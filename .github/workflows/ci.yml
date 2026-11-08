@@ -66,22 +66,34 @@ jobs:
 
       # Each check runs in a fresh container the way the gate runs on Hades:
       # no network, read-only root, a tmpfs scratch dir, no capabilities.
+      # The last ones prove the two gate bugs of Hades run 3 (2026-11-08)
+      # fixed: landrun's checks for report item (g), and a crafted cube saved
+      # for one printer and sliced on the others. The cube is sliced twice:
+      # with the image as built, and with Orca's process_full folder hidden by
+      # an empty tmpfs, which is the image as it was for run 3 and must fail
+      # the way run 3 did. Own-printer slices must match between the two.
       - name: Smoke-check the image
         run: |
+          gate() {
+            docker run --rm --network none --read-only \
+              --tmpfs /work:rw,size=1g,mode=1777 --cap-drop ALL \
+              --security-opt no-new-privileges:true -e HOME=/work \
+              -v "$PWD/tools/slicing-gate:/src:ro" "$@"
+          }
           smoke() {
             local name="$1"
             shift
             local out
-            if ! out="$(docker run --rm --network none --read-only \
-                --tmpfs /work:rw,size=1g,mode=1777 --cap-drop ALL \
-                --security-opt no-new-privileges:true -e HOME=/work \
-                -v "$PWD/tools/slicing-gate:/src:ro" "$IMAGE" "$@" 2>&1)"; then
+            if ! out="$(gate "$IMAGE" "$@" 2>&1)"; then
               printf '%s\n' "$out"
               echo "::error::smoke check failed: ${name}"
               exit 1
             fi
             printf '== %s: ok\n' "${name}"
-            printf '%s\n' "$out" | head -n 8
+            # The first lines only, from a here-string: a pipe into head let
+            # head close it early, and under pipefail the SIGPIPE that killed
+            # printf failed a check that had passed (issue #9).
+            head -n 8 <<<"$out"
           }
           smoke "orca --help exits 0" /opt/orca/AppRun --help
           smoke "BBL profile version" node /src/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json
@@ -89,3 +101,15 @@ jobs:
           smoke "node starts" node --version
           smoke "openscad starts" /opt/openscad/AppRun --version
           smoke "landrun starts" landrun --version
+          echo "== landrun checks, report item (g)"
+          gate "$IMAGE" node /src/smoke-gate.mjs checks
+          results="$RUNNER_TEMP/smoke"
+          mkdir -p "$results"
+          chmod 1777 "$results"
+          echo "== crafted cube across printers, image as built"
+          gate -v "$results:/results" "$IMAGE" node /src/smoke-gate.mjs switch --out /results/fixed.json
+          echo "== crafted cube across printers, control: process_full hidden as in run 3"
+          gate -v "$results:/results" --tmpfs /opt/orca/resources/profiles/BBL/process_full:ro,size=1m \
+            "$IMAGE" node /src/smoke-gate.mjs switch --control --out /results/control.json
+          echo "== own-printer slices with and without process_full"
+          node tools/slicing-gate/smoke-gate.mjs compare "$results/fixed.json" "$results/control.json"

@@ -181,8 +181,9 @@ test("the smoke step runs the gate's checks step and judges landrun's item (g)",
 });
 
 test("every smoke container keeps the gate's hardening", () => {
-  const s = stepScript(text(), "Smoke-check the image");
-  const docker = s.match(/docker run[^\n]*(?:\\\n[^\n]*)*/g) ?? [];
+  // Line continuations joined, so each docker run is one line.
+  const s = stepScript(text(), "Smoke-check the image").replace(/\\\n\s*/g, " ");
+  const docker = s.match(/docker run[^\n]*/g) ?? [];
   assert.ok(docker.length >= 1);
   for (const d of docker) {
     for (const flag of ["--rm", "--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges:true", "--tmpfs /work:"]) {
