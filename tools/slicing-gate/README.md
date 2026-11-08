@@ -22,9 +22,9 @@ the fallback.
 | `flatten-profiles.mjs` | the image | Flattens Orca's BBL machine and filament profiles through `inherits` into full JSON for `--load-settings` and `--load-filaments`, and writes the recipe. |
 | `gate.mjs` | the image | The driver: `plan`, `slice <id>`, `checks`, `report`. |
 | `lib/` | both | Zip and 3MF metadata reader, printer ids, result classifier, GLB writer. |
-| `Dockerfile` | Hades | The throwaway gate image. Every download is pinned and sha256-checked. |
+| `Dockerfile` | Hades | The throwaway gate image. Every release file it downloads is pinned and sha256-checked; apt packages come from a dated Ubuntu snapshot, except ca-certificates, which comes from the live archive (see Pins). |
 | `check-libs.sh` | the image | Build-time check: fails the build when ldd fails on a binary or reports a missing shared library. |
-| `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes everything. |
+| `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
 ## The sample rule
@@ -91,6 +91,12 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    ls /tmp/platehouse-gate                 # expect: No such file or directory
    docker images | grep platehouse-gate    # expect: nothing
    ```
+
+   `--clean` does not prune Docker's build cache, so the layers of the
+   Dockerfile's `fetch` stage (the Orca and OpenSCAD AppImages, landrun, Node,
+   occt-import-js and the NIST zip) stay on Hades. `docker builder prune`
+   clears them, but it clears every project's build cache, so that is
+   platform-sre's call on the day.
 
    Also delete `/tmp/platehouse-selection.json` and
    `/tmp/platehouse-names.txt` on mini01.
@@ -182,6 +188,7 @@ On Hades and Mario, read-only, reported with the gate:
 |---|---|---|
 | Base image | ubuntu:24.04 | index digest `sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852` |
 | apt packages | Ubuntu snapshot 20261107T000000Z | signed snapshot index (apt) |
+| ca-certificates | not pinned: the noble version current on the build day | live Ubuntu archive, installed in both stages before the snapshot is switched on, because the snapshot service is https only and the base image has no CA bundle; any dependency of it the base image lacks comes from the live archive too |
 | OrcaSlicer | v2.5.0 Ubuntu 24.04 AppImage | sha256 `d13eb0a9cd618ed080ab6b82c64c0a60c4501aac91e88d5ac2c3b526fb141a7c` |
 | OpenSCAD | 2026.11-RC0 x86_64 AppImage | sha256 `78c2050aedcf52cca0186151cdcda1118a771491e3bec934b3172d0b03a9de96` |
 | landrun | v0.1.17 linux amd64 | sha256 `6ada66a06669e8994e174a7271af2db636308e55a0d6ec896cc7d326b46727f6` |

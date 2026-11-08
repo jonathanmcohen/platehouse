@@ -1,8 +1,8 @@
 # Platehouse slicing gate image (build plan Task 1). Throwaway: platform-sre
 # builds it on Hades for one gate run and deletes it afterwards. amd64 only.
 #
-# Every download is pinned to an exact version and checked against the
-# sha256 recorded here. The sha256 values were read from the GitHub release
+# Every release file fetched below is pinned to an exact version and checked
+# against the sha256 recorded here. The sha256 values were read from the GitHub release
 # asset digests, the npm registry tarball (its sha512 integrity matched), the
 # Node.js SHASUMS256.txt and a hash of the NIST archive, all on 2026-11-07.
 # The OpenSCAD value also matches the .sha256 file published with that release.
