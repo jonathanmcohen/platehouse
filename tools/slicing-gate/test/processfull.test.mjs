@@ -79,7 +79,7 @@ test("the command line writes the folder with --process-full alone", () => {
     encoding: "utf8",
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /wrote 2 default process presets for 2 machine presets to .*; skipped 0 machine preset\(s\) that would not flatten/);
+  assert.equal(r.stdout, `wrote 2 default process presets for 2 instantiable machine presets to ${out}\n`);
   assert.equal(readdirSync(out).length, 2);
 });
 
@@ -102,36 +102,99 @@ test("a default process whose parent is not in the bundle fails, naming both, an
   assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
 });
 
-// A machine that will not flatten used to be dropped by a bare catch, so its
-// default process was never written and nothing said so.
-test("a machine preset that will not flatten is listed with its reason, not dropped silently", () => {
+// The rule (PR #11 review, issue #13): every instantiable BBL machine preset
+// ends with its default process written to process_full, or the build fails
+// naming the machine and why. A machine left out means code -3 at slice time
+// on Hades when a file is switched to that printer, which is the failure this
+// folder exists to prevent, so nothing is skipped and listed instead.
+
+const machine = (root, name, fields) =>
+  writeFileSync(join(root, "BBL", "machine", `${name}.json`), JSON.stringify({ type: "machine", name, from: "system", ...fields }));
+
+// A 0.6 nozzle variant that takes its default_print_profile from a parent the
+// bundle no longer has: flattenPreset drops the link, so the flattened machine
+// has no default process and used to be passed over with "skipped 0".
+test("an instantiable machine whose parent is not in the bundle fails, naming the machine and the parent, and nothing is written", () => {
   const root = profileTree();
-  writeFileSync(
-    join(root, "BBL", "machine", "Loop 0.4 nozzle.json"),
-    JSON.stringify({ type: "machine", name: "Loop 0.4 nozzle", from: "system", inherits: "Loop 0.4 nozzle", instantiation: "true" }),
-  );
+  machine(root, "Odd 0.6 nozzle", { inherits: "Odd 0.4 nozzle gone", instantiation: "true" });
   const out = freshDir();
-  const result = flatten.writeProcessFull(flatten.loadIndex(root), out);
-  assert.deepEqual(result.files, ["0.20mm Standard @BBL A1", "0.20mm Standard @BBL X1C"]);
-  assert.equal(result.skipped.length, 1);
-  assert.equal(result.skipped[0].name, "Loop 0.4 nozzle");
-  assert.match(result.skipped[0].reason, /inheritance depth/);
+  assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), out), /machine "Odd 0\.6 nozzle".*inherits "Odd 0\.4 nozzle gone"/);
+  assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
 });
 
-test("templates and _common machine presets are excluded without being counted as skipped", () => {
-  const result = flatten.writeProcessFull(flatten.loadIndex(profileTree()), freshDir());
-  assert.deepEqual(result.skipped, []);
+// The same with the default process still on the machine itself: the file
+// would be written, but from a machine missing its parent's keys.
+test("an instantiable machine with a dangling parent fails even when it names its own default process", () => {
+  const root = profileTree();
+  machine(root, "Odd 0.6 nozzle", { inherits: "Odd 0.4 nozzle gone", instantiation: "true", default_print_profile: "0.20mm Standard @BBL A1" });
+  assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), freshDir()), /machine "Odd 0\.6 nozzle".*inherits "Odd 0\.4 nozzle gone"/);
 });
 
-test("the command line prints the skipped count beside the written count, and each skipped machine", () => {
+for (const [label, fields] of [
+  ["no default_print_profile", {}],
+  ["an empty default_print_profile", { default_print_profile: "" }],
+  ["a default_print_profile that is not a string", { default_print_profile: ["0.20mm Standard @BBL A1"] }],
+]) {
+  test(`an instantiable machine with ${label} fails, naming the machine, and nothing is written`, () => {
+    const root = profileTree();
+    machine(root, "Odd 0.4 nozzle", { inherits: "fdm_bbl_3dp_001_common", instantiation: "true", ...fields });
+    const out = freshDir();
+    assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), out), /machine "Odd 0\.4 nozzle".*no default_print_profile/);
+    assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
+  });
+}
+
+test("a default process the bundle does not have fails, naming the machine that wants it", () => {
+  const root = profileTree();
+  machine(root, "Odd 0.4 nozzle", { instantiation: "true", default_print_profile: "No Such Process" });
+  assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), freshDir()), /machine "Odd 0\.4 nozzle".*No Such Process/);
+});
+
+test("a default process whose parent is missing fails, naming the machine that wants it", () => {
   const root = profileTree();
   writeFileSync(
-    join(root, "BBL", "machine", "Loop 0.4 nozzle.json"),
-    JSON.stringify({ type: "machine", name: "Loop 0.4 nozzle", from: "system", inherits: "Loop 0.4 nozzle", instantiation: "true" }),
+    join(root, "BBL", "process", "0.20mm Orphan @BBL Odd.json"),
+    JSON.stringify({ type: "process", name: "0.20mm Orphan @BBL Odd", from: "system", inherits: "fdm_process_gone" }),
   );
+  machine(root, "Odd 0.4 nozzle", { instantiation: "true", default_print_profile: "0.20mm Orphan @BBL Odd" });
+  assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), freshDir()), /machine "Odd 0\.4 nozzle".*fdm_process_gone/);
+});
+
+// A machine that will not flatten (here an inheritance loop) cannot be told
+// apart from an instantiable one, so it fails the build rather than being
+// listed and left out.
+test("a machine preset that will not flatten fails the build, naming it and why", () => {
+  const root = profileTree();
+  machine(root, "Loop 0.4 nozzle", { inherits: "Loop 0.4 nozzle", instantiation: "true" });
+  const out = freshDir();
+  assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), out), /machine "Loop 0\.4 nozzle".*inheritance depth/);
+  assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
+});
+
+test("every broken machine is named in the one failure, not just the first", () => {
+  const root = profileTree();
+  machine(root, "Odd 0.4 nozzle", { instantiation: "true" });
+  machine(root, "Odd 0.6 nozzle", { inherits: "Odd 0.4 nozzle gone", instantiation: "true" });
+  assert.throws(
+    () => flatten.writeProcessFull(flatten.loadIndex(root), freshDir()),
+    (err) => /"Odd 0\.4 nozzle"/.test(err.message) && /"Odd 0\.6 nozzle"/.test(err.message),
+  );
+});
+
+test("templates, _common presets, machine models and non-instantiable machines are passed over, and only instantiable ones are counted", () => {
+  const root = profileTree();
+  machine(root, "Shelf 0.4 nozzle", { inherits: "fdm_bbl_3dp_001_common", instantiation: "false" });
+  const result = flatten.writeProcessFull(flatten.loadIndex(root), freshDir());
+  assert.equal(result.machines, 2);
+  assert.deepEqual(result.files, ["0.20mm Standard @BBL A1", "0.20mm Standard @BBL X1C"]);
+});
+
+test("the command line fails with exit 2 naming a machine it cannot give a default process, and writes nothing", () => {
+  const root = profileTree();
+  machine(root, "Odd 0.6 nozzle", { inherits: "Odd 0.4 nozzle gone", instantiation: "true" });
   const out = freshDir();
   const r = spawnSync(process.execPath, [join(HERE, "flatten-profiles.mjs"), "--profiles", root, "--process-full", out], { encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /wrote 2 default process presets for 2 machine presets to .*; skipped 1 machine preset\(s\) that would not flatten/);
-  assert.match(r.stdout, /skipped machine "Loop 0\.4 nozzle": inheritance depth/);
+  assert.equal(r.status, 2, r.stdout);
+  assert.match(r.stderr, /machine "Odd 0\.6 nozzle"/);
+  assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
 });
