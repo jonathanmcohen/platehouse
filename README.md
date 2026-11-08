@@ -48,4 +48,8 @@ node --test 'tools/slicing-gate/test/**/*.test.mjs'
 - `apps/server` - the Fastify server. So far it holds `src/config.ts`, which reads the
   configuration from the environment and refuses to start when a value is missing or invalid.
   A configuration error names the key and never prints its value.
+  - `src/db` - the Postgres schema as hand-written, numbered SQL files in `src/db/migrations`,
+    the forward-only migrator (`migrate.ts`) and the Kysely setup. An applied migration is
+    never edited: the migrator refuses to run if one changed, so a change goes in a new file.
+  - `src/repos` - the database repositories the rest of the server calls.
 - `tools/slicing-gate` - the Task 1 slicing gate harness; see its README.
