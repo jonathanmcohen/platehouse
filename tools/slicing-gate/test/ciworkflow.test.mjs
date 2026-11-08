@@ -252,7 +252,7 @@ test("lint, typecheck, unit and integration run in a chain, each gated on the on
 });
 
 // The gate job builds a large image, so it runs only when the changes job finds
-// the gate or this workflow among the changed files.
+// the gate, this workflow or .node-version among the changed files.
 test("the gate job runs only when the changes job says so", () => {
   const t = text();
   const gate = jobBlock(t, "gate-image");
@@ -308,13 +308,24 @@ for (const [name, input, want] of [
   ["a PR touching only the server skips it", { event: "pull_request", prBase: SHA, changed: ["apps/server/src/config.ts"] }, "false"],
   ["a PR touching the gate runs it", { event: "pull_request", prBase: SHA, changed: ["apps/server/a.ts", "tools/slicing-gate/Dockerfile"] }, "true"],
   ["a PR touching this workflow runs it", { event: "pull_request", prBase: SHA, changed: [".github/workflows/ci.yml"] }, "true"],
+  // The gate job takes its Node version from .node-version, so a bump to it
+  // alone must run the gate tests and the image build on the new Node.
+  ["a PR touching only .node-version runs it", { event: "pull_request", prBase: SHA, changed: [".node-version"] }, "true"],
+  ["a push touching only .node-version runs it", { event: "push", before: SHA, changed: [".node-version"] }, "true"],
   ["a PR with no changed files skips it", { event: "pull_request", prBase: SHA, changed: [] }, "false"],
   [
     "look-alike paths skip it",
     {
       event: "pull_request",
       prBase: SHA,
-      changed: ["tools/slicing-gate-old/x", "docs/tools/slicing-gate/x", ".github/workflows/ci.yml.orig", ".github/workflows/release.yml"],
+      changed: [
+        "tools/slicing-gate-old/x",
+        "docs/tools/slicing-gate/x",
+        ".github/workflows/ci.yml.orig",
+        ".github/workflows/release.yml",
+        "apps/server/.node-version",
+        ".node-version.bak",
+      ],
     },
     "false",
   ],
