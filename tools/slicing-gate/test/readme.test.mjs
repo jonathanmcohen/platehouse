@@ -34,10 +34,14 @@ test("the tool is copied with scp -rp, so its scripts keep their modes", () => {
 test("every run.sh call goes through bash, so it works without the execute bit", () => {
   const calls = commands.filter((c) => c.includes("run.sh"));
   assert.ok(calls.length >= 2, calls.join("\n"));
-  // Step 3's detached form wraps the same call in setsid nohup bash -c '...',
-  // after removing the previous run's exit file.
+  // Step 3's detached form wraps the same call in setsid nohup flock -n
+  // <lock> bash -c '...', after removing the previous run's exit file.
   for (const c of calls) {
-    assert.match(c, /^(setsid nohup bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; )?bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/, c);
+    assert.match(
+      c,
+      /^(setsid nohup flock -n \/tmp\/platehouse-gate\/run\.lock bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; )?bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/,
+      c,
+    );
   }
 });
 
@@ -148,7 +152,7 @@ test("step 3 starts the run detached, with its log and exit code in the scratch 
   const line = detached();
   assert.ok(line, "step 3 has a setsid line");
   // A run.exit left by an earlier run would read as this run having finished.
-  assert.match(line, /^setsid nohup bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; bash /);
+  assert.match(line, /^setsid nohup flock -n \/tmp\/platehouse-gate\/run\.lock bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; bash /);
   assert.match(line, /bash \/tmp\/platehouse-gate\/tool\/run\.sh > \/tmp\/platehouse-gate\/run\.log 2>&1/);
   assert.match(line, /echo \$\? > \/tmp\/platehouse-gate\/run\.exit/);
   assert.match(line, /< \/dev\/null > \/dev\/null 2>&1 &$/, "detached from the terminal and backgrounded");
@@ -214,5 +218,74 @@ test(
     for (let i = 0; i < 100 && !done(); i++) await new Promise((res) => setTimeout(res, 50));
     assert.equal(readFileSync(exitFile, "utf8"), "3\n");
     assert.match(readFileSync(join(root, "run.log"), "utf8"), /^stub run \d+, old exit file absent\n$/);
+  },
+);
+
+// The run outlives the ssh session, so an operator who reconnects may paste
+// step 3 again while a run is still going (PR #7 review). Without a guard the
+// second wrapper truncated run.log, its run.sh died at "out is not empty", and
+// it wrote 2 to run.exit while the first run went on; step 5's --clean then
+// deleted the live run. The wrapper takes run.lock with flock -n, so a second
+// start does nothing, and step 3 first says whether a run is going.
+const lockCheck = () => step3Commands().find((l) => l.startsWith("flock -n "));
+
+test("step 3 says whether a run is already going before it starts one", () => {
+  const cmds = step3Commands();
+  const check = lockCheck();
+  assert.ok(check, "step 3 has a flock -n check line");
+  assert.match(check, /^flock -n \/tmp\/platehouse-gate\/run\.lock true \|\| echo '[^']*already going[^']*'$/);
+  assert.ok(cmds.indexOf(check) < cmds.findIndex((l) => l.startsWith("setsid ")), "the check comes before the start");
+  assert.match(step3, /second start/i, "step 3 says what a second start does");
+});
+
+test(
+  "step 3 pasted again while a run is going leaves that run's log and exit code alone",
+  {
+    skip:
+      spawnSync("bash", ["-c", "command -v setsid && command -v flock"]).status !== 0 &&
+      "setsid or flock is not installed (util-linux, Linux only)",
+  },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "gate-twice-"));
+    made.push(root);
+    mkdirSync(join(root, "tool"));
+    // The stub logs its start, then waits (at most 30 s) for the test to let it finish.
+    writeFileSync(
+      join(root, "tool", "run.sh"),
+      'd="$(dirname "$0")/.."\nprintf \'stub run %s started\\n\' "$$"\nfor _ in $(seq 300); do [ -e "$d/release" ] && break; sleep 0.1; done\nprintf \'stub run %s done\\n\' "$$"\nexit 3\n',
+    );
+    const start = detached().replaceAll("/tmp/platehouse-gate", root);
+    const check = lockCheck().replaceAll("/tmp/platehouse-gate", root);
+    const log = join(root, "run.log");
+    const exitFile = join(root, "run.exit");
+    const wait = async (ok) => {
+      for (let i = 0; i < 200 && !ok(); i++) await new Promise((res) => setTimeout(res, 50));
+    };
+    const readLog = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
+
+    assert.equal(spawnSync("bash", ["-c", start], { encoding: "utf8", timeout: 10000 }).status, 0);
+    await wait(() => /started/.test(readLog()));
+    const first = readLog();
+    assert.match(first, /^stub run \d+ started\n$/);
+
+    const busy = spawnSync("bash", ["-c", check], { encoding: "utf8", timeout: 10000 });
+    assert.match(busy.stdout, /already going/, "the check sees the running gate");
+    assert.equal(spawnSync("bash", ["-c", start], { encoding: "utf8", timeout: 10000 }).status, 0);
+    await new Promise((res) => setTimeout(res, 1000));
+    assert.equal(readLog(), first, "the second start did not touch run.log");
+    assert.equal(existsSync(exitFile), false, "the second start wrote no run.exit");
+
+    writeFileSync(join(root, "release"), "");
+    await wait(() => existsSync(exitFile) && /\n$/.test(readFileSync(exitFile, "utf8")));
+    assert.equal(readFileSync(exitFile, "utf8"), "3\n");
+    assert.match(readLog(), /^stub run (\d+) started\nstub run \1 done\n$/, "one run, start to finish");
+    // run.exit is written just before the wrapper and flock exit and drop the lock.
+    let idle = "";
+    for (let i = 0; i < 40; i++) {
+      idle = spawnSync("bash", ["-c", check], { encoding: "utf8", timeout: 10000 }).stdout;
+      if (idle === "") break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    assert.equal(idle, "", "with no run going the check prints nothing");
   },
 );
