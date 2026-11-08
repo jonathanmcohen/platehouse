@@ -52,7 +52,8 @@ test("every action is pinned to an exact release tag", () => {
 test("the job runs the gate tests on Node 26, then builds the image, then smoke-checks it", () => {
   const t = text();
   assert.match(t, /node-version: "26\.\d+\.\d+"/);
-  const tests = t.indexOf("node --test 'tools/slicing-gate/test/**/*.test.mjs'");
+  // Reporter options may sit between node --test and the glob, across lines.
+  const tests = t.search(/node --test (\\\s+|--\S+\s+)*'tools\/slicing-gate\/test\/\*\*\/\*\.test\.mjs'/);
   const build = t.search(/docker build --platform linux\/amd64 -t \S+ tools\/slicing-gate/);
   const smoke = t.indexOf("/opt/orca/AppRun --help");
   assert.ok(tests !== -1 && build !== -1 && smoke !== -1, "tests, build and smoke steps are present");
