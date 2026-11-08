@@ -171,20 +171,24 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
           .forUpdate()
           .executeTakeFirst();
         if (trashed === undefined) return false;
+        // isUuid and the uuid column accept any case, but bucket keys are
+        // lowercase and S3 prefixes are case-sensitive, so go on with the id
+        // as Postgres returns it (canonical lowercase), not the caller's text.
+        const modelId = trashed.id;
 
         const stored = await trx
           .selectFrom("blobs")
           .select("key")
-          .where("modelId", "=", id)
+          .where("modelId", "=", modelId)
           .where("state", "=", "stored")
           .execute();
         if (stored.length > 0) {
-          const listed = new Set((await store.listPrefix(`models/${id}/`)).map((o) => o.key));
+          const listed = new Set((await store.listPrefix(`models/${modelId}/`)).map((o) => o.key));
           const missing = stored.filter((b) => !listed.has(b.key)).length;
-          if (missing > 0) throw new FilesMissing(id, missing);
+          if (missing > 0) throw new FilesMissing(modelId, missing);
         }
 
-        return modelsRepo(trx).restore(id);
+        return modelsRepo(trx).restore(modelId);
       });
     },
 

@@ -118,6 +118,21 @@ describe("trashModel and restoreModel", () => {
     expect(ids(await search.search({ collection }))).toEqual([model.id]);
   });
 
+  test("restore accepts the id in uppercase and still finds the model's lowercase keys", async () => {
+    const { model, source, thumbnail } = await seedStoredModel(env);
+    const trash = trashFor();
+    expect(await trash.trashModel(model.id)).toBe(true);
+    // The stored keys are lowercase, so the uppercase id below differs from them.
+    expect(model.id).toBe(model.id.toLowerCase());
+    expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(2);
+
+    expect(await trash.restoreModel(model.id.toUpperCase())).toBe(true);
+
+    expect((await env.repos.models.get(model.id))?.trashedAt).toBeNull();
+    expect((await env.repos.blobs.get(source.id))?.state).toBe("stored");
+    expect((await env.repos.blobs.get(thumbnail.id))?.state).toBe("stored");
+  });
+
   test("restore refuses a model a failed purge left with some of its objects gone", async () => {
     const { model, source, thumbnail } = await seedStoredModel(env);
     const trash = trashFor();
