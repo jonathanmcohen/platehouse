@@ -25,10 +25,10 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { classifyPlate, gateVerdict, parseTimeV, pctDiff, proposeLimits, summarise } from "./lib/classify.mjs";
 import { loadIndex, writeRecipe } from "./flatten-profiles.mjs";
 import { meshesToGlb } from "./lib/glb.mjs";
+import { isMain } from "./lib/is-main.mjs";
 import { MODEL_IDS, SELECTED_PRINTERS } from "./lib/printers.mjs";
 import { readProjectMeta } from "./lib/threemf.mjs";
 
@@ -41,7 +41,9 @@ export const PATHS = Object.freeze({
   out: env.GATE_OUT ?? "/out",
   work: env.GATE_WORK ?? "/work",
   orca: "/opt/orca/AppRun",
-  orcaProfiles: env.GATE_ORCA_PROFILES ?? "/opt/orca/resources/profiles",
+  // Orca's BBL profile JSON from its source at v2.5.0 (see the Dockerfile);
+  // the AppImage itself ships the presets only as binary .opc caches.
+  orcaProfiles: env.GATE_ORCA_PROFILES ?? "/opt/orca-profiles",
   openscad: "/opt/openscad/AppRun",
   openscadDir: "/opt/openscad",
   landrun: "/usr/local/bin/landrun",
@@ -736,7 +738,7 @@ function reportCommand() {
 
 // ---------------------------------------------------------------- main
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isMain(import.meta.url)) {
   const [cmd, arg] = process.argv.slice(2);
   try {
     if (cmd === "plan") planCommand();

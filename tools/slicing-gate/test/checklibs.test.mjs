@@ -74,6 +74,6 @@ test("the Dockerfile checks Orca's real binary with the launcher's library path,
     dockerfile,
     /check-libs\.sh \/opt\/orca\/bin\/orca-slicer \/opt\/orca\/lib\/orca-runtime:\/opt\/orca\/bin\b/,
   );
-  assert.match(dockerfile, /check-libs\.sh "\$scad_bin"/);
+  assert.match(dockerfile, /check-libs\.sh \/opt\/openscad\/usr\/bin\/openscad\b/);
   assert.doesNotMatch(dockerfile, /ldd \/opt\/orca\/AppRun/);
 });

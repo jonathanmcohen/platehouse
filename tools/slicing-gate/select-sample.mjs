@@ -8,11 +8,15 @@
 //
 // Usage: node select-sample.mjs <folder> [--json <out.json>] [--names <out.txt>]
 //   --json   writes the selection (names, roles, reasons, counts) for run.sh
-//   --names  writes one relative file name per line, the union of the sample
-//            and the comparison set, for rsync --files-from
+//   --names  writes one file name per line, the union of the sample and the
+//            comparison set. Each is relative to <folder>, and a name
+//            may hold a subfolder path, since folders are scanned recursively
+//            ("Sub Folder/part.3mf"); a name with a line break is skipped and
+//            reported. README step 2 copies the list with tar -T, which keeps
+//            the path, so each file lands at in/sample/<name> on Hades.
 import { readdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMain } from "./lib/is-main.mjs";
 import { printerOf, SHORT } from "./lib/printers.mjs";
 import { readProjectMeta } from "./lib/threemf.mjs";
 
@@ -176,7 +180,7 @@ function main(argv) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isMain(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (err) {
