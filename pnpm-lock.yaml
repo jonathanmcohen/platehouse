@@ -187,6 +187,12 @@ importers:
       '@aws-sdk/lib-storage':
         specifier: 3.1164.0
         version: 3.1164.0(@aws-sdk/client-s3@3.1164.0)
+      kysely:
+        specifier: 0.29.8
+        version: 0.29.8
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -195,9 +201,6 @@ importers:
         specifier: 12.2.1
         version: 12.2.1(bare-buffer@3.7.1)
       '@types/pg':
-        specifier: 8.23.1
-        version: 8.23.1
-      pg:
         specifier: 8.23.1
         version: 8.23.1
       testcontainers:
@@ -1044,6 +1047,10 @@ packages:
 
   jackspeak@3.4.3:
     resolution: {integrity: sha512-OGlZQpz2yfahA/Rd1Y8Cd9SIEsqvXkLVoSw/cgwhnhFMDbsQFeZYoJJ7bIZBS9BcamUW96asq/npPWugM+RQBw==}
+
+  kysely@0.29.8:
+    resolution: {integrity: sha512-ixHU1H4R+LeC5Y0nAhYgiGRFpFRHm2DXKEmJSs/vbes9sKXyssyzxzE/NYiOJX5fY0BL28biCre3GqlCqUwyXQ==}
+    engines: {node: '>=22.0.0'}
 
   lazystream@1.0.1:
     resolution: {integrity: sha512-b94GiNHQNy6JNTrt5w6zNyffMrNkXZb3KTkCZJb2V1xaEGCk093vkZ2jk3tpaeP33/OiXC+WvK9AxUebnf5nbw==}
@@ -2390,6 +2397,8 @@ snapshots:
       '@isaacs/cliui': 8.0.2
     optionalDependencies:
       '@pkgjs/parseargs': 0.11.0
+
+  kysely@0.29.8: {}
 
   lazystream@1.0.1:
     dependencies:
