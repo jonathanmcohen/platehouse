@@ -12,7 +12,12 @@ on:
     paths:
       - "tools/slicing-gate/**"
       - ".github/workflows/ci.yml"
+  # Pushes only to the branches that take merges: a push to a PR branch is
+  # already run by pull_request, and ran twice without this (issue #8).
   push:
+    branches:
+      - main
+      - "release/**"
     paths:
       - "tools/slicing-gate/**"
       - ".github/workflows/ci.yml"
