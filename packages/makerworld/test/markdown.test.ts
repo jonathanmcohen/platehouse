@@ -721,6 +721,28 @@ describe("escaped designer text beside misnested inline tags renders literally (
     expect(render(out)).toBe("<h2>Learn C#</h2>\n<p>z</p>\n");
   });
 
+  // The cell's trailing spaces (one per <br>) are trimmed before the "; "
+  // between list items, and before the "; " between the rows of a table
+  // nested in the cell. A bold opened inside those spaces once kept its old
+  // start, which then fell on the "!" after its backslash: the "!" came out
+  // bare before the link's [ and made it an image (issue #33). The bold now
+  // starts after the "; " that replaced those spaces.
+  it("bold opened in a cell's trailing spaces before a list item makes no image", () => {
+    const out = htmlToMarkdown(
+      '<table><tr><td><ul><li>a</li><br><br><br><b><li>!<a href="https://evil.example/x.png">y</a></b></li></ul></td></tr></table>',
+    );
+    expect(out).toBe("| a; **\\![y](https://evil.example/x.png)** |\n| --- |");
+    expect(render(out)).not.toMatch(/<img/);
+  });
+
+  it("bold opened in a cell's trailing spaces before a nested table row makes no image", () => {
+    const out = htmlToMarkdown(
+      '<table><tr><td><table><tr><td>a</td></tr><br><br><b><tr><td>!<a href="https://evil.example/x.png">y</a></b></td></tr></table></td></tr></table>',
+    );
+    expect(out).toBe("| a; **\\![y](https://evil.example/x.png)** |\n| --- |");
+    expect(render(out)).not.toMatch(/<img/);
+  });
+
   it.each(DESIGNER_PAYLOADS)("a link closed before the bold inside it: %j", (payload) => {
     const p = htmlEscape(payload);
     const out = htmlToMarkdown(`<p>a <a href="https://e.test/">${p}<b>y</a>${p}z</b></p>`);

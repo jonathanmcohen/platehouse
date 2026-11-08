@@ -250,6 +250,23 @@ describe("escaped designer text beside misnested inline tags renders literally t
     expectTextOnly(html, "!abcd");
   });
 
+  // Issue #33: a bold opened in a cell's trailing spaces, which are trimmed
+  // before the "; " between list items or nested table rows.
+  it.each([
+    [
+      "before a list item in a cell",
+      '<table><tr><td><ul><li>a</li><br><br><br><b><li>!<a href="https://evil.example/x.png">y</a></b></li></ul></td></tr></table>',
+    ],
+    [
+      "before a row of a table nested in a cell",
+      '<table><tr><td><table><tr><td>a</td></tr><br><br><b><tr><td>!<a href="https://evil.example/x.png">y</a></b></td></tr></table></td></tr></table>',
+    ],
+  ])("bold opened in a cell's trailing spaces %s makes no image", (_name, input) => {
+    const html = renderMarkdown(htmlToMarkdown(input));
+    expect(html).not.toMatch(/<img/);
+    expectTextOnly(html, "a; !y");
+  });
+
   it.each(DESIGNER_PAYLOADS)("a link closed before the bold inside it: %j", (payload) => {
     const p = htmlEscape(payload);
     const html = renderMarkdown(
