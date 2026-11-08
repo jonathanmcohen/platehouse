@@ -7,13 +7,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "kysely": "0.29.8",
+    "pg": "8.23.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "3.1164.0",
     "@testcontainers/postgresql": "12.2.1",
     "@types/pg": "8.23.1",
-    "pg": "8.23.1",
     "testcontainers": "12.2.1"
   }
 }
