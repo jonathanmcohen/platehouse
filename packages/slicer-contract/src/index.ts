@@ -5,8 +5,13 @@
 //   GET  /v1/health                         -> health
 //   GET  /v1/profiles                       -> profiles
 //   POST /v1/slice?printer=<id>&plate=<n>   -> sliceResult | 409 busy | 413 too_large | 422 not_3mf
-//   POST /v1/scad/stl, /v1/scad/png         -> model/stl, image/png | 422 renderError
-//   POST /v1/step/glb                       -> model/gltf-binary | 422 convertError
+//   POST /v1/scad/stl, /v1/scad/png         -> model/stl, image/png | 409 busy | 422 renderError
+//   POST /v1/step/glb                       -> model/gltf-binary | 409 busy | 422 convertError
+//
+// The slicer runs one heavy job at a time: a slice, a render or a STEP
+// conversion. A POST to any of those three routes while one runs is 409
+// busy, answered at once without reading the body; the caller retries
+// later. health.busy is true while one runs.
 //
 // Where the plan leaves a case open, these schemas settle it, and the PR
 // says so: a malformed query or an unknown printer is 400 bad_request, an

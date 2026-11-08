@@ -5,10 +5,13 @@
 // surface is five routes, and the container opens untrusted files, so it
 // carries as little as it can.
 //
-// - Slices run one at a time; a second POST /v1/slice while one runs is 409.
-// - STEP conversions also run one at a time: a second waits for the first
-//   before its body is read, so at most one STEP body (up to 256 MiB) sits
-//   on the tmpfs and one OCCT worker runs, inside the container's 4g.
+// - One heavy job at a time: a slice, an OpenSCAD render or a STEP
+//   conversion. The container's 4g is sized from a single slice, so a
+//   request for any of them while one runs is 409 busy, answered before its
+//   body is read and with the connection closed, so no socket waits. The
+//   caller retries.
+// - The server sets its own request and headers timeouts (requestTimeouts):
+//   Node's default would cut a slow 512 MiB upload off with a 408.
 // - Every request works in its own folder under WORK_DIR (/work, a tmpfs),
 //   deleted afterwards, success or failure.
 // - Every external program runs in its own process group, killed whole at
@@ -192,6 +195,34 @@ function declaredLength(req: IncomingMessage): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Node's requestTimeout counts from a request's first byte until its whole
+ * body has arrived (work after that does not count), and answers 408 past
+ * it. The largest legitimate body is the 512 MiB .3mf: this allows it
+ * UPLOAD_SECONDS (a little under 1 MiB/s), plus the longest time cap and a
+ * margin. The headers of a legitimate request arrive in well under a second,
+ * so the headers timeout stays at Node's 60 s, set here so it is explicit; it
+ * must not exceed the request timeout.
+ */
+const UPLOAD_SECONDS = 600;
+const MARGIN_SECONDS = 60;
+const HEADERS_TIMEOUT_MS = 60_000;
+
+export function requestTimeouts(config: SlicerConfig): {
+  requestTimeout: number;
+  headersTimeout: number;
+} {
+  const longestCap = Math.max(
+    config.sliceTimeoutSeconds,
+    config.scadTimeoutSeconds,
+    config.stepTimeoutSeconds,
+  );
+  return {
+    requestTimeout: (UPLOAD_SECONDS + longestCap + MARGIN_SECONDS) * 1000,
+    headersTimeout: HEADERS_TIMEOUT_MS,
+  };
+}
+
 const ZIP_MAGIC = [Buffer.from("PK\x03\x04", "latin1"), Buffer.from("PK\x05\x06", "latin1")];
 
 export interface Slicer {
@@ -204,6 +235,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
   const profiles = loadProfiles(config.profilesDir);
   const menu = new Set(profiles.printers.map((p) => p.id));
   const running = new Set<() => void>();
+  // Held by the one heavy job running: a slice, a render or a STEP conversion.
   let busy = false;
 
   const track = () => {
@@ -331,19 +363,9 @@ export function createSlicer(config: SlicerConfig): Slicer {
     }
   }
 
-  // STEP conversions queue here, one at a time.
-  let stepQueue: Promise<void> = Promise.resolve();
-  const oneStepAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
-    const run = stepQueue.then(fn, fn);
-    stepQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  };
-
   /**
-   * Saves the body as dir/<input> in a fresh job folder and hands the folder
+   * Takes the heavy-job lock (or answers 409 busy before reading the body),
+   * saves the body as dir/<input> in a fresh job folder and hands the folder
    * to `work`, which runs its program on that file. The body is never read
    * into the server's memory.
    */
@@ -357,17 +379,23 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const declared = declaredLength(req);
     if (declared !== null && declared > limit)
       return refuseEarly(req, res, 413, { error: "too_large" });
-    const dir = jobDir();
+    if (busy) return refuseEarly(req, res, 409, { error: "busy" });
+    busy = true;
     try {
+      const dir = jobDir();
       try {
-        await saveBody(req, join(dir, input), limit);
-      } catch (err) {
-        if (err instanceof TooLarge) return refuseEarly(req, res, 413, { error: "too_large" });
-        throw err;
+        try {
+          await saveBody(req, join(dir, input), limit);
+        } catch (err) {
+          if (err instanceof TooLarge) return refuseEarly(req, res, 413, { error: "too_large" });
+          throw err;
+        }
+        await work(dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-      await work(dir);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      busy = false;
     }
   }
 
@@ -407,28 +435,22 @@ export function createSlicer(config: SlicerConfig): Slicer {
           return send(res, 422, { error: "render_failed", message: r.message });
         });
       }
-      case "POST /v1/step/glb": {
-        const declared = declaredLength(req);
-        if (declared !== null && declared > config.limits.stepBodyBytes)
-          return refuseEarly(req, res, 413, { error: "too_large" });
-        return oneStepAtATime(() =>
-          withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (dir) => {
-            const r = await runStepWorker(
-              { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
-              dir,
-              track(),
-            );
-            if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
-            return send(res, 422, { error: "convert_failed", message: r.message });
-          }),
-        );
-      }
+      case "POST /v1/step/glb":
+        return withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (dir) => {
+          const r = await runStepWorker(
+            { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
+            dir,
+            track(),
+          );
+          if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
+          return send(res, 422, { error: "convert_failed", message: r.message });
+        });
       default:
         return refuseEarly(req, res, 404, { error: "not_found" });
     }
   }
 
-  const server = createServer((req, res) => {
+  const server = createServer(requestTimeouts(config), (req, res) => {
     handle(req, res).catch((err: unknown) => {
       log(`request failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) {
