@@ -7,9 +7,7 @@
 import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
-import type { Model } from "../repos/models.js";
-
-const SEARCH_RANK_MAX = 1_000_000;
+import { type Model, modelsRepo, SEARCH_RANK_MAX } from "../repos/models.js";
 
 export interface LibrarySearch {
   /** Matched anywhere in name, caption, creator or a tag, ignoring case. Empty lists all. */
@@ -79,10 +77,42 @@ export function decodeCursor(cursor: string): CursorPosition {
   return { rank, name, id };
 }
 
-export function createSearch(_db: Kysely<DB>) {
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+function pageSize(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_LIMIT;
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_LIMIT);
+}
+
+// A blank filter, such as an empty tag= in a query string, is no filter.
+function filter(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed === "" ? undefined : trimmed;
+}
+
+export function createSearch(db: Kysely<DB>) {
+  const models = modelsRepo(db);
   return {
-    async search(_query: LibrarySearch): Promise<SearchPage> {
-      throw new Error("not implemented: search");
+    async search(query: LibrarySearch): Promise<SearchPage> {
+      const after = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
+      const limit = pageSize(query.limit);
+      // One row more than the page, to know whether another page follows.
+      const rows = await models.searchRanked({
+        q: query.q ?? "",
+        tag: filter(query.tag),
+        collection: filter(query.collection),
+        creator: filter(query.creator),
+        after,
+        limit: limit + 1,
+      });
+      const page = rows.slice(0, limit);
+      const last = page.at(-1);
+      const nextCursor =
+        rows.length > limit && last !== undefined
+          ? encodeCursor({ rank: last.rank, name: last.name, id: last.id })
+          : null;
+      return { models: page.map(({ rank: _rank, ...model }) => model), nextCursor };
     },
   };
 }

@@ -38,8 +38,31 @@ export interface SearchQuery {
   limit?: number;
 }
 
+export interface RankedSearchQuery {
+  /** As SearchQuery.q; empty or blank lists every live model. */
+  q: string;
+  /** Only models with this tag, ignoring case. */
+  tag?: string | undefined;
+  /** Only models in this collection, ignoring case. */
+  collection?: string | undefined;
+  /** Only models by the creator with exactly this name. */
+  creator?: string | undefined;
+  /** Only models after this one in the result order (keyset paging). */
+  after?: { rank: number; name: string; id: string } | undefined;
+  /** At most this many models, 1 to 1000. */
+  limit: number;
+}
+
+/**
+ * A model's search rank: the best pg_trgm similarity of q to its name,
+ * caption, creator or any of its tags, scaled to a whole number from 0 to
+ * SEARCH_RANK_MAX. A whole number, so a page cursor can carry it exactly.
+ */
+export const SEARCH_RANK_MAX = 1_000_000;
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+const MAX_RANKED_LIMIT = 1000;
 
 /** q as a LIKE pattern that matches it literally anywhere in the text. */
 function containsPattern(q: string): string {
@@ -89,6 +112,85 @@ export function modelsRepo(db: Kysely<DB>) {
     return query.executeTakeFirst();
   }
 
+  async function searchRanked(query: RankedSearchQuery): Promise<Array<Model & { rank: number }>> {
+    const q = query.q.trim();
+    const limit = Math.trunc(query.limit);
+    if (!(limit >= 1 && limit <= MAX_RANKED_LIMIT)) {
+      throw new RangeError(`searchRanked takes a limit from 1 to ${MAX_RANKED_LIMIT}`);
+    }
+    const pattern = containsPattern(q);
+    const rank = sql<number>`round(greatest(
+        similarity(models.name, ${q}),
+        similarity(coalesce(models.caption, ''), ${q}),
+        similarity(coalesce(creators.name, ''), ${q}),
+        coalesce((
+          select max(similarity(t.name, ${q}))
+          from model_tags mt join tags t on t.id = mt.tag_id
+          where mt.model_id = models.id), 0)
+      ) * ${SEARCH_RANK_MAX})::integer`;
+
+    let select = selectModels(db)
+      .select(rank.as("rank"))
+      .where("models.trashedAt", "is", null)
+      .where((eb) =>
+        eb.or([
+          eb("models.name", "ilike", pattern),
+          eb("models.caption", "ilike", pattern),
+          eb("creators.name", "ilike", pattern),
+          eb.exists(
+            eb
+              .selectFrom("modelTags")
+              .innerJoin("tags", "tags.id", "modelTags.tagId")
+              .select("modelTags.tagId")
+              .whereRef("modelTags.modelId", "=", "models.id")
+              .where("tags.name", "ilike", pattern),
+          ),
+        ]),
+      );
+    const { tag, collection, creator, after } = query;
+    if (tag !== undefined) {
+      select = select.where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("modelTags")
+            .innerJoin("tags", "tags.id", "modelTags.tagId")
+            .select("modelTags.tagId")
+            .whereRef("modelTags.modelId", "=", "models.id")
+            .where(sql<boolean>`lower(tags.name) = lower(${tag.trim()})`),
+        ),
+      );
+    }
+    if (collection !== undefined) {
+      select = select.where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("collectionModels")
+            .innerJoin("collections", "collections.id", "collectionModels.collectionId")
+            .select("collectionModels.collectionId")
+            .whereRef("collectionModels.modelId", "=", "models.id")
+            .where(sql<boolean>`lower(collections.name) = lower(${collection.trim()})`),
+        ),
+      );
+    }
+    if (creator !== undefined) {
+      select = select.where("creators.name", "=", creator.trim());
+    }
+    if (after !== undefined) {
+      // The rows after the cursor in the order below: rank down, then name
+      // and id up.
+      select = select.where(
+        sql<boolean>`(${rank} < ${after.rank}
+          or (${rank} = ${after.rank}
+              and (models.name > ${after.name}
+                   or (models.name = ${after.name} and models.id > cast(${after.id} as uuid)))))`,
+      );
+    }
+    return select
+      .orderBy(rank, "desc")
+      .orderBy("models.name")
+      .orderBy("models.id")
+      .limit(limit)
+      .execute();
+  }
+
   return {
     /**
      * Makes a model. A taken externalRef, live or trashed, fails with
@@ -123,38 +225,17 @@ export function modelsRepo(db: Kysely<DB>) {
      * ignoring case, best trigram match first. An empty q lists live models.
      */
     async search(query: SearchQuery): Promise<Model[]> {
-      const q = query.q.trim();
       const limit = Math.min(Math.max(Math.trunc(query.limit ?? DEFAULT_LIMIT), 1), MAX_LIMIT);
-      const pattern = containsPattern(q);
-      return selectModels(db)
-        .where("models.trashedAt", "is", null)
-        .where((eb) =>
-          eb.or([
-            eb("models.name", "ilike", pattern),
-            eb("models.caption", "ilike", pattern),
-            eb("creators.name", "ilike", pattern),
-            eb.exists(
-              eb
-                .selectFrom("modelTags")
-                .innerJoin("tags", "tags.id", "modelTags.tagId")
-                .select("modelTags.tagId")
-                .whereRef("modelTags.modelId", "=", "models.id")
-                .where("tags.name", "ilike", pattern),
-            ),
-          ]),
-        )
-        .orderBy(
-          sql`greatest(
-            similarity(models.name, ${q}),
-            similarity(coalesce(models.caption, ''), ${q}),
-            similarity(coalesce(creators.name, ''), ${q}))`,
-          "desc",
-        )
-        .orderBy("models.name")
-        .orderBy("models.id")
-        .limit(limit)
-        .execute();
+      const rows = await searchRanked({ q: query.q, limit });
+      return rows.map(({ rank: _rank, ...model }) => model);
     },
+
+    /**
+     * The query under search, for library search (library/search.ts): it
+     * adds tag, collection and creator filters and keyset paging, and returns
+     * each model's rank for the page cursor. Trashed models never appear.
+     */
+    searchRanked,
 
     /** Moves a live model to the trash; false when it is unknown or already there. */
     async trash(id: string): Promise<boolean> {

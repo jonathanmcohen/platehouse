@@ -1,13 +1,58 @@
-import type { Kysely } from "kysely";
+// Renaming (build plan Task 14; AC-060, Q16). A rename changes the display
+// name only. The bucket key (models/<modelId>/<blobId>) holds no user text
+// and is never renamed, and a file keeps its original_name.
+import { type Kysely, sql } from "kysely";
+import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
+import { withLiveModel } from "./live.js";
 
-export function createRename(_db: Kysely<DB>) {
+function displayName(name: string, what: "model" | "file"): string {
+  const trimmed = name.trim();
+  if (trimmed === "") throw new RangeError(`A ${what} name must not be empty`);
+  return trimmed;
+}
+
+export function createRename(db: Kysely<DB>) {
   return {
-    async renameModel(_id: string, _name: string): Promise<boolean> {
-      throw new Error("not implemented: renameModel");
+    /**
+     * Gives a live model a new display name, trimmed. False when the model is
+     * unknown, malformed or trashed; RangeError for an empty name.
+     */
+    async renameModel(id: string, name: string): Promise<boolean> {
+      const newName = displayName(name, "model");
+      return withLiveModel(db, id, async (trx) => {
+        await trx
+          .updateTable("models")
+          .set({ name: newName, updatedAt: sql<Date>`now()` })
+          .where("id", "=", id)
+          .execute();
+        return true;
+      });
     },
-    async renameFile(_id: string, _name: string): Promise<boolean> {
-      throw new Error("not implemented: renameFile");
+
+    /**
+     * Gives a file of a live model a new display name, trimmed. False when the
+     * file is unknown or malformed or its model is trashed; RangeError for an
+     * empty name.
+     */
+    async renameFile(id: string, name: string): Promise<boolean> {
+      const newName = displayName(name, "file");
+      if (!isUuid(id)) return false;
+      const file = await db
+        .selectFrom("files")
+        .select("modelId")
+        .where("id", "=", id)
+        .executeTakeFirst();
+      if (!file) return false;
+      return withLiveModel(db, file.modelId, async (trx) => {
+        const result = await trx
+          .updateTable("files")
+          .set({ name: newName, updatedAt: sql<Date>`now()` })
+          .where("id", "=", id)
+          .where("modelId", "=", file.modelId)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
     },
   };
 }
