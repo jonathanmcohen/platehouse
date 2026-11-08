@@ -2,11 +2,14 @@
 // trash, where it is invisible to the library, search and the API; restore
 // brings it back with its files, tags and collections, which a trashing never
 // touches. A trashed model is purged 30 days after it was trashed
-// (purgeExpired), or at once by Empty trash (emptyTrash).
+// (purgeExpired), or at once by Empty trash (emptyTrash). purgeExpired also
+// finishes every purge that began and failed, however recently the model was
+// trashed, so a failed Empty trash does not wait 30 days for its retry.
 //
 // A purge removes one model at a time:
 //   1. in a transaction, lock the model's row FOR UPDATE, only if it is still
-//      in the trash (and, for purgeExpired, still past the cutoff), so a
+//      in the trash (and, for purgeExpired, still past the cutoff or already
+//      marked by an earlier purge that failed), so a
 //      restore that holds the row makes the purge wait and then find no
 //      trashed model; read its blob rows and list models/<modelId>/;
 //   2. still in that transaction, set purge_started_at (migration 0002) and
@@ -132,7 +135,10 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
   const { db, store } = deps;
   const models = modelsRepo(db);
 
-  /** Purges one model; false when it is no longer in the trash (or not past cutoff). */
+  /**
+   * Purges one model; false when it is no longer in the trash, or, given a
+   * cutoff, when it is neither past the cutoff nor marked by an earlier purge.
+   */
   async function purgeModel(modelId: string, cutoff: Date | undefined): Promise<boolean> {
     const prefix = `models/${modelId}/`;
 
@@ -144,7 +150,13 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         .select("id")
         .where("id", "=", modelId)
         .where("trashedAt", "is not", null);
-      if (cutoff !== undefined) trashed = trashed.where("trashedAt", "<", cutoff);
+      // A marked model is never restored, so its purge is finished whatever
+      // its trash date.
+      if (cutoff !== undefined) {
+        trashed = trashed.where((eb) =>
+          eb.or([eb("trashedAt", "<", cutoff), eb("purgeStartedAt", "is not", null)]),
+        );
+      }
       // Gone, restored, or trashed again since: not this purge's to remove.
       if ((await trashed.forUpdate().executeTakeFirst()) === undefined) return undefined;
 
@@ -263,7 +275,9 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
     },
 
     /**
-     * Purges every model trashed more than TRASH_RETENTION_DAYS before now.
+     * Purges every model trashed more than TRASH_RETENTION_DAYS before now,
+     * and every trashed model whose purge began and failed, however recently
+     * it was trashed (such as one a failed Empty trash left half deleted).
      * Throws PurgeIncomplete, after trying them all, when any could not be
      * purged; a later run retries those.
      */
@@ -271,8 +285,18 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
       if (Number.isNaN(now.getTime())) throw new RangeError("purgeExpired needs a valid date");
       const cutoff = new Date(now.getTime() - TRASH_RETENTION_DAYS * DAY_MS);
       const expired = await models.purgeable(cutoff);
+      // Marked models not yet past the cutoff, all trashed after every model
+      // in expired, so the list stays oldest first.
+      const started = await db
+        .selectFrom("models")
+        .select("id")
+        .where("trashedAt", ">=", cutoff)
+        .where("purgeStartedAt", "is not", null)
+        .orderBy("trashedAt")
+        .orderBy("id")
+        .execute();
       return purgeAll(
-        expired.map((m) => m.id),
+        [...expired, ...started].map((m) => m.id),
         cutoff,
       );
     },
