@@ -7,10 +7,12 @@
 // - the plate list comes from model_settings.config, else the plate_N.png names;
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
-// - anything wrong with the bytes is damage (null); a filesystem error is
-//   ReadUnavailable and never damage;
-// - whatever onThumbnail throws reaches the caller unchanged: a bug in the
-//   caller is not a file with no plate data.
+// - only the parser's own reads of the file (opening the zip, listing it,
+//   inflating an entry) and the ceilings make a damaged file (null); broken
+//   config XML or JSON costs that entry only;
+// - a filesystem error is ReadUnavailable and never damage;
+// - anything else reaches the caller unchanged: whatever onThumbnail throws,
+//   and a bug in this file's own code. Neither is a file with no plate data.
 import type { FileHandle } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -50,7 +52,7 @@ export async function readProject(path: string, opts: ReadOptions = {}): Promise
       throw unavailableOr(err);
     }
     // readProjectFromReader classifies its own errors; what it rethrows
-    // unclassified came from onThumbnail and must stay as it is.
+    // unclassified came from onThumbnail or a bug and must stay as it is.
     return await readProjectFromReader(new HandleReader(handle), size, opts);
   } finally {
     await handle.close().catch(() => undefined);
@@ -70,11 +72,28 @@ export async function readProjectFromReader(
     return await readArchive(reader, size, opts);
   } catch (err) {
     if (err instanceof CallerError) throw err.error;
-    if (err instanceof ReadUnavailable) throw err;
+    // Damaged comes only from ownRead (the zip reader and inflate) and the
+    // ceilings, so a hostile file never throws.
+    if (err instanceof Damaged) return null;
+    // ReadUnavailable from ownRead, or a bug in this file: either way the
+    // caller sees it, never "No Bambu plate data in this file".
+    throw err;
+  }
+}
+
+/**
+ * Runs one of the parser's own reads of the archive (yauzl or inflate) and
+ * classifies what it throws: a filesystem error is ReadUnavailable, anything
+ * else is Damaged. The parser.rb@136fd61 damaged_on_read_error. It never
+ * wraps the parser's mapping code or the caller's callback.
+ */
+async function ownRead<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (err) {
+    if (err instanceof Damaged || err instanceof ReadUnavailable) throw err;
     if (isSystemError(err)) throw new ReadUnavailable(err);
-    // Everything else came from the bytes: the zip reader, inflate, the XML
-    // or JSON, or a ceiling. A hostile file never throws.
-    return null;
+    throw new Damaged(`unreadable archive: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -145,15 +164,17 @@ async function readArchive(
   size: number,
   opts: ReadOptions,
 ): Promise<Project | null> {
-  const zip = await yauzl.fromRandomAccessReaderPromise(reader, size, {
-    lazyEntries: true,
-    autoClose: false,
-    validateEntrySizes: true,
-    decodeStrings: true,
-    strictFileNames: false,
-  });
+  const zip = await ownRead(() =>
+    yauzl.fromRandomAccessReaderPromise(reader, size, {
+      lazyEntries: true,
+      autoClose: false,
+      validateEntrySizes: true,
+      decodeStrings: true,
+      strictFileNames: false,
+    }),
+  );
   try {
-    const entries = await listEntries(zip);
+    const entries = await ownRead(() => listEntries(zip));
     const configText = async (name: string): Promise<string | null> => {
       const entry = entries.get(name);
       if (!entry) return null;
@@ -276,10 +297,16 @@ async function pump(
   cap: number,
   take: (chunk: Buffer) => boolean,
 ): Promise<number> {
-  const stream = await openStream(zip, entry);
+  const stream = await ownRead(() => openStream(zip, entry));
+  const chunks = (stream as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
   let total = 0;
   try {
-    for await (const chunk of stream as AsyncIterable<Buffer>) {
+    // Only pulling the next inflated chunk is a read of the file; take and
+    // the cap check are the parser's own code.
+    for (;;) {
+      const next = await ownRead(() => chunks.next());
+      if (next.done) break;
+      const chunk = next.value;
       total += chunk.length;
       if (total > cap) throw new Damaged(`entry over ${cap} bytes`);
       if (!take(chunk)) break;
