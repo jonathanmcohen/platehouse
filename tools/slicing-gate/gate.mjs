@@ -570,14 +570,17 @@ export function buildReport({ plan, results, hostExits, checks }) {
   const counts = { ok: 0, refused: 0, "needs-decision": 0, fail: 0 };
   for (const p of plates) counts[p.verdict]++;
   let verdict = gateVerdict(plates);
-  // A setup error (a missing machine preset) means some plates never ran, so
-  // the gate could not run (exit 2); it is not a result, pass or fail.
-  if (plan.errors?.length) verdict = "COULD-NOT-RUN";
   // gate.mjs checks writes checks.json only once all three checks are done,
-  // so no file means items (f) to (h) are missing and the gate could not run.
+  // so no file means items (f) to (h) are missing.
   const incomplete = [];
   if (!checks) incomplete.push("the checks step wrote no checks.json, so items (f), (g) and (h) are missing");
-  if (incomplete.length) verdict = "COULD-NOT-RUN";
+  // A setup error (a missing machine preset) or missing checks means the run
+  // is incomplete, so the gate could not run (exit 2) - but only when nothing
+  // failed. A crash, a timeout or an unexplained error on a plate that did run
+  // fails the gate whatever else is missing. A plate that never ran for a
+  // setup error is not such a failure.
+  const plateFailed = plates.some((p) => p.verdict === "fail" && p.reason !== "setup");
+  if ((plan.errors?.length || incomplete.length) && !plateFailed) verdict = "COULD-NOT-RUN";
 
   const measured = plan.jobs.map((j) => ({ ...(results[j.id] ?? {}), inputBytes: j.inputBytes }));
   return {
