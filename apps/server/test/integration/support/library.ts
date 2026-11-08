@@ -114,26 +114,31 @@ export async function trashDaysAgo(db: Kysely<DB>, modelId: string, days: number
 
 /** How many rows of each of a model's own tables are left. */
 export async function rowCounts(db: Kysely<DB>, modelId: string) {
+  // Single-word aliases: the CamelCasePlugin renames result columns of raw
+  // queries too (model_tags would come back as modelTags).
   const { rows } = await sql<{
     models: number;
     files: number;
     blobs: number;
-    model_tags: number;
-    collection_models: number;
+    tags: number;
+    collections: number;
   }>`select
        (select count(*)::int from models where id = ${modelId}) as models,
        (select count(*)::int from files where model_id = ${modelId}) as files,
        (select count(*)::int from blobs where model_id = ${modelId}) as blobs,
-       (select count(*)::int from model_tags where model_id = ${modelId}) as model_tags,
+       (select count(*)::int from model_tags where model_id = ${modelId}) as tags,
        (select count(*)::int from collection_models where model_id = ${modelId})
-         as collection_models`.execute(db);
+         as collections`.execute(db);
   const row = rows[0];
   if (!row) throw new Error("count query returned no row");
+  for (const [key, value] of Object.entries(row)) {
+    if (typeof value !== "number") throw new Error(`count ${key} came back as ${typeof value}`);
+  }
   return {
     models: row.models,
     files: row.files,
     blobs: row.blobs,
-    modelTags: row.model_tags,
-    collectionModels: row.collection_models,
+    modelTags: row.tags,
+    collectionModels: row.collections,
   };
 }

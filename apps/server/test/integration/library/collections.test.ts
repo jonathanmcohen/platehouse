@@ -57,11 +57,12 @@ describe("addToCollection and removeFromCollection", () => {
       { tbl: "collection_models", col: "collection_id", target: "collections" },
       { tbl: "collection_models", col: "model_id", target: "models" },
     ]);
-    const columns = await sql<{ column_name: string }>`
-      select column_name from information_schema.columns
+    // A single-word alias, because the CamelCasePlugin renames result columns.
+    const columns = await sql<{ col: string }>`
+      select column_name as col from information_schema.columns
       where table_schema = current_schema() and table_name = 'collections'
       order by ordinal_position`.execute(env.db);
-    expect(columns.rows.map((r) => r.column_name)).toEqual(["id", "name"]);
+    expect(columns.rows.map((r) => r.col)).toEqual(["id", "name"]);
 
     // And the function has no way to put a collection in a collection: a
     // collection's id is not a model, so nothing is added.
