@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # Platehouse slicing gate image (build plan Task 1). Throwaway: platform-sre
 # builds it on Hades for one gate run and deletes it afterwards. amd64 only.
 #
