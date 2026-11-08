@@ -23,6 +23,10 @@
 // Usage (inside the gate image):
 //   node flatten-profiles.mjs --profiles /opt/orca-profiles --out <dir> \
 //        --printer "Bambu Lab P1S 0.4 nozzle" [--printer ...] --types PLA,PETG [--companions]
+//   node flatten-profiles.mjs --profiles /opt/orca-profiles \
+//        --process-full /opt/orca/resources/profiles/BBL/process_full
+//     (at image build time: Orca's default process presets for a printer
+//     switch; see writeProcessFull)
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
@@ -299,26 +303,137 @@ export function writeRecipe(index, outDir, { printers, types, companions = false
   return recipe;
 }
 
+/**
+ * Writes Orca's process_full folder: the flattened default process
+ * (default_print_profile) of every instantiable machine preset, one file
+ * per process, named exactly "<process name>.json".
+ *
+ * Why: when a file is sliced on a printer other than its own and the
+ * extruder variant count changes (P1S and X1C carry two print variants, A1
+ * one), Orca 2.5.0's CLI (src/OrcaSlicer.cpp, the machine_switch block)
+ * loads <resources>/profiles/BBL/process_full/<default_print_profile>.json.
+ * The resources dir is the binary's ../../resources and no flag moves it,
+ * and the AppImage ships no process_full folder, so the switch failed with
+ * code -3 (Hades run 3, 79 plates). The file must be flattened:
+ * load_config_file resolves an inherits chain only through a vendor
+ * manifest (BBL.json) beside the vendor folder, which the AppImage does not
+ * ship, and the switch rejects a file whose type is not "process" or whose
+ * from is not "system". flattenPreset gives exactly that.
+ *
+ * The rule: every instantiable machine preset ends with its default process
+ * written here, or the call throws, naming each machine and why, and writes
+ * nothing. A machine left out would fail with code -3 the first time a file
+ * is switched to it, which is the failure this folder exists to prevent, so
+ * nothing is skipped and merely listed. The reasons:
+ *   - the machine will not flatten (an inheritance loop or chain too deep),
+ *     or its own inherits chain names a parent the bundle does not have
+ *     (flattenPreset's dangling): its keys, instantiation and
+ *     default_print_profile included, may come from that parent, so it can
+ *     be neither trusted nor told apart from an instantiable machine;
+ *   - it has no default_print_profile, or one that is not a non-empty string;
+ *   - its default process is not in the bundle, has a dangling parent of its
+ *     own (the file would lack the parent's keys and Orca would quietly use
+ *     its built-in defaults for them), or is not a process preset.
+ * Templates and _common machine presets are never read, and a machine that
+ * flattens cleanly but is not instantiable (machine_model files included) is
+ * passed over: the printer menu does not offer it, so nothing switches to it.
+ * Never overwrites a file, and refuses a name that is not a plain file name.
+ * Returns { files: [process names, sorted], machines: instantiable count }.
+ */
+export function writeProcessFull(index, outDir) {
+  const wanted = new Map();
+  const problems = [];
+  let machines = 0;
+  for (const name of [...index.vendor.machine.keys()].sort()) {
+    if (name.includes(TEMPLATE_MARKER) || name.endsWith("_common")) continue;
+    let flat;
+    try {
+      flat = flattenPreset(index, "machine", name);
+    } catch (err) {
+      problems.push(`machine "${name}" will not flatten: ${err.message}`);
+      continue;
+    }
+    if (flat.dangling !== null) {
+      problems.push(`machine "${name}" inherits "${flat.dangling}", which the bundle does not have, so its default process cannot be known`);
+      continue;
+    }
+    const { profile } = flat;
+    if (profile.instantiation !== "true") continue;
+    machines += 1;
+    const proc = profile.default_print_profile;
+    if (typeof proc !== "string" || proc.length === 0) {
+      problems.push(`machine "${name}" is instantiable but has no default_print_profile`);
+      continue;
+    }
+    if (proc.includes("/") || proc.includes("\\") || proc.includes("\0") || proc.startsWith(".")) {
+      throw new Error(`machine "${name}" names default process "${proc}", which is not a plain file name`);
+    }
+    if (!wanted.has(proc)) wanted.set(proc, []);
+    wanted.get(proc).push(name);
+  }
+  const files = [...wanted.keys()].sort();
+  // Flatten every one before writing any, so a problem writes nothing.
+  const flat = [];
+  for (const name of files) {
+    const users = wanted.get(name).map((m) => `machine "${m}"`).join(", ");
+    let result;
+    try {
+      result = flattenPreset(index, "process", name);
+    } catch (err) {
+      problems.push(`${users}: default process "${name}": ${err.message}`);
+      continue;
+    }
+    if (result.dangling !== null) {
+      problems.push(`${users}: default process "${name}" inherits "${result.dangling}", which the bundle does not have; the file would lack its keys`);
+    } else if (result.profile.type !== "process") {
+      problems.push(`${users}: "${name}" is a ${result.profile.type} preset, not a process`);
+    } else {
+      flat.push([name, result.profile]);
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `${problems.length} problem(s) would leave an instantiable machine without its default process (code -3 on a printer switch):\n  ${problems.join("\n  ")}`,
+    );
+  }
+  mkdirSync(outDir, { recursive: true });
+  for (const [name, profile] of flat) {
+    writeFileSync(join(outDir, `${name}.json`), `${JSON.stringify(profile, null, 2)}\n`, { flag: "wx" });
+  }
+  return { files, machines };
+}
+
 function parseArgs(argv) {
-  const args = { profiles: null, out: null, printers: [], types: [], companions: false };
+  const args = { profiles: null, out: null, printers: [], types: [], companions: false, processFull: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--profiles") args.profiles = argv[++i];
+    else if (a === "--process-full") args.processFull = argv[++i];
     else if (a === "--out") args.out = argv[++i];
     else if (a === "--printer") args.printers.push(argv[++i]);
     else if (a === "--types") args.types.push(...argv[++i].split(",").filter(Boolean));
     else if (a === "--companions") args.companions = true;
     else throw new Error(`unknown argument ${a}`);
   }
-  if (!args.profiles || !args.out || args.printers.length === 0) {
-    throw new Error("usage: flatten-profiles.mjs --profiles <dir> --out <dir> --printer <name> [--printer ...] --types A,B [--companions]");
+  const usage =
+    "usage: flatten-profiles.mjs --profiles <dir> --out <dir> --printer <name> [--printer ...] --types A,B [--companions]\n" +
+    "       flatten-profiles.mjs --profiles <dir> --process-full <dir>";
+  if (args.processFull !== null) {
+    if (!args.profiles || !args.processFull || args.out || args.printers.length > 0) throw new Error(usage);
+    return args;
   }
+  if (!args.profiles || !args.out || args.printers.length === 0) throw new Error(usage);
   return args;
 }
 
 if (isMain(import.meta.url)) {
   try {
     const args = parseArgs(process.argv.slice(2));
+    if (args.processFull !== null) {
+      const { files, machines } = writeProcessFull(loadIndex(args.profiles), args.processFull);
+      process.stdout.write(`wrote ${files.length} default process presets for ${machines} instantiable machine presets to ${args.processFull}\n`);
+      process.exit(0);
+    }
     const recipe = writeRecipe(loadIndex(args.profiles), args.out, args);
     process.stdout.write(
       `wrote ${Object.keys(recipe.printers).length} machine preset(s) and recipe.json to ${basename(args.out)}; ${recipe.nozzlePrinterCount} nozzle printers in the bundle\n`,

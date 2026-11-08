@@ -293,3 +293,60 @@ test("the execute and read checks are repeated as the gate user, after USER", ()
   }
   assert.match(asUser, /source \/usr\/local\/lib\/need\.sh/);
 });
+
+// Hades run 3 (2026-11-08): 79 cross-printer plates failed with Orca code -3,
+// "can not find setting file: /opt/orca/resources/profiles/BBL/process_full/
+// 0.20mm Standard @BBL A1.json". Orca's CLI builds that path from its
+// resources dir (canonical binary path ../../resources, no flag moves it), so
+// the image writes the flattened default processes there, from the pinned
+// source JSON. It adds a folder inside BBL/ only: no BBL.json, which would
+// make Orca install the vendor from JSON instead of from BBL.opc.
+const PROCESS_FULL = "/opt/orca/resources/profiles/BBL/process_full";
+
+test("the image writes Orca's process_full folder from the pinned profile JSON, without shadowing BBL.opc", () => {
+  const s = stages();
+  const final = s.at(-1);
+  const run = final.runs.find((r) => r.includes("--process-full"));
+  assert.ok(run, "a RUN in the final stage writes process_full");
+  assert.match(run, /source \/usr\/local\/lib\/need\.sh/);
+  const write = `node /opt/gate/flatten-profiles.mjs --profiles ${PROFILES} --process-full ${PROCESS_FULL}`;
+  assert.ok(run.includes(write), `writes it with: ${write}`);
+  // Nothing was there before (so nothing Orca shipped is replaced) ...
+  const absent = `need ! -e ${PROCESS_FULL}`;
+  assert.ok(run.includes(absent) && run.indexOf(absent) < run.indexOf(write), "checks the folder is new, before writing it");
+  // ... the files run 3 named are there afterwards ...
+  for (const name of ["0.20mm Standard @BBL A1", "0.20mm Standard @BBL X1C"]) {
+    const check = `need -f "${PROCESS_FULL}/${name}.json"`;
+    assert.ok(run.includes(check) && run.indexOf(check) > run.indexOf(write), `checks ${name}.json after writing`);
+  }
+  // ... readable by every user, and the vendor is still installed from its cache.
+  assert.ok(run.includes(`chmod -R a+rX ${PROCESS_FULL}`), "made readable for every user");
+  assert.ok(run.includes("need ! -e /opt/orca/resources/profiles/BBL.json"), "no BBL.json beside BBL.opc");
+  assert.ok(run.includes("need -f /opt/orca/resources/profiles/BBL.opc"), "BBL.opc still there");
+  // flatten-profiles.mjs is in the image before this RUN.
+  const copyAt = final.lines.findIndex((l) => /^COPY .*\bflatten-profiles\.mjs\b.*\/opt\/gate\/$/.test(l));
+  assert.ok(copyAt !== -1 && copyAt < final.lines.indexOf(run), "flatten-profiles.mjs is copied in first");
+});
+
+test("the gate user can read the process_full files", () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8").replace(/\\\n/g, " ");
+  const lines = text.split("\n");
+  const user = lines.findIndex((l) => /^USER 10001$/.test(l));
+  const asUser = lines.slice(user + 1).filter((l) => /^RUN\b/.test(l)).join("\n");
+  assert.ok(asUser.includes(`need -r "${PROCESS_FULL}/0.20mm Standard @BBL A1.json"`), asUser.slice(0, 200));
+});
+
+// Issue #8: check-libs.sh was copied in before the downloads, so editing it
+// invalidated every download layer and Hades fetched everything again. It is
+// copied after the last download and still runs before the first Node call
+// (the test above, "every stage that runs Node checks ...").
+test("the fetch stage copies check-libs.sh after its last download", () => {
+  const fetch = stages()[0];
+  const copyAt = fetch.lines.findIndex((l) => /^COPY\b.*\bcheck-libs\.sh\b/.test(l));
+  assert.ok(copyAt !== -1, "the fetch stage copies check-libs.sh");
+  const downloads = fetch.lines
+    .map((l, i) => ({ l, i }))
+    .filter(({ l }) => /^RUN\b/.test(l) && /(\bfetch "\$|git fetch )/.test(l));
+  assert.ok(downloads.length >= 7, `the downloads: ${downloads.length}`);
+  for (const { l, i } of downloads) assert.ok(i < copyAt, `download after the check-libs.sh COPY: ${l.slice(0, 100)}`);
+});

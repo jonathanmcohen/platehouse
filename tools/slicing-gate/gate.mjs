@@ -370,13 +370,18 @@ function openscadCheck(dir, env) {
   };
 }
 
-function landrunCheck(env) {
-  const dir = join(PATHS.work, `scad-${randomUUID()}`);
-  mkdirSync(dir, { recursive: true });
-  const outside = join(PATHS.gateSamples, "outside.stl");
-  copyFileSync(outside, join(dir, "inner.stl"));
-  writeFileSync(join(dir, "inside.scad"), 'import("inner.stl");\n');
-  writeFileSync(join(dir, "escape.scad"), `import("${outside}");\n`);
+/**
+ * The four landrun calls of report item (g), each as { name, args, command }:
+ * args is landrun's whole argument list, command what landrun must run.
+ *
+ * landrun's flags end with "--" (Hades run 3, 2026-11-08: all three calls
+ * failed with "flag provided but not defined: -o"). landrun v0.1.17 parses
+ * with urfave/cli v3.6.2, which keeps reading flags after the command until
+ * it meets "--" (command_parse.go), so OpenSCAD's own -o was taken as a
+ * landrun flag. landrun's README writes every example as
+ * landrun [flags] -- <command> [args].
+ */
+export function landrunInvocations(dir) {
   const sandboxEnv = [
     "--env",
     `HOME=${dir}`,
@@ -401,25 +406,38 @@ function landrunCheck(env) {
     dir,
     ...sandboxEnv,
   ];
-  const scad = (file, out) => [PATHS.openscad, "-o", out, file];
-  const inside = run(PATHS.landrun, [...sandbox, ...scad("inside.scad", "inside.stl")], { cwd: dir, env });
-  const escape = run(PATHS.landrun, [...sandbox, ...scad("escape.scad", "escape.stl")], { cwd: dir, env });
-  const control = run(PATHS.openscad, ["-o", "control.stl", "escape.scad"], { cwd: dir, env });
   // The form the plan wrote for T11 (--ro on the OpenSCAD tree), as evidence.
-  const planForm = run(
-    PATHS.landrun,
-    [
-      "--best-effort",
-      "--ro",
-      `${PATHS.openscadDir},/usr/lib,/lib,/usr/share/fonts,/etc/fonts`,
-      "--rw",
-      dir,
-      ...sandboxEnv,
-      ...scad("inside.scad", "planform.stl"),
-    ],
-    { cwd: dir, env },
-  );
-  const abi = run(PATHS.landrun, ["--log-level", "debug", "--best-effort", "--rox", "/usr,/lib,/lib64", "/usr/bin/true"], { env });
+  const planForm = [
+    "--best-effort",
+    "--ro",
+    `${PATHS.openscadDir},/usr/lib,/lib,/usr/share/fonts,/etc/fonts`,
+    "--rw",
+    dir,
+    ...sandboxEnv,
+  ];
+  const scad = (file, out) => [PATHS.openscad, "-o", out, file];
+  const call = (name, flags, command) => ({ name, args: [...flags, "--", ...command], command });
+  return [
+    call("inside", sandbox, scad("inside.scad", "inside.stl")),
+    call("escape", sandbox, scad("escape.scad", "escape.stl")),
+    call("planFormRo", planForm, scad("inside.scad", "planform.stl")),
+    call("abi", ["--log-level", "debug", "--best-effort", "--rox", "/usr,/lib,/lib64"], ["/usr/bin/true"]),
+  ];
+}
+
+function landrunCheck(env) {
+  const dir = join(PATHS.work, `scad-${randomUUID()}`);
+  mkdirSync(dir, { recursive: true });
+  const outside = join(PATHS.gateSamples, "outside.stl");
+  copyFileSync(outside, join(dir, "inner.stl"));
+  writeFileSync(join(dir, "inside.scad"), 'import("inner.stl");\n');
+  writeFileSync(join(dir, "escape.scad"), `import("${outside}");\n`);
+  const ran = {};
+  for (const { name, args } of landrunInvocations(dir)) {
+    ran[name] = run(PATHS.landrun, args, name === "abi" ? { env } : { cwd: dir, env });
+  }
+  const { inside, escape, planFormRo: planForm, abi } = ran;
+  const control = run(PATHS.openscad, ["-o", "control.stl", "escape.scad"], { cwd: dir, env });
   const ok = (name) => fileSize(join(dir, name)) > 0;
   const result = {
     kernel: run("uname", ["-r"], { env }).stdoutTail.trim(),
@@ -603,7 +621,7 @@ export function buildReport({ plan, results, hostExits, checks }) {
   return {
     verdict,
     passRule:
-      "Every plate gets a time and a weight above zero, or is refused for a reason AC-034 treats as legitimate (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), which is reported. A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the plan's reason map and Orca's own meaning disagree on are reported as needs-decision.",
+      "Every plate gets a time and a weight above zero, or is refused for a legitimate reason, which is reported: one AC-034 names (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), or, by Jon's decision on 2026-11-08, -101 (G-code path conflicts) or -62 (filament temperatures too far apart). A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the plan's reason map and Orca's own meaning disagree on (-50, -61, -63 to -65, -67 and -69) are reported as needs-decision.",
     counts,
     setupErrors: plan.errors ?? [],
     incomplete,
