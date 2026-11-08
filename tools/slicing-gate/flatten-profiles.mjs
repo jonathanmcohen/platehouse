@@ -74,9 +74,25 @@ function readTree(profilesRoot, name) {
   return tree;
 }
 
-/** Indexes the vendor tree and the filament library under resources/profiles. */
+/**
+ * Indexes the vendor tree and the filament library under resources/profiles.
+ * Throws when the vendor has no JSON presets, rather than return an empty
+ * index that turns every printer into a "no bundled machine preset" error.
+ */
 export function loadIndex(profilesRoot, vendor = VENDOR) {
+  // OrcaSlicer 2.5.0's AppImage ships resources/profiles/<vendor>.opc, a
+  // binary preset cache (PresetCacheFormat.cpp), in place of <vendor>.json
+  // and its JSON tree; <vendor>/filament keeps only a few JSON maps, which are
+  // not presets, so the manifest is what tells the two layouts apart.
+  if (!existsSync(join(profilesRoot, `${vendor}.json`)) && existsSync(join(profilesRoot, `${vendor}.opc`))) {
+    throw new Error(
+      `${profilesRoot} has ${vendor}.opc but no ${vendor}.json: OrcaSlicer 2.5.0 packs its presets into ${vendor}.opc, a binary preset cache this flattener cannot read`,
+    );
+  }
   const vendorTree = readTree(profilesRoot, vendor);
+  if (CATEGORIES.every((category) => vendorTree[category].size === 0)) {
+    throw new Error(`no ${vendor} presets under ${profilesRoot} (no ${vendor}.json and no ${vendor}/machine, process or filament JSON)`);
+  }
   let library = null;
   if (existsSync(join(profilesRoot, LIBRARY)) || existsSync(join(profilesRoot, `${LIBRARY}.json`))) {
     library = readTree(profilesRoot, LIBRARY);

@@ -42,30 +42,51 @@ RUN printf '%s\n' \
       'fetch() { curl -fsSL --retry 3 -o "$2" "$1"; echo "$3  $2" | sha256sum -c -; }' \
       > /usr/local/lib/fetch.sh
 
+# need TEST-ARGS [-- REASON]: a check that names itself on stderr when it
+# fails, so a failed step never exits 1 with no text (see need.sh).
+COPY need.sh /usr/local/lib/need.sh
+
 WORKDIR /dl
 
 # OrcaSlicer v2.5.0, Ubuntu 24.04 AppImage (released 2026-11-07).
+# Layout read from this exact file's squashfs on 2026-11-08: AppRun is a bash
+# launcher (mode 0755) that execs libexec/orca-slicer-env bin/orca-slicer, and
+# the env script puts lib/orca-runtime and bin on LD_LIBRARY_PATH. There is no
+# resources/profiles/BBL.json and no BBL/machine, process or filament JSON:
+# every vendor's presets are packed into resources/profiles/<vendor>.opc, a
+# binary preset cache (OrcaSlicer src/libslic3r/PresetCacheFormat.cpp), which
+# flatten-profiles.mjs cannot read. So the BBL.json check below fails on this
+# AppImage, and says why, until the profile source is decided.
 ARG ORCA_URL=https://github.com/OrcaSlicer/OrcaSlicer/releases/download/v2.5.0/OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.5.0.AppImage
 ARG ORCA_SHA256=d13eb0a9cd618ed080ab6b82c64c0a60c4501aac91e88d5ac2c3b526fb141a7c
 RUN source /usr/local/lib/fetch.sh \
+ && source /usr/local/lib/need.sh \
  && fetch "$ORCA_URL" orca.AppImage "$ORCA_SHA256" \
  && chmod +x orca.AppImage \
  && ./orca.AppImage --appimage-extract > /dev/null \
  && mv squashfs-root /opt/orca \
  && rm orca.AppImage \
- && test -x /opt/orca/AppRun \
- && test -f /opt/orca/resources/profiles/BBL.json
+ && need -x /opt/orca/AppRun \
+ && need -x /opt/orca/libexec/orca-slicer-env \
+ && need -x /opt/orca/bin/orca-slicer \
+ && need -d /opt/orca/lib/orca-runtime \
+ && need -f /opt/orca/resources/profiles/BBL.json -- "OrcaSlicer 2.5.0 packs its BBL presets into resources/profiles/BBL.opc, a binary preset cache that flatten-profiles.mjs cannot read"
 
 # OpenSCAD 2026.11-RC0 Linux AppImage (pre-release, Jon's call: latest RC).
+# Layout read from this exact file's squashfs on 2026-11-08: AppRun is a
+# symlink to usr/bin/openscad, an ELF binary whose RUNPATH ($ORIGIN/../lib)
+# finds the libraries bundled in usr/lib.
 ARG OPENSCAD_URL=https://github.com/openscad/openscad/releases/download/openscad-2026.11-RC0/OpenSCAD-2026.11-RC0-x86_64.AppImage
 ARG OPENSCAD_SHA256=78c2050aedcf52cca0186151cdcda1118a771491e3bec934b3172d0b03a9de96
 RUN source /usr/local/lib/fetch.sh \
+ && source /usr/local/lib/need.sh \
  && fetch "$OPENSCAD_URL" openscad.AppImage "$OPENSCAD_SHA256" \
  && chmod +x openscad.AppImage \
  && ./openscad.AppImage --appimage-extract > /dev/null \
  && mv squashfs-root /opt/openscad \
  && rm openscad.AppImage \
- && test -e /opt/openscad/AppRun
+ && need -x /opt/openscad/AppRun \
+ && need -x /opt/openscad/usr/bin/openscad
 
 # landrun v0.1.17.
 ARG LANDRUN_URL=https://github.com/Zouuup/landrun/releases/download/v0.1.17/landrun-linux-amd64
@@ -141,20 +162,25 @@ COPY --from=fetch /opt/landrun /usr/local/bin/landrun
 COPY --from=fetch /opt/gate /opt/gate
 COPY gate.mjs flatten-profiles.mjs select-sample.mjs check-libs.sh /opt/gate/
 COPY lib/ /opt/gate/lib/
+COPY need.sh /usr/local/lib/need.sh
 RUN ln -s /opt/node/bin/node /usr/local/bin/node
 
 # Fail the build, not the run, when a shared library either program links is
 # missing from the image. Orca's AppRun is a bash launcher, so the check runs
 # on the real binary with the library path the launcher's orca-slicer-env sets
-# (lib/orca-runtime, then bin). check-libs.sh also fails when ldd itself fails,
-# so it cannot pass without checking anything.
-RUN bash /opt/gate/check-libs.sh /opt/orca/bin/orca-slicer /opt/orca/lib/orca-runtime:/opt/orca/bin \
- && scad_bin="$(find /opt/openscad -path '*/bin/openscad' -type f | head -n 1)" \
- && test -n "$scad_bin" \
- && bash /opt/gate/check-libs.sh "$scad_bin" \
- && node --version | grep -qx 'v26.13.0' \
- && test -x /usr/local/bin/landrun \
- && test -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js
+# (lib/orca-runtime, then bin). OpenSCAD's AppRun is a symlink to
+# usr/bin/openscad, which finds its bundled libraries through its RUNPATH.
+# check-libs.sh also fails when ldd itself fails, so it cannot pass without
+# checking anything. occt-import-js's package.json main is
+# dist/occt-import-js.js, which loads dist/occt-import-js.wasm beside it.
+RUN source /usr/local/lib/need.sh \
+ && bash /opt/gate/check-libs.sh /opt/orca/bin/orca-slicer /opt/orca/lib/orca-runtime:/opt/orca/bin \
+ && need -x /opt/openscad/usr/bin/openscad \
+ && bash /opt/gate/check-libs.sh /opt/openscad/usr/bin/openscad \
+ && need "$(node --version)" = v26.13.0 \
+ && need -x /usr/local/bin/landrun \
+ && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js \
+ && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.wasm
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin gate
 USER 10001
