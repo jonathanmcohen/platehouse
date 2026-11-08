@@ -196,12 +196,44 @@ test("a setup error means the gate could not run, not that it failed", () => {
   assert.deepEqual(report.setupErrors, ["printer X missing"]);
 });
 
-test("a setup error outranks a plate failure: the run is incomplete either way", () => {
+test("a plate failure outranks a setup error: one unexplained slicer error fails the gate", () => {
   const { jobs } = buildJobs(selection, metas, recipe);
   const results = {};
   for (const j of jobs) results[j.id] = res();
   results[jobs[0].id] = res({ returnCode: -100, errorString: "Failed slicing", timeSeconds: null, weightGrams: null });
-  const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks: null });
-  assert.equal(report.verdict, "COULD-NOT-RUN");
+  const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks });
+  assert.equal(report.verdict, "FAIL");
   assert.equal(report.counts.fail, 1, "the failed plate is still counted and listed");
+  assert.deepEqual(report.setupErrors, ["printer X missing"], "the setup error is still reported");
+});
+
+test("a crashed plate fails the gate even when checks.json is missing", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs.slice(1)) results[j.id] = res();
+  const report = buildReport({ plan: { jobs, errors: [], inspect: [], recipe }, results, hostExits: {}, checks: null });
+  assert.equal(report.plates.find((p) => p.id === jobs[0].id).reason, "crash");
+  assert.equal(report.verdict, "FAIL");
+  assert.ok(report.incomplete.some((m) => /checks\.json/.test(m)), "the missing checks are still reported");
+});
+
+test("a crashed plate fails the gate even when a setup error stopped other plates", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs.slice(2)) results[j.id] = res();
+  results[jobs[1].id] = { id: jobs[1].id, setupError: "no machine preset" };
+  const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks });
+  assert.equal(report.plates.find((p) => p.id === jobs[0].id).reason, "crash");
+  assert.equal(report.plates.find((p) => p.id === jobs[1].id).reason, "setup");
+  assert.equal(report.verdict, "FAIL");
+});
+
+test("plates that never ran for a setup error are not failures: with nothing else failed the gate could not run", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs.slice(1)) results[j.id] = res();
+  results[jobs[0].id] = { id: jobs[0].id, setupError: "no machine preset" };
+  const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks });
+  assert.equal(report.counts.fail, 1, "the setup plate is listed");
+  assert.equal(report.verdict, "COULD-NOT-RUN");
 });

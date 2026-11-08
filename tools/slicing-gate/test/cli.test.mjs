@@ -120,6 +120,39 @@ test("select-sample, plan and report run end to end and apply the pass rule", ()
   assert.equal(node([GATE, "report"], env).status, 3);
 });
 
+test("a failed plate makes report exit 1 even when checks.json is missing", () => {
+  const { root, sample, out, env } = setup();
+  assert.equal(node([SELECT, sample, "--json", join(root, "in", "selection.json")], env).status, 0);
+  assert.equal(node([GATE, "plan"], env).status, 0);
+  const ids = readFileSync(join(out, "jobs.txt"), "utf8").trim().split("\n");
+  // every plate but one finished; that one wrote no result, which is a crash
+  fakeResults(out, ids.slice(1));
+  const report = node([GATE, "report"], env);
+  assert.equal(report.status, 1, report.stderr);
+  const summary = readFileSync(join(out, "summary.txt"), "utf8");
+  assert.match(summary, /^Platehouse slicing gate: FAIL/);
+  assert.match(summary, /incomplete: the checks step wrote no checks\.json/);
+});
+
+test("a failed plate makes report exit 1 even when a machine preset is missing", () => {
+  const { root, sample, out, env } = setup();
+  rmSync(join(env.GATE_ORCA_PROFILES, "BBL", "machine", "Bambu Lab X1 Carbon 0.4 nozzle.json"));
+  assert.equal(node([SELECT, sample, "--json", join(root, "in", "selection.json")], env).status, 0);
+  assert.equal(node([GATE, "plan"], env).status, 0);
+  const planJson = JSON.parse(readFileSync(join(out, "plan.json"), "utf8"));
+  const ran = planJson.jobs.filter((j) => j.machineFile).map((j) => j.id);
+  const missing = planJson.jobs.filter((j) => !j.machineFile).map((j) => j.id);
+  assert.ok(missing.length > 0 && ran.length > 1);
+  fakeResults(out, ran, { [ran[0]]: { returnCode: -100, errorString: "Failed slicing", timeSeconds: null } });
+  for (const id of missing) writeFileSync(join(out, "jobs", `${id}.json`), JSON.stringify({ id, setupError: "no machine preset" }));
+  writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-07T00:00:00.000Z", openscad: null, landrun: null, step: null }));
+  const report = node([GATE, "report"], env);
+  assert.equal(report.status, 1, report.stderr);
+  const summary = readFileSync(join(out, "summary.txt"), "utf8");
+  assert.match(summary, /^Platehouse slicing gate: FAIL/);
+  assert.match(summary, /setup error: no bundled machine preset named Bambu Lab X1 Carbon 0\.4 nozzle/);
+});
+
 test("a missing machine preset makes report exit 2, the gate could not run, not 1", () => {
   const { root, sample, out, env } = setup();
   rmSync(join(env.GATE_ORCA_PROFILES, "BBL", "machine", "Bambu Lab X1 Carbon 0.4 nozzle.json"));
