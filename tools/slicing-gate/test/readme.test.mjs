@@ -95,5 +95,15 @@ test(
     assert.equal(existsSync(join(dest, "not selected.3mf")), false);
     const all = readdirSync(dest, { recursive: true });
     assert.ok(!all.some((f) => f.split("/").pop().startsWith("._")), `no AppleDouble files: ${all.join(", ")}`);
+    // With an extended attribute on a file, plain bsdtar writes it as a
+    // LIBARCHIVE.xattr pax header, which GNU tar on Hades warns about; the
+    // step's flags keep it out. The create half of the line, run alone:
+    spawnSync("xattr", ["-w", "com.platehouse.test", "1", join(src, names[0])]);
+    const create = line.slice(0, line.indexOf(" | "));
+    const stream = spawnSync("bash", ["-c", create], { cwd: src, maxBuffer: 1 << 24 });
+    assert.equal(stream.status, 0, String(stream.stderr));
+    const bytes = stream.stdout.toString("latin1");
+    assert.ok(bytes.includes("crafted 0"), "the stream carries the files");
+    assert.ok(!bytes.includes("LIBARCHIVE.xattr") && !bytes.includes("._"), "no extended attributes or AppleDouble entries");
   },
 );
