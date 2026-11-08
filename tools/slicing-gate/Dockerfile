@@ -94,7 +94,10 @@ RUN source /usr/local/lib/fetch.sh \
 # checkout is that commit's content; HEAD is then checked against the pin.
 # The JSON goes to /opt/orca-profiles, beside the AppImage, not inside it,
 # so nothing shadows the .opc files Orca ships.
-ARG ORCA_SRC_TAG=v2.5.0
+# Orca source tag v2.5.0 -> commit 40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19
+# (git ls-remote, 2026-11-08). The tag is recorded here, not as a build arg:
+# only the commit is fetched, so a tag arg would be a setting nothing reads
+# (issue #6). A new Orca release means a new commit pin, resolved the same way.
 ARG ORCA_SRC_SHA=40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19
 ARG ORCA_SRC_REPO=https://github.com/OrcaSlicer/OrcaSlicer.git
 RUN source /usr/local/lib/need.sh \
