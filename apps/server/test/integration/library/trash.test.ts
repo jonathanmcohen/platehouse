@@ -431,6 +431,42 @@ describe("purgeExpired", () => {
     expect((await trashFor().purgeExpired(new Date())).purged).not.toContain(model.id);
   });
 
+  test("an Empty trash that fails mid-delete on a model trashed today is finished by the next run", async () => {
+    const { model } = await seedStoredModel(env);
+    const recent = await seedStoredModel(env);
+    const trash = trashFor();
+    expect(await trash.trashModel(model.id)).toBe(true);
+    // For this model, the first DeleteObjects removes one object, then the
+    // connection drops. Other trashed models in the file are purged normally.
+    const dropsMidDelete: PurgeStore = {
+      listPrefix: (p) => env.store.listPrefix(p),
+      async deleteBlobs(keys) {
+        if (!keys.some((k) => k.startsWith(prefix(model.id)))) return env.store.deleteBlobs(keys);
+        await env.store.deleteBlobs(keys.slice(0, 1));
+        throw new StoreUnavailable("DeleteObjects", "ECONNRESET");
+      },
+    };
+    await expect(trashFor(dropsMidDelete).emptyTrash()).rejects.toBeInstanceOf(PurgeIncomplete);
+    expect(await purgeStartedAt(model.id)).toBeInstanceOf(Date);
+    expect(await env.store.listPrefix(prefix(model.id))).toHaveLength(1);
+    // An unmarked model trashed today, which the daily run must leave alone.
+    expect(await trash.trashModel(recent.model.id)).toBe(true);
+
+    // The daily run picks up the marked model, trashed today, and finishes it.
+    const result = await trash.purgeExpired(new Date());
+
+    expect(result.purged).toContain(model.id);
+    expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 0, files: 0, blobs: 0 });
+    expect(await env.store.listPrefix(prefix(model.id))).toEqual([]);
+    expect(result.purged).not.toContain(recent.model.id);
+    expect(await rowCounts(env.db, recent.model.id)).toMatchObject({ models: 1, blobs: 2 });
+    expect(await env.store.listPrefix(prefix(recent.model.id))).toHaveLength(2);
+    expect(await purgeStartedAt(recent.model.id)).toBeNull();
+
+    // Clean up so later purges in this file are not affected.
+    expect(await trash.restoreModel(recent.model.id)).toBe(true);
+  });
+
   test("an object outside the blob layout is never deleted, and the purge names it", async () => {
     const { model, source, thumbnail } = await seedStoredModel(env);
     await trashFor().trashModel(model.id);
