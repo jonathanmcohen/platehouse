@@ -4,7 +4,7 @@
 // written by the test in the shape gate.mjs slice writes them.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -111,6 +111,26 @@ test("select-sample, plan and report run end to end and apply the pass rule", ()
 
   fakeResults(out, [ids[3]], { [ids[3]]: { returnCode: -63, errorString: "collision", timeSeconds: null } });
   assert.equal(node([GATE, "report"], env).status, 3);
+});
+
+test("a missing machine preset makes report exit 2, the gate could not run, not 1", () => {
+  const { root, sample, out, env } = setup();
+  rmSync(join(env.GATE_ORCA_PROFILES, "BBL", "machine", "Bambu Lab X1 Carbon 0.4 nozzle.json"));
+  assert.equal(node([SELECT, sample, "--json", join(root, "in", "selection.json")], env).status, 0);
+  const plan = node([GATE, "plan"], env);
+  assert.equal(plan.status, 0, plan.stderr);
+  const planJson = JSON.parse(readFileSync(join(out, "plan.json"), "utf8"));
+  assert.ok(planJson.errors.some((e) => e.includes("X1 Carbon")), JSON.stringify(planJson.errors));
+  // what gate.mjs slice writes for a job with no machine preset, and real results for the rest
+  const missing = planJson.jobs.filter((j) => !j.machineFile).map((j) => j.id);
+  assert.ok(missing.length > 0);
+  fakeResults(out, planJson.jobs.filter((j) => j.machineFile).map((j) => j.id));
+  for (const id of missing) writeFileSync(join(out, "jobs", `${id}.json`), JSON.stringify({ id, setupError: "no machine preset" }));
+  const report = node([GATE, "report"], env);
+  assert.equal(report.status, 2, report.stderr);
+  const summary = readFileSync(join(out, "summary.txt"), "utf8");
+  assert.match(summary, /^Platehouse slicing gate: COULD-NOT-RUN/);
+  assert.match(summary, /setup error: no bundled machine preset named Bambu Lab X1 Carbon 0\.4 nozzle/);
 });
 
 test("plan stops with exit 2 when a selected file is not in the sample folder", () => {

@@ -154,6 +154,21 @@ test("run.sh exits 2, not FAIL, when docker cannot start a plate's container", (
   assert.equal(readFileSync(join(gate, "out", "host-exit.tsv"), "utf8"), "j0001\t125\n");
 });
 
+// gate.mjs slice exits 0 whatever Orca did (Orca's code goes in the job record)
+// and 2 only when its own command fails; 126 and 127 mean the container could
+// not run the command at all. None of them is a slicer result.
+test("run.sh exits 2, not FAIL, when a plate's container exits 2, 126 or 127", () => {
+  for (const rc of ["2", "126", "127"]) {
+    const gate = gateDir();
+    const r = run([], { gate, stubDir: stubs(), extra: { STUB_SLICE1_RC: rc } });
+    assert.equal(r.status, 2, `slice container ${rc}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`slice for j0001 could not run \\(exit ${rc}\\); the gate could not run`));
+    assert.ok(!r.calls.some((c) => c.includes(" slice j0002")), `no further plate runs after ${rc}`);
+    assert.ok(!r.calls.some((c) => c.endsWith(" report")), `no report is written as an Orca result after ${rc}`);
+    assert.equal(readFileSync(join(gate, "out", "host-exit.tsv"), "utf8"), `j0001\t${rc}\n`);
+  }
+});
+
 test("run.sh refuses a non-empty output dir, a GATE_DIR outside /tmp/platehouse-gate, and missing inputs", () => {
   const stubDir = stubs();
   const gate = gateDir();

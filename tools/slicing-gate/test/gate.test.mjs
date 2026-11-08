@@ -145,10 +145,21 @@ test("a missing job result after a host kill is a timeout failure; a job never r
   assert.equal(report.plates.find((p) => p.id === "j0002").reason, "crash");
 });
 
-test("a setup error alone fails the gate", () => {
+test("a setup error means the gate could not run, not that it failed", () => {
   const { jobs } = buildJobs(selection, metas, recipe);
   const results = {};
   for (const j of jobs) results[j.id] = res();
   const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks: null });
-  assert.equal(report.verdict, "FAIL");
+  assert.equal(report.verdict, "COULD-NOT-RUN");
+  assert.deepEqual(report.setupErrors, ["printer X missing"]);
+});
+
+test("a setup error outranks a plate failure: the run is incomplete either way", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs) results[j.id] = res();
+  results[jobs[0].id] = res({ returnCode: -100, errorString: "Failed slicing", timeSeconds: null, weightGrams: null });
+  const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks: null });
+  assert.equal(report.verdict, "COULD-NOT-RUN");
+  assert.equal(report.counts.fail, 1, "the failed plate is still counted and listed");
 });
