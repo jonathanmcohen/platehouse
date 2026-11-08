@@ -128,13 +128,14 @@ export interface SliceFilamentSpec {
   usedG?: number | string;
 }
 
+/** An undefined field leaves its metadata line out. */
 export interface SliceSpec {
   index: number | string;
-  prediction?: number | string;
-  weight?: number | string;
-  printerModelId?: string;
-  nozzle?: string;
-  filaments?: SliceFilamentSpec[];
+  prediction?: number | string | undefined;
+  weight?: number | string | undefined;
+  printerModelId?: string | undefined;
+  nozzle?: string | undefined;
+  filaments?: SliceFilamentSpec[] | undefined;
 }
 
 /** Metadata/slice_info.config as Bambu Studio writes it after slicing. */
