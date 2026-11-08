@@ -1,0 +1,13 @@
+{
+  "name": "@platehouse/makerworld",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "markdown-it": "15.0.3"
+  }
+}
