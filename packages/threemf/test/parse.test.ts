@@ -84,9 +84,23 @@ describe("the plate list", () => {
     ]);
   });
 
-  it("gives null for an empty plate name", async () => {
-    const project = await mustRead(build3mf({ plates: [{ index: 1, name: "" }] }));
+  it.each(["", " ", " \t\n "])("gives null for a plate name of %j", async (name) => {
+    const project = await mustRead(build3mf({ plates: [{ index: 1, name }] }));
     expect(project.plates[0]?.name).toBeNull();
+    expect(project.plates[0]?.index).toBe(1);
+  });
+
+  it("keeps a non-blank name exactly as written, spaces included", async () => {
+    const project = await mustRead(build3mf({ plates: [{ index: 1, name: " Lid " }] }));
+    expect(project.plates[0]?.name).toBe(" Lid ");
+  });
+
+  it("keeps a non-ASCII name byte for byte", async () => {
+    // "Fensterkeil - Turstopper" with an en dash and a u-umlaut, written as
+    // escapes so this source file stays ASCII.
+    const name = "Fensterkeil \u2013 T\u00FCrstopper";
+    const project = await mustRead(build3mf({ plates: [{ index: 1, name }] }));
+    expect(Buffer.from(project.plates[0]?.name ?? "", "utf8")).toEqual(Buffer.from(name, "utf8"));
   });
 
   it("decodes XML escapes in plate names", async () => {
@@ -118,6 +132,32 @@ describe("the plate list", () => {
       { index: 2, name: null, objectCount: 0, sliced: false, filaments: [] },
       { index: 3, name: null, objectCount: 0, sliced: false, filaments: [] },
     ]);
+  });
+
+  it("lists a plate gap as it is, and hands over only the thumbnails there are", async () => {
+    const indexes: number[] = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          plates: [
+            { index: 1, name: "A" },
+            { index: 3, name: "C", objects: 2 },
+          ],
+          pngs: { 1: png("one"), 3: png("three") },
+        }),
+      ),
+      { onThumbnail: async (i) => void indexes.push(i) },
+    );
+    expect(project?.plates.map((p) => [p.index, p.name, p.objectCount])).toEqual([
+      [1, "A", 1],
+      [3, "C", 2],
+    ]);
+    expect(indexes).toEqual([1, 3]);
+  });
+
+  it("falls back to the png names when model_settings.config is not XML", async () => {
+    const project = await mustRead(build3mf({ modelSettings: "not xml", pngs: { 1: png("p1") } }));
+    expect(project.plates.map((p) => [p.index, p.name])).toEqual([[1, null]]);
   });
 
   it("falls back to the png names when model_settings.config names no plate", async () => {
@@ -210,6 +250,27 @@ describe("embedded slice data", () => {
     expect(plate?.sliced).toBe(true);
     expect(plate?.weightGrams).toBeUndefined();
     expect(plate?.filaments).toEqual([{ slot: 1, type: "PLA", colour: "#FFFFFF", grams: null }]);
+  });
+
+  it("matches slice data to plates by index, not by position", async () => {
+    const project = await mustRead(
+      build3mf({
+        plates: [{ index: 1 }, { index: 2 }],
+        slices: [slicedP1S(2, { prediction: 120 })],
+      }),
+    );
+    expect(project.plates.map((p) => p.sliced)).toEqual([false, true]);
+    expect(project.plates[1]?.predictionSeconds).toBe(120);
+  });
+
+  it("leaves the plates unsliced when slice_info.config is not well-formed XML", async () => {
+    const project = await mustRead(
+      build3mf({ plates: [{ index: 1, name: "A" }], sliceInfo: "<config><plate>" }),
+    );
+    expect(project.plates).toEqual([
+      { index: 1, name: "A", objectCount: 1, sliced: false, filaments: [] },
+    ]);
+    expect(project.slicedFor).toBeUndefined();
   });
 
   it("ignores slice data for a plate the plate list does not have", async () => {
@@ -309,6 +370,12 @@ describe("project settings", () => {
     expect(project.processName).toBeUndefined();
   });
 
+  it("gives an empty filament list when project_settings.config has none of the keys", async () => {
+    const project = await mustRead(build3mf({ plates: [{ index: 1 }], project: "{}" }));
+    expect(project.projectFilaments).toEqual([]);
+    expect(project.processName).toBeUndefined();
+  });
+
   it("gives an empty filament list when the file has no project settings", async () => {
     const project = await mustRead(build3mf({ plates: [{ index: 1 }] }));
     expect(project.projectFilaments).toEqual([]);
@@ -399,13 +466,40 @@ describe("thumbnails", () => {
     expect(maxInFlight).toBe(1);
   });
 
-  it("skip a plate that has no thumbnail", async () => {
+  it("skip a plate that has no thumbnail, which is still listed", async () => {
     const indexes: number[] = [];
-    await readProject(
+    const project = await readProject(
       writeTmp(build3mf({ plates: [{ index: 1 }, { index: 2 }], pngs: { 2: png("two") } })),
       { onThumbnail: async (i) => void indexes.push(i) },
     );
+    expect(project?.plates.map((p) => p.index)).toEqual([1, 2]);
     expect(indexes).toEqual([2]);
+  });
+
+  it("fall back to plate_N_small.png when plate_N.png is empty", async () => {
+    const seen: Array<[number, string]> = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          plates: [{ index: 1 }],
+          pngs: { 1: Buffer.alloc(0) },
+          smallPngs: { 1: png("small") },
+        }),
+      ),
+      { onThumbnail: async (i, buf) => void seen.push([i, buf.subarray(8).toString("latin1")]) },
+    );
+    expect(project).not.toBeNull();
+    expect(seen).toEqual([[1, "small"]]);
+  });
+
+  it("skip a plate whose only thumbnail is empty", async () => {
+    const indexes: number[] = [];
+    const project = await readProject(
+      writeTmp(build3mf({ plates: [{ index: 1 }], pngs: { 1: Buffer.alloc(0) } })),
+      { onThumbnail: async (i) => void indexes.push(i) },
+    );
+    expect(project?.plates).toHaveLength(1);
+    expect(indexes).toEqual([]);
   });
 
   it("are not handed over at all when the file turns out damaged", async () => {
@@ -435,6 +529,21 @@ describe("thumbnails", () => {
     expect(await read(buf, { maxThumbnailBytes: 2047 })).toBeNull();
   });
 
+  it.each([Number.NaN, 0, -1, Number.POSITIVE_INFINITY])(
+    "ignore a maxThumbnailBytes of %s and keep the 10 MiB ceiling",
+    async (maxThumbnailBytes) => {
+      const over = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", LIMITS.pngBytes + 1) } });
+      expect(await read(over, { maxThumbnailBytes })).toBeNull();
+      const sizes: number[] = [];
+      const project = await readProject(
+        writeTmp(build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", 2048) } })),
+        { maxThumbnailBytes, onThumbnail: async (_i, buf) => void sizes.push(buf.length) },
+      );
+      expect(project).not.toBeNull();
+      expect(sizes).toEqual([2048]);
+    },
+  );
+
   it("cannot have the 10 MiB ceiling raised by maxThumbnailBytes", async () => {
     const buf = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", LIMITS.pngBytes + 1) } });
     expect(await read(buf, { maxThumbnailBytes: 64 * MiB })).toBeNull();
@@ -451,6 +560,79 @@ describe("thumbnails", () => {
     );
     expect(project).not.toBeNull();
     expect(sizes.reduce((a, b) => a + b, 0)).toBe(LIMITS.thumbnailBytesPerFile);
+  });
+});
+
+// A bug in the caller is not a file with no plate data (parser.rb@136fd61,
+// test_read_passes_on_an_error_raised_by_the_block): whatever onThumbnail
+// throws reaches the caller as the same object, never null and never
+// ReadUnavailable, and no further thumbnail is read or handed over.
+describe("errors from onThumbnail reach the caller unchanged", () => {
+  const twoPlates = build3mf({
+    plates: [{ index: 1 }, { index: 2 }],
+    pngs: { 1: png("one"), 2: png("two") },
+  });
+
+  const systemError = (): NodeJS.ErrnoException => {
+    const err: NodeJS.ErrnoException = new Error("connect ECONNREFUSED 127.0.0.1:9000");
+    err.code = "ECONNREFUSED";
+    err.syscall = "connect";
+    return err;
+  };
+
+  const thrown: Array<[string, () => unknown]> = [
+    ["a plain Error", () => new Error("from the callback")],
+    ["a TypeError", () => new TypeError("from the callback")],
+    ["a RangeError", () => new RangeError("from the callback")],
+    ["an error with a syscall", systemError],
+    ["a ReadUnavailable of the caller's own", () => new ReadUnavailable(systemError())],
+    ["a value that is not an Error", () => "from the callback"],
+  ];
+
+  it.each(thrown)("%s, rejected", async (_label, make) => {
+    const error = make();
+    const handed: number[] = [];
+    const err = await readProject(writeTmp(twoPlates), {
+      onThumbnail: async (i) => {
+        handed.push(i);
+        throw error;
+      },
+    }).then(
+      () => "resolved",
+      (e: unknown) => e,
+    );
+    expect(err).toBe(error);
+    expect(handed).toEqual([1]);
+  });
+
+  it.each(thrown)("%s, thrown before any promise", async (_label, make) => {
+    const error = make();
+    const handed: number[] = [];
+    const err = await readProject(writeTmp(twoPlates), {
+      onThumbnail: (i) => {
+        handed.push(i);
+        throw error;
+      },
+    }).then(
+      () => "resolved",
+      (e: unknown) => e,
+    );
+    expect(err).toBe(error);
+    expect(handed).toEqual([1]);
+  });
+
+  it("an error with a syscall, through readProjectFromReader too", async () => {
+    const error = systemError();
+    const reader = new MemoryReader(twoPlates);
+    const err = await readProjectFromReader(reader, twoPlates.length, {
+      onThumbnail: async () => {
+        throw error;
+      },
+    }).then(
+      () => "resolved",
+      (e: unknown) => e,
+    );
+    expect(err).toBe(error);
   });
 });
 
@@ -547,6 +729,12 @@ class FailingReader extends yauzl.RandomAccessReader {
   }
 }
 
+class MemoryReader extends FailingReader {
+  constructor(data: Buffer) {
+    super(data, 0, 0, "EIO");
+  }
+}
+
 describe("filesystem errors reach the caller as ReadUnavailable (#4)", () => {
   const archive = build3mf({
     plates: [{ index: 1 }, { index: 2 }],
@@ -573,6 +761,19 @@ describe("filesystem errors reach the caller as ReadUnavailable (#4)", () => {
     await expect(readProjectFromReader(reader, archive.length)).rejects.toBeInstanceOf(
       ReadUnavailable,
     );
+  });
+
+  it("EIO in the middle of a thumbnail, with nothing handed over", async () => {
+    const png2 = "Metadata/plate_2.png";
+    const pngStart = archive.indexOf(png2) + png2.length;
+    const reader = new FailingReader(archive, pngStart + 1, pngStart + 2, "EIO");
+    const handed: number[] = [];
+    const err = await readProjectFromReader(reader, archive.length, {
+      onThumbnail: async (i) => void handed.push(i),
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReadUnavailable);
+    expect((err as ReadUnavailable).code).toBe("EIO");
+    expect(handed).toEqual([]);
   });
 
   it("keeps the cause's code and never reports the error as damage", async () => {

@@ -8,7 +8,9 @@
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - anything wrong with the bytes is damage (null); a filesystem error is
-//   ReadUnavailable and never damage.
+//   ReadUnavailable and never damage;
+// - whatever onThumbnail throws reaches the caller unchanged: a bug in the
+//   caller is not a file with no plate data.
 import type { FileHandle } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -41,10 +43,15 @@ export async function readProject(path: string, opts: ReadOptions = {}): Promise
     throw unavailableOr(err);
   }
   try {
-    const { size } = await handle.stat();
+    let size: number;
+    try {
+      ({ size } = await handle.stat());
+    } catch (err) {
+      throw unavailableOr(err);
+    }
+    // readProjectFromReader classifies its own errors; what it rethrows
+    // unclassified came from onThumbnail and must stay as it is.
     return await readProjectFromReader(new HandleReader(handle), size, opts);
-  } catch (err) {
-    throw unavailableOr(err);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -62,11 +69,21 @@ export async function readProjectFromReader(
   try {
     return await readArchive(reader, size, opts);
   } catch (err) {
+    if (err instanceof CallerError) throw err.error;
     if (err instanceof ReadUnavailable) throw err;
     if (isSystemError(err)) throw new ReadUnavailable(err);
     // Everything else came from the bytes: the zip reader, inflate, the XML
     // or JSON, or a ceiling. A hostile file never throws.
     return null;
+  }
+}
+
+/** Carries what onThumbnail threw past the classification above, untouched. */
+class CallerError {
+  readonly error: unknown;
+
+  constructor(error: unknown) {
+    this.error = error;
   }
 }
 
@@ -169,18 +186,27 @@ async function readArchive(
     const modelEntry = entries.get(MODEL);
     const makerWorldXml = modelEntry ? await readModelPrefix(zip, modelEntry) : undefined;
 
-    const thumbs = plates
-      .map((p) => ({ index: p.index, entry: thumbnailEntry(entries, p.index) }))
-      .filter((t): t is { index: number; entry: yauzl.Entry } => t.entry !== undefined);
-    const perThumbnail = Math.min(opts.maxThumbnailBytes ?? LIMITS.pngBytes, LIMITS.pngBytes);
+    const perThumbnail = thumbnailCeiling(opts.maxThumbnailBytes);
 
     // Pass 1: every thumbnail must fit its ceiling and the file's budget
     // before any is handed over, so a caller never stores thumbnails of a
     // file that turns out damaged. Bytes are counted and dropped, never held.
+    // plate_N.png comes first; an empty one gives way to plate_N_small.png,
+    // and a plate with neither, or only empty ones, has no thumbnail.
+    const thumbs: Array<{ index: number; entry: yauzl.Entry }> = [];
     let total = 0;
-    for (const t of thumbs) {
-      total += await countCapped(zip, t.entry, perThumbnail);
-      if (total > LIMITS.thumbnailBytesPerFile) throw new Damaged("thumbnails over budget");
+    for (const { index } of plates) {
+      for (const name of [`Metadata/plate_${index}.png`, `Metadata/plate_${index}_small.png`]) {
+        const entry = entries.get(name);
+        if (!entry) continue;
+        const bytes = await countCapped(zip, entry, perThumbnail);
+        total += bytes;
+        if (total > LIMITS.thumbnailBytesPerFile) throw new Damaged("thumbnails over budget");
+        if (bytes > 0) {
+          thumbs.push({ index, entry });
+          break;
+        }
+      }
     }
     // Pass 2: hand them over one at a time, in plate order (Bambu Plates #11).
     if (opts.onThumbnail) {
@@ -189,7 +215,11 @@ async function readArchive(
         const png = await readCapped(zip, t.entry, perThumbnail);
         total += png.length;
         if (total > LIMITS.thumbnailBytesPerFile) throw new Damaged("thumbnails over budget");
-        await opts.onThumbnail(t.index, png);
+        try {
+          await opts.onThumbnail(t.index, png);
+        } catch (err) {
+          throw new CallerError(err);
+        }
       }
     }
 
@@ -288,10 +318,15 @@ async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<
   return buf.subarray(0, Math.min(stop, MODEL_PREFIX_BYTES)).toString("utf8");
 }
 
-function thumbnailEntry(entries: Map<string, yauzl.Entry>, index: number): yauzl.Entry | undefined {
-  return (
-    entries.get(`Metadata/plate_${index}.png`) ?? entries.get(`Metadata/plate_${index}_small.png`)
-  );
+/**
+ * The per-thumbnail ceiling: maxThumbnailBytes when it is a positive finite
+ * number, never above LIMITS.pngBytes. Anything else (NaN from an unset
+ * setting, zero, a negative number) keeps LIMITS.pngBytes, so the option can
+ * neither lift the ceiling nor make every thumbnail count as damage.
+ */
+function thumbnailCeiling(asked: number | undefined): number {
+  if (asked === undefined || !Number.isFinite(asked) || asked <= 0) return LIMITS.pngBytes;
+  return Math.min(asked, LIMITS.pngBytes);
 }
 
 // --- XML ------------------------------------------------------------------
@@ -383,7 +418,8 @@ function platesFromModelSettings(text: string | null): Listed[] | null {
     const name = meta.get("plater_name") ?? "";
     seen.set(index, {
       index,
-      name: name === "" ? null : name,
+      // A blank name is no name, so the page shows "Plate N" for it.
+      name: name.trim() === "" ? null : name,
       objectCount: count(block.model_instance),
     });
   }

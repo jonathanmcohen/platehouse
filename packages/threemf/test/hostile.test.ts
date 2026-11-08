@@ -101,6 +101,17 @@ const rows: Row[] = [
     expect: "null",
   },
   {
+    name: "a thumbnail's local header past the end of the file",
+    issue: "#5",
+    file: () =>
+      buildZip(
+        projectEntries({ ...onePlate, pngs: { 1: png("one") } }).map((e) =>
+          e.name === "Metadata/plate_1.png" ? { ...e, localOffset: 0x7ffffff0 } : e,
+        ),
+      ),
+    expect: "null",
+  },
+  {
     name: "a config entry over 5 MiB",
     issue: "#5",
     file: () => build3mf({ modelSettings: overConfig() }),

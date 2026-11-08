@@ -35,12 +35,18 @@ export interface Project {
 }
 
 export interface ReadOptions {
-  /** Lowers the per-thumbnail ceiling; it cannot raise it past LIMITS.pngBytes. */
+  /**
+   * Lowers the per-thumbnail ceiling; it cannot raise it past LIMITS.pngBytes.
+   * A value that is not a positive finite number (NaN, 0, a negative number)
+   * is ignored and LIMITS.pngBytes applies.
+   */
   maxThumbnailBytes?: number;
   /**
    * Receives each plate thumbnail, one at a time in plate order; the next is
    * read only after the returned promise settles. Called only for a file
-   * that has already passed every ceiling.
+   * that has already passed every ceiling. Whatever it throws or rejects
+   * with reaches the caller of readProject as the same value, never as null
+   * or ReadUnavailable, and no further thumbnail is handed over.
    */
   onThumbnail?: (index: number, png: Buffer) => Promise<void>;
 }
