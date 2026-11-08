@@ -4,31 +4,42 @@
 // touches. A trashed model is purged 30 days after it was trashed
 // (purgeExpired), or at once by Empty trash (emptyTrash).
 //
-// A purge removes one model at a time, in its own transaction:
-//   1. lock the model's row FOR UPDATE, and go on only if it is still in the
-//      trash (and, for purgeExpired, still past the cutoff), so a restore or
-//      an organising call made meanwhile waits for the purge and then finds
-//      no model;
-//   2. delete the bucket objects: every blob row's key, plus anything listed
-//      under models/<modelId>/, such as an upload that landed without its row
-//      being marked stored;
-//   3. list models/<modelId>/ again and expect zero objects (the Purge
-//      contract);
-//   4. only then delete the model's row; its files, plates, estimates, blobs
+// A purge removes one model at a time:
+//   1. mark it: set purge_started_at (migration 0002) in a transaction of its
+//      own, only if the model is still in the trash (and, for purgeExpired,
+//      still past the cutoff), and commit before any object is deleted. The
+//      UPDATE waits for a restore that holds the row and then finds no
+//      trashed model, so the purge stops there;
+//   2. in a second transaction, lock the model's row FOR UPDATE, so a restore
+//      or an organising call made meanwhile waits for the purge and then
+//      finds no model;
+//   3. delete the bucket objects: every blob row's key, plus every key listed
+//      under models/<modelId>/ that is in the models/<modelId>/<blobId>
+//      layout, such as an upload that landed without its row being marked
+//      stored. The app never deletes a key outside that layout (the store
+//      refuses to), so an object like a folder marker made in an S3 console
+//      stays where it is;
+//   4. list models/<modelId>/ again and expect zero objects (the Purge
+//      contract). Anything left fails the purge with ObjectsRemain, which
+//      names the first keys left, so an object outside the layout can be
+//      found and removed by hand;
+//   5. only then delete the model's row; its files, plates, estimates, blobs
 //      and tag and collection links go with it (on delete cascade).
-// A failure at any step rolls the rows back and leaves the model in the trash.
-// Deleting an object that is already gone is not an error, so the next run
-// finishes the job: a purge is idempotent on retry.
+// A failure after step 1 rolls back the second transaction and leaves the
+// model in the trash, its marker set. Deleting an object that is already gone
+// is not an error, so the next run finishes the job: a purge is idempotent on
+// retry.
 //
-// A purge that failed after step 2 leaves a model in the trash whose rows are
-// intact but whose objects are gone, or some of them. restoreModel checks for
-// that before it brings a model back: it locks the row FOR UPDATE, lists
-// models/<modelId>/, and refuses with FilesMissing when any stored blob's key
-// is not there. The model stays in the trash and the next purge finishes it.
+// restoreModel refuses a model whose marker is set, with PurgeStarted: its
+// purge may have deleted some of its objects already, and the next purge
+// finishes it. Any other trashed model is restored without looking at the
+// bucket. An object lost some other way (AC-010 reconciliation counts stored
+// rows against objects) shows as unavailable when it is read
+// (getBlobStream's BlobNotFound); it never makes a model unrestorable.
 //
 // The daily 03:30 schedule for purgeExpired belongs to the job runner (Task
 // 8), which registers it on the maintenance queue.
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
 import { modelsRepo } from "../repos/models.js";
@@ -48,35 +59,52 @@ export interface PurgeResult {
   purged: string[];
 }
 
-/** Objects were still under a model's prefix after the purge deleted them. */
+/** How many leftover keys ObjectsRemain names. */
+const REMAIN_KEYS_SHOWN = 10;
+
+/**
+ * Objects were still under a model's prefix after the purge deleted its
+ * blobs. Usually a key outside the models/<modelId>/<blobId> layout, which
+ * the app never deletes: remove it by hand and the next purge finishes.
+ */
 export class ObjectsRemain extends Error {
   readonly modelId: string;
+  /** How many objects were left. */
   readonly count: number;
+  /** The first keys left, at most REMAIN_KEYS_SHOWN of them. */
+  readonly keys: string[];
 
-  constructor(modelId: string, count: number) {
-    super(`${count} objects are still under the model's prefix after the purge deleted its blobs`);
+  constructor(modelId: string, keys: readonly string[]) {
+    const shown = keys.slice(0, REMAIN_KEYS_SHOWN);
+    const more = keys.length > shown.length ? ` and ${keys.length - shown.length} more` : "";
+    super(
+      `${keys.length} objects are still under models/${modelId}/ after the purge deleted its blobs: ` +
+        `${shown.join(", ")}${more}. The app deletes only keys in the models/<modelId>/<blobId> ` +
+        "layout; remove any other by hand and the next purge finishes",
+    );
     this.name = "ObjectsRemain";
     this.modelId = modelId;
-    this.count = count;
+    this.count = keys.length;
+    this.keys = shown;
   }
 }
 
 /**
- * restoreModel refused: stored blobs of the trashed model are no longer in the
- * bucket, because a purge deleted them and then failed. The model stays in the
- * trash, and the next purge removes it.
+ * restoreModel refused: a purge of the trashed model has begun, and may
+ * already have deleted some of its objects. The model stays in the trash,
+ * and the next purge removes it.
  */
-export class FilesMissing extends Error {
+export class PurgeStarted extends Error {
   readonly modelId: string;
-  readonly missing: number;
+  readonly purgeStartedAt: Date;
 
-  constructor(modelId: string, missing: number) {
+  constructor(modelId: string, purgeStartedAt: Date) {
     super(
-      `${missing} stored blobs of the trashed model are no longer in the bucket; a purge has begun, so it cannot be restored`,
+      `A purge of the trashed model began at ${purgeStartedAt.toISOString()} and may already have deleted its files, so it cannot be restored; the next purge finishes it`,
     );
-    this.name = "FilesMissing";
+    this.name = "PurgeStarted";
     this.modelId = modelId;
-    this.missing = missing;
+    this.purgeStartedAt = purgeStartedAt;
   }
 }
 
@@ -104,14 +132,27 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
 
   /** Purges one model; false when it is no longer in the trash (or not past cutoff). */
   async function purgeModel(modelId: string, cutoff: Date | undefined): Promise<boolean> {
+    // Step 1, committed on its own before any object is deleted. A marker an
+    // earlier failed purge set is kept as it was.
+    let mark = db
+      .updateTable("models")
+      .set((eb) => ({ purgeStartedAt: eb.fn.coalesce("purgeStartedAt", sql<Date>`now()`) }))
+      .where("id", "=", modelId)
+      .where("trashedAt", "is not", null);
+    if (cutoff !== undefined) mark = mark.where("trashedAt", "<", cutoff);
+    if ((await mark.returning("id").executeTakeFirst()) === undefined) return false;
+
     return db.transaction().execute(async (trx) => {
-      let lock = trx
+      const lock = await trx
         .selectFrom("models")
         .select("id")
         .where("id", "=", modelId)
-        .where("trashedAt", "is not", null);
-      if (cutoff !== undefined) lock = lock.where("trashedAt", "<", cutoff);
-      if ((await lock.forUpdate().executeTakeFirst()) === undefined) return false;
+        .where("trashedAt", "is not", null)
+        .where("purgeStartedAt", "is not", null)
+        .forUpdate()
+        .executeTakeFirst();
+      // Gone: another purge finished it meanwhile.
+      if (lock === undefined) return false;
 
       const prefix = `models/${modelId}/`;
       const rows = await trx
@@ -120,13 +161,20 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         .where("modelId", "=", modelId)
         .execute();
       const listed = await store.listPrefix(prefix);
+      // Only keys in the blob layout: the store refuses to delete any other,
+      // and the check below reports what is left.
       const keys = [...new Set([...rows.map((r) => r.key), ...listed.map((o) => o.key)])].filter(
         isBlobKey,
       );
       if (keys.length > 0) await store.deleteBlobs(keys);
 
       const left = await store.listPrefix(prefix);
-      if (left.length > 0) throw new ObjectsRemain(modelId, left.length);
+      if (left.length > 0) {
+        throw new ObjectsRemain(
+          modelId,
+          left.map((o) => o.key),
+        );
+      }
 
       await trx.deleteFrom("models").where("id", "=", modelId).execute();
       return true;
@@ -156,39 +204,27 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
     /**
      * Brings a trashed model back with its files, tags and collections; false
      * when it is unknown, malformed, live, or purged meanwhile. Throws
-     * FilesMissing, and leaves the model in the trash, when a purge already
-     * deleted any of its stored blobs' objects; a store error when the bucket
-     * cannot be listed.
+     * PurgeStarted, and leaves the model in the trash, when a purge of it has
+     * begun. It does not read the bucket: an object lost some other way shows
+     * as unavailable when it is read, and does not stop the restore.
      */
     async restoreModel(id: string): Promise<boolean> {
       if (!isUuid(id)) return false;
       return db.transaction().execute(async (trx) => {
         const trashed = await trx
           .selectFrom("models")
-          .select("id")
+          .select(["id", "purgeStartedAt"])
           .where("id", "=", id)
           .where("trashedAt", "is not", null)
           .forUpdate()
           .executeTakeFirst();
         if (trashed === undefined) return false;
-        // isUuid and the uuid column accept any case, but bucket keys are
-        // lowercase and S3 prefixes are case-sensitive, so go on with the id
-        // as Postgres returns it (canonical lowercase), not the caller's text.
-        const modelId = trashed.id;
-
-        const stored = await trx
-          .selectFrom("blobs")
-          .select("key")
-          .where("modelId", "=", modelId)
-          .where("state", "=", "stored")
-          .execute();
-        if (stored.length > 0) {
-          const listed = new Set((await store.listPrefix(`models/${modelId}/`)).map((o) => o.key));
-          const missing = stored.filter((b) => !listed.has(b.key)).length;
-          if (missing > 0) throw new FilesMissing(modelId, missing);
+        if (trashed.purgeStartedAt !== null) {
+          throw new PurgeStarted(trashed.id, trashed.purgeStartedAt);
         }
-
-        return modelsRepo(trx).restore(modelId);
+        // isUuid and the uuid column accept any case; go on with the id as
+        // Postgres returns it (canonical lowercase), not the caller's text.
+        return modelsRepo(trx).restore(trashed.id);
       });
     },
 
