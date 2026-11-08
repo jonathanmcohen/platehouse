@@ -289,3 +289,18 @@ test(
     assert.equal(idle, "", "with no run going the check prints nothing");
   },
 );
+
+// Jon, 2026-11-08: -101 and -62 are legitimate refusals. The README's pass
+// rule lists them with the others, says whose decision it was, and no longer
+// lists -62 among the codes waiting for a decision.
+test("the README pass rule lists -101 and -62 as legitimate refusals by Jon's decision of 2026-11-08", () => {
+  const text = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "README.md"), "utf8");
+  const section = text.slice(text.indexOf("## The pass rule"), text.indexOf("## What the report holds"));
+  const legit = section.slice(section.indexOf("The legitimate refusals"), section.indexOf("NEEDS-DECISION"));
+  const needs = section.slice(section.indexOf("NEEDS-DECISION"));
+  assert.match(legit.replace(/\s+/g, " "), /-101 \(G-code path conflicts\)/);
+  assert.match(legit.replace(/\s+/g, " "), /-62 \(filament temperatures too far apart\)/);
+  assert.match(legit.replace(/\s+/g, " "), /Jon's decision on 2026-11-08/);
+  assert.doesNotMatch(needs, /-62\b/);
+  assert.doesNotMatch(needs, /temperature/);
+});
