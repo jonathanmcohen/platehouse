@@ -2,15 +2,14 @@
 // v2.5.0's own return codes (src/libslic3r/Utils.hpp, messages from
 // src/OrcaSlicer.cpp cli_errors), as the slicing gate's lib/classify.mjs
 // reads them. -62 and -101 are legitimate refusals reported with their
-// reason (Jon, 2026-11-08, gate run 3).
+// reason (Jon, 2026-11-08, gate run 3). Only the codes the contract's map
+// names get a reason of their own; -15 and -20 are not among them.
 import { describe, expect, test } from "vitest";
 import { ORCA_MESSAGES, reasonFor } from "../src/reasons.js";
 
 const MAP: Array<[number, string]> = [
-  [-15, "machine_not_supported"],
   [-16, "machine_not_supported"],
   [-17, "process_not_compatible"],
-  [-20, "bed_too_small"],
   [-52, "bed_too_small"],
   [-102, "bed_too_small"],
   [-66, "nozzle_mismatch"],
@@ -40,6 +39,13 @@ describe("reason map", () => {
 
   test.each([-1, -2, -3, -5, -14, -18, -51, -59, -60, -70, -100, -103, 1, 7, 255])(
     "any other code (%i) is slicer_error",
+    (code) => {
+      expect(reasonFor(code)).toBe("slicer_error");
+    },
+  );
+
+  test.each([-15, -20])(
+    "Orca code %i is not in the contract's map and is reported as slicer_error",
     (code) => {
       expect(reasonFor(code)).toBe("slicer_error");
     },

@@ -49,11 +49,12 @@ export const ORCA_MESSAGES: Readonly<Record<number, string>> = Object.freeze({
   [-102]: "G-code in an unprintable area of a multi-extruder printer",
 });
 
+// Exactly the contract's map. -15 (printer not supported) and -20 (bed
+// smaller than the print profile's) are not in it, so they take "anything
+// else" and are slicer_error with Orca's message, like the gate's planReason.
 const MAP: ReadonlyMap<number, Reason> = new Map<number, Reason>([
-  [-15, "machine_not_supported"],
   [-16, "machine_not_supported"],
   [-17, "process_not_compatible"],
-  [-20, "bed_too_small"],
   [-52, "bed_too_small"],
   [-102, "bed_too_small"],
   [-66, "nozzle_mismatch"],
