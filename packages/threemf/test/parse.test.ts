@@ -37,6 +37,13 @@ async function mustRead(buf: Buffer): Promise<Project> {
   return project;
 }
 
+/** Broken XML that fast-xml-parser 5.12.0 throws on, not just tolerates. */
+const MALFORMED_XML = [
+  "<config><plate></plate",
+  '<config><plate a="1></plate></config>',
+  '<config><plate><metadata key="plater_id" value="1"/></plate',
+];
+
 const slicedP1S = (index: number, extra: Partial<SliceSpec> = {}): SliceSpec => ({
   index,
   prediction: 5025,
@@ -160,6 +167,23 @@ describe("the plate list", () => {
     expect(project.plates.map((p) => [p.index, p.name])).toEqual([[1, null]]);
   });
 
+  // fast-xml-parser throws on some broken XML (Nokogiri, under parser.rb,
+  // recovers from all of it). Either way a broken model_settings.config costs
+  // the plate names, never the file (test_garbage_model_settings_returns_nil_or_png_fallback).
+  it.each(MALFORMED_XML)(
+    "falls back to the png names when model_settings.config is %j",
+    async (modelSettings) => {
+      const project = await mustRead(build3mf({ modelSettings, pngs: { 1: png("p1") } }));
+      expect(project.plates).toEqual([
+        { index: 1, name: null, objectCount: 0, sliced: false, filaments: [] },
+      ]);
+    },
+  );
+
+  it("is null when model_settings.config is broken and there is no plate png to fall back to", async () => {
+    expect(await read(build3mf({ modelSettings: "<config><plate></plate" }))).toBeNull();
+  });
+
   it("falls back to the png names when model_settings.config names no plate", async () => {
     const project = await mustRead(
       build3mf({ modelSettings: modelSettingsXml([]), pngs: { 1: png("p1") } }),
@@ -272,6 +296,19 @@ describe("embedded slice data", () => {
     ]);
     expect(project.slicedFor).toBeUndefined();
   });
+
+  // test_garbage_slice_info_leaves_plates_unsliced, over XML that makes
+  // fast-xml-parser throw: broken slice data costs the slice data only.
+  it.each(MALFORMED_XML)(
+    "leaves the plates unsliced when slice_info.config is %j",
+    async (sliceInfo) => {
+      const project = await mustRead(build3mf({ plates: [{ index: 1, name: "A" }], sliceInfo }));
+      expect(project.plates).toEqual([
+        { index: 1, name: "A", objectCount: 1, sliced: false, filaments: [] },
+      ]);
+      expect(project.slicedFor).toBeUndefined();
+    },
+  );
 
   it("ignores slice data for a plate the plate list does not have", async () => {
     const project = await mustRead(build3mf({ plates: [{ index: 1 }], slices: [slicedP1S(2)] }));
