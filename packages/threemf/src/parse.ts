@@ -207,35 +207,39 @@ async function readArchive(
     const modelEntry = entries.get(MODEL);
     const makerWorldXml = modelEntry ? await readModelPrefix(zip, modelEntry) : undefined;
 
-    const perThumbnail = thumbnailCeiling(opts.maxThumbnailBytes);
+    const budget = thumbnailBudget(opts.maxThumbnailBytes);
 
-    // Pass 1: every thumbnail must fit its ceiling and the file's budget
-    // before any is handed over, so a caller never stores thumbnails of a
-    // file that turns out damaged. Bytes are counted and dropped, never held.
-    // plate_N.png comes first; an empty one gives way to plate_N_small.png,
-    // and a plate with neither, or only empty ones, has no thumbnail.
+    // Pass 1: every thumbnail must fit the file's budget before any is
+    // handed over, so a caller never stores thumbnails of a file that turns
+    // out damaged. Bytes are counted and dropped, never held. As in
+    // parser.rb thumbnail_from: plate_N.png comes first, and an empty one or
+    // one over LIMITS.pngBytes gives way to plate_N_small.png; a plate with
+    // no usable entry has no thumbnail. Every byte read from a thumbnail
+    // entry counts against the budget, a passed-over one included.
     const thumbs: Array<{ index: number; entry: yauzl.Entry }> = [];
     let total = 0;
     for (const { index } of plates) {
       for (const name of [`Metadata/plate_${index}.png`, `Metadata/plate_${index}_small.png`]) {
         const entry = entries.get(name);
         if (!entry) continue;
-        const bytes = await countCapped(zip, entry, perThumbnail);
+        const bytes = await countUpTo(zip, entry, LIMITS.pngBytes + 1);
         total += bytes;
-        if (total > LIMITS.thumbnailBytesPerFile) throw new Damaged("thumbnails over budget");
-        if (bytes > 0) {
+        if (total > budget) throw new Damaged("thumbnails over budget");
+        if (bytes > 0 && bytes <= LIMITS.pngBytes) {
           thumbs.push({ index, entry });
           break;
         }
       }
     }
     // Pass 2: hand them over one at a time, in plate order (Bambu Plates #11).
+    // The same bytes again, so the checks below hold unless the file changed
+    // under the read.
     if (opts.onThumbnail) {
       total = 0;
       for (const t of thumbs) {
-        const png = await readCapped(zip, t.entry, perThumbnail);
+        const png = await readCapped(zip, t.entry, LIMITS.pngBytes);
         total += png.length;
-        if (total > LIMITS.thumbnailBytesPerFile) throw new Damaged("thumbnails over budget");
+        if (total > budget) throw new Damaged("thumbnails over budget");
         try {
           await opts.onThumbnail(t.index, png);
         } catch (err) {
@@ -327,8 +331,19 @@ async function readCapped(zip: yauzl.ZipFile, entry: yauzl.Entry, cap: number): 
   return Buffer.concat(chunks);
 }
 
-function countCapped(zip: yauzl.ZipFile, entry: yauzl.Entry, cap: number): Promise<number> {
-  return pump(zip, entry, cap, () => true);
+/**
+ * Inflates an entry until it ends or limit bytes have come out, and returns
+ * how many bytes were taken, at most limit. Bytes past limit in the last
+ * chunk are dropped, not counted, so the count is the same however the
+ * inflated stream is chunked (parser.rb reads cap + 1 bytes the same way).
+ */
+async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number): Promise<number> {
+  let taken = 0;
+  await pump(zip, entry, Number.POSITIVE_INFINITY, (chunk) => {
+    taken = Math.min(limit, taken + chunk.length);
+    return taken < limit;
+  });
+  return taken;
 }
 
 /** 3D/3dmodel.model up to <resources, at most MODEL_PREFIX_BYTES. Never damage by size. */
@@ -346,14 +361,18 @@ async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<
 }
 
 /**
- * The per-thumbnail ceiling: maxThumbnailBytes when it is a positive finite
- * number, never above LIMITS.pngBytes. Anything else (NaN from an unset
- * setting, zero, a negative number) keeps LIMITS.pngBytes, so the option can
- * neither lift the ceiling nor make every thumbnail count as damage.
+ * The per-file thumbnail budget (parser.rb max_thumbnail_bytes):
+ * maxThumbnailBytes when it is a positive finite number, never above
+ * LIMITS.thumbnailBytesPerFile. Anything else (NaN from an unset setting,
+ * zero, a negative number, Infinity) keeps the default, so the option can
+ * neither lift the budget nor make every thumbnail count as damage. The
+ * 10 MiB per-thumbnail ceiling, LIMITS.pngBytes, is fixed.
  */
-function thumbnailCeiling(asked: number | undefined): number {
-  if (asked === undefined || !Number.isFinite(asked) || asked <= 0) return LIMITS.pngBytes;
-  return Math.min(asked, LIMITS.pngBytes);
+function thumbnailBudget(asked: number | undefined): number {
+  if (asked === undefined || !Number.isFinite(asked) || asked <= 0) {
+    return LIMITS.thumbnailBytesPerFile;
+  }
+  return Math.min(asked, LIMITS.thumbnailBytesPerFile);
 }
 
 // --- XML ------------------------------------------------------------------

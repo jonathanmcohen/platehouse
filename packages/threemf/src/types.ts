@@ -36,9 +36,13 @@ export interface Project {
 
 export interface ReadOptions {
   /**
-   * Lowers the per-thumbnail ceiling; it cannot raise it past LIMITS.pngBytes.
-   * A value that is not a positive finite number (NaN, 0, a negative number)
-   * is ignored and LIMITS.pngBytes applies.
+   * Lowers the per-file thumbnail budget (parser.rb max_thumbnail_bytes); it
+   * cannot raise it past LIMITS.thumbnailBytesPerFile. Every byte read from a
+   * thumbnail entry counts, one passed over for being over LIMITS.pngBytes
+   * included, and a file over the budget is damaged (null). A value that is
+   * not a positive finite number (NaN, 0, a negative number, Infinity) is
+   * ignored and the default applies. The 10 MiB per-thumbnail ceiling is
+   * fixed: a plate_N.png over it gives way to plate_N_small.png.
    */
   maxThumbnailBytes?: number;
   /**
