@@ -19,18 +19,29 @@ the fallback.
 | File | Runs on | What it does |
 |---|---|---|
 | `select-sample.mjs` | mini01 | Reads each .3mf's metadata read-only and picks the sample. Prints names and reasons, never contents. |
-| `flatten-profiles.mjs` | the image | Flattens Orca's BBL machine and filament profiles through `inherits` into full JSON for `--load-settings` and `--load-filaments`, and writes the recipe. |
+| `flatten-profiles.mjs` | the image | Flattens Orca's BBL machine and filament profiles through `inherits` into full JSON for `--load-settings` and `--load-filaments`, and writes the recipe. At image build time it also writes Orca's `process_full` folder (see below). |
 | `gate.mjs` | the image | The driver: `plan`, `slice <id>`, `checks`, `report`. |
 | `lib/` | both | Zip and 3MF metadata reader, printer ids, result classifier, GLB writer. |
 | `Dockerfile` | Hades | The throwaway gate image. Every release file it downloads is pinned and sha256-checked; apt packages come from a dated Ubuntu snapshot; ca-certificates and openssl are first installed at their pinned noble release versions to reach it (see Pins). |
 | `check-libs.sh` | the image | Build-time check: fails the build when ldd fails on a binary or reports a missing shared library. |
 | `need.sh` | the image | Build-time check helper: every path and version check in the Dockerfile goes through `need`, which names the failed check on stderr instead of exiting 1 with no text. |
 | `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
+| `smoke-gate.mjs` | CI, in the image | The CI smoke checks for the printer switch and landrun (see below). Never run on Hades. |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
 CI (`.github/workflows/ci.yml`) runs these tests, builds this image and
-smoke-checks it on every pull request and push that touches this folder, so a
-build failure shows up on GitHub before anyone copies the tool to Hades.
+smoke-checks it on every pull request that touches this folder, and on pushes
+that touch it on main and release branches, so a build failure shows up on
+GitHub before anyone copies the tool to Hades. The smoke checks run in the
+image with the gate's hardening and use no designer file:
+
+- the gate's landrun checks (report item g), judged as the report reads them;
+- a crafted two-plate cube, saved by Orca for the P1S and for the A1, planned
+  and sliced by the image's own `gate.mjs` on the P1S, X1 Carbon and A1; every
+  plate must get a time and a weight above zero;
+- the same with the `process_full` folder hidden by an empty tmpfs, which is
+  the image as it was for Hades run 3: it must fail the way run 3 did, and
+  the own-printer slices must match the first run exactly.
 
 ## Where the BBL profiles come from
 
@@ -55,6 +66,30 @@ JSON from Orca's own source at the commit tag v2.5.0 points to:
 The same choice binds the production slicer image (build plan Task 11) and
 the daily Orca update workflow: each new Orca tag needs its profile commit
 pinned and checked the same way.
+
+## Slicing on another printer: Orca's process_full folder
+
+Hades run 3 (2026-11-08) failed 79 plates with Orca code -3, all of them
+files sliced on a printer other than their own. When the printer switch
+changes the extruder variant count (the P1S and X1C presets carry two print
+variants, the A1 one), Orca 2.5.0's CLI loads the new printer's default
+process from `<resources>/profiles/BBL/process_full/<name>.json`, where
+`<resources>` is the binary's `../../resources`; no flag or data dir moves
+it. The AppImage ships no such folder.
+
+Orca wants a flattened preset there: it resolves `inherits` only through a
+`BBL.json` manifest, which the AppImage does not ship, and the switch rejects
+a file whose type is not process or whose from is not system. So the image
+build runs `flatten-profiles.mjs --process-full` on the pinned source JSON
+and writes the default process of every machine preset (46 files) into
+`/opt/orca/resources/profiles/BBL/process_full`. The build fails if that
+folder already existed or if a `BBL.json` appears beside `BBL.opc`, so Orca
+still installs BBL from the cache it ships.
+
+The same files are read in one other place: for a file whose process is one
+of them, Orca now checks the switch against that system preset's
+compatible printers instead of the file's own copy of the list. CI checks
+that own-printer slices come out the same with and without the folder.
 
 ## The sample rule
 
@@ -240,7 +275,9 @@ rather than passed or failed, so Jon decides them.
   an `import("/opt/gate/samples/outside.stl")` is blocked, with a control run
   of the same import outside landrun to show landrun is what blocks it. It
   also runs the plan's T11 form (`--ro` on the OpenSCAD tree) as evidence;
-  landrun's README says executed paths need `--rox`.
+  landrun's README says executed paths need `--rox`. Every landrun call ends
+  landrun's flags with `--`: landrun reads flags after the command until it
+  meets one, so without it OpenSCAD's `-o` was taken as a landrun flag (run 3).
 - (h) occt-import-js 0.0.23 converts the NIST CTC-01 STEP file to GLB: time
   and size.
 
