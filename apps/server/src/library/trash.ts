@@ -20,9 +20,16 @@
 // Deleting an object that is already gone is not an error, so the next run
 // finishes the job: a purge is idempotent on retry.
 //
+// A purge that failed after step 2 leaves a model in the trash whose rows are
+// intact but whose objects are gone, or some of them. restoreModel checks for
+// that before it brings a model back: it locks the row FOR UPDATE, lists
+// models/<modelId>/, and refuses with FilesMissing when any stored blob's key
+// is not there. The model stays in the trash and the next purge finishes it.
+//
 // The daily 03:30 schedule for purgeExpired belongs to the job runner (Task
 // 8), which registers it on the maintenance queue.
 import type { Kysely } from "kysely";
+import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
 import { modelsRepo } from "../repos/models.js";
 import { isBlobKey } from "../storage/keys.js";
@@ -51,6 +58,25 @@ export class ObjectsRemain extends Error {
     this.name = "ObjectsRemain";
     this.modelId = modelId;
     this.count = count;
+  }
+}
+
+/**
+ * restoreModel refused: stored blobs of the trashed model are no longer in the
+ * bucket, because a purge deleted them and then failed. The model stays in the
+ * trash, and the next purge removes it.
+ */
+export class FilesMissing extends Error {
+  readonly modelId: string;
+  readonly missing: number;
+
+  constructor(modelId: string, missing: number) {
+    super(
+      `${missing} stored blobs of the trashed model are no longer in the bucket; a purge has begun, so it cannot be restored`,
+    );
+    this.name = "FilesMissing";
+    this.modelId = modelId;
+    this.missing = missing;
   }
 }
 
@@ -129,10 +155,37 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
 
     /**
      * Brings a trashed model back with its files, tags and collections; false
-     * when it is unknown, malformed, live, or purged meanwhile.
+     * when it is unknown, malformed, live, or purged meanwhile. Throws
+     * FilesMissing, and leaves the model in the trash, when a purge already
+     * deleted any of its stored blobs' objects; a store error when the bucket
+     * cannot be listed.
      */
-    restoreModel(id: string): Promise<boolean> {
-      return models.restore(id);
+    async restoreModel(id: string): Promise<boolean> {
+      if (!isUuid(id)) return false;
+      return db.transaction().execute(async (trx) => {
+        const trashed = await trx
+          .selectFrom("models")
+          .select("id")
+          .where("id", "=", id)
+          .where("trashedAt", "is not", null)
+          .forUpdate()
+          .executeTakeFirst();
+        if (trashed === undefined) return false;
+
+        const stored = await trx
+          .selectFrom("blobs")
+          .select("key")
+          .where("modelId", "=", id)
+          .where("state", "=", "stored")
+          .execute();
+        if (stored.length > 0) {
+          const listed = new Set((await store.listPrefix(`models/${id}/`)).map((o) => o.key));
+          const missing = stored.filter((b) => !listed.has(b.key)).length;
+          if (missing > 0) throw new FilesMissing(id, missing);
+        }
+
+        return modelsRepo(trx).restore(id);
+      });
     },
 
     /**

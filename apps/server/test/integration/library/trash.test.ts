@@ -11,6 +11,7 @@ import { createSearch } from "../../../src/library/search.js";
 import { createTags } from "../../../src/library/tags.js";
 import {
   createTrash,
+  FilesMissing,
   PurgeIncomplete,
   type PurgeStore,
   TRASH_RETENTION_DAYS,
@@ -117,11 +118,58 @@ describe("trashModel and restoreModel", () => {
     expect(ids(await search.search({ collection }))).toEqual([model.id]);
   });
 
+  test("restore refuses a model a failed purge left with some of its objects gone", async () => {
+    const { model, source, thumbnail } = await seedStoredModel(env);
+    const trash = trashFor();
+    expect(await trash.trashModel(model.id)).toBe(true);
+    // What a purge that failed part way through DeleteObjects leaves: the
+    // rows intact and stored, one of the two objects gone.
+    await env.store.deleteBlobs([thumbnail.key]);
+
+    const error = await trash.restoreModel(model.id).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FilesMissing);
+    expect((error as FilesMissing).modelId).toBe(model.id);
+    expect((error as FilesMissing).missing).toBe(1);
+    expect(
+      (await env.repos.models.get(model.id, { includeTrashed: true }))?.trashedAt,
+    ).not.toBeNull();
+    expect(await env.repos.models.get(model.id)).toBeUndefined();
+    expect((await env.repos.blobs.get(source.id))?.state).toBe("stored");
+
+    // The next purge finishes it.
+    expect((await trash.emptyTrash()).purged).toContain(model.id);
+    expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 0, blobs: 0 });
+  });
+
+  test("restore fails, and the model stays in the trash, when the bucket cannot be listed", async () => {
+    const { model } = await seedStoredModel(env);
+    await trashFor().trashModel(model.id);
+    const down: PurgeStore = {
+      listPrefix: async () => {
+        throw new StoreUnavailable("ListObjectsV2", "ECONNREFUSED");
+      },
+      deleteBlobs: async () => {
+        throw new StoreUnavailable("DeleteObjects", "ECONNREFUSED");
+      },
+    };
+
+    await expect(trashFor(down).restoreModel(model.id)).rejects.toBeInstanceOf(StoreUnavailable);
+    expect(
+      (await env.repos.models.get(model.id, { includeTrashed: true }))?.trashedAt,
+    ).not.toBeNull();
+
+    // With the store back, the restore goes through.
+    expect(await trashFor().restoreModel(model.id)).toBe(true);
+    expect((await env.repos.models.get(model.id))?.trashedAt).toBeNull();
+  });
+
   test("trash and restore answer false for an unknown, malformed or wrong-state model", async () => {
     const trash = trashFor();
     expect(await trash.trashModel(uuidv7())).toBe(false);
     expect(await trash.trashModel("x")).toBe(false);
     expect(await trash.restoreModel(uuidv7())).toBe(false);
+    expect(await trash.restoreModel("x")).toBe(false);
 
     const { model } = await seedStoredModel(env);
     expect(await trash.restoreModel(model.id)).toBe(false);
@@ -268,6 +316,13 @@ describe("purgeExpired", () => {
     );
     expect(await env.store.listPrefix(prefix(model.id))).toEqual([]);
     expect(await rowCounts(env.db, model.id)).toMatchObject({ models: 1, files: 1, blobs: 2 });
+    expect(
+      (await env.repos.models.get(model.id, { includeTrashed: true }))?.trashedAt,
+    ).not.toBeNull();
+
+    // A restore now would bring back a model with no bytes: it is refused,
+    // and the model stays in the trash for the retry.
+    await expect(trashFor().restoreModel(model.id)).rejects.toBeInstanceOf(FilesMissing);
     expect(
       (await env.repos.models.get(model.id, { includeTrashed: true }))?.trashedAt,
     ).not.toBeNull();
