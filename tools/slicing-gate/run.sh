@@ -149,8 +149,9 @@ gate checks
 checks_rc=$?
 set -e
 if [[ "${checks_rc}" -ne 0 ]]; then
-  # The report reads COULD-NOT-RUN (exit 2) when checks.json is missing.
-  printf 'run.sh: the checks step exited %s; the report says COULD-NOT-RUN if it wrote no checks.json\n' "${checks_rc}" >&2
+  # With no checks.json the report reads COULD-NOT-RUN (exit 2), unless a
+  # plate failed, which stays FAIL (exit 1).
+  printf 'run.sh: the checks step exited %s; with no checks.json the report says COULD-NOT-RUN unless a plate failed\n' "${checks_rc}" >&2
 fi
 
 set +e
