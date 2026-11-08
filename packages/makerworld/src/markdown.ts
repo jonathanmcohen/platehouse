@@ -84,31 +84,59 @@ const TAG = /<(\/?)([A-Za-z][A-Za-z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
 const HREF = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 const isSpace = (c: string): boolean => /\s/.test(c);
 
+interface Inline {
+  readonly tag: string;
+  start: number;
+  readonly href: string | null;
+}
+
 // The converter's output, built from parts so that appending never copies
 // what is already written. Reads look only near the end, and the last
 // non-whitespace position is kept up to date, so "is there text after this
 // point" costs nothing however long the output is.
+//
+// It also holds the open links and emphasis. Each one's start is a position
+// in this buffer, and closing it writes its [ or marks there, so that start
+// must always fall where an append began or where only whitespace was cut:
+// anywhere else it could sit between a backslash and the character it
+// escapes, and the marks would un-escape designer text (a "!" left bare
+// before a link's [ makes it an image). The buffer is private, and the only
+// ways to change it are below; each keeps every open start valid, so no
+// caller has to remember to (PR #24 review, issue #33).
+//   append                 adds text after every open start; none moves
+//   truncate               an open start past the cut is moved back to it
+//                          when only whitespace lay between, and the
+//                          element is dropped when text did (its markup is
+//                          never written, its text stays)
+//   insert                 open starts after the insertion move with it
+//   replaceTrailingSpace   an open start in the replaced whitespace moves to
+//                          after the replacement
 class Output {
   private parts: string[] = [];
-  length = 0;
-  lastText = -1;
+  private size = 0;
+  private lastText = -1;
+  private readonly inline: Inline[] = []; // open emphasis and links, oldest first
+
+  get length(): number {
+    return this.size;
+  }
 
   append(s: string): void {
     if (!s) return;
     this.parts.push(s);
     for (let i = s.length - 1; i >= 0; i--) {
       if (!isSpace(s.charAt(i))) {
-        this.lastText = this.length + i;
+        this.lastText = this.size + i;
         break;
       }
     }
-    this.length += s.length;
+    this.size += s.length;
   }
 
   // Everything from position `from` to the end.
   from(from: number): string {
-    if (from >= this.length) return "";
-    let start = this.length;
+    if (from >= this.size) return "";
+    let start = this.size;
     let i = this.parts.length;
     while (i > 0 && start > from) {
       i--;
@@ -120,33 +148,77 @@ class Output {
       .slice(from - start);
   }
 
-  // Drops everything from position `to` on.
+  // Drops everything from position `to` on. An open link or emphasis that
+  // began after `to` keeps its place at `to` when only whitespace is cut
+  // before it, and is dropped when text is: the text it would wrap is being
+  // removed or rewritten.
   truncate(to: number): void {
-    if (to >= this.length) return;
+    if (to >= this.size) return;
     const target = Math.max(0, to);
-    while (this.parts.length > 0 && this.length > target) {
-      const last = this.parts.pop() as string;
-      this.length -= last.length;
-      if (this.length < target) {
-        this.parts.push(last.slice(0, target - this.length));
-        this.length = target;
+    const past = this.inline.filter((e) => e.start > target);
+    if (past.length > 0) {
+      const removed = this.from(target);
+      for (const e of past) {
+        if (removed.slice(0, e.start - target).trim() === "") e.start = target;
+        else this.inline.splice(this.inline.indexOf(e), 1);
       }
     }
-    if (this.lastText >= this.length) {
-      this.lastText = -1;
-      for (let i = this.length - 1; i >= 0; i--) {
-        if (!isSpace(this.charAt(i))) {
-          this.lastText = i;
-          break;
-        }
-      }
+    this.cut(target);
+  }
+
+  // Inserts `s` at position `at`; open starts after `at` move with the text.
+  insert(at: number, s: string): void {
+    if (!s || at >= this.size) {
+      this.append(s);
+      return;
+    }
+    const rest = this.from(at);
+    this.cut(at);
+    this.append(s + rest);
+    for (const e of this.inline) if (e.start > at) e.start += s.length;
+  }
+
+  // Replaces the whitespace at the end with `s`. An open link or emphasis
+  // that began in that whitespace (or right where it began) now begins
+  // after `s`, so `s` stays outside its markup.
+  replaceTrailingSpace(s: string): void {
+    const at = this.lastText + 1;
+    const moved = this.inline.filter((e) => e.start >= at);
+    this.cut(at);
+    this.append(s);
+    for (const e of moved) e.start = this.size;
+  }
+
+  // Opens a link or emphasis at the end; false (and nothing opened) past
+  // MAX_INLINE_DEPTH.
+  openInline(tag: string, href: string | null): boolean {
+    if (this.inline.length >= MAX_INLINE_DEPTH) return false;
+    this.inline.push({ tag, start: this.size, href });
+    return true;
+  }
+
+  // Closes the innermost open `tag`, returning it, or undefined if none is
+  // open. Writing its markup moves the text after its start, so every
+  // element opened inside it and still open (misnested tags, as in
+  // <i>a<b>b</i>c</b>) is dropped with it: its markup is never written.
+  closeInline(tag: string): Readonly<Inline> | undefined {
+    const idx = this.inline.findLastIndex((e) => e.tag === tag);
+    if (idx === -1) return undefined;
+    return this.inline.splice(idx)[0];
+  }
+
+  // Drops every open link or emphasis that began at or after `from`; markup
+  // cannot span a table cell.
+  endInlineFrom(from: number): void {
+    for (let i = this.inline.length - 1; i >= 0; i--) {
+      if ((this.inline[i] as Inline).start >= from) this.inline.splice(i, 1);
     }
   }
 
   // The character at position `at`; cheap near the end.
   charAt(at: number): string {
-    if (at < 0 || at >= this.length) return "";
-    let start = this.length;
+    if (at < 0 || at >= this.size) return "";
+    let start = this.size;
     for (let i = this.parts.length - 1; i >= 0; i--) {
       const part = this.parts[i] as string;
       start -= part.length;
@@ -156,19 +228,39 @@ class Output {
   }
 
   last(): string {
-    return this.charAt(this.length - 1);
+    return this.charAt(this.size - 1);
   }
 
   hasTextFrom(from: number): boolean {
     return this.lastText >= from;
   }
 
-  trimEnd(): void {
-    this.truncate(this.lastText + 1);
-  }
-
   toString(): string {
     return this.parts.join("");
+  }
+
+  // The raw cut, with no care for open starts; only the methods above call
+  // it, each after putting the starts it affects right.
+  private cut(to: number): void {
+    if (to >= this.size) return;
+    const target = Math.max(0, to);
+    while (this.parts.length > 0 && this.size > target) {
+      const last = this.parts.pop() as string;
+      this.size -= last.length;
+      if (this.size < target) {
+        this.parts.push(last.slice(0, target - this.size));
+        this.size = target;
+      }
+    }
+    if (this.lastText >= this.size) {
+      this.lastText = -1;
+      for (let i = this.size - 1; i >= 0; i--) {
+        if (!isSpace(this.charAt(i))) {
+          this.lastText = i;
+          break;
+        }
+      }
+    }
   }
 }
 
@@ -185,11 +277,6 @@ interface Item {
   list: List | undefined;
   dropped: boolean;
   contentCol: number;
-}
-interface Inline {
-  tag: string;
-  start: number;
-  href: string | null;
 }
 interface Table {
   nested: boolean;
@@ -243,7 +330,6 @@ function textToMarkdown(raw: string): string {
 export function htmlToMarkdown(html: string | null | undefined): string {
   if (!html) return "";
   const out = new Output();
-  const inline: Inline[] = []; // open emphasis and links
   const lists: List[] = []; // open lists
   const tables: Table[] = []; // open tables
   const items: Item[] = []; // open list items outside cells
@@ -254,19 +340,6 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   let headingMarker = -1; // where the open heading's "#" marker begins
   let itemStart = -1; // where the text of the open list item begins
 
-  const clampInline = (): void => {
-    for (const e of inline) e.start = Math.min(e.start, out.length);
-  };
-  // A rewrite of the output from `from` on (a heading's text tidied, a table
-  // cell trimmed) can move the text after `from`, so an open link or emphasis
-  // that began there would keep a start that no longer matches the text, and
-  // could land between a backslash and the character it escapes. Such an
-  // element is dropped: its markup is never written and its text stays.
-  const dropInlineFrom = (from: number): void => {
-    const keep = inline.filter((e) => e.start < from);
-    inline.length = 0;
-    inline.push(...keep);
-  };
   // A paragraph break; idempotent, so the output never holds more than two
   // newlines in a row (more would collapse to two at the end anyway).
   const breakBlock = (): void => {
@@ -284,7 +357,6 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     const item = items.at(-1);
     if (!item || item.dropped || out.hasTextFrom(item.textStart)) return;
     out.truncate(item.markerStart);
-    clampInline();
     item.dropped = true;
     itemStart = -1;
     if (item.list?.ordered) item.list.n--;
@@ -331,7 +403,6 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       const lineStart = textLineStart();
       if (lineStart >= 0) {
         out.truncate(lineStart);
-        clampInline();
         t = t.trimStart();
         if (t) t = TEXT_LINE + t;
       }
@@ -372,12 +443,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           else {
             const text = /#$/.test(body) && !/\\#$/.test(body) ? `${body.slice(0, -1)}\\#` : body;
             if (text !== written) {
-              dropInlineFrom(headingStart + 1);
               out.truncate(headingStart);
               out.append(text);
             }
           }
-          clampInline();
         }
         headingStart = -1;
         breakBlock();
@@ -399,10 +468,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       if (!closing) {
         const n = list ? ++list.n : 1;
         const table = tables.at(-1);
-        if (n > 1 && table && out.hasTextFrom(table.cellStart)) {
-          out.trimEnd();
-          out.append("; ");
-        } else space();
+        if (n > 1 && table && out.hasTextFrom(table.cellStart)) out.replaceTrailingSpace("; ");
+        else space();
         if (list?.ordered) out.append(`${n}. `);
       }
     } else if (tag === "ul" || tag === "ol") {
@@ -447,7 +514,6 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           const open = items.pop() as Item;
           if (!open.dropped && !out.hasTextFrom(open.textStart)) {
             out.truncate(open.markerStart);
-            clampInline();
             if (list.ordered) list.n--;
           }
         }
@@ -467,24 +533,17 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         const item = items.pop();
         if (item && !item.dropped && !out.hasTextFrom(item.textStart)) {
           out.truncate(item.markerStart);
-          clampInline();
           if (item.list?.ordered) item.list.n--;
         }
         endLine();
         itemStart = -1;
       }
     } else if (EMPHASIS.has(tag) || tag === "a") {
-      if (!closing) {
-        if (inline.length >= MAX_INLINE_DEPTH) return;
-        const href = tag === "a" ? hrefOf(attrs) : null;
-        inline.push({ tag, start: out.length, href });
-      } else {
-        const idx = inline.findLastIndex((e) => e.tag === tag);
-        if (idx === -1) return;
-        // Writing this element's markup moves the text after its start, so
-        // every element opened inside it and still open (misnested tags, as in
-        // <i>a<b>b</i>c</b>) is dropped with it: its markup is never written.
-        const [open] = inline.splice(idx) as [Inline];
+      if (!closing) out.openInline(tag, tag === "a" ? hrefOf(attrs) : null);
+      else {
+        // Closing drops every element opened inside this one and still open.
+        const open = out.closeInline(tag);
+        if (!open) return;
         const seg = out.from(open.start);
         const core = seg.trim();
         const lead = seg.slice(0, seg.length - seg.trimStart().length);
@@ -542,10 +601,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     } else if (tag === "tr" && tables.at(-1)?.nested) {
       const t = tables.at(-1) as Table;
       if (!closing) {
-        if (t.rows > 0 && out.hasTextFrom(t.cellStart)) {
-          out.trimEnd();
-          out.append("; ");
-        } else space();
+        if (t.rows > 0 && out.hasTextFrom(t.cellStart)) out.replaceTrailingSpace("; ");
+        else space();
         t.cells = 0;
       } else t.rows++;
     } else if ((tag === "td" || tag === "th") && tables.at(-1)?.nested) {
@@ -562,7 +619,6 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         out.append("|");
       } else if (t.cells === 0) {
         out.truncate(t.rowStart); // an empty row leaves nothing
-        clampInline();
       } else {
         // The first row is the header, so the separator line follows it.
         if (t.rows === 0) {
@@ -587,11 +643,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           .from(t.cellStart)
           .trim()
           .replace(/[ \t]{2,}/g, " ");
-        // The rewrite moves the cell's text, and markup cannot span cells.
-        dropInlineFrom(t.cellStart);
+        // Markup cannot span cells.
+        out.endInlineFrom(t.cellStart);
         out.truncate(t.cellStart);
         out.append(` ${cell} |`);
-        clampInline();
       }
     } else if (BLOCK.has(tag)) {
       // Inside a list item or a table cell a paragraph is just the text, with
@@ -607,16 +662,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   const padHeader = (t: Table): void => {
     const extra = t.maxCells - t.headerCells;
     if (t.rows === 0 || extra <= 0) return;
-    const rest = out.from(t.headerEnd);
-    const headPad = " |".repeat(extra);
-    const sepPad = " --- |".repeat(extra);
-    const sepAt = t.sepEnd - t.headerEnd;
-    out.truncate(t.headerEnd);
-    out.append(headPad + rest.slice(0, sepAt) + sepPad + rest.slice(sepAt));
-    for (const e of inline) {
-      if (e.start > t.sepEnd) e.start += headPad.length + sepPad.length;
-      else if (e.start > t.headerEnd) e.start += headPad.length;
-    }
+    // The separator's pad first, so the header's end has not moved yet.
+    out.insert(t.sepEnd, " --- |".repeat(extra));
+    out.insert(t.headerEnd, " |".repeat(extra));
   };
 
   // The tokenizer: comments, tags and text, each found by a scan that stops
