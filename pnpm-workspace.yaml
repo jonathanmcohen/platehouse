@@ -3,3 +3,12 @@ packages:
   - "packages/*"
 
 saveExact: true
+
+# Build scripts stay off for these. They come in through testcontainers'
+# Docker client (docker-modem -> ssh2) and the AWS SDK; none is needed: ssh2
+# falls back to its JavaScript crypto, cpu-features is an optional speed-up for
+# it, and protobufjs's postinstall only checks its own version.
+allowBuilds:
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

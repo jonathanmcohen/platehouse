@@ -22,12 +22,19 @@ Every dependency is pinned to an exact version in `package.json` and `pnpm-lock.
 Run these from the repository root. Each one must pass before a pull request.
 
 ```sh
-pnpm vitest run          # every TypeScript test under apps/ and packages/
-pnpm biome check .       # lint and format
-pnpm tsc -b              # type check
+pnpm vitest run --project unit          # every test outside a test/integration/ folder
+pnpm vitest run --project integration   # the test/integration/ folders; needs Docker
+pnpm biome check .                      # lint and format
+pnpm tsc -b                             # type check
 ```
 
+The integration tests start Postgres and the S3 test server in containers through
+testcontainers, so they need a running Docker. A plain `pnpm vitest run` runs both projects.
+
 To run one test file, name it: `pnpm vitest run apps/server/test/config.test.ts`.
+
+CI (`.github/workflows/ci.yml`) runs the same four checks on every pull request and on every
+push to main or a release branch, and fails a test job when no test ran.
 
 The slicing gate in `tools/slicing-gate` is not part of the pnpm workspace and Biome does not
 check it. Its tests use Node's own test runner and need no install:
