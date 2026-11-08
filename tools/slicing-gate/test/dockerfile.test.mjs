@@ -84,7 +84,7 @@ test("need compares strings, so a wrong version names both values", () => {
 
 test("no RUN makes a bare test or grep -q check that would fail without saying which", () => {
   for (const run of runs()) {
-    assert.doesNotMatch(run, /(^RUN|&&|;|\|\||\{)\s*(test|\[)\s/, `bare test in: ${run.slice(0, 120)}`);
+    assert.doesNotMatch(run, /(^RUN|&&|;|\|\||\{)\s*(test|\[\[?)\s/, `bare test in: ${run.slice(0, 120)}`);
     assert.doesNotMatch(run, /grep -q/, `silent grep in: ${run.slice(0, 120)}`);
   }
 });
