@@ -4,7 +4,7 @@
 // built here; no designer file is used.
 import { chmodSync, unlinkSync } from "node:fs";
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import yauzl from "yauzl";
 import {
   LIMITS,
@@ -670,6 +670,59 @@ describe("errors from onThumbnail reach the caller unchanged", () => {
       (e: unknown) => e,
     );
     expect(err).toBe(error);
+  });
+});
+
+// Only the parser's own zip, inflate and XML reads make a damaged file
+// (parser.rb@136fd61 keeps the same split: READ_ERRORS come only from its own
+// reads). A bug in the parser's own mapping code is not a file with no plate
+// data, so it reaches the caller instead of "No Bambu plate data in this file".
+// The bug is simulated by making Number.isSafeInteger, which only the
+// parser's integer mapping calls (not yauzl, not fast-xml-parser), throw.
+describe("a bug in the parser's own code reaches the caller", () => {
+  const bugs: Array<[string, () => Error]> = [
+    ["a TypeError", () => new TypeError("simulated parser bug")],
+    ["a RangeError", () => new RangeError("simulated parser bug")],
+    ["a plain Error", () => new Error("simulated parser bug")],
+  ];
+
+  it.each(bugs)("%s from the plate mapping, never null", async (_label, make) => {
+    const bug = make();
+    const file = writeTmp(build3mf({ plates: [{ index: 1 }], pngs: { 1: png("one") } }));
+    const spy = vi.spyOn(Number, "isSafeInteger").mockImplementation(() => {
+      throw bug;
+    });
+    try {
+      const err = await readProject(file).then(
+        () => "resolved",
+        (e: unknown) => e,
+      );
+      expect(err).toBe(bug);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("is not wrapped as ReadUnavailable through readProjectFromReader either", async () => {
+    const bug = new TypeError("simulated parser bug");
+    const archive = build3mf({ plates: [{ index: 1 }] });
+    const spy = vi.spyOn(Number, "isSafeInteger").mockImplementation(() => {
+      throw bug;
+    });
+    try {
+      const err = await readProjectFromReader(new MemoryReader(archive), archive.length).then(
+        () => "resolved",
+        (e: unknown) => e,
+      );
+      expect(err).toBe(bug);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("while a truncated archive, a fault in the zip read itself, is still null", async () => {
+    const whole = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("one") } });
+    expect(await read(whole.subarray(0, Math.floor(whole.length / 2)))).toBeNull();
   });
 });
 
