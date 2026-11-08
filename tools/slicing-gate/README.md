@@ -124,13 +124,16 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 
    ```sh
    setsid nohup bash -c 'rm -f /tmp/platehouse-gate/run.exit; bash /tmp/platehouse-gate/tool/run.sh > /tmp/platehouse-gate/run.log 2>&1; echo $? > /tmp/platehouse-gate/run.exit' < /dev/null > /dev/null 2>&1 &
-   tail -f /tmp/platehouse-gate/run.log
+   tail -F /tmp/platehouse-gate/run.log
    cat /tmp/platehouse-gate/run.exit
    ```
 
-   `tail -f` can be stopped and restarted at any time, from any ssh
-   session; it does not touch the run. `run.exit` appears only when the run
-   has finished.
+   `tail -F` can be stopped and restarted at any time, from any ssh
+   session; it does not touch the run. It is `-F`, not `-f`, because on a
+   first run the tail usually starts before the background job has created
+   `run.log`: `tail -f` would then report "No such file or directory" and
+   exit, while `tail -F` waits for the file. `run.exit` appears only when the
+   run has finished.
 
    `run.sh` builds `platehouse-gate:t1` if it is missing (`--build` forces a
    rebuild), then writes `/tmp/platehouse-gate/out/result.json` and

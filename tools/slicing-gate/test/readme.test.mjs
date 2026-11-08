@@ -168,7 +168,6 @@ const step3Commands = () =>
 test("step 3 follows run.log with tail -F, which waits for a log that is not there yet", () => {
   const tails = step3Commands().filter((l) => /^tail\b/.test(l));
   assert.deepEqual(tails, ["tail -F /tmp/platehouse-gate/run.log"]);
-  assert.doesNotMatch(step3, /tail -f\b/, "no tail -f in step 3's text");
 });
 
 test("step 3's tail, run as written before run.log exists, keeps waiting and then shows the log", async () => {
