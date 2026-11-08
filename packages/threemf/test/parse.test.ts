@@ -250,6 +250,22 @@ describe("embedded slice data", () => {
     expect(project.slicedFor).toBeUndefined();
   });
 
+  // test_huge_prediction_is_not_sliced: 400 digits is past the float range
+  // (Number() gives Infinity), not just past the ten-year ceiling.
+  it("treats a 400-digit prediction as not sliced, without throwing", async () => {
+    const project = await mustRead(
+      build3mf({
+        plates: [{ index: 1 }],
+        slices: [slicedP1S(1, { prediction: "9".repeat(400), weight: 1 })],
+      }),
+    );
+    const plate = project.plates[0];
+    expect(plate?.sliced).toBe(false);
+    expect(plate?.predictionSeconds).toBeUndefined();
+    expect(plate?.weightGrams).toBeUndefined();
+    expect(plate?.filaments).toEqual([]);
+  });
+
   it("counts a prediction of exactly ten years as sliced (inclusive ceiling)", async () => {
     const project = await mustRead(
       build3mf({
