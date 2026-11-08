@@ -24,8 +24,8 @@ export function createRename(db: Kysely<DB>) {
       // One UPDATE, not withLiveModel: its FOR SHARE lock would have to be
       // upgraded for this UPDATE of the same row, and two renames of one
       // model, each holding the share lock, would deadlock (40P01). The
-      // UPDATE takes the row lock itself, so concurrent renames queue, and a
-      // purge holding the row FOR UPDATE makes it wait and then find no row.
+      // UPDATE takes the row lock itself, so concurrent renames queue, and
+      // trashed_at IS NULL keeps it off a trashed model, and so off a purge.
       const result = await db
         .updateTable("models")
         .set({ name: newName, updatedAt: sql<Date>`now()` })

@@ -1,8 +1,8 @@
 // Shared by the organising calls (build plan Task 14): every change to a model
 // first takes a share lock on its row and checks it is live. A trashed model
-// is invisible (AC-063), and the lock makes a purge of the same model, which
-// holds the row FOR UPDATE while it deletes objects, wait for the change or
-// the change wait for the purge, so neither sees half of the other.
+// is invisible (AC-063), so a change never lands on a model being purged
+// (a purge only takes a trashed one), and the lock makes a trashing of the
+// same model wait for the change or the change wait for the trashing.
 // A call that updates the models row itself does not use it (renameModel in
 // rename.ts): two such calls would each hold the share lock and deadlock
 // upgrading it, so that call is a single UPDATE ... WHERE trashed_at IS NULL.

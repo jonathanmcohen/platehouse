@@ -5,30 +5,32 @@
 // (purgeExpired), or at once by Empty trash (emptyTrash).
 //
 // A purge removes one model at a time:
-//   1. mark it: set purge_started_at (migration 0002) in a transaction of its
-//      own, only if the model is still in the trash (and, for purgeExpired,
-//      still past the cutoff), and commit before any object is deleted. The
-//      UPDATE waits for a restore that holds the row and then finds no
-//      trashed model, so the purge stops there;
-//   2. in a second transaction, lock the model's row FOR UPDATE, so a restore
-//      or an organising call made meanwhile waits for the purge and then
-//      finds no model;
-//   3. delete the bucket objects: every blob row's key, plus every key listed
-//      under models/<modelId>/ that is in the models/<modelId>/<blobId>
-//      layout, such as an upload that landed without its row being marked
-//      stored. The app never deletes a key outside that layout (the store
-//      refuses to), so an object like a folder marker made in an S3 console
-//      stays where it is;
-//   4. list models/<modelId>/ again and expect zero objects (the Purge
-//      contract). Anything left fails the purge with ObjectsRemain, which
-//      names the first keys left, so an object outside the layout can be
-//      found and removed by hand;
+//   1. in a transaction, lock the model's row FOR UPDATE, only if it is still
+//      in the trash (and, for purgeExpired, still past the cutoff), so a
+//      restore that holds the row makes the purge wait and then find no
+//      trashed model; read its blob rows and list models/<modelId>/;
+//   2. still in that transaction, set purge_started_at (migration 0002) and
+//      commit, just before the first object delete. A failure before this
+//      point (the store unreachable at the listing, the lock or a read
+//      failing) rolls it back and leaves no marker, so the model can still be
+//      restored: nothing of it was deleted;
+//   3. delete the bucket objects: every blob row's key, plus every listed key
+//      that is in the models/<modelId>/<blobId> layout, such as an upload that
+//      landed without its row being marked stored. The app never deletes a
+//      key outside that layout (the store refuses to), so an object like a
+//      folder marker made in an S3 console stays where it is;
+//   4. in a second transaction, lock the row again, list models/<modelId>/
+//      and expect zero objects (the Purge contract). Anything left fails the
+//      purge with ObjectsRemain, which names the first keys left, so an object
+//      outside the layout can be found and removed by hand;
 //   5. only then delete the model's row; its files, plates, estimates, blobs
 //      and tag and collection links go with it (on delete cascade).
-// A failure after step 1 rolls back the second transaction and leaves the
-// model in the trash, its marker set. Deleting an object that is already gone
-// is not an error, so the next run finishes the job: a purge is idempotent on
-// retry.
+// A failure at or after step 3 leaves the model in the trash, its marker
+// set: some of its objects may be gone. Deleting an object that is already
+// gone is not an error, so the next run finishes the job: a purge is
+// idempotent on retry. The row is not held while objects are deleted, but
+// nothing can change the model then: the organising calls refuse a trashed
+// model, and restore refuses one whose marker is set.
 //
 // restoreModel refuses a model whose marker is set, with PurgeStarted: its
 // purge may have deleted some of its objects already, and the next purge
@@ -132,16 +134,44 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
 
   /** Purges one model; false when it is no longer in the trash (or not past cutoff). */
   async function purgeModel(modelId: string, cutoff: Date | undefined): Promise<boolean> {
-    // Step 1, committed on its own before any object is deleted. A marker an
-    // earlier failed purge set is kept as it was.
-    let mark = db
-      .updateTable("models")
-      .set((eb) => ({ purgeStartedAt: eb.fn.coalesce("purgeStartedAt", sql<Date>`now()`) }))
-      .where("id", "=", modelId)
-      .where("trashedAt", "is not", null);
-    if (cutoff !== undefined) mark = mark.where("trashedAt", "<", cutoff);
-    if ((await mark.returning("id").executeTakeFirst()) === undefined) return false;
+    const prefix = `models/${modelId}/`;
 
+    // Steps 1 and 2: read what to delete, then mark the model and commit. A
+    // marker an earlier failed purge set is kept as it was.
+    const keys = await db.transaction().execute(async (trx) => {
+      let trashed = trx
+        .selectFrom("models")
+        .select("id")
+        .where("id", "=", modelId)
+        .where("trashedAt", "is not", null);
+      if (cutoff !== undefined) trashed = trashed.where("trashedAt", "<", cutoff);
+      // Gone, restored, or trashed again since: not this purge's to remove.
+      if ((await trashed.forUpdate().executeTakeFirst()) === undefined) return undefined;
+
+      const rows = await trx
+        .selectFrom("blobs")
+        .select("key")
+        .where("modelId", "=", modelId)
+        .execute();
+      const listed = await store.listPrefix(prefix);
+
+      await trx
+        .updateTable("models")
+        .set((eb) => ({ purgeStartedAt: eb.fn.coalesce("purgeStartedAt", sql<Date>`now()`) }))
+        .where("id", "=", modelId)
+        .execute();
+      // Only keys in the blob layout: the store refuses to delete any other,
+      // and step 4 reports what is left.
+      return [...new Set([...rows.map((r) => r.key), ...listed.map((o) => o.key)])].filter(
+        isBlobKey,
+      );
+    });
+    if (keys === undefined) return false;
+
+    // Step 3: the marker is committed, so from here a failure keeps it.
+    if (keys.length > 0) await store.deleteBlobs(keys);
+
+    // Steps 4 and 5.
     return db.transaction().execute(async (trx) => {
       const lock = await trx
         .selectFrom("models")
@@ -153,20 +183,6 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         .executeTakeFirst();
       // Gone: another purge finished it meanwhile.
       if (lock === undefined) return false;
-
-      const prefix = `models/${modelId}/`;
-      const rows = await trx
-        .selectFrom("blobs")
-        .select("key")
-        .where("modelId", "=", modelId)
-        .execute();
-      const listed = await store.listPrefix(prefix);
-      // Only keys in the blob layout: the store refuses to delete any other,
-      // and the check below reports what is left.
-      const keys = [...new Set([...rows.map((r) => r.key), ...listed.map((o) => o.key)])].filter(
-        isBlobKey,
-      );
-      if (keys.length > 0) await store.deleteBlobs(keys);
 
       const left = await store.listPrefix(prefix);
       if (left.length > 0) {
