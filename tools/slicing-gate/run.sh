@@ -112,11 +112,15 @@ while IFS= read -r id; do
     docker rm -f "${name}" > /dev/null 2>&1 || true
   fi
   printf '%s\t%s\n' "${id}" "${rc}" >> "${OUT}/host-exit.tsv"
-  # 125 is docker run failing to create or start the container, so Orca never
-  # ran; the report would count the plate as a slicer crash and FAIL the gate.
-  if [[ "${rc}" -eq 125 ]]; then
-    die "docker could not start the container for ${id} (exit 125); the gate could not run"
-  fi
+  # None of these is a slicer result, and the report would count the plate as
+  # an Orca crash and FAIL the gate. 125 is docker run failing to create or
+  # start the container. gate.mjs slice exits 0 whatever Orca did and 2 only
+  # when its own command fails; 126 and 127 mean the command could not run.
+  case "${rc}" in
+    125) die "docker could not start the container for ${id} (exit 125); the gate could not run" ;;
+    2 | 126 | 127) die "slice for ${id} could not run (exit ${rc}); the gate could not run" ;;
+    *) ;;
+  esac
 done < "${OUT}/jobs.txt"
 
 set +e

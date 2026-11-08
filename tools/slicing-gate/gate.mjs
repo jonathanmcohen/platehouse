@@ -566,7 +566,9 @@ export function buildReport({ plan, results, hostExits, checks }) {
   const counts = { ok: 0, refused: 0, "needs-decision": 0, fail: 0 };
   for (const p of plates) counts[p.verdict]++;
   let verdict = gateVerdict(plates);
-  if (plan.errors?.length) verdict = "FAIL";
+  // A setup error (a missing machine preset) means some plates never ran, so
+  // the gate could not run (exit 2); it is not a result, pass or fail.
+  if (plan.errors?.length) verdict = "COULD-NOT-RUN";
 
   const measured = plan.jobs.map((j) => ({ ...(results[j.id] ?? {}), inputBytes: j.inputBytes }));
   return {
@@ -688,7 +690,8 @@ function reportCommand() {
   const text = summaryText(report);
   writeFileSync(join(PATHS.out, "summary.txt"), text);
   process.stdout.write(text);
-  process.exitCode = report.verdict === "PASS" ? 0 : report.verdict === "NEEDS-DECISION" ? 3 : 1;
+  const EXIT = { PASS: 0, FAIL: 1, "COULD-NOT-RUN": 2, "NEEDS-DECISION": 3 };
+  process.exitCode = EXIT[report.verdict] ?? 1;
 }
 
 // ---------------------------------------------------------------- main
