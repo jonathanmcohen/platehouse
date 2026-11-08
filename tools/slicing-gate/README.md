@@ -28,6 +28,10 @@ the fallback.
 | `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
+CI (`.github/workflows/ci.yml`) runs these tests, builds this image and
+smoke-checks it on every pull request and push that touches this folder, so a
+build failure shows up on GitHub before anyone copies the tool to Hades.
+
 ## Where the BBL profiles come from
 
 The pinned Orca 2.5.0 AppImage ships no `resources/profiles/BBL.json`. Every
