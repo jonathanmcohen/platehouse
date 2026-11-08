@@ -3,8 +3,11 @@
 // process and MakerWorld fields Platehouse needs.
 //
 // Rules carried from that parser:
-// - entries are read only by exact name;
-// - the plate list comes from model_settings.config, else the plate_N.png names;
+// - entries are read only by exact name, compared as the raw name bytes: a
+//   backslash is not a slash, and the name of an entry the parser does not
+//   read (one with '..' or an absolute path, say) never makes a damaged file;
+// - the plate list comes from model_settings.config, else the plate_N.png
+//   names; a plate index from either is kept only as a safe integer from 1;
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - only the parser's own reads of the file (opening the zip, listing it,
@@ -164,13 +167,18 @@ async function readArchive(
   size: number,
   opts: ReadOptions,
 ): Promise<Project | null> {
+  // decodeStrings: false keeps every entry name as the bytes the archive
+  // holds. Decoding would turn a backslash into a slash (so
+  // Metadata\model_settings.config would pass for the Bambu entry), honour
+  // an Info-ZIP Unicode Path field over the real name, and make the whole
+  // file damaged when any entry, even one never read, has '..' or an
+  // absolute path. listEntries keys on those bytes instead.
   const zip = await ownRead(() =>
     yauzl.fromRandomAccessReaderPromise(reader, size, {
       lazyEntries: true,
       autoClose: false,
       validateEntrySizes: true,
-      decodeStrings: true,
-      strictFileNames: false,
+      decodeStrings: false,
     }),
   );
   try {
@@ -258,7 +266,11 @@ async function readArchive(
   }
 }
 
-/** Lists the entry names once; the first entry of a duplicated name wins. */
+/**
+ * Lists the entries once, keyed by the raw name bytes read as latin1: one
+ * character per byte, so a key equals a Bambu name only when the bytes are
+ * exactly that ASCII name. The first entry of a duplicated name wins.
+ */
 function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
   return new Promise((resolve, reject) => {
     const entries = new Map<string, yauzl.Entry>();
@@ -276,7 +288,8 @@ function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
         done(() => reject(new Damaged("too many entries")));
         return;
       }
-      if (!entries.has(entry.fileName)) entries.set(entry.fileName, entry);
+      const name = entry.fileNameRaw.toString("latin1");
+      if (!entries.has(name)) entries.set(name, entry);
       zip.readEntry();
     });
     zip.on("end", () => done(() => resolve(entries)));
@@ -489,8 +502,11 @@ function platesFromModelSettings(text: string | null): Listed[] | null {
 function platesFromPngs(entries: Map<string, yauzl.Entry>): Listed[] {
   const indexes = new Set<number>();
   for (const name of entries.keys()) {
-    const m = PLATE_PNG.exec(name);
-    if (m?.[1] !== undefined) indexes.add(Number(m[1]));
+    // The same safe-integer check as plater_id: a name whose N is past
+    // Number.MAX_SAFE_INTEGER (from 9007199254740992, so every name of 17
+    // digits or more) is not a plate.
+    const index = int(PLATE_PNG.exec(name)?.[1]);
+    if (index !== null) indexes.add(index);
   }
   if (indexes.size > LIMITS.plates) throw new Damaged("too many plate thumbnails");
   return [...indexes].sort((a, b) => a - b).map((index) => ({ index, name: null, objectCount: 0 }));
