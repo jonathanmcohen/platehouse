@@ -43,14 +43,19 @@ export interface BlobStore {
    * Uploads a stream to key, hashing it as it goes (lib-storage, multipart for
    * large bodies). Then HEADs the object: when its size or the bytes read
    * differ from size, the object is deleted and a StoreError with code
-   * SizeMismatch is thrown. A failure of the source stream itself is rethrown
-   * as it is.
+   * SizeMismatch is thrown; when the HEAD itself fails, the object is deleted
+   * too. A failure of the source stream itself is rethrown as it is; a store
+   * failure partway through a multipart upload is StoreUnavailable or
+   * StoreError, never the stream teardown that follows it.
    */
   putBlob(
     stream: Readable,
     opts: { key: string; size: number; contentType: string },
   ): Promise<{ sha256: Buffer; size: number }>;
-  /** The object's bytes. BlobNotFound when the key does not exist. */
+  /**
+   * The object's bytes. BlobNotFound when the key does not exist (S3 404
+   * NoSuchKey); any other 404, a missing bucket for one, is a StoreError.
+   */
   getBlobStream(key: string): Promise<Readable>;
   /** Deletes the keys; a key already gone is not an error, so a purge can be retried. */
   deleteBlobs(keys: readonly string[]): Promise<void>;
@@ -113,15 +118,21 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       const hash = createHash("sha256");
       let read = 0;
       let sourceError: unknown;
-      stream.once("error", (err) => {
-        sourceError ??= err;
-      });
       const hasher = new Transform({
         transform(chunk: Buffer, _encoding, done) {
           hash.update(chunk);
           read += chunk.length;
           done(null, chunk);
         },
+      });
+      // Only a failure the source raised itself counts. When the upload stops
+      // reading partway (a part refused, an outage), lib-storage closes its
+      // iterator over the hasher, which destroys the hasher, and pipeline()
+      // then destroys the source with an error of its own (an AbortError or
+      // ERR_STREAM_PREMATURE_CLOSE, by Node version). That error arrives after
+      // the hasher is already destroyed; the upload's error is the real one.
+      stream.once("error", (err) => {
+        if (!hasher.destroyed) sourceError ??= err;
       });
       pipeline(stream, hasher, () => {
         // Errors are taken from the source's own listener above and from the
@@ -150,6 +161,9 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
         const head = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
         stored = head.ContentLength;
       } catch (err) {
+        // The upload went through, so an object may be in the bucket that no
+        // caller will record; remove it as the size-mismatch path does.
+        await deleteQuietly(key);
         throw toStoreError(err, "HeadObject");
       }
       if (stored !== size || read !== size) {

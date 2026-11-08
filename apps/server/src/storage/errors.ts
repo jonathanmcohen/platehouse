@@ -42,7 +42,10 @@ export class StoreUnavailable extends Error {
   }
 }
 
-/** The object does not exist (S3 404). Never thrown for an outage. */
+/**
+ * The object does not exist (S3 404 with code NoSuchKey). Never thrown for an
+ * outage, a missing bucket or any other 404.
+ */
 export class BlobNotFound extends Error {
   readonly operation: string;
 
@@ -120,7 +123,10 @@ export function isUnavailable(err: unknown): boolean {
 
 /**
  * Turns an SDK failure into one of the store's errors. A 404 becomes
- * BlobNotFound only where the caller says a missing object is possible.
+ * BlobNotFound only where the caller says a missing object is possible and the
+ * S3 code is NoSuchKey. Any other 404 (NoSuchBucket for a missing or misnamed
+ * bucket, or a proxy's own 404) is a StoreError carrying its code, so a broken
+ * storage setup is never reported as a missing file.
  */
 export function toStoreError(
   err: unknown,
@@ -130,6 +136,7 @@ export function toStoreError(
   const reason = unreachableReason(err);
   if (reason !== null) return new StoreUnavailable(operation, reason);
   const status = httpStatus(err);
-  if (opts.notFound && status === 404) return new BlobNotFound(operation);
-  return new StoreError(operation, s3Code(err), status);
+  const code = s3Code(err);
+  if (opts.notFound && status === 404 && code === "NoSuchKey") return new BlobNotFound(operation);
+  return new StoreError(operation, code, status);
 }

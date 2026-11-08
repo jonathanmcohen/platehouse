@@ -173,6 +173,19 @@ describe("failures that are not an outage", () => {
     expect(everyRendering(err)).not.toContain(SECRET);
   });
 
+  it("a 404 for a missing bucket is a StoreError, not BlobNotFound", async () => {
+    // A misnamed or deleted bucket answers GetObject with 404 too; that is a
+    // broken setup, not a missing object.
+    const store = await storeAt(() =>
+      s3Error(404, "NoSuchBucket", "The specified bucket does not exist."),
+    );
+    const err = await errorOf(store.getBlobStream(KEY));
+    expect(err).not.toBeInstanceOf(BlobNotFound);
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).code).toBe("NoSuchBucket");
+    expect((err as StoreError).status).toBe(404);
+  });
+
   it("a delete the store partly refuses is a StoreError", async () => {
     const store = await storeAt(() =>
       xml(
@@ -182,6 +195,91 @@ describe("failures that are not an outage", () => {
     const err = await errorOf(store.deleteBlobs([KEY]));
     expect(err).toBeInstanceOf(StoreError);
     expect((err as StoreError).code).toBe("AccessDenied");
+  });
+});
+
+// A source far bigger than one 5 MiB part, so lib-storage uploads it in parts
+// and is still reading it when a part fails. Made lazily, a chunk at a time.
+function largeSource(total: number): Readable {
+  const chunk = Buffer.alloc(256 * 1024, 0x61);
+  let sent = 0;
+  return new Readable({
+    read() {
+      if (sent >= total) {
+        this.push(null);
+        return;
+      }
+      const n = Math.min(chunk.length, total - sent);
+      sent += n;
+      this.push(n === chunk.length ? chunk : chunk.subarray(0, n));
+    },
+  });
+}
+
+describe("putBlob when the store fails partway through a multipart upload", () => {
+  const LARGE = 64 * 1024 * 1024;
+
+  // The store takes part 1, then answers every later part with failure. When
+  // a part fails, lib-storage stops reading and pipeline() tears the source
+  // down with an error of its own (an AbortError on Node 26, a premature-close
+  // error on others); that teardown must not stand in for the store's error.
+  function multipartStore(failure: ReturnType<typeof s3Error>): Handler {
+    return (req) => {
+      if (req.method === "POST" && req.query.has("uploads")) {
+        return xml(
+          `<InitiateMultipartUploadResult><Bucket>platehouse-test</Bucket><Key>${KEY}</Key><UploadId>synthetic-upload</UploadId></InitiateMultipartUploadResult>`,
+        );
+      }
+      if (req.method === "PUT" && req.query.has("partNumber")) {
+        return req.query.get("partNumber") === "1"
+          ? { status: 200, headers: { etag: '"synthetic-part-1"' } }
+          : failure;
+      }
+      if (req.method === "DELETE") return { status: 204 };
+      return s3Error(400, "UnexpectedRequest");
+    };
+  }
+
+  it("an outage after the first part is StoreUnavailable, not the stream teardown", async () => {
+    const store = await storeAt(multipartStore(s3Error(503, "ServiceUnavailable")));
+    const err = await errorOf(
+      store.putBlob(largeSource(LARGE), { key: KEY, size: LARGE, contentType: "model/stl" }),
+    );
+    expect(err).toBeInstanceOf(StoreUnavailable);
+  });
+
+  it("a part the store refuses after the first is a StoreError naming the S3 code", async () => {
+    const store = await storeAt(multipartStore(s3Error(403, "AccessDenied")));
+    const err = await errorOf(
+      store.putBlob(largeSource(LARGE), { key: KEY, size: LARGE, contentType: "model/stl" }),
+    );
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).code).toBe("AccessDenied");
+  });
+});
+
+describe("putBlob when the check after the upload fails", () => {
+  it("deletes the uploaded object before it throws", async () => {
+    const fake = await startFakeS3((req) => {
+      if (req.method === "PUT") return { status: 200, headers: { etag: '"synthetic"' } };
+      if (req.method === "HEAD") return { status: 403 };
+      if (req.method === "DELETE") return { status: 204 };
+      return s3Error(400, "UnexpectedRequest");
+    });
+    cleanups.push(() => fake.close());
+    const store = createBlobStore(settings(fake.endpoint), { maxAttempts: 1 });
+    cleanups.push(() => store.destroy());
+    const err = await errorOf(
+      store.putBlob(Readable.from([Buffer.from("abc")]), {
+        key: KEY,
+        size: 3,
+        contentType: "model/stl",
+      }),
+    );
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).operation).toBe("HeadObject");
+    expect(fake.requests.map((r) => r.method)).toEqual(["PUT", "HEAD", "DELETE"]);
+    expect(fake.requests[2]?.path).toBe(`/platehouse-test/${KEY}`);
   });
 });
 

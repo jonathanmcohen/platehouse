@@ -51,6 +51,17 @@ describe("toStoreError", () => {
     expect((plain as StoreError).code).toBe("NoSuchKey");
   });
 
+  it("a 404 that is not NoSuchKey is a StoreError even where a missing object is allowed", () => {
+    // A missing bucket, or a proxy in front of the store, answers 404 too.
+    for (const name of ["NoSuchBucket", "NotFound"]) {
+      const mapped = toStoreError(s3Failure(name, 404), "GetObject", { notFound: true });
+      expect(mapped).not.toBeInstanceOf(BlobNotFound);
+      expect(mapped).toBeInstanceOf(StoreError);
+      expect((mapped as StoreError).code).toBe(name);
+      expect((mapped as StoreError).status).toBe(404);
+    }
+  });
+
   it("an error that is not an object is a StoreError with code Unknown", () => {
     const mapped = toStoreError("a string was thrown", "GetObject");
     expect(mapped).toBeInstanceOf(StoreError);
