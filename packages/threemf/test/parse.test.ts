@@ -540,11 +540,12 @@ describe("thumbnails", () => {
   });
 
   it("are not handed over at all when the file turns out damaged", async () => {
-    const pngs: Record<number, Buffer> = { 1: png("ok"), 2: png("big", LIMITS.pngBytes + 1) };
+    // Two 11-byte thumbnails against a 20-byte budget: the second crosses it.
+    const pngs: Record<number, Buffer> = { 1: png("one"), 2: png("two") };
     const indexes: number[] = [];
     const project = await readProject(
       writeTmp(build3mf({ plates: [{ index: 1 }, { index: 2 }], pngs })),
-      { onThumbnail: async (i) => void indexes.push(i) },
+      { maxThumbnailBytes: 20, onThumbnail: async (i) => void indexes.push(i) },
     );
     expect(project).toBeNull();
     expect(indexes).toEqual([]);
@@ -560,30 +561,138 @@ describe("thumbnails", () => {
     expect(sizes).toEqual([LIMITS.pngBytes]);
   });
 
-  it("honour a lower maxThumbnailBytes", async () => {
-    const buf = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", 2048) } });
-    expect(await read(buf, { maxThumbnailBytes: 2048 })).not.toBeNull();
-    expect(await read(buf, { maxThumbnailBytes: 2047 })).toBeNull();
+  // test_thumbnail_oversized_png_falls_back_to_small: a plate_N.png over the
+  // 10 MiB ceiling is passed over for plate_N_small.png, as thumbnail_from
+  // does in parser.rb@136fd61.
+  it("fall back to plate_N_small.png when plate_N.png is over 10 MiB", async () => {
+    const seen: Array<[number, string]> = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          plates: [{ index: 1 }],
+          pngs: { 1: png("big", LIMITS.pngBytes + 1) },
+          smallPngs: { 1: png("small") },
+        }),
+      ),
+      { onThumbnail: async (i, buf) => void seen.push([i, buf.subarray(8).toString("latin1")]) },
+    );
+    expect(project).not.toBeNull();
+    expect(seen).toEqual([[1, "small"]]);
   });
 
-  it.each([Number.NaN, 0, -1, Number.POSITIVE_INFINITY])(
-    "ignore a maxThumbnailBytes of %s and keep the 10 MiB ceiling",
+  it("skip a plate whose only thumbnail is over 10 MiB, which is still listed", async () => {
+    const indexes: number[] = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          plates: [{ index: 1 }, { index: 2 }],
+          pngs: { 1: png("big", LIMITS.pngBytes + 1), 2: png("two") },
+        }),
+      ),
+      { onThumbnail: async (i) => void indexes.push(i) },
+    );
+    expect(project?.plates.map((p) => p.index)).toEqual([1, 2]);
+    expect(indexes).toEqual([2]);
+  });
+
+  it("count the bytes read from an over-10 MiB plate_N.png against the per-file budget", async () => {
+    // The oversized entry costs the 10 MiB ceiling plus one byte (what is
+    // read before it is known to be over), as in parser.rb; the 13-byte
+    // small thumbnail then has to fit what is left.
+    const buf = build3mf({
+      plates: [{ index: 1 }],
+      pngs: { 1: png("big", LIMITS.pngBytes + 1) },
+      smallPngs: { 1: png("small") },
+    });
+    const small = png("small").length;
+    expect(await read(buf, { maxThumbnailBytes: LIMITS.pngBytes + 1 + small })).not.toBeNull();
+    expect(await read(buf, { maxThumbnailBytes: LIMITS.pngBytes + small })).toBeNull();
+  });
+
+  it("cannot have the 10 MiB per-thumbnail ceiling raised by maxThumbnailBytes", async () => {
+    const seen: string[] = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          plates: [{ index: 1 }],
+          pngs: { 1: png("big", LIMITS.pngBytes + 1) },
+          smallPngs: { 1: png("small") },
+        }),
+      ),
+      {
+        maxThumbnailBytes: 64 * MiB,
+        onThumbnail: async (_i, buf) => void seen.push(buf.subarray(8).toString("latin1")),
+      },
+    );
+    expect(project).not.toBeNull();
+    expect(seen).toEqual(["small"]);
+  });
+
+  // maxThumbnailBytes is parser.rb's max_thumbnail_bytes: it lowers the
+  // per-file budget (LIMITS.thumbnailBytesPerFile), not the per-thumbnail
+  // ceiling. Each fixture thumbnail png("plate_N") is 15 bytes, 45 for three,
+  // as in parser_test.rb.
+  const threeThumbnails = (): Buffer =>
+    build3mf({
+      plates: range(3).map((index) => ({ index })),
+      pngs: Object.fromEntries(range(3).map((i) => [i, png(`plate_${i}`)])),
+    });
+
+  it("read thumbnails within a lower maxThumbnailBytes budget (test_thumbnails_within_the_budget_are_read)", async () => {
+    expect(png("plate_1").length).toBe(15);
+    const indexes: number[] = [];
+    const project = await readProject(writeTmp(threeThumbnails()), {
+      maxThumbnailBytes: 45,
+      onThumbnail: async (i) => void indexes.push(i),
+    });
+    expect(project).not.toBeNull();
+    expect(indexes).toEqual([1, 2, 3]);
+  });
+
+  it("make a file over a lower maxThumbnailBytes budget damaged (test_thumbnails_over_the_budget_make_a_damaged_file)", async () => {
+    const indexes: number[] = [];
+    const project = await readProject(writeTmp(threeThumbnails()), {
+      maxThumbnailBytes: 44,
+      onThumbnail: async (i) => void indexes.push(i),
+    });
+    expect(project).toBeNull();
+    // parser.rb hands over plates 1 and 2 before the third crosses the
+    // budget; this port checks every thumbnail first, so it hands over none.
+    expect(indexes).toEqual([]);
+  });
+
+  it.each([Number.NaN, 0, -1, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY])(
+    "fall back to the 128 MiB per-file budget for a maxThumbnailBytes of %s",
     async (maxThumbnailBytes) => {
-      const over = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", LIMITS.pngBytes + 1) } });
-      expect(await read(over, { maxThumbnailBytes })).toBeNull();
-      const sizes: number[] = [];
-      const project = await readProject(
-        writeTmp(build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", 2048) } })),
-        { maxThumbnailBytes, onThumbnail: async (_i, buf) => void sizes.push(buf.length) },
-      );
+      const indexes: number[] = [];
+      const project = await readProject(writeTmp(threeThumbnails()), {
+        maxThumbnailBytes,
+        onThumbnail: async (i) => void indexes.push(i),
+      });
       expect(project).not.toBeNull();
-      expect(sizes).toEqual([2048]);
+      expect(indexes).toEqual([1, 2, 3]);
     },
   );
 
-  it("cannot have the 10 MiB ceiling raised by maxThumbnailBytes", async () => {
-    const buf = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("p", LIMITS.pngBytes + 1) } });
-    expect(await read(buf, { maxThumbnailBytes: 64 * MiB })).toBeNull();
+  describe("over the 128 MiB per-file budget", () => {
+    let file: string | undefined;
+    // 13 thumbnails of 10 MiB: 130 MiB, built once.
+    const overBudget = (): string => {
+      file ??= writeTmp(
+        build3mf({
+          plates: range(13).map((index) => ({ index })),
+          pngs: Object.fromEntries(range(13).map((i) => [i, png(`p${i}`, LIMITS.pngBytes)])),
+        }),
+      );
+      return file;
+    };
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, 256 * MiB, Number.MAX_VALUE])(
+      "is damaged with a maxThumbnailBytes of %s, never lifted above the default",
+      async (maxThumbnailBytes) => {
+        expect(await readProject(overBudget(), { maxThumbnailBytes })).toBeNull();
+      },
+    );
   });
 
   it("accept exactly the 128 MiB per-file budget", async () => {

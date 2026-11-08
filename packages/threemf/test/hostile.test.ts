@@ -1,7 +1,10 @@
 // AC-023: a crafted or damaged file must not tie up the app. Every row is a
 // hostile file built by this suite. Each must come back as null (shown as
-// "No Bambu plate data in this file") without throwing, except the
-// over-long print time, which only makes the plate count as unsliced.
+// "No Bambu plate data in this file") without throwing, except two: an
+// over-long print time only makes the plate count as unsliced, and a
+// thumbnail over 10 MiB is passed over (for plate_N_small.png when there is
+// one, as parser.rb@136fd61 does) while its bytes still count against the
+// per-file budget.
 //
 // Each row cites the Bambu Plates issue it carries over:
 //   #5  a crafted archive (Zip64 offset, truncation, bad sizes) gave a 500
@@ -39,7 +42,7 @@ interface Row {
   name: string;
   issue: "#5" | "#6" | "#7" | "#11" | "#12";
   file: () => Buffer;
-  expect: "null" | "unsliced";
+  expect: "null" | "unsliced" | "no thumbnail";
 }
 
 const rows: Row[] = [
@@ -196,10 +199,10 @@ const rows: Row[] = [
     expect: "null",
   },
   {
-    name: "a thumbnail over 10 MiB",
+    name: "a thumbnail over 10 MiB, with no small one to fall back to",
     issue: "#11",
     file: () => build3mf({ ...onePlate, pngs: { 1: png("big", LIMITS.pngBytes + 1) } }),
-    expect: "null",
+    expect: "no thumbnail",
   },
   {
     name: "thumbnails over the 128 MiB per-file budget",
@@ -242,6 +245,9 @@ describe("hostile files (AC-023)", () => {
     ).resolves.toBeUndefined();
     if (row.expect === "null") {
       expect(result).toBeNull();
+      expect(handed).toEqual([]);
+    } else if (row.expect === "no thumbnail") {
+      expect(result?.plates.map((p) => p.index)).toEqual([1]);
       expect(handed).toEqual([]);
     } else {
       expect(result).not.toBeNull();
