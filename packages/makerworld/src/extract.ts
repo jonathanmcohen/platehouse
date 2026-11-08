@@ -82,10 +82,67 @@ export interface MakerWorldDetails {
 // "Untitled Bin". Compared after case and spacing are folded.
 const GENERATORS: ReadonlySet<string> = new Set(["gridfinity layout tool"]);
 
-// A <metadata name="..."> element, self-closing or with text, as the source
-// read it. test/hostile.test.ts times it on crafted 256 KiB prefixes.
-const METADATA =
-  /<metadata\s+name\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*?(?:\/>|>([\s\S]*?)<\/metadata\s*>)/g;
+// The start tag of a <metadata name="..."> element, matched where it begins
+// (sticky). Like the converter's TAG, nothing in it may run past a <, so an
+// attempt that fails stops at the next tag; group 3 is the "/" of "/>".
+const METADATA_START = /<metadata\s+name\s*=\s*(?:"([^"<]*)"|'([^'<]*)')[^<>]*?(\/)?>/y;
+// A close tag, matched where "</metadata" was found (sticky).
+const METADATA_END = /<\/metadata\s*>/y;
+
+// Each <metadata name="..."> element in the prefix as [name, text], in order:
+// a self-closing one has empty text, and one with text runs to the first
+// close tag after its start tag (start tags in between are part of its text).
+// An element with no close tag after it is skipped. That is what the
+// source's single regular expression read, but that expression had two lazy
+// scans that could each run to the end of the input from every <metadata,
+// so a prefix of start tags that never close took time that grows with the
+// square of its length (PR #24 review). Here every search moves forward
+// only. Each start tag is matched where indexOf found it, and its close tag
+// is searched for from there; the scan then resumes after that close tag, so
+// no stretch of the input is searched for a close tag twice. When there is
+// no close tag left, no later element can have text, and a self-closing one
+// would add only an empty value, which reads the same as an absent one, so
+// the scan stops there instead of searching to the end again from every
+// later start tag. test/hostile.test.ts checks the time grows linearly.
+function* metadataElements(xml: string): Generator<[string, string]> {
+  // The first close tag at or after `from`, or -1.
+  const nextClose = (from: number): number => {
+    for (
+      let at = xml.indexOf("</metadata", from);
+      at !== -1;
+      at = xml.indexOf("</metadata", at + 1)
+    ) {
+      METADATA_END.lastIndex = at;
+      if (METADATA_END.test(xml)) return at;
+    }
+    return -1;
+  };
+
+  let pos = 0;
+  for (;;) {
+    const start = xml.indexOf("<metadata", pos);
+    if (start === -1) return;
+    METADATA_START.lastIndex = start;
+    const m = METADATA_START.exec(xml);
+    if (!m) {
+      pos = start + 1;
+      continue;
+    }
+    const name = m[1] ?? m[2] ?? "";
+    const textStart = METADATA_START.lastIndex;
+    if (m[3] === "/") {
+      yield [name, ""];
+      pos = textStart;
+      continue;
+    }
+    const close = nextClose(textStart);
+    if (close === -1) return;
+    yield [name, xml.slice(textStart, close)];
+    METADATA_END.lastIndex = close;
+    METADATA_END.test(xml);
+    pos = METADATA_END.lastIndex;
+  }
+}
 
 // {title, designer, descriptionHtml, license} from the <metadata> elements, or
 // null when the file is not a MakerWorld download.
@@ -110,9 +167,8 @@ const METADATA =
 // to know must learn it from the reader (PR #24 review).
 export function extractMakerWorld(modelXmlPrefix: string): MakerWorldDetails | null {
   const found = new Map<string, string>();
-  for (const m of (modelXmlPrefix ?? "").matchAll(METADATA)) {
-    const name = m[1] ?? m[2] ?? "";
-    if (!found.has(name)) found.set(name, decodeEntities(decodeEntities(m[3] ?? "")));
+  for (const [name, value] of metadataElements(modelXmlPrefix ?? "")) {
+    if (!found.has(name)) found.set(name, decodeEntities(decodeEntities(value)));
   }
   const text = (name: string): string | null =>
     blankToNull(collapse(decodeEntities(found.get(name) ?? "")));

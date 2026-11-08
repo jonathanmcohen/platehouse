@@ -281,6 +281,9 @@ interface List {
   n: number;
   indent: string;
   lastContentCol: number;
+  // A heading or table left this list (blockColumn), so its next item
+  // starts after a blank line.
+  breakBeforeItem: boolean;
 }
 // A list opened inside a table cell: written on the row, so it only counts.
 interface CellList {
@@ -296,6 +299,8 @@ interface Item {
 }
 interface Table {
   nested: boolean;
+  indent: string; // written before each row: the list item's indent, if any
+  item: Item | undefined; // the list item the table opened in
   rows: number;
   cells: number;
   rowStart: number;
@@ -334,7 +339,8 @@ function textToMarkdown(raw: string): string {
 // HTML to readable Markdown: h1-h6 to # headings (an empty one dropped, a
 // trailing # escaped), p and br to paragraphs and line breaks, strong/b to
 // **, em/i to *, ul/ol items to - and 1. (an empty item dropped, a nested
-// list indented to its item's text), links to [text](href) for http(s) only,
+// list indented to its item's text, and so a heading or table in an item
+// and the text after it), links to [text](href) for http(s) only,
 // tables to pipe tables with the first row as the header (padded to the
 // widest row; a heading or list in a cell stays on its row, items joined by
 // "; "; a table in a cell is flattened into it, cells joined by spaces and
@@ -356,7 +362,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   let listDepth = 0; // open lists outside cells
   let dropDepth = 0;
   let headingStart = -1;
-  let headingMarker = -1; // where the open heading's "#" marker begins
+  let headingMarker = -1; // where the open heading's line (indent, "#") begins
+  let headingCol = 0; // the column the open heading is written at
+  let headingItem: Item | undefined; // the list item the open heading is in
   let itemStart = -1; // where the text of the open list item begins
 
   // A paragraph break; idempotent, so the output never holds more than two
@@ -367,9 +375,13 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     else if (out.charAt(out.length - 2) !== "\n") out.append("\n");
   };
   const outerList = (): List | undefined => lists.at(-1);
-  // The open list item whose nested list just closed, while nothing has been
-  // written after it; text that follows goes back to that item (resumeItem).
-  let resumeItem: Item | undefined;
+  // The open list item whose nested list, heading or table just closed,
+  // while nothing has been written after it, and the column to write at:
+  // text that follows goes back to that item, after a blank line (onText).
+  let resume: { item: Item; col: number } | undefined;
+  const resumeAt = (item: Item | undefined, col: number): void => {
+    if (item && item === items.at(-1)) resume = { item, col };
+  };
   // A list item with no text yet would keep a bare marker if a block (a
   // nested list, a heading, a table) opened in it: CommonMark does not read a
   // marker with nothing after it as the item meant, so a bare "-" or "1."
@@ -382,6 +394,23 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     item.dropped = true;
     itemStart = -1;
     if (item.list?.ordered) item.list.n--;
+  };
+  // The column a heading or table opened outside a cell is written at, after
+  // dropBareMarker and a blank line. In a list item it is the item's indent,
+  // so the block stays in the item: at column 0 it would end the list, and
+  // in an ordered list the item's text after it would then run into the
+  // next item's marker, which markdown-it reads as text unless the list
+  // starts at 1 (PR #24 review). An item that lost its bare marker to the
+  // block has no text to hold it, so the block leaves that list, at the
+  // list's own indent (column 0 for a top-level list, the enclosing item's
+  // indent for a nested one), and the list's next item starts after a blank
+  // line so that it begins a list rather than running into the text.
+  const blockColumn = (): number => {
+    const item = items.at(-1);
+    if (!item) return 0;
+    if (!item.dropped) return item.contentCol;
+    if (item.list) item.list.breakBeforeItem = true;
+    return item.list?.indent.length ?? 0;
   };
   // True while the open list item (outside a cell) has no text yet.
   const itemEmpty = (): boolean => {
@@ -423,15 +452,15 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // still starts here when only spaces follow the newline or the list
     // marker: those spaces (an &nbsp;, an empty <strong> </strong>) are
     // dropped, so whitespace never uses up a line start or indents it.
-    if (!inCell && resumeItem && resumeItem === items.at(-1) && out.last() === "\n") {
-      // Text after a nested list in the same item: a blank line ends the
-      // nested list, and the item's indent keeps the text in the item.
+    if (!inCell && resume && resume.item === items.at(-1) && out.last() === "\n") {
+      // Text after a nested list, heading or table in the same item: a blank
+      // line ends the block, and the indent keeps the text in the item.
       // Whitespace alone writes nothing, so the list stays tight.
       t = t.trimStart();
       if (!t) return;
       breakBlock();
-      out.append(" ".repeat(resumeItem.contentCol) + TEXT_LINE + t);
-      resumeItem = undefined;
+      out.append(" ".repeat(resume.col) + TEXT_LINE + t);
+      resume = undefined;
       return;
     }
     if (!inCell) {
@@ -455,10 +484,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       return;
     }
     if (dropDepth > 0) return;
-    // A heading, list, item or table after a nested list writes its own
-    // block, so text after it does not go back to the item; the </ul> or
-    // </ol> that closes a nested list sets resumeItem again below.
-    if (STRUCTURE.test(tag)) resumeItem = undefined;
+    // A heading, list, item or table after a nested list, heading or table
+    // writes its own block, so text after it does not go back to the item;
+    // the close of a nested list, heading or table sets resume again below.
+    if (STRUCTURE.test(tag)) resume = undefined;
 
     if (/^h[1-6]$/.test(tag) && inCell) {
       space();
@@ -468,7 +497,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         dropBareMarker();
         breakBlock();
         headingMarker = out.length;
-        out.append(`${"#".repeat(Number(tag[1]))} `);
+        headingCol = blockColumn();
+        headingItem = items.at(-1);
+        out.append(`${" ".repeat(headingCol)}${"#".repeat(Number(tag[1]))} `);
         headingStart = out.length;
       } else {
         if (headingStart >= 0) {
@@ -489,6 +520,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         }
         headingStart = -1;
         breakBlock();
+        resumeAt(headingItem, headingCol);
+        headingItem = undefined;
       }
     } else if (tag === "br") {
       // A line break before an item's first text would leave a bare marker on
@@ -527,7 +560,13 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           else if (item && item.list === parent) indent = " ".repeat(item.contentCol);
           else indent = " ".repeat(parent.lastContentCol || parent.indent.length + 2);
         }
-        lists.push({ ordered: tag === "ol", n: 0, indent, lastContentCol: 0 });
+        lists.push({
+          ordered: tag === "ol",
+          n: 0,
+          indent,
+          lastContentCol: 0,
+          breakBeforeItem: false,
+        });
         listDepth++;
       } else {
         const closed = lists.pop();
@@ -545,7 +584,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           // item's indent (onText), not at column 0, where CommonMark would
           // read it as a lazy continuation of the nested item's last line.
           const item = items.at(-1);
-          if (closed && item?.list === parent) resumeItem = item;
+          if (closed && item?.list === parent) resumeAt(item, item.contentCol);
         } else breakBlock();
       }
     } else if (tag === "li") {
@@ -559,7 +598,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
             if (list.ordered) list.n--;
           }
         }
-        endLine();
+        if (list?.breakBeforeItem) {
+          breakBlock();
+          list.breakBeforeItem = false;
+        } else endLine();
         const markerStart = out.length;
         const indent = list?.indent ?? "";
         const marker = list?.ordered ? `${++list.n}. ` : "- ";
@@ -627,7 +669,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         else {
           dropBareMarker();
           breakBlock();
-          tables.push(newTable());
+          const indent = " ".repeat(blockColumn());
+          tables.push({ ...newTable(), indent, item: items.at(-1) });
         }
       } else {
         const t = tables.pop();
@@ -638,6 +681,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           cellLists.length = 0;
           inCell = false;
           breakBlock();
+          if (t) resumeAt(t.item, t.indent.length);
         }
       }
     } else if (tag === "tr" && tables.at(-1)?.nested) {
@@ -658,7 +702,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         endLine();
         t.rowStart = out.length;
         t.cells = 0;
-        out.append("|");
+        out.append(`${t.indent}|`);
       } else if (t.cells === 0) {
         out.truncate(t.rowStart); // an empty row leaves nothing
       } else {
@@ -666,7 +710,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         if (t.rows === 0) {
           t.headerEnd = out.length;
           t.headerCells = t.cells;
-          out.append(`\n|${" --- |".repeat(t.cells)}`);
+          out.append(`\n${t.indent}|${" --- |".repeat(t.cells)}`);
           t.sepEnd = out.length;
           out.append("\n");
         } else out.append("\n");
@@ -753,6 +797,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
 function newTable(): Table {
   return {
     nested: false,
+    indent: "",
+    item: undefined,
     rows: 0,
     cells: 0,
     rowStart: 0,
