@@ -97,6 +97,15 @@ of them, Orca now checks the switch against that system preset's
 compatible printers instead of the file's own copy of the list. CI checks
 that own-printer slices come out the same with and without the folder.
 
+The same folder binds the production slicer image (build plan Task 11) and
+the daily Orca update workflow. Both build from the same AppImage, so each
+must run `flatten-profiles.mjs --process-full` on its pinned profile source
+into the same `process_full` path, with the same build checks: every
+instantiable machine gets its file, the folder did not exist before, and no
+`BBL.json` sits beside `BBL.opc`. An image built without it fails with code
+-3 on its first slice that switches between the P1S or X1C and the A1, as
+Hades run 3 did.
+
 ## The sample rule
 
 `select-sample.mjs` reads `Metadata/slice_info.config` (per-plate
