@@ -30,8 +30,9 @@ the fallback.
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
 CI (`.github/workflows/ci.yml`) runs these tests, builds this image and
-smoke-checks it on every pull request that touches this folder, and on pushes
-that touch it on main and release branches, so a build failure shows up on
+smoke-checks it on every pull request that touches this folder, `ci.yml` or
+`.node-version` (the Node version the job uses), and on pushes that touch
+them on main and release branches, so a build failure shows up on
 GitHub before anyone copies the tool to Hades. The smoke checks run in the
 image with the gate's hardening and use no designer file:
 
