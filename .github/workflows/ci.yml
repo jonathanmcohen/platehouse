@@ -140,25 +140,32 @@ jobs:
         run: pnpm install --frozen-lockfile
       # The zero-test guard (AC-094). A test that a filter skipped still counts
       # in numTotalTests, so the guard counts the tests that ran: the total less
-      # the skipped and todo ones. It runs even when vitest fails, so the count
-      # is always logged, and then the step takes vitest's own exit code.
+      # the skipped and todo ones. The count is logged whenever vitest wrote a
+      # report, pass or fail. A failed vitest run then ends the step with
+      # vitest's own exit code before the zero-test check, so "No tests ran"
+      # means vitest passed with nothing run, never a hidden failure (#20).
       - name: Unit tests
         run: |
           status=0
           pnpm exec vitest run --project unit --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ -s report.json ]; then
+            total="$(jq '.numTotalTests' report.json)"
+            skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+            ran=$((total - skipped))
+            echo "unit: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Vitest failed (exit ${status}); its output above names the failure"
+            exit "$status"
+          fi
           if [ ! -s report.json ]; then
-            echo "::error::No tests ran (vitest wrote no report, exit ${status})"
+            echo "::error::No tests ran (vitest wrote no report)"
             exit 1
           fi
-          total="$(jq '.numTotalTests' report.json)"
-          skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
-          ran=$((total - skipped))
-          echo "unit: ${ran} tests ran, ${skipped} skipped, ${total} collected"
           if [ "$ran" -eq 0 ]; then
             echo "::error::No tests ran"
             exit 1
           fi
-          exit "$status"
       - name: Upload the test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
@@ -194,19 +201,24 @@ jobs:
         run: |
           status=0
           pnpm exec vitest run --project integration --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ -s report.json ]; then
+            total="$(jq '.numTotalTests' report.json)"
+            skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+            ran=$((total - skipped))
+            echo "integration: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Vitest failed (exit ${status}); its output above names the failure"
+            exit "$status"
+          fi
           if [ ! -s report.json ]; then
-            echo "::error::No tests ran (vitest wrote no report, exit ${status})"
+            echo "::error::No tests ran (vitest wrote no report)"
             exit 1
           fi
-          total="$(jq '.numTotalTests' report.json)"
-          skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
-          ran=$((total - skipped))
-          echo "integration: ${ran} tests ran, ${skipped} skipped, ${total} collected"
           if [ "$ran" -eq 0 ]; then
             echo "::error::No tests ran"
             exit 1
           fi
-          exit "$status"
       - name: Upload the test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
