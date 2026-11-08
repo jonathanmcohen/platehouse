@@ -3,11 +3,11 @@
 // src/libslic3r/Utils.hpp and src/OrcaSlicer.cpp cli_errors, read for the
 // slicing gate (tools/slicing-gate/lib/classify.mjs) at commit 40ecc66.
 //
-// -50, -61, -63 to -65, -67 and -69 wait on Jon's decision: their Orca
-// meaning (empty plate, bed type, collisions, vase mode, TPU count, mixed
-// filament) is not one of the legitimate refusals AC-034 names. Until he
-// decides they take the contract's "anything else" and are slicer_error,
-// with Orca's message as the detail.
+// -50, -61, -63 to -65, -67 and -69 (empty plate, bed type, collisions,
+// vase mode, TPU count, mixed filament) are not among the legitimate
+// refusals AC-034 names. By Jon's decision (2026-11-08) they take the
+// contract's "anything else" and are slicer_error, with Orca's message as
+// the detail.
 import type { Reason } from "@platehouse/slicer-contract";
 
 export const ORCA_MESSAGES: Readonly<Record<number, string>> = Object.freeze({

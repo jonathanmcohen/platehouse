@@ -21,21 +21,18 @@ const MAP: Array<[number, string]> = [
 
 // Codes the plan's original map sent to nozzle_mismatch (-61 to -69) or did
 // not name (-50), whose Orca meaning is something else: empty plate, bed
-// type, collisions, vase mode, TPU count, mixed filament. They wait on Jon's
-// decision, and until then fall to the contract's "anything else".
-const NEEDS_DECISION = [-50, -61, -63, -64, -65, -67, -69];
+// type, collisions, vase mode, TPU count, mixed filament. By Jon's decision
+// (2026-11-08) they fall to the contract's "anything else".
+const SLICER_ERROR_CODES = [-50, -61, -63, -64, -65, -67, -69];
 
 describe("reason map", () => {
   test.each(MAP)("Orca code %i is %s", (code, reason) => {
     expect(reasonFor(code)).toBe(reason);
   });
 
-  test.each(NEEDS_DECISION)(
-    "Orca code %i is not mapped yet and is reported as slicer_error",
-    (code) => {
-      expect(reasonFor(code)).toBe("slicer_error");
-    },
-  );
+  test.each(SLICER_ERROR_CODES)("Orca code %i is reported as slicer_error", (code) => {
+    expect(reasonFor(code)).toBe("slicer_error");
+  });
 
   test.each([-1, -2, -3, -5, -14, -18, -51, -59, -60, -70, -100, -103, 1, 7, 255])(
     "any other code (%i) is slicer_error",
@@ -58,8 +55,8 @@ describe("reason map", () => {
     expect(nozzle).toEqual([-66, -68]);
   });
 
-  test("every mapped or pending code has Orca's own message for the detail fallback", () => {
-    for (const code of [...MAP.map(([c]) => c), ...NEEDS_DECISION]) {
+  test("every mapped or slicer_error code has Orca's own message for the detail fallback", () => {
+    for (const code of [...MAP.map(([c]) => c), ...SLICER_ERROR_CODES]) {
       expect(ORCA_MESSAGES[code], `code ${code}`).toMatch(/\w/);
     }
     expect(ORCA_MESSAGES[-62]).toBe("filament temperatures too far apart");
