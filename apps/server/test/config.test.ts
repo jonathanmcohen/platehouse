@@ -144,7 +144,7 @@ describe("loadConfig", () => {
     ["OIDC_ISSUER", "http://id.local.jonco.dev"],
     ["OIDC_ISSUER", "issuer-without-scheme"],
     ["LINK_SECRET", "a".repeat(31)],
-    ["LINK_SECRET", `${"é".repeat(15)}a`],
+    ["LINK_SECRET", `${"\u00e9".repeat(15)}a`],
     ["SLICER_URL", "slicer:8080"],
     ["SLICER_CONCURRENCY", "0"],
     ["SLICER_CONCURRENCY", "1.5"],
@@ -238,7 +238,7 @@ describe("loadConfig", () => {
   });
 
   it("measures LINK_SECRET in bytes, not characters", () => {
-    const config = loadConfig(withValue(validEnv(), "LINK_SECRET", "é".repeat(16)));
+    const config = loadConfig(withValue(validEnv(), "LINK_SECRET", "\u00e9".repeat(16)));
     expect(Buffer.byteLength(config.linkSecret, "utf8")).toBe(32);
   });
 
