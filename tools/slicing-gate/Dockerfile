@@ -54,7 +54,6 @@ RUN printf '%s\n' \
 # need TEST-ARGS [-- REASON]: a check that names itself on stderr when it
 # fails, so a failed step never exits 1 with no text (see need.sh).
 COPY need.sh /usr/local/lib/need.sh
-COPY check-libs.sh /opt/gate-build/check-libs.sh
 
 WORKDIR /dl
 
@@ -149,27 +148,14 @@ RUN source /usr/local/lib/fetch.sh \
  && chmod 0755 /opt/landrun
 
 # Node.js 26.13.0, linux x64. Its libraries (libatomic.so.1 among them) are
-# checked before anything here runs it.
+# checked after the last download and before anything here runs it.
 ARG NODE_URL=https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz
 ARG NODE_SHA256=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
 RUN source /usr/local/lib/fetch.sh \
- && source /usr/local/lib/need.sh \
  && fetch "$NODE_URL" node.tar.xz "$NODE_SHA256" \
  && mkdir /opt/node \
  && tar -xJf node.tar.xz -C /opt/node --strip-components=1 \
- && rm node.tar.xz \
- && bash /opt/gate-build/check-libs.sh /opt/node/bin/node \
- && need "$(/opt/node/bin/node --version)" = v26.13.0
-
-# The profile JSON must be the release the AppImage was built from: the version
-# in each source <vendor>.json must equal the version stamped in the
-# <vendor>.opc Orca ships (Orca writes it from that same field), or the build
-# fails naming both. On 2026-11-08: BBL 02.08.00.16 = 2.8.0.16 and
-# OrcaFilamentLibrary 02.04.00.26 = 2.4.0.26.
-COPY check-profile-version.mjs /opt/gate-build/check-profile-version.mjs
-COPY lib/is-main.mjs /opt/gate-build/lib/is-main.mjs
-RUN /opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json \
- && /opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/OrcaFilamentLibrary.opc /opt/orca-profiles/OrcaFilamentLibrary.json
+ && rm node.tar.xz
 
 # occt-import-js 0.0.23 from the npm registry (no runtime dependencies).
 ARG OCCT_URL=https://registry.npmjs.org/occt-import-js/-/occt-import-js-0.0.23.tgz
@@ -199,6 +185,24 @@ RUN printf '%s\n' 'solid outside' \
       '  facet normal 0 0 1' '    outer loop' \
       '      vertex 0 0 0' '      vertex 10 0 0' '      vertex 0 10 0' \
       '    endloop' '  endfacet' 'endsolid outside' > /opt/gate/samples/outside.stl
+
+# check-libs.sh is copied in after the last download, so editing it reruns
+# only the steps from here on and not every download (issue #8). It checks
+# Node's libraries before the first Node call in this stage.
+COPY check-libs.sh /opt/gate-build/check-libs.sh
+RUN source /usr/local/lib/need.sh \
+ && bash /opt/gate-build/check-libs.sh /opt/node/bin/node \
+ && need "$(/opt/node/bin/node --version)" = v26.13.0
+
+# The profile JSON must be the release the AppImage was built from: the version
+# in each source <vendor>.json must equal the version stamped in the
+# <vendor>.opc Orca ships (Orca writes it from that same field), or the build
+# fails naming both. On 2026-11-08: BBL 02.08.00.16 = 2.8.0.16 and
+# OrcaFilamentLibrary 02.04.00.26 = 2.4.0.26.
+COPY check-profile-version.mjs /opt/gate-build/check-profile-version.mjs
+COPY lib/is-main.mjs /opt/gate-build/lib/is-main.mjs
+RUN /opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json \
+ && /opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/OrcaFilamentLibrary.opc /opt/orca-profiles/OrcaFilamentLibrary.json
 
 FROM --platform=linux/amd64 ${BASE}
 ARG APT_SNAPSHOT
