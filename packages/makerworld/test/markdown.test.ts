@@ -28,6 +28,12 @@ import { DESIGNER_PAYLOADS, htmlEscape } from "./support/payloads.js";
 
 const md = createMarkdownIt();
 const render = (markdown: string): string => md.render(markdown);
+// The same setup with markdown-it's image rule back on. renderMarkdown never
+// renders an image (Jon, 2026-11-08), so a "!" the converter left bare before
+// a link's [ no longer shows there; this renderer still turns it into an
+// <img>, so the escaping checks below keep their teeth.
+const withImages = createMarkdownIt().enable("image");
+const renderWithImages = (markdown: string): string => withImages.render(markdown);
 const para = (inner: string): string => `<p>${inner}</p>\n`;
 
 describe("htmlToMarkdown: ported cases", () => {
@@ -693,12 +699,25 @@ describe("the markdown-it layer alone", () => {
     expect(html).not.toMatch(/<a |<img /);
   });
 
-  it("an absolute http(s) link or image is kept", () => {
+  // Descriptions never render images (Jon, 2026-11-08): the image rule is
+  // off, so an image to an http(s) address is a "!" and a link to it.
+  it("an absolute http(s) link is kept, and an image is a link to its address", () => {
     expect(render("[x](https://e.test/a) ![i](http://e.test/i.png) <https://e.test/b>")).toBe(
       para(
-        '<a href="https://e.test/a">x</a> <img src="http://e.test/i.png" alt="i"> <a href="https://e.test/b">https://e.test/b</a>',
+        '<a href="https://e.test/a">x</a> !<a href="http://e.test/i.png">i</a> <a href="https://e.test/b">https://e.test/b</a>',
       ),
     );
+  });
+
+  it.each([
+    "![i](https://e.test/i.png)",
+    '![i](https://e.test/i.png "t")',
+    "![i][r]\n\n[r]: https://e.test/i.png",
+    "[![i](https://e.test/i.png)](https://e.test/)",
+    "| ![i](https://e.test/i.png) |\n| --- |",
+    "## ![i](https://e.test/i.png)",
+  ])("an image to an http(s) address is no <img>: %j", (markdown) => {
+    expect(render(markdown)).not.toMatch(/<img/);
   });
 
   it("raw HTML is text", () => {
@@ -874,7 +893,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
   it("emphasis closed before the bold and link inside it makes no image", () => {
     const out = htmlToMarkdown('<p><i>!<b>abc<a href="https://evil.test/p.png">d</i></b></a></p>');
     expect(out).toBe("*\\!abcd*");
-    expect(render(out)).not.toMatch(/<img/);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
     expect(render(out)).toBe(para("<em>!abcd</em>"));
   });
 
@@ -900,7 +919,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
       '<table><tr><td><ul><li>a</li><br><br><br><b><li>!<a href="https://evil.example/x.png">y</a></b></li></ul></td></tr></table>',
     );
     expect(out).toBe("| a; **\\![y](https://evil.example/x.png)** |\n| --- |");
-    expect(render(out)).not.toMatch(/<img/);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
   });
 
   it("bold opened in a cell's trailing spaces before a nested table row makes no image", () => {
@@ -908,7 +927,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
       '<table><tr><td><table><tr><td>a</td></tr><br><br><b><tr><td>!<a href="https://evil.example/x.png">y</a></b></td></tr></table></td></tr></table>',
     );
     expect(out).toBe("| a; **\\![y](https://evil.example/x.png)** |\n| --- |");
-    expect(render(out)).not.toMatch(/<img/);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
   });
 
   // HTML lets a page leave out </td>: the next <td> closes the cell. That
@@ -922,7 +941,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
       '<table><tr><td><a href="https://ok.example/">!<td><a href="https://evil.example/x.png">t</a></a></td></tr></table>',
     );
     expect(out).toBe("| \\! | [t](https://evil.example/x.png) |\n| --- | --- |");
-    expect(render(out)).not.toMatch(/<img/);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
   });
 
   it("a cell left open by a missing </td> is closed by the next cell, its row or its table", () => {
@@ -940,7 +959,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
       `<table><tr><td><a href="https://e.test/">${p}!<td><a href="https://evil.example/x.png">t</a>${p}z</a></td></tr></table>`,
     );
     const html = render(out);
-    expect(html).not.toMatch(/<img/);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
     expect(html).toBe(
       `<table>\n<thead>\n<tr>\n<th>${p}!</th>\n<th><a href="https://evil.example/x.png">t</a>${p}z</th>\n</tr>\n</thead>\n</table>\n`,
     );
@@ -964,7 +983,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
       `<p>a <i>${p}<b>abc<a href="https://evil.test/p.png">d</i>${p}</b>e</a></p>`,
     );
     const html = render(out);
-    expect(html).not.toMatch(/<img/);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
     expect(html).toBe(para(`a <em>${p}abcd</em>${p}e`));
   });
 

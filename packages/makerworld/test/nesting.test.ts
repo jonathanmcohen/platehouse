@@ -2,6 +2,7 @@
 /// <reference lib="dom" />
 import { describe, expect, it } from "vitest";
 import { htmlToMarkdown, renderMarkdown } from "../src/index.js";
+import { createMarkdownIt } from "../src/markdown.js";
 import { htmlEscape } from "./support/payloads.js";
 
 // Every block and inline the converter handles, nested inside every other,
@@ -156,6 +157,12 @@ const ALLOWED_TAGS = new Set([
 
 const norm = (s: string): string => s.replace(/\s+/g, " ");
 
+// renderMarkdown never renders an image (Jon, 2026-11-08), so it cannot show
+// a "!" the converter left bare before a link's [. The same markdown-it setup
+// with the image rule back on still would, so the converter's escaping is
+// checked through it as well.
+const withImages = createMarkdownIt().enable("image");
+
 function count(haystack: string, needle: string): number {
   let n = 0;
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) n++;
@@ -171,6 +178,7 @@ describe("designer text nested in every block and inline renders literally", () 
     const elements = Array.from(root.querySelectorAll("*"));
 
     const detail = `${html}\n-> ${md}\n-> ${rendered}`;
+    expect(withImages.render(md), detail).not.toMatch(/<img/);
     for (const el of elements) {
       const tag = el.tagName.toLowerCase();
       expect(tag, detail).not.toBe("img");

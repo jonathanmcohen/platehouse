@@ -99,6 +99,12 @@ describe("a script or event-handler payload does not survive", () => {
     "![x](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+)",
     '[x](https://e.test "t" onmouseover="alert(1)")',
     "[x]: javascript:alert(1)\n\n[x]",
+    // Descriptions never render images (Jon, 2026-11-08): an image to an
+    // http(s) address is a link, never an <img> that loads it.
+    "![x](https://attacker.example/x.png)",
+    '![x](http://attacker.example/x.png "t")',
+    "![x][r]\n\n[r]: https://attacker.example/x.png",
+    "[![x](https://attacker.example/x.png)](https://e.test/)",
     "```html\n<script>alert(1)</script>\n```",
     "    <script>alert(1)</script>",
     "<div onclick=alert(1)>x</div>",
@@ -175,14 +181,19 @@ describe("the DOMPurify layer alone", () => {
     ['<a href="//e.test/x">x</a>', "<a>x</a>"],
     ['<a href="javascript:alert(1)">x</a>', "<a>x</a>"],
     ['<a href="mailto:a@e.test">x</a>', "<a>x</a>"],
-    // DOMPurify keeps a data: src on img, audio, video, source and track
-    // whatever ALLOWED_URI_REGEXP says; this layer must not.
-    ['<img src="data:image/png;base64,AAAA" onerror="alert(1)">', "<img>"],
-    ['<img src="data:image/svg+xml;base64,PHN2Zz4=" alt="a">', '<img alt="a">'],
-    ['<img src=" DATA:image/png;base64,AAAA">', "<img>"],
+    // Descriptions never render images (Jon, 2026-11-08): img is forbidden,
+    // whatever its address, an http(s) one included.
+    ['<img src="data:image/png;base64,AAAA" onerror="alert(1)">', ""],
+    ['<img src="data:image/svg+xml;base64,PHN2Zz4=" alt="a">', ""],
+    ['<img src=" DATA:image/png;base64,AAAA">', ""],
     ['<a href="data:text/html,x">x</a>', "<a>x</a>"],
-    ['<img src="https://e.test/i.png" alt="a">', '<img src="https://e.test/i.png" alt="a">'],
-    ['<img src="/i.png" alt="a">', '<img alt="a">'],
+    ['<img src="https://e.test/i.png" alt="a">', ""],
+    ['<p>a<img src="https://e.test/i.png">b</p>', "<p>ab</p>"],
+    [
+      '<a href="https://e.test/"><img src="https://e.test/i.png"></a>',
+      '<a href="https://e.test/"></a>',
+    ],
+    ['<img src="/i.png" alt="a">', ""],
     ['<p onclick="alert(1)" style="color:red" class="c" id="i">x</p>', "<p>x</p>"],
     ["<script>alert(1)</script><p>x</p>", "<p>x</p>"],
     ['<div><span title="t">x</span></div>', "x"],
@@ -290,5 +301,77 @@ describe("escaped designer text beside misnested inline tags renders literally t
       htmlToMarkdown(`<table><tr><td>a ${p}<b>y</td><td>z</b></td></tr></table>`),
     );
     expectTextOnly(html, `a ${payload}y z`.replace(/\s+/g, " ").trim());
+  });
+});
+
+// Jon's decision, 2026-11-08 (build plan Task 7): descriptions never render
+// images. markdown-it's image rule is off, so ![alt](url) is a "!" and a link
+// to the address, and DOMPurify forbids img, so no description can load a
+// remote address whatever the Markdown holds.
+describe("descriptions never render images", () => {
+  const IMG = "https://attacker.example/x.png";
+
+  function expectNoImage(html: string): void {
+    expectInert(html);
+    const { tags, attributes } = parse(html);
+    expect(tags, html).not.toContain("img");
+    for (const a of attributes) expect(a.name, html).not.toBe("src");
+  }
+
+  it("a Markdown image shows as a link to its address", () => {
+    expect(renderMarkdown(`![photo](${IMG})`)).toBe(`<p>!<a href="${IMG}">photo</a></p>\n`);
+  });
+
+  it.each([
+    ["in a paragraph", `a ![x](${IMG}) b`],
+    ["with a title", `![x](${IMG} "t")`],
+    ["by reference", `![x][r]\n\n[r]: ${IMG}`],
+    ["collapsed reference", `![x][]\n\n[x]: ${IMG}`],
+    ["shortcut reference", `![x]\n\n[x]: ${IMG}`],
+    ["inside a link", `[![x](${IMG})](https://e.test/)`],
+    ["in a heading", `## ![x](${IMG})`],
+    ["in a list item", `- ![x](${IMG})`],
+    ["in an ordered list item", `1. ![x](${IMG})`],
+    ["in a table cell", `| a |\n| --- |\n| ![x](${IMG}) |`],
+    ["in a table header", `| ![x](${IMG}) |\n| --- |`],
+    ["in a blockquote", `> ![x](${IMG})`],
+    ["in emphasis", `**![x](${IMG})** *![y](${IMG})*`],
+    ["in an http address", `![x](http://attacker.example/x.png)`],
+    ["with angle brackets", `![x](<${IMG}>)`],
+  ])("an image %s renders no img", (_name, markdown) => {
+    expectNoImage(renderMarkdown(markdown));
+  });
+
+  it.each([
+    ["a bare image", `<p>Look <img src="${IMG}" alt="photo"> here</p>`, "Look here"],
+    ["a linked image", `<p><a href="${IMG}"><img src="${IMG}"></a> caption</p>`, "caption"],
+    [
+      "a linked image with a caption",
+      `<p><a href="https://e.test/x"><img src="${IMG}"> Photo</a></p>`,
+      "Photo",
+    ],
+    ["an image in a heading", `<h2>Kit <img src="${IMG}"></h2>`, "Kit"],
+    ["an image in a list", `<ul><li><img src="${IMG}">a</li></ul>`, "a"],
+    ["an image in a table", `<table><tr><td><img src="${IMG}">a</td></tr></table>`, "a"],
+  ])("a description image from MakerWorld HTML, %s, is text, not an image", (_name, html, text) => {
+    const out = renderMarkdown(htmlToMarkdown(html));
+    expectNoImage(out);
+    expect(parse(out).root.textContent?.replace(/\s+/g, " ").trim(), out).toBe(text);
+  });
+
+  it.each(DESIGNER_PAYLOADS)("designer text in a paragraph renders no img: %j", (payload) => {
+    expectNoImage(renderMarkdown(htmlToMarkdown(`<p>${htmlEscape(payload)}</p>`)));
+  });
+
+  // Issue #40, exactly as reported: a heading closed between a table's rows,
+  // with a later row wider than the header. The converter's text is pinned
+  // in markdown.test.ts; whatever it writes, no image renders.
+  it("the issue #40 reproduction renders no img", () => {
+    const html =
+      `<h2>a${"<p>a".repeat(12)}` +
+      `<table><tr><td>b</td></tr></h2><tr><td>!<a href="${IMG}">tttttttt</a></td><td>z</td></tr></table>`;
+    const out = renderMarkdown(htmlToMarkdown(html));
+    expectNoImage(out);
+    expect(out).not.toMatch(/<img/);
   });
 });
