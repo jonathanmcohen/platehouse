@@ -164,7 +164,21 @@ function planCommand() {
     companions: process.env.GATE_COMPANIONS === "1",
   });
   const built = buildJobs(selection, metas, recipe);
-  const plan = { createdAt: new Date().toISOString(), jobs: built.jobs, errors: [...errors, ...built.errors], inspect, recipe };
+  // Where the sample falls short of the plan's rule, and why each file was
+  // picked, so the report says it and not only selection.json.
+  const picked = {
+    sample: selection.sample.map((s) => ({ name: s.name, roles: s.roles ?? [], reasons: s.reasons ?? [] })),
+    missing: selection.missing ?? [],
+    unknownPrinter: selection.unknownPrinter ?? [],
+  };
+  const plan = {
+    createdAt: new Date().toISOString(),
+    jobs: built.jobs,
+    errors: [...errors, ...built.errors],
+    inspect,
+    recipe,
+    selection: picked,
+  };
   writeJson(join(PATHS.out, "plan.json"), plan);
   writeFileSync(join(PATHS.out, "jobs.txt"), `${built.jobs.map((j) => j.id).join("\n")}\n`);
   mkdirSync(join(PATHS.out, "jobs"), { recursive: true });
@@ -591,6 +605,7 @@ export function buildReport({ plan, results, hostExits, checks }) {
     counts,
     setupErrors: plan.errors ?? [],
     incomplete,
+    selection: plan.selection ?? null,
     plates,
     bambuGap: {
       platesCompared: gapRows.length,
@@ -635,6 +650,16 @@ export function summaryText(report) {
   );
   for (const e of report.setupErrors) L.push(`    setup error: ${e}`);
   for (const e of report.incomplete ?? []) L.push(`    incomplete: ${e}`);
+  const sel = report.selection;
+  if (sel) {
+    if (sel.missing.length === 0) L.push("    The sample covers every role the plan's sample rule names.");
+    for (const m of sel.missing) L.push(`    not covered: ${m}`);
+    for (const u of sel.unknownPrinter) L.push(`    left out, printer not named: ${u}`);
+    L.push(`    Sample, ${sel.sample.length} files, each with the role it was picked for:`);
+    for (const s of sel.sample) {
+      L.push(`      ${s.name}: ${s.roles.map((r, i) => `${r}${s.reasons[i] ? ` (${s.reasons[i]})` : ""}`).join("; ")}`);
+    }
+  } else L.push("    sample selection: not recorded in plan.json, so gaps in the sample are unknown.");
   const notOk = report.plates.filter((p) => p.verdict !== "ok");
   for (const p of notOk) {
     L.push(`    ${p.verdict}: ${p.file} on ${p.printer}, plate ${p.plate}: ${p.reason}${p.returnCode !== null ? ` (code ${p.returnCode}: ${p.meaning})` : p.meaning ? ` (${p.meaning})` : ""}`);

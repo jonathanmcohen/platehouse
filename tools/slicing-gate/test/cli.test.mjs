@@ -182,6 +182,33 @@ test("plan stops with exit 2 when a selected file is not in the sample folder", 
   assert.match(plan.stderr, /u\.3mf/);
 });
 
+test("plan copies the selection's gaps, roles and reasons into plan.json, and the report prints them", () => {
+  const { root, sample, out, env } = setup();
+  const selFile = join(root, "in", "selection.json");
+  assert.equal(node([SELECT, sample, "--json", selFile], env).status, 0);
+  const selection = JSON.parse(readFileSync(selFile, "utf8"));
+  assert.ok(selection.missing.length > 0, "the synthetic folder leaves gaps");
+  assert.equal(node([GATE, "plan"], env).status, 0);
+  const planJson = JSON.parse(readFileSync(join(out, "plan.json"), "utf8"));
+  assert.deepEqual(planJson.selection, {
+    sample: selection.sample.map((s) => ({ name: s.name, roles: s.roles, reasons: s.reasons })),
+    missing: selection.missing,
+    unknownPrinter: selection.unknownPrinter,
+  });
+  fakeResults(out, readFileSync(join(out, "jobs.txt"), "utf8").trim().split("\n"));
+  writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-07T00:00:00.000Z", openscad: null, landrun: null, step: null }));
+  node([GATE, "report"], env);
+  const result = JSON.parse(readFileSync(join(out, "result.json"), "utf8"));
+  assert.deepEqual(result.selection, planJson.selection);
+  const summary = readFileSync(join(out, "summary.txt"), "utf8");
+  for (const m of selection.missing) assert.ok(summary.includes(`not covered: ${m}`), m);
+  for (const s of selection.sample) {
+    const line = summary.split("\n").find((l) => l.trim().startsWith(`${s.name}: `));
+    assert.ok(line, s.name);
+    for (const role of s.roles) assert.ok(line.includes(role), `${s.name} ${role}`);
+  }
+});
+
 test("an empty folder ends with report exit 2, the gate could not run, not 1", () => {
   const { root, out, env } = setup();
   const empty = join(root, "empty");

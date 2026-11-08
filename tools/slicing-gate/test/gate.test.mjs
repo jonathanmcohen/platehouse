@@ -245,3 +245,35 @@ test("a run with no plates could not run, not FAIL: nothing was sliced", () => {
   assert.ok(report.incomplete.some((m) => /no plate/.test(m)), JSON.stringify(report.incomplete));
   assert.match(summaryText(report), /incomplete: .*no plate/);
 });
+
+test("the report carries the selection's gaps and each sample file's roles and reasons", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs) results[j.id] = res();
+  const sel = {
+    sample: [
+      { name: "a.3mf", roles: ["p1s-sliced"], reasons: ["already sliced for P1S"] },
+      { name: "x.3mf", roles: ["foreign-X2D"], reasons: ["saved for X2D in project_settings printer_model, not sliced"] },
+    ],
+    missing: ["foreign-P2S", "foreign-X2D sliced (used a saved, unsliced file instead)"],
+    unknownPrinter: ["q.3mf"],
+  };
+  const report = buildReport({ plan: { jobs, errors: [], inspect: [], recipe, selection: sel }, results, hostExits: {}, checks });
+  assert.equal(report.verdict, "PASS", "a sample gap is reported, not enforced");
+  assert.deepEqual(report.selection, sel);
+  const text = summaryText(report);
+  assert.match(text, /not covered: foreign-P2S/);
+  assert.match(text, /not covered: foreign-X2D sliced \(used a saved, unsliced file instead\)/);
+  assert.match(text, /x\.3mf: foreign-X2D \(saved for X2D in project_settings printer_model, not sliced\)/);
+  assert.match(text, /a\.3mf: p1s-sliced \(already sliced for P1S\)/);
+  assert.match(text, /left out, printer not named: q\.3mf/);
+});
+
+test("a plan.json written without selection data still reports, and says the selection is unknown", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs) results[j.id] = res();
+  const report = buildReport({ plan: { jobs, errors: [], inspect: [], recipe }, results, hostExits: {}, checks });
+  assert.equal(report.selection, null);
+  assert.match(summaryText(report), /sample selection: not recorded in plan\.json/);
+});
