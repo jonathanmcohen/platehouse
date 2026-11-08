@@ -40,6 +40,11 @@ OUT="${GATE_DIR}/out"
 die() { printf 'run.sh: %s\n' "$*" >&2; exit 2; }
 
 # The scratch dir is deleted with rm -rf, so it must be the throwaway path.
+# A case pattern's * also matches "/..", so a .. segment is refused first.
+case "/${GATE_DIR}/" in
+  */../*) die "GATE_DIR must not contain a .. segment, got ${GATE_DIR}" ;;
+  *) ;;
+esac
 case "${GATE_DIR}" in
   /tmp/platehouse-gate | /tmp/platehouse-gate/*) ;;
   *) die "GATE_DIR must be /tmp/platehouse-gate or below it, got ${GATE_DIR}" ;;
