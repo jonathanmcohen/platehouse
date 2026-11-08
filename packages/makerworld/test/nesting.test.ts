@@ -29,7 +29,13 @@ const LINK = "https://e.test/l";
 const EVIL = "https://evil.example/x.png";
 const IMAGE_BAIT = `!<a href="${EVIL}">y</a>`;
 const END_ITEM = "<li>end item</li>";
-const LISTS = new Set(["list", "ordered list"]);
+const LISTS = new Set(["list", "ordered list", "heading closed inside a list"]);
+const TABLES = new Set([
+  "table cell",
+  "table cell, no </td>",
+  "table row, no </td> or </tr>",
+  "heading closed inside a table",
+]);
 
 interface Context {
   open: string;
@@ -72,6 +78,22 @@ const CONTEXTS: Record<string, Context> = {
     close: "</td></tr></table></td></tr></table>",
   },
   heading: { open: "<h2>", mid: "</h2><h2>", close: "</h2>" },
+  // A heading opened before a table and closed between its rows, the rows
+  // after it wider than the first. The heading's rewrite once left the table
+  // holding stale header and separator ends, and the header's pad then went
+  // into a later row's text, which made an escaped "!" bare (issue #40).
+  "heading closed inside a table": {
+    open: "<h2>a<p>a<p>a<table><tr><td>b</td></tr></h2><tr><td>a</td><td>",
+    mid: "</td><td>",
+    close: "</td></tr></table>",
+  },
+  // The same with a list: a heading closed inside an item of a list that
+  // opened in it once left that item's marker start stale (issue #40).
+  "heading closed inside a list": {
+    open: "<h2>a<p>a<p>a<ul><li>a</h2></li><li>",
+    mid: "</li><li>",
+    close: `</li>${END_ITEM}</ul>`,
+  },
   link: { open: `<a href="${LINK}">`, mid: `</a> <a href="${LINK}">`, close: "</a>" },
   emphasis: { open: "<b>", mid: "</b> <b>", close: "</b>" },
   blockquote: { open: "<blockquote>", mid: "</blockquote><blockquote>", close: "</blockquote>" },
@@ -93,23 +115,31 @@ interface Case {
   // review). Left out: misnested pairs, where that item can fall inside the
   // inner context (a table cell, say) and is no item there.
   listHolds: boolean;
+  // The outer context is a table and the inner one sits wholly inside it,
+  // so the output must still render a table: a row left open by a missing
+  // </tr> once lost its separator, and the rows rendered as text (issue
+  // #41). Left out for misnested pairs, as listHolds is.
+  tableHolds: boolean;
 }
 
 function cases(): Case[] {
   const out: Case[] = [];
   for (const [aName, a] of Object.entries(CONTEXTS)) {
     const listHolds = LISTS.has(aName);
+    const tableHolds = TABLES.has(aName);
     for (const [bName, b] of Object.entries(CONTEXTS)) {
       const pair = `${bName} in ${aName}`;
       out.push({
         name: `${pair}, nested`,
         html: a.open + P + b.open + P + b.close + P + a.close,
         listHolds,
+        tableHolds,
       });
       out.push({
         name: `${pair}, misnested`,
         html: a.open + P + b.open + P + a.close + P + b.close,
         listHolds: false,
+        tableHolds: false,
       });
       for (const [dName, dOpen, dClose] of DANGLING) {
         for (let n = 1; n <= 3; n++) {
@@ -119,16 +149,19 @@ function cases(): Case[] {
             name: `${pair}, ${tag} open across the inner boundary`,
             html: `${a.open + b.open}a${brs}${dOpen}${b.mid}${IMAGE_BAIT}${P}${dClose}${b.close}${a.close}`,
             listHolds,
+            tableHolds,
           });
           out.push({
             name: `${pair}, ${tag} open across the outer boundary`,
             html: `${a.open}a${brs}${dOpen}${a.mid}${b.open}${IMAGE_BAIT}${P}${dClose}${b.close}${a.close}`,
             listHolds,
+            tableHolds,
           });
           out.push({
             name: `${pair}, ${tag} open around both and closed inside`,
             html: `${dOpen}${a.open}${P}${brs}${b.open}${IMAGE_BAIT}${P}${dClose}${P}${b.close}${a.close}`,
             listHolds,
+            tableHolds,
           });
         }
       }
@@ -170,7 +203,7 @@ function count(haystack: string, needle: string): number {
 }
 
 describe("designer text nested in every block and inline renders literally", () => {
-  it.each(cases())("$name", ({ html, listHolds }) => {
+  it.each(cases())("$name", ({ html, listHolds, tableHolds }) => {
     const md = htmlToMarkdown(html);
     const rendered = renderMarkdown(md);
     const root = document.createElement("div");
@@ -200,5 +233,6 @@ describe("designer text nested in every block and inline renders literally", () 
       );
       expect(items.length, detail).toBe(count(html, END_ITEM));
     }
+    if (tableHolds) expect(root.querySelector("table"), detail).not.toBeNull();
   });
 });

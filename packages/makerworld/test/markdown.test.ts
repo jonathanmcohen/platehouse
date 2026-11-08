@@ -953,6 +953,119 @@ describe("escaped designer text beside misnested inline tags renders literally (
     );
   });
 
+  // Issue #40: a heading opened before a table and closed between its rows.
+  // The heading's whitespace collapse rewrote the table's header and
+  // separator rows, which shrank them, while the table kept its old header
+  // and separator ends; a later row wider than the header then had its pad
+  // inserted at those stale ends, inside the row's own text, between a
+  // backslash and the "!" it escaped, which made the designer's link an
+  // image. The heading now ends where the table opens.
+  const EVIL = "https://evil.example/x.png";
+
+  it("a heading closed between a table's rows keeps the table and the designer's ! (#40)", () => {
+    const out = htmlToMarkdown(
+      `<h2>a${"<p>a".repeat(12)}` +
+        `<table><tr><td>b</td></tr></h2><tr><td>!<a href="${EVIL}">tttttttt</a></td><td>z</td></tr></table>`,
+    );
+    expect(out).toBe(
+      `## ${"a ".repeat(12)}a\n\n| b | |\n| --- | --- |\n| \\![tttttttt](${EVIL}) | z |`,
+    );
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+    expect(render(out)).toBe(
+      `<h2>${"a ".repeat(12)}a</h2>\n<table>\n<thead>\n<tr>\n<th>b</th>\n<th></th>\n</tr>\n</thead>\n` +
+        `<tbody>\n<tr>\n<td>!<a href="${EVIL}">tttttttt</a></td>\n<td>z</td>\n</tr>\n</tbody>\n</table>\n`,
+    );
+  });
+
+  it("a heading closed inside a list item it opened keeps the list (#40)", () => {
+    const out = htmlToMarkdown(
+      `<h2>a<p>a<p>a<p>a<ul><li></h2>!!!!<li><a href="${EVIL}">t</a></li></ul>`,
+    );
+    expect(out).toBe(`## a a a a\n\n- \\!\\!\\!\\!\n- [t](${EVIL})`);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+  });
+
+  // The same cause through every position a heading's rewrite could leave
+  // behind: a table's header and separator ends and its row start, and a list
+  // item's marker and text starts. However many paragraphs shrink in the
+  // heading, the designer's "!" stays escaped.
+  const HEADING_ACROSS: Array<[string, (p: string) => string]> = [
+    [
+      "a table row wider than the header",
+      (p) =>
+        `<h2>a${p}<table><tr><td>b</td></tr></h2><tr><td>!<a href="${EVIL}">tttttttt</a></td><td>z</td></tr></table>`,
+    ],
+    [
+      "a list item with no text yet",
+      (p) => `<h2>a${p}<ul><li></h2>!!!!<li><a href="${EVIL}">t</a></li></ul>`,
+    ],
+    [
+      "an ordered list item with no text yet",
+      (p) => `<h2>a${p}<ol><li>x<li></h2>!!!!</li><li>!<a href="${EVIL}">t</a></ol>`,
+    ],
+    [
+      "a table row opened in the heading",
+      (p) =>
+        `<table><tr><td>a</td></tr><h2>x${p}<tr></h2>!!!!</tr><tr><td>!<a href="${EVIL}">t</a></td><td>z</td></tr></table>`,
+    ],
+    [
+      "a table cell opened in the heading",
+      (p) =>
+        `<table><tr><td>a</td><h2>x${p}<td>!!</h2>!!</td></tr><tr><td>!<a href="${EVIL}">t</a></td><td>z</td><td>w</td></tr></table>`,
+    ],
+  ];
+  const SHRINKS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+  it.each(HEADING_ACROSS.flatMap(([name, make]) => SHRINKS.map((n) => [name, n, make] as const)))(
+    "a heading closed across %s, after %i paragraphs, makes no image (#40)",
+    (_name, n, make) => {
+      const out = htmlToMarkdown(make("<p>a".repeat(n)));
+      expect(renderWithImages(out), out).not.toMatch(/<img/);
+    },
+  );
+
+  // Issue #41: HTML lets a page leave out </tr>; the next <tr> or the
+  // table's end closes the row, as the next <td> closes a cell.
+  it.each([
+    [
+      "a <tr> closes the row before it",
+      "<table><tr><td>a<tr><td>b</table>",
+      "| a |\n| --- |\n| b |",
+    ],
+    [
+      "</table> closes the last row, which can widen the header",
+      "<table><tr><td>a</td></tr><tr><td>b<td>c</table>",
+      "| a | |\n| --- | --- |\n| b | c |",
+    ],
+    [
+      "a row closed by the next <tr> can widen the header",
+      "<table><tr><td>a<td>b<tr><td>c<td>d<td>e</table>",
+      "| a | b | |\n| --- | --- | --- |\n| c | d | e |",
+    ],
+    [
+      "an empty row left open leaves nothing",
+      "<table><tr><td>a</td></tr><tr></table>",
+      "| a |\n| --- |",
+    ],
+    [
+      "an empty row closed by the next <tr> leaves nothing",
+      "<table><tr><td>a</td></tr><tr><tr><td>b</td></tr></table>",
+      "| a |\n| --- |\n| b |",
+    ],
+  ])("a row left open by a missing </tr>: %s (#41)", (_name, html, expected) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(expected);
+    expect(render(out)).toMatch(/^<table>/);
+  });
+
+  it("a row left open by a missing </tr> keeps every cell in the rendered table (#41)", () => {
+    const html = render(htmlToMarkdown("<table><tr><td>a</td></tr><tr><td>b<td>c</table>"));
+    expect(html).toBe(
+      "<table>\n<thead>\n<tr>\n<th>a</th>\n<th></th>\n</tr>\n</thead>\n" +
+        "<tbody>\n<tr>\n<td>b</td>\n<td>c</td>\n</tr>\n</tbody>\n</table>\n",
+    );
+  });
+
   it.each(DESIGNER_PAYLOADS)("a link left open across a missing </td>: %j", (payload) => {
     const p = htmlEscape(payload);
     const out = htmlToMarkdown(
