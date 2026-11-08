@@ -107,7 +107,7 @@ test("the build checks the paths the pinned artifacts really hold", () => {
     "need -x /opt/orca/libexec/orca-slicer-env",
     "need -x /opt/orca/bin/orca-slicer",
     "need -d /opt/orca/lib/orca-runtime",
-    "need -f /opt/orca/resources/profiles/BBL.json -- ",
+    "need -f /opt/orca/resources/profiles/BBL.opc",
     "need -x /opt/openscad/AppRun",
     "need -x /opt/openscad/usr/bin/openscad",
     "need -x /usr/local/bin/landrun",
@@ -117,6 +117,72 @@ test("the build checks the paths the pinned artifacts really hold", () => {
   ]) {
     assert.ok(all.includes(check), `missing: ${check}`);
   }
-  assert.match(all, /need -f \/opt\/orca\/resources\/profiles\/BBL\.json -- "[^"]*BBL\.opc[^"]*"/, "the BBL.json check says why it can fail");
   assert.doesNotMatch(all, /find \/opt\/openscad/, "OpenSCAD's binary is named, not searched for");
+});
+
+// Jon's call, 2026-11-08: Orca 2.5.0 ships its presets only as binary .opc
+// caches, so the gate takes the BBL profile JSON from Orca's own source at the
+// commit tag v2.5.0 points to, fetched by that commit and checked by git.
+const ORCA_SRC_SHA = "40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19";
+const PROFILES = "/opt/orca-profiles";
+
+test("the profile source is pinned by the commit tag v2.5.0 points to, not by a moving ref", () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8");
+  assert.match(text, /^ARG ORCA_SRC_TAG=v2\.5\.0$/m);
+  assert.match(text, new RegExp(`^ARG ORCA_SRC_SHA=${ORCA_SRC_SHA}$`, "m"));
+  const all = runs().join("\n");
+  const fetches = all.match(/git fetch [^&]*/g) ?? [];
+  assert.equal(fetches.length, 1, fetches.join("\n"));
+  assert.match(fetches[0], /--depth 1 /);
+  assert.match(fetches[0], /--filter=blob:none /);
+  assert.match(fetches[0], /origin "\$ORCA_SRC_SHA"\s*$/, "the fetch names the commit");
+  assert.doesNotMatch(all, /git (clone|fetch)[^&]*(\$ORCA_SRC_TAG|v2\.5\.0|--branch|refs\/)/, "no tag or branch is fetched");
+  assert.ok(all.includes('need "$(git rev-parse HEAD)" = "$ORCA_SRC_SHA"'), "HEAD is checked against the pin");
+  assert.match(all, /git sparse-checkout set --no-cone /);
+});
+
+test("the README Pins table names the same tag and commit as the Dockerfile", () => {
+  const readme = readFileSync(join(HERE, "README.md"), "utf8");
+  const row = readme.split("\n").find((l) => l.startsWith("| OrcaSlicer profiles"));
+  assert.ok(row, "a Pins row for the profiles");
+  assert.ok(row.includes("v2.5.0") && row.includes(ORCA_SRC_SHA), row);
+});
+
+test("the profile JSON lands in its own folder, checked, beside Orca's shipped .opc files", () => {
+  const all = runs().join("\n");
+  for (const check of [
+    `need -f ${PROFILES}/BBL.json`,
+    `need -d ${PROFILES}/BBL/machine`,
+    `need -d ${PROFILES}/BBL/process`,
+    `need -d ${PROFILES}/BBL/filament`,
+    `need -f ${PROFILES}/OrcaFilamentLibrary.json`,
+    `need -d ${PROFILES}/OrcaFilamentLibrary/filament`,
+  ]) {
+    assert.ok(all.includes(check), `missing: ${check}`);
+  }
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8");
+  assert.match(text, new RegExp(`^COPY --from=fetch ${PROFILES} ${PROFILES}$`, "m"));
+  assert.ok(!PROFILES.startsWith("/opt/orca/"), "not inside the AppImage tree");
+});
+
+test("the build fails unless the source BBL.json version matches the BBL.opc Orca ships", () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8");
+  assert.match(text, /^COPY check-profile-version\.mjs \/usr\/local\/lib\/check-profile-version\.mjs$/m);
+  const all = runs().join("\n");
+  assert.ok(
+    all.includes(`/opt/node/bin/node /usr/local/lib/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc ${PROFILES}/BBL.json`),
+    "the version check runs on both files",
+  );
+});
+
+test("gate.mjs reads the profiles from the fetched JSON folder", () => {
+  const env = { ...process.env };
+  delete env.GATE_ORCA_PROFILES;
+  const r = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", `import { PATHS } from ${JSON.stringify(join(HERE, "gate.mjs"))}; process.stdout.write(PATHS.orcaProfiles);`],
+    { encoding: "utf8", env },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, PROFILES);
 });
