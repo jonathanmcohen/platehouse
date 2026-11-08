@@ -134,17 +134,19 @@ COPY --from=fetch /opt/openscad /opt/openscad
 COPY --from=fetch /opt/node /opt/node
 COPY --from=fetch /opt/landrun /usr/local/bin/landrun
 COPY --from=fetch /opt/gate /opt/gate
-COPY gate.mjs flatten-profiles.mjs select-sample.mjs /opt/gate/
+COPY gate.mjs flatten-profiles.mjs select-sample.mjs check-libs.sh /opt/gate/
 COPY lib/ /opt/gate/lib/
 RUN ln -s /opt/node/bin/node /usr/local/bin/node
 
 # Fail the build, not the run, when a shared library either program links is
-# missing from the image.
-RUN missing="$(ldd /opt/orca/AppRun | grep 'not found' || true)" \
+# missing from the image. Orca's AppRun is a bash launcher, so the check runs
+# on the real binary with the library path the launcher's orca-slicer-env sets
+# (lib/orca-runtime, then bin). check-libs.sh also fails when ldd itself fails,
+# so it cannot pass without checking anything.
+RUN bash /opt/gate/check-libs.sh /opt/orca/bin/orca-slicer /opt/orca/lib/orca-runtime:/opt/orca/bin \
  && scad_bin="$(find /opt/openscad -path '*/bin/openscad' -type f | head -n 1)" \
  && test -n "$scad_bin" \
- && missing="${missing}$(ldd "$scad_bin" | grep 'not found' || true)" \
- && if [ -n "$missing" ]; then echo "missing shared libraries:"; echo "$missing"; exit 1; fi \
+ && bash /opt/gate/check-libs.sh "$scad_bin" \
  && node --version | grep -qx 'v26.13.0' \
  && test -x /usr/local/bin/landrun \
  && test -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js

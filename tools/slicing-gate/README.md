@@ -23,6 +23,7 @@ the fallback.
 | `gate.mjs` | the image | The driver: `plan`, `slice <id>`, `checks`, `report`. |
 | `lib/` | both | Zip and 3MF metadata reader, printer ids, result classifier, GLB writer. |
 | `Dockerfile` | Hades | The throwaway gate image. Every download is pinned and sha256-checked. |
+| `check-libs.sh` | the image | Build-time check: fails the build when ldd fails on a binary or reports a missing shared library. |
 | `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes everything. |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
