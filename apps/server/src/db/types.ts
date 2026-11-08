@@ -1,9 +1,10 @@
 import type { ColumnType, Generated, Selectable } from "kysely";
 
-// The Kysely view of migrations/0001_init.sql. Names here are camelCase;
-// kysely.ts installs Kysely's CamelCasePlugin, which maps each one to the
-// snake_case table or column in the SQL (descriptionMd -> description_md,
-// modelTags -> model_tags). The SQL is the schema of record: when a migration
+// The Kysely view of the SQL in migrations/ (0001_init.sql, then each later
+// file in number order). Names here are camelCase; kysely.ts installs
+// Kysely's CamelCasePlugin, which maps each one to the snake_case table or
+// column in the SQL (descriptionMd -> description_md, modelTags ->
+// model_tags). The SQL is the schema of record: when a migration
 // changes a table, this file changes in the same commit.
 //
 // Generated<T> marks a column the database fills by default when an insert
@@ -45,6 +46,8 @@ export interface ModelsTable {
   licenseNote: string | null;
   externalRef: string | null;
   trashedAt: Date | null;
+  /** Set when a purge of the trashed model began (0002); restore then refuses it. */
+  purgeStartedAt: Date | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;
 }
