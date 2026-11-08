@@ -86,12 +86,24 @@ describe("buildSliceable", () => {
   });
 
   test("Orca's plate grid: columns are the rounded-up square root, stride is 1.2 beds", () => {
-    // PartPlate.hpp compute_colum_count and PartPlate.cpp compute_shape_position.
-    expect(plateOrigin(0, 1)).toEqual({ x: 0, y: 0 });
-    expect(plateOrigin(1, 2)).toEqual({ x: 256 * 1.2, y: 0 });
-    expect(plateOrigin(2, 3)).toEqual({ x: 0, y: -256 * 1.2 });
-    expect(plateOrigin(3, 4)).toEqual({ x: 256 * 1.2, y: -256 * 1.2 });
-    expect(plateOrigin(4, 5)).toEqual({ x: 256 * 2.4, y: 0 });
+    // PartPlate.hpp compute_colum_count: cols = round(sqrt(n)), plus one when
+    // sqrt(n) is above its rounding. PartPlate.cpp compute_shape_position:
+    // x = col * 1.2 * bed, y = -row * 1.2 * bed.
+    const stride = 256 * 1.2;
+    const cases: Array<[number, number, number, number]> = [
+      [0, 1, 0, 0], // 1 plate: 1 column
+      [1, 2, 1, 0], // 2 plates: sqrt 1.41 rounds to 1, so 2 columns
+      [2, 3, 0, 1], // 3 plates: 2 columns, the third starts row 1
+      [3, 4, 1, 1], // 4 plates: sqrt is exactly 2, so 2 columns
+      [2, 5, 2, 0], // 5 plates: sqrt 2.24 rounds to 2, so 3 columns
+      [4, 5, 1, 1],
+      [5, 7, 2, 1], // 7 plates: sqrt 2.65 rounds to 3, so 3 columns
+    ];
+    for (const [index, count, col, row] of cases) {
+      const o = plateOrigin(index, count);
+      expect(o.x, `plate ${index} of ${count}`).toBeCloseTo(col * stride, 6);
+      expect(o.y, `plate ${index} of ${count}`).toBeCloseTo(-row * stride, 6);
+    }
   });
 
   test("each cube uses the filament it is assigned, one per filament on every plate", () => {

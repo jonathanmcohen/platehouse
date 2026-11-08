@@ -122,21 +122,34 @@ function headersOnly(
 }
 
 describe("configuration", () => {
+  // The image sets both versions from its build arguments; health reports
+  // them and the app re-estimates when Orca's changes (AC-036).
+  const VERSIONS = { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" };
+
   test("SLICE_PLATE_SECONDS defaults to the gate's 120 and the kill to that plus 60", () => {
-    const c = loadConfig({});
+    const c = loadConfig(VERSIONS);
     expect(c.slicePlateSeconds).toBe(120);
     expect(c.sliceTimeoutSeconds).toBe(180);
     expect(c.port).toBe(8080);
     expect(c.workDir).toBe("/work");
-    expect(loadConfig({ SLICE_PLATE_SECONDS: "200" }).sliceTimeoutSeconds).toBe(260);
+    expect(c.orcaVersion).toBe("2.5.0");
+    expect(loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "200" }).sliceTimeoutSeconds).toBe(260);
     expect(
-      loadConfig({ SLICE_PLATE_SECONDS: "200", SLICE_TIMEOUT_SECONDS: "500" }).sliceTimeoutSeconds,
+      loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "200", SLICE_TIMEOUT_SECONDS: "500" })
+        .sliceTimeoutSeconds,
     ).toBe(500);
   });
 
   test("a bad number names the key", () => {
-    expect(() => loadConfig({ SLICE_PLATE_SECONDS: "soon" })).toThrow(/SLICE_PLATE_SECONDS/);
-    expect(() => loadConfig({ PORT: "-1" })).toThrow(/PORT/);
+    expect(() => loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "soon" })).toThrow(
+      /SLICE_PLATE_SECONDS/,
+    );
+    expect(() => loadConfig({ ...VERSIONS, PORT: "-1" })).toThrow(/PORT/);
+  });
+
+  test("a missing version fails at start, naming the key", () => {
+    expect(() => loadConfig({ OPENSCAD_VERSION: "2026.11-RC0" })).toThrow(/ORCA_VERSION/);
+    expect(() => loadConfig({ ORCA_VERSION: "2.5.0" })).toThrow(/OPENSCAD_VERSION/);
   });
 });
 

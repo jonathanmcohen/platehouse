@@ -3,6 +3,7 @@
 // downloads it, checks its sha256 and names it in STEP_SAMPLE. It is public
 // NIST test data, not a designer file.
 import { readFileSync } from "node:fs";
+import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { type RunningSlicer, startSlicer } from "./support/slicer.js";
 
@@ -36,6 +37,6 @@ describe("STEP in the image", () => {
       body: "not a step file",
     });
     expect(res.status).toBe(422);
-    expect((await res.json()).error).toBe("convert_failed");
+    expect(slicerContract.convertError.parse(await res.json()).error).toBe("convert_failed");
   });
 });
