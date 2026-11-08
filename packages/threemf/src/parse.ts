@@ -350,9 +350,22 @@ const xml = new XMLParser({
 
 type Node = Record<string, unknown>;
 
+/**
+ * The <config> element of a config entry, or null when there is none. XML
+ * that fast-xml-parser cannot parse counts as the entry being absent, as
+ * Nokogiri's recovery does under parser.rb: a broken model_settings.config
+ * costs the plate names (the png list takes over) and a broken
+ * slice_info.config costs the slice data, never the whole file. A DTD is
+ * still damage.
+ */
 function parseXml(text: string): Node | null {
   if (/<!DOCTYPE/i.test(text) || /<!ENTITY/i.test(text)) throw new Damaged("XML with a DTD");
-  const doc: unknown = xml.parse(text);
+  let doc: unknown;
+  try {
+    doc = xml.parse(text);
+  } catch {
+    return null;
+  }
   if (!isNode(doc)) return null;
   const config = doc.config;
   return isNode(config) ? config : null;
