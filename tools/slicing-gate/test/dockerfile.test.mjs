@@ -167,12 +167,18 @@ test("the profile JSON lands in its own folder, checked, beside Orca's shipped .
 
 test("the build fails unless the source BBL.json version matches the BBL.opc Orca ships", () => {
   const text = readFileSync(join(HERE, "Dockerfile"), "utf8");
-  assert.match(text, /^COPY check-profile-version\.mjs \/usr\/local\/lib\/check-profile-version\.mjs$/m);
+  // The script imports lib/is-main.mjs, so it is copied beside it.
+  assert.match(text, /^COPY check-profile-version\.mjs \/opt\/gate-build\/check-profile-version\.mjs$/m);
+  assert.match(text, /^COPY lib\/is-main\.mjs \/opt\/gate-build\/lib\/is-main\.mjs$/m);
   const all = runs().join("\n");
-  assert.ok(
-    all.includes(`/opt/node/bin/node /usr/local/lib/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc ${PROFILES}/BBL.json`),
-    "the version check runs on both files",
-  );
+  for (const vendor of ["BBL", "OrcaFilamentLibrary"]) {
+    assert.ok(
+      all.includes(
+        `/opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/${vendor}.opc ${PROFILES}/${vendor}.json`,
+      ),
+      `the version check runs on ${vendor}`,
+    );
+  }
 });
 
 test("gate.mjs reads the profiles from the fetched JSON folder", () => {

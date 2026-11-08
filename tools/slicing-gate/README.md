@@ -8,7 +8,7 @@ container needs (CPU, memory, time per plate, scratch space) and checks the
 OpenSCAD, landrun and STEP pieces the slicer image will carry.
 
 It runs on Hades only, by platform-sre (T1b), after Jon approves it. Designer
-files go from mini01 to Hades over scp and never to GitHub. When the report is
+files go from mini01 to Hades over ssh and never to GitHub. When the report is
 collected, the scratch dir and the image are deleted.
 
 If the gate fails, the build plan stops and goes back to Jon with Kiri:Moto as
@@ -28,14 +28,29 @@ the fallback.
 | `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
-## Orca 2.5.0 profiles (open, 2026-11-08)
+## Where the BBL profiles come from
 
 The pinned Orca 2.5.0 AppImage ships no `resources/profiles/BBL.json`. Every
 vendor's presets are packed into `resources/profiles/<vendor>.opc`, a binary
 preset cache, and `BBL/` keeps only covers, models and a few filament maps.
-`flatten-profiles.mjs` reads the JSON tree, so the image build stops at its
-BBL.json check, and says so, until Jon decides where the gate takes its BBL
-profiles from.
+`flatten-profiles.mjs` reads JSON, so (Jon, 2026-11-08) the image takes the
+JSON from Orca's own source at the commit tag v2.5.0 points to:
+
+- The fetch names the commit (see Pins), never the tag or a branch. It is a
+  shallow git fetch without blobs and a sparse checkout of `BBL.json`,
+  `BBL/`, `OrcaFilamentLibrary.json` and `OrcaFilamentLibrary/`. Git checks
+  the objects against the commit, and the build checks HEAD equals the pin.
+- The JSON goes to `/opt/orca-profiles`, beside the AppImage, so it shadows
+  nothing Orca ships, and the build checks BBL.json and the BBL machine,
+  process and filament folders are there.
+- `check-profile-version.mjs` fails the build unless the version in each
+  source `<vendor>.json` equals the version stamped in the `<vendor>.opc`
+  Orca ships, which Orca writes from that same field. On 2026-11-08: BBL
+  02.08.00.16 = 2.8.0.16, OrcaFilamentLibrary 02.04.00.26 = 2.4.0.26.
+
+The same choice binds the production slicer image (build plan Task 11) and
+the daily Orca update workflow: each new Orca tag needs its profile commit
+pinned and checked the same way.
 
 ## The sample rule
 
@@ -68,19 +83,25 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
      --json /tmp/platehouse-selection.json --names /tmp/platehouse-names.txt
    ```
 
-2. Copy the selection, the sample and this folder to Hades over scp. The names
-   in `/tmp/platehouse-names.txt` are top-level file names (checked on
-   2026-11-07; none holds a `/`).
+2. Copy the selection, the sample and this folder to Hades over ssh.
 
    ```sh
    ssh hades 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
    scp /tmp/platehouse-selection.json hades:/tmp/platehouse-gate/in/selection.json
    cd "$HOME/Downloads/3D Prints"
-   while IFS= read -r f; do scp -p -- "./$f" hades:/tmp/platehouse-gate/in/sample/; done < /tmp/platehouse-names.txt
+   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -T /tmp/platehouse-names.txt | ssh hades 'tar -xf - -C /tmp/platehouse-gate/in/sample'
    scp -rp /path/to/platehouse/tools/slicing-gate hades:/tmp/platehouse-gate/tool
    ```
 
-   `-p` keeps the files' modes. Without it, the first run (2026-11-08) found
+   Each line of `/tmp/platehouse-names.txt` is a path relative to the folder.
+   `select-sample.mjs` scans subfolders too, so a name may hold a subfolder
+   (`Sub Folder/part.3mf`). The tar stream keeps that path, so each file lands
+   at `in/sample/<name>`, where `gate.mjs plan` looks for it. Names with spaces
+   or a leading dash work. A name with a line break is never written (the
+   selection skips it and says so). `COPYFILE_DISABLE=1` and the two `--no-`
+   flags keep macOS metadata files (`._*`) out of the stream.
+
+   For the tool, `-p` keeps the files' modes. Without it, the first run (2026-11-08) found
    the scripts on Hades without their execute bits. The old copy of the tool
    is removed first because `scp -r` into a folder that already exists puts
    the new copy inside it (`tool/slicing-gate`), and a re-run would start the
@@ -216,6 +237,7 @@ On Hades and Mario, read-only, reported with the gate:
 | apt packages | Ubuntu snapshot 20261107T000000Z | signed snapshot index (apt) |
 | ca-certificates, openssl (bootstrap) | ca-certificates 20240203, openssl 3.0.13-0ubuntu3 | the noble release pocket of the live Ubuntu archive, which never changes; installed in both stages before the snapshot is switched on, because the snapshot service is https only and the base image has no CA bundle. Their other dependencies (debconf, libssl3t64) are already in the base image. Both are installed again from the snapshot once it is on, so the image carries the snapshot's versions |
 | OrcaSlicer | v2.5.0 Ubuntu 24.04 AppImage | sha256 `d13eb0a9cd618ed080ab6b82c64c0a60c4501aac91e88d5ac2c3b526fb141a7c` |
+| OrcaSlicer profiles (JSON) | source tag v2.5.0, commit `40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19` | git fetch of that commit (not the tag), HEAD checked equal; BBL.json and OrcaFilamentLibrary.json versions checked against the AppImage's .opc stamps |
 | OpenSCAD | 2026.11-RC0 x86_64 AppImage | sha256 `78c2050aedcf52cca0186151cdcda1118a771491e3bec934b3172d0b03a9de96` |
 | landrun | v0.1.17 linux amd64 | sha256 `6ada66a06669e8994e174a7271af2db636308e55a0d6ec896cc7d326b46727f6` |
 | Node.js | 26.13.0 linux x64 | sha256 `d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997` |

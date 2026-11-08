@@ -41,7 +41,9 @@ export const PATHS = Object.freeze({
   out: env.GATE_OUT ?? "/out",
   work: env.GATE_WORK ?? "/work",
   orca: "/opt/orca/AppRun",
-  orcaProfiles: env.GATE_ORCA_PROFILES ?? "/opt/orca/resources/profiles",
+  // Orca's BBL profile JSON from its source at v2.5.0 (see the Dockerfile);
+  // the AppImage itself ships the presets only as binary .opc caches.
+  orcaProfiles: env.GATE_ORCA_PROFILES ?? "/opt/orca-profiles",
   openscad: "/opt/openscad/AppRun",
   openscadDir: "/opt/openscad",
   landrun: "/usr/local/bin/landrun",

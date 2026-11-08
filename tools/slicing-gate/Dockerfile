@@ -6,6 +6,8 @@
 # asset digests, the npm registry tarball (its sha512 integrity matched), the
 # Node.js SHASUMS256.txt and a hash of the NIST archive, all on 2026-11-07.
 # The OpenSCAD value also matches the .sha256 file published with that release.
+# The one source checkout, Orca's profile JSON, is pinned by its git commit
+# instead and checked by git (see that step).
 #
 # Build context: tools/slicing-gate
 #   docker build --platform linux/amd64 -t platehouse-gate:t1 tools/slicing-gate
@@ -34,7 +36,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils unzip \
+ && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils unzip git \
  && rm -rf /var/lib/apt/lists/*
 
 # fetch URL FILE SHA256: download and refuse anything that does not match.
@@ -55,8 +57,9 @@ WORKDIR /dl
 # resources/profiles/BBL.json and no BBL/machine, process or filament JSON:
 # every vendor's presets are packed into resources/profiles/<vendor>.opc, a
 # binary preset cache (OrcaSlicer src/libslic3r/PresetCacheFormat.cpp), which
-# flatten-profiles.mjs cannot read. So the BBL.json check below fails on this
-# AppImage, and says why, until the profile source is decided.
+# flatten-profiles.mjs cannot read. The JSON comes from Orca's source in the
+# next step; the .opc files stay as Orca shipped them, and their version
+# stamps are checked against that JSON further down.
 ARG ORCA_URL=https://github.com/OrcaSlicer/OrcaSlicer/releases/download/v2.5.0/OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.5.0.AppImage
 ARG ORCA_SHA256=d13eb0a9cd618ed080ab6b82c64c0a60c4501aac91e88d5ac2c3b526fb141a7c
 RUN source /usr/local/lib/fetch.sh \
@@ -70,7 +73,40 @@ RUN source /usr/local/lib/fetch.sh \
  && need -x /opt/orca/libexec/orca-slicer-env \
  && need -x /opt/orca/bin/orca-slicer \
  && need -d /opt/orca/lib/orca-runtime \
- && need -f /opt/orca/resources/profiles/BBL.json -- "OrcaSlicer 2.5.0 packs its BBL presets into resources/profiles/BBL.opc, a binary preset cache that flatten-profiles.mjs cannot read"
+ && need -f /opt/orca/resources/profiles/BBL.opc \
+ && need -f /opt/orca/resources/profiles/OrcaFilamentLibrary.opc
+
+# Orca's BBL profile JSON, from OrcaSlicer's own source at the commit tag
+# v2.5.0 points to (Jon's call, 2026-11-08; resolved with git ls-remote on
+# 2026-11-08: a lightweight tag on 40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19).
+# It is fetched by that commit, never by the tag or a branch, shallow and
+# without blobs, and only BBL.json, BBL/, OrcaFilamentLibrary.json and
+# OrcaFilamentLibrary/ are checked out (about 17 MB). Git checks every object
+# it receives against its hash, and the tree against the commit, so the
+# checkout is that commit's content; HEAD is then checked against the pin.
+# The JSON goes to /opt/orca-profiles, beside the AppImage, not inside it,
+# so nothing shadows the .opc files Orca ships.
+ARG ORCA_SRC_TAG=v2.5.0
+ARG ORCA_SRC_SHA=40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19
+ARG ORCA_SRC_REPO=https://github.com/OrcaSlicer/OrcaSlicer.git
+RUN source /usr/local/lib/need.sh \
+ && git init -q /dl/orca-src \
+ && cd /dl/orca-src \
+ && git remote add origin "$ORCA_SRC_REPO" \
+ && git sparse-checkout set --no-cone /resources/profiles/BBL.json /resources/profiles/BBL/ /resources/profiles/OrcaFilamentLibrary.json /resources/profiles/OrcaFilamentLibrary/ \
+ && git fetch -q --depth 1 --filter=blob:none origin "$ORCA_SRC_SHA" \
+ && git -c advice.detachedHead=false checkout -q FETCH_HEAD \
+ && need "$(git rev-parse HEAD)" = "$ORCA_SRC_SHA" \
+ && mkdir /opt/orca-profiles \
+ && mv resources/profiles/BBL.json resources/profiles/BBL resources/profiles/OrcaFilamentLibrary.json resources/profiles/OrcaFilamentLibrary /opt/orca-profiles/ \
+ && cd /dl \
+ && rm -rf /dl/orca-src \
+ && need -f /opt/orca-profiles/BBL.json \
+ && need -d /opt/orca-profiles/BBL/machine \
+ && need -d /opt/orca-profiles/BBL/process \
+ && need -d /opt/orca-profiles/BBL/filament \
+ && need -f /opt/orca-profiles/OrcaFilamentLibrary.json \
+ && need -d /opt/orca-profiles/OrcaFilamentLibrary/filament
 
 # OpenSCAD 2026.11-RC0 Linux AppImage (pre-release, Jon's call: latest RC).
 # Layout read from this exact file's squashfs on 2026-11-08: AppRun is a
@@ -103,6 +139,16 @@ RUN source /usr/local/lib/fetch.sh \
  && mkdir /opt/node \
  && tar -xJf node.tar.xz -C /opt/node --strip-components=1 \
  && rm node.tar.xz
+
+# The profile JSON must be the release the AppImage was built from: the version
+# in each source <vendor>.json must equal the version stamped in the
+# <vendor>.opc Orca ships (Orca writes it from that same field), or the build
+# fails naming both. On 2026-11-08: BBL 02.08.00.16 = 2.8.0.16 and
+# OrcaFilamentLibrary 02.04.00.26 = 2.4.0.26.
+COPY check-profile-version.mjs /opt/gate-build/check-profile-version.mjs
+COPY lib/is-main.mjs /opt/gate-build/lib/is-main.mjs
+RUN /opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json \
+ && /opt/node/bin/node /opt/gate-build/check-profile-version.mjs /opt/orca/resources/profiles/OrcaFilamentLibrary.opc /opt/orca-profiles/OrcaFilamentLibrary.json
 
 # occt-import-js 0.0.23 from the npm registry (no runtime dependencies).
 ARG OCCT_URL=https://registry.npmjs.org/occt-import-js/-/occt-import-js-0.0.23.tgz
@@ -156,6 +202,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=fetch /opt/orca /opt/orca
+COPY --from=fetch /opt/orca-profiles /opt/orca-profiles
 COPY --from=fetch /opt/openscad /opt/openscad
 COPY --from=fetch /opt/node /opt/node
 COPY --from=fetch /opt/landrun /usr/local/bin/landrun

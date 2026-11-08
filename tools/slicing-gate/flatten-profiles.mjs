@@ -21,7 +21,7 @@
 // system presets carry none, so it is not done here.
 //
 // Usage (inside the gate image):
-//   node flatten-profiles.mjs --profiles /opt/orca/resources/profiles --out <dir> \
+//   node flatten-profiles.mjs --profiles /opt/orca-profiles --out <dir> \
 //        --printer "Bambu Lab P1S 0.4 nozzle" [--printer ...] --types PLA,PETG [--companions]
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -75,7 +75,9 @@ function readTree(profilesRoot, name) {
 }
 
 /**
- * Indexes the vendor tree and the filament library under resources/profiles.
+ * Indexes the vendor tree and the filament library under a profiles folder in
+ * the layout of Orca's source resources/profiles (in the image,
+ * /opt/orca-profiles, fetched from Orca's source; see the Dockerfile).
  * Throws when the vendor has no JSON presets, rather than return an empty
  * index that turns every printer into a "no bundled machine preset" error.
  */
