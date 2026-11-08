@@ -1157,6 +1157,62 @@ describe("escaped designer text beside misnested inline tags renders literally (
     );
   });
 
+  // A <br> between a table's rows wrote a second newline, and a list there
+  // wrote a blank line or a "- " line, either of which ended the table, so
+  // the rows after it showed as text with pipes (PR #24 review). A <br>
+  // there is at most one newline, and a list's items are lines of their own,
+  // which markdown-it reads as one-cell rows.
+  it.each([
+    ["a <br>", "<br>", "| a |\n| --- |\n| b |"],
+    ["two <br>s", "<br><br>", "| a |\n| --- |\n| b |"],
+    ["a list", "<ul><li>x</li></ul>", "| a |\n| --- |\nx\n| b |"],
+    ["an ordered list of two", "<ol><li>x</li><li>y</li></ol>", "| a |\n| --- |\nx\ny\n| b |"],
+    ["a bare <li>", "<li>x</li>", "| a |\n| --- |\nx\n| b |"],
+    ["a bare <li> left open", "<li>x", "| a |\n| --- |\nx\n| b |"],
+    ["text, a list and text", "t<ul><li>x</li></ul>u", "| a |\n| --- |\nt\nx\nu\n| b |"],
+  ])("%s between a table's rows keeps the table whole", (_name, between, expected) => {
+    const out = htmlToMarkdown(`<table><tr><td>a</td></tr>${between}<tr><td>b</td></tr></table>`);
+    expect(out).toBe(expected);
+    const html = render(out);
+    expect(html.match(/<table>/g)).toHaveLength(1);
+    expect(html).toMatch(/^<table>/);
+    expect(html).toContain("<td>b</td>");
+  });
+
+  it("a list between the rows of a table in a list item keeps the table in the item", () => {
+    const out = htmlToMarkdown(
+      "<ul><li>i<table><tr><td>a</td></tr><ul><li>x</li></ul><br><tr><td>b</td></tr></table></li><li>j</li></ul>",
+    );
+    expect(out).toBe("- i\n\n  | a |\n  | --- |\n  x\n  | b |\n- j");
+    expect(render(out)).toBe(
+      "<ul>\n<li>\n<p>i</p>\n<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n" +
+        "<tbody>\n<tr>\n<td>x</td>\n</tr>\n<tr>\n<td>b</td>\n</tr>\n</tbody>\n</table>\n</li>\n" +
+        "<li>\n<p>j</p>\n</li>\n</ul>\n",
+    );
+  });
+
+  it.each([
+    ["a <br>", "<br>"],
+    ["a list", "<ul><li>x</li></ul>"],
+  ])("%s in a row before its first cell keeps the row whole", (_name, before) => {
+    const out = htmlToMarkdown(`<table><tr>${before}<td>a</td></tr><tr><td>b</td></tr></table>`);
+    const html = render(out);
+    expect(html.match(/<table>/g)).toHaveLength(1);
+    expect(html).toMatch(/^<table>/);
+    expect(html).toContain("<td>b</td>");
+  });
+
+  it.each(DESIGNER_PAYLOADS)("a list between a table's rows: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(
+      `<table><tr><td>a</td></tr><ul><li>${p}x</li><li>- ${p}</li></ul><br><br><tr><td>b</td></tr></table>`,
+    );
+    const html = render(out);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+    expect(html.match(/<table>/g)).toHaveLength(1);
+    expect(html).toContain("<td>b</td>");
+  });
+
   it("two paragraphs between a table's rows keep their words apart", () => {
     const out = htmlToMarkdown(
       "<table><tr><td>a</td></tr><p>x</p><p>y</p><tr><td>b</td></tr></table>",
