@@ -4,18 +4,37 @@ import { defineConfig } from "vitest/config";
 // Only the TypeScript suites under apps/ and packages/ run here. The slicing
 // gate's tests use node:test and run with node --test (see ci.yml).
 //
-// Two projects, one per CI job (build plan Task 3):
-// - unit: every test file except those under a test/integration/ folder.
+// Three projects, one per CI job (build plan Tasks 3 and 11):
+// - unit: every test file except those under a test/integration/ or
+//   test/container/ folder.
 // - integration: the files under test/integration/, which start real
 //   containers (Postgres and the S3 test server) through testcontainers and
 //   need Docker. Container start-up includes an image pull, hence the longer
 //   timeouts.
+// - container: the files under test/container/, which build the slicer image
+//   (apps/slicer/Dockerfile) and test it over HTTP. The image build downloads
+//   OrcaSlicer and OpenSCAD and takes minutes, hence the hour-long hook
+//   timeout; the files run one at a time so the build happens once and the
+//   later files reuse Docker's cache.
+//
+// Workspace packages export their TypeScript source under the "source"
+// condition, so tests import them without a build; Node and tsc use the
+// built dist/ files.
 const INTEGRATION = [
   "apps/*/test/integration/**/*.test.ts",
   "packages/*/test/integration/**/*.test.ts",
 ];
+const CONTAINER = ["apps/*/test/container/**/*.test.ts", "packages/*/test/container/**/*.test.ts"];
 
 export default defineConfig({
+  resolve: {
+    conditions: ["source"],
+  },
+  ssr: {
+    resolve: {
+      conditions: ["source"],
+    },
+  },
   test: {
     projects: [
       {
@@ -23,7 +42,7 @@ export default defineConfig({
         test: {
           name: "unit",
           include: ["apps/*/test/**/*.test.ts", "packages/*/test/**/*.test.ts"],
-          exclude: INTEGRATION,
+          exclude: [...INTEGRATION, ...CONTAINER],
         },
       },
       {
@@ -33,6 +52,16 @@ export default defineConfig({
           include: INTEGRATION,
           testTimeout: 60_000,
           hookTimeout: 300_000,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "container",
+          include: CONTAINER,
+          testTimeout: 300_000,
+          hookTimeout: 3_600_000,
+          fileParallelism: false,
         },
       },
     ],

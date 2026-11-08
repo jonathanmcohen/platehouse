@@ -9,8 +9,13 @@
 # The slicing gate job builds a large image, so it keeps its own path scoping:
 # the changes job decides whether tools/slicing-gate, this file or .node-version
 # (the gate job's Node version) changed, and the gate job runs only then. Nothing depends on the gate job, so its skip
-# reaches no other job. Nothing is pushed anywhere and no secret is used. No
-# designer file comes near any job: every test builds its own fixtures.
+# reaches no other job. The slicer job (build plan Task 11) is scoped the same
+# way, by the same changes job: it builds the slicer image and runs the
+# container tests against it, and nothing depends on it either. Nothing is
+# pushed anywhere, no image is published (Task 25 does that) and no secret is
+# used. No designer file comes near any job: every test builds its own
+# fixtures, and the one outside file, the slicer's STEP sample, is public NIST
+# test data checked against its sha256.
 name: ci
 
 on:
@@ -40,6 +45,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       gate: ${{ steps.diff.outputs.gate }}
+      slicer: ${{ steps.slicer.outputs.slicer }}
     steps:
       - name: Check out
         uses: actions/checkout@v7.0.1
@@ -76,6 +82,35 @@ jobs:
             fi
           fi
           echo "gate=${gate}" >>"$GITHUB_OUTPUT"
+
+      # The same rule for the slicer job (build plan Task 11), with the same
+      # base commit and the same safe default. It runs when apps/slicer or
+      # packages/slicer-contract changes, or anything else the slicer image or
+      # its container tests are built from: packages/threemf (the slicer reads
+      # projects with it, and buildSliceable lives there), the root workspace
+      # files the image's install and build read, vitest.config.ts (the
+      # container project), this workflow and .node-version.
+      - name: Decide whether the slicer job runs
+        id: slicer
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          slicer=true
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (${base:-none}); the slicer job runs."
+          else
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
+            if grep -Eq '^(apps/slicer/|packages/slicer-contract/|packages/threemf/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig\.base\.json$|vitest\.config\.ts$|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The slicer, its contract or an input of its image changed; the slicer job runs."
+            else
+              slicer=false
+              echo "Nothing the slicer image is built from changed; the slicer job is skipped."
+            fi
+          fi
+          echo "slicer=${slicer}" >>"$GITHUB_OUTPUT"
 
   lint:
     name: Lint (Biome)
@@ -321,3 +356,84 @@ jobs:
             "$IMAGE" node /src/smoke-gate.mjs switch --control --out /results/control.json
           echo "== own-printer slices with and without process_full"
           node tools/slicing-gate/smoke-gate.mjs compare "$results/fixed.json" "$results/control.json"
+
+  # The slicer image (build plan Task 11): the container tests build
+  # apps/slicer/Dockerfile and run it the way Hades will (read-only root,
+  # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract v1 over
+  # HTTP: a real slice of buildSliceable's plates, OpenSCAD renders and the
+  # landrun sandbox, STEP to GLB, health and the printer menu. Runs only when
+  # the changes job says the slicer or an input of its image changed. The
+  # image stays on the runner; nothing is pushed.
+  slicer-image:
+    name: Slicer image and container tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.slicer == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SLICER_IMAGE: platehouse-slicer:ci
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # The STEP sample of gate item (h): NIST MBE PMI test case CTC-01,
+      # geometry only (published 2024-06-19; NIST allows use without
+      # restriction). The archive and the extracted file are both checked
+      # against the sha256 values the slicing gate's Dockerfile records.
+      - name: Fetch the STEP sample
+        env:
+          NIST_URL: https://www.nist.gov/system/files/documents/noindex/2024/06/19/NIST-PMI-STEP-Files.zip
+          NIST_SHA256: 8fa78429e6d8d9b0d7681d223b6aa9ec98c3772185c55b1a0e3679b21c181911
+          NIST_STEP_SHA256: e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855
+        run: |
+          dir="$RUNNER_TEMP/step"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/nist.zip" "$NIST_URL"
+          echo "$NIST_SHA256  $dir/nist.zip" | sha256sum -c -
+          unzip -j -q "$dir/nist.zip" 'NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp' -d "$dir"
+          echo "$NIST_STEP_SHA256  $dir/nist_ctc_01_asme1_rd.stp" | sha256sum -c -
+          echo "STEP_SAMPLE=$dir/nist_ctc_01_asme1_rd.stp" >>"$GITHUB_ENV"
+      # Same zero-test guard as the unit and integration jobs. The image is
+      # built inside the run (the first file's beforeAll), so a build failure
+      # fails the tests rather than skipping them.
+      - name: Container tests
+        run: |
+          status=0
+          pnpm exec vitest run --project container --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ -s report.json ]; then
+            total="$(jq '.numTotalTests' report.json)"
+            skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+            ran=$((total - skipped))
+            echo "container: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Vitest failed (exit ${status}); its output above names the failure"
+            exit "$status"
+          fi
+          if [ ! -s report.json ]; then
+            echo "::error::No tests ran (vitest wrote no report)"
+            exit 1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No tests ran"
+            exit 1
+          fi
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: container-report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 14

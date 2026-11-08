@@ -1,4 +1,9 @@
 {
   "files": [],
-  "references": [{ "path": "./apps/server" }, { "path": "./packages/threemf" }]
+  "references": [
+    { "path": "./apps/server" },
+    { "path": "./apps/slicer" },
+    { "path": "./packages/slicer-contract" },
+    { "path": "./packages/threemf" }
+  ]
 }
