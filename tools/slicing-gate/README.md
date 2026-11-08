@@ -24,8 +24,18 @@ the fallback.
 | `lib/` | both | Zip and 3MF metadata reader, printer ids, result classifier, GLB writer. |
 | `Dockerfile` | Hades | The throwaway gate image. Every release file it downloads is pinned and sha256-checked; apt packages come from a dated Ubuntu snapshot; ca-certificates and openssl are first installed at their pinned noble release versions to reach it (see Pins). |
 | `check-libs.sh` | the image | Build-time check: fails the build when ldd fails on a binary or reports a missing shared library. |
+| `need.sh` | the image | Build-time check helper: every path and version check in the Dockerfile goes through `need`, which names the failed check on stderr instead of exiting 1 with no text. |
 | `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
+
+## Orca 2.5.0 profiles (open, 2026-11-08)
+
+The pinned Orca 2.5.0 AppImage ships no `resources/profiles/BBL.json`. Every
+vendor's presets are packed into `resources/profiles/<vendor>.opc`, a binary
+preset cache, and `BBL/` keeps only covers, models and a few filament maps.
+`flatten-profiles.mjs` reads the JSON tree, so the image build stops at its
+BBL.json check, and says so, until Jon decides where the gate takes its BBL
+profiles from.
 
 ## The sample rule
 
@@ -63,17 +73,24 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    2026-11-07; none holds a `/`).
 
    ```sh
-   ssh hades 'mkdir -p /tmp/platehouse-gate/in/sample'
+   ssh hades 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
    scp /tmp/platehouse-selection.json hades:/tmp/platehouse-gate/in/selection.json
    cd "$HOME/Downloads/3D Prints"
    while IFS= read -r f; do scp -p -- "./$f" hades:/tmp/platehouse-gate/in/sample/; done < /tmp/platehouse-names.txt
-   scp -r /path/to/platehouse/tools/slicing-gate hades:/tmp/platehouse-gate/tool
+   scp -rp /path/to/platehouse/tools/slicing-gate hades:/tmp/platehouse-gate/tool
    ```
 
-3. On Hades:
+   `-p` keeps the files' modes. Without it, the first run (2026-11-08) found
+   the scripts on Hades without their execute bits. The old copy of the tool
+   is removed first because `scp -r` into a folder that already exists puts
+   the new copy inside it (`tool/slicing-gate`), and a re-run would start the
+   old `run.sh`.
+
+3. On Hades, through `bash`, so it runs whether or not the execute bit
+   survived the copy:
 
    ```sh
-   /tmp/platehouse-gate/tool/run.sh
+   bash /tmp/platehouse-gate/tool/run.sh
    ```
 
    It builds `platehouse-gate:t1` if it is missing (`--build` forces a
@@ -87,7 +104,7 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 5. Delete the scratch dir and the image, and check both are gone:
 
    ```sh
-   /tmp/platehouse-gate/tool/run.sh --clean
+   bash /tmp/platehouse-gate/tool/run.sh --clean
    ls /tmp/platehouse-gate                 # expect: No such file or directory
    docker images | grep platehouse-gate    # expect: nothing
    ```

@@ -5,9 +5,9 @@
 # checks, then writes the report.
 #
 # Usage:
-#   tools/slicing-gate/run.sh          build the image if missing, run the gate
-#   tools/slicing-gate/run.sh --build  rebuild the image first
-#   tools/slicing-gate/run.sh --clean  delete the scratch dir and the image, and verify
+#   bash tools/slicing-gate/run.sh          build the image if missing, run the gate
+#   bash tools/slicing-gate/run.sh --build  rebuild the image first
+#   bash tools/slicing-gate/run.sh --clean  delete the scratch dir and the image, and verify
 #
 # Inputs, under GATE_DIR (default /tmp/platehouse-gate):
 #   in/selection.json   from select-sample.mjs --json on mini01
@@ -172,7 +172,7 @@ esac
 
 printf '\nResults: %s/result.json and %s/summary.txt\n' "${OUT}" "${OUT}"
 printf 'Per-plate kill inside each container: %s s; --mstpp 600.\n' "${KILL_SECONDS}"
-printf 'After the report is collected: %s --clean\n' "$0"
+printf 'After the report is collected: bash %s --clean\n' "$0"
 exit_as="${verdict}"
 exit "${verdict}"
 }
