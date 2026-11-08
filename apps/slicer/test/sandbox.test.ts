@@ -66,8 +66,14 @@ describe("landrun arguments", () => {
     }
   });
 
-  test("the sandbox fails closed: no best-effort fallback to running unsandboxed", () => {
-    expect(split(args).flags).not.toContain("--best-effort");
+  // landrun v0.1.17 asks for Landlock ABI 9 unless it runs best effort, and
+  // refuses an older kernel outright: GitHub's runner has ABI 8 (CI run
+  // 42530006914, "Got Landlock ABI v8, wanted Landlock V9"). The filesystem
+  // rules work from ABI 1, and the gate proved this form on Hades. The
+  // server's sandbox self-test (server.test.ts) refuses every render if the
+  // sandbox does not actually block a read outside the job folder.
+  test("landrun runs best effort, as the gate proved it", () => {
+    expect(split(args).flags).toContain("--best-effort");
   });
 
   test("OpenSCAD gets a fixed environment with no OPENSCADPATH", () => {

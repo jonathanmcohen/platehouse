@@ -109,8 +109,11 @@ exit $st
 export function fakeLandrun(
   dir: string,
   mode: { kind: "ok"; content: string } | { kind: "fail"; stderr: string },
-): { bin: string; argsLog: string } {
+  opts: { blocksProbe?: boolean } = {},
+): { bin: string; argsLog: string; runsLog: string } {
   const argsLog = join(dir, "landrun.log");
+  const runsLog = join(dir, "landrun-runs.log");
+  const blocksProbe = opts.blocksProbe ?? true;
   const tail =
     mode.kind === "ok"
       ? `printf '%s' '${mode.content}' > "$out"
@@ -119,19 +122,33 @@ exit 0
       : `printf '%s\\n' '${mode.stderr}' >&2
 exit 1
 `;
+  // A .scad that imports the sandbox probe is the server's self-test. A
+  // working sandbox blocks it the way OpenSCAD reports a file it cannot open.
+  const probe = blocksProbe
+    ? `if grep -q sandbox-probe "$input"; then
+  printf '%s\\n' "WARNING: Can't open import file, import() at line 1" >&2
+  exit 1
+fi
+`
+    : "";
   const bin = writeScript(
     join(dir, "landrun"),
     `#!/bin/sh
-: > '${argsLog}'
-for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
+printf 'run\\n' >> '${runsLog}'
+input=""
+for a in "$@"; do input="$a"; done
+if ! grep -q sandbox-probe "$input" 2>/dev/null; then
+  : > '${argsLog}'
+  for a in "$@"; do printf '%s\\n' "$a" >> '${argsLog}'; done
+fi
 out=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "-o" ]; then out="$2"; fi
   shift
 done
-${tail}`,
+${probe}${tail}`,
   );
-  return { bin, argsLog };
+  return { bin, argsLog, runsLog };
 }
 
 /** A fake STEP worker module: node worker.mjs <in> <out>. */

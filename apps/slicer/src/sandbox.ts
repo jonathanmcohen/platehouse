@@ -11,10 +11,14 @@
 //   until it meets "--", so without it OpenSCAD's own -o was taken as a
 //   landrun flag ("flag provided but not defined: -o").
 //
-// The gate ran landrun with --best-effort. This does not: best effort lets
-// landrun run the command with a weaker sandbox, or none, on a kernel
-// without the Landlock features asked for, and a render that cannot be
-// sandboxed must fail instead.
+// landrun runs with --best-effort, as the gate proved it. Without it,
+// landrun v0.1.17 asks for Landlock ABI 9 and refuses any older kernel
+// outright: GitHub's runner has ABI 8 (CI run 42530006914). The filesystem
+// rules this sandbox relies on work from ABI 1. Best effort would also run
+// OpenSCAD unsandboxed on a kernel with no Landlock at all, so the server
+// does not trust it: before its first render it proves the sandbox blocks a
+// read outside the job folder (sandboxSelfTest in scad.ts), and refuses
+// every render if it does not.
 //
 // runGroup, below, is how the server runs every external program (Orca,
 // landrun with OpenSCAD, the STEP worker): in its own process group, killed
@@ -32,6 +36,7 @@ export function landrunArgs(opts: {
 }): string[] {
   const { dir, openscadDir, command } = opts;
   return [
+    "--best-effort",
     "--ignore-missing",
     "--rox",
     [openscadDir, ...SYSTEM_EXEC].join(","),

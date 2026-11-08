@@ -55,3 +55,45 @@ export async function renderScad(
       `OpenSCAD exited with ${run.signal ?? run.code} and wrote no ${kind.toUpperCase()}.`,
   };
 }
+
+export interface SandboxCheck {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Proves the sandbox works before any render runs. landrun runs best effort,
+ * which would run OpenSCAD unsandboxed on a kernel without Landlock, so this
+ * renders a .scad that imports `probe`, a file outside the job folder,
+ * through the same landrun call a real render uses. OpenSCAD must fail to
+ * read it. A missing probe file fails the check too: the import would fail
+ * for that reason alone and prove nothing.
+ */
+export async function sandboxSelfTest(
+  config: ScadConfig,
+  dir: string,
+  probe: string,
+): Promise<SandboxCheck> {
+  if (!existsSync(probe) || statSync(probe).size === 0) {
+    return {
+      ok: false,
+      detail: `the sandbox probe ${probe} is missing, so the sandbox cannot be checked`,
+    };
+  }
+  const r = await renderScad(
+    config,
+    dir,
+    "stl",
+    Buffer.from(`import(${JSON.stringify(probe)});\n`),
+  );
+  if (r.ok) {
+    return {
+      ok: false,
+      detail: `OpenSCAD read ${probe} from outside its job folder under landrun`,
+    };
+  }
+  return {
+    ok: true,
+    detail: `landrun blocked a read of ${probe}: ${r.message.split("\n").at(-1) ?? ""}`,
+  };
+}

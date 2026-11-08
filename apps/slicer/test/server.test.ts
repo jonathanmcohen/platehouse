@@ -1,7 +1,7 @@
 // The slicer server (build plan Task 11) against stub programs: contract v1
 // over HTTP, one slice at a time (409), the kill at SLICE_TIMEOUT_SECONDS,
 // the body limits and the Orca arguments of the T1 recipe.
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -37,6 +37,8 @@ function setup(
   buildProfiles(loadIndex(profileTree()), profilesDir);
   const workDir = mkdtempSync(join(tmpdir(), "slicer-work-"));
   const fake = fakeOrca(stubs, orca);
+  const sandboxProbe = join(stubs, "sandbox-probe.stl");
+  writeFileSync(sandboxProbe, "solid probe\nendsolid probe\n");
   const config: SlicerConfig = {
     port: 0,
     workDir,
@@ -46,6 +48,7 @@ function setup(
     openscadBin: "/opt/openscad/AppRun",
     openscadDir: "/opt/openscad",
     landrunBin: fakeLandrun(stubs, { kind: "ok", content: "solid x" }).bin,
+    sandboxProbe,
     stepWorker: fakeStepWorker(stubs, { kind: "ok", content: "glTF" }),
     slicePlateSeconds: 120,
     sliceTimeoutSeconds: 30,
@@ -383,6 +386,59 @@ describe("slicing", () => {
     const res = await postSlice(base, sliceable(), printer, plate);
     expect(res.status).toBe(400);
     expect(slicerContract.error.parse(await res.json()).error).toBe("bad_request");
+  });
+});
+
+// landrun runs best effort (see sandbox.test.ts), so before its first render
+// the server proves the sandbox works: it renders a .scad that imports a file
+// outside the job folder, through the same landrun, and expects OpenSCAD to
+// fail. If the import works, or the probe file is missing so the check would
+// prove nothing, every render is refused.
+describe("sandbox self-test", () => {
+  const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
+
+  test("renders run once the self-test has seen the sandbox block a read outside the job folder", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+      expect(res.status).toBe(200);
+    }
+    // one self-test, then the two renders
+    expect(lines(lr.runsLog)).toBe(3);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("when the sandbox lets OpenSCAD read outside its folder, every render is refused", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { blocksProbe: false });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (const kind of ["stl", "png"]) {
+      const res = await fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+      expect(res.status).toBe(422);
+      expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
+    }
+    // the self-test ran once and no render ran
+    expect(lines(lr.runsLog)).toBe(1);
+  });
+
+  test("a missing probe file refuses every render, since the self-test would prove nothing", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({
+      ...s.config,
+      landrunBin: lr.bin,
+      sandboxProbe: join(s.stubs, "no-such-probe.stl"),
+    });
+    const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+    expect(res.status).toBe(422);
+    expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
+  });
+
+  test("SANDBOX_PROBE defaults to the file the image ships", () => {
+    const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
+    expect(c.sandboxProbe).toBe("/opt/platehouse/sandbox-probe.stl");
   });
 });
 

@@ -29,7 +29,7 @@ import { z } from "zod";
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import { runGroup } from "./sandbox.js";
-import { renderScad } from "./scad.js";
+import { renderScad, type SandboxCheck, sandboxSelfTest } from "./scad.js";
 import { runStepWorker } from "./step.js";
 
 export interface SlicerConfig {
@@ -42,6 +42,8 @@ export interface SlicerConfig {
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
+  /** A file outside every job folder that the sandbox self-test imports. */
+  sandboxProbe: string;
   /** The STEP worker module, run with this Node (normally dist/src/step.js). */
   stepWorker: string;
   /** Orca's own per-plate cap, --mstpp. */
@@ -76,6 +78,7 @@ const envSchema = z.object({
   OPENSCAD_BIN: z.string().min(1).default("/opt/openscad/AppRun"),
   OPENSCAD_DIR: z.string().min(1).default("/opt/openscad"),
   LANDRUN_BIN: z.string().min(1).default("/usr/local/bin/landrun"),
+  SANDBOX_PROBE: z.string().min(1).default("/opt/platehouse/sandbox-probe.stl"),
   STEP_WORKER: z
     .string()
     .min(1)
@@ -111,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     openscadBin: e.OPENSCAD_BIN,
     openscadDir: e.OPENSCAD_DIR,
     landrunBin: e.LANDRUN_BIN,
+    sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
     slicePlateSeconds: e.SLICE_PLATE_SECONDS,
     sliceTimeoutSeconds: e.SLICE_TIMEOUT_SECONDS ?? e.SLICE_PLATE_SECONDS + 60,
@@ -212,6 +216,27 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const dir = join(config.workDir, randomUUID());
     mkdirSync(dir, { recursive: true });
     return dir;
+  };
+
+  // The sandbox self-test runs once, before the first render, and every
+  // render waits for it. A failed check refuses every render until restart.
+  let sandbox: Promise<SandboxCheck> | null = null;
+  const sandboxReady = (): Promise<SandboxCheck> => {
+    sandbox ??= (async () => {
+      const dir = jobDir();
+      try {
+        const check = await sandboxSelfTest(config, dir, config.sandboxProbe);
+        log(`sandbox self-test: ${check.ok ? "ok" : "FAILED"}: ${check.detail}`);
+        return check;
+      } catch (err) {
+        const detail = `the self-test could not run: ${err instanceof Error ? err.message : String(err)}`;
+        log(`sandbox self-test: FAILED: ${detail}`);
+        return { ok: false, detail };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    })();
+    return sandbox;
   };
 
   async function slice(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -349,6 +374,13 @@ export function createSlicer(config: SlicerConfig): Slicer {
       case "POST /v1/scad/png": {
         const kind = url.pathname.endsWith("png") ? "png" : "stl";
         return withBody(req, res, config.limits.scadBodyBytes, async (dir, body) => {
+          const check = await sandboxReady();
+          if (!check.ok) {
+            return send(res, 422, {
+              error: "render_failed",
+              message: `OpenSCAD renders are off: the sandbox self-test failed (${check.detail}).`,
+            });
+          }
           const r = await renderScad(config, dir, kind, body, track());
           if (r.ok) return sendBytes(res, kind === "png" ? "image/png" : "model/stl", r.bytes);
           return send(res, 422, { error: "render_failed", message: r.message });
