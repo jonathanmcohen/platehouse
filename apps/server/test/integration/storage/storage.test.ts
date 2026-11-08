@@ -235,15 +235,16 @@ describe("a stopped store", () => {
     const secret = own.secretAccessKey;
     await own.stop();
 
-    const calls: Array<Promise<unknown>> = [
-      store.putBlob(streamOf(randomBytes(8)), { key, size: 8, contentType: "model/stl" }),
-      store.getBlobStream(key),
-      store.listPrefix("models/"),
-      store.deleteBlobs([key]),
-      store.readVersioning(),
+    // Each call starts only when it is awaited, so no rejection goes unhandled.
+    const calls: Array<() => Promise<unknown>> = [
+      () => store.putBlob(streamOf(randomBytes(8)), { key, size: 8, contentType: "model/stl" }),
+      () => store.getBlobStream(key),
+      () => store.listPrefix("models/"),
+      () => store.deleteBlobs([key]),
+      () => store.readVersioning(),
     ];
     for (const call of calls) {
-      const err = await errorOf(call);
+      const err = await errorOf(call());
       expect(err).toBeInstanceOf(StoreUnavailable);
       expect(everyRendering(err)).not.toContain(secret);
     }
