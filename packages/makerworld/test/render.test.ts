@@ -2,6 +2,7 @@
 /// <reference lib="dom" />
 import { describe, expect, it } from "vitest";
 import { htmlToMarkdown, renderMarkdown } from "../src/index.js";
+import { sanitizeHtml } from "../src/markdown.js";
 import { DESIGNER_PAYLOADS, htmlEscape } from "./support/payloads.js";
 
 // renderMarkdown is markdown-it (html off, linkify off, http(s) links only)
@@ -163,5 +164,31 @@ describe("renderMarkdown keeps the Markdown it is meant to show", () => {
 
   it("empty input renders nothing", () => {
     expect(renderMarkdown("")).toBe("");
+  });
+});
+
+// The DOMPurify layer on its own, on HTML markdown-it would never write, so a
+// weakened allow-list cannot hide behind markdown-it's own checks.
+describe("the DOMPurify layer alone", () => {
+  it.each([
+    ['<a href="/relative">x</a>', "<a>x</a>"],
+    ['<a href="//e.test/x">x</a>', "<a>x</a>"],
+    ['<a href="javascript:alert(1)">x</a>', "<a>x</a>"],
+    ['<a href="mailto:a@e.test">x</a>', "<a>x</a>"],
+    [
+      '<img src="data:image/png;base64,AAAA" onerror="alert(1)">',
+      '<img src="data:image/png;base64,AAAA">',
+    ],
+    ['<img src="/i.png" alt="a">', '<img alt="a">'],
+    ['<p onclick="alert(1)" style="color:red" class="c" id="i">x</p>', "<p>x</p>"],
+    ["<script>alert(1)</script><p>x</p>", "<p>x</p>"],
+    ['<div><span title="t">x</span></div>', "x"],
+    [
+      '<a href="https://e.test/" target="_blank" rel="opener">x</a>',
+      '<a href="https://e.test/">x</a>',
+    ],
+    ['<ol start="3" type="a"><li>x</li></ol>', '<ol start="3"><li>x</li></ol>'],
+  ])("%s", (html, expected) => {
+    expect(sanitizeHtml(html)).toBe(expected);
   });
 });

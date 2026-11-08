@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run --dir test"
   },
   "dependencies": {
     "dompurify": "3.4.17",

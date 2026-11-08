@@ -508,6 +508,44 @@ describe("htmlToMarkdown: ported cases", () => {
   });
 });
 
+// The markdown-it layer of renderMarkdown on its own, without DOMPurify, so a
+// weakened markdown-it setup cannot hide behind the sanitiser.
+describe("the markdown-it layer alone", () => {
+  it.each([
+    "[x](/relative)",
+    "[x](//e.test/protocol-relative)",
+    "[x](javascript:alert(1))",
+    "[x](mailto:a@e.test)",
+    "[x](data:text/html,x)",
+    "![x](/i.png)",
+    "![x](data:image/png;base64,AAAA)",
+    "<mailto:a@e.test>",
+  ])("a link or image that is not absolute http(s) is text: %j", (markdown) => {
+    const html = render(markdown);
+    expect(html).not.toMatch(/<a |<img /);
+  });
+
+  it("an absolute http(s) link or image is kept", () => {
+    expect(render("[x](https://e.test/a) ![i](http://e.test/i.png) <https://e.test/b>")).toBe(
+      para(
+        '<a href="https://e.test/a">x</a> <img src="http://e.test/i.png" alt="i"> <a href="https://e.test/b">https://e.test/b</a>',
+      ),
+    );
+  });
+
+  it("raw HTML is text", () => {
+    expect(render("<script>alert(1)</script> <b onclick=x>b</b>")).toBe(
+      para("&lt;script&gt;alert(1)&lt;/script&gt; &lt;b onclick=x&gt;b&lt;/b&gt;"),
+    );
+  });
+
+  it("a bare address is text", () => {
+    expect(render("see https://e.test/x and www.e.test")).toBe(
+      para("see https://e.test/x and www.e.test"),
+    );
+  });
+});
+
 describe("htmlToMarkdown: re-derived for markdown-it", () => {
   it("text that spells an autolink stays text", () => {
     const out = htmlToMarkdown("<p>&lt;https://e.test&gt; and &lt;javascript:alert(1)&gt;</p>");
@@ -562,6 +600,14 @@ describe("htmlToMarkdown: re-derived for markdown-it", () => {
   it("a tag-like run with no closing > stays text", () => {
     const out = htmlToMarkdown("<p>a <b c</p>");
     expect(out).toBe("a \\<b c");
+  });
+
+  it("control characters the converter uses internally cannot be smuggled in", () => {
+    // &#1; and a raw U+0001 or NUL are dropped; none can turn the text after
+    // them into an entity markdown-it decodes, or into a line-start mark.
+    const out = htmlToMarkdown("<p>x&#1;lt;y \u0001lt; \0# z</p>");
+    expect(out).toBe("xlt;y lt; # z");
+    expect(render(out)).toBe(para("xlt;y lt; # z"));
   });
 });
 

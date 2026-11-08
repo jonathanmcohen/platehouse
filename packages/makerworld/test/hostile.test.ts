@@ -22,6 +22,13 @@ const nest = (open: string, inner: string, close: string): string => {
 const HTML_SHAPES: Array<[string, string]> = [
   ["tag starts with no closing >", fill("<a ")],
   ["unterminated quoted attributes", fill('<a href="x ')],
+  ["one quote left open before many tags", `<a href="${fill("<b ")}`],
+  ["quoted values holding <", fill('<a b="<c" ')],
+  ["mixed quotes holding <", fill('<a b="<c d=\'" e=\'<f" ')],
+  [
+    "many empty paragraphs then list items",
+    `${fill("<p></p>").slice(0, SIZE / 2)}<ul>${fill("<li><h3></h3></li>").slice(0, SIZE / 2)}`,
+  ],
   ["unterminated comments", fill("<!--")],
   ["deeply nested emphasis", nest("<b>", "x", "</b>")],
   ["deeply nested links", nest('<a href="https://e.test/">', "x", "</a>")],
@@ -53,6 +60,9 @@ describe("a crafted description of 256 KiB converts in bounded time and size", (
   });
 });
 
+// A regression guard, not a proof of a fix: extractMakerWorld keeps the
+// source's regular expression, and Node 26's engine read every shape here in
+// a few milliseconds with it.
 const XML_SHAPES: Array<[string, string]> = [
   ["metadata elements never closed", fill('<metadata name="x">')],
   ["metadata start tags with no >", fill('<metadata name="x" ')],
