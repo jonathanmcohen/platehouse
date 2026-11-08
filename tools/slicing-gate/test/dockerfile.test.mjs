@@ -260,3 +260,36 @@ test("every stage that runs Node checks /opt/node/bin/node's libraries before it
     }
   }
 });
+
+// CI run 42489171613 (PR #7, 2026-11-08): the image built, then the smoke
+// check failed with "/opt/orca/AppRun: line 29: /opt/orca/libexec/orca-slicer-env:
+// Permission denied". The gate runs as uid 10001 (and on Hades as the caller's
+// uid), but the AppImage trees keep the modes they were extracted with, and the
+// build's need -x checks ran as root, which passes -x on any execute bit.
+test("both AppImage trees are made readable, and executable where they already are, for every user", () => {
+  const all = runs().join("\n");
+  for (const tree of ["/opt/orca", "/opt/openscad"]) {
+    assert.ok(all.includes(`chmod -R a+rX ${tree} `) || all.includes(`chmod -R a+rX ${tree}\n`), `chmod -R a+rX ${tree}`);
+  }
+});
+
+test("the execute and read checks are repeated as the gate user, after USER", () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8").replace(/\\\n/g, " ");
+  const lines = text.split("\n");
+  const user = lines.findIndex((l) => /^USER 10001$/.test(l));
+  assert.ok(user !== -1, "the final stage switches to USER 10001");
+  const asUser = lines.slice(user + 1).filter((l) => /^RUN\b/.test(l)).join("\n");
+  for (const check of [
+    "need -x /opt/orca/AppRun",
+    "need -x /opt/orca/libexec/orca-slicer-env",
+    "need -x /opt/orca/bin/orca-slicer",
+    "need -x /opt/openscad/usr/bin/openscad",
+    "need -x /usr/local/bin/landrun",
+    "need -x /opt/node/bin/node",
+    "need -r /opt/orca-profiles/BBL.json",
+    "need -r /opt/gate/gate.mjs",
+  ]) {
+    assert.ok(asUser.includes(check), `as the gate user: ${check}`);
+  }
+  assert.match(asUser, /source \/usr\/local\/lib\/need\.sh/);
+});
