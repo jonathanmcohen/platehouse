@@ -9,5 +9,8 @@
   "dependencies": {
     "dompurify": "3.4.17",
     "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "jsdom": "31.0.0"
   }
 }
