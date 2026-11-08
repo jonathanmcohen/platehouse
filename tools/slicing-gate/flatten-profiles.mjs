@@ -26,7 +26,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMain } from "./lib/is-main.mjs";
 
 export const VENDOR = "BBL";
 export const LIBRARY = "OrcaFilamentLibrary";
@@ -298,7 +298,7 @@ function parseArgs(argv) {
   return args;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isMain(import.meta.url)) {
   try {
     const args = parseArgs(process.argv.slice(2));
     const recipe = writeRecipe(loadIndex(args.profiles), args.out, args);

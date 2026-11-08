@@ -12,7 +12,7 @@
 //            and the comparison set, for rsync --files-from
 import { readdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMain } from "./lib/is-main.mjs";
 import { printerOf, SHORT } from "./lib/printers.mjs";
 import { readProjectMeta } from "./lib/threemf.mjs";
 
@@ -176,7 +176,7 @@ function main(argv) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isMain(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (err) {
