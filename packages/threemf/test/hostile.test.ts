@@ -220,6 +220,28 @@ const rows: Row[] = [
     expect: "null",
   },
   {
+    // A 400-digit N is Infinity as a Number; it must not become a plate.
+    name: "a plate png name too long to be a safe integer (400 digits)",
+    issue: "#6",
+    file: () =>
+      build3mf({ extra: [{ name: `Metadata/plate_${"9".repeat(400)}.png`, data: png("n") }] }),
+    expect: "null",
+  },
+  {
+    // Distinct 400-digit names must not collapse into one plate and slip
+    // under the 128-plate ceiling: none of them is a plate at all.
+    name: "129 plate png names too long to be safe integers",
+    issue: "#6",
+    file: () =>
+      build3mf({
+        extra: range(129).map((i) => ({
+          name: `Metadata/plate_${String(i).padStart(400, "9")}.png`,
+          data: png(`p${i}`),
+        })),
+      }),
+    expect: "null",
+  },
+  {
     name: "129 plates in slice_info.config",
     issue: "#6",
     file: () =>

@@ -4,6 +4,7 @@
 // built here; no designer file is used.
 import { chmodSync, unlinkSync } from "node:fs";
 import { Readable } from "node:stream";
+import { crc32 } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import yauzl from "yauzl";
 
@@ -38,8 +39,31 @@ import {
   projectEntries,
   range,
   type SliceSpec,
+  sliceInfoXml,
   writeTmp,
+  type ZipEntry,
 } from "./support/fixture-builder.js";
+
+const MODEL_SETTINGS = "Metadata/model_settings.config";
+
+/**
+ * An entry named rawName whose central record carries an Info-ZIP Unicode
+ * Path extra field (0x7075) naming it unicodeName. A reader that decodes
+ * names takes unicodeName as the entry's name, because the field's CRC
+ * matches rawName.
+ */
+const unicodePathEntry = (
+  rawName: string,
+  unicodeName: string,
+  data: Buffer | string,
+): ZipEntry => {
+  const body = Buffer.concat([Buffer.from([1]), Buffer.alloc(4), Buffer.from(unicodeName, "utf8")]);
+  body.writeUInt32LE(crc32(Buffer.from(rawName, "utf8")), 1);
+  const head = Buffer.alloc(4);
+  head.writeUInt16LE(0x7075, 0);
+  head.writeUInt16LE(body.length, 2);
+  return { name: rawName, data, centralExtra: Buffer.concat([head, body]) };
+};
 
 const read = (buf: Buffer, opts?: Parameters<typeof readProject>[1]): Promise<Project | null> =>
   readProject(writeTmp(buf), opts);
@@ -217,8 +241,127 @@ describe("the plate list", () => {
       { name: "x/Metadata/model_settings.config", data: modelSettingsXml([{ index: 3 }]) },
       { name: "Metadata/plate_4.PNG", data: png("p4") },
       { name: "Metadata/plate_05x.png", data: png("p5") },
+      // A backslash is not a slash: these are other names, not the Bambu ones.
+      { name: "Metadata\\model_settings.config", data: modelSettingsXml([{ index: 6 }]) },
+      { name: "Metadata\\plate_7.png", data: png("p7") },
+      { name: "Metadata\\plate_8_small.png", data: png("p8s") },
     ]);
     expect(await read(lookalikes)).toBeNull();
+  });
+
+  // Beside a real plate, so the result is a project: a null here could
+  // also mean a damaged file, and would not show the lookalikes went unread.
+  it("takes an entry's name from its bytes, never from an Info-ZIP Unicode Path field", async () => {
+    const handed: number[] = [];
+    const project = await readProject(
+      writeTmp(
+        buildZip([
+          { name: "3D/3dmodel.model", data: MODEL_XML },
+          { name: "Metadata/plate_1.png", data: png("p1") },
+          unicodePathEntry(
+            "Metadata/other.config",
+            MODEL_SETTINGS,
+            modelSettingsXml([{ index: 9, name: "Lookalike" }]),
+          ),
+          unicodePathEntry("Metadata/other.png", "Metadata/plate_10.png", png("p10")),
+        ]),
+      ),
+      { onThumbnail: async (i) => void handed.push(i) },
+    );
+    expect(project?.plates.map((p) => [p.index, p.name])).toEqual([[1, null]]);
+    expect(handed).toEqual([1]);
+  });
+
+  it("does not read a backslash lookalike of any entry it reads", async () => {
+    const handed: number[] = [];
+    const project = await readProject(
+      writeTmp(
+        buildZip([
+          { name: MODEL_SETTINGS, data: modelSettingsXml([{ index: 1, name: "Base" }]) },
+          { name: "Metadata\\slice_info.config", data: sliceInfoXml([slicedP1S(1)]) },
+          { name: "Metadata\\project_settings.config", data: JSON.stringify(P1S_PROJECT) },
+          { name: "Metadata\\plate_1.png", data: png("p1") },
+          { name: "Metadata\\plate_1_small.png", data: png("p1s") },
+          { name: "3D\\3dmodel.model", data: MODEL_XML },
+        ]),
+      ),
+      { onThumbnail: async (i) => void handed.push(i) },
+    );
+    expect(project).toEqual({
+      plates: [{ index: 1, name: "Base", objectCount: 1, sliced: false, filaments: [] }],
+      projectFilaments: [],
+    });
+    expect(handed).toEqual([]);
+  });
+
+  it("reads the project when an entry it never reads has '..' or an absolute path", async () => {
+    const handed: number[] = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          plates: [{ index: 1, name: "Base" }],
+          pngs: { 1: png("p1") },
+          extra: [
+            { name: "../outside.txt", data: "x" },
+            { name: "Metadata/../../outside.txt", data: "x" },
+            { name: "/etc/absolute.txt", data: "x" },
+            { name: "C:/absolute.txt", data: "x" },
+            { name: "Metadata\\..\\outside.txt", data: "x" },
+          ],
+        }),
+      ),
+      { onThumbnail: async (i) => void handed.push(i) },
+    );
+    expect(project?.plates.map((p) => [p.index, p.name])).toEqual([[1, "Base"]]);
+    expect(project?.makerWorldXml).toContain("Synthetic Title");
+    expect(handed).toEqual([1]);
+  });
+
+  it("skips a plate png name whose number is not a safe integer (17 to 21 digits)", async () => {
+    const handed: number[] = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          extra: [
+            { name: "Metadata/plate_1.png", data: png("p1") },
+            { name: "Metadata/plate_9007199254740992.png", data: png("unsafe16") },
+            { name: "Metadata/plate_12345678901234567.png", data: png("d17") },
+            { name: "Metadata/plate_12345678901234567_small.png", data: png("d17s") },
+            { name: "Metadata/plate_123456789012345678.png", data: png("d18") },
+            { name: "Metadata/plate_1234567890123456789.png", data: png("d19") },
+            { name: "Metadata/plate_12345678901234567890.png", data: png("d20") },
+            { name: "Metadata/plate_123456789012345678901.png", data: png("d21") },
+          ],
+        }),
+      ),
+      { onThumbnail: async (i) => void handed.push(i) },
+    );
+    expect(project?.plates).toEqual([
+      { index: 1, name: null, objectCount: 0, sliced: false, filaments: [] },
+    ]);
+    expect(handed).toEqual([1]);
+  });
+
+  it("is null when the only plate png names are not safe integers", async () => {
+    const names = ["12345678901234567", "123456789012345678901", "9".repeat(400)];
+    const file = build3mf({
+      extra: names.map((n) => ({ name: `Metadata/plate_${n}.png`, data: png(n.slice(0, 8)) })),
+    });
+    expect(await read(file)).toBeNull();
+  });
+
+  it("reads the largest safe integer as a plate png index, with its thumbnail", async () => {
+    const pngs: Array<[number, Buffer]> = [];
+    const project = await readProject(
+      writeTmp(
+        build3mf({
+          extra: [{ name: "Metadata/plate_9007199254740991.png", data: png("max") }],
+        }),
+      ),
+      { onThumbnail: async (i, b) => void pngs.push([i, b]) },
+    );
+    expect(project?.plates.map((p) => p.index)).toEqual([Number.MAX_SAFE_INTEGER]);
+    expect(pngs).toEqual([[Number.MAX_SAFE_INTEGER, png("max")]]);
   });
 });
 
