@@ -389,20 +389,24 @@ describe("slicing", () => {
   });
 });
 
-// landrun runs best effort (see sandbox.test.ts), so before its first render
-// the server proves the sandbox works: it renders a .scad that imports a file
-// outside the job folder, through the same landrun, and expects OpenSCAD to
-// fail. If the import works, or the probe file is missing so the check would
-// prove nothing, every render is refused.
+// landrun runs best effort (see sandbox.test.ts), so the server proves the
+// sandbox works before it renders: it renders a .scad that imports a file
+// outside the job folder, through the same landrun, and passes the check only
+// when OpenSCAD reports it cannot open that file. Only a pass is remembered.
+// Anything else (the import works, the probe file is missing, or the render
+// fails for another reason such as a timeout) refuses that render, and the
+// next render runs the check again.
 describe("sandbox self-test", () => {
   const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").length;
+  const render = (base: string, kind = "stl") =>
+    fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
 
   test("renders run once the self-test has seen the sandbox block a read outside the job folder", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
     for (let i = 0; i < 2; i++) {
-      const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+      const res = await render(base);
       expect(res.status).toBe(200);
     }
     // one self-test, then the two renders
@@ -412,15 +416,53 @@ describe("sandbox self-test", () => {
 
   test("when the sandbox lets OpenSCAD read outside its folder, every render is refused", async () => {
     const s = setup();
-    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { blocksProbe: false });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "read" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
     for (const kind of ["stl", "png"]) {
-      const res = await fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+      const res = await render(base, kind);
       expect(res.status).toBe(422);
       expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
     }
-    // the self-test ran once and no render ran
+    // the self-test ran before each request and no render ran
+    expect(lines(lr.runsLog)).toBe(2);
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+  });
+
+  test("a self-test render that fails for another reason refuses that render, and the next one checks again", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "other" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    let res = await render(base);
+    expect(res.status).toBe(422);
+    expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
     expect(lines(lr.runsLog)).toBe(1);
+
+    lr.setProbe("blocked");
+    res = await render(base);
+    expect(res.status).toBe(200);
+    // a second self-test, which passed, then the render
+    expect(lines(lr.runsLog)).toBe(3);
+
+    // the pass is remembered: no third self-test
+    lr.setProbe("read");
+    res = await render(base);
+    expect(res.status).toBe(200);
+    expect(lines(lr.runsLog)).toBe(4);
+  });
+
+  test("a self-test render that times out proves nothing and is checked again", async () => {
+    const s = setup({ scadTimeoutSeconds: 1 });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    let res = await render(base);
+    expect(res.status).toBe(422);
+    expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
+
+    lr.setProbe("blocked");
+    res = await render(base);
+    expect(res.status).toBe(200);
+    expect(lines(lr.runsLog)).toBe(3);
+    expect(readdirSync(s.workDir)).toEqual([]);
   });
 
   test("a missing probe file refuses every render, since the self-test would prove nothing", async () => {
@@ -431,7 +473,7 @@ describe("sandbox self-test", () => {
       landrunBin: lr.bin,
       sandboxProbe: join(s.stubs, "no-such-probe.stl"),
     });
-    const res = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(10);" });
+    const res = await render(base);
     expect(res.status).toBe(422);
     expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
   });

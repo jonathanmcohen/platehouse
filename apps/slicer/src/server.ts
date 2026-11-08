@@ -218,11 +218,12 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return dir;
   };
 
-  // The sandbox self-test runs once, before the first render, and every
-  // render waits for it. A failed check refuses every render until restart.
+  // The sandbox self-test runs before the first render, and every render
+  // waits for it. Only a pass is remembered: a failed or inconclusive check
+  // refuses the renders waiting on it, and the next render checks again.
   let sandbox: Promise<SandboxCheck> | null = null;
   const sandboxReady = (): Promise<SandboxCheck> => {
-    sandbox ??= (async () => {
+    sandbox ??= (async (): Promise<SandboxCheck> => {
       const dir = jobDir();
       try {
         const check = await sandboxSelfTest(config, dir, config.sandboxProbe);
@@ -235,7 +236,10 @@ export function createSlicer(config: SlicerConfig): Slicer {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-    })();
+    })().then((check) => {
+      if (!check.ok) sandbox = null;
+      return check;
+    });
     return sandbox;
   };
 

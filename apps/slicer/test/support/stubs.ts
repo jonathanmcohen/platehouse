@@ -103,17 +103,31 @@ exit $st
 }
 
 /**
+ * How the fake landrun answers the server's sandbox self-test (a .scad that
+ * imports the sandbox probe):
+ * - "blocked": a working sandbox. OpenSCAD's own warning naming the probe.
+ * - "read": no sandbox. The import works and the render succeeds.
+ * - "other": the render fails for a reason that proves nothing about the
+ *   sandbox (here landrun failing to start).
+ * - "hang": the render runs past the time cap and is killed.
+ */
+export type ProbeMode = "blocked" | "read" | "other" | "hang";
+
+/**
  * A fake landrun. It writes its arguments to landrun.log, then, for the
  * command after "--", writes the file named by -o (or fails like OpenSCAD).
+ * setProbe changes how it answers the self-test from the next run on.
  */
 export function fakeLandrun(
   dir: string,
   mode: { kind: "ok"; content: string } | { kind: "fail"; stderr: string },
-  opts: { blocksProbe?: boolean } = {},
-): { bin: string; argsLog: string; runsLog: string } {
+  opts: { probe?: ProbeMode } = {},
+): { bin: string; argsLog: string; runsLog: string; setProbe: (probe: ProbeMode) => void } {
   const argsLog = join(dir, "landrun.log");
   const runsLog = join(dir, "landrun-runs.log");
-  const blocksProbe = opts.blocksProbe ?? true;
+  const probeFile = join(dir, "landrun-probe-mode");
+  const setProbe = (probe: ProbeMode) => writeFileSync(probeFile, probe);
+  setProbe(opts.probe ?? "blocked");
   const tail =
     mode.kind === "ok"
       ? `printf '%s' '${mode.content}' > "$out"
@@ -122,15 +136,24 @@ exit 0
       : `printf '%s\\n' '${mode.stderr}' >&2
 exit 1
 `;
-  // A .scad that imports the sandbox probe is the server's self-test. A
-  // working sandbox blocks it the way OpenSCAD reports a file it cannot open.
-  const probe = blocksProbe
-    ? `if grep -q sandbox-probe "$input"; then
-  printf '%s\\n' "WARNING: Can't open import file, import() at line 1" >&2
-  exit 1
+  // A .scad that imports the sandbox probe is the server's self-test.
+  // OpenSCAD reports a file it cannot open (src/io/import_stl.cc) as
+  // "WARNING: Can't open import file '<path>', import() at line <n>".
+  const probe = `if grep -q sandbox-probe "$input"; then
+  path=$(sed -n 's/^import("\\(.*\\)");$/\\1/p' "$input")
+  case "$(cat '${probeFile}')" in
+    blocked)
+      printf "WARNING: Can't open import file '%s', import() at line 1\\n" "$path" >&2
+      exit 1 ;;
+    other)
+      printf '%s\\n' 'landrun: failed to start: operation not permitted' >&2
+      exit 1 ;;
+    hang)
+      sleep 30
+      exit 1 ;;
+  esac
 fi
-`
-    : "";
+`;
   const bin = writeScript(
     join(dir, "landrun"),
     `#!/bin/sh
@@ -148,7 +171,7 @@ while [ $# -gt 0 ]; do
 done
 ${probe}${tail}`,
   );
-  return { bin, argsLog, runsLog };
+  return { bin, argsLog, runsLog, setProbe };
 }
 
 /** A fake STEP worker module: node worker.mjs <in> <out>. */

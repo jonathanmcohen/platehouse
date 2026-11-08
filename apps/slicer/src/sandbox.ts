@@ -16,9 +16,9 @@
 // outright: GitHub's runner has ABI 8 (CI run 42530006914). The filesystem
 // rules this sandbox relies on work from ABI 1. Best effort would also run
 // OpenSCAD unsandboxed on a kernel with no Landlock at all, so the server
-// does not trust it: before its first render it proves the sandbox blocks a
-// read outside the job folder (sandboxSelfTest in scad.ts), and refuses
-// every render if it does not.
+// does not trust it: before it renders it proves the sandbox blocks a read
+// outside the job folder (sandboxSelfTest in scad.ts), and refuses to render
+// until that check has passed.
 //
 // runGroup, below, is how the server runs every external program (Orca,
 // landrun with OpenSCAD, the STEP worker): in its own process group, killed
