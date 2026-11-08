@@ -23,3 +23,21 @@ test("the Dockerfile pulls no frontend image by a floating tag", () => {
     );
   }
 });
+
+// apt installs before the APT::Snapshot line come from the live archive, so
+// each package there must name an exact version, or the image varies with the
+// day it is built.
+test("every apt package installed before the snapshot is switched on names an exact version", () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8").replace(/\\\n/g, " ");
+  const runs = text.split("\n").filter((l) => /^RUN\b/.test(l) && l.includes("apt-get install"));
+  assert.ok(runs.length >= 2, "both stages install apt packages");
+  for (const run of runs) {
+    const [before, after] = run.split("APT::Snapshot");
+    assert.ok(after !== undefined, `the snapshot is switched on in: ${run.slice(0, 80)}`);
+    for (const install of before.split("&&").filter((c) => c.includes("apt-get install"))) {
+      const pkgs = install.replace(/.*apt-get install/, "").trim().split(/\s+/).filter((w) => !w.startsWith("-"));
+      assert.ok(pkgs.length > 0, install);
+      for (const p of pkgs) assert.match(p, /^[a-z0-9.+-]+=[0-9][A-Za-z0-9.+~:-]*$/, `unpinned before the snapshot: ${p}`);
+    }
+  }
+});

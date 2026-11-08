@@ -15,9 +15,15 @@
 ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 
 # Ubuntu snapshot every apt package is installed from. apt checks each package
-# against the signed snapshot index. ca-certificates alone comes from the live
-# archive first, because the snapshot service is https only and the base image
-# carries no CA bundle.
+# against the signed snapshot index. The snapshot service is https only and
+# the base image carries no CA bundle, so each stage first installs
+# ca-certificates and the openssl it depends on from the live archive, pinned
+# to their versions in the noble release pocket, which never changes:
+# ca-certificates 20240203 and openssl 3.0.13-0ubuntu3, read from
+# dists/noble/main/binary-amd64/Packages on 2026-11-07. Its other dependencies,
+# debconf and libssl3t64 (3.0.13-0ubuntu3.16), are already in the pinned base
+# image (its var/lib/dpkg/status, read the same day). Once the snapshot is on,
+# both are installed again, so the image keeps the snapshot's versions.
 ARG APT_SNAPSHOT=20261107T000000Z
 
 FROM --platform=linux/amd64 ${BASE} AS fetch
@@ -25,10 +31,10 @@ ARG APT_SNAPSHOT
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
- && apt-get install -y --no-install-recommends curl xz-utils unzip \
+ && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils unzip \
  && rm -rf /var/lib/apt/lists/*
 
 # fetch URL FILE SHA256: download and refuse anything that does not match.
@@ -116,10 +122,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # GStreamer, fontconfig and the C++ runtime), Mesa for EGL and software GL,
 # and GNU time. No X server and no Xvfb.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
+      ca-certificates openssl \
       time \
       libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libegl-mesa0 libgles2 libopengl0 libglu1-mesa \
       libgtk-3-0t64 libwebkit2gtk-4.1-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
