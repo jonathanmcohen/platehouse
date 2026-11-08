@@ -61,7 +61,8 @@ fi
 mkdir -p "${OUT}/jobs"
 
 if [[ "${1:-}" = "--build" ]] || ! docker image inspect "${IMAGE}" > /dev/null 2>&1; then
-  docker build --platform linux/amd64 -t "${IMAGE}" "${HERE}"
+  # A setup failure exits 2, never 1, so it cannot read as a gate FAIL.
+  docker build --platform linux/amd64 -t "${IMAGE}" "${HERE}" || die "image build failed"
 fi
 
 # Task 1's container: no network, 4 CPUs, 8 GB (swap included, so the limit
@@ -91,7 +92,7 @@ gate() {
   docker run "${run_args[@]}" "${IMAGE}" node /opt/gate/gate.mjs "$@" < /dev/null
 }
 
-gate plan
+gate plan || die "plan step failed"
 
 total="$(grep -c '^j' "${OUT}/jobs.txt" || true)"
 n=0

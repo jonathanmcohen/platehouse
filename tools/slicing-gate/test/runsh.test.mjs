@@ -21,7 +21,8 @@ after(() => {
 const DOCKER = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_LOG"
 case "$1" in
-  info|build|kill|rm) exit 0 ;;
+  build) exit "\${STUB_BUILD_RC:-0}" ;;
+  info|kill|rm) exit 0 ;;
   image) [ "$2" = inspect ] && exit "\${STUB_IMAGE_MISSING:-0}"; exit 0 ;;
   images) exit 0 ;;
   run)
@@ -35,7 +36,7 @@ case "$1" in
       slice) [ "$last1" = j0002 ] && exit 124; exit 0 ;;
     esac
     case "$last1" in
-      plan) printf 'j0001\\nj0002\\n' > "$out/jobs.txt"; exit 0 ;;
+      plan) [ -n "\${STUB_PLAN_RC:-}" ] && exit "$STUB_PLAN_RC"; printf 'j0001\\nj0002\\n' > "$out/jobs.txt"; exit 0 ;;
       checks) exit 0 ;;
       report) exit "\${STUB_VERDICT:-0}" ;;
     esac
@@ -108,6 +109,24 @@ test("run.sh builds the image when it is missing or --build is given", () => {
   assert.ok(r.calls.some((c) => c.startsWith("build --platform linux/amd64 -t platehouse-gate:t1 ")));
   const r2 = run(["--build"], { gate: gateDir(), stubDir: stubs() });
   assert.ok(r2.calls.some((c) => c.startsWith("build ")));
+});
+
+test("run.sh exits 2, not FAIL, when the image build fails", () => {
+  const stubDir = stubs();
+  const r = run(["--build"], { gate: gateDir(), stubDir, extra: { STUB_BUILD_RC: "1" } });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /image build failed/);
+  assert.ok(!r.calls.some((c) => c.startsWith("run ")), "nothing runs after a failed build");
+});
+
+test("run.sh exits 2 when the plan step fails, whatever docker run returned", () => {
+  for (const rc of ["1", "125"]) {
+    const stubDir = stubs();
+    const r = run([], { gate: gateDir(), stubDir, extra: { STUB_PLAN_RC: rc } });
+    assert.equal(r.status, 2, `docker run ${rc}: ${r.stderr}`);
+    assert.match(r.stderr, /plan step failed/);
+    assert.ok(!r.calls.some((c) => c.includes(" slice ")), "no plate runs after a failed plan");
+  }
 });
 
 test("run.sh refuses a non-empty output dir, a GATE_DIR outside /tmp/platehouse-gate, and missing inputs", () => {
