@@ -895,20 +895,26 @@ function safeHref(raw: string): string | null {
 }
 
 // The markdown-it setup renderMarkdown uses: raw HTML off, so a tag in the
-// Markdown is text; linkify off, so a bare address is text; links and images
-// only to absolute http(s) addresses, so javascript:, data:, relative and
-// protocol-relative ones render as text. A newline in a paragraph is a line
-// break, as it was for descriptions in Manyfold (Kramdown's GFM parser,
-// hard_wrap on) and as htmlToMarkdown writes <br>.
+// Markdown is text; linkify off, so a bare address is text; links only to
+// absolute http(s) addresses, so javascript:, data:, relative and
+// protocol-relative ones render as text. The image rule is off: descriptions
+// never render images (Jon, 2026-11-08, PR #24), so ![alt](url) is a "!" and
+// a link to the address, and no description can make the page load a remote
+// address. A newline in a paragraph is a line break, as it was for
+// descriptions in Manyfold (Kramdown's GFM parser, hard_wrap on) and as
+// htmlToMarkdown writes <br>.
 export function createMarkdownIt(): MarkdownIt {
   const md = new MarkdownItCallable({ html: false, linkify: false, breaks: true });
+  md.disable("image");
   md.validateLink = (url: string): boolean => /^https?:\/\//i.test(url.trim());
   return md;
 }
 
-// What DOMPurify lets through: exactly the elements markdown-it writes, and
-// the attributes a link, an image and an ordered list need. Anything else (an
-// event handler, a style, a class, a script) is removed. An href or src must
+// What DOMPurify lets through: the elements markdown-it writes, less img, and
+// the attributes a link and an ordered list need. Anything else (an image, an
+// event handler, a style, a class, a script) is removed. img is not allowed
+// and is forbidden outright as well, so no description can load a remote
+// address whatever markdown-it writes (Jon, 2026-11-08, PR #24). An href must
 // be an absolute http(s) address: ALLOWED_URI_REGEXP says so, and
 // keepHttpAddressesOnly below covers the data: exception DOMPurify makes on
 // its own. markdown-it with html off writes nothing dangerous; this is the
@@ -921,7 +927,6 @@ const PURIFY_CONFIG: Config = {
     "em",
     "s",
     "a",
-    "img",
     "h1",
     "h2",
     "h3",
@@ -942,7 +947,8 @@ const PURIFY_CONFIG: Config = {
     "blockquote",
     "hr",
   ],
-  ALLOWED_ATTR: ["href", "src", "alt", "title", "start"],
+  FORBID_TAGS: ["img"],
+  ALLOWED_ATTR: ["href", "title", "start"],
   ADD_URI_SAFE_ATTR: ["start"],
   ALLOWED_URI_REGEXP: /^https?:\/\//i,
   ALLOW_DATA_ATTR: false,
@@ -951,8 +957,10 @@ const PURIFY_CONFIG: Config = {
 
 // DOMPurify keeps a src that starts with data: on img, audio, video, source
 // and track whatever ALLOWED_URI_REGEXP says (its DATA_URI_TAGS exception,
-// which config can add to but not empty). So this hook drops every href and
-// src that is not an absolute http(s) address before DOMPurify's own checks.
+// which config can add to but not empty). None of those elements is allowed
+// now, but this hook still drops every href and src that is not an absolute
+// http(s) address before DOMPurify's own checks, so a later change to the
+// allow-list cannot bring the exception back.
 function keepHttpAddressesOnly(_node: unknown, data: UponSanitizeAttributeHookEvent): void {
   if (data.attrName !== "href" && data.attrName !== "src") return;
   if (!/^https?:\/\//i.test(data.attrValue)) data.keepAttr = false;
