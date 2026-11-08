@@ -82,6 +82,31 @@ describe("estimates uniqueness", () => {
     expect(rows).toHaveLength(4);
   });
 
+  test("a file estimate and a Platehouse estimate with the same plate, printer and version are both kept", async () => {
+    const { plate } = await seedPlate(repos);
+    const version = "2.5.0";
+
+    // Only the source differs between these two, so this pins source as part
+    // of the uniqueness key: without it the second insert would raise 23505.
+    const file = await repos.estimates.insertFile({
+      ...fileNumbers(plate.id, P1S),
+      slicerVersion: version,
+    });
+    const platehouse = await repos.estimates.upsertPending(pending(plate.id, P1S, version));
+    expect(platehouse.id).not.toBe(file.id);
+
+    const rows = await t.db
+      .selectFrom("estimates")
+      .select(["source", "printerId", "slicerVersion"])
+      .where("plateId", "=", plate.id)
+      .orderBy("source")
+      .execute();
+    expect(rows).toEqual([
+      { source: "file", printerId: P1S, slicerVersion: version },
+      { source: "platehouse", printerId: P1S, slicerVersion: version },
+    ]);
+  });
+
   test("two file estimates with no slicer version for one printer still collide", async () => {
     const { plate } = await seedPlate(repos);
     const numbers = { ...fileNumbers(plate.id), slicer: null, slicerVersion: null };
