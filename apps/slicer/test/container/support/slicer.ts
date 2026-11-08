@@ -1,5 +1,6 @@
 // Builds the slicer image and runs it the way Hades will (AC-035): read-only
-// root, a 1 GB tmpfs at /work, 4 CPUs, 4 GB of memory, no capabilities and
+// root, a 1 GB tmpfs at /work, 4 CPUs (fewer if the host has fewer), 4 GB of
+// memory, no capabilities and
 // no-new-privileges. Uses the docker CLI rather than testcontainers, which has
 // no read-only-root option. The port is published on 127.0.0.1 only so the
 // tests can reach the HTTP contract.
@@ -52,8 +53,22 @@ export interface RunningSlicer {
   stop(): void;
 }
 
+/**
+ * Hades gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
+ * host's count, and GitHub's runner for this private repo has 2, so the
+ * tests ask for 4 or as many as the host has, whichever is fewer.
+ */
+export function cpuLimit(hostCpus: number): string {
+  return String(Math.min(4, Math.max(1, Math.floor(hostCpus))));
+}
+
 export async function startSlicer(): Promise<RunningSlicer> {
   ensureImage();
+  const info = docker(["info", "--format", "{{.NCPU}}"]);
+  const hostCpus = Number(info.stdout.trim());
+  if (info.code !== 0 || !Number.isFinite(hostCpus) || hostCpus < 1) {
+    throw new Error(`docker info gave no CPU count: ${info.stderr}${info.stdout}`);
+  }
   const run = docker([
     "run",
     "-d",
@@ -63,7 +78,7 @@ export async function startSlicer(): Promise<RunningSlicer> {
     "--tmpfs",
     "/work:rw,size=1g,mode=1777",
     "--cpus",
-    "4",
+    cpuLimit(hostCpus),
     "--memory",
     "4g",
     "--cap-drop",
