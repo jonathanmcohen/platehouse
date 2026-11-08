@@ -1,0 +1,16 @@
+{
+  "name": "@platehouse/threemf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fast-xml-parser": "5.12.0",
+    "yauzl": "3.4.0"
+  },
+  "devDependencies": {
+    "@types/yauzl": "3.4.0"
+  }
+}
