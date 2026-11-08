@@ -257,6 +257,16 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   const clampInline = (): void => {
     for (const e of inline) e.start = Math.min(e.start, out.length);
   };
+  // A rewrite of the output from `from` on (a heading's text tidied, a table
+  // cell trimmed) can move the text after `from`, so an open link or emphasis
+  // that began there would keep a start that no longer matches the text, and
+  // could land between a backslash and the character it escapes. Such an
+  // element is dropped: its markup is never written and its text stays.
+  const dropInlineFrom = (from: number): void => {
+    const keep = inline.filter((e) => e.start < from);
+    inline.length = 0;
+    inline.push(...keep);
+  };
   // A paragraph break; idempotent, so the output never holds more than two
   // newlines in a row (more would collapse to two at the end anyway).
   const breakBlock = (): void => {
@@ -357,10 +367,15 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           // with text; it is dropped. CommonMark strips a run of # that ends
           // a heading after a space, so a trailing # is escaped ("Part #"
           // stays "Part #", and "Learn C#" is escaped the same way).
+          const written = out.from(headingStart);
           if (!body) out.truncate(headingMarker);
           else {
-            out.truncate(headingStart);
-            out.append(/#$/.test(body) && !/\\#$/.test(body) ? `${body.slice(0, -1)}\\#` : body);
+            const text = /#$/.test(body) && !/\\#$/.test(body) ? `${body.slice(0, -1)}\\#` : body;
+            if (text !== written) {
+              dropInlineFrom(headingStart + 1);
+              out.truncate(headingStart);
+              out.append(text);
+            }
           }
           clampInline();
         }
@@ -466,7 +481,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       } else {
         const idx = inline.findLastIndex((e) => e.tag === tag);
         if (idx === -1) return;
-        const [open] = inline.splice(idx, 1) as [Inline];
+        // Writing this element's markup moves the text after its start, so
+        // every element opened inside it and still open (misnested tags, as in
+        // <i>a<b>b</i>c</b>) is dropped with it: its markup is never written.
+        const [open] = inline.splice(idx) as [Inline];
         const seg = out.from(open.start);
         const core = seg.trim();
         const lead = seg.slice(0, seg.length - seg.trimStart().length);
@@ -569,6 +587,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           .from(t.cellStart)
           .trim()
           .replace(/[ \t]{2,}/g, " ");
+        // The rewrite moves the cell's text, and markup cannot span cells.
+        dropInlineFrom(t.cellStart);
         out.truncate(t.cellStart);
         out.append(` ${cell} |`);
         clampInline();

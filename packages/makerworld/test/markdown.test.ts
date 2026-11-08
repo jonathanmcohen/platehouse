@@ -689,3 +689,71 @@ describe("escaped designer text beside converter markup renders literally (markd
     expect(render(out)).toBe(para(`a ${p}<em>b</em>${p}x`));
   });
 });
+
+// Misnested inline tags. Closing a link or emphasis writes its [ or marks at
+// the point it opened, and rewriting a heading or a table cell can move text;
+// an element still open across either must not keep a start that now points
+// between a backslash and the character it escapes, or its later marks would
+// un-escape designer text (and a "!" left bare before a link's [ would make
+// it an image). Each case below rendered wrong before the fix (PR #24 review).
+describe("escaped designer text beside misnested inline tags renders literally (markdown-it)", () => {
+  it("a link closed before the bold inside it keeps the designer's *", () => {
+    const out = htmlToMarkdown('<p><a href="https://e.test/">*<b>y</a>z</b></p>');
+    expect(out).toBe("[\\*y](https://e.test/)z");
+    expect(render(out)).toBe(para('<a href="https://e.test/">*y</a>z'));
+  });
+
+  it("emphasis closed before the bold and link inside it makes no image", () => {
+    const out = htmlToMarkdown('<p><i>!<b>abc<a href="https://evil.test/p.png">d</i></b></a></p>');
+    expect(out).toBe("*\\!abcd*");
+    expect(render(out)).not.toMatch(/<img/);
+    expect(render(out)).toBe(para("<em>!abcd</em>"));
+  });
+
+  it("bold left open across a table cell keeps the designer's *", () => {
+    const out = htmlToMarkdown("<table><tr><td>a *<b>y</td><td>z</b></td></tr></table>");
+    expect(out).toBe("| a \\*y | z |\n| --- | --- |");
+  });
+
+  it("bold left open across a heading whose trailing # is escaped keeps the #", () => {
+    const out = htmlToMarkdown("<h2>Learn C#<b></h2></b><p>z</p>");
+    expect(out).toBe("## Learn C\\#\n\nz");
+    expect(render(out)).toBe("<h2>Learn C#</h2>\n<p>z</p>\n");
+  });
+
+  it.each(DESIGNER_PAYLOADS)("a link closed before the bold inside it: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<p>a <a href="https://e.test/">${p}<b>y</a>${p}z</b></p>`);
+    expect(render(out)).toBe(para(`a <a href="https://e.test/">${p}y</a>${p}z`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("emphasis closed before the bold inside it: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<p>a <i>${p}<b>y</i>${p}z</b></p>`);
+    expect(render(out)).toBe(para(`a <em>${p}y</em>${p}z`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("emphasis closed before a bold and a link: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(
+      `<p>a <i>${p}<b>abc<a href="https://evil.test/p.png">d</i>${p}</b>e</a></p>`,
+    );
+    const html = render(out);
+    expect(html).not.toMatch(/<img/);
+    expect(html).toBe(para(`a <em>${p}abcd</em>${p}e`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("bold left open across a table cell: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<table><tr><td>a ${p}<b>y</td><td>z</b></td></tr></table>`);
+    expect(render(out)).toBe(
+      `<table>\n<thead>\n<tr>\n<th>a ${p}y</th>\n<th>z</th>\n</tr>\n</thead>\n</table>\n`,
+    );
+  });
+
+  it.each(DESIGNER_PAYLOADS)("bold left open across a heading ending in #: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<h2>a ${p}C#<b></h2></b>`);
+    expect(render(out)).toBe(`<h2>a ${p}C#</h2>\n`);
+  });
+});

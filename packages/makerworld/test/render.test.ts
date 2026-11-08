@@ -226,3 +226,52 @@ describe("escaped designer text beside a link renders literally through renderMa
     expectTextAndLink(html, `a store${payload}x`);
   });
 });
+
+// Misnested inline tags through renderMarkdown: the payload stays text, and
+// nothing but paragraph, emphasis, link and table elements comes out; above
+// all no <img>, which a "!" left bare before a link's [ once produced, loading
+// an address the designer chose (PR #24 review).
+describe("escaped designer text beside misnested inline tags renders literally through renderMarkdown", () => {
+  const ALLOWED = ["p", "em", "strong", "a", "table", "thead", "tbody", "tr", "th", "td"];
+
+  function expectTextOnly(html: string, text: string): void {
+    expectInert(html);
+    const { root, tags } = parse(html);
+    expect(tags, html).not.toContain("img");
+    for (const tag of tags) expect(ALLOWED, html).toContain(tag);
+    expect(root.textContent?.replace(/\s+/g, " ").trim(), html).toBe(text);
+  }
+
+  it("emphasis closed before the bold and link inside it makes no image", () => {
+    const html = renderMarkdown(
+      htmlToMarkdown('<p><i>!<b>abc<a href="https://evil.test/p.png">d</i></b></a></p>'),
+    );
+    expect(html).not.toMatch(/<img|evil\.test/);
+    expectTextOnly(html, "!abcd");
+  });
+
+  it.each(DESIGNER_PAYLOADS)("a link closed before the bold inside it: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const html = renderMarkdown(
+      htmlToMarkdown(`<p>a <a href="https://e.test/">${p}<b>y</a>${p}z</b></p>`),
+    );
+    expectTextOnly(html, `a ${payload}y${payload}z`.replace(/\s+/g, " ").trim());
+  });
+
+  it.each(DESIGNER_PAYLOADS)("emphasis closed before a bold and a link: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const html = renderMarkdown(
+      htmlToMarkdown(`<p>a <i>${p}<b>abc<a href="https://evil.test/p.png">d</i>${p}</b>e</a></p>`),
+    );
+    expect(html).not.toMatch(/evil\.test/);
+    expectTextOnly(html, `a ${payload}abcd${payload}e`.replace(/\s+/g, " ").trim());
+  });
+
+  it.each(DESIGNER_PAYLOADS)("bold left open across a table cell: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const html = renderMarkdown(
+      htmlToMarkdown(`<table><tr><td>a ${p}<b>y</td><td>z</b></td></tr></table>`),
+    );
+    expectTextOnly(html, `a ${payload}y z`.replace(/\s+/g, " ").trim());
+  });
+});
