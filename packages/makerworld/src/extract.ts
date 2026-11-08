@@ -102,6 +102,12 @@ const METADATA =
 // designs leave it empty, and other tools' exports carry only a placeholder
 // title. Also null when the Designer is a generator's name. The first
 // occurrence of each field wins.
+//
+// A prefix cut by the 256 KiB read cap can hide any field after the cut,
+// Designer included (Bambu Studio writes Description before Designer, so a
+// long description can push it out and this returns null). Nothing in the
+// prefix shows that a cut happened, so this cannot tell; a caller that needs
+// to know must learn it from the reader (PR #24 review).
 export function extractMakerWorld(modelXmlPrefix: string): MakerWorldDetails | null {
   const found = new Map<string, string>();
   for (const m of (modelXmlPrefix ?? "").matchAll(METADATA)) {
@@ -119,15 +125,4 @@ export function extractMakerWorld(modelXmlPrefix: string): MakerWorldDetails | n
     descriptionHtml: description === null ? null : description.trim(),
     license: text("License"),
   };
-}
-
-// The fields an extractMakerWorld result lacks that a prefix cut by the read
-// cap may have hidden: License and Title come after Designer in the order
-// Bambu Studio writes them, so a cut after Designer loses them silently.
-export function fieldsHiddenByCap(mw: MakerWorldDetails | null): Array<"license" | "title"> {
-  if (!mw) return [];
-  const hidden: Array<"license" | "title"> = [];
-  if (mw.license === null) hidden.push("license");
-  if (mw.title === null) hidden.push("title");
-  return hidden;
 }

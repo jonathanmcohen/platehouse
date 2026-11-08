@@ -60,6 +60,8 @@ const EMPHASIS: ReadonlyMap<string, string> = new Map([
 const BLOCK_LINE = /\n[ \t]*(?:#{1,6} |- |\d+\. |\|)/;
 const BLOCK_START = /^[ \t]*(?:#{1,6} |- |\d+\. |\|)/;
 const BLANK_LINE = /\n[ \t]*\n/;
+// Tags that open or close a block the converter writes itself.
+const STRUCTURE = /^(?:h[1-6]|ul|ol|li|table|tr|td|th)$/;
 
 // Marks text that begins a line; never present in decoded text (NUL is
 // stripped from it) and removed before htmlToMarkdown returns.
@@ -124,12 +126,8 @@ class Output {
   append(s: string): void {
     if (!s) return;
     this.parts.push(s);
-    for (let i = s.length - 1; i >= 0; i--) {
-      if (!isSpace(s.charAt(i))) {
-        this.lastText = this.size + i;
-        break;
-      }
-    }
+    const last = lastNonSpace(s);
+    if (last >= 0) this.lastText = this.size + last;
     this.size += s.length;
   }
 
@@ -252,11 +250,19 @@ class Output {
         this.size = target;
       }
     }
+    // The last text was cut: find the new one by walking the parts from the
+    // end, each character once. (Reading it through charAt, which walks the
+    // parts from the end on every call, made a run of one-space parts cost
+    // the square of its length; PR #24 review.)
     if (this.lastText >= this.size) {
       this.lastText = -1;
-      for (let i = this.size - 1; i >= 0; i--) {
-        if (!isSpace(this.charAt(i))) {
-          this.lastText = i;
+      let end = this.size;
+      for (let p = this.parts.length - 1; p >= 0; p--) {
+        const part = this.parts[p] as string;
+        end -= part.length;
+        const last = lastNonSpace(part);
+        if (last >= 0) {
+          this.lastText = end + last;
           break;
         }
       }
@@ -264,12 +270,22 @@ class Output {
   }
 }
 
+// The index of the last non-whitespace character in `s`, or -1.
+function lastNonSpace(s: string): number {
+  for (let i = s.length - 1; i >= 0; i--) if (!isSpace(s.charAt(i))) return i;
+  return -1;
+}
+
 interface List {
   ordered: boolean;
   n: number;
-  cell: boolean;
   indent: string;
   lastContentCol: number;
+}
+// A list opened inside a table cell: written on the row, so it only counts.
+interface CellList {
+  ordered: boolean;
+  n: number;
 }
 interface Item {
   markerStart: number;
@@ -330,7 +346,10 @@ function textToMarkdown(raw: string): string {
 export function htmlToMarkdown(html: string | null | undefined): string {
   if (!html) return "";
   const out = new Output();
-  const lists: List[] = []; // open lists
+  const lists: List[] = []; // open lists outside cells
+  // Open lists inside the open cell, kept apart so that nothing outside a
+  // cell scans past them, and emptied when the cell closes (PR #24 review).
+  const cellLists: CellList[] = [];
   const tables: Table[] = []; // open tables
   const items: Item[] = []; // open list items outside cells
   let inCell = false;
@@ -347,7 +366,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     else if (out.last() !== "\n") out.append("\n\n");
     else if (out.charAt(out.length - 2) !== "\n") out.append("\n");
   };
-  const outerList = (): List | undefined => lists.findLast((l) => !l.cell);
+  const outerList = (): List | undefined => lists.at(-1);
+  // The open list item whose nested list just closed, while nothing has been
+  // written after it; text that follows goes back to that item (resumeItem).
+  let resumeItem: Item | undefined;
   // A list item with no text yet would keep a bare marker if a block (a
   // nested list, a heading, a table) opened in it: CommonMark does not read a
   // marker with nothing after it as the item meant, so a bare "-" or "1."
@@ -368,7 +390,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   };
   // A line break, outside a cell; at most two newlines in a row.
   const newline = (): void => {
-    if (inCell) out.append(" ");
+    // In a cell, one space however many breaks: a space per <br> made a run
+    // of one-space parts that a later cut re-read (PR #24 review).
+    if (inCell) space();
     else if (!(out.last() === "\n" && out.charAt(out.length - 2) === "\n")) out.append("\n");
   };
   const endLine = (): void => {
@@ -399,6 +423,17 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // still starts here when only spaces follow the newline or the list
     // marker: those spaces (an &nbsp;, an empty <strong> </strong>) are
     // dropped, so whitespace never uses up a line start or indents it.
+    if (!inCell && resumeItem && resumeItem === items.at(-1) && out.last() === "\n") {
+      // Text after a nested list in the same item: a blank line ends the
+      // nested list, and the item's indent keeps the text in the item.
+      // Whitespace alone writes nothing, so the list stays tight.
+      t = t.trimStart();
+      if (!t) return;
+      breakBlock();
+      out.append(" ".repeat(resumeItem.contentCol) + TEXT_LINE + t);
+      resumeItem = undefined;
+      return;
+    }
     if (!inCell) {
       const lineStart = textLineStart();
       if (lineStart >= 0) {
@@ -420,6 +455,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       return;
     }
     if (dropDepth > 0) return;
+    // A heading, list, item or table after a nested list writes its own
+    // block, so text after it does not go back to the item; the </ul> or
+    // </ol> that closes a nested list sets resumeItem again below.
+    if (STRUCTURE.test(tag)) resumeItem = undefined;
 
     if (/^h[1-6]$/.test(tag) && inCell) {
       space();
@@ -456,15 +495,13 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       // a line of its own; it is dropped so the text stays on the marker's line.
       if (inCell || !itemEmpty()) newline();
     } else if ((tag === "ul" || tag === "ol") && inCell) {
-      if (!closing)
-        lists.push({ ordered: tag === "ol", n: 0, cell: true, indent: "", lastContentCol: 0 });
-      else lists.pop();
+      if (!closing) cellLists.push({ ordered: tag === "ol", n: 0 });
+      else cellLists.pop();
       space();
     } else if (tag === "li" && inCell) {
       // Only a list opened in this cell numbers its items; an outer list's
       // count is left alone.
-      const last = lists.at(-1);
-      const list = last?.cell ? last : undefined;
+      const list = cellLists.at(-1);
       if (!closing) {
         const n = list ? ++list.n : 1;
         const table = tables.at(-1);
@@ -490,21 +527,26 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           else if (item && item.list === parent) indent = " ".repeat(item.contentCol);
           else indent = " ".repeat(parent.lastContentCol || parent.indent.length + 2);
         }
-        lists.push({ ordered: tag === "ol", n: 0, cell: false, indent, lastContentCol: 0 });
+        lists.push({ ordered: tag === "ol", n: 0, indent, lastContentCol: 0 });
         listDepth++;
       } else {
-        const closed = outerList();
-        if (closed) {
-          lists.splice(lists.lastIndexOf(closed), 1);
-          listDepth--;
-        }
+        const closed = lists.pop();
+        if (closed) listDepth--;
         // Items left open in the closed list (an <li> with no </li>) end with it.
         while (items.length > 0 && closed && items.at(-1)?.list === closed) {
           items.pop();
           itemStart = -1;
         }
-        if (outerList()) endLine();
-        else breakBlock();
+        const parent = outerList();
+        if (parent) {
+          endLine();
+          // Text after a nested list, still inside the item that holds it,
+          // belongs to that item: it is written after a blank line at the
+          // item's indent (onText), not at column 0, where CommonMark would
+          // read it as a lazy continuation of the nested item's last line.
+          const item = items.at(-1);
+          if (closed && item?.list === parent) resumeItem = item;
+        } else breakBlock();
       }
     } else if (tag === "li") {
       const list = outerList();
@@ -593,7 +635,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         else {
           if (t) padHeader(t);
           // A list left open in a cell ends with the table.
-          while (lists.at(-1)?.cell) lists.pop();
+          cellLists.length = 0;
           inCell = false;
           breakBlock();
         }
@@ -639,6 +681,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         t.cellStart = out.length;
       } else if (inCell) {
         inCell = false;
+        // A list left open in the cell ends with it.
+        cellLists.length = 0;
         const cell = out
           .from(t.cellStart)
           .trim()
