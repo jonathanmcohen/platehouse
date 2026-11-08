@@ -6,7 +6,12 @@
 // requirements lesson 5) and the tests in test/markdown.test.ts and
 // test/render.test.ts are the contract.
 
-import DOMPurify, { type Config, type DOMPurify as Purifier, type WindowLike } from "dompurify";
+import DOMPurify, {
+  type Config,
+  type DOMPurify as Purifier,
+  type UponSanitizeAttributeHookEvent,
+  type WindowLike,
+} from "dompurify";
 import MarkdownItCallable, { type MarkdownIt } from "markdown-it";
 import { decodeEntities, mapEntities } from "./extract.js";
 
@@ -723,10 +728,12 @@ export function createMarkdownIt(): MarkdownIt {
   return md;
 }
 
-// What DOMPurify lets through: exactly the elements markdown-it writes, the
-// attributes a link, an image and an ordered list need, and only http(s)
-// addresses. Anything else (an event handler, a style, a class, a script) is
-// removed. markdown-it with html off writes nothing dangerous; this is the
+// What DOMPurify lets through: exactly the elements markdown-it writes, and
+// the attributes a link, an image and an ordered list need. Anything else (an
+// event handler, a style, a class, a script) is removed. An href or src must
+// be an absolute http(s) address: ALLOWED_URI_REGEXP says so, and
+// keepHttpAddressesOnly below covers the data: exception DOMPurify makes on
+// its own. markdown-it with html off writes nothing dangerous; this is the
 // second, independent layer.
 const PURIFY_CONFIG: Config = {
   ALLOWED_TAGS: [
@@ -764,6 +771,15 @@ const PURIFY_CONFIG: Config = {
   ALLOW_ARIA_ATTR: false,
 };
 
+// DOMPurify keeps a src that starts with data: on img, audio, video, source
+// and track whatever ALLOWED_URI_REGEXP says (its DATA_URI_TAGS exception,
+// which config can add to but not empty). So this hook drops every href and
+// src that is not an absolute http(s) address before DOMPurify's own checks.
+function keepHttpAddressesOnly(_node: unknown, data: UponSanitizeAttributeHookEvent): void {
+  if (data.attrName !== "href" && data.attrName !== "src") return;
+  if (!/^https?:\/\//i.test(data.attrValue)) data.keepAttr = false;
+}
+
 let purifier: Purifier | undefined;
 let renderer: MarkdownIt | undefined;
 
@@ -780,6 +796,7 @@ function getPurifier(): Purifier {
   if (!p.isSupported || typeof p.sanitize !== "function") {
     throw new Error("renderMarkdown needs a DOM that DOMPurify supports");
   }
+  p.addHook("uponSanitizeAttribute", keepHttpAddressesOnly);
   purifier = p;
   return p;
 }
