@@ -422,6 +422,12 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // In a cell, one space however many breaks: a space per <br> made a run
     // of one-space parts that a later cut re-read (PR #24 review).
     if (inCell) space();
+    // In a list, one newline however many breaks, as a <p> in an item is a
+    // space: a blank line there, with the text after it at column 0, ended
+    // the list, and in an ordered list the next item then rendered as text,
+    // since markdown-it lets a numbered list interrupt a paragraph only at 1
+    // (PR #24 review).
+    else if (lists.length > 0) endLine();
     else if (!(out.last() === "\n" && out.charAt(out.length - 2) === "\n")) out.append("\n");
   };
   const endLine = (): void => {
@@ -432,6 +438,27 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   // closes, and "; " between list items.
   const space = (): void => {
     if (out.length > 0 && !isSpace(out.last())) out.append(" ");
+  };
+  // Closes the open cell of a table that is not nested in a cell: its text
+  // trimmed and written as one pipe-table cell. Called by </td>, and by
+  // whatever HTML lets close a cell with </td> left out (the next <td> or
+  // <th>, <tr>, </tr>, </table>). A cell left open kept its start while a
+  // link opened in it and closed in the next cell rewrote the text before
+  // that start, and cutting the cell there split a backslash from the "!" it
+  // escaped, which made the designer's link an image (PR #24 review).
+  const closeCell = (t: Table): void => {
+    if (!inCell) return;
+    inCell = false;
+    // A list left open in the cell ends with it.
+    cellLists.length = 0;
+    const cell = out
+      .from(t.cellStart)
+      .trim()
+      .replace(/[ \t]{2,}/g, " ");
+    // Markup cannot span cells.
+    out.endInlineFrom(t.cellStart);
+    out.truncate(t.cellStart);
+    out.append(` ${cell} |`);
   };
   // Where a line's text would begin if text came next: the end of the output
   // less any spaces after a newline (or the start), or after the open list
@@ -676,8 +703,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         const t = tables.pop();
         if (t?.nested) space();
         else {
+          // A cell left open (no </td>) ends with the table.
+          if (t) closeCell(t);
           if (t) padHeader(t);
-          // A list left open in a cell ends with the table.
           cellLists.length = 0;
           inCell = false;
           breakBlock();
@@ -698,6 +726,8 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       } else space();
     } else if (tag === "tr" && tables.length > 0) {
       const t = tables.at(-1) as Table;
+      // A cell left open (no </td>) ends with its row.
+      closeCell(t);
       if (!closing) {
         endLine();
         t.rowStart = out.length;
@@ -719,22 +749,12 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       }
     } else if ((tag === "td" || tag === "th") && tables.length > 0) {
       const t = tables.at(-1) as Table;
+      // A cell left open (no </td>) ends where the next begins.
+      closeCell(t);
       if (!closing) {
         t.cells++;
         inCell = true;
         t.cellStart = out.length;
-      } else if (inCell) {
-        inCell = false;
-        // A list left open in the cell ends with it.
-        cellLists.length = 0;
-        const cell = out
-          .from(t.cellStart)
-          .trim()
-          .replace(/[ \t]{2,}/g, " ");
-        // Markup cannot span cells.
-        out.endInlineFrom(t.cellStart);
-        out.truncate(t.cellStart);
-        out.append(` ${cell} |`);
       }
     } else if (BLOCK.has(tag)) {
       // Inside a list item or a table cell a paragraph is just the text, with
