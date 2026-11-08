@@ -239,13 +239,16 @@ crash, a timeout or an unexplained slicer error on any plate fails the gate.
 
 The legitimate refusals, by Orca 2.5.0 return code: -15 and -16 (machine not
 supported), -17 (process not compatible), -20, -52 and -102 (bed too small),
--66 and -68 (nozzle or extruder mismatch).
+-66 and -68 (nozzle or extruder mismatch), and, by Jon's decision on
+2026-11-08 after Hades run 3 hit them, -101 (G-code path conflicts) and -62
+(filament temperatures too far apart). Each refused plate is reported with
+its code and Orca's meaning for it.
 
 NEEDS-DECISION: the plan's slicer contract maps -61 to -69 to "nozzle
 mismatch", but Orca's own messages say only -66 and -68 are about extruders.
--61 to -65, -67 and -69 (bed type, temperature, collisions, vase mode, TPU
-count, mixed filament), and -50 (empty plate), are reported as needs-decision
-rather than passed or failed, so Jon decides them.
+-61, -63 to -65, -67 and -69 (bed type, collisions, vase mode, TPU count,
+mixed filament), and -50 (empty plate), are reported as needs-decision rather
+than passed or failed, so Jon decides them.
 
 ## What the report holds
 

@@ -3,6 +3,9 @@
 // AC-034 treats as legitimate (process not compatible, machine not supported,
 // bed too small, nozzle or extruder mismatch), which is reported. A crash, a
 // timeout or an unexplained slicer error on any plate fails the gate.
+// Jon, 2026-11-08: -101 (G-code path conflicts) and -62 (filament
+// temperatures too far apart), both hit in Hades run 3, are legitimate
+// refusals too, reported with Orca's reason, and do not fail the gate.
 //
 // Return codes are OrcaSlicer v2.5.0's, from src/libslic3r/Utils.hpp, with the
 // messages from src/OrcaSlicer.cpp cli_errors.
@@ -10,10 +13,10 @@
 // The plan's reason map (slicer contract v1) sends -61 to -69 to
 // nozzle_mismatch, but in Orca only -66 and -68 are about extruders; -61 to
 // -65, -67 and -69 are bed type, temperature, collisions, vase mode, TPU count
-// and mixed filament. Those codes, and -50 (empty plate), are neither a
-// legitimate AC-034 refusal by Orca's own meaning nor an unexplained error, so
-// the gate reports them as needs-decision for Jon instead of passing or
-// failing them silently.
+// and mixed filament. Those codes (except -62, which Jon has decided), and -50
+// (empty plate), are neither a legitimate AC-034 refusal by Orca's own meaning
+// nor an unexplained error, so the gate reports them as needs-decision for Jon
+// instead of passing or failing them silently.
 
 export const CODES = Object.freeze({
   0: "success",
@@ -63,9 +66,12 @@ const LEGITIMATE = new Map([
   [-102, "bed_too_small"],
   [-66, "nozzle_mismatch"],
   [-68, "nozzle_mismatch"],
+  // Jon's decision, 2026-11-08.
+  [-101, "gcode_path_conflict"],
+  [-62, "filament_temperature_mismatch"],
 ]);
 
-const NEEDS_DECISION = new Set([-50, -61, -62, -63, -64, -65, -67, -69]);
+const NEEDS_DECISION = new Set([-50, -61, -63, -64, -65, -67, -69]);
 
 /** The reason the plan's slicer contract v1 map gives a return code. */
 export function planReason(code) {

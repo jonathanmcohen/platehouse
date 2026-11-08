@@ -621,7 +621,7 @@ export function buildReport({ plan, results, hostExits, checks }) {
   return {
     verdict,
     passRule:
-      "Every plate gets a time and a weight above zero, or is refused for a reason AC-034 treats as legitimate (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), which is reported. A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the plan's reason map and Orca's own meaning disagree on are reported as needs-decision.",
+      "Every plate gets a time and a weight above zero, or is refused for a legitimate reason, which is reported: one AC-034 names (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), or, by Jon's decision on 2026-11-08, -101 (G-code path conflicts) or -62 (filament temperatures too far apart). A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the plan's reason map and Orca's own meaning disagree on (-50, -61, -63 to -65, -67 and -69) are reported as needs-decision.",
     counts,
     setupErrors: plan.errors ?? [],
     incomplete,
