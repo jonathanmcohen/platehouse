@@ -2,7 +2,7 @@
 // (2026-11-08): scp -r over Tailscale SSH dropped the scripts' execute bits,
 // so step 3's /tmp/platehouse-gate/tool/run.sh failed with exit 126.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,14 +34,22 @@ test("the tool is copied with scp -rp, so its scripts keep their modes", () => {
 test("every run.sh call goes through bash, so it works without the execute bit", () => {
   const calls = commands.filter((c) => c.includes("run.sh"));
   assert.ok(calls.length >= 2, calls.join("\n"));
-  for (const c of calls) assert.match(c, /^bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/, c);
+  // Step 3's detached form wraps the same call in setsid nohup flock -n
+  // <lock> bash -c '...', after removing the previous run's exit file.
+  for (const c of calls) {
+    assert.match(
+      c,
+      /^(setsid nohup flock -n \/tmp\/platehouse-gate\/run\.lock bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; )?bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/,
+      c,
+    );
+  }
 });
 
 // scp -r into a directory that already exists copies the folder inside it
 // (tool/slicing-gate), so a re-run would start the old run.sh. The tool dir is
 // removed before the copy, in the same ssh call that makes the sample dir.
 test("an old copy of the tool is removed before the new one is copied", () => {
-  const prep = commands.findIndex((c) => c.startsWith("ssh hades") && c.includes("rm -rf /tmp/platehouse-gate/tool"));
+  const prep = commands.findIndex((c) => c.startsWith("ssh Hades") && c.includes("rm -rf /tmp/platehouse-gate/tool"));
   const copy = commands.findIndex((c) => c.startsWith("scp -rp "));
   assert.ok(prep !== -1, "an ssh step removes /tmp/platehouse-gate/tool");
   assert.ok(prep < copy, "and it runs before the copy");
@@ -59,7 +67,7 @@ const sampleCopy = () => commands.find((c) => c.includes("-T /tmp/platehouse-nam
 test("the sample is copied by name list in one tar stream that keeps relative paths", () => {
   const c = sampleCopy();
   assert.ok(c, "a step reads /tmp/platehouse-names.txt");
-  assert.match(c, /\| ssh hades 'tar -xf - -C \/tmp\/platehouse-gate\/in\/sample'$/);
+  assert.match(c, /\| ssh Hades 'tar -xf - -C \/tmp\/platehouse-gate\/in\/sample'$/);
   assert.ok(!commands.some((x) => /while .*read .*scp/.test(x)), "no per-file scp loop");
   assert.doesNotMatch(readme, /top-level file names/);
   const select = readFileSync(join(HERE, "select-sample.mjs"), "utf8");
@@ -87,7 +95,7 @@ test(
     writeFileSync(list, `${names.join("\n")}\n`);
     const line = sampleCopy()
       .replaceAll("/tmp/platehouse-names.txt", list)
-      .replace("ssh hades '", "bash -c '")
+      .replace("ssh Hades '", "bash -c '")
       .replace("/tmp/platehouse-gate/in/sample", dest);
     const r = spawnSync("bash", ["-c", line], { cwd: src, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
@@ -105,5 +113,179 @@ test(
     const bytes = stream.stdout.toString("latin1");
     assert.ok(bytes.includes("crafted 0"), "the stream carries the files");
     assert.ok(!bytes.includes("LIBARCHIVE.xattr") && !bytes.includes("._"), "no extended attributes or AppleDouble entries");
+  },
+);
+
+// Hades run 2 (2026-11-08): the ssh alias on mini01 is Hades, and OpenSSH
+// matches Host patterns case-sensitively, so "ssh hades" missed the alias and
+// failed with "Host key verification failed" until the operator typed Hades.
+// Every ssh and scp target in any README command must be the alias exactly.
+const allCommands = [...readme.matchAll(/```sh\n([\s\S]*?)```/g)].flatMap((m) =>
+  m[1]
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#")),
+);
+
+test("every ssh and scp in the README targets the alias Hades, spelled exactly", () => {
+  const ssh = allCommands.flatMap((c) => [...c.matchAll(/\bssh\s+([^\s']+)/g)].map((m) => m[1]));
+  const scp = allCommands
+    .filter((c) => /\bscp\b/.test(c))
+    .flatMap((c) => [...c.matchAll(/(?:^|\s)([A-Za-z][\w.-]*):\//g)].map((m) => m[1]));
+  assert.ok(ssh.length >= 2 && scp.length >= 2, `found ssh ${ssh.join(",")} scp ${scp.join(",")}`);
+  for (const host of [...ssh, ...scp]) assert.equal(host, "Hades", `host alias in a README command: ${host}`);
+  assert.doesNotMatch(readme, /\b(ssh|scp)\b[^\n`]*\bhades\b/, "no lower-case hades in an ssh or scp line");
+  assert.doesNotMatch(readme, /\bhades:/, "no lower-case hades: scp target");
+});
+
+// Run 2's operator started run.sh detached by hand, so a dropped ssh session
+// could not kill a run of several hours. Step 3 says how, with the log and the
+// exit code written inside the scratch dir, where step 5 deletes them.
+const step3 = runSteps.slice(runSteps.indexOf("\n3. "), runSteps.indexOf("\n4. "));
+const detached = () =>
+  [...step3.matchAll(/```sh\n([\s\S]*?)```/g)]
+    .flatMap((m) => m[1].split("\n"))
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("setsid "));
+
+test("step 3 starts the run detached, with its log and exit code in the scratch dir", () => {
+  const line = detached();
+  assert.ok(line, "step 3 has a setsid line");
+  // A run.exit left by an earlier run would read as this run having finished.
+  assert.match(line, /^setsid nohup flock -n \/tmp\/platehouse-gate\/run\.lock bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; bash /);
+  assert.match(line, /bash \/tmp\/platehouse-gate\/tool\/run\.sh > \/tmp\/platehouse-gate\/run\.log 2>&1/);
+  assert.match(line, /echo \$\? > \/tmp\/platehouse-gate\/run\.exit/);
+  assert.match(line, /< \/dev\/null > \/dev\/null 2>&1 &$/, "detached from the terminal and backgrounded");
+  assert.match(step3, /dropped ssh session/i);
+});
+
+// The tail is pasted straight after the backgrounded setsid line, so on a first
+// run it usually starts before the background job has created run.log. GNU
+// tail -f then prints "No such file or directory" and exits 1; tail -F follows
+// the name and waits for the file to appear.
+const step3Commands = () =>
+  [...step3.matchAll(/```sh\n([\s\S]*?)```/g)]
+    .flatMap((m) => m[1].split("\n"))
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+
+test("step 3 follows run.log with tail -F, which waits for a log that is not there yet", () => {
+  const tails = step3Commands().filter((l) => /^tail\b/.test(l));
+  assert.deepEqual(tails, ["tail -F /tmp/platehouse-gate/run.log"]);
+});
+
+test("step 3's tail, run as written before run.log exists, keeps waiting and then shows the log", async () => {
+  const root = mkdtempSync(join(tmpdir(), "gate-tail-"));
+  made.push(root);
+  const line = step3Commands().find((l) => /^tail\b/.test(l)).replaceAll("/tmp/platehouse-gate", root);
+  const child = spawn("bash", ["-c", `exec ${line}`], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  let exited = null;
+  child.on("exit", (code) => (exited = code));
+  try {
+    await new Promise((res) => setTimeout(res, 500));
+    assert.equal(exited, null, "tail exited while run.log did not exist yet");
+    writeFileSync(join(root, "run.log"), "stub run line\n");
+    for (let i = 0; i < 100 && !out.includes("stub run line"); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.match(out, /stub run line/);
+  } finally {
+    child.kill();
+  }
+});
+
+// Runs step 3's detached line as written, with run.sh replaced by a stub that
+// prints a line and exits 3 and the scratch dir by a temporary one. setsid is
+// util-linux, so this runs on Linux (CI and Hades), not on macOS.
+test(
+  "step 3's detached line, run as written, records the run's output and exit code",
+  { skip: spawnSync("bash", ["-c", "command -v setsid"]).status !== 0 && "setsid is not installed (util-linux, Linux only)" },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "gate-detach-"));
+    made.push(root);
+    mkdirSync(join(root, "tool"));
+    // The stub reports whether the earlier run's exit file was gone when it started.
+    writeFileSync(
+      join(root, "tool", "run.sh"),
+      'if [ -e "$(dirname "$0")/../run.exit" ]; then s=present; else s=absent; fi\nprintf \'stub run %s, old exit file %s\\n\' "$$" "$s"\nexit 3\n',
+    );
+    writeFileSync(join(root, "run.exit"), "0\n"); // left by an earlier run
+    const line = detached().replaceAll("/tmp/platehouse-gate", root);
+    const r = spawnSync("bash", ["-c", line], { encoding: "utf8", timeout: 10000 });
+    assert.equal(r.status, 0, r.stderr);
+    const exitFile = join(root, "run.exit");
+    const done = () => existsSync(exitFile) && /^[1-9]\d*\n$/.test(readFileSync(exitFile, "utf8"));
+    for (let i = 0; i < 100 && !done(); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(readFileSync(exitFile, "utf8"), "3\n");
+    assert.match(readFileSync(join(root, "run.log"), "utf8"), /^stub run \d+, old exit file absent\n$/);
+  },
+);
+
+// The run outlives the ssh session, so an operator who reconnects may paste
+// step 3 again while a run is still going (PR #7 review). Without a guard the
+// second wrapper truncated run.log, its run.sh died at "out is not empty", and
+// it wrote 2 to run.exit while the first run went on; step 5's --clean then
+// deleted the live run. The wrapper takes run.lock with flock -n, so a second
+// start does nothing, and step 3 first says whether a run is going.
+const lockCheck = () => step3Commands().find((l) => l.startsWith("flock -n "));
+
+test("step 3 says whether a run is already going before it starts one", () => {
+  const cmds = step3Commands();
+  const check = lockCheck();
+  assert.ok(check, "step 3 has a flock -n check line");
+  assert.match(check, /^flock -n \/tmp\/platehouse-gate\/run\.lock true \|\| echo '[^']*already going[^']*'$/);
+  assert.ok(cmds.indexOf(check) < cmds.findIndex((l) => l.startsWith("setsid ")), "the check comes before the start");
+  assert.match(step3, /second start/i, "step 3 says what a second start does");
+});
+
+test(
+  "step 3 pasted again while a run is going leaves that run's log and exit code alone",
+  {
+    skip:
+      spawnSync("bash", ["-c", "command -v setsid && command -v flock"]).status !== 0 &&
+      "setsid or flock is not installed (util-linux, Linux only)",
+  },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "gate-twice-"));
+    made.push(root);
+    mkdirSync(join(root, "tool"));
+    // The stub logs its start, then waits (at most 30 s) for the test to let it finish.
+    writeFileSync(
+      join(root, "tool", "run.sh"),
+      'd="$(dirname "$0")/.."\nprintf \'stub run %s started\\n\' "$$"\nfor _ in $(seq 300); do [ -e "$d/release" ] && break; sleep 0.1; done\nprintf \'stub run %s done\\n\' "$$"\nexit 3\n',
+    );
+    const start = detached().replaceAll("/tmp/platehouse-gate", root);
+    const check = lockCheck().replaceAll("/tmp/platehouse-gate", root);
+    const log = join(root, "run.log");
+    const exitFile = join(root, "run.exit");
+    const wait = async (ok) => {
+      for (let i = 0; i < 200 && !ok(); i++) await new Promise((res) => setTimeout(res, 50));
+    };
+    const readLog = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
+
+    assert.equal(spawnSync("bash", ["-c", start], { encoding: "utf8", timeout: 10000 }).status, 0);
+    await wait(() => /started/.test(readLog()));
+    const first = readLog();
+    assert.match(first, /^stub run \d+ started\n$/);
+
+    const busy = spawnSync("bash", ["-c", check], { encoding: "utf8", timeout: 10000 });
+    assert.match(busy.stdout, /already going/, "the check sees the running gate");
+    assert.equal(spawnSync("bash", ["-c", start], { encoding: "utf8", timeout: 10000 }).status, 0);
+    await new Promise((res) => setTimeout(res, 1000));
+    assert.equal(readLog(), first, "the second start did not touch run.log");
+    assert.equal(existsSync(exitFile), false, "the second start wrote no run.exit");
+
+    writeFileSync(join(root, "release"), "");
+    await wait(() => existsSync(exitFile) && /\n$/.test(readFileSync(exitFile, "utf8")));
+    assert.equal(readFileSync(exitFile, "utf8"), "3\n");
+    assert.match(readLog(), /^stub run (\d+) started\nstub run \1 done\n$/, "one run, start to finish");
+    // run.exit is written just before the wrapper and flock exit and drop the lock.
+    let idle = "";
+    for (let i = 0; i < 40; i++) {
+      idle = spawnSync("bash", ["-c", check], { encoding: "utf8", timeout: 10000 }).stdout;
+      if (idle === "") break;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    assert.equal(idle, "", "with no run going the check prints nothing");
   },
 );

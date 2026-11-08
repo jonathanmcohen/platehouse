@@ -26,6 +26,13 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # debconf and libssl3t64 (3.0.13-0ubuntu3.16), are already in the pinned base
 # image (its var/lib/dpkg/status, read the same day). Once the snapshot is on,
 # both are installed again, so the image keeps the snapshot's versions.
+#
+# Both stages run Node, and the Node 26 linux-x64 binary links libatomic.so.1,
+# which the base image does not carry, so both install libatomic1 from the
+# snapshot. Without it the second Hades run (2026-11-08) died at the fetch
+# stage's first Node call with "libatomic.so.1: cannot open shared object
+# file" (exit 127). Each stage runs check-libs.sh on /opt/node/bin/node before
+# it first calls Node, so a missing library fails there, naming the library.
 ARG APT_SNAPSHOT=20261107T000000Z
 
 FROM --platform=linux/amd64 ${BASE} AS fetch
@@ -36,7 +43,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils unzip git \
+ && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils unzip git libatomic1 \
  && rm -rf /var/lib/apt/lists/*
 
 # fetch URL FILE SHA256: download and refuse anything that does not match.
@@ -47,10 +54,15 @@ RUN printf '%s\n' \
 # need TEST-ARGS [-- REASON]: a check that names itself on stderr when it
 # fails, so a failed step never exits 1 with no text (see need.sh).
 COPY need.sh /usr/local/lib/need.sh
+COPY check-libs.sh /opt/gate-build/check-libs.sh
 
 WORKDIR /dl
 
 # OrcaSlicer v2.5.0, Ubuntu 24.04 AppImage (released 2026-11-07).
+# Both AppImage trees get chmod -R a+rX after extraction: read for every user,
+# and execute wherever any execute bit is already set. Without it the gate
+# user could not run libexec/orca-slicer-env ("Permission denied", first CI
+# build, 2026-11-08), while the checks here, run as root, passed.
 # Layout read from this exact file's squashfs on 2026-11-08: AppRun is a bash
 # launcher (mode 0755) that execs libexec/orca-slicer-env bin/orca-slicer, and
 # the env script puts lib/orca-runtime and bin on LD_LIBRARY_PATH. There is no
@@ -68,6 +80,7 @@ RUN source /usr/local/lib/fetch.sh \
  && chmod +x orca.AppImage \
  && ./orca.AppImage --appimage-extract > /dev/null \
  && mv squashfs-root /opt/orca \
+ && chmod -R a+rX /opt/orca \
  && rm orca.AppImage \
  && need -x /opt/orca/AppRun \
  && need -x /opt/orca/libexec/orca-slicer-env \
@@ -86,7 +99,10 @@ RUN source /usr/local/lib/fetch.sh \
 # checkout is that commit's content; HEAD is then checked against the pin.
 # The JSON goes to /opt/orca-profiles, beside the AppImage, not inside it,
 # so nothing shadows the .opc files Orca ships.
-ARG ORCA_SRC_TAG=v2.5.0
+# Orca source tag v2.5.0 -> commit 40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19
+# (git ls-remote, 2026-11-08). The tag is recorded here, not as a build arg:
+# only the commit is fetched, so a tag arg would be a setting nothing reads
+# (issue #6). A new Orca release means a new commit pin, resolved the same way.
 ARG ORCA_SRC_SHA=40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19
 ARG ORCA_SRC_REPO=https://github.com/OrcaSlicer/OrcaSlicer.git
 RUN source /usr/local/lib/need.sh \
@@ -120,6 +136,7 @@ RUN source /usr/local/lib/fetch.sh \
  && chmod +x openscad.AppImage \
  && ./openscad.AppImage --appimage-extract > /dev/null \
  && mv squashfs-root /opt/openscad \
+ && chmod -R a+rX /opt/openscad \
  && rm openscad.AppImage \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad
@@ -131,14 +148,18 @@ RUN source /usr/local/lib/fetch.sh \
  && fetch "$LANDRUN_URL" /opt/landrun "$LANDRUN_SHA256" \
  && chmod 0755 /opt/landrun
 
-# Node.js 26.13.0, linux x64.
+# Node.js 26.13.0, linux x64. Its libraries (libatomic.so.1 among them) are
+# checked before anything here runs it.
 ARG NODE_URL=https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz
 ARG NODE_SHA256=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
 RUN source /usr/local/lib/fetch.sh \
+ && source /usr/local/lib/need.sh \
  && fetch "$NODE_URL" node.tar.xz "$NODE_SHA256" \
  && mkdir /opt/node \
  && tar -xJf node.tar.xz -C /opt/node --strip-components=1 \
- && rm node.tar.xz
+ && rm node.tar.xz \
+ && bash /opt/gate-build/check-libs.sh /opt/node/bin/node \
+ && need "$(/opt/node/bin/node --version)" = v26.13.0
 
 # The profile JSON must be the release the AppImage was built from: the version
 # in each source <vendor>.json must equal the version stamped in the
@@ -187,7 +208,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime libraries the two AppImages take from the host (Orca's
 # scripts/appimage_lib_policy.sh lists GL/EGL, X11, GTK 3, WebKitGTK 4.1,
 # GStreamer, fontconfig and the C++ runtime), Mesa for EGL and software GL,
-# and GNU time. No X server and no Xvfb.
+# GNU time, and libatomic1 for Node (see APT_SNAPSHOT). No X server and no
+# Xvfb.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
@@ -195,6 +217,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates openssl \
       time \
+      libatomic1 \
       libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libegl-mesa0 libgles2 libopengl0 libglu1-mesa \
       libgtk-3-0t64 libwebkit2gtk-4.1-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
       libsecret-1-0 libsm6 libice6 libmspack0t64 \
@@ -218,12 +241,15 @@ RUN ln -s /opt/node/bin/node /usr/local/bin/node
 # (lib/orca-runtime, then bin). OpenSCAD's AppRun is a symlink to
 # usr/bin/openscad, which finds its bundled libraries through its RUNPATH.
 # check-libs.sh also fails when ldd itself fails, so it cannot pass without
-# checking anything. occt-import-js's package.json main is
-# dist/occt-import-js.js, which loads dist/occt-import-js.wasm beside it.
+# checking anything. Node's libraries are checked again here, in the stage
+# the gate runs in, before node is first called. occt-import-js's
+# package.json main is dist/occt-import-js.js, which loads
+# dist/occt-import-js.wasm beside it.
 RUN source /usr/local/lib/need.sh \
  && bash /opt/gate/check-libs.sh /opt/orca/bin/orca-slicer /opt/orca/lib/orca-runtime:/opt/orca/bin \
  && need -x /opt/openscad/usr/bin/openscad \
  && bash /opt/gate/check-libs.sh /opt/openscad/usr/bin/openscad \
+ && bash /opt/gate/check-libs.sh /opt/node/bin/node \
  && need "$(node --version)" = v26.13.0 \
  && need -x /usr/local/bin/landrun \
  && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js \
@@ -231,6 +257,24 @@ RUN source /usr/local/lib/need.sh \
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin gate
 USER 10001
+
+# The same checks again as the gate user. Every check above runs as root,
+# and root passes test -x on any execute bit and test -r on any file, so
+# only these show the gate user can start the programs and read its files.
+RUN source /usr/local/lib/need.sh \
+ && need -x /opt/orca/AppRun \
+ && need -x /opt/orca/libexec/orca-slicer-env \
+ && need -x /opt/orca/bin/orca-slicer \
+ && need -r /opt/orca/resources/profiles/BBL.opc \
+ && need -x /opt/openscad/AppRun \
+ && need -x /opt/openscad/usr/bin/openscad \
+ && need -x /usr/local/bin/landrun \
+ && need -x /opt/node/bin/node \
+ && need -r /opt/orca-profiles/BBL.json \
+ && need -r /opt/orca-profiles/OrcaFilamentLibrary.json \
+ && need -r /opt/gate/gate.mjs \
+ && need -r /opt/gate/node_modules/occt-import-js/dist/occt-import-js.wasm
+
 WORKDIR /work
 ENTRYPOINT []
 CMD ["node", "/opt/gate/gate.mjs"]

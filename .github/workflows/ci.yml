@@ -1,0 +1,91 @@
+# CI for Platehouse. Build plan Task 3 owns this file and adds the lint,
+# typecheck, unit and integration jobs. For now it holds one job: the slicing
+# gate's tests and a build of the gate image, so an image build failure is
+# found here and not on Hades (the second Hades run, 2026-11-08, failed while
+# building the image). Nothing is pushed anywhere and no secret is used. No
+# designer file comes near this job: the gate tests build their own fixtures,
+# and the smoke checks need no model file at all.
+name: ci
+
+on:
+  pull_request:
+    paths:
+      - "tools/slicing-gate/**"
+      - ".github/workflows/ci.yml"
+  push:
+    paths:
+      - "tools/slicing-gate/**"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate-image:
+    name: Slicing gate tests and image build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IMAGE: platehouse-gate:ci
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "26.13.0"
+
+      # A green job must mean tests ran: the TAP copy of the results is read
+      # for its test count, and a count of zero fails the step.
+      - name: Gate tests
+        run: |
+          node --test --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=tap --test-reporter-destination=gate-tests.tap \
+            'tools/slicing-gate/test/**/*.test.mjs'
+          grep -E '^# (tests|pass|fail|skipped) ' gate-tests.tap
+          if ! grep -Eq '^# tests [1-9][0-9]*$' gate-tests.tap; then
+            echo "::error::No gate tests ran"
+            exit 1
+          fi
+
+      # Every RUN step and build check in the Dockerfile runs here, as on Hades.
+      - name: Build the gate image
+        run: docker build --platform linux/amd64 -t "$IMAGE" tools/slicing-gate
+
+      # Each check runs in a fresh container the way the gate runs on Hades:
+      # no network, read-only root, a tmpfs scratch dir, no capabilities.
+      - name: Smoke-check the image
+        run: |
+          smoke() {
+            local name="$1"
+            shift
+            local out
+            if ! out="$(docker run --rm --network none --read-only \
+                --tmpfs /work:rw,size=1g,mode=1777 --cap-drop ALL \
+                --security-opt no-new-privileges:true -e HOME=/work \
+                -v "$PWD/tools/slicing-gate:/src:ro" "$IMAGE" "$@" 2>&1)"; then
+              printf '%s\n' "$out"
+              echo "::error::smoke check failed: ${name}"
+              exit 1
+            fi
+            printf '== %s: ok\n' "${name}"
+            printf '%s\n' "$out" | head -n 8
+          }
+          smoke "orca --help exits 0" /opt/orca/AppRun --help
+          smoke "BBL profile version" node /src/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json
+          smoke "OrcaFilamentLibrary profile version" node /src/check-profile-version.mjs /opt/orca/resources/profiles/OrcaFilamentLibrary.opc /opt/orca-profiles/OrcaFilamentLibrary.json
+          smoke "node starts" node --version
+          smoke "openscad starts" /opt/openscad/AppRun --version
+          smoke "landrun starts" landrun --version

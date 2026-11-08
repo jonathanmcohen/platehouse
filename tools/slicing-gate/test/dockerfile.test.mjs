@@ -128,7 +128,12 @@ const PROFILES = "/opt/orca-profiles";
 
 test("the profile source is pinned by the commit tag v2.5.0 points to, not by a moving ref", () => {
   const text = readFileSync(join(HERE, "Dockerfile"), "utf8");
-  assert.match(text, /^ARG ORCA_SRC_TAG=v2\.5\.0$/m);
+  // Issue #6: an ORCA_SRC_TAG build arg looked like a setting but nothing read
+  // it, so --build-arg ORCA_SRC_TAG=... was silently ignored. The tag is a
+  // comment beside the commit it pointed to when pinned, not an ARG.
+  assert.doesNotMatch(text, /^ARG ORCA_SRC_TAG\b/m, "no ORCA_SRC_TAG build arg");
+  assert.doesNotMatch(text, /\$\{?ORCA_SRC_TAG\b/, "nothing reads ORCA_SRC_TAG");
+  assert.match(text, new RegExp(`^# .*\\bv2\\.5\\.0\\b.*\\b${ORCA_SRC_SHA.slice(0, 7)}`, "m"), "a comment names the tag and the commit");
   assert.match(text, new RegExp(`^ARG ORCA_SRC_SHA=${ORCA_SRC_SHA}$`, "m"));
   const all = runs().join("\n");
   const fetches = all.match(/git fetch [^&]*/g) ?? [];
@@ -191,4 +196,100 @@ test("gate.mjs reads the profiles from the fetched JSON folder", () => {
   );
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, PROFILES);
+});
+
+// The Dockerfile split into its stages, each with its RUNs (continuations
+// joined) and its other instructions.
+const stages = () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8").replace(/\\\n/g, " ");
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (/^FROM\b/.test(line)) out.push({ from: line, lines: [] });
+    else if (out.length > 0) out.at(-1).lines.push(line);
+  }
+  return out.map((s) => ({ ...s, runs: s.lines.filter((l) => /^RUN\b/.test(l)) }));
+};
+// A Node call is node, by either path, at the start of a command (a RUN, a
+// step after && or ;, or a $(...)); a path argument such as ln -s
+// /opt/node/bin/node or check-libs.sh /opt/node/bin/node is not one.
+const NODE_CALL = /(^RUN|&&|;|\$\()\s*(\/opt\/node\/bin\/node|node)\s/;
+// A stage runs Node when a RUN calls node or the image's default command does.
+const runsNode = (stage) => stage.runs.some((r) => NODE_CALL.test(r)) || stage.lines.some((l) => /^CMD \["node"/.test(l));
+
+// Hades run 2 (2026-11-08): the fetch stage's first Node call, the profile
+// version check, died with "libatomic.so.1: cannot open shared object file"
+// (exit 127). The Node 26 linux-x64 binary links libatomic.so.1, which the
+// ubuntu:24.04 base image does not carry.
+test("both stages run Node", () => {
+  const s = stages();
+  assert.equal(s.length, 2);
+  for (const stage of s) assert.ok(runsNode(stage), `${stage.from} runs node`);
+});
+
+test("every stage that runs Node installs libatomic1 from the dated snapshot", () => {
+  for (const stage of stages().filter(runsNode)) {
+    const apt = stage.runs.find((r) => r.includes("apt-get install"));
+    assert.ok(apt, `${stage.from} installs apt packages`);
+    const after = apt.split("APT::Snapshot")[1];
+    assert.ok(after !== undefined, `${stage.from} switches the snapshot on`);
+    const installs = after.split("&&").filter((c) => c.includes("apt-get install"));
+    const pkgs = installs.flatMap((c) => c.replace(/.*apt-get install/, "").trim().split(/\s+/));
+    assert.ok(pkgs.includes("libatomic1"), `${stage.from} installs libatomic1 after the snapshot is on: ${pkgs.join(" ")}`);
+  }
+});
+
+// check-libs.sh names the binary and every missing library, so the next
+// missing library fails the build there instead of at a later RUN with exit 127.
+test("every stage that runs Node checks /opt/node/bin/node's libraries before its first Node call", () => {
+  for (const stage of stages().filter(runsNode)) {
+    assert.ok(
+      stage.lines.some((l) => /^COPY\b.*\bcheck-libs\.sh\b/.test(l)),
+      `${stage.from} copies check-libs.sh in`,
+    );
+    const check = stage.runs.findIndex((r) => /bash \S*check-libs\.sh \/opt\/node\/bin\/node\b/.test(r));
+    assert.ok(check !== -1, `${stage.from} runs check-libs.sh on /opt/node/bin/node`);
+    const firstNode = stage.runs.findIndex((r) => NODE_CALL.test(r));
+    assert.ok(firstNode !== -1, `${stage.from} calls node`);
+    assert.ok(check <= firstNode, `${stage.from}: the library check (RUN ${check}) comes before the first Node call (RUN ${firstNode})`);
+    if (check === firstNode) {
+      const run = stage.runs[check];
+      assert.ok(
+        run.indexOf("check-libs.sh /opt/node/bin/node") < run.search(NODE_CALL),
+        `${stage.from}: the library check runs before node in the same RUN`,
+      );
+    }
+  }
+});
+
+// CI run 42489171613 (PR #7, 2026-11-08): the image built, then the smoke
+// check failed with "/opt/orca/AppRun: line 29: /opt/orca/libexec/orca-slicer-env:
+// Permission denied". The gate runs as uid 10001 (and on Hades as the caller's
+// uid), but the AppImage trees keep the modes they were extracted with, and the
+// build's need -x checks ran as root, which passes -x on any execute bit.
+test("both AppImage trees are made readable, and executable where they already are, for every user", () => {
+  const all = runs().join("\n");
+  for (const tree of ["/opt/orca", "/opt/openscad"]) {
+    assert.ok(all.includes(`chmod -R a+rX ${tree} `) || all.includes(`chmod -R a+rX ${tree}\n`), `chmod -R a+rX ${tree}`);
+  }
+});
+
+test("the execute and read checks are repeated as the gate user, after USER", () => {
+  const text = readFileSync(join(HERE, "Dockerfile"), "utf8").replace(/\\\n/g, " ");
+  const lines = text.split("\n");
+  const user = lines.findIndex((l) => /^USER 10001$/.test(l));
+  assert.ok(user !== -1, "the final stage switches to USER 10001");
+  const asUser = lines.slice(user + 1).filter((l) => /^RUN\b/.test(l)).join("\n");
+  for (const check of [
+    "need -x /opt/orca/AppRun",
+    "need -x /opt/orca/libexec/orca-slicer-env",
+    "need -x /opt/orca/bin/orca-slicer",
+    "need -x /opt/openscad/usr/bin/openscad",
+    "need -x /usr/local/bin/landrun",
+    "need -x /opt/node/bin/node",
+    "need -r /opt/orca-profiles/BBL.json",
+    "need -r /opt/gate/gate.mjs",
+  ]) {
+    assert.ok(asUser.includes(check), `as the gate user: ${check}`);
+  }
+  assert.match(asUser, /source \/usr\/local\/lib\/need\.sh/);
 });
