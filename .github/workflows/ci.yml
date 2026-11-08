@@ -7,8 +7,8 @@
 # actually ran (AC-094), and logs how many did.
 #
 # The slicing gate job builds a large image, so it keeps its own path scoping:
-# the changes job decides whether tools/slicing-gate or this file changed, and
-# the gate job runs only then. Nothing depends on the gate job, so its skip
+# the changes job decides whether tools/slicing-gate, this file or .node-version
+# (the gate job's Node version) changed, and the gate job runs only then. Nothing depends on the gate job, so its skip
 # reaches no other job. Nothing is pushed anywhere and no secret is used. No
 # designer file comes near any job: every test builds its own fixtures.
 name: ci
@@ -65,11 +65,11 @@ jobs:
             changed="$(git diff --name-only "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$)' <<<"$changed"; then
-              echo "The slicing gate or this workflow changed; the gate job runs."
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The slicing gate, this workflow or .node-version changed; the gate job runs."
             else
               gate=false
-              echo "Neither the slicing gate nor this workflow changed; the gate job is skipped."
+              echo "Neither the slicing gate, this workflow nor .node-version changed; the gate job is skipped."
             fi
           fi
           echo "gate=${gate}" >>"$GITHUB_OUTPUT"
@@ -219,7 +219,7 @@ jobs:
   # The slicing gate's tests and a build of the gate image, so an image build
   # failure is found here and not on Hades (the second Hades run, 2026-11-08,
   # failed while building the image). Runs only when the changes job says the
-  # gate or this workflow changed.
+  # gate, this workflow or .node-version changed.
   gate-image:
     name: Slicing gate tests and image build
     needs: changes
