@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -104,4 +104,29 @@ test("writeRecipe writes loadable machine and filament files and a recipe naming
   assert.equal(recipe.nozzlePrinterCount, 2);
   assert.equal(recipe.companions, false);
   assert.ok(!p1s.file.includes(" "));
+});
+
+// OrcaSlicer 2.5.0's AppImage has no BBL.json and no BBL/machine, process or
+// filament JSON: every vendor's presets are packed into <vendor>.opc, a binary
+// preset cache, and BBL/ keeps only covers, models and filament maps. Read
+// from the pinned AppImage's squashfs listing on 2026-11-08. The index must
+// say so, not come back empty and turn every printer into a "no bundled
+// machine preset" setup error.
+function opcOnlyTree() {
+  const root = mkdtempSync(join(tmpdir(), "gate-opc-"));
+  mkdirSync(join(root, "BBL", "filament"), { recursive: true });
+  writeFileSync(join(root, "BBL.opc"), Buffer.from("ZCRO\u0002\u0000\u0000\u0000", "latin1"));
+  writeFileSync(join(root, "OrcaFilamentLibrary.opc"), Buffer.from("ZCRO\u0002\u0000\u0000\u0000", "latin1"));
+  writeFileSync(join(root, "BBL", "cli_config.json"), "{}");
+  writeFileSync(join(root, "BBL", "filament", "filament_id_map.json"), "{}");
+  return root;
+}
+
+test("a profile tree that only has BBL.opc is an error naming the packed format", () => {
+  assert.throws(() => loadIndex(opcOnlyTree()), /BBL\.opc.*binary preset cache.*cannot read/);
+});
+
+test("a profile tree with no BBL presets at all is an error naming the folder", () => {
+  const root = mkdtempSync(join(tmpdir(), "gate-empty-"));
+  assert.throws(() => loadIndex(root), (err) => err.message.includes(root) && /no BBL presets/.test(err.message));
 });
