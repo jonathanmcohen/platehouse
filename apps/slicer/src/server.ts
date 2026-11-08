@@ -6,13 +6,16 @@
 // carries as little as it can.
 //
 // - Slices run one at a time; a second POST /v1/slice while one runs is 409.
+// - STEP conversions also run one at a time: a second waits for the first
+//   before its body is read, so at most one STEP body (up to 256 MiB) sits
+//   on the tmpfs and one OCCT worker runs, inside the container's 4g.
 // - Every request works in its own folder under WORK_DIR (/work, a tmpfs),
 //   deleted afterwards, success or failure.
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
 import { randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, realpathSync, rmSync } from "node:fs";
-import { open, readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -29,8 +32,8 @@ import { z } from "zod";
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import { runGroup } from "./sandbox.js";
-import { renderScad, type SandboxCheck, sandboxSelfTest } from "./scad.js";
-import { runStepWorker } from "./step.js";
+import { renderScad, type SandboxCheck, SCAD_INPUT, sandboxSelfTest } from "./scad.js";
+import { runStepWorker, STEP_INPUT } from "./step.js";
 
 export interface SlicerConfig {
   port: number;
@@ -328,27 +331,41 @@ export function createSlicer(config: SlicerConfig): Slicer {
     }
   }
 
+  // STEP conversions queue here, one at a time.
+  let stepQueue: Promise<void> = Promise.resolve();
+  const oneStepAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = stepQueue.then(fn, fn);
+    stepQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+
+  /**
+   * Saves the body as dir/<input> in a fresh job folder and hands the folder
+   * to `work`, which runs its program on that file. The body is never read
+   * into the server's memory.
+   */
   async function withBody(
     req: IncomingMessage,
     res: ServerResponse,
     limit: number,
-    work: (dir: string, body: Buffer) => Promise<void>,
+    input: string,
+    work: (dir: string) => Promise<void>,
   ): Promise<void> {
     const declared = declaredLength(req);
     if (declared !== null && declared > limit)
       return refuseEarly(req, res, 413, { error: "too_large" });
     const dir = jobDir();
     try {
-      const file = join(dir, "body");
       try {
-        await saveBody(req, file, limit);
+        await saveBody(req, join(dir, input), limit);
       } catch (err) {
         if (err instanceof TooLarge) return refuseEarly(req, res, 413, { error: "too_large" });
         throw err;
       }
-      const body = await readFile(file);
-      rmSync(file);
-      await work(dir, body);
+      await work(dir);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -377,7 +394,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       case "POST /v1/scad/stl":
       case "POST /v1/scad/png": {
         const kind = url.pathname.endsWith("png") ? "png" : "stl";
-        return withBody(req, res, config.limits.scadBodyBytes, async (dir, body) => {
+        return withBody(req, res, config.limits.scadBodyBytes, SCAD_INPUT, async (dir) => {
           const check = await sandboxReady();
           if (!check.ok) {
             return send(res, 422, {
@@ -385,22 +402,27 @@ export function createSlicer(config: SlicerConfig): Slicer {
               message: `OpenSCAD renders are off: the sandbox self-test failed (${check.detail}).`,
             });
           }
-          const r = await renderScad(config, dir, kind, body, track());
+          const r = await renderScad(config, dir, kind, track());
           if (r.ok) return sendBytes(res, kind === "png" ? "image/png" : "model/stl", r.bytes);
           return send(res, 422, { error: "render_failed", message: r.message });
         });
       }
-      case "POST /v1/step/glb":
-        return withBody(req, res, config.limits.stepBodyBytes, async (dir, body) => {
-          const r = await runStepWorker(
-            { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
-            dir,
-            body,
-            track(),
-          );
-          if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
-          return send(res, 422, { error: "convert_failed", message: r.message });
-        });
+      case "POST /v1/step/glb": {
+        const declared = declaredLength(req);
+        if (declared !== null && declared > config.limits.stepBodyBytes)
+          return refuseEarly(req, res, 413, { error: "too_large" });
+        return oneStepAtATime(() =>
+          withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (dir) => {
+            const r = await runStepWorker(
+              { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
+              dir,
+              track(),
+            );
+            if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
+            return send(res, 422, { error: "convert_failed", message: r.message });
+          }),
+        );
+      }
       default:
         return refuseEarly(req, res, 404, { error: "not_found" });
     }

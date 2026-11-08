@@ -24,16 +24,21 @@ export type RenderResult =
       output: string;
     };
 
+/** The name the .scad takes inside its job folder. */
+export const SCAD_INPUT = "input.scad";
+
+/**
+ * Renders dir/input.scad (SCAD_INPUT), which the caller has already written,
+ * so the server never holds the body in memory.
+ */
 export async function renderScad(
   config: ScadConfig,
   dir: string,
   kind: ScadOutput,
-  source: Buffer,
   track?: (kill: (() => void) | null) => void,
 ): Promise<RenderResult> {
-  const input = "input.scad";
+  const input = SCAD_INPUT;
   const outputName = `output.${kind}`;
-  writeFileSync(join(dir, input), source);
   const command = [config.openscadBin, ...scadArgs(kind, input, outputName)];
   const run = await runGroup(
     config.landrunBin,
@@ -98,12 +103,8 @@ export async function sandboxSelfTest(
       detail: `the sandbox probe ${probe} is missing, so the sandbox cannot be checked`,
     };
   }
-  const r = await renderScad(
-    config,
-    dir,
-    "stl",
-    Buffer.from(`import(${JSON.stringify(probe)});\n`),
-  );
+  writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(probe)});\n`);
+  const r = await renderScad(config, dir, "stl");
   if (r.ok) {
     return {
       ok: false,

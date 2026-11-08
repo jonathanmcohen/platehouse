@@ -155,16 +155,21 @@ export async function convertStepFile(input: string, output: string): Promise<vo
 
 export type ConvertResult = { ok: true; bytes: Buffer } | { ok: false; message: string };
 
-/** Runs the worker (this file, or a test stand-in) on input.stp in dir. */
+/** The name the STEP file takes inside its job folder. */
+export const STEP_INPUT = "input.stp";
+
+/**
+ * Runs the worker (this file, or a test stand-in) on dir/input.stp
+ * (STEP_INPUT), which the caller has already written, so the server never
+ * holds the body in memory.
+ */
 export async function runStepWorker(
   opts: { worker: string; timeoutSeconds: number },
   dir: string,
-  source: Buffer,
   track?: (kill: (() => void) | null) => void,
 ): Promise<ConvertResult> {
-  const input = join(dir, "input.stp");
+  const input = join(dir, STEP_INPUT);
   const output = join(dir, "output.glb");
-  writeFileSync(input, source);
   const run = await runGroup(process.execPath, [opts.worker, input, output], {
     cwd: dir,
     env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },

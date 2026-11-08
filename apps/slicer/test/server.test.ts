@@ -548,6 +548,29 @@ describe("OpenSCAD and STEP", () => {
     expect(slicerContract.convertError.parse(await res.json()).message).toContain("no shapes");
   });
 
+  test("the STEP body reaches the worker byte for byte", async () => {
+    const s = setup({ stepWorker: fakeStepWorker(stubDir(), { kind: "echo" }) });
+    const base = await start(s.config);
+    const body = Buffer.alloc(3 * 1024 * 1024);
+    for (let i = 0; i < body.length; i++) body[i] = (i * 31 + 7) % 256;
+    const res = await fetch(`${base}/v1/step/glb`, { method: "POST", body });
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).equals(body)).toBe(true);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("STEP conversions run one at a time; a second waits for the first", async () => {
+    const stubs = stubDir();
+    const log = join(stubs, "step.log");
+    const s = setup({ stepWorker: fakeStepWorker(stubs, { kind: "slow", log, ms: 400 }) });
+    const base = await start(s.config);
+    const post = () => fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    const results = await Promise.all([post(), post()]);
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "end", "start", "end"]);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
   test("a STEP file over 256 MiB is 413", async () => {
     const base = await start(setup().config);
     const res = await headersOnly(`${base}/v1/step/glb`, {

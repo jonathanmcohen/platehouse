@@ -174,20 +174,46 @@ ${probe}${tail}`,
   return { bin, argsLog, runsLog, setProbe };
 }
 
-/** A fake STEP worker module: node worker.mjs <in> <out>. */
+/**
+ * A fake STEP worker module: node worker.mjs <in> <out>. "echo" copies the
+ * input to the output; "slow" appends "start" and "end" lines to `log`
+ * around a wait of `ms`, so a test can see whether two conversions overlap.
+ */
 export function fakeStepWorker(
   dir: string,
-  mode: { kind: "ok"; content: string } | { kind: "fail"; stderr: string },
+  mode:
+    | { kind: "ok"; content: string }
+    | { kind: "fail"; stderr: string }
+    | { kind: "echo" }
+    | { kind: "slow"; log: string; ms: number },
 ): string {
   const file = join(dir, "step-worker.mjs");
-  const body =
-    mode.kind === "ok"
-      ? `import { writeFileSync } from "node:fs";
+  let body: string;
+  switch (mode.kind) {
+    case "ok":
+      body = `import { writeFileSync } from "node:fs";
 writeFileSync(process.argv[3], ${JSON.stringify(mode.content)});
-`
-      : `process.stderr.write(${JSON.stringify(`${mode.stderr}\n`)});
+`;
+      break;
+    case "fail":
+      body = `process.stderr.write(${JSON.stringify(`${mode.stderr}\n`)});
 process.exit(1);
 `;
+      break;
+    case "echo":
+      body = `import { copyFileSync } from "node:fs";
+copyFileSync(process.argv[2], process.argv[3]);
+`;
+      break;
+    case "slow":
+      body = `import { appendFileSync, writeFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(mode.log)}, "start\\n");
+await new Promise((r) => setTimeout(r, ${mode.ms}));
+appendFileSync(${JSON.stringify(mode.log)}, "end\\n");
+writeFileSync(process.argv[3], "glTF");
+`;
+      break;
+  }
   writeFileSync(file, body);
   return file;
 }
