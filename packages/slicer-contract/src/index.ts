@@ -4,9 +4,17 @@
 //
 //   GET  /v1/health                         -> health
 //   GET  /v1/profiles                       -> profiles
-//   POST /v1/slice?printer=<id>&plate=<n>   -> sliceResult | 409 busy | 413 too_large | 422 not_3mf
-//   POST /v1/scad/stl, /v1/scad/png         -> model/stl, image/png | 409 busy | 422 renderError
-//   POST /v1/step/glb                       -> model/gltf-binary | 409 busy | 422 convertError
+//   POST /v1/slice?printer=<id>&plate=<n>   -> sliceResult | 400 bad_request | 409 busy
+//                                              | 413 too_large | 422 not_3mf
+//   POST /v1/scad/stl, /v1/scad/png         -> model/stl, image/png | 409 busy | 413 too_large
+//                                              | 422 renderError
+//   POST /v1/step/glb                       -> model/gltf-binary | 409 busy | 413 too_large
+//                                              | 422 convertError
+//
+// 413 too_large comes before the body is read when its Content-Length is
+// over the route's limit (LIMITS), and as soon as it passes the limit when
+// there is none. Any route answers an unexpected server error with 500 and a
+// plain-text body, not an error schema.
 //
 // The slicer runs one heavy job at a time: a slice, a render or a STEP
 // conversion. A POST to any of those three routes while one runs is 409
