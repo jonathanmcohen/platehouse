@@ -310,6 +310,7 @@ interface Table {
   headerCells: number;
   headerEnd: number;
   sepEnd: number;
+  lists: number; // lists opened outside its cells and still open
 }
 
 // Text as Markdown that markdown-it shows as written. Entities the converter
@@ -432,11 +433,26 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // the list, and in an ordered list the next item then rendered as text,
     // since markdown-it lets a numbered list interrupt a paragraph only at 1
     // (PR #24 review).
+    // In a table, outside its cells, one newline however many breaks, or a
+    // space in a row before its first cell: a blank line there split the
+    // table (PR #24 review).
+    else if (tables.length > 0) tableLine();
     else if (lists.length > 0) endLine();
     else if (!(out.last() === "\n" && out.charAt(out.length - 2) === "\n")) out.append("\n");
   };
   const endLine = (): void => {
     if (out.length > 0 && out.last() !== "\n") out.append("\n");
+  };
+  // The open table that is not nested in a cell, while no cell is open in
+  // it: between its rows, or in a row before its first cell.
+  const rowTable = (): Table | undefined => (inCell ? undefined : tables.at(-1));
+  // A line end in rowTable(), or a space in a row before its first cell,
+  // where a line end would end the row. Text that follows on a line of its
+  // own takes the table's indent (onText), which markdown-it reads as a
+  // one-cell row.
+  const tableLine = (): void => {
+    if (tables.at(-1)?.rowOpen) space();
+    else endLine();
   };
   // Inside a table cell a line break would end the pipe-table row, so a
   // heading or a list there is written on the row: a space where it opens or
@@ -619,6 +635,19 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         else space();
         if (list?.ordered) out.append(`${n}. `);
       }
+    } else if (
+      (tag === "ul" || tag === "ol") &&
+      rowTable() &&
+      !(closing && (rowTable() as Table).lists === 0)
+    ) {
+      // A list between a table's rows is its items, each on a line of its
+      // own (the <li> below): a list's blank line or "- " marker there ended
+      // the table, so the rows after it showed as text with pipes (PR #24
+      // review). A close with no such list open is left to the branch below.
+      (rowTable() as Table).lists += closing ? -1 : 1;
+      tableLine();
+    } else if (tag === "li" && rowTable()) {
+      tableLine();
     } else if (tag === "ul" || tag === "ol") {
       // A list nested in a list item continues that list; a top-level one is a block.
       if (!closing) {
@@ -914,6 +943,7 @@ function newTable(): Table {
     headerCells: 0,
     headerEnd: 0,
     sepEnd: 0,
+    lists: 0,
   };
 }
 

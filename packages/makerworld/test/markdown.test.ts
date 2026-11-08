@@ -1183,7 +1183,7 @@ describe("escaped designer text beside misnested inline tags renders literally (
     const out = htmlToMarkdown(
       "<ul><li>i<table><tr><td>a</td></tr><ul><li>x</li></ul><br><tr><td>b</td></tr></table></li><li>j</li></ul>",
     );
-    expect(out).toBe("- i\n\n  | a |\n  | --- |\n  x\n  | b |\n- j");
+    expect(out).toBe("- i\n\n  | a |\n  | --- |\n  x\n  | b |\n\n- j");
     expect(render(out)).toBe(
       "<ul>\n<li>\n<p>i</p>\n<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n" +
         "<tbody>\n<tr>\n<td>x</td>\n</tr>\n<tr>\n<td>b</td>\n</tr>\n</tbody>\n</table>\n</li>\n" +
