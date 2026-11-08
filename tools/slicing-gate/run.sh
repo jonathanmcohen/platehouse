@@ -17,6 +17,18 @@
 {
 set -euo pipefail
 
+# Exit 1 means the gate FAILED, so only the report's verdict may return it.
+# Under set -e any command that fails outside a die guard would end the script
+# with its own status, usually 1. This trap turns every exit except a
+# deliberate one (exit_as set just before it) into 2, the gate could not run.
+exit_as=""
+exit_rc=0
+trap 'exit_rc=$?
+if [[ "${exit_rc}" -ne 2 && "${exit_rc}" != "${exit_as}" ]]; then
+  printf "run.sh: a step failed (exit %s); the gate could not run\n" "${exit_rc}" >&2
+  exit 2
+fi' EXIT
+
 GATE_DIR="${GATE_DIR:-/tmp/platehouse-gate}"
 IMAGE="platehouse-gate:t1"
 KILL_SECONDS=900            # the external kill inside each container
@@ -46,6 +58,7 @@ if [[ "${1:-}" = "--clean" ]]; then
     die "a platehouse-gate image still exists"
   fi
   printf 'Deleted %s and the %s image; neither remains.\n' "${GATE_DIR}" "${IMAGE}"
+  exit_as=0
   exit 0
 fi
 
@@ -93,6 +106,9 @@ gate() {
 }
 
 gate plan || die "plan step failed"
+# bash 3.2 does not stop on a failed redirect into the loop below, so a plan
+# step that wrote no jobs.txt would go on to a report with no plates.
+[[ -f "${OUT}/jobs.txt" ]] || die "the plan step wrote no ${OUT}/jobs.txt; the gate could not run"
 
 total="$(grep -c '^j' "${OUT}/jobs.txt" || true)"
 n=0
@@ -145,5 +161,6 @@ esac
 printf '\nResults: %s/result.json and %s/summary.txt\n' "${OUT}" "${OUT}"
 printf 'Per-plate kill inside each container: %s s; --mstpp 600.\n' "${KILL_SECONDS}"
 printf 'After the report is collected: %s --clean\n' "$0"
+exit_as="${verdict}"
 exit "${verdict}"
 }
