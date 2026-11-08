@@ -205,6 +205,9 @@ interface Table {
 // Then, in the decoded text only:
 //   \ ` * _ [ ] ~ |   backslash-escaped anywhere (escapes, code, emphasis,
 //                     links and images, fences and ~~, table rows)
+//   !                 backslash-escaped anywhere: the converter writes a link's
+//                     [ straight after the text before it, so a ! there would
+//                     make the link an image
 //   < >               backslash-escaped anywhere (autolinks, which markdown-it
 //                     reads even with html off, and > quotes)
 //   &                 backslash-escaped where it would start an entity, since
@@ -215,7 +218,7 @@ interface Table {
 function textToMarkdown(raw: string): string {
   return mapEntities(stripSentinels(raw), (whole) => PASS_AMP + whole.slice(1), stripSentinels)
     .replace(/\s+/g, " ")
-    .replace(/[\\`*_[\]~|<>]/g, "\\$&")
+    .replace(/[\\`*_[\]~|<>!]/g, "\\$&")
     .replace(/&(?=#?[A-Za-z0-9]+;)/g, "\\&")
     .replaceAll(PASS_AMP, "&");
 }

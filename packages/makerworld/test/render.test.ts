@@ -192,3 +192,34 @@ describe("the DOMPurify layer alone", () => {
     expect(sanitizeHtml(html)).toBe(expected);
   });
 });
+
+// The shared table directly beside a link the converter writes: the output
+// holds exactly the paragraph and that link, with the payload as text. A "!"
+// before the link once made it an image fetching the link's address (PR #24
+// review).
+describe("escaped designer text beside a link renders literally through renderMarkdown", () => {
+  const LINK = '<a href="https://shop.example/x">store</a>';
+
+  function expectTextAndLink(html: string, text: string): void {
+    const { root, tags, attributes } = parse(html);
+    expect(tags, html).toEqual(["p", "a"]);
+    expect(attributes, html).toEqual([{ tag: "a", name: "href", value: "https://shop.example/x" }]);
+    expect(root.querySelector("a")?.textContent).toBe("store");
+    expect(root.querySelector("p")?.textContent).toBe(text);
+  }
+
+  it("a ! right before a link stays text and the link stays a link", () => {
+    const html = renderMarkdown(htmlToMarkdown(`<p>Get the files here!${LINK}</p>`));
+    expectTextAndLink(html, "Get the files here!store");
+  });
+
+  it.each(DESIGNER_PAYLOADS)("directly before a link: %j", (payload) => {
+    const html = renderMarkdown(htmlToMarkdown(`<p>a ${htmlEscape(payload)}${LINK}</p>`));
+    expectTextAndLink(html, `a ${payload}store`);
+  });
+
+  it.each(DESIGNER_PAYLOADS)("directly after a link: %j", (payload) => {
+    const html = renderMarkdown(htmlToMarkdown(`<p>a ${LINK}${htmlEscape(payload)}x</p>`));
+    expectTextAndLink(html, `a store${payload}x`);
+  });
+});

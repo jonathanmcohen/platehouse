@@ -652,3 +652,40 @@ describe("escaped designer text renders literally (markdown-it)", () => {
     expect(render(out)).toBe(`<h2>${htmlEscape(`x${payload}`.trim())}</h2>\n`);
   });
 });
+
+// The same table directly beside markup the converter writes itself: a link
+// and emphasis. Nothing separates a link's [ or an emphasis mark from the
+// text before or after it, so a payload must stay text there too: a "!"
+// before a link must not turn it into an image (PR #24 review).
+describe("escaped designer text beside converter markup renders literally (markdown-it)", () => {
+  const LINK = '<a href="https://shop.example/x">store</a>';
+  const LINK_OUT = '<a href="https://shop.example/x">store</a>';
+
+  it("a ! right before a link keeps the link and the !", () => {
+    const out = htmlToMarkdown(`<p>Get the files here!${LINK}</p>`);
+    expect(out).toBe("Get the files here\\![store](https://shop.example/x)");
+    expect(render(out)).toBe(para(`Get the files here!${LINK_OUT}`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("directly before a link: %j", (payload) => {
+    const out = htmlToMarkdown(`<p>a ${htmlEscape(payload)}${LINK}</p>`);
+    expect(render(out)).toBe(para(`a ${htmlEscape(payload)}${LINK_OUT}`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("directly after a link: %j", (payload) => {
+    const out = htmlToMarkdown(`<p>a ${LINK}${htmlEscape(payload)}x</p>`);
+    expect(render(out)).toBe(para(`a ${LINK_OUT}${htmlEscape(payload)}x`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("directly around strong: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<p>a ${p}<strong>b</strong>${p}x</p>`);
+    expect(render(out)).toBe(para(`a ${p}<strong>b</strong>${p}x`));
+  });
+
+  it.each(DESIGNER_PAYLOADS)("directly around em: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<p>a ${p}<em>b</em>${p}x</p>`);
+    expect(render(out)).toBe(para(`a ${p}<em>b</em>${p}x`));
+  });
+});
