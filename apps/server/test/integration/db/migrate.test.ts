@@ -36,6 +36,11 @@ const TABLES = [
   "tags",
 ];
 
+// The migrations shipped in src/db/migrations, in order, and the number the
+// tests below give a migration they add to a copy of that folder.
+const SHIPPED = ["0001_init.sql", "0002_purge_started.sql"];
+const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
+
 let pgc: TestPostgres;
 
 beforeAll(async () => {
@@ -69,11 +74,11 @@ describe("migrate", () => {
     await migrate(db);
 
     expect(await tableNames(db)).toEqual(TABLES);
-    const [shipped] = await listMigrations(MIGRATIONS_DIR);
-    expect(shipped?.name).toBe("0001_init.sql");
-    expect((await applied(db)).map(({ name, checksum }) => ({ name, checksum }))).toEqual([
-      { name: "0001_init.sql", checksum: shipped?.checksum },
-    ]);
+    const shipped = await listMigrations(MIGRATIONS_DIR);
+    expect(shipped.map((f) => f.name)).toEqual(SHIPPED);
+    expect((await applied(db)).map(({ name, checksum }) => ({ name, checksum }))).toEqual(
+      shipped.map(({ name, checksum }) => ({ name, checksum })),
+    );
 
     // SHOW cannot alias its column, and CamelCasePlugin renames
     // server_version_num, so read the setting through a select.
@@ -135,7 +140,7 @@ describe("migrate", () => {
     const b = createDb(url);
     try {
       await Promise.all([migrate(a), migrate(b)]);
-      expect((await applied(a)).map((r) => r.name)).toEqual(["0001_init.sql"]);
+      expect((await applied(a)).map((r) => r.name)).toEqual(SHIPPED);
     } finally {
       await Promise.all([a.destroy(), b.destroy()]);
     }
@@ -161,7 +166,7 @@ describe("migrate with a changed migrations folder", () => {
 
     await appendFile(join(dir, "0001_init.sql"), "\n-- an edit after it was applied\n");
     // A new migration beside the edit must not be applied either.
-    await writeFile(join(dir, "0002_more.sql"), "create table more_things (id int);\n");
+    await writeFile(join(dir, `${NEXT}_more.sql`), "create table more_things (id int);\n");
 
     const run = migrateFrom(db, dir);
     await expect(run).rejects.toThrow(MigrationError);
@@ -172,21 +177,21 @@ describe("migrate with a changed migrations folder", () => {
 
   test("an applied migration file that has gone missing stops migrate", async () => {
     const { db } = await pgc.freshDatabase();
-    await writeFile(join(dir, "0002_more.sql"), "create table more_things (id int);\n");
+    await writeFile(join(dir, `${NEXT}_more.sql`), "create table more_things (id int);\n");
     await migrateFrom(db, dir);
-    await rm(join(dir, "0002_more.sql"));
+    await rm(join(dir, `${NEXT}_more.sql`));
 
-    await expect(migrateFrom(db, dir)).rejects.toThrow(/0002_more\.sql.*missing/);
+    await expect(migrateFrom(db, dir)).rejects.toThrow(new RegExp(`${NEXT}_more\\.sql.*missing`));
   });
 
   test("a new migration file is applied after the ones already applied", async () => {
     const { db } = await pgc.freshDatabase();
     await migrateFrom(db, dir);
-    await writeFile(join(dir, "0002_more.sql"), "create table more_things (id int);\n");
+    await writeFile(join(dir, `${NEXT}_more.sql`), "create table more_things (id int);\n");
 
     await migrateFrom(db, dir);
 
-    expect((await applied(db)).map((r) => r.name)).toEqual(["0001_init.sql", "0002_more.sql"]);
+    expect((await applied(db)).map((r) => r.name)).toEqual([...SHIPPED, `${NEXT}_more.sql`]);
     expect(await tableNames(db)).toContain("more_things");
   });
 
@@ -194,13 +199,13 @@ describe("migrate with a changed migrations folder", () => {
     const { db } = await pgc.freshDatabase();
     await migrateFrom(db, dir);
     await writeFile(
-      join(dir, "0002_broken.sql"),
+      join(dir, `${NEXT}_broken.sql`),
       "create table half_made (id int);\nselect no_such_function();\n",
     );
 
-    await expect(migrateFrom(db, dir)).rejects.toThrow(/0002_broken\.sql/);
+    await expect(migrateFrom(db, dir)).rejects.toThrow(new RegExp(`${NEXT}_broken\\.sql`));
 
-    expect((await applied(db)).map((r) => r.name)).toEqual(["0001_init.sql"]);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED);
     expect(await tableNames(db)).not.toContain("half_made");
   });
 });
