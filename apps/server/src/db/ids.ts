@@ -9,6 +9,13 @@ import { randomBytes } from "node:crypto";
 
 const MAX_MS = 2 ** 48 - 1;
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True for text Postgres reads as a uuid in its canonical hyphenated form. */
+export function isUuid(value: string): boolean {
+  return UUID.test(value);
+}
+
 export function uuidv7(ms: number = Date.now()): string {
   if (!Number.isInteger(ms) || ms < 0 || ms > MAX_MS) {
     throw new RangeError("uuidv7 takes a whole number of milliseconds from 0 to 2^48 - 1");

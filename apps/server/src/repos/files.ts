@@ -1,4 +1,5 @@
 import type { Kysely } from "kysely";
+import { isUuid, uuidv7 } from "../db/ids.js";
 import type { DB, FileKind, ModelFile, ParseStatus } from "../db/types.js";
 
 export interface NewFile {
@@ -14,13 +15,30 @@ export interface NewFile {
   parseStatus?: ParseStatus;
 }
 
-export function filesRepo(_db: Kysely<DB>) {
+export function filesRepo(db: Kysely<DB>) {
   return {
-    async create(_input: NewFile): Promise<ModelFile> {
-      throw new Error("not implemented: files.create");
+    async create(input: NewFile): Promise<ModelFile> {
+      return db
+        .insertInto("files")
+        .values({
+          id: input.id ?? uuidv7(),
+          modelId: input.modelId,
+          blobId: input.blobId,
+          name: input.name,
+          originalName: input.originalName,
+          kind: input.kind,
+          size: input.size,
+          sha256: input.sha256,
+          externalRef: input.externalRef ?? null,
+          ...(input.parseStatus === undefined ? {} : { parseStatus: input.parseStatus }),
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
     },
-    async get(_id: string): Promise<ModelFile | undefined> {
-      throw new Error("not implemented: files.get");
+
+    async get(id: string): Promise<ModelFile | undefined> {
+      if (!isUuid(id)) return undefined;
+      return db.selectFrom("files").selectAll().where("id", "=", id).executeTakeFirst();
     },
   };
 }

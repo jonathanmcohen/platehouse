@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { uuidv7 } from "../../src/db/ids.js";
+import { isUuid, uuidv7 } from "../../src/db/ids.js";
 
 // The bucket key contract wants model and blob ids as UUIDv7, lowercase and
 // hyphenated (build plan, Bucket key layout). Every id the repositories mint
@@ -45,5 +45,30 @@ describe("uuidv7", () => {
     expect(() => uuidv7(-1)).toThrow(RangeError);
     expect(() => uuidv7(2 ** 48)).toThrow(RangeError);
     expect(() => uuidv7(1.5)).toThrow(RangeError);
+  });
+});
+
+// Repositories answer "not found" for an id that is not a uuid, instead of
+// sending it to Postgres and getting an invalid-input error back.
+describe("isUuid", () => {
+  test("accepts a uuid in either case", () => {
+    expect(isUuid(uuidv7())).toBe(true);
+    expect(isUuid(uuidv7().toUpperCase())).toBe(true);
+    expect(isUuid("00000000-0000-0000-0000-000000000000")).toBe(true);
+  });
+
+  test.each([
+    "",
+    "not-a-uuid",
+    "../etc/passwd",
+    "0190f3a1-7c2b-7d4e-8f00-12345678901",
+    "0190f3a1-7c2b-7d4e-8f00-1234567890123",
+    " 0190f3a1-7c2b-7d4e-8f00-123456789012",
+    "0190f3a1-7c2b-7d4e-8f00-123456789012\n",
+    "{0190f3a1-7c2b-7d4e-8f00-123456789012}",
+    "0190f3a17c2b7d4e8f00123456789012",
+    "0190f3a1-7c2b-7d4e-8f00-12345678901g",
+  ])("refuses %j", (value) => {
+    expect(isUuid(value)).toBe(false);
   });
 });

@@ -1,5 +1,7 @@
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import type { BucketVersioning, DB } from "../db/types.js";
+
+// The single settings row, seeded by migration 0001.
 
 export interface Settings {
   printerId: string;
@@ -12,13 +14,30 @@ export type SettingsPatch = Partial<
   Pick<Settings, "printerId" | "lastOrcaVersion" | "bucketVersioning">
 >;
 
-export function settingsRepo(_db: Kysely<DB>) {
+const COLUMNS = ["printerId", "lastOrcaVersion", "bucketVersioning", "updatedAt"] as const;
+
+export function settingsRepo(db: Kysely<DB>) {
   return {
     async get(): Promise<Settings> {
-      throw new Error("not implemented: settings.get");
+      return db.selectFrom("settings").select(COLUMNS).executeTakeFirstOrThrow();
     },
-    async update(_patch: SettingsPatch): Promise<Settings> {
-      throw new Error("not implemented: settings.update");
+
+    /** Changes only the fields the patch names, and returns the new settings. */
+    async update(patch: SettingsPatch): Promise<Settings> {
+      return db
+        .updateTable("settings")
+        .set({
+          ...(patch.printerId === undefined ? {} : { printerId: patch.printerId }),
+          ...(patch.lastOrcaVersion === undefined
+            ? {}
+            : { lastOrcaVersion: patch.lastOrcaVersion }),
+          ...(patch.bucketVersioning === undefined
+            ? {}
+            : { bucketVersioning: patch.bucketVersioning }),
+          updatedAt: sql`now()`,
+        })
+        .returning(COLUMNS)
+        .executeTakeFirstOrThrow();
     },
   };
 }

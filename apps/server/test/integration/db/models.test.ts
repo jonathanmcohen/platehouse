@@ -10,7 +10,7 @@ import {
   type TestDatabase,
   type TestPostgres,
 } from "../support/db.js";
-import { seedPlate } from "../support/fixtures.js";
+import { seedPlate, sha256Of } from "../support/fixtures.js";
 
 let pgc: TestPostgres;
 let t: TestDatabase;
@@ -218,6 +218,23 @@ describe("deleting a model row", () => {
       slicer: "OrcaSlicer",
       slicerVersion: "2.5.0",
     });
+    // Derived blobs pointed at from the plate and the file: the cascade must
+    // not trip over these references while it deletes the blobs.
+    const derived = async (kind: "thumbnail" | "mesh_glb") => {
+      const blob = await repos.blobs.insertPending({ modelId, kind, contentType: "image/png" });
+      await repos.blobs.markStored(blob.id, { size: 1, sha256: sha256Of(kind) });
+      return blob.id;
+    };
+    await t.db
+      .updateTable("plates")
+      .set({ thumbnailBlobId: await derived("thumbnail") })
+      .where("id", "=", plate.id)
+      .execute();
+    await t.db
+      .updateTable("files")
+      .set({ meshBlobId: await derived("mesh_glb") })
+      .where("id", "=", file.id)
+      .execute();
 
     await t.db.deleteFrom("models").where("id", "=", modelId).execute();
 
