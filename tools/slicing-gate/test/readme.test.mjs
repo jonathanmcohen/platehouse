@@ -34,14 +34,15 @@ test("the tool is copied with scp -rp, so its scripts keep their modes", () => {
 test("every run.sh call goes through bash, so it works without the execute bit", () => {
   const calls = commands.filter((c) => c.includes("run.sh"));
   assert.ok(calls.length >= 2, calls.join("\n"));
-  for (const c of calls) assert.match(c, /^bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/, c);
+  // Step 3's detached form wraps the same call in setsid nohup bash -c '...'.
+  for (const c of calls) assert.match(c, /^(setsid nohup bash -c ')?bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/, c);
 });
 
 // scp -r into a directory that already exists copies the folder inside it
 // (tool/slicing-gate), so a re-run would start the old run.sh. The tool dir is
 // removed before the copy, in the same ssh call that makes the sample dir.
 test("an old copy of the tool is removed before the new one is copied", () => {
-  const prep = commands.findIndex((c) => c.startsWith("ssh hades") && c.includes("rm -rf /tmp/platehouse-gate/tool"));
+  const prep = commands.findIndex((c) => c.startsWith("ssh Hades") && c.includes("rm -rf /tmp/platehouse-gate/tool"));
   const copy = commands.findIndex((c) => c.startsWith("scp -rp "));
   assert.ok(prep !== -1, "an ssh step removes /tmp/platehouse-gate/tool");
   assert.ok(prep < copy, "and it runs before the copy");
@@ -59,7 +60,7 @@ const sampleCopy = () => commands.find((c) => c.includes("-T /tmp/platehouse-nam
 test("the sample is copied by name list in one tar stream that keeps relative paths", () => {
   const c = sampleCopy();
   assert.ok(c, "a step reads /tmp/platehouse-names.txt");
-  assert.match(c, /\| ssh hades 'tar -xf - -C \/tmp\/platehouse-gate\/in\/sample'$/);
+  assert.match(c, /\| ssh Hades 'tar -xf - -C \/tmp\/platehouse-gate\/in\/sample'$/);
   assert.ok(!commands.some((x) => /while .*read .*scp/.test(x)), "no per-file scp loop");
   assert.doesNotMatch(readme, /top-level file names/);
   const select = readFileSync(join(HERE, "select-sample.mjs"), "utf8");
@@ -87,7 +88,7 @@ test(
     writeFileSync(list, `${names.join("\n")}\n`);
     const line = sampleCopy()
       .replaceAll("/tmp/platehouse-names.txt", list)
-      .replace("ssh hades '", "bash -c '")
+      .replace("ssh Hades '", "bash -c '")
       .replace("/tmp/platehouse-gate/in/sample", dest);
     const r = spawnSync("bash", ["-c", line], { cwd: src, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
@@ -105,5 +106,68 @@ test(
     const bytes = stream.stdout.toString("latin1");
     assert.ok(bytes.includes("crafted 0"), "the stream carries the files");
     assert.ok(!bytes.includes("LIBARCHIVE.xattr") && !bytes.includes("._"), "no extended attributes or AppleDouble entries");
+  },
+);
+
+// Hades run 2 (2026-11-08): the ssh alias on mini01 is Hades, and OpenSSH
+// matches Host patterns case-sensitively, so "ssh hades" missed the alias and
+// failed with "Host key verification failed" until the operator typed Hades.
+// Every ssh and scp target in any README command must be the alias exactly.
+const allCommands = [...readme.matchAll(/```sh\n([\s\S]*?)```/g)].flatMap((m) =>
+  m[1]
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#")),
+);
+
+test("every ssh and scp in the README targets the alias Hades, spelled exactly", () => {
+  const ssh = allCommands.flatMap((c) => [...c.matchAll(/\bssh\s+([^\s']+)/g)].map((m) => m[1]));
+  const scp = allCommands
+    .filter((c) => /\bscp\b/.test(c))
+    .flatMap((c) => [...c.matchAll(/(?:^|\s)([A-Za-z][\w.-]*):\//g)].map((m) => m[1]));
+  assert.ok(ssh.length >= 2 && scp.length >= 2, `found ssh ${ssh.join(",")} scp ${scp.join(",")}`);
+  for (const host of [...ssh, ...scp]) assert.equal(host, "Hades", `host alias in a README command: ${host}`);
+  assert.doesNotMatch(readme, /\b(ssh|scp)\b[^\n`]*\bhades\b/, "no lower-case hades in an ssh or scp line");
+  assert.doesNotMatch(readme, /\bhades:/, "no lower-case hades: scp target");
+});
+
+// Run 2's operator started run.sh detached by hand, so a dropped ssh session
+// could not kill a run of several hours. Step 3 says how, with the log and the
+// exit code written inside the scratch dir, where step 5 deletes them.
+const step3 = runSteps.slice(runSteps.indexOf("\n3. "), runSteps.indexOf("\n4. "));
+const detached = () =>
+  [...step3.matchAll(/```sh\n([\s\S]*?)```/g)]
+    .flatMap((m) => m[1].split("\n"))
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("setsid "));
+
+test("step 3 starts the run detached, with its log and exit code in the scratch dir", () => {
+  const line = detached();
+  assert.ok(line, "step 3 has a setsid line");
+  assert.match(line, /^setsid nohup bash -c '/);
+  assert.match(line, /bash \/tmp\/platehouse-gate\/tool\/run\.sh > \/tmp\/platehouse-gate\/run\.log 2>&1/);
+  assert.match(line, /echo \$\? > \/tmp\/platehouse-gate\/run\.exit/);
+  assert.match(line, /< \/dev\/null > \/dev\/null 2>&1 &$/, "detached from the terminal and backgrounded");
+  assert.match(step3, /dropped ssh session/i);
+});
+
+// Runs step 3's detached line as written, with run.sh replaced by a stub that
+// prints a line and exits 3 and the scratch dir by a temporary one. setsid is
+// util-linux, so this runs on Linux (CI and Hades), not on macOS.
+test(
+  "step 3's detached line, run as written, records the run's output and exit code",
+  { skip: spawnSync("bash", ["-c", "command -v setsid"]).status !== 0 && "setsid is not installed (util-linux, Linux only)" },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "gate-detach-"));
+    made.push(root);
+    mkdirSync(join(root, "tool"));
+    writeFileSync(join(root, "tool", "run.sh"), "printf 'stub run %s\\n' \"$$\"\nexit 3\n");
+    const line = detached().replaceAll("/tmp/platehouse-gate", root);
+    const r = spawnSync("bash", ["-c", line], { encoding: "utf8", timeout: 10000 });
+    assert.equal(r.status, 0, r.stderr);
+    const exitFile = join(root, "run.exit");
+    for (let i = 0; i < 100 && !existsSync(exitFile); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(readFileSync(exitFile, "utf8"), "3\n");
+    assert.match(readFileSync(join(root, "run.log"), "utf8"), /^stub run \d+\n$/);
   },
 );
