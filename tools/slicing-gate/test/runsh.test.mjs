@@ -22,9 +22,10 @@ const DOCKER = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_LOG"
 case "$1" in
   build) exit "\${STUB_BUILD_RC:-0}" ;;
-  info|kill|rm) exit 0 ;;
+  info) exit "\${STUB_INFO_RC:-0}" ;;
+  kill|rm) exit 0 ;;
   image) [ "$2" = inspect ] && exit "\${STUB_IMAGE_MISSING:-0}"; [ "$2" = rm ] && exit "\${STUB_IMAGE_RM_RC:-0}"; exit 0 ;;
-  images) exit 0 ;;
+  images) [ -n "\${STUB_IMAGES_OUT:-}" ] && printf '%s\\n' "$STUB_IMAGES_OUT"; exit "\${STUB_IMAGES_RC:-0}" ;;
   run)
     out=""
     for a in "$@"; do case "$a" in *:/out:rw) out="\${a%%:/out:rw}" ;; esac; done
@@ -196,6 +197,25 @@ test("run.sh --clean deletes the scratch dir and the image and verifies", () => 
   assert.equal(existsSync(gate), false);
   assert.ok(r.calls.includes("image rm platehouse-gate:t1"));
   assert.match(r.stdout, /neither remains/);
+});
+
+// --clean must never say the image is gone when it could not check: a docker
+// daemon it cannot reach, or a docker images that fails, is exit 2, and an
+// image still listed is exit 2.
+test("run.sh --clean exits 2 instead of claiming success when it cannot check the image", async (t) => {
+  const cases = [
+    { name: "the docker daemon is unreachable", extra: { STUB_INFO_RC: "1" }, err: /cannot reach the docker daemon/ },
+    { name: "docker images fails", extra: { STUB_IMAGES_RC: "1" }, err: /docker images failed/ },
+    { name: "the image is still listed", extra: { STUB_IMAGES_OUT: "platehouse-gate:t1" }, err: /a platehouse-gate image still exists/ },
+  ];
+  for (const c of cases) {
+    await t.test(c.name, () => {
+      const r = run(["--clean"], { gate: gateDir(), stubDir: stubs(), extra: c.extra });
+      assert.equal(r.status, 2, `${c.name}: ${r.stderr}`);
+      assert.match(r.stderr, c.err);
+      assert.doesNotMatch(r.stdout, /neither remains/);
+    });
+  }
 });
 
 // Under set -euo pipefail any unguarded command that fails ends run.sh with its

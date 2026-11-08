@@ -92,6 +92,9 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    docker images | grep platehouse-gate    # expect: nothing
    ```
 
+   `--clean` needs the Docker daemon: if it cannot reach it, or
+   `docker images` fails, it exits 2 rather than say the image is gone.
+
    `--clean` does not prune Docker's build cache, so the layers of the
    Dockerfile's `fetch` stage (the Orca and OpenSCAD AppImages, landrun, Node,
    occt-import-js and the NIST zip) stay on Hades. `docker builder prune`

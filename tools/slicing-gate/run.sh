@@ -52,6 +52,8 @@ esac
 
 command -v docker > /dev/null || die "docker is not installed"
 command -v timeout > /dev/null || die "GNU timeout is not installed"
+# Before --clean too: with no daemon, --clean cannot remove or check the image.
+docker info > /dev/null 2>&1 || die "cannot reach the docker daemon"
 
 if [[ "${1:-}" = "--clean" ]]; then
   rm -rf -- "${GATE_DIR}"
@@ -59,7 +61,11 @@ if [[ "${1:-}" = "--clean" ]]; then
     docker image rm "${IMAGE}" > /dev/null
   fi
   if [[ -e "${GATE_DIR}" ]]; then die "${GATE_DIR} still exists"; fi
-  if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q '^platehouse-gate'; then
+  # Captured first, so a failing docker images is exit 2, never "gone", and
+  # grep reads a variable, so no pipe can turn a match into a miss.
+  images="$(docker images --format '{{.Repository}}:{{.Tag}}')" \
+    || die "docker images failed, so whether the image is gone is unknown"
+  if grep -q '^platehouse-gate' <<< "${images}"; then
     die "a platehouse-gate image still exists"
   fi
   printf 'Deleted %s and the %s image; neither remains.\n' "${GATE_DIR}" "${IMAGE}"
@@ -67,7 +73,6 @@ if [[ "${1:-}" = "--clean" ]]; then
   exit 0
 fi
 
-docker info > /dev/null 2>&1 || die "cannot reach the docker daemon"
 [[ -f "${IN}/selection.json" ]] || die "missing ${IN}/selection.json (from select-sample.mjs --json)"
 [[ -d "${IN}/sample" ]] || die "missing ${IN}/sample (the selected .3mf files)"
 if [[ -e "${OUT}" ]]; then
