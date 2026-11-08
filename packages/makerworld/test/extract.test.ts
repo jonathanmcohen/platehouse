@@ -165,6 +165,30 @@ describe("extractMakerWorld", () => {
     expect(decodeEntities("&#0; &#xD800; &#1114112; &#65;")).toBe("&#0; &#xD800; &#1114112; A");
   });
 
+  // Pins the named-entity table, so writing its non-ASCII values as escapes
+  // (the file is ASCII only) cannot change a character.
+  it.each([
+    ["nbsp", " "],
+    ["lsquo", "\u2018"],
+    ["rsquo", "\u2019"],
+    ["ldquo", "\u201c"],
+    ["rdquo", "\u201d"],
+    ["ndash", "\u2013"],
+    ["mdash", "\u2014"],
+    ["hellip", "\u2026"],
+    ["bull", "\u2022"],
+    ["middot", "\u00b7"],
+    ["copy", "\u00a9"],
+    ["reg", "\u00ae"],
+    ["trade", "\u2122"],
+    ["deg", "\u00b0"],
+    ["times", "\u00d7"],
+    ["plusmn", "\u00b1"],
+    ["micro", "\u00b5"],
+  ])("decodeEntities reads &%s; as its character", (name, char) => {
+    expect(decodeEntities(`a&${name};b`)).toBe(`a${char}b`);
+  });
+
   // Not in the port: the first occurrence of a field wins, as in the source.
   it("the first occurrence of a field wins", () => {
     const mw = extractMakerWorld(

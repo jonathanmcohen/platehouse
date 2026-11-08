@@ -175,10 +175,13 @@ describe("the DOMPurify layer alone", () => {
     ['<a href="//e.test/x">x</a>', "<a>x</a>"],
     ['<a href="javascript:alert(1)">x</a>', "<a>x</a>"],
     ['<a href="mailto:a@e.test">x</a>', "<a>x</a>"],
-    [
-      '<img src="data:image/png;base64,AAAA" onerror="alert(1)">',
-      '<img src="data:image/png;base64,AAAA">',
-    ],
+    // DOMPurify keeps a data: src on img, audio, video, source and track
+    // whatever ALLOWED_URI_REGEXP says; this layer must not.
+    ['<img src="data:image/png;base64,AAAA" onerror="alert(1)">', "<img>"],
+    ['<img src="data:image/svg+xml;base64,PHN2Zz4=" alt="a">', '<img alt="a">'],
+    ['<img src=" DATA:image/png;base64,AAAA">', "<img>"],
+    ['<a href="data:text/html,x">x</a>', "<a>x</a>"],
+    ['<img src="https://e.test/i.png" alt="a">', '<img src="https://e.test/i.png" alt="a">'],
     ['<img src="/i.png" alt="a">', '<img alt="a">'],
     ['<p onclick="alert(1)" style="color:red" class="c" id="i">x</p>', "<p>x</p>"],
     ["<script>alert(1)</script><p>x</p>", "<p>x</p>"],
