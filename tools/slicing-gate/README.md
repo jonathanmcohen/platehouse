@@ -123,10 +123,20 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    `run.exit`, both in the scratch dir:
 
    ```sh
-   setsid nohup bash -c 'rm -f /tmp/platehouse-gate/run.exit; bash /tmp/platehouse-gate/tool/run.sh > /tmp/platehouse-gate/run.log 2>&1; echo $? > /tmp/platehouse-gate/run.exit' < /dev/null > /dev/null 2>&1 &
+   flock -n /tmp/platehouse-gate/run.lock true || echo 'A gate run is already going: do not start another; follow it with tail -F'
+   setsid nohup flock -n /tmp/platehouse-gate/run.lock bash -c 'rm -f /tmp/platehouse-gate/run.exit; bash /tmp/platehouse-gate/tool/run.sh > /tmp/platehouse-gate/run.log 2>&1; echo $? > /tmp/platehouse-gate/run.exit' < /dev/null > /dev/null 2>&1 &
    tail -F /tmp/platehouse-gate/run.log
    cat /tmp/platehouse-gate/run.exit
    ```
+
+   The run holds `/tmp/platehouse-gate/run.lock` (`flock -n`) until it ends,
+   so a second start while it is going does nothing: no new run, and its
+   `run.log` and `run.exit` stay as they are. Without the lock, a second
+   start would empty `run.log`, die at "out is not empty" and write 2 to
+   `run.exit` while the first run carried on, and step 5 would then delete
+   the live run. The first line prints a warning when a run is going, so
+   after a reconnect, paste it alone to check before anything else. `flock`
+   and `setsid` come from util-linux, so this step runs on Linux, not macOS.
 
    `tail -F` can be stopped and restarted at any time, from any ssh
    session; it does not touch the run. It is `-F`, not `-f`, because on a
