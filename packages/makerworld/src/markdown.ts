@@ -303,6 +303,7 @@ interface Table {
   item: Item | undefined; // the list item the table opened in
   rows: number;
   cells: number;
+  rowOpen: boolean; // a <tr> has opened and no </tr> has closed it yet
   rowStart: number;
   cellStart: number;
   maxCells: number;
@@ -744,8 +745,9 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         const t = tables.pop();
         if (t?.nested) space();
         else {
-          // A cell left open (no </td>) ends with the table.
+          // A cell or row left open (no </td>, no </tr>) ends with the table.
           if (t) closeCell(t);
+          if (t?.rowOpen) closeRow(t);
           if (t) padHeader(t);
           cellLists.length = 0;
           inCell = false;
@@ -770,24 +772,14 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       // A cell left open (no </td>) ends with its row.
       closeCell(t);
       if (!closing) {
+        // A row left open (no </tr>) ends where the next begins.
+        if (t.rowOpen) closeRow(t);
         endLine();
         t.rowStart = out.length;
         t.cells = 0;
+        t.rowOpen = true;
         out.append(`${t.indent}|`);
-      } else if (t.cells === 0) {
-        out.truncate(t.rowStart); // an empty row leaves nothing
-      } else {
-        // The first row is the header, so the separator line follows it.
-        if (t.rows === 0) {
-          t.headerEnd = out.length;
-          t.headerCells = t.cells;
-          out.append(`\n${t.indent}|${" --- |".repeat(t.cells)}`);
-          t.sepEnd = out.length;
-          out.append("\n");
-        } else out.append("\n");
-        t.maxCells = Math.max(t.maxCells, t.cells);
-        t.rows++;
-      }
+      } else closeRow(t);
     } else if ((tag === "td" || tag === "th") && tables.length > 0) {
       const t = tables.at(-1) as Table;
       // A cell left open (no </td>) ends where the next begins.
@@ -804,6 +796,29 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       else space();
     }
     // Every other tag (img, span, font, ...) is dropped; its text stays.
+  };
+
+  // Closes the open row of a table that is not nested in a cell. Called by
+  // </tr>, and by whatever HTML lets close a row with </tr> left out (the
+  // next <tr>, </table>). A row left open once got no separator after the
+  // first row, so the table rendered as text, and did not count its cells,
+  // so a wider last row lost the cells past the header (issue #41).
+  const closeRow = (t: Table): void => {
+    t.rowOpen = false;
+    if (t.cells === 0) {
+      out.truncate(t.rowStart); // an empty row leaves nothing
+      return;
+    }
+    // The first row is the header, so the separator line follows it.
+    if (t.rows === 0) {
+      t.headerEnd = out.length;
+      t.headerCells = t.cells;
+      out.append(`\n${t.indent}|${" --- |".repeat(t.cells)}`);
+      t.sepEnd = out.length;
+      out.append("\n");
+    } else out.append("\n");
+    t.maxCells = Math.max(t.maxCells, t.cells);
+    t.rows++;
   };
 
   // markdown-it drops the cells of a row past the header's count, so a table
@@ -862,6 +877,7 @@ function newTable(): Table {
     item: undefined,
     rows: 0,
     cells: 0,
+    rowOpen: false,
     rowStart: 0,
     cellStart: 0,
     maxCells: 0,
