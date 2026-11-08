@@ -1,6 +1,7 @@
 // Build plan Task 14, AC-060: a rename changes the display name only; the
 // object in the bucket keeps its key and its bytes.
 import { buffer } from "node:stream/consumers";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createRename } from "../../../src/library/rename.js";
@@ -64,6 +65,48 @@ describe("renameModel", () => {
     await createTrash({ db: env.db, store: env.store }).trashModel(model.id);
     expect(await rename.renameModel(model.id, "Hidden")).toBe(false);
     expect((await env.repos.models.get(model.id, { includeTrashed: true }))?.name).toBe(model.name);
+  });
+});
+
+describe("renameModel under concurrency", () => {
+  test("two renames of one model at once both succeed, without a deadlock", async () => {
+    const { model } = await seedStoredModel(env);
+    const rename = createRename(env.db);
+    const first = `First ${marker()}`;
+    const second = `Second ${marker()}`;
+
+    // Hold the row FOR UPDATE so both renames queue on it, then release it:
+    // both go on at the same moment. A rename that took a share lock and then
+    // upgraded it for its UPDATE would deadlock here (40P01) and one of the
+    // two would reject.
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked: () => void = () => {};
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const blocker = env.db.transaction().execute(async (trx) => {
+      await trx.selectFrom("models").select("id").where("id", "=", model.id).forUpdate().execute();
+      locked();
+      await released;
+    });
+    await isLocked;
+    const renames = Promise.allSettled([
+      rename.renameModel(model.id, first),
+      rename.renameModel(model.id, second),
+    ]);
+    await sleep(300);
+    release();
+    await blocker;
+
+    const results = await renames;
+    expect(results).toEqual([
+      { status: "fulfilled", value: true },
+      { status: "fulfilled", value: true },
+    ]);
+    expect([first, second]).toContain((await env.repos.models.get(model.id))?.name);
   });
 });
 

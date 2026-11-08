@@ -3,6 +3,9 @@
 // is invisible (AC-063), and the lock makes a purge of the same model, which
 // holds the row FOR UPDATE while it deletes objects, wait for the change or
 // the change wait for the purge, so neither sees half of the other.
+// A call that updates the models row itself does not use it (renameModel in
+// rename.ts): two such calls would each hold the share lock and deadlock
+// upgrading it, so that call is a single UPDATE ... WHERE trashed_at IS NULL.
 import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";

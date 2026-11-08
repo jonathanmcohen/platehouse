@@ -20,14 +20,19 @@ export function createRename(db: Kysely<DB>) {
      */
     async renameModel(id: string, name: string): Promise<boolean> {
       const newName = displayName(name, "model");
-      return withLiveModel(db, id, async (trx) => {
-        await trx
-          .updateTable("models")
-          .set({ name: newName, updatedAt: sql<Date>`now()` })
-          .where("id", "=", id)
-          .execute();
-        return true;
-      });
+      if (!isUuid(id)) return false;
+      // One UPDATE, not withLiveModel: its FOR SHARE lock would have to be
+      // upgraded for this UPDATE of the same row, and two renames of one
+      // model, each holding the share lock, would deadlock (40P01). The
+      // UPDATE takes the row lock itself, so concurrent renames queue, and a
+      // purge holding the row FOR UPDATE makes it wait and then find no row.
+      const result = await db
+        .updateTable("models")
+        .set({ name: newName, updatedAt: sql<Date>`now()` })
+        .where("id", "=", id)
+        .where("trashedAt", "is", null)
+        .executeTakeFirst();
+      return result.numUpdatedRows > 0n;
     },
 
     /**
