@@ -36,6 +36,24 @@ const overConfig = (): string => {
   return xml.replace("<config>", `<config>${" ".repeat(LIMITS.configBytes - xml.length + 1)}`);
 };
 
+/**
+ * One entry's central record says its local header offset is in a Zip64
+ * extra field (0xFFFFFFFF), and that field holds offset: 8 bytes for a full
+ * offset, fewer for a truncated one.
+ */
+const zip64Offset = (name: string, offset: Buffer): Buffer =>
+  buildZip(
+    projectEntries({ ...onePlate, pngs: { 1: png("one") } }).map((e) =>
+      e.name === name
+        ? {
+            ...e,
+            localOffset: 0xffffffff,
+            centralExtra: Buffer.concat([Buffer.from([0x01, 0x00, offset.length, 0x00]), offset]),
+          }
+        : e,
+    ),
+  );
+
 const filaments = (n: number) => range(n).map((id) => ({ id, type: "PLA", usedG: 1 }));
 
 interface Row {
@@ -87,6 +105,27 @@ const rows: Row[] = [
     expect: "null",
   },
   {
+    // parser_test.rb test_impossible_zip64_offset_is_a_damaged_file
+    name: "an impossible Zip64 local header offset on an entry",
+    issue: "#5",
+    file: () => zip64Offset("Metadata/model_settings.config", Buffer.alloc(8, 0xff)),
+    expect: "null",
+  },
+  {
+    // parser_test.rb test_truncated_zip64_offset_field_is_a_damaged_file
+    name: "a truncated Zip64 local header offset field on an entry",
+    issue: "#5",
+    file: () => zip64Offset("Metadata/model_settings.config", Buffer.from([0xff, 0xff, 0, 0])),
+    expect: "null",
+  },
+  {
+    // parser_test.rb test_impossible_zip64_offset_on_a_thumbnail_gives_nil
+    name: "an impossible Zip64 local header offset on a thumbnail",
+    issue: "#5",
+    file: () => zip64Offset("Metadata/plate_1.png", Buffer.alloc(8, 0xff)),
+    expect: "null",
+  },
+  {
     name: "a central directory past the end of the file",
     issue: "#5",
     file: () => build3mf(onePlate, { cdOffset: 0x7fffffff }),
@@ -118,6 +157,21 @@ const rows: Row[] = [
     name: "a config entry over 5 MiB",
     issue: "#5",
     file: () => build3mf({ modelSettings: overConfig() }),
+    expect: "null",
+  },
+  {
+    // parser_test.rb test_oversized_slice_info_is_ignored keeps the plates;
+    // the plan's hostile table makes any config over 5 MiB a damaged file.
+    name: "a slice_info.config over 5 MiB",
+    issue: "#5",
+    file: () =>
+      build3mf({
+        ...onePlate,
+        sliceInfo: sliceInfoXml([]).replace(
+          "<config>",
+          `<config>${" ".repeat(LIMITS.configBytes + 1)}`,
+        ),
+      }),
     expect: "null",
   },
   {

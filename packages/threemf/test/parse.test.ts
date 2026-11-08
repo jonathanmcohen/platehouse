@@ -6,6 +6,19 @@ import { chmodSync, unlinkSync } from "node:fs";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import yauzl from "yauzl";
+
+// Counts opens of the file while delegating to the real fs; only the
+// "one open" test reads the count.
+const opens = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const open: typeof real.open = (...args) => {
+    opens.count++;
+    return real.open(...args);
+  };
+  return { ...real, open };
+});
+
 import {
   LIMITS,
   NO_PLATE_DATA_MESSAGE,
@@ -978,18 +991,21 @@ describe("filesystem errors reach the caller as ReadUnavailable (#4)", () => {
     );
   });
 
-  it("EIO in the middle of a thumbnail, with nothing handed over", async () => {
-    const png2 = "Metadata/plate_2.png";
-    const pngStart = archive.indexOf(png2) + png2.length;
-    const reader = new FailingReader(archive, pngStart + 1, pngStart + 2, "EIO");
-    const handed: number[] = [];
-    const err = await readProjectFromReader(reader, archive.length, {
-      onThumbnail: async (i) => void handed.push(i),
-    }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ReadUnavailable);
-    expect((err as ReadUnavailable).code).toBe("EIO");
-    expect(handed).toEqual([]);
-  });
+  it.each(["EIO", "ENOENT"])(
+    "%s in the middle of a thumbnail, with nothing handed over",
+    async (code) => {
+      const png2 = "Metadata/plate_2.png";
+      const pngStart = archive.indexOf(png2) + png2.length;
+      const reader = new FailingReader(archive, pngStart + 1, pngStart + 2, code);
+      const handed: number[] = [];
+      const err = await readProjectFromReader(reader, archive.length, {
+        onThumbnail: async (i) => void handed.push(i),
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ReadUnavailable);
+      expect((err as ReadUnavailable).code).toBe(code);
+      expect(handed).toEqual([]);
+    },
+  );
 
   it("keeps the cause's code and never reports the error as damage", async () => {
     const reader = new FailingReader(archive, dataStart + 1, dataStart + 2, "EIO");
@@ -1024,6 +1040,112 @@ describe("filesystem errors reach the caller as ReadUnavailable (#4)", () => {
     const reader = new FailingReader(archive, 0, 0, "EIO");
     const project = await readProjectFromReader(reader, archive.length);
     expect(project?.plates.map((p) => p.sliced)).toEqual([true, false]);
+  });
+});
+
+// parser_test.rb test_archive_structure_errors_are_a_damaged_file: an error
+// the zip reader raises that is not a system error describes the archive,
+// so it is a damaged file, never thrown.
+class BrokenReader extends yauzl.RandomAccessReader {
+  private readonly make: () => Error;
+
+  constructor(make: () => Error) {
+    super();
+    this.make = make;
+  }
+
+  override _readStreamForRange(): Readable {
+    const stream = new Readable({ read() {} });
+    setImmediate(() => stream.destroy(this.make()));
+    return stream;
+  }
+
+  override read(
+    _buffer: Buffer,
+    _offset: number,
+    _length: number,
+    _position: number,
+    callback: (err: Error | null, bytesRead?: number) => void,
+  ): void {
+    setImmediate(() => callback(this.make()));
+  }
+}
+
+describe("errors the zip reader raises about the archive are a damaged file", () => {
+  const archive = build3mf({ plates: [{ index: 1 }], pngs: { 1: png("one") } });
+  const errors: Array<[string, () => Error]> = [
+    ["a RangeError", () => new RangeError("offset out of range")],
+    ["a TypeError", () => new TypeError("not a number")],
+    ["a plain Error", () => new Error("invalid signature")],
+    ["an error with a code but no syscall", () => Object.assign(new Error("bad"), { code: "X" })],
+  ];
+
+  it.each(errors)("%s gives null", async (_label, make) => {
+    const handed: number[] = [];
+    const project = await readProjectFromReader(new BrokenReader(make), archive.length, {
+      onThumbnail: async (i) => void handed.push(i),
+    });
+    expect(project).toBeNull();
+    expect(handed).toEqual([]);
+  });
+});
+
+// parser_test.rb test_read_yields_every_thumbnail_in_plate_order_from_one_open
+// and test_read_reads_each_thumbnail_only_after_yielding_the_one_before.
+describe("one open serves the plate list and every thumbnail", () => {
+  it("opens the file once for the list and all thumbnails", async () => {
+    const file = writeTmp(
+      build3mf({
+        plates: range(3).map((index) => ({ index })),
+        pngs: Object.fromEntries(range(3).map((i) => [i, png(`plate_${i}`)])),
+      }),
+    );
+    opens.count = 0;
+    const handed: number[] = [];
+    const project = await readProject(file, { onThumbnail: async (i) => void handed.push(i) });
+    expect(opens.count).toBe(1);
+    expect(handed).toEqual([1, 2, 3]);
+    expect(project?.plates.map((p) => p.index)).toEqual([1, 2, 3]);
+  });
+
+  it("reads each thumbnail it hands over only after the one before was handled", async () => {
+    const archive = build3mf({
+      plates: range(3).map((index) => ({ index })),
+      pngs: Object.fromEntries(range(3).map((i) => [i, png(`plate_${i}`)])),
+    });
+    // Where each plate_N.png's data starts (the fixture writes no local extra).
+    const dataStart = new Map<number, number>();
+    for (const i of range(3)) {
+      const name = `Metadata/plate_${i}.png`;
+      dataStart.set(archive.indexOf(name) + name.length, i);
+    }
+    const events: string[] = [];
+    class RecordingReader extends FailingReader {
+      override _readStreamForRange(start: number, end: number): Readable {
+        const plate = dataStart.get(start);
+        if (plate !== undefined) events.push(`read ${plate}`);
+        return super._readStreamForRange(start, end);
+      }
+    }
+    await readProjectFromReader(new RecordingReader(archive, 0, 0, "EIO"), archive.length, {
+      onThumbnail: async (i) => {
+        await new Promise((r) => setTimeout(r, 5));
+        events.push(`hand ${i}`);
+      },
+    });
+    // First every thumbnail is counted against the ceilings, then each is
+    // read again only once the one before it has been handled.
+    expect(events).toEqual([
+      "read 1",
+      "read 2",
+      "read 3",
+      "read 1",
+      "hand 1",
+      "read 2",
+      "hand 2",
+      "read 3",
+      "hand 3",
+    ]);
   });
 });
 
