@@ -51,6 +51,20 @@ const CONTEXTS: Record<string, Context> = {
     mid: "</td><td>",
     close: "</td></tr></table>",
   },
+  // HTML lets a page leave out </td> and </tr>: the next cell or row closes
+  // the open one. A cell left open once kept its start while a link closed
+  // across it rewrote the text before that start, so the cell was then cut
+  // between a backslash and the "!" it escaped (PR #24 review).
+  "table cell, no </td>": {
+    open: "<table><tr><td>a<td>",
+    mid: "<td>",
+    close: "</tr></table>",
+  },
+  "table row, no </td> or </tr>": {
+    open: "<table><tr><td>a<tr><td>",
+    mid: "<tr><td>",
+    close: "</table>",
+  },
   "nested table": {
     open: "<table><tr><td><table><tr><td>a</td></tr><tr><td>",
     mid: "</td></tr><tr><td>",
@@ -73,11 +87,10 @@ interface Case {
   name: string;
   html: string;
   // The outer context is a list and the inner one sits wholly inside it, so
-  // the list's closing item must render as an item. Left out: misnested
-  // pairs, where that item can fall inside the inner context (a table cell,
-  // say) and is no item there, and runs of two or more <br>, which write a
-  // blank line in the item and so end it whatever the inner context is (a
-  // separate defect, reported on PR #24 rather than fixed with this check).
+  // the list's closing item must render as an item, however many <br> came
+  // before (two or more once wrote a blank line that ended the item; PR #24
+  // review). Left out: misnested pairs, where that item can fall inside the
+  // inner context (a table cell, say) and is no item there.
   listHolds: boolean;
 }
 
@@ -104,17 +117,17 @@ function cases(): Case[] {
           out.push({
             name: `${pair}, ${tag} open across the inner boundary`,
             html: `${a.open + b.open}a${brs}${dOpen}${b.mid}${IMAGE_BAIT}${P}${dClose}${b.close}${a.close}`,
-            listHolds: listHolds && n === 1,
+            listHolds,
           });
           out.push({
             name: `${pair}, ${tag} open across the outer boundary`,
             html: `${a.open}a${brs}${dOpen}${a.mid}${b.open}${IMAGE_BAIT}${P}${dClose}${b.close}${a.close}`,
-            listHolds: listHolds && n === 1,
+            listHolds,
           });
           out.push({
             name: `${pair}, ${tag} open around both and closed inside`,
             html: `${dOpen}${a.open}${P}${brs}${b.open}${IMAGE_BAIT}${P}${dClose}${P}${b.close}${a.close}`,
-            listHolds: listHolds && n === 1,
+            listHolds,
           });
         }
       }

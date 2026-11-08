@@ -593,6 +593,26 @@ describe("htmlToMarkdown: ported cases", () => {
     }
   });
 
+  // An empty line inside a list item (two or more <br> in a row) once wrote
+  // a blank line, and the text after it went to column 0, which ends the
+  // list; in an ordered list the next item then rendered as text, since
+  // markdown-it lets a numbered list interrupt a paragraph only at 1 (PR #24
+  // review). In a list a run of <br> is one line break, as a <p> in an item
+  // is a space, so the item and the list hold.
+  it("two or more line breaks in a list item keep the next item an item", () => {
+    expect(htmlToMarkdown("<ol><li>a<br><br>b</li><li>c</li></ol>")).toBe("1. a\nb\n2. c");
+    expect(render("1. a\nb\n2. c")).toBe("<ol>\n<li>a<br>\nb</li>\n<li>c</li>\n</ol>\n");
+    expect(htmlToMarkdown("<ul><li>a<br><br><br>b</li><li>c</li></ul>")).toBe("- a\nb\n- c");
+    expect(render("- a\nb\n- c")).toBe("<ul>\n<li>a<br>\nb</li>\n<li>c</li>\n</ul>\n");
+    const nested = htmlToMarkdown("<ol><li>x<ol><li>a<br><br>b</li><li>c</li></ol></li></ol>");
+    expect(nested).toBe("1. x\n   1. a\nb\n   2. c");
+    expect(render(nested)).toBe(
+      "<ol>\n<li>x\n<ol>\n<li>a<br>\nb</li>\n<li>c</li>\n</ol>\n</li>\n</ol>\n",
+    );
+    // Outside a list a run of <br> still writes a blank line.
+    expect(htmlToMarkdown("<p>a<br><br>b</p>")).toBe("a\n\nb");
+  });
+
   it("a heading ending in # keeps it (#27)", () => {
     expect(htmlToMarkdown("<h2>Learn C#</h2>")).toBe("## Learn C\\#");
     expect(render("## Learn C\\#")).toBe("<h2>Learn C#</h2>\n");
@@ -889,6 +909,41 @@ describe("escaped designer text beside misnested inline tags renders literally (
     );
     expect(out).toBe("| a; **\\![y](https://evil.example/x.png)** |\n| --- |");
     expect(render(out)).not.toMatch(/<img/);
+  });
+
+  // HTML lets a page leave out </td>: the next <td> closes the cell. That
+  // cell once stayed open, so a link left open in it and closed in the next
+  // cell rewrote the text before the next cell's start; cutting the cell
+  // there split "\\!" and left the "!" bare before the designer's link,
+  // which made it an image (PR #24 review). The open cell is now closed
+  // first, as </td> closes it.
+  it("a cell left open by a missing </td> makes no image", () => {
+    const out = htmlToMarkdown(
+      '<table><tr><td><a href="https://ok.example/">!<td><a href="https://evil.example/x.png">t</a></a></td></tr></table>',
+    );
+    expect(out).toBe("| \\! | [t](https://evil.example/x.png) |\n| --- | --- |");
+    expect(render(out)).not.toMatch(/<img/);
+  });
+
+  it("a cell left open by a missing </td> is closed by the next cell, its row or its table", () => {
+    expect(htmlToMarkdown("<table><tr><td>a<td>b</tr><tr><td>c<td>d</table>")).toBe(
+      "| a | b |\n| --- | --- |\n| c | d |",
+    );
+    expect(htmlToMarkdown("<table><tr><th>a</tr><tr><td>b</td></tr></table>")).toBe(
+      "| a |\n| --- |\n| b |",
+    );
+  });
+
+  it.each(DESIGNER_PAYLOADS)("a link left open across a missing </td>: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(
+      `<table><tr><td><a href="https://e.test/">${p}!<td><a href="https://evil.example/x.png">t</a>${p}z</a></td></tr></table>`,
+    );
+    const html = render(out);
+    expect(html).not.toMatch(/<img/);
+    expect(html).toBe(
+      `<table>\n<thead>\n<tr>\n<th>${p}!</th>\n<th><a href="https://evil.example/x.png">t</a>${p}z</th>\n</tr>\n</thead>\n</table>\n`,
+    );
   });
 
   it.each(DESIGNER_PAYLOADS)("a link closed before the bold inside it: %j", (payload) => {
