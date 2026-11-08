@@ -12,6 +12,7 @@ import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterEach, describe, expect, test } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
+import { streamChunked } from "./support/http.js";
 import { profileTree, TREE_PRINTERS } from "./support/profiles.js";
 import {
   fakeLandrun,
@@ -379,7 +380,10 @@ describe("slicing", () => {
     expect(JSON.parse(res.body)).toEqual({ error: "too_large" });
   });
 
-  test("a chunked body that runs past the limit is 413 and leaves nothing behind", async () => {
+  // fetch sends a Buffer body with its Content-Length, so this one is refused
+  // before the body is read. A chunked body with no Content-Length is tested
+  // under "a failed request never takes the server down".
+  test("a body whose Content-Length is past the limit is 413 and leaves nothing behind", async () => {
     const s = setup({ limits: { ...LIMITS, sliceBodyBytes: 1000 } });
     const base = await start(s.config);
     const res = await postSlice(base, Buffer.alloc(5000, 1));
@@ -732,4 +736,68 @@ describe("request timeouts", () => {
     expect(server.headersTimeout).toBeLessThanOrEqual(server.requestTimeout);
     expect(server.requestTimeout).toBeGreaterThan(0);
   });
+});
+
+// A body that goes wrong (too large with no Content-Length, or a client that
+// dies mid-upload) and a job folder that cannot be made must cost that one
+// request, never the server: it keeps answering, does not stay busy and
+// leaves nothing in WORK_DIR.
+describe("a failed request never takes the server down", () => {
+  const SMALL = { ...LIMITS, sliceBodyBytes: 1000, scadBodyBytes: 1000, stepBodyBytes: 1000 };
+  const ROUTES = [
+    ["slice", (base: string) => sliceUrl(base, P1S, 1)],
+    ["scad/stl", (base: string) => `${base}/v1/scad/stl`],
+    ["scad/png", (base: string) => `${base}/v1/scad/png`],
+    ["step/glb", (base: string) => `${base}/v1/step/glb`],
+  ] as const;
+
+  async function expectServing(base: string, workDir?: string): Promise<void> {
+    const res = await fetch(`${base}/v1/health`);
+    expect(res.status).toBe(200);
+    const health = slicerContract.health.parse(await res.json());
+    expect(health.busy).toBe(false);
+    if (workDir) expect(readdirSync(workDir)).toEqual([]);
+  }
+
+  test.each(ROUTES)(
+    "%s: a chunked body (no Content-Length) that runs past the limit is 413, and the server still answers",
+    async (_route, url) => {
+      const s = setup({ limits: SMALL });
+      const base = await start(s.config);
+      const res = await streamChunked(url(base), 64 * 1024, { chunk: 512 });
+      expect(res).toEqual({ status: 413, body: JSON.stringify({ error: "too_large" }) });
+      await expectServing(base, s.workDir);
+      // and the next request is served as normal
+      const again = await streamChunked(url(base), 64 * 1024, { chunk: 512 });
+      expect(again).toEqual({ status: 413, body: JSON.stringify({ error: "too_large" }) });
+    },
+  );
+
+  test.each(ROUTES)(
+    "%s: a client that dies mid-upload costs only its own request",
+    async (_route, url) => {
+      const s = setup();
+      const base = await start(s.config);
+      const res = await streamChunked(url(base), 1024 * 1024, { chunk: 4096, abortAfter: 16384 });
+      expect(res).toEqual({ error: "aborted by the client" });
+      await waitFor(() => readdirSync(s.workDir).length === 0);
+      await expectServing(base, s.workDir);
+    },
+  );
+
+  test.each(ROUTES)(
+    "%s: a job folder that cannot be made is 500, and the server is not left busy",
+    async (_route, url) => {
+      const s = setup();
+      // WORK_DIR is a plain file, so no job folder can be made under it.
+      const workDir = join(s.stubs, "work-is-a-file");
+      writeFileSync(workDir, "");
+      const base = await start({ ...s.config, workDir });
+      for (let i = 0; i < 2; i++) {
+        const res = await fetch(url(base), { method: "POST", body: sliceable() });
+        expect(res.status).toBe(500);
+      }
+      await expectServing(base);
+    },
+  );
 });
