@@ -8,6 +8,13 @@ import type { DB } from "./types.js";
 export interface DbOptions {
   /** Most connections the pool opens. */
   max?: number;
+  /**
+   * Called when an idle connection in the pool fails, for example when
+   * Postgres restarts or the db container is recreated. pg-pool has already
+   * dropped that client and opens a new one on the next query. With no
+   * handler the error is written to stderr. Either way the process carries on.
+   */
+  onError?: (error: Error) => void;
 }
 
 const INT8_OID = 20;
@@ -40,8 +47,24 @@ export function inTransaction<T>(db: Kysely<DB>, fn: (trx: Kysely<DB>) => Promis
   return db.isTransaction ? fn(db) : db.transaction().execute(fn);
 }
 
-export function createDb(connectionString: string, options: DbOptions = {}): Kysely<DB> {
+function logPoolError(error: Error): void {
+  console.error(`postgres: an idle pooled connection failed and was dropped: ${error.message}`);
+}
+
+/**
+ * The pg pool under createDb. pg-pool emits 'error' on the pool when an idle
+ * client loses its connection, and an 'error' event nobody listens to ends
+ * the Node process, so the pool always gets a listener here.
+ */
+export function createPool(connectionString: string, options: DbOptions = {}): pg.Pool {
   const pool = new pg.Pool({ connectionString, types, max: options.max ?? 10 });
+  const onError = options.onError ?? logPoolError;
+  pool.on("error", (error) => onError(error));
+  return pool;
+}
+
+export function createDb(connectionString: string, options: DbOptions = {}): Kysely<DB> {
+  const pool = createPool(connectionString, options);
   return new Kysely<DB>({
     dialect: new PostgresDialect({ pool }),
     plugins: [new CamelCasePlugin()],
