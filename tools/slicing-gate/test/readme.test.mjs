@@ -2,7 +2,7 @@
 // (2026-11-08): scp -r over Tailscale SSH dropped the scripts' execute bits,
 // so step 3's /tmp/platehouse-gate/tool/run.sh failed with exit 126.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -153,6 +153,42 @@ test("step 3 starts the run detached, with its log and exit code in the scratch 
   assert.match(line, /echo \$\? > \/tmp\/platehouse-gate\/run\.exit/);
   assert.match(line, /< \/dev\/null > \/dev\/null 2>&1 &$/, "detached from the terminal and backgrounded");
   assert.match(step3, /dropped ssh session/i);
+});
+
+// The tail is pasted straight after the backgrounded setsid line, so on a first
+// run it usually starts before the background job has created run.log. GNU
+// tail -f then prints "No such file or directory" and exits 1; tail -F follows
+// the name and waits for the file to appear.
+const step3Commands = () =>
+  [...step3.matchAll(/```sh\n([\s\S]*?)```/g)]
+    .flatMap((m) => m[1].split("\n"))
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+
+test("step 3 follows run.log with tail -F, which waits for a log that is not there yet", () => {
+  const tails = step3Commands().filter((l) => /^tail\b/.test(l));
+  assert.deepEqual(tails, ["tail -F /tmp/platehouse-gate/run.log"]);
+  assert.doesNotMatch(step3, /tail -f\b/, "no tail -f in step 3's text");
+});
+
+test("step 3's tail, run as written before run.log exists, keeps waiting and then shows the log", async () => {
+  const root = mkdtempSync(join(tmpdir(), "gate-tail-"));
+  made.push(root);
+  const line = step3Commands().find((l) => /^tail\b/.test(l)).replaceAll("/tmp/platehouse-gate", root);
+  const child = spawn("bash", ["-c", `exec ${line}`], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  let exited = null;
+  child.on("exit", (code) => (exited = code));
+  try {
+    await new Promise((res) => setTimeout(res, 500));
+    assert.equal(exited, null, "tail exited while run.log did not exist yet");
+    writeFileSync(join(root, "run.log"), "stub run line\n");
+    for (let i = 0; i < 100 && !out.includes("stub run line"); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.match(out, /stub run line/);
+  } finally {
+    child.kill();
+  }
 });
 
 // Runs step 3's detached line as written, with run.sh replaced by a stub that
