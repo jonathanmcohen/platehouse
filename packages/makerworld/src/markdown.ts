@@ -529,7 +529,13 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       if (lineStart >= 0) {
         out.truncate(lineStart);
         t = t.trimStart();
-        if (t) t = TEXT_LINE + t;
+        // Text on a line of its own in an open table, outside its cells (a
+        // paragraph or heading between rows, say), takes the table's
+        // indent: at column 0 it would end the list item the table is in,
+        // and with it the table.
+        const table = tables.at(-1);
+        const ownLine = lineStart === 0 || out.charAt(lineStart - 1) === "\n";
+        if (t) t = (table && ownLine ? table.indent : "") + TEXT_LINE + t;
       }
     }
     // A space meeting a space across dropped markup (an image, an empty
@@ -557,10 +563,15 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       headingEnded = true;
     }
 
-    if (/^h[1-6]$/.test(tag) && inCell) {
+    if (/^h[1-6]$/.test(tag) && (inCell || tables.length > 0)) {
+      // In a cell, or between a table's rows, a heading is just its text: a
+      // heading's blank line there would end the row or split the table
+      // (PR #24 review). A heading that opened before the table and ended
+      // where the table opened closes here too, writing no break.
       space();
       headingStart = -1;
       headingEnded = false;
+      if (!inCell) headingItem = undefined;
     } else if (/^h[1-6]$/.test(tag)) {
       if (!closing) {
         dropBareMarker();
@@ -573,14 +584,11 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         out.append(`${" ".repeat(headingCol)}${"#".repeat(Number(tag[1]))} `);
         headingStart = out.length;
       } else if (headingEnded) {
-        // The heading already ended where a table or list opened in it. A
-        // paragraph break here would split a table that is still open, so
-        // nothing is written; in a list that opened in the heading the
-        // close is a space, as a paragraph's is in a list.
+        // The heading already ended where a table or list opened in it (a
+        // table still open is handled above). In a list that opened in the
+        // heading the close is a space, as a paragraph's is in a list.
         headingEnded = false;
-        if (tables.length > 0) {
-          // nothing
-        } else if (lists.length > headingLists) space();
+        if (lists.length > headingLists) space();
         else {
           breakBlock();
           resumeAt(headingItem, headingCol);
@@ -774,17 +782,27 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       if (!closing) {
         // A row left open (no </tr>) ends where the next begins.
         if (t.rowOpen) closeRow(t);
-        endLine();
-        t.rowStart = out.length;
-        t.cells = 0;
-        t.rowOpen = true;
-        out.append(`${t.indent}|`);
-      } else closeRow(t);
+        openRow(t);
+      } else if (t.rowOpen) {
+        // A </tr> with no row open closes nothing. Closing anyway, before
+        // the first row it cut from the row start a table begins with, 0,
+        // which erased everything before the table; after a closed row it
+        // wrote a blank line that split the table (PR #24 review).
+        closeRow(t);
+      }
     } else if ((tag === "td" || tag === "th") && tables.length > 0) {
       const t = tables.at(-1) as Table;
       // A cell left open (no </td>) ends where the next begins.
       closeCell(t);
       if (!closing) {
+        // A cell with no row open (no <tr>) opens one, as a browser does; it
+        // once opened outside any row, so its pipes showed as text.
+        if (!t.rowOpen) openRow(t);
+        // Markup cannot span a cell: a link or emphasis opened in the row
+        // before this cell and closed inside it would rewrite the text
+        // before the cell's start, and cutting the cell there split a
+        // backslash from the "!" it escaped (PR #24 review).
+        out.endInlineFrom(t.rowStart);
         t.cells++;
         inCell = true;
         t.cellStart = out.length;
@@ -792,10 +810,22 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     } else if (BLOCK.has(tag)) {
       // Inside a list item or a table cell a paragraph is just the text, with
       // a space where it opens or closes so two paragraphs' words stay apart.
-      if (lists.length === 0 && !inCell) breakBlock();
+      // Between a table's rows it is the same: a paragraph break there split
+      // the table (PR #24 review).
+      if (lists.length === 0 && !inCell && tables.length === 0) breakBlock();
       else space();
     }
     // Every other tag (img, span, font, ...) is dropped; its text stays.
+  };
+
+  // Opens a row of a table that is not nested in a cell, on a line of its
+  // own. Called by <tr>, and by a <td> or <th> with no row open.
+  const openRow = (t: Table): void => {
+    endLine();
+    t.rowStart = out.length;
+    t.cells = 0;
+    t.rowOpen = true;
+    out.append(`${t.indent}|`);
   };
 
   // Closes the open row of a table that is not nested in a cell. Called by
