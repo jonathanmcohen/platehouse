@@ -16,6 +16,9 @@
 //   deleted afterwards, success or failure.
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
+// - An error in a request costs that request, never the process (guard.ts):
+//   it is answered 500, or its connection is closed, and its job is undone
+//   (program killed, folder deleted, lock freed).
 import { randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { open } from "node:fs/promises";
@@ -32,6 +35,7 @@ import {
 } from "@platehouse/slicer-contract";
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
+import { guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import { runGroup } from "./sandbox.js";
@@ -151,22 +155,23 @@ function sendBytes(res: ServerResponse, contentType: string, bytes: Buffer): voi
 }
 
 /**
- * Refuses a request before reading its body: answers, then drops the
- * connection so the client stops sending.
+ * Refuses a request before reading its body (or once a body runs past its
+ * limit): answers, then drops the connection so the client stops sending.
+ *
+ * The connection is taken from res, before the answer is sent. req.socket is
+ * no use here: once a body error has made stream.pipeline destroy the
+ * request, Node has already set req.socket to null, and calling destroy() on
+ * it threw in this callback, outside any try, and ended the process.
  */
-function refuseEarly(
-  req: IncomingMessage,
-  res: ServerResponse,
-  status: number,
-  body: ErrorBody,
-): void {
+function refuseEarly(res: ServerResponse, status: number, body: ErrorBody): void {
+  const socket = res.socket;
   const text = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
     connection: "close",
   });
-  res.end(text, () => req.socket.destroy());
+  res.end(text, () => socket?.destroy());
 }
 
 class TooLarge extends Error {}
@@ -231,20 +236,43 @@ export interface Slicer {
   close(): Promise<void>;
 }
 
+/** The tracker a job hands to runGroup, and a way to kill what it tracks. */
+type Tracker = ((kill: (() => void) | null) => void) & { killNow(): void };
+
+/** The one heavy job running (a slice, a render or a STEP conversion). */
+interface Job {
+  /** Its own folder under WORK_DIR. */
+  dir: string;
+  /** Passed to every program the job runs, so release() can kill it. */
+  track: Tracker;
+  /**
+   * Kills its program, deletes its folder and frees the lock. Safe to call
+   * twice: the crash guard calls it again when the request fails, and it
+   * never frees a lock that a later job holds.
+   */
+  release(): void;
+}
+
 export function createSlicer(config: SlicerConfig): Slicer {
   const profiles = loadProfiles(config.profilesDir);
   const menu = new Set(profiles.printers.map((p) => p.id));
   const running = new Set<() => void>();
-  // Held by the one heavy job running: a slice, a render or a STEP conversion.
-  let busy = false;
+  // The heavy-job lock: the job holding it, or null.
+  let holder: Job | null = null;
 
-  const track = () => {
+  const track = (): Tracker => {
     let current: (() => void) | null = null;
-    return (kill: (() => void) | null) => {
+    const set = (kill: (() => void) | null) => {
       if (current) running.delete(current);
       current = kill;
       if (kill) running.add(kill);
     };
+    return Object.assign(set, {
+      killNow: () => {
+        current?.();
+        set(null);
+      },
+    });
   };
 
   const jobDir = (): string => {
@@ -253,29 +281,69 @@ export function createSlicer(config: SlicerConfig): Slicer {
     return dir;
   };
 
+  /**
+   * Takes the heavy-job lock and makes the job's folder, or returns null when
+   * another job holds the lock. If the folder cannot be made (a full tmpfs,
+   * say), the lock is freed again and the error goes to the request.
+   */
+  const takeJob = (): Job | null => {
+    if (holder) return null;
+    let dir: string | null = null;
+    let released = false;
+    const job: Job = {
+      dir: "",
+      track: track(),
+      release: () => {
+        if (released) return;
+        released = true;
+        job.track.killNow();
+        if (dir) rmSync(dir, { recursive: true, force: true });
+        if (holder === job) holder = null;
+      },
+    };
+    holder = job;
+    whenRequestFails(job.release);
+    try {
+      dir = jobDir();
+    } catch (err) {
+      job.release();
+      throw err;
+    }
+    job.dir = dir;
+    return job;
+  };
+
   // The sandbox self-test runs before the first render, and every render
   // waits for it. Only a pass is remembered: a failed or inconclusive check
   // refuses the renders waiting on it, and the next render checks again.
+  // If the render's request fails while the check runs, the check is
+  // forgotten too, so a check the guard cut short cannot hang later renders.
   let sandbox: Promise<SandboxCheck> | null = null;
-  const sandboxReady = (): Promise<SandboxCheck> => {
-    sandbox ??= (async (): Promise<SandboxCheck> => {
-      const dir = jobDir();
+  const sandboxReady = (job: Job): Promise<SandboxCheck> => {
+    if (sandbox) return sandbox;
+    const check = (async (): Promise<SandboxCheck> => {
+      let dir: string | null = null;
       try {
-        const check = await sandboxSelfTest(config, dir, config.sandboxProbe);
-        log(`sandbox self-test: ${check.ok ? "ok" : "FAILED"}: ${check.detail}`);
-        return check;
+        dir = jobDir();
+        const result = await sandboxSelfTest(config, dir, config.sandboxProbe, job.track);
+        log(`sandbox self-test: ${result.ok ? "ok" : "FAILED"}: ${result.detail}`);
+        return result;
       } catch (err) {
         const detail = `the self-test could not run: ${err instanceof Error ? err.message : String(err)}`;
         log(`sandbox self-test: FAILED: ${detail}`);
         return { ok: false, detail };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        if (dir) rmSync(dir, { recursive: true, force: true });
       }
-    })().then((check) => {
-      if (!check.ok) sandbox = null;
-      return check;
+    })().then((result) => {
+      if (!result.ok && sandbox === check) sandbox = null;
+      return result;
     });
-    return sandbox;
+    sandbox = check;
+    whenRequestFails(() => {
+      if (sandbox === check) sandbox = null;
+    });
+    return check;
   };
 
   async function slice(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -284,7 +352,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       plate: url.searchParams.get("plate") ?? undefined,
     });
     if (!query.success) {
-      return refuseEarly(req, res, 400, {
+      return refuseEarly(res, 400, {
         error: "bad_request",
         message: query.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
       });
@@ -292,22 +360,22 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const { printer, plate } = query.data;
     const machineFile = menu.has(printer) ? profiles.machineFile(printer) : null;
     if (!machineFile) {
-      return refuseEarly(req, res, 400, { error: "bad_request", message: "unknown printer" });
+      return refuseEarly(res, 400, { error: "bad_request", message: "unknown printer" });
     }
     const declared = declaredLength(req);
     if (declared !== null && declared > config.limits.sliceBodyBytes) {
-      return refuseEarly(req, res, 413, { error: "too_large" });
+      return refuseEarly(res, 413, { error: "too_large" });
     }
-    if (busy) return refuseEarly(req, res, 409, { error: "busy" });
-    busy = true;
-    const dir = jobDir();
+    const job = takeJob();
+    if (!job) return refuseEarly(res, 409, { error: "busy" });
+    const dir = job.dir;
     try {
       for (const sub of SCRATCH_DIRS) mkdirSync(join(dir, sub), { recursive: true });
       const input = join(dir, "input.3mf");
       try {
         await saveBody(req, input, config.limits.sliceBodyBytes);
       } catch (err) {
-        if (err instanceof TooLarge) return refuseEarly(req, res, 413, { error: "too_large" });
+        if (err instanceof TooLarge) return refuseEarly(res, 413, { error: "too_large" });
         throw err;
       }
       const head = Buffer.alloc(4);
@@ -338,7 +406,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
         cwd: dir,
         env: scratchEnv(dir),
         timeoutMs: config.sliceTimeoutSeconds * 1000,
-        track: track(),
+        track: job.track,
       });
       const result = sliceOutcome(
         {
@@ -358,8 +426,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
       );
       return send(res, 200, result);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-      busy = false;
+      job.release();
     }
   }
 
@@ -374,28 +441,22 @@ export function createSlicer(config: SlicerConfig): Slicer {
     res: ServerResponse,
     limit: number,
     input: string,
-    work: (dir: string) => Promise<void>,
+    work: (job: Job) => Promise<void>,
   ): Promise<void> {
     const declared = declaredLength(req);
-    if (declared !== null && declared > limit)
-      return refuseEarly(req, res, 413, { error: "too_large" });
-    if (busy) return refuseEarly(req, res, 409, { error: "busy" });
-    busy = true;
+    if (declared !== null && declared > limit) return refuseEarly(res, 413, { error: "too_large" });
+    const job = takeJob();
+    if (!job) return refuseEarly(res, 409, { error: "busy" });
     try {
-      const dir = jobDir();
       try {
-        try {
-          await saveBody(req, join(dir, input), limit);
-        } catch (err) {
-          if (err instanceof TooLarge) return refuseEarly(req, res, 413, { error: "too_large" });
-          throw err;
-        }
-        await work(dir);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
+        await saveBody(req, join(job.dir, input), limit);
+      } catch (err) {
+        if (err instanceof TooLarge) return refuseEarly(res, 413, { error: "too_large" });
+        throw err;
       }
+      await work(job);
     } finally {
-      busy = false;
+      job.release();
     }
   }
 
@@ -408,7 +469,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
           contract: CONTRACT_VERSION,
           orca: config.orcaVersion,
           openscad: config.openscadVersion,
-          busy,
+          busy: holder !== null,
         });
       case "GET /v1/profiles":
         return send(res, 200, {
@@ -422,45 +483,37 @@ export function createSlicer(config: SlicerConfig): Slicer {
       case "POST /v1/scad/stl":
       case "POST /v1/scad/png": {
         const kind = url.pathname.endsWith("png") ? "png" : "stl";
-        return withBody(req, res, config.limits.scadBodyBytes, SCAD_INPUT, async (dir) => {
-          const check = await sandboxReady();
+        return withBody(req, res, config.limits.scadBodyBytes, SCAD_INPUT, async (job) => {
+          const check = await sandboxReady(job);
           if (!check.ok) {
             return send(res, 422, {
               error: "render_failed",
               message: `OpenSCAD renders are off: the sandbox self-test failed (${check.detail}).`,
             });
           }
-          const r = await renderScad(config, dir, kind, track());
+          const r = await renderScad(config, job.dir, kind, job.track);
           if (r.ok) return sendBytes(res, kind === "png" ? "image/png" : "model/stl", r.bytes);
           return send(res, 422, { error: "render_failed", message: r.message });
         });
       }
       case "POST /v1/step/glb":
-        return withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (dir) => {
+        return withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (job) => {
           const r = await runStepWorker(
             { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
-            dir,
-            track(),
+            job.dir,
+            job.track,
           );
           if (r.ok) return sendBytes(res, "model/gltf-binary", r.bytes);
           return send(res, 422, { error: "convert_failed", message: r.message });
         });
       default:
-        return refuseEarly(req, res, 404, { error: "not_found" });
+        return refuseEarly(res, 404, { error: "not_found" });
     }
   }
 
-  const server = createServer(requestTimeouts(config), (req, res) => {
-    handle(req, res).catch((err: unknown) => {
-      log(`request failed: ${err instanceof Error ? err.message : String(err)}`);
-      if (!res.headersSent) {
-        res.writeHead(500, { "content-type": "text/plain", connection: "close" });
-        res.end("internal error\n");
-      } else {
-        res.destroy();
-      }
-    });
-  });
+  // A handler that throws or rejects is answered 500, or its connection is
+  // closed if the answer has started, and its job is undone (guard.ts).
+  const server = createServer(requestTimeouts(config), guardRequests(handle, log));
 
   return {
     server,
@@ -490,9 +543,19 @@ function isMain(): boolean {
 }
 
 if (isMain()) {
+  // Errors that escape a request's own code (a listener or callback that
+  // throws, an unhandled rejection) fail that request, never the process.
+  installCrashGuard(process, log);
   try {
     const config = loadConfig(process.env);
     const slicer = createSlicer(config);
+    // The server's own errors (the port is taken, say) are fatal: with the
+    // crash guard installed they would otherwise leave a process that
+    // listens on nothing.
+    slicer.server.on("error", (err) => {
+      process.stderr.write(`slicer: ${err.message}\n`);
+      process.exit(1);
+    });
     slicer.server.listen(config.port, "0.0.0.0", () => {
       log(
         `slicer contract ${CONTRACT_VERSION} listening on ${config.port}: orca ${config.orcaVersion}, openscad ${config.openscadVersion}, --mstpp ${config.slicePlateSeconds} s, kill at ${config.sliceTimeoutSeconds} s`,

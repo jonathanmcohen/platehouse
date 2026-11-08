@@ -96,6 +96,7 @@ export async function sandboxSelfTest(
   config: ScadConfig,
   dir: string,
   probe: string,
+  track?: (kill: (() => void) | null) => void,
 ): Promise<SandboxCheck> {
   if (!existsSync(probe) || statSync(probe).size === 0) {
     return {
@@ -104,7 +105,7 @@ export async function sandboxSelfTest(
     };
   }
   writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(probe)});\n`);
-  const r = await renderScad(config, dir, "stl");
+  const r = await renderScad(config, dir, "stl", track);
   if (r.ok) {
     return {
       ok: false,
