@@ -15,6 +15,12 @@ import type { DB } from "./types.js";
 // an applied file is missing: an applied migration is never edited, a change
 // goes in a new file.
 
+// The migrations folder is found next to this module. Run from source that is
+// src/db/migrations. tsc -b compiles this file to dist/src/db/migrate.js and
+// copies no .sql files, so a built server looks in dist/src/db/migrations and
+// migrate() fails with ENOENT unless the build copies src/db/migrations there.
+// No build step does that yet; the app image (build plan Task 24) must, and
+// issue #31 tracks it.
 export const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations/", import.meta.url));
 
 const NAME = /^([0-9]{4})_[a-z0-9_]+\.sql$/;
@@ -58,7 +64,7 @@ export async function listMigrations(dir: string): Promise<MigrationFile[]> {
   return files;
 }
 
-/** Applies the shipped migrations (src/db/migrations). */
+/** Applies the shipped migrations, from MIGRATIONS_DIR. */
 export async function migrate(db: Kysely<DB>): Promise<void> {
   await migrateFrom(db, MIGRATIONS_DIR);
 }
