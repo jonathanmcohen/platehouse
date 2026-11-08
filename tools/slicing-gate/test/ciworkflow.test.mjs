@@ -389,10 +389,29 @@ for (const [stepName, label] of [
     assert.match(r.stdout, /::error::No tests ran\n/);
   });
 
-  test(`${label} guard: no report at all fails with No tests ran`, () => {
-    const r = runGuard(stepName, { report: null, status: 1 });
-    assert.notEqual(r.status, 0);
-    assert.match(r.stdout, /::error::No tests ran \(vitest wrote no report, exit 1\)/);
+  test(`${label} guard: vitest passing with no report fails with No tests ran`, () => {
+    const r = runGuard(stepName, { report: null, status: 0 });
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /::error::No tests ran \(vitest wrote no report\)\n/);
+  });
+
+  // Issue #20: when vitest itself fails, the step reports that failure, with
+  // vitest's own exit code, and never "No tests ran". A suite whose beforeAll
+  // throws has every test marked skipped, so it fails with zero tests run.
+  // Exit 7 tells vitest's code apart from the guard's own exit 1.
+  test(`${label} guard: vitest failing with zero tests run exits with vitest's code, not No tests ran (issue #20)`, () => {
+    const r = runGuard(stepName, { report: vitestReport(2, 0, 0, 2), status: 7 });
+    assert.equal(r.status, 7, r.stdout + r.stderr);
+    assert.match(r.stdout, new RegExp(`${label}: 0 tests ran, 2 skipped, 2 collected`));
+    assert.match(r.stdout, /::error::Vitest failed \(exit 7\)/);
+    assert.doesNotMatch(r.stdout, /No tests ran/);
+  });
+
+  test(`${label} guard: vitest failing with no report exits with vitest's code, not No tests ran (issue #20)`, () => {
+    const r = runGuard(stepName, { report: null, status: 7 });
+    assert.equal(r.status, 7, r.stdout + r.stderr);
+    assert.match(r.stdout, /::error::Vitest failed \(exit 7\)/);
+    assert.doesNotMatch(r.stdout, /No tests ran/);
   });
 
   test(`${label} guard: tests that ran and passed pass, with the count logged`, () => {
@@ -406,6 +425,7 @@ for (const [stepName, label] of [
     const r = runGuard(stepName, { report: vitestReport(3, 2, 1, 0), status: 1 });
     assert.equal(r.status, 1);
     assert.match(r.stdout, new RegExp(`${label}: 3 tests ran, 0 skipped, 3 collected`));
+    assert.match(r.stdout, /::error::Vitest failed \(exit 1\)/);
     assert.doesNotMatch(r.stdout, /No tests ran/);
   });
 }
