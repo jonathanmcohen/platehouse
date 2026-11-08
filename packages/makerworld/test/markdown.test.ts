@@ -110,6 +110,113 @@ describe("htmlToMarkdown: ported cases", () => {
     );
   });
 
+  // PR #24 review: a heading or table in a list item was written at column 0,
+  // which ends the list, and the item's text after it went to column 0 too.
+  // In an ordered list the next item's marker then sat straight under that
+  // paragraph, and markdown-it lets an ordered list interrupt a paragraph
+  // only when it starts at 1, so the next item rendered as text ("b 2. c").
+  // The heading or table, and the text after it, now stay in the item: a
+  // blank line, then the item's indent.
+  describe("a heading or table in a list item, and the text after it, stay in the item", () => {
+    const loose = (tag: "ol" | "ul", first: string): string =>
+      `<${tag}>\n<li>\n<p>a</p>\n${first}\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</${tag}>\n`;
+    const H3 = "<h3>H</h3>";
+    const ONE_CELL = "<table>\n<thead>\n<tr>\n<th>x</th>\n</tr>\n</thead>\n</table>";
+    const TWO_ROWS =
+      "<table>\n<thead>\n<tr>\n<th>x</th>\n<th>y</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td></td>\n</tr>\n</tbody>\n</table>";
+
+    it.each([
+      [
+        "a heading, ordered",
+        "<ol><li>a<h3>H</h3>b</li><li>c</li></ol>",
+        "1. a\n\n   ### H\n\n   b\n2. c",
+        loose("ol", H3),
+      ],
+      [
+        "a heading, unordered",
+        "<ul><li>a<h3>H</h3>b</li><li>c</li></ul>",
+        "- a\n\n  ### H\n\n  b\n- c",
+        loose("ul", H3),
+      ],
+      [
+        "a table, ordered",
+        "<ol><li>a<table><tr><td>x</td></tr></table>b</li><li>c</li></ol>",
+        "1. a\n\n   | x |\n   | --- |\n\n   b\n2. c",
+        loose("ol", ONE_CELL),
+      ],
+      [
+        "a table, unordered, its header padded",
+        "<ul><li>a<table><tr><td>x</td><td>y</td></tr><tr><td>1</td></tr></table>b</li><li>c</li></ul>",
+        "- a\n\n  | x | y |\n  | --- | --- |\n  | 1 |\n\n  b\n- c",
+        loose("ul", TWO_ROWS),
+      ],
+    ])("%s", (_name, html, markdown, rendered) => {
+      const out = htmlToMarkdown(html);
+      expect(out).toBe(markdown);
+      expect(render(out)).toBe(rendered);
+    });
+
+    it("in a nested item, at that item's indent", () => {
+      const out = htmlToMarkdown(
+        "<ol><li>a<ol><li>n<h3>H</h3>m</li><li>o</li></ol>b</li><li>c</li></ol>",
+      );
+      expect(out).toBe("1. a\n   1. n\n\n      ### H\n\n      m\n   2. o\n\n   b\n2. c");
+      expect(render(out)).toBe(
+        "<ol>\n<li>\n<p>a</p>\n<ol>\n<li>\n<p>n</p>\n<h3>H</h3>\n<p>m</p>\n</li>\n<li>\n<p>o</p>\n</li>\n</ol>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ol>\n",
+      );
+    });
+
+    it("emphasis, block syntax or nothing after the heading", () => {
+      expect(htmlToMarkdown("<ol><li>a<h3>H</h3><b>b</b> more</li><li>c</li></ol>")).toBe(
+        "1. a\n\n   ### H\n\n   **b** more\n2. c",
+      );
+      const escaped = htmlToMarkdown("<ol><li>a<h3>H</h3>3. b</li><li>c</li></ol>");
+      expect(escaped).toBe("1. a\n\n   ### H\n\n   3\\. b\n2. c");
+      expect(render(escaped)).toContain("<p>3. b</p>");
+      const last = htmlToMarkdown("<ol><li>a<h3>H</h3></li><li>c</li></ol>");
+      expect(last).toBe("1. a\n\n   ### H\n\n2. c");
+      expect(render(last)).toBe(
+        "<ol>\n<li>\n<p>a</p>\n<h3>H</h3>\n</li>\n<li>\n<p>c</p>\n</li>\n</ol>\n",
+      );
+      // An empty heading writes nothing, and the text after it stays in the item.
+      const empty = htmlToMarkdown("<ol><li>a<h3></h3>b</li><li>c</li></ol>");
+      expect(empty).toBe("1. a\n\n   b\n2. c");
+      expect(render(empty)).toBe(
+        "<ol>\n<li>\n<p>a</p>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ol>\n",
+      );
+    });
+
+    // An item whose first content is a heading or table loses its bare marker
+    // (see "leaves no bare marker" below), so the block leaves that list, as
+    // before. The text after it follows the block, and the next item starts
+    // after a blank line, where markdown-it starts a new list at its number.
+    it.each([
+      ["a heading", "<h3>H</h3>", "### H", H3],
+      [
+        "a table",
+        "<table><tr><td>t</td></tr></table>",
+        "| t |\n| --- |",
+        ONE_CELL.replace("x", "t"),
+      ],
+    ])("%s first in an ordered item", (_name, block, blockMd, blockHtml) => {
+      const out = htmlToMarkdown(`<ol><li>x</li><li>${block}b</li><li>c</li></ol>`);
+      expect(out).toBe(`1. x\n\n${blockMd}\n\nb\n\n2. c`);
+      expect(render(out)).toBe(
+        `<ol>\n<li>x</li>\n</ol>\n${blockHtml}\n<p>b</p>\n<ol start="2">\n<li>c</li>\n</ol>\n`,
+      );
+    });
+
+    it("a heading first in a nested ordered item stays in the outer item", () => {
+      const out = htmlToMarkdown(
+        "<ol><li>a<ol><li><h3>H</h3>m</li><li>o</li></ol>b</li><li>c</li></ol>",
+      );
+      expect(out).toBe("1. a\n\n   ### H\n\n   m\n\n   1. o\n\n   b\n2. c");
+      expect(render(out)).toBe(
+        "<ol>\n<li>\n<p>a</p>\n<h3>H</h3>\n<p>m</p>\n<ol>\n<li>o</li>\n</ol>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ol>\n",
+      );
+    });
+  });
+
   it("htmlToMarkdown: a table becomes a pipe table with the first row as header", () => {
     const html =
       "<p>Storage:</p><table><tbody>" +
@@ -293,12 +400,15 @@ describe("htmlToMarkdown: ported cases", () => {
     expect(render(cells)).toBe(
       "<table>\n<thead>\n<tr>\n<th># one</th>\n<th>- two</th>\n</tr>\n</thead>\n</table>\n",
     );
-    // A table inside an outer list item leaves that list's numbering alone.
-    expect(
-      htmlToMarkdown(
-        "<ol><li>a<table><tr><td><ol><li>x</li><li>y</li></ol></td></tr></table></li><li>b</li></ol>",
-      ),
-    ).toBe("1. a\n\n| 1. x; 2. y |\n| --- |\n\n2. b");
+    // A table inside an outer list item leaves that list's numbering alone,
+    // and sits in the item at its indent.
+    const inItem = htmlToMarkdown(
+      "<ol><li>a<table><tr><td><ol><li>x</li><li>y</li></ol></td></tr></table></li><li>b</li></ol>",
+    );
+    expect(inItem).toBe("1. a\n\n   | 1. x; 2. y |\n   | --- |\n\n2. b");
+    expect(render(inItem)).toBe(
+      "<ol>\n<li>\n<p>a</p>\n<table>\n<thead>\n<tr>\n<th>1. x; 2. y</th>\n</tr>\n</thead>\n</table>\n</li>\n<li>\n<p>b</p>\n</li>\n</ol>\n",
+    );
     // Outside a table a list and a heading are unchanged, and after one they still work.
     expect(
       htmlToMarkdown(

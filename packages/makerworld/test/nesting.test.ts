@@ -27,6 +27,8 @@ const P = htmlEscape(PAYLOAD);
 const LINK = "https://e.test/l";
 const EVIL = "https://evil.example/x.png";
 const IMAGE_BAIT = `!<a href="${EVIL}">y</a>`;
+const END_ITEM = "<li>end item</li>";
+const LISTS = new Set(["list", "ordered list"]);
 
 interface Context {
   open: string;
@@ -35,7 +37,15 @@ interface Context {
 }
 
 const CONTEXTS: Record<string, Context> = {
-  list: { open: "<ul><li>a</li><li>", mid: "</li><li>", close: "</li></ul>" },
+  // Each list closes with one more item, which must still render as an item
+  // whatever came before it in the list (PR #24 review: after a heading in an
+  // ordered item, the next item rendered as text).
+  list: { open: "<ul><li>a</li><li>", mid: "</li><li>", close: `</li>${END_ITEM}</ul>` },
+  "ordered list": {
+    open: "<ol><li>a</li><li>",
+    mid: "</li><li>",
+    close: `</li>${END_ITEM}</ol>`,
+  },
   "table cell": {
     open: "<table><tr><td>a</td><td>",
     mid: "</td><td>",
@@ -62,20 +72,30 @@ const DANGLING: Array<[string, string, string]> = [
 interface Case {
   name: string;
   html: string;
+  // The outer context is a list and the inner one sits wholly inside it, so
+  // the list's closing item must render as an item. Left out: misnested
+  // pairs, where that item can fall inside the inner context (a table cell,
+  // say) and is no item there, and runs of two or more <br>, which write a
+  // blank line in the item and so end it whatever the inner context is (a
+  // separate defect, reported on PR #24 rather than fixed with this check).
+  listHolds: boolean;
 }
 
 function cases(): Case[] {
   const out: Case[] = [];
   for (const [aName, a] of Object.entries(CONTEXTS)) {
+    const listHolds = LISTS.has(aName);
     for (const [bName, b] of Object.entries(CONTEXTS)) {
       const pair = `${bName} in ${aName}`;
       out.push({
         name: `${pair}, nested`,
         html: a.open + P + b.open + P + b.close + P + a.close,
+        listHolds,
       });
       out.push({
         name: `${pair}, misnested`,
         html: a.open + P + b.open + P + a.close + P + b.close,
+        listHolds: false,
       });
       for (const [dName, dOpen, dClose] of DANGLING) {
         for (let n = 1; n <= 3; n++) {
@@ -84,14 +104,17 @@ function cases(): Case[] {
           out.push({
             name: `${pair}, ${tag} open across the inner boundary`,
             html: `${a.open + b.open}a${brs}${dOpen}${b.mid}${IMAGE_BAIT}${P}${dClose}${b.close}${a.close}`,
+            listHolds: listHolds && n === 1,
           });
           out.push({
             name: `${pair}, ${tag} open across the outer boundary`,
             html: `${a.open}a${brs}${dOpen}${a.mid}${b.open}${IMAGE_BAIT}${P}${dClose}${b.close}${a.close}`,
+            listHolds: listHolds && n === 1,
           });
           out.push({
             name: `${pair}, ${tag} open around both and closed inside`,
             html: `${dOpen}${a.open}${P}${brs}${b.open}${IMAGE_BAIT}${P}${dClose}${P}${b.close}${a.close}`,
+            listHolds: listHolds && n === 1,
           });
         }
       }
@@ -108,6 +131,7 @@ const ALLOWED_TAGS = new Set([
   "a",
   "h2",
   "ul",
+  "ol",
   "li",
   "table",
   "thead",
@@ -126,7 +150,7 @@ function count(haystack: string, needle: string): number {
 }
 
 describe("designer text nested in every block and inline renders literally", () => {
-  it.each(cases())("$name", ({ html }) => {
+  it.each(cases())("$name", ({ html, listHolds }) => {
     const md = htmlToMarkdown(html);
     const rendered = renderMarkdown(md);
     const root = document.createElement("div");
@@ -139,10 +163,21 @@ describe("designer text nested in every block and inline renders literally", () 
       expect(tag, detail).not.toBe("img");
       expect(ALLOWED_TAGS.has(tag), `${tag} in ${detail}`).toBe(true);
       for (const attr of Array.from(el.attributes)) {
+        // An ordered list that markdown-it starts past 1 carries its number.
+        if (`${tag} ${attr.name}` === "ol start") {
+          expect(attr.value, detail).toMatch(/^\d+$/);
+          continue;
+        }
         expect(`${tag} ${attr.name}`, detail).toBe("a href");
         expect([LINK, EVIL], detail).toContain(attr.value);
       }
     }
     expect(count(norm(root.textContent ?? ""), PAYLOAD), detail).toBe(count(html, P));
+    if (listHolds) {
+      const items = elements.filter(
+        (el) => el.tagName === "LI" && norm(el.textContent ?? "").trim() === "end item",
+      );
+      expect(items.length, detail).toBe(count(html, END_ITEM));
+    }
   });
 });

@@ -173,4 +173,67 @@ describe("extractMakerWorld", () => {
     );
     expect(mw?.designer).toBe("First");
   });
+
+  // What the source's regular expression read, pinned before it was replaced
+  // by a forward-only scan (PR #24 review): the scan must read the same
+  // elements the same way.
+  describe("reads elements as the source's expression did", () => {
+    const designer = (xml: string): string | null | undefined => extractMakerWorld(xml)?.designer;
+
+    it("an element's text runs to the first close tag, start tags included", () => {
+      expect(designer('<metadata name="Designer">D<metadata name="Title">T</metadata>')).toBe(
+        'D<metadata name="Title">T',
+      );
+      // So the Designer inside an element left open is part of its text.
+      expect(
+        extractMakerWorld('<metadata name="Title">open <metadata name="Designer">D</metadata>'),
+      ).toBeNull();
+    });
+
+    it("an element with no close tag after it is skipped", () => {
+      expect(designer('<metadata name="Designer">D</metadata><metadata name="Designer">E')).toBe(
+        "D",
+      );
+      expect(
+        designer('<metadata name="Title">T</metadata><metadata name="Designer">D'),
+      ).toBeUndefined();
+    });
+
+    it("a close tag may hold whitespace before its >, and only that", () => {
+      expect(designer('<metadata name="Designer">D</metadata  >')).toBe("D");
+      expect(designer('<metadata name="Designer">D</metadata\n>')).toBe("D");
+      expect(designer('<metadata name="Designer">D</metadataX></metadata>')).toBe("D</metadataX>");
+      expect(designer('<metadata name="Designer">D</metadata x></metadata>')).toBe(
+        "D</metadata x>",
+      );
+    });
+
+    it("the start tag: whitespace, other attributes, and quotes", () => {
+      expect(designer('<metadata\n  name = "Designer" type="x">D</metadata>')).toBe("D");
+      expect(designer("<metadata name='Designer' a=\"1\">D</metadata>")).toBe("D");
+      expect(designer('<metadata name="Designer" a=">">D</metadata>')).toBe('">D');
+      // Only "/>" closes the tag itself; "/ >" opens an element with text.
+      expect(designer('<metadata name="Designer" / >D</metadata>')).toBe("D");
+      expect(
+        designer('<metadata name="Designer" x="1"/><metadata name="Designer">D</metadata>'),
+      ).toBeUndefined();
+    });
+
+    it("a tag that is not a named metadata element is not read", () => {
+      expect(designer('<metadatax name="Designer">D</metadata>')).toBeUndefined();
+      expect(designer("<metadata name=Designer>D</metadata>")).toBeUndefined();
+      expect(designer('<metadata id="1" name="Designer">D</metadata>')).toBeUndefined();
+      expect(designer('<Metadata name="Designer">D</metadata>')).toBeUndefined();
+    });
+  });
+
+  // New with the forward-only scan: like the converter's tag pattern, a start
+  // tag cannot run past a <, so a tag left without its > ends at the next
+  // tag instead of borrowing that tag's >. XML allows no < in a tag.
+  it("a start tag whose attributes or name hold a < is not read", () => {
+    const designer = (xml: string): string | null | undefined => extractMakerWorld(xml)?.designer;
+    expect(designer('<metadata name="Designer" <x>D</metadata>')).toBeUndefined();
+    expect(designer('<metadata name="Desi<gner">D</metadata>')).toBeUndefined();
+    expect(designer('<metadata name="Title" <metadata name="Designer">D</metadata>')).toBe("D");
+  });
 });

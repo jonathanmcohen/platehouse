@@ -82,22 +82,72 @@ describe("a crafted description of 256 KiB converts in bounded time and size", (
   });
 });
 
-// A regression guard, not a proof of a fix: extractMakerWorld keeps the
-// source's regular expression, and Node 26's engine read every shape here in
-// a few milliseconds with it.
-const XML_SHAPES: Array<[string, string]> = [
-  ["metadata elements never closed", fill('<metadata name="x">')],
-  ["metadata start tags with no >", fill('<metadata name="x" ')],
-  ["one unterminated name", `<metadata name="${"a".repeat(SIZE)}`],
-  ["a Designer with no closing tag", `<metadata name="Designer">${fill("a")}`],
-  ["many complete elements", fill('<metadata name="Designer">a</metadata>')],
-  ["entities in a value", `<metadata name="Designer">${fill("&amp;amp;")}</metadata>`],
+// extractMakerWorld once read the prefix with one regular expression whose
+// two lazy scans could each run to the end of the input from every
+// <metadata start, so a prefix of start tags that never close took time
+// that grows with the square of its length: about half a second on a fast
+// Mac at 256 KiB and over 2 s on a CI runner (PR #24 review). A fixed
+// budget passes or fails with the machine, so each shape is timed at 64 KiB
+// and at 256 KiB instead. Four times the input takes about four times as
+// long when the work is linear and about sixteen times when it is
+// quadratic; the test allows eight, plus a few milliseconds so that timer
+// noise on runs well under a millisecond cannot fail it.
+const SMALL = 64 * 1024;
+const GROWTH_LIMIT = 8;
+const SLACK_MS = 5;
+const fillTo = (unit: string, size: number): string =>
+  unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+
+const XML_SHAPES: Array<[string, (size: number) => string]> = [
+  ["metadata elements never closed", (n) => fillTo('<metadata name="x">', n)],
+  ["metadata start tags with no >", (n) => fillTo('<metadata name="x" ', n)],
+  [
+    "start tags with no > before one that closes",
+    (n) => `${fillTo('<metadata name="x" ', n - 64)}<metadata name="Designer">a</metadata>`,
+  ],
+  [
+    "start tags with a > that never close, then a close",
+    (n) => `${fillTo('<metadata name="x">', n - 64)}</metadata>`,
+  ],
+  ["close tags with no >", (n) => `<metadata name="x">${fillTo("</metadata ", n)}`],
+  ["unterminated quoted names", (n) => fillTo('<metadata name="', n)],
+  ["quoted names holding <", (n) => fillTo('<metadata name="a<b" ', n)],
+  [
+    "self-closing elements after one never closed",
+    (n) => `<metadata name="x">${fillTo('<metadata name="y"/>', n)}`,
+  ],
+  ["one unterminated name", (n) => `<metadata name="${"a".repeat(n)}`],
+  ["a Designer with no closing tag", (n) => `<metadata name="Designer">${fillTo("a", n)}`],
+  ["many complete elements", (n) => fillTo('<metadata name="Designer">a</metadata>', n)],
+  ["entities in a value", (n) => `<metadata name="Designer">${fillTo("&amp;amp;", n)}</metadata>`],
 ];
 
-describe("a crafted model prefix of 256 KiB is read in bounded time", () => {
-  it.each(XML_SHAPES)("%s", (_name, xml) => {
+// The fastest of three runs, so a garbage collection or a compile in one run
+// does not set the number.
+function fastestMs(run: () => void): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < 3; i++) {
     const started = performance.now();
-    extractMakerWorld(xml);
-    expect(performance.now() - started).toBeLessThan(BUDGET_MS);
-  });
+    run();
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+describe("a crafted model prefix is read in time that grows linearly up to 256 KiB", () => {
+  // The quadratic code took several seconds per shape on a CI runner, so the
+  // timeout is raised to let it fail on the assertion rather than time out.
+  it.each(XML_SHAPES)(
+    "%s",
+    (_name, shape) => {
+      const small = shape(SMALL);
+      const large = shape(SIZE);
+      const smallMs = fastestMs(() => extractMakerWorld(small));
+      const largeMs = fastestMs(() => extractMakerWorld(large));
+      expect(largeMs, `64 KiB: ${smallMs} ms, 256 KiB: ${largeMs} ms`).toBeLessThan(
+        GROWTH_LIMIT * smallMs + SLACK_MS,
+      );
+    },
+    60_000,
+  );
 });
