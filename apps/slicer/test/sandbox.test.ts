@@ -51,6 +51,17 @@ describe("landrun arguments", () => {
     expect(values(flags, "--rw")).toEqual([DIR]);
   });
 
+  // PNG renders through EGL. libEGL (glvnd) finds Mesa through the vendor
+  // files in /usr/share/glvnd, and Mesa reads its driver config from
+  // /usr/share/drirc.d; without them a PNG render under landrun failed with
+  // "No EGL display found" (CI run 42530496760) while STL rendered.
+  test("EGL's vendor files and Mesa's driver config are read-only", () => {
+    const { flags } = split(args);
+    expect(values(flags, "--ro")).toEqual(
+      expect.arrayContaining(["/usr/share/glvnd", "/usr/share/drirc.d"]),
+    );
+  });
+
   test("nothing outside the job folder is readable: no /work, /opt or /tmp beyond OpenSCAD", () => {
     const { flags } = split(args);
     const readable = [

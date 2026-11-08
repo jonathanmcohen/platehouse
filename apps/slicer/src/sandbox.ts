@@ -27,7 +27,19 @@ import { spawn } from "node:child_process";
 
 /** Paths OpenSCAD's AppImage tree and the system it links against run from. */
 const SYSTEM_EXEC = ["/usr/lib", "/lib", "/lib64", "/usr/lib64", "/usr/bin", "/bin"];
-const FONTS = ["/usr/share/fonts", "/etc/fonts", "/usr/share/fontconfig"];
+/**
+ * Read-only data OpenSCAD needs: fonts, and for PNG renders EGL's glvnd
+ * vendor files (how libEGL finds Mesa) and Mesa's driver config. Without the
+ * last two a PNG render failed with "No EGL display found" (CI run
+ * 42530496760).
+ */
+const READ_ONLY = [
+  "/usr/share/fonts",
+  "/etc/fonts",
+  "/usr/share/fontconfig",
+  "/usr/share/glvnd",
+  "/usr/share/drirc.d",
+];
 
 export function landrunArgs(opts: {
   dir: string;
@@ -41,7 +53,7 @@ export function landrunArgs(opts: {
     "--rox",
     [openscadDir, ...SYSTEM_EXEC].join(","),
     "--ro",
-    FONTS.join(","),
+    READ_ONLY.join(","),
     "--rw",
     dir,
     "--env",
