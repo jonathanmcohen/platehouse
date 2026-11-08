@@ -33,7 +33,7 @@ case "$1" in
       plan) printf 'j0001\\nj0002\\n' > "$out/jobs.txt"; exit 0 ;;
       checks) exit 0 ;;
       report) exit "\${STUB_VERDICT:-0}" ;;
-      slice) [ "$last1" = j0002 ] && exit 124; exit 0 ;;
+      slice) [ "$last1" = j0001 ] && [ -n "\${STUB_SLICE1_RC:-}" ] && exit "$STUB_SLICE1_RC"; [ "$last1" = j0002 ] && exit 124; exit 0 ;;
     esac
     case "$last1" in
       plan) [ -n "\${STUB_PLAN_RC:-}" ] && exit "$STUB_PLAN_RC"; printf 'j0001\\nj0002\\n' > "$out/jobs.txt"; exit 0 ;;
@@ -127,6 +127,31 @@ test("run.sh exits 2 when the plan step fails, whatever docker run returned", ()
     assert.match(r.stderr, /plan step failed/);
     assert.ok(!r.calls.some((c) => c.includes(" slice ")), "no plate runs after a failed plan");
   }
+});
+
+test("run.sh passes the report's own exit codes 0 to 3 through", () => {
+  for (const rc of [0, 1, 2, 3]) {
+    const r = run([], { gate: gateDir(), stubDir: stubs(), extra: { STUB_VERDICT: String(rc) } });
+    assert.equal(r.status, rc, `report ${rc}: ${r.stderr}`);
+  }
+});
+
+test("run.sh exits 2 when docker fails the report step, not with docker's own code", () => {
+  for (const rc of ["125", "137"]) {
+    const r = run([], { gate: gateDir(), stubDir: stubs(), extra: { STUB_VERDICT: rc } });
+    assert.equal(r.status, 2, `docker run ${rc}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`report step failed \\(exit ${rc}\\)`));
+  }
+});
+
+test("run.sh exits 2, not FAIL, when docker cannot start a plate's container", () => {
+  const stubDir = stubs();
+  const gate = gateDir();
+  const r = run([], { gate, stubDir, extra: { STUB_SLICE1_RC: "125" } });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /could not start the container for j0001 \(exit 125\)/);
+  assert.ok(!r.calls.some((c) => c.endsWith(" report")), "no report is written as an Orca result");
+  assert.equal(readFileSync(join(gate, "out", "host-exit.tsv"), "utf8"), "j0001\t125\n");
 });
 
 test("run.sh refuses a non-empty output dir, a GATE_DIR outside /tmp/platehouse-gate, and missing inputs", () => {

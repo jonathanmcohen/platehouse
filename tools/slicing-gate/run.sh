@@ -112,6 +112,11 @@ while IFS= read -r id; do
     docker rm -f "${name}" > /dev/null 2>&1 || true
   fi
   printf '%s\t%s\n' "${id}" "${rc}" >> "${OUT}/host-exit.tsv"
+  # 125 is docker run failing to create or start the container, so Orca never
+  # ran; the report would count the plate as a slicer crash and FAIL the gate.
+  if [[ "${rc}" -eq 125 ]]; then
+    die "docker could not start the container for ${id} (exit 125); the gate could not run"
+  fi
 done < "${OUT}/jobs.txt"
 
 set +e
@@ -126,6 +131,12 @@ set +e
 gate report
 verdict=$?
 set -e
+# gate.mjs exits 0 to 3 itself; any other code is docker's (125 could not
+# start, 137 killed), so the report never ran and the gate could not run.
+case "${verdict}" in
+  0 | 1 | 2 | 3) ;;
+  *) die "report step failed (exit ${verdict})" ;;
+esac
 
 printf '\nResults: %s/result.json and %s/summary.txt\n' "${OUT}" "${OUT}"
 printf 'Per-plate kill inside each container: %s s; --mstpp 600.\n' "${KILL_SECONDS}"
