@@ -75,7 +75,11 @@ describe("migrate", () => {
       { name: "0001_init.sql", checksum: shipped?.checksum },
     ]);
 
-    const version = await sql<{ v: string }>`show server_version_num`.execute(db);
+    // SHOW cannot alias its column, and CamelCasePlugin renames
+    // server_version_num, so read the setting through a select.
+    const version = await sql<{
+      v: string;
+    }>`select current_setting('server_version_num') as v`.execute(db);
     expect(Math.floor(Number(version.rows[0]?.v) / 10000)).toBe(17);
   });
 
