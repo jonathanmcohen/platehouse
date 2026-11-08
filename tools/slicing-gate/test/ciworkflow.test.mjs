@@ -1,10 +1,13 @@
-// Pins the CI job that builds the gate image on GitHub, so the next image
-// build failure is found there and not on Hades (run 2, 2026-11-08, failed at
-// the fetch stage's first Node call). Read as text: the repo has no YAML
-// parser and needs no install step. actionlint checks the syntax.
+// Pins ci.yml: the CI job that builds the gate image on GitHub, so the next
+// image build failure is found there and not on Hades (run 2, 2026-11-08,
+// failed at the fetch stage's first Node call), the changes job that decides
+// when that job runs, and the workspace jobs with their zero-test guard (build
+// plan Task 3). Read as text: the gate has no YAML parser and needs no install
+// step. Shell steps are run in bash with their tools stubbed.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -13,14 +16,18 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
 const text = () => readFileSync(WORKFLOW, "utf8");
 
-test("the workflow runs on pull requests and pushes that touch the gate or the workflow", () => {
+// The on: block, from "on:" up to the next top-level key.
+const onBlock = (t) => t.slice(t.indexOf("\non:\n")).split(/\n(?=[a-z])/)[1];
+
+// Issue #16: both triggers carried a paths filter for the gate and this file,
+// so no CI ran on a product PR. The triggers now carry no paths filter; the
+// gate job's own scoping lives in the changes job (tested below).
+test("the workflow runs on every pull request and push, with no paths filter (issue #16)", () => {
   const t = text();
-  for (const event of ["pull_request", "push"]) {
-    const block = t.slice(t.indexOf(`  ${event}:`)).split(/\n {2}\S/)[0];
-    assert.ok(t.includes(`  ${event}:`), `on ${event}`);
-    assert.match(block, /- "tools\/slicing-gate\/\*\*"/, `${event} paths include the gate`);
-    assert.match(block, /- "\.github\/workflows\/ci\.yml"/, `${event} paths include the workflow`);
-  }
+  const on = onBlock(t);
+  assert.match(on, /^ {2}pull_request:/m, "on pull_request");
+  assert.match(on, /^ {2}push:/m, "on push");
+  assert.doesNotMatch(on, /paths(-ignore)?:/, `no paths filter on the triggers:\n${on}`);
 });
 
 test("the workflow reads the repo only, holds no secrets and pushes nothing", () => {
@@ -50,9 +57,19 @@ test("every action is pinned to an exact release tag", () => {
   for (const u of uses) assert.match(u, /^[\w.-]+\/[\w.-]+@v\d+\.\d+\.\d+$/, `not an exact release tag: ${u}`);
 });
 
-test("the job runs the gate tests on Node 26, then builds the image, then smoke-checks it", () => {
+// Jon, 2026-11-08 (build plan Task 3): every job takes its Node version from
+// .node-version, the one the workspace pins, instead of a hardcoded one.
+test("every setup-node step reads .node-version, which pins Node 26", () => {
   const t = text();
-  assert.match(t, /node-version: "26\.\d+\.\d+"/);
+  const setups = t.split(/\n(?= {6}- )/).filter((s) => /uses: actions\/setup-node@/.test(s));
+  assert.ok(setups.length >= 2, `setup-node steps: ${setups.length}`);
+  for (const s of setups) assert.match(s, /node-version-file: \.node-version\n/, s);
+  assert.doesNotMatch(t, /node-version: /, "no hardcoded node-version");
+  assert.match(readFileSync(join(ROOT, ".node-version"), "utf8"), /^26\.\d+\.\d+\n?$/);
+});
+
+test("the job runs the gate tests, then builds the image, then smoke-checks it", () => {
+  const t = text();
   // Reporter options may sit between node --test and the glob, across lines.
   const tests = t.search(/node --test (\\\s+|--\S+\s+)*'tools\/slicing-gate\/test\/\*\*\/\*\.test\.mjs'/);
   const build = t.search(/docker build --platform linux\/amd64 -t \S+ tools\/slicing-gate/);
@@ -193,3 +210,191 @@ test("every smoke container keeps the gate's hardening", () => {
   // Every container the step starts goes through that one helper.
   assert.equal((s.match(/docker run/g) ?? []).length, docker.length);
 });
+
+// One job's block under jobs:, by its id.
+function jobBlock(t, id) {
+  const jobs = t.slice(t.indexOf("\njobs:\n"));
+  const at = jobs.indexOf(`\n  ${id}:\n`);
+  assert.ok(at !== -1, `a job named ${id}`);
+  return jobs.slice(at + 1).split(/\n(?= {2}[\w-]+:\n)/)[0];
+}
+
+// Build plan Task 3: lint, typecheck, unit and integration in a chain, and
+// every job after the first carries its own !cancelled() condition, because a
+// skip propagates down a needs chain (Engineering Lessons).
+test("lint, typecheck, unit and integration run in a chain, each gated on the one before", () => {
+  const t = text();
+  assert.doesNotMatch(jobBlock(t, "lint"), /needs:/, "lint is the first job");
+  assert.match(jobBlock(t, "lint"), /run: pnpm exec biome ci \.\n/);
+  assert.match(jobBlock(t, "typecheck"), /run: pnpm exec tsc -b\n/);
+  for (const [job, dep] of [
+    ["typecheck", "lint"],
+    ["unit", "typecheck"],
+    ["integration", "unit"],
+  ]) {
+    const b = jobBlock(t, job);
+    assert.match(b, new RegExp(`\\n {4}needs: ${dep}\\n`), `${job} needs ${dep}`);
+    assert.ok(
+      b.includes(`if: \${{ !cancelled() && needs.${dep}.result == 'success' }}`),
+      `${job} runs only after ${dep} succeeded`,
+    );
+  }
+  for (const job of ["lint", "typecheck", "unit", "integration"]) {
+    const b = jobBlock(t, job);
+    assert.match(b, /uses: pnpm\/action-setup@/, `${job} sets up pnpm`);
+    assert.match(b, /run: pnpm install --frozen-lockfile\n/, `${job} installs from the lockfile`);
+  }
+  assert.match(jobBlock(t, "unit"), /vitest run --project unit --reporter=default --reporter=json --outputFile=report\.json/);
+  assert.match(
+    jobBlock(t, "integration"),
+    /vitest run --project integration --reporter=default --reporter=json --outputFile=report\.json/,
+  );
+});
+
+// The gate job builds a large image, so it runs only when the changes job finds
+// the gate or this workflow among the changed files.
+test("the gate job runs only when the changes job says so", () => {
+  const t = text();
+  const gate = jobBlock(t, "gate-image");
+  assert.match(gate, /\n {4}needs: changes\n/);
+  assert.ok(
+    gate.includes(
+      "if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate == 'true' }}",
+    ),
+    gate,
+  );
+  assert.match(jobBlock(t, "changes"), /gate: \$\{\{ steps\.diff\.outputs\.gate \}\}/);
+  assert.match(jobBlock(t, "changes"), /fetch-depth: 0/);
+  // No job depends on the gate job, so its skip reaches nothing else.
+  assert.doesNotMatch(t, /needs: \[?[^\n]*gate-image/);
+});
+
+// Runs the changes job's script in bash with git stubbed, and returns the gate
+// output it wrote.
+function decideGate({ event, prBase = "", before = "", baseExists = true, changed = [] }) {
+  const dir = mkdtempSync(join(tmpdir(), "ci-changes-"));
+  try {
+    const out = join(dir, "github-output");
+    writeFileSync(out, "");
+    const script = [
+      "set -eo pipefail",
+      'git() { case "$1" in cat-file) [ "$BASE_EXISTS" = 1 ];; diff) printf "%s" "$CHANGED";; *) return 99;; esac; }',
+      stepScript(text(), "Decide whether the gate job runs"),
+    ].join("\n");
+    const r = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        EVENT: event,
+        PR_BASE: prBase,
+        PUSH_BEFORE: before,
+        BASE_EXISTS: baseExists ? "1" : "0",
+        CHANGED: changed.map((f) => `${f}\n`).join(""),
+        GITHUB_OUTPUT: out,
+      },
+    });
+    assert.equal(r.status, 0, `exit ${r.status}: ${r.stderr}`);
+    const m = readFileSync(out, "utf8").match(/^gate=(true|false)$/m);
+    assert.ok(m, `gate output written: ${readFileSync(out, "utf8")}`);
+    return m[1];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SHA = "3b2a20f0000000000000000000000000000000aa";
+
+for (const [name, input, want] of [
+  ["a PR touching only the server skips it", { event: "pull_request", prBase: SHA, changed: ["apps/server/src/config.ts"] }, "false"],
+  ["a PR touching the gate runs it", { event: "pull_request", prBase: SHA, changed: ["apps/server/a.ts", "tools/slicing-gate/Dockerfile"] }, "true"],
+  ["a PR touching this workflow runs it", { event: "pull_request", prBase: SHA, changed: [".github/workflows/ci.yml"] }, "true"],
+  ["a PR with no changed files skips it", { event: "pull_request", prBase: SHA, changed: [] }, "false"],
+  [
+    "look-alike paths skip it",
+    {
+      event: "pull_request",
+      prBase: SHA,
+      changed: ["tools/slicing-gate-old/x", "docs/tools/slicing-gate/x", ".github/workflows/ci.yml.orig", ".github/workflows/release.yml"],
+    },
+    "false",
+  ],
+  ["a push touching only the README skips it", { event: "push", before: SHA, changed: ["README.md"] }, "false"],
+  ["a push touching the gate runs it", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, "true"],
+  ["a new branch (all-zero before) runs it", { event: "push", before: "0".repeat(40), changed: [] }, "true"],
+  ["a push with no before runs it", { event: "push", before: "", changed: [] }, "true"],
+  ["a base commit that is gone (force-push) runs it", { event: "push", before: SHA, baseExists: false, changed: [] }, "true"],
+  ["a PR with no base runs it", { event: "pull_request", prBase: "", changed: [] }, "true"],
+]) {
+  test(`gate job decision: ${name}`, () => {
+    assert.equal(decideGate(input), want);
+  });
+}
+
+// Runs one test job's step in bash with pnpm stubbed: the stub writes the given
+// vitest JSON report (or none) and exits with the given status.
+function runGuard(stepName, { report, status = 0 }) {
+  const dir = mkdtempSync(join(tmpdir(), "ci-guard-"));
+  try {
+    const script = [
+      "set -eo pipefail",
+      'pnpm() { if [ -n "$REPORT" ]; then printf "%s" "$REPORT" > report.json; fi; return "$VITEST_STATUS"; }',
+      stepScript(text(), stepName),
+    ].join("\n");
+    return spawnSync("bash", ["-c", script], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, REPORT: report ? JSON.stringify(report) : "", VITEST_STATUS: String(status) },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const vitestReport = (total, passed, failed, pending, todo = 0) => ({
+  numTotalTests: total,
+  numPassedTests: passed,
+  numFailedTests: failed,
+  numPendingTests: pending,
+  numTodoTests: todo,
+});
+
+// AC-094: CI fails when zero tests ran. Measured with Vitest 5.1.0 on
+// 2026-11-08: vitest run -t no-such-test skips all 65 tests, exits 0, and
+// still reports numTotalTests 65, so a guard on numTotalTests alone passes.
+for (const [stepName, label] of [
+  ["Unit tests", "unit"],
+  ["Integration tests", "integration"],
+]) {
+  test(`${label} guard: every test skipped by a filter fails with No tests ran`, () => {
+    const r = runGuard(stepName, { report: vitestReport(65, 0, 0, 65) });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, new RegExp(`${label}: 0 tests ran, 65 skipped, 65 collected`));
+    assert.match(r.stdout, /::error::No tests ran\n/);
+  });
+
+  test(`${label} guard: todo-only tests fail with No tests ran`, () => {
+    const r = runGuard(stepName, { report: vitestReport(2, 0, 0, 0, 2) });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /::error::No tests ran\n/);
+  });
+
+  test(`${label} guard: no report at all fails with No tests ran`, () => {
+    const r = runGuard(stepName, { report: null, status: 1 });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /::error::No tests ran \(vitest wrote no report, exit 1\)/);
+  });
+
+  test(`${label} guard: tests that ran and passed pass, with the count logged`, () => {
+    const r = runGuard(stepName, { report: vitestReport(5, 3, 0, 2) });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, new RegExp(`${label}: 3 tests ran, 2 skipped, 5 collected`));
+    assert.doesNotMatch(r.stdout, /::error::/);
+  });
+
+  test(`${label} guard: a failing test still fails the step, with the count logged`, () => {
+    const r = runGuard(stepName, { report: vitestReport(3, 2, 1, 0), status: 1 });
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, new RegExp(`${label}: 3 tests ran, 0 skipped, 3 collected`));
+    assert.doesNotMatch(r.stdout, /No tests ran/);
+  });
+}

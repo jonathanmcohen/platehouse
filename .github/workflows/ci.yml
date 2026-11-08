@@ -1,26 +1,26 @@
-# CI for Platehouse. Build plan Task 3 owns this file and adds the lint,
-# typecheck, unit and integration jobs. For now it holds one job: the slicing
-# gate's tests and a build of the gate image, so an image build failure is
-# found here and not on Hades (the second Hades run, 2026-11-08, failed while
-# building the image). Nothing is pushed anywhere and no secret is used. No
-# designer file comes near this job: the gate tests build their own fixtures,
-# and the smoke checks need no model file at all.
+# CI for Platehouse (build plan Task 3).
+#
+# The workspace jobs run on every pull request and on every push to main and
+# the release branches, whatever the change touches (issue #16: a paths filter
+# on the triggers meant no CI ran on product PRs). They run in a chain:
+# lint -> typecheck -> unit -> integration. Each test job fails when no test
+# actually ran (AC-094), and logs how many did.
+#
+# The slicing gate job builds a large image, so it keeps its own path scoping:
+# the changes job decides whether tools/slicing-gate or this file changed, and
+# the gate job runs only then. Nothing depends on the gate job, so its skip
+# reaches no other job. Nothing is pushed anywhere and no secret is used. No
+# designer file comes near any job: every test builds its own fixtures.
 name: ci
 
 on:
   pull_request:
-    paths:
-      - "tools/slicing-gate/**"
-      - ".github/workflows/ci.yml"
   # Pushes only to the branches that take merges: a push to a PR branch is
   # already run by pull_request, and ran twice without this (issue #8).
   push:
     branches:
       - main
       - "release/**"
-    paths:
-      - "tools/slicing-gate/**"
-      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
@@ -34,8 +34,196 @@ defaults:
     shell: bash
 
 jobs:
+  changes:
+    name: Decide which path-scoped jobs run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      gate: ${{ steps.diff.outputs.gate }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # A pull request is compared with its base commit, a push with the commit
+      # the branch pointed at before it. With no usable base (a new branch, or
+      # a force-push whose old commit is gone) the gate job runs, to be safe.
+      - name: Decide whether the gate job runs
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          gate=true
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (${base:-none}); the gate job runs."
+          else
+            changed="$(git diff --name-only "$base" HEAD)"
+            echo "Files changed since ${base}:"
+            printf '%s\n' "$changed"
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+              echo "The slicing gate or this workflow changed; the gate job runs."
+            else
+              gate=false
+              echo "Neither the slicing gate nor this workflow changed; the gate job is skipped."
+            fi
+          fi
+          echo "gate=${gate}" >>"$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint (Biome)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Biome
+        run: pnpm exec biome ci .
+
+  typecheck:
+    name: Typecheck
+    needs: lint
+    if: ${{ !cancelled() && needs.lint.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: tsc -b
+        run: pnpm exec tsc -b
+
+  unit:
+    name: Unit tests
+    needs: typecheck
+    if: ${{ !cancelled() && needs.typecheck.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # The zero-test guard (AC-094). A test that a filter skipped still counts
+      # in numTotalTests, so the guard counts the tests that ran: the total less
+      # the skipped and todo ones. It runs even when vitest fails, so the count
+      # is always logged, and then the step takes vitest's own exit code.
+      - name: Unit tests
+        run: |
+          status=0
+          pnpm exec vitest run --project unit --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ ! -s report.json ]; then
+            echo "::error::No tests ran (vitest wrote no report, exit ${status})"
+            exit 1
+          fi
+          total="$(jq '.numTotalTests' report.json)"
+          skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+          ran=$((total - skipped))
+          echo "unit: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No tests ran"
+            exit 1
+          fi
+          exit "$status"
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: unit-report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  integration:
+    name: Integration tests
+    needs: unit
+    if: ${{ !cancelled() && needs.unit.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Postgres and the S3 test server start through testcontainers on the
+      # runner's Docker. Same zero-test guard as the unit job.
+      - name: Integration tests
+        run: |
+          status=0
+          pnpm exec vitest run --project integration --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ ! -s report.json ]; then
+            echo "::error::No tests ran (vitest wrote no report, exit ${status})"
+            exit 1
+          fi
+          total="$(jq '.numTotalTests' report.json)"
+          skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+          ran=$((total - skipped))
+          echo "integration: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No tests ran"
+            exit 1
+          fi
+          exit "$status"
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: integration-report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The slicing gate's tests and a build of the gate image, so an image build
+  # failure is found here and not on Hades (the second Hades run, 2026-11-08,
+  # failed while building the image). Runs only when the changes job says the
+  # gate or this workflow changed.
   gate-image:
     name: Slicing gate tests and image build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -50,7 +238,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7.1.0
         with:
-          node-version: "26.13.0"
+          node-version-file: .node-version
 
       # A green job must mean tests ran: the TAP copy of the results is read
       # for its test count, and a count of zero fails the step.
