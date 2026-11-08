@@ -72,6 +72,44 @@ describe("htmlToMarkdown: ported cases", () => {
     );
   });
 
+  // PR #24 review: text after a nested list in the same item was written at
+  // column 0, where CommonMark reads it as a lazy continuation of the nested
+  // item's paragraph. It needs a blank line and the outer item's indent.
+  it("text after a nested list stays in its own item, not the nested one", () => {
+    const out = htmlToMarkdown("<ul><li>a<ul><li>b</li></ul>c</li></ul>");
+    expect(out).toBe("- a\n  - b\n\n  c");
+    expect(render(out)).toBe(
+      "<ul>\n<li>\n<p>a</p>\n<ul>\n<li>b</li>\n</ul>\n<p>c</p>\n</li>\n</ul>\n",
+    );
+    // Under "1. " the text is indented three spaces.
+    const ordered = htmlToMarkdown("<ol><li>a<ul><li>b</li></ul>c</li><li>d</li></ol>");
+    expect(ordered).toBe("1. a\n   - b\n\n   c\n2. d");
+    expect(render(ordered)).toBe(
+      "<ol>\n<li>\n<p>a</p>\n<ul>\n<li>b</li>\n</ul>\n<p>c</p>\n</li>\n<li>\n<p>d</p>\n</li>\n</ol>\n",
+    );
+    // Each level returns to its own item.
+    const deep = htmlToMarkdown("<ul><li>a<ul><li>b<ul><li>x</li></ul>y</li></ul>z</li></ul>");
+    expect(deep).toBe("- a\n  - b\n    - x\n\n    y\n\n  z");
+    expect(render(deep)).toBe(
+      "<ul>\n<li>\n<p>a</p>\n<ul>\n<li>\n<p>b</p>\n<ul>\n<li>x</li>\n</ul>\n<p>y</p>\n</li>\n</ul>\n<p>z</p>\n</li>\n</ul>\n",
+    );
+    // Emphasis, a line break or a paragraph tag before the text changes nothing.
+    expect(htmlToMarkdown("<ul><li>a<ul><li>b</li></ul><b>c</b></li></ul>")).toBe(
+      "- a\n  - b\n\n  **c**",
+    );
+    expect(htmlToMarkdown("<ul><li>a<ul><li>b</li></ul><br><p>c</p></li></ul>")).toBe(
+      "- a\n  - b\n\n  c",
+    );
+    // Block syntax in that text is still escaped, so it stays text.
+    const hash = htmlToMarkdown("<ul><li>a<ul><li>b</li></ul># c</li></ul>");
+    expect(hash).toBe("- a\n  - b\n\n  \\# c");
+    expect(render(hash)).toContain("<p># c</p>");
+    // Only whitespace after the nested list adds nothing: the list stays tight.
+    expect(htmlToMarkdown("<ul><li>a<ul><li>b</li></ul> </li><li>d</li></ul>")).toBe(
+      "- a\n  - b\n- d",
+    );
+  });
+
   it("htmlToMarkdown: a table becomes a pipe table with the first row as header", () => {
     const html =
       "<p>Storage:</p><table><tbody>" +

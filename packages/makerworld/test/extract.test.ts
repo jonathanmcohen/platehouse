@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeEntities, extractMakerWorld, fieldsHiddenByCap } from "../src/extract.js";
+import { decodeEntities, extractMakerWorld } from "../src/extract.js";
 import { htmlToMarkdown } from "../src/markdown.js";
 
 // Ported by behaviour from automation Manyfold/makerworld-metadata
@@ -102,29 +102,6 @@ describe("extractMakerWorld", () => {
       extractMakerWorld('<metadata name="Designer">Gridfinity Layout Tool Fan</metadata>')
         ?.designer,
     ).toBe("Gridfinity Layout Tool Fan");
-  });
-
-  it("fieldsHiddenByCap names the license and title a cut after Designer may have hidden", () => {
-    // A prefix cut by the read cap inside License.
-    const mw = extractMakerWorld(
-      '<metadata name="Description">&amp;lt;p&amp;gt;long&amp;lt;/p&amp;gt;</metadata> <metadata name="Designer">Jane</metadata> <metadata name="License">BY-N',
-    );
-    expect(fieldsHiddenByCap(mw)).toEqual(["license", "title"]);
-    expect(
-      fieldsHiddenByCap(
-        extractMakerWorld(
-          '<metadata name="Designer">Jane</metadata><metadata name="License">BY</metadata>',
-        ),
-      ),
-    ).toEqual(["title"]);
-    expect(
-      fieldsHiddenByCap(
-        extractMakerWorld(
-          '<metadata name="Designer">Jane</metadata><metadata name="License">BY</metadata><metadata name="Title">T</metadata>',
-        ),
-      ),
-    ).toEqual([]);
-    expect(fieldsHiddenByCap(null)).toEqual([]);
   });
 
   it("empty or whitespace-only values count as absent", () => {

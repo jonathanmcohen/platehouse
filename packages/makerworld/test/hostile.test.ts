@@ -36,6 +36,28 @@ const HTML_SHAPES: Array<[string, string]> = [
   ["deeply nested lists", fill("<ul><li>a")],
   ["deeply nested ordered lists", fill("<ol><li>a")],
   ["many line breaks in one list item", `<ul><li>${fill("a<br>")}`],
+  // Lists opened in a cell and never closed, then list items after the cell
+  // (PR #24 review): each item outside the cell once scanned back over every
+  // list left open in it.
+  [
+    "lists left open in a cell, then list items",
+    `<table><tr><td>${fill("<ul>").slice(0, SIZE / 2)}</td>${fill("<li>").slice(0, SIZE / 2 - 32)}`,
+  ],
+  [
+    "lists left open in a cell, then nested lists",
+    `<table><tr><td>${fill("<ol>").slice(0, SIZE / 2)}</td>${fill("<ul><li>a</ul>").slice(0, SIZE / 2 - 32)}`,
+  ],
+  // Line breaks in a cell, then emphasis whose rewrite cuts the text after
+  // them (PR #24 review): each <br> was its own one-space part, and every cut
+  // re-read all of them from the end, once per nested emphasis closed.
+  [
+    "many line breaks in a cell before emphasis",
+    `<table><tr><td>${fill("<br>").slice(0, SIZE - 256)}${"<b>".repeat(16)}y${"</b>".repeat(16)}`,
+  ],
+  [
+    "line breaks and emphasis repeated in a cell",
+    `<table><tr><td>${fill("<br><br><br><br><b>y</b>")}`,
+  ],
   ["many paragraphs", fill("<p>x</p>")],
   ["many headings", fill("<h2>x</h2>")],
   ["many cells in one row", `<table><tr>${fill("<td>x</td>")}`],

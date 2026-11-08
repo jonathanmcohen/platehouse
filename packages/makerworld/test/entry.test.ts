@@ -19,13 +19,7 @@ const manifest = JSON.parse(readFileSync(join(PKG, "package.json"), "utf8")) as 
   exports?: Record<string, unknown>;
 };
 
-const EXPORTS = [
-  "extractMakerWorld",
-  "fieldsHiddenByCap",
-  "htmlToMarkdown",
-  "mapLicense",
-  "renderMarkdown",
-];
+const EXPORTS = ["extractMakerWorld", "htmlToMarkdown", "mapLicense", "renderMarkdown"];
 
 // Runs in the child: import the package by its own name (Node's package
 // self-reference, which goes through "exports" like any other consumer) and
