@@ -115,6 +115,9 @@ const res = (over) => ({
   ...over,
 });
 
+// what gate.mjs checks writes; buildReport only needs it to be there
+const checks = { ranAt: "2026-11-07T00:00:00.000Z", openscad: null, landrun: null, step: null };
+
 test("buildReport applies the pass rule and reports the Bambu gap, limits and process survival", () => {
   const { jobs } = buildJobs(selection, metas, recipe);
   const results = {};
@@ -122,7 +125,7 @@ test("buildReport applies the pass rule and reports the Bambu gap, limits and pr
   const x1cA2 = jobs.find((j) => j.file === "a.3mf" && j.printer === X1C && j.plate === 2);
   results[x1cA2.id] = res({ returnCode: -17, errorString: "not compatible", timeSeconds: null, weightGrams: null });
   const inspect = Object.entries(metas).map(([name, m]) => ({ name, project: m.project, keys: {} }));
-  const report = buildReport({ plan: { jobs, errors: [], inspect, recipe }, results, hostExits: {}, checks: null });
+  const report = buildReport({ plan: { jobs, errors: [], inspect, recipe }, results, hostExits: {}, checks });
   assert.equal(report.verdict, "PASS");
   assert.equal(report.counts.ok, 8);
   assert.equal(report.counts.refused, 1);
@@ -135,11 +138,50 @@ test("buildReport applies the pass rule and reports the Bambu gap, limits and pr
   assert.equal(report.recipe.processSurvival.kept, 8);
 });
 
+test("process survival counts a finished slice as unknown when any compared value is missing, not as changed", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const selected = jobs.filter((j) => j.kinds.includes("selected"));
+  const inspect = Object.entries(metas).map(([name, m]) => ({ name, project: m.project, keys: {} }));
+  const survivalFor = (resultOver, projectOver = {}) => {
+    const results = {};
+    for (const j of jobs) results[j.id] = res({ result: { layerHeight: 0.2, wallLoops: 2, sparseInfillDensity: 15, ...resultOver } });
+    const ins = inspect.map((i) => ({ ...i, project: { ...i.project, ...projectOver } }));
+    return buildReport({ plan: { jobs, errors: [], inspect: ins, recipe }, results, hostExits: {}, checks }).recipe.processSurvival;
+  };
+  // a key Orca's result.json does not carry
+  for (const key of ["layerHeight", "wallLoops", "sparseInfillDensity"]) {
+    const s = survivalFor({ [key]: null });
+    assert.equal(s.changed, 0, `result ${key} null`);
+    assert.equal(s.unknown, selected.length, `result ${key} null`);
+  }
+  // a key the file's own project_settings lacks
+  for (const key of ["layerHeight", "wallLoops", "sparseInfillDensity"]) {
+    const s = survivalFor({}, { [key]: undefined });
+    assert.equal(s.changed, 0, `project ${key} missing`);
+    assert.equal(s.unknown, selected.length, `project ${key} missing`);
+  }
+  // all six present and one differs is a real change
+  const changed = survivalFor({ wallLoops: 3 });
+  assert.equal(changed.changed, selected.length);
+  assert.equal(changed.unknown, 0);
+  assert.equal(changed.kept, 0);
+});
+
+test("a run whose checks step wrote no checks.json could not run, even when every plate passed", () => {
+  const { jobs } = buildJobs(selection, metas, recipe);
+  const results = {};
+  for (const j of jobs) results[j.id] = res();
+  const report = buildReport({ plan: { jobs, errors: [], inspect: [], recipe }, results, hostExits: {}, checks: null });
+  assert.equal(report.verdict, "COULD-NOT-RUN");
+  assert.equal(report.counts.ok, 9, "the plates are still counted");
+  assert.ok(report.incomplete.some((m) => /checks\.json/.test(m)), JSON.stringify(report.incomplete));
+});
+
 test("a missing job result after a host kill is a timeout failure; a job never run is a crash", () => {
   const { jobs } = buildJobs(selection, metas, recipe);
   const results = {};
   for (const j of jobs.slice(2)) results[j.id] = res();
-  const report = buildReport({ plan: { jobs, errors: [], inspect: [], recipe }, results, hostExits: { j0001: 124 }, checks: null });
+  const report = buildReport({ plan: { jobs, errors: [], inspect: [], recipe }, results, hostExits: { j0001: 124 }, checks });
   assert.equal(report.verdict, "FAIL");
   assert.equal(report.plates.find((p) => p.id === "j0001").reason, "timeout");
   assert.equal(report.plates.find((p) => p.id === "j0002").reason, "crash");

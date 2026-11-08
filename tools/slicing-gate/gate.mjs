@@ -527,11 +527,15 @@ export function buildReport({ plan, results, hostExits, checks }) {
       survival.unknown++;
       continue;
     }
-    const same =
-      close(r.layerHeight, parsePercent(proj.layerHeight)) &&
-      close(r.wallLoops, parsePercent(proj.wallLoops)) &&
-      close(r.sparseInfillDensity, parsePercent(proj.sparseInfillDensity));
-    if (same) survival.kept++;
+    const pairs = [
+      [r.layerHeight, parsePercent(proj.layerHeight)],
+      [r.wallLoops, parsePercent(proj.wallLoops)],
+      [r.sparseInfillDensity, parsePercent(proj.sparseInfillDensity)],
+    ];
+    // A key missing on either side (result.json or project_settings) says
+    // nothing about the process, so it is unknown, never a change.
+    if (pairs.some(([a, b]) => a === null || a === undefined || b === null)) survival.unknown++;
+    else if (pairs.every(([a, b]) => close(a, b))) survival.kept++;
     else survival.changed++;
   }
   survival.refusedProcessNotCompatible = plates.filter((p) => p.kinds.includes("selected") && p.returnCode === -17).length;
@@ -569,6 +573,11 @@ export function buildReport({ plan, results, hostExits, checks }) {
   // A setup error (a missing machine preset) means some plates never ran, so
   // the gate could not run (exit 2); it is not a result, pass or fail.
   if (plan.errors?.length) verdict = "COULD-NOT-RUN";
+  // gate.mjs checks writes checks.json only once all three checks are done,
+  // so no file means items (f) to (h) are missing and the gate could not run.
+  const incomplete = [];
+  if (!checks) incomplete.push("the checks step wrote no checks.json, so items (f), (g) and (h) are missing");
+  if (incomplete.length) verdict = "COULD-NOT-RUN";
 
   const measured = plan.jobs.map((j) => ({ ...(results[j.id] ?? {}), inputBytes: j.inputBytes }));
   return {
@@ -577,6 +586,7 @@ export function buildReport({ plan, results, hostExits, checks }) {
       "Every plate gets a time and a weight above zero, or is refused for a reason AC-034 treats as legitimate (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), which is reported. A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the plan's reason map and Orca's own meaning disagree on are reported as needs-decision.",
     counts,
     setupErrors: plan.errors ?? [],
+    incomplete,
     plates,
     bambuGap: {
       platesCompared: gapRows.length,
@@ -620,6 +630,7 @@ export function summaryText(report) {
     `(a) Plates sliced: ${report.plates.length}. ok ${report.counts.ok}, refused for a legitimate reason ${report.counts.refused}, needs Jon's decision ${report.counts["needs-decision"]}, failed ${report.counts.fail}.`,
   );
   for (const e of report.setupErrors) L.push(`    setup error: ${e}`);
+  for (const e of report.incomplete ?? []) L.push(`    incomplete: ${e}`);
   const notOk = report.plates.filter((p) => p.verdict !== "ok");
   for (const p of notOk) {
     L.push(`    ${p.verdict}: ${p.file} on ${p.printer}, plate ${p.plate}: ${p.reason}${p.returnCode !== null ? ` (code ${p.returnCode}: ${p.meaning})` : p.meaning ? ` (${p.meaning})` : ""}`);

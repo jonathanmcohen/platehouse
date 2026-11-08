@@ -93,6 +93,13 @@ test("select-sample, plan and report run end to end and apply the pass rule", ()
   assert.equal(machine.name, "Bambu Lab P1S 0.4 nozzle");
 
   fakeResults(out, ids);
+  // the report needs the checks step's file; with no checks.json the gate could not run
+  const noChecks = node([GATE, "report"], env);
+  assert.equal(noChecks.status, 2, noChecks.stderr);
+  const noChecksSummary = readFileSync(join(out, "summary.txt"), "utf8");
+  assert.match(noChecksSummary, /^Platehouse slicing gate: COULD-NOT-RUN/);
+  assert.match(noChecksSummary, /incomplete: the checks step wrote no checks\.json/);
+  writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-07T00:00:00.000Z", openscad: null, landrun: null, step: null }));
   const pass = node([GATE, "report"], env);
   assert.equal(pass.status, 0, pass.stderr);
   const summary = readFileSync(join(out, "summary.txt"), "utf8");
