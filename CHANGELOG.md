@@ -10,6 +10,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - Slicing gate harness in tools/slicing-gate: picks the Task 1 sample from the .3mf metadata, flattens OrcaSlicer's BBL profiles, and slices every plate in a throwaway network-less container on Hades, with a report and Jon's pass rule ([#1](https://github.com/jonathanmcohen/platehouse/pull/1)).
 - CI job for the slicing gate: on pull requests and pushes that touch tools/slicing-gate, it runs the gate tests on Node 26, builds the gate image so every build step and check runs on GitHub instead of first on Hades, and smoke-checks the built image with no network; nothing is pushed and no secret is used ([#7](https://github.com/jonathanmcohen/platehouse/pull/7)).
+- pnpm workspace on Node 26.13.0 and pnpm 12.18.0, with TypeScript 7.0.2, Vitest 5.1.0 and Biome 2.6.6, every dependency pinned exactly; the slicing gate stays outside the workspace and outside Biome. The server's config loader reads every key of the configuration contract from the environment with zod, refuses to start when a value is missing or invalid, and names the key without ever printing its value; it builds absolute URLs from PUBLIC_ORIGIN only, defaults SLICE_PLATE_SECONDS to 120 from the gate's worst plate (55.31 s on Hades), and requires LINK_SECRET to be at least 32 bytes.
 
 ### Fixed
 
