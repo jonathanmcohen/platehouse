@@ -14,6 +14,7 @@ export function profileTree() {
   const root = mkdtempSync(join(tmpdir(), "gate-prof-"));
   const m = (name, sub = `machine/${name}.json`) => ({ name, sub_path: sub });
   const f = (name, sub = `filament/${name}.json`) => ({ name, sub_path: sub });
+  const pr = (name, sub = `process/${name}.json`) => ({ name, sub_path: sub });
   put(root, "BBL.json", {
     name: "Bambu Lab",
     machine_model_list: [m("Bambu Lab P1S"), m("Bambu Lab A1")],
@@ -24,7 +25,7 @@ export function profileTree() {
       m("Bambu Lab A1 0.4 nozzle"),
       m("Escape", "../outside.json"),
     ],
-    process_list: [],
+    process_list: [pr("fdm_process_common"), pr("0.20mm Standard @BBL X1C"), pr("0.20mm Standard @BBL A1")],
     filament_list: [
       f("fdm_filament_common"),
       f("Generic PLA @base"),
@@ -64,6 +65,7 @@ export function profileTree() {
     instantiation: "true",
     printer_model: "Bambu Lab P1S",
     nozzle_diameter: ["0.4"],
+    default_print_profile: "0.20mm Standard @BBL X1C",
   });
   put(root, "BBL/machine/Bambu Lab P1S 0.4 nozzle template machine_start_gcode.json", {
     name: "Bambu Lab P1S 0.4 nozzle template machine_start_gcode",
@@ -79,6 +81,36 @@ export function profileTree() {
     from: "system",
     instantiation: "true",
     printer_model: "Bambu Lab A1",
+    default_print_profile: "0.20mm Standard @BBL A1",
+  });
+  // Process presets, shaped like Orca's: an abstract common root and one
+  // instantiable preset per printer family, each the default process of a
+  // machine above (default_print_profile).
+  put(root, "BBL/process/fdm_process_common.json", {
+    type: "process",
+    name: "fdm_process_common",
+    from: "system",
+    instantiation: "false",
+    layer_height: "0.2",
+    wall_loops: "2",
+    print_extruder_variant: ["Direct Drive Standard"],
+  });
+  put(root, "BBL/process/0.20mm Standard @BBL X1C.json", {
+    type: "process",
+    name: "0.20mm Standard @BBL X1C",
+    inherits: "fdm_process_common",
+    from: "system",
+    instantiation: "true",
+    print_extruder_variant: ["Direct Drive Standard", "Direct Drive High Flow"],
+    compatible_printers: ["Bambu Lab P1S 0.4 nozzle"],
+  });
+  put(root, "BBL/process/0.20mm Standard @BBL A1.json", {
+    type: "process",
+    name: "0.20mm Standard @BBL A1",
+    inherits: "fdm_process_common",
+    from: "system",
+    instantiation: "true",
+    compatible_printers: ["Bambu Lab A1 0.4 nozzle"],
   });
   put(root, "outside.json", { name: "Escape", instantiation: "true" });
   put(root, "BBL/filament/fdm_filament_common.json", {
