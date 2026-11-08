@@ -23,6 +23,10 @@
 // Usage (inside the gate image):
 //   node flatten-profiles.mjs --profiles /opt/orca-profiles --out <dir> \
 //        --printer "Bambu Lab P1S 0.4 nozzle" [--printer ...] --types PLA,PETG [--companions]
+//   node flatten-profiles.mjs --profiles /opt/orca-profiles \
+//        --process-full /opt/orca/resources/profiles/BBL/process_full
+//     (at image build time: Orca's default process presets for a printer
+//     switch; see writeProcessFull)
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
@@ -299,26 +303,91 @@ export function writeRecipe(index, outDir, { printers, types, companions = false
   return recipe;
 }
 
+/**
+ * Writes Orca's process_full folder: the flattened default process
+ * (default_print_profile) of every instantiable machine preset, one file
+ * per process, named exactly "<process name>.json".
+ *
+ * Why: when a file is sliced on a printer other than its own and the
+ * extruder variant count changes (P1S and X1C carry two print variants, A1
+ * one), Orca 2.5.0's CLI (src/OrcaSlicer.cpp, the machine_switch block)
+ * loads <resources>/profiles/BBL/process_full/<default_print_profile>.json.
+ * The resources dir is the binary's ../../resources and no flag moves it,
+ * and the AppImage ships no process_full folder, so the switch failed with
+ * code -3 (Hades run 3, 79 plates). The file must be flattened:
+ * load_config_file resolves an inherits chain only through a vendor
+ * manifest (BBL.json) beside the vendor folder, which the AppImage does not
+ * ship, and the switch rejects a file whose type is not "process" or whose
+ * from is not "system". flattenPreset gives exactly that.
+ *
+ * Never overwrites a file, and refuses a name that is not a plain file name.
+ * Returns { files: [process names, sorted], machines: count }.
+ */
+export function writeProcessFull(index, outDir) {
+  const wanted = new Set();
+  let machines = 0;
+  for (const name of [...index.vendor.machine.keys()].sort()) {
+    if (name.includes(TEMPLATE_MARKER) || name.endsWith("_common")) continue;
+    let profile;
+    try {
+      profile = flattenPreset(index, "machine", name).profile;
+    } catch {
+      continue;
+    }
+    if (profile.instantiation !== "true") continue;
+    const proc = profile.default_print_profile;
+    if (typeof proc !== "string" || proc.length === 0) continue;
+    if (proc.includes("/") || proc.includes("\\") || proc.includes("\0") || proc.startsWith(".")) {
+      throw new Error(`machine "${name}" names default process "${proc}", which is not a plain file name`);
+    }
+    machines += 1;
+    wanted.add(proc);
+  }
+  const files = [...wanted].sort();
+  // Flatten every one before writing any, so a missing preset writes nothing.
+  const flat = files.map((name) => {
+    const { profile } = flattenPreset(index, "process", name);
+    if (profile.type !== "process") throw new Error(`"${name}" is a ${profile.type} preset, not a process`);
+    return [name, profile];
+  });
+  mkdirSync(outDir, { recursive: true });
+  for (const [name, profile] of flat) {
+    writeFileSync(join(outDir, `${name}.json`), `${JSON.stringify(profile, null, 2)}\n`, { flag: "wx" });
+  }
+  return { files, machines };
+}
+
 function parseArgs(argv) {
-  const args = { profiles: null, out: null, printers: [], types: [], companions: false };
+  const args = { profiles: null, out: null, printers: [], types: [], companions: false, processFull: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--profiles") args.profiles = argv[++i];
+    else if (a === "--process-full") args.processFull = argv[++i];
     else if (a === "--out") args.out = argv[++i];
     else if (a === "--printer") args.printers.push(argv[++i]);
     else if (a === "--types") args.types.push(...argv[++i].split(",").filter(Boolean));
     else if (a === "--companions") args.companions = true;
     else throw new Error(`unknown argument ${a}`);
   }
-  if (!args.profiles || !args.out || args.printers.length === 0) {
-    throw new Error("usage: flatten-profiles.mjs --profiles <dir> --out <dir> --printer <name> [--printer ...] --types A,B [--companions]");
+  const usage =
+    "usage: flatten-profiles.mjs --profiles <dir> --out <dir> --printer <name> [--printer ...] --types A,B [--companions]\n" +
+    "       flatten-profiles.mjs --profiles <dir> --process-full <dir>";
+  if (args.processFull !== null) {
+    if (!args.profiles || !args.processFull || args.out || args.printers.length > 0) throw new Error(usage);
+    return args;
   }
+  if (!args.profiles || !args.out || args.printers.length === 0) throw new Error(usage);
   return args;
 }
 
 if (isMain(import.meta.url)) {
   try {
     const args = parseArgs(process.argv.slice(2));
+    if (args.processFull !== null) {
+      const { files, machines } = writeProcessFull(loadIndex(args.profiles), args.processFull);
+      process.stdout.write(`wrote ${files.length} default process presets for ${machines} machine presets to ${args.processFull}\n`);
+      process.exit(0);
+    }
     const recipe = writeRecipe(loadIndex(args.profiles), args.out, args);
     process.stdout.write(
       `wrote ${Object.keys(recipe.printers).length} machine preset(s) and recipe.json to ${basename(args.out)}; ${recipe.nozzlePrinterCount} nozzle printers in the bundle\n`,

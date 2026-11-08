@@ -255,6 +255,31 @@ RUN source /usr/local/lib/need.sh \
  && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js \
  && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.wasm
 
+# Orca's process_full folder (Hades run 3, 2026-11-08: 79 plates failed with
+# code -3). When a file is sliced on another printer and the extruder variant
+# count changes (P1S and X1C presets carry two print variants, A1 one),
+# Orca 2.5.0's CLI (src/OrcaSlicer.cpp, machine_switch) loads
+# <resources>/profiles/BBL/process_full/<the new printer's default_print_profile>.json.
+# <resources> is the binary's ../../resources, here /opt/orca/resources, and
+# no flag or data dir moves it. The AppImage ships no such folder. Orca wants a
+# flattened preset there (type process, from system, no inherits: it can only
+# resolve inherits through a BBL.json manifest the AppImage does not ship), so
+# flatten-profiles.mjs writes one per machine preset's default process from
+# the pinned source JSON. Only a new folder is added inside BBL/: Orca finds
+# vendors by the <vendor>.json and <vendor>.opc files directly under
+# profiles/, so BBL is still installed from BBL.opc, and the checks below fail
+# the build if a BBL.json appears or if the folder was already there.
+# Read on 2026-11-08 from OrcaSlicer.cpp, PresetBundle.cpp and utils.cpp
+# (vendor_names_in) at commit 40ecc66.
+RUN source /usr/local/lib/need.sh \
+ && need -f /opt/orca/resources/profiles/BBL.opc \
+ && need ! -e /opt/orca/resources/profiles/BBL/process_full -- "the AppImage ships no process_full, so nothing of Orca's is replaced" \
+ && node /opt/gate/flatten-profiles.mjs --profiles /opt/orca-profiles --process-full /opt/orca/resources/profiles/BBL/process_full \
+ && chmod -R a+rX /opt/orca/resources/profiles/BBL/process_full \
+ && need -f "/opt/orca/resources/profiles/BBL/process_full/0.20mm Standard @BBL A1.json" \
+ && need -f "/opt/orca/resources/profiles/BBL/process_full/0.20mm Standard @BBL X1C.json" \
+ && need ! -e /opt/orca/resources/profiles/BBL.json -- "a BBL.json would make Orca install BBL from JSON instead of BBL.opc"
+
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin gate
 USER 10001
 
@@ -266,6 +291,8 @@ RUN source /usr/local/lib/need.sh \
  && need -x /opt/orca/libexec/orca-slicer-env \
  && need -x /opt/orca/bin/orca-slicer \
  && need -r /opt/orca/resources/profiles/BBL.opc \
+ && need -r "/opt/orca/resources/profiles/BBL/process_full/0.20mm Standard @BBL A1.json" \
+ && need -r "/opt/orca/resources/profiles/BBL/process_full/0.20mm Standard @BBL X1C.json" \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad \
  && need -x /usr/local/bin/landrun \
