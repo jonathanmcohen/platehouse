@@ -321,17 +321,27 @@ export function writeRecipe(index, outDir, { printers, types, companions = false
  * from is not "system". flattenPreset gives exactly that.
  *
  * Never overwrites a file, and refuses a name that is not a plain file name.
- * Returns { files: [process names, sorted], machines: count }.
+ * Fails on a default process whose inherits chain names a parent the bundle
+ * does not have (flattenPreset's dangling), since that file would lack the
+ * parent's keys and Orca would quietly use its built-in defaults for them.
+ * Templates and _common machine presets are never read, and non-instantiable
+ * ones are passed over; any other machine preset that will not flatten is
+ * listed in skipped with its reason (the printer menu does not offer it
+ * either; see nozzlePrinters), so the build log shows it.
+ * Returns { files: [process names, sorted], machines: count,
+ * skipped: [{ name, reason }] }.
  */
 export function writeProcessFull(index, outDir) {
   const wanted = new Set();
+  const skipped = [];
   let machines = 0;
   for (const name of [...index.vendor.machine.keys()].sort()) {
     if (name.includes(TEMPLATE_MARKER) || name.endsWith("_common")) continue;
     let profile;
     try {
       profile = flattenPreset(index, "machine", name).profile;
-    } catch {
+    } catch (err) {
+      skipped.push({ name, reason: err.message });
       continue;
     }
     if (profile.instantiation !== "true") continue;
@@ -346,7 +356,10 @@ export function writeProcessFull(index, outDir) {
   const files = [...wanted].sort();
   // Flatten every one before writing any, so a missing preset writes nothing.
   const flat = files.map((name) => {
-    const { profile } = flattenPreset(index, "process", name);
+    const { profile, dangling } = flattenPreset(index, "process", name);
+    if (dangling !== null) {
+      throw new Error(`default process "${name}" inherits "${dangling}", which the bundle does not have; the file would lack its keys`);
+    }
     if (profile.type !== "process") throw new Error(`"${name}" is a ${profile.type} preset, not a process`);
     return [name, profile];
   });
@@ -354,7 +367,7 @@ export function writeProcessFull(index, outDir) {
   for (const [name, profile] of flat) {
     writeFileSync(join(outDir, `${name}.json`), `${JSON.stringify(profile, null, 2)}\n`, { flag: "wx" });
   }
-  return { files, machines };
+  return { files, machines, skipped };
 }
 
 function parseArgs(argv) {
@@ -384,8 +397,11 @@ if (isMain(import.meta.url)) {
   try {
     const args = parseArgs(process.argv.slice(2));
     if (args.processFull !== null) {
-      const { files, machines } = writeProcessFull(loadIndex(args.profiles), args.processFull);
-      process.stdout.write(`wrote ${files.length} default process presets for ${machines} machine presets to ${args.processFull}\n`);
+      const { files, machines, skipped } = writeProcessFull(loadIndex(args.profiles), args.processFull);
+      process.stdout.write(
+        `wrote ${files.length} default process presets for ${machines} machine presets to ${args.processFull}; skipped ${skipped.length} machine preset(s) that would not flatten\n`,
+      );
+      for (const { name, reason } of skipped) process.stdout.write(`skipped machine "${name}": ${reason}\n`);
       process.exit(0);
     }
     const recipe = writeRecipe(loadIndex(args.profiles), args.out, args);

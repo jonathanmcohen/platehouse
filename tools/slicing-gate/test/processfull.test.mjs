@@ -79,6 +79,59 @@ test("the command line writes the folder with --process-full alone", () => {
     encoding: "utf8",
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /wrote 2 default process presets/);
+  assert.match(r.stdout, /wrote 2 default process presets for 2 machine presets to .*; skipped 0 machine preset\(s\) that would not flatten/);
   assert.equal(readdirSync(out).length, 2);
+});
+
+// PR #11 review (processfull-silent-skip): a process whose parent is not in
+// the bundle used to come back from flattenPreset without the parent's keys
+// and be written anyway, so a cross-printer slice would quietly fall back to
+// Orca's built-in defaults for the missing keys.
+test("a default process whose parent is not in the bundle fails, naming both, and nothing is written", () => {
+  const root = profileTree();
+  writeFileSync(
+    join(root, "BBL", "process", "0.20mm Orphan @BBL Odd.json"),
+    JSON.stringify({ type: "process", name: "0.20mm Orphan @BBL Odd", from: "system", inherits: "fdm_process_gone", layer_height: "0.2" }),
+  );
+  writeFileSync(
+    join(root, "BBL", "machine", "Odd 0.4 nozzle.json"),
+    JSON.stringify({ type: "machine", name: "Odd 0.4 nozzle", from: "system", instantiation: "true", default_print_profile: "0.20mm Orphan @BBL Odd" }),
+  );
+  const out = freshDir();
+  assert.throws(() => flatten.writeProcessFull(flatten.loadIndex(root), out), /0\.20mm Orphan @BBL Odd.*fdm_process_gone/);
+  assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
+});
+
+// A machine that will not flatten used to be dropped by a bare catch, so its
+// default process was never written and nothing said so.
+test("a machine preset that will not flatten is listed with its reason, not dropped silently", () => {
+  const root = profileTree();
+  writeFileSync(
+    join(root, "BBL", "machine", "Loop 0.4 nozzle.json"),
+    JSON.stringify({ type: "machine", name: "Loop 0.4 nozzle", from: "system", inherits: "Loop 0.4 nozzle", instantiation: "true" }),
+  );
+  const out = freshDir();
+  const result = flatten.writeProcessFull(flatten.loadIndex(root), out);
+  assert.deepEqual(result.files, ["0.20mm Standard @BBL A1", "0.20mm Standard @BBL X1C"]);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.skipped[0].name, "Loop 0.4 nozzle");
+  assert.match(result.skipped[0].reason, /inheritance depth/);
+});
+
+test("templates and _common machine presets are excluded without being counted as skipped", () => {
+  const result = flatten.writeProcessFull(flatten.loadIndex(profileTree()), freshDir());
+  assert.deepEqual(result.skipped, []);
+});
+
+test("the command line prints the skipped count beside the written count, and each skipped machine", () => {
+  const root = profileTree();
+  writeFileSync(
+    join(root, "BBL", "machine", "Loop 0.4 nozzle.json"),
+    JSON.stringify({ type: "machine", name: "Loop 0.4 nozzle", from: "system", inherits: "Loop 0.4 nozzle", instantiation: "true" }),
+  );
+  const out = freshDir();
+  const r = spawnSync(process.execPath, [join(HERE, "flatten-profiles.mjs"), "--profiles", root, "--process-full", out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /wrote 2 default process presets for 2 machine presets to .*; skipped 1 machine preset\(s\) that would not flatten/);
+  assert.match(r.stdout, /skipped machine "Loop 0\.4 nozzle": inheritance depth/);
 });
