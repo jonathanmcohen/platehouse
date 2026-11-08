@@ -81,10 +81,16 @@ Orca wants a flattened preset there: it resolves `inherits` only through a
 `BBL.json` manifest, which the AppImage does not ship, and the switch rejects
 a file whose type is not process or whose from is not system. So the image
 build runs `flatten-profiles.mjs --process-full` on the pinned source JSON
-and writes the default process of every machine preset (46 files) into
-`/opt/orca/resources/profiles/BBL/process_full`. The build fails if that
-folder already existed or if a `BBL.json` appears beside `BBL.opc`, so Orca
-still installs BBL from the cache it ships.
+and writes the default process of every instantiable machine preset (56
+machines share 46 files at v2.5.0) into
+`/opt/orca/resources/profiles/BBL/process_full`. Every instantiable machine
+must end up with its file: if one has a missing parent, no
+`default_print_profile`, or a default process that is missing or broken, or
+if a machine preset will not flatten at all, the build fails and names each
+machine and why, because a machine left out would fail with code -3 the
+first time a file is switched to it. The build also fails if that folder
+already existed or if a `BBL.json` appears beside `BBL.opc`, so Orca still
+installs BBL from the cache it ships.
 
 The same files are read in one other place: for a file whose process is one
 of them, Orca now checks the switch against that system preset's
