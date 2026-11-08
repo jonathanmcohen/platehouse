@@ -50,6 +50,9 @@ jobs:
       # A pull request is compared with its base commit, a push with the commit
       # the branch pointed at before it. With no usable base (a new branch, or
       # a force-push whose old commit is gone) the gate job runs, to be safe.
+      # --no-renames lists both paths of a move: with rename detection on (git's
+      # default) only the new path is listed, so a file moved out of the gate
+      # would leave no gate path in the list and skip the job.
       - name: Decide whether the gate job runs
         id: diff
         env:
@@ -62,7 +65,7 @@ jobs:
           if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
             echo "No usable base commit (${base:-none}); the gate job runs."
           else
-            changed="$(git diff --name-only "$base" HEAD)"
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
             if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
