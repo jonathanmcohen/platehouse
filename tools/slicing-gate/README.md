@@ -86,12 +86,17 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 2. Copy the selection, the sample and this folder to Hades over ssh.
 
    ```sh
-   ssh hades 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
-   scp /tmp/platehouse-selection.json hades:/tmp/platehouse-gate/in/selection.json
+   ssh Hades 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
+   scp /tmp/platehouse-selection.json Hades:/tmp/platehouse-gate/in/selection.json
    cd "$HOME/Downloads/3D Prints"
-   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -T /tmp/platehouse-names.txt | ssh hades 'tar -xf - -C /tmp/platehouse-gate/in/sample'
-   scp -rp /path/to/platehouse/tools/slicing-gate hades:/tmp/platehouse-gate/tool
+   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -T /tmp/platehouse-names.txt | ssh Hades 'tar -xf - -C /tmp/platehouse-gate/in/sample'
+   scp -rp /path/to/platehouse/tools/slicing-gate Hades:/tmp/platehouse-gate/tool
    ```
+
+   `Hades`, with a capital H, is the ssh alias on mini01. OpenSSH matches
+   host aliases case-sensitively, so the name in lower case skips the alias
+   and fails with "Host key verification failed", as it did on the second
+   run (2026-11-08).
 
    Each line of `/tmp/platehouse-names.txt` is a path relative to the folder.
    `select-sample.mjs` scans subfolders too, so a name may hold a subfolder
@@ -108,19 +113,29 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    old `run.sh`.
 
 3. On Hades, through `bash`, so it runs whether or not the execute bit
-   survived the copy:
+   survived the copy. A full run takes several hours, so start it detached:
+   a dropped ssh session then cannot kill it, as the second run's operator
+   found. The run's output goes to `run.log` and its exit status to
+   `run.exit`, both in the scratch dir:
 
    ```sh
-   bash /tmp/platehouse-gate/tool/run.sh
+   setsid nohup bash -c 'rm -f /tmp/platehouse-gate/run.exit; bash /tmp/platehouse-gate/tool/run.sh > /tmp/platehouse-gate/run.log 2>&1; echo $? > /tmp/platehouse-gate/run.exit' < /dev/null > /dev/null 2>&1 &
+   tail -f /tmp/platehouse-gate/run.log
+   cat /tmp/platehouse-gate/run.exit
    ```
 
-   It builds `platehouse-gate:t1` if it is missing (`--build` forces a
-   rebuild), then writes `/tmp/platehouse-gate/out/result.json` and
-   `/tmp/platehouse-gate/out/summary.txt`. Exit status: 0 PASS, 1 FAIL,
-   3 NEEDS-DECISION, 2 the gate could not run.
+   `tail -f` can be stopped and restarted at any time, from any ssh
+   session; it does not touch the run. `run.exit` appears only when the run
+   has finished.
 
-4. Copy `result.json` and `summary.txt` back. The main session files the
-   report in Drive under 15 - Plans/Platehouse.
+   `run.sh` builds `platehouse-gate:t1` if it is missing (`--build` forces a
+   rebuild), then writes `/tmp/platehouse-gate/out/result.json` and
+   `/tmp/platehouse-gate/out/summary.txt`. Exit status, the number in
+   `run.exit`: 0 PASS, 1 FAIL, 3 NEEDS-DECISION, 2 the gate could not run.
+
+4. Copy `result.json` and `summary.txt` back (and `run.log` if the run
+   did not pass). The main session files the report in Drive under
+   15 - Plans/Platehouse.
 
 5. Delete the scratch dir and the image, and check both are gone:
 

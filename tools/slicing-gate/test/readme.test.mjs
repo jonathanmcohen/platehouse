@@ -34,8 +34,11 @@ test("the tool is copied with scp -rp, so its scripts keep their modes", () => {
 test("every run.sh call goes through bash, so it works without the execute bit", () => {
   const calls = commands.filter((c) => c.includes("run.sh"));
   assert.ok(calls.length >= 2, calls.join("\n"));
-  // Step 3's detached form wraps the same call in setsid nohup bash -c '...'.
-  for (const c of calls) assert.match(c, /^(setsid nohup bash -c ')?bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/, c);
+  // Step 3's detached form wraps the same call in setsid nohup bash -c '...',
+  // after removing the previous run's exit file.
+  for (const c of calls) {
+    assert.match(c, /^(setsid nohup bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; )?bash \/tmp\/platehouse-gate\/tool\/run\.sh\b/, c);
+  }
 });
 
 // scp -r into a directory that already exists copies the folder inside it
@@ -144,7 +147,8 @@ const detached = () =>
 test("step 3 starts the run detached, with its log and exit code in the scratch dir", () => {
   const line = detached();
   assert.ok(line, "step 3 has a setsid line");
-  assert.match(line, /^setsid nohup bash -c '/);
+  // A run.exit left by an earlier run would read as this run having finished.
+  assert.match(line, /^setsid nohup bash -c 'rm -f \/tmp\/platehouse-gate\/run\.exit; bash /);
   assert.match(line, /bash \/tmp\/platehouse-gate\/tool\/run\.sh > \/tmp\/platehouse-gate\/run\.log 2>&1/);
   assert.match(line, /echo \$\? > \/tmp\/platehouse-gate\/run\.exit/);
   assert.match(line, /< \/dev\/null > \/dev\/null 2>&1 &$/, "detached from the terminal and backgrounded");
@@ -161,13 +165,19 @@ test(
     const root = mkdtempSync(join(tmpdir(), "gate-detach-"));
     made.push(root);
     mkdirSync(join(root, "tool"));
-    writeFileSync(join(root, "tool", "run.sh"), "printf 'stub run %s\\n' \"$$\"\nexit 3\n");
+    // The stub reports whether the earlier run's exit file was gone when it started.
+    writeFileSync(
+      join(root, "tool", "run.sh"),
+      'if [ -e "$(dirname "$0")/../run.exit" ]; then s=present; else s=absent; fi\nprintf \'stub run %s, old exit file %s\\n\' "$$" "$s"\nexit 3\n',
+    );
+    writeFileSync(join(root, "run.exit"), "0\n"); // left by an earlier run
     const line = detached().replaceAll("/tmp/platehouse-gate", root);
     const r = spawnSync("bash", ["-c", line], { encoding: "utf8", timeout: 10000 });
     assert.equal(r.status, 0, r.stderr);
     const exitFile = join(root, "run.exit");
-    for (let i = 0; i < 100 && !existsSync(exitFile); i++) await new Promise((res) => setTimeout(res, 50));
+    const done = () => existsSync(exitFile) && /^[1-9]\d*\n$/.test(readFileSync(exitFile, "utf8"));
+    for (let i = 0; i < 100 && !done(); i++) await new Promise((res) => setTimeout(res, 50));
     assert.equal(readFileSync(exitFile, "utf8"), "3\n");
-    assert.match(readFileSync(join(root, "run.log"), "utf8"), /^stub run \d+\n$/);
+    assert.match(readFileSync(join(root, "run.log"), "utf8"), /^stub run \d+, old exit file absent\n$/);
   },
 );
