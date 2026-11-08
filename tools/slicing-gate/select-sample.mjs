@@ -19,6 +19,7 @@ import { readProjectMeta } from "./lib/threemf.mjs";
 export const AIR_DRY = "Air Dry - AMS.3mf";
 const FOREIGN = ["X1C", "A1", "A1 mini", "P1P", "P2S", "X2D"];
 const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+const isAirDry = (f) => f.name.split("/").pop() === AIR_DRY;
 
 /** Lists every .3mf under folder (recursive) with its metadata, or meta null when unreadable. */
 export function scanFolder(folder) {
@@ -71,7 +72,9 @@ export function selectSample(files) {
   for (const f of p1s) pick(f, "p1s-sliced", `already sliced for ${f.printer.orcaName} (${f.printer.source})`);
   if (p1s.length < 5) missing.push(`p1s-sliced (found ${p1s.length} of 5)`);
 
-  const un = unsliced.slice(0, 5);
+  // Air Dry is a separate item (plan Task 1, requirements section 6), so it
+  // never takes one of the 5 unsliced slots.
+  const un = unsliced.filter((f) => !isAirDry(f)).slice(0, 5);
   for (const f of un) pick(f, "unsliced", "no plate carries Bambu slice numbers in slice_info.config");
   if (un.length < 5) missing.push(`unsliced (found ${un.length} of 5)`);
 
@@ -92,7 +95,7 @@ export function selectSample(files) {
     } else missing.push(`foreign-${short}`);
   }
 
-  const air = readable.find((f) => f.name.split("/").pop() === AIR_DRY);
+  const air = readable.find(isAirDry);
   if (air) pick(air, "air-dry", `named ${AIR_DRY}, the large file AC-020 names`);
   else missing.push("air-dry");
 

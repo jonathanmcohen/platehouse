@@ -35,7 +35,8 @@ list, and the printer keys in `Metadata/project_settings.config`. Files are
 taken in name order:
 
 - 5 files already sliced for the P1S;
-- 5 unsliced files (no plate carries Bambu's numbers);
+- 5 unsliced files (no plate carries Bambu's numbers), not counting
+  `Air Dry - AMS.3mf`, which is its own item below;
 - one file each sliced for the X1C, A1, A1 mini, P1P, P2S and X2D. When no file
   is sliced for one of these, it takes an unsliced file whose
   `project_settings.config` names that printer, says so in the reason, and

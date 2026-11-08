@@ -62,7 +62,9 @@ test("selectSample picks 5 P1S, 5 unsliced, one per foreign printer, Air Dry, an
   const sel = selectSample(files);
   const byRole = (role) => sel.sample.filter((s) => s.roles.includes(role)).map((s) => s.name);
   assert.deepEqual(byRole("p1s-sliced"), ["p1s-1.3mf", "p1s-2.3mf", "p1s-3.3mf", "p1s-4.3mf", "p1s-5.3mf"]);
-  assert.deepEqual(byRole("unsliced"), ["Air Dry - AMS.3mf", "u-1.3mf", "u-2.3mf", "u-3.3mf", "u-4.3mf"]);
+  // Air Dry is its own item, never one of the 5 unsliced files, even though it
+  // sorts among them.
+  assert.deepEqual(byRole("unsliced"), ["u-1.3mf", "u-2.3mf", "u-3.3mf", "u-4.3mf", "u-5.3mf"]);
   assert.deepEqual(byRole("foreign-X1C"), ["x1c-a.3mf"]);
   assert.deepEqual(byRole("foreign-A1 mini"), ["a1m-a.3mf"]);
   assert.deepEqual(byRole("air-dry"), ["Air Dry - AMS.3mf"]);
@@ -73,10 +75,22 @@ test("selectSample picks 5 P1S, 5 unsliced, one per foreign printer, Air Dry, an
   assert.deepEqual(sel.unknownPrinter, ["odd.3mf"]);
   assert.equal(sel.counts.slicedFiles, 17);
   assert.equal(sel.counts.slicedPlates, 17);
-  // one entry per file even when it holds two roles
+  // one entry per file
   assert.equal(new Set(sel.sample.map((s) => s.name)).size, sel.sample.length);
   const air = sel.sample.find((s) => s.name === "Air Dry - AMS.3mf");
-  assert.equal(air.reasons.length, 2);
+  assert.deepEqual(air.roles, ["air-dry"]);
+  // 5 P1S + 5 unsliced + 5 foreign (no X2D here) + Air Dry
+  assert.equal(sel.sample.length, 16);
+  assert.equal(sel.counts.unslicedFiles, 7);
+});
+
+test("Air Dry does not count toward the 5 unsliced files when fewer than 5 others exist", () => {
+  const files = [{ name: "Air Dry - AMS.3mf", meta: meta(null, null, 0, 4) }];
+  for (let i = 1; i <= 4; i++) files.push({ name: `u-${i}.3mf`, meta: meta(null, null, 0) });
+  const sel = selectSample(files);
+  const unsliced = sel.sample.filter((s) => s.roles.includes("unsliced")).map((s) => s.name);
+  assert.deepEqual(unsliced, ["u-1.3mf", "u-2.3mf", "u-3.3mf", "u-4.3mf"]);
+  assert.ok(sel.missing.includes("unsliced (found 4 of 5)"));
 });
 
 test("scanFolder reads .3mf files recursively and read-only, and names are relative", () => {
