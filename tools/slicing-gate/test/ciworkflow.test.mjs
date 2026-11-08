@@ -270,15 +270,28 @@ test("the gate job runs only when the changes job says so", () => {
 });
 
 // Runs the changes job's script in bash with git stubbed, and returns the gate
-// output it wrote.
-function decideGate({ event, prBase = "", before = "", baseExists = true, changed = [] }) {
+// output it wrote. The git diff stub behaves as real git does with renames
+// detected (diff.renames defaults to true): each moved [from, to] pair prints
+// only its new path, unless the job passes --no-renames, which prints both.
+function decideGate({ event, prBase = "", before = "", baseExists = true, changed = [], moved = [] }) {
   const dir = mkdtempSync(join(tmpdir(), "ci-changes-"));
   try {
     const out = join(dir, "github-output");
     writeFileSync(out, "");
     const script = [
       "set -eo pipefail",
-      'git() { case "$1" in cat-file) [ "$BASE_EXISTS" = 1 ];; diff) printf "%s" "$CHANGED";; *) return 99;; esac; }',
+      [
+        "git() {",
+        '  case "$1" in',
+        '    cat-file) [ "$BASE_EXISTS" = 1 ];;',
+        '    diff)',
+        '      printf "%s" "$CHANGED"',
+        '      case " $* " in *" --no-renames "*) printf "%s" "$MOVED_FROM";; esac',
+        '      printf "%s" "$MOVED_TO";;',
+        "    *) return 99;;",
+        "  esac",
+        "}",
+      ].join("\n"),
       stepScript(text(), "Decide whether the gate job runs"),
     ].join("\n");
     const r = spawnSync("bash", ["-c", script], {
@@ -290,6 +303,8 @@ function decideGate({ event, prBase = "", before = "", baseExists = true, change
         PUSH_BEFORE: before,
         BASE_EXISTS: baseExists ? "1" : "0",
         CHANGED: changed.map((f) => `${f}\n`).join(""),
+        MOVED_FROM: moved.map(([from]) => `${from}\n`).join(""),
+        MOVED_TO: moved.map(([, to]) => `${to}\n`).join(""),
         GITHUB_OUTPUT: out,
       },
     });
@@ -331,6 +346,30 @@ for (const [name, input, want] of [
   ],
   ["a push touching only the README skips it", { event: "push", before: SHA, changed: ["README.md"] }, "false"],
   ["a push touching the gate runs it", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, "true"],
+  // PR #17 review: git diff --name-only lists only the new path of a rename, so
+  // a module moved out of the gate (say into packages/threemf/ in Task 6) left
+  // no gate path in the list and the gate job was skipped. The job passes
+  // --no-renames so a move lists its old path too.
+  [
+    "a PR moving a file out of the gate runs it",
+    { event: "pull_request", prBase: SHA, moved: [["tools/slicing-gate/lib/zip.mjs", "packages/threemf/src/zip.mjs"]] },
+    "true",
+  ],
+  [
+    "a push moving a file out of the gate runs it",
+    { event: "push", before: SHA, moved: [["tools/slicing-gate/lib/threemf.mjs", "packages/threemf/src/threemf.mjs"]] },
+    "true",
+  ],
+  [
+    "a PR moving a file into the gate runs it",
+    { event: "pull_request", prBase: SHA, moved: [["packages/threemf/src/zip.mjs", "tools/slicing-gate/lib/zip.mjs"]] },
+    "true",
+  ],
+  [
+    "a PR moving a file between two non-gate paths skips it",
+    { event: "pull_request", prBase: SHA, moved: [["apps/server/src/a.ts", "apps/server/src/b.ts"]] },
+    "false",
+  ],
   ["a new branch (all-zero before) runs it", { event: "push", before: "0".repeat(40), changed: [] }, "true"],
   ["a push with no before runs it", { event: "push", before: "", changed: [] }, "true"],
   ["a base commit that is gone (force-push) runs it", { event: "push", before: SHA, baseExists: false, changed: [] }, "true"],
