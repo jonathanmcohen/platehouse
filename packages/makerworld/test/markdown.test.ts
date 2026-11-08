@@ -1066,6 +1066,125 @@ describe("escaped designer text beside misnested inline tags renders literally (
     );
   });
 
+  // A </tr> with no row open closes nothing. It once ran the row close
+  // anyway: before the first <tr> the empty row it found was cut from the
+  // table's row start, still 0, which erased everything written before the
+  // table; after a closed row it wrote a blank line that split the table
+  // (PR #24 review).
+  it.each([
+    [
+      "before the first row",
+      "<p>Intro text</p><table></tr><tr><td>a</td></tr></table>",
+      "Intro text\n\n| a |\n| --- |",
+    ],
+    [
+      "in a tbody before the first row",
+      "<p>Intro text</p><table><tbody></tr><tr><td>a</td></tr></tbody></table>",
+      "Intro text\n\n| a |\n| --- |",
+    ],
+    [
+      "between rows",
+      "<table><tr><td>a</td></tr></tr><tr><td>b</td></tr></table>",
+      "| a |\n| --- |\n| b |",
+    ],
+  ])("a stray </tr> %s closes nothing", (_name, html, expected) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(expected);
+    expect(render(out).match(/<table>/g)).toHaveLength(1);
+  });
+
+  // A <td> or <th> with no row open opens one, as a browser does; the cell
+  // once opened with no row, so its pipes showed as text outside the table
+  // (PR #24 review).
+  it.each([
+    ["with no <tr> at all", "<table><td>a</td><td>b</td></table>", "| a | b |\n| --- | --- |"],
+    [
+      "before the first <tr>",
+      "<table><td>a</td><tr><td>b</td></tr></table>",
+      "| a |\n| --- |\n| b |",
+    ],
+    ["after a closed row", "<table><tr><td>a</td></tr><td>b</td></table>", "| a |\n| --- |\n| b |"],
+    ["as a <th>", "<table><th>a</th></table>", "| a |\n| --- |"],
+  ])("a cell with no row open opens one: %s", (_name, html, expected) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(expected);
+    expect(render(out)).toMatch(/^<table>/);
+  });
+
+  // A link or emphasis opened in a row before its first cell and closed in
+  // the cell rewrote the text before the cell's start, and cutting the cell
+  // there split a backslash from the "!" it escaped, leaving image syntax
+  // and un-escaped designer text (PR #24 review). Markup cannot span a cell,
+  // so a cell opening drops what opened earlier in its row.
+  it.each([
+    ["a link", '<a href="https://h.test/">!', "</a>"],
+    ["bold", "<b>!", "</b>"],
+    ["emphasis", "<i>!", "</i>"],
+  ])("%s opened in a row before its first cell makes no image", (_name, open, close) => {
+    const out = htmlToMarkdown(
+      `<table><tr>${open}<td><a href="${EVIL}">t</a>${close}</td></tr></table>`,
+    );
+    expect(out).toBe(`|\\! [t](${EVIL}) |\n| --- |`);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+  });
+
+  it.each(DESIGNER_PAYLOADS)("a link opened in a row before its first cell: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(
+      `<table><tr><a href="https://h.test/">${p}!<td><a href="${EVIL}">t</a>${p}z</a></td></tr></table>`,
+    );
+    const html = render(out);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+    expect(html).toMatch(/^<table>/);
+    expect(html).toContain(`<a href="${EVIL}">t</a>`);
+    expect(html).not.toContain("https://h.test/");
+  });
+
+  // A paragraph or heading between a table's rows once wrote a blank line
+  // that split the table, so the rows after it showed as text with pipes
+  // (PR #24 review). Its text now stays in the table, on a line of its own,
+  // which markdown-it reads as a one-cell row.
+  it.each([
+    ["a paragraph", "<p>x</p>"],
+    ["a heading", "<h2>x</h2>"],
+    ["a div", "<div>x</div>"],
+  ])("%s between a table's rows keeps the table whole", (_name, block) => {
+    const out = htmlToMarkdown(`<table><tr><td>a</td></tr>${block}<tr><td>b</td></tr></table>`);
+    expect(out).toBe("| a |\n| --- |\nx\n| b |");
+    expect(render(out)).toBe(
+      "<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n" +
+        "<tbody>\n<tr>\n<td>x</td>\n</tr>\n<tr>\n<td>b</td>\n</tr>\n</tbody>\n</table>\n",
+    );
+  });
+
+  it("two paragraphs between a table's rows keep their words apart", () => {
+    const out = htmlToMarkdown(
+      "<table><tr><td>a</td></tr><p>x</p><p>y</p><tr><td>b</td></tr></table>",
+    );
+    expect(out).toBe("| a |\n| --- |\nx y\n| b |");
+    expect(render(out).match(/<table>/g)).toHaveLength(1);
+  });
+
+  it("a paragraph between the rows of a table in a list item keeps the table in the item", () => {
+    const out = htmlToMarkdown(
+      "<ul><li>i<table><tr><td>a</td></tr><p>x</p><tr><td>b</td></tr></table></li></ul>",
+    );
+    expect(out).toBe("- i\n\n  | a |\n  | --- |\n  x\n  | b |");
+    expect(render(out)).toBe(
+      "<ul>\n<li>\n<p>i</p>\n<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n" +
+        "<tbody>\n<tr>\n<td>x</td>\n</tr>\n<tr>\n<td>b</td>\n</tr>\n</tbody>\n</table>\n</li>\n</ul>\n",
+    );
+  });
+
+  it.each(DESIGNER_PAYLOADS)("a paragraph between a table's rows: %j", (payload) => {
+    const p = htmlEscape(payload);
+    const out = htmlToMarkdown(`<table><tr><td>a</td></tr><p>${p}x</p><tr><td>b</td></tr></table>`);
+    const html = render(out);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+    expect(html.match(/<table>/g)).toHaveLength(1);
+    expect(html).toContain("<td>b</td>");
+  });
+
   it.each(DESIGNER_PAYLOADS)("a link left open across a missing </td>: %j", (payload) => {
     const p = htmlEscape(payload);
     const out = htmlToMarkdown(
