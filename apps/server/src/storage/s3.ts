@@ -14,7 +14,7 @@ export class StoreError extends Error {
 export interface BlobStoreOptions {
   maxAttempts?: number;
   connectionTimeoutMs?: number;
-  requestTimeoutMs?: number;
+  socketTimeoutMs?: number;
 }
 
 export interface BlobStore {
