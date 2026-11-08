@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildJobs, buildReport, orcaArgs } from "../gate.mjs";
+import { buildJobs, buildReport, orcaArgs, summaryText } from "../gate.mjs";
 
 const plates = (n, sliced = []) =>
   Array.from({ length: n }, (_, i) => ({
@@ -18,9 +18,9 @@ const A1 = "Bambu Lab A1 0.4 nozzle";
 
 const recipe = {
   printers: {
-    [P1S]: { file: "machine/p1s.json" },
-    [X1C]: { file: "machine/x1c.json" },
-    [A1]: { file: "machine/a1.json" },
+    [P1S]: { file: "machine/p1s.json", chain: [P1S] },
+    [X1C]: { file: "machine/x1c.json", chain: [X1C] },
+    [A1]: { file: "machine/a1.json", chain: [A1] },
   },
   filaments: {
     [P1S]: { PLA: { name: "Generic PLA", file: "filament/pla.json" }, ASA: { name: "Generic ASA", file: "filament/asa.json" } },
@@ -236,4 +236,12 @@ test("plates that never ran for a setup error are not failures: with nothing els
   const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks });
   assert.equal(report.counts.fail, 1, "the setup plate is listed");
   assert.equal(report.verdict, "COULD-NOT-RUN");
+});
+
+test("a run with no plates could not run, not FAIL: nothing was sliced", () => {
+  const report = buildReport({ plan: { jobs: [], errors: [], inspect: [], recipe }, results: {}, hostExits: {}, checks });
+  assert.equal(report.verdict, "COULD-NOT-RUN");
+  assert.equal(report.plates.length, 0);
+  assert.ok(report.incomplete.some((m) => /no plate/.test(m)), JSON.stringify(report.incomplete));
+  assert.match(summaryText(report), /incomplete: .*no plate/);
 });

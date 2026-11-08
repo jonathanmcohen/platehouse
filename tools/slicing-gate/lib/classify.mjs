@@ -128,9 +128,12 @@ export function classifyPlate(r) {
   return { ...base, verdict: "fail", reason: "slicer_error" };
 }
 
-/** PASS, FAIL or NEEDS-DECISION over classified plates. No plates is a FAIL. */
+/**
+ * PASS, FAIL or NEEDS-DECISION over classified plates. No plates means
+ * nothing was sliced, so the gate could not run (COULD-NOT-RUN), not FAIL.
+ */
 export function gateVerdict(classified) {
-  if (classified.length === 0) return "FAIL";
+  if (classified.length === 0) return "COULD-NOT-RUN";
   if (classified.some((c) => c.verdict === "fail")) return "FAIL";
   if (classified.some((c) => c.verdict === "needs-decision")) return "NEEDS-DECISION";
   return "PASS";

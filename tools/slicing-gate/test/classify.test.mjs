@@ -95,7 +95,7 @@ test("gate verdict: any fail fails; else any needs-decision; else pass", () => {
   assert.equal(v("ok", "refused"), "PASS");
   assert.equal(v("ok", "needs-decision", "refused"), "NEEDS-DECISION");
   assert.equal(v("ok", "needs-decision", "fail"), "FAIL");
-  assert.equal(v(), "FAIL");
+  assert.equal(v(), "COULD-NOT-RUN", "no plates means nothing was sliced, so the gate could not run");
 });
 
 test("pctDiff and summarise give the per-plate gap, median and worst", () => {

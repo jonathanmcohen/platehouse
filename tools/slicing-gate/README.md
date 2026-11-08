@@ -147,7 +147,8 @@ rather than passed or failed, so Jon decides them.
 `result.json` is the machine-readable report; `summary.txt` is the plain one.
 
 - (a) per file x printer x plate: return code, error string, time, weight,
-  grams per filament, wall time, peak RSS, and the verdict.
+  grams per filament, wall time, peak RSS, and the verdict. A run that
+  plans no plates at all is COULD-NOT-RUN (exit 2), not FAIL.
 - (b) the gap against Bambu's own numbers on the already-sliced files: per
   plate percent difference, median and worst, for time and weight. No
   threshold.

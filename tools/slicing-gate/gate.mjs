@@ -574,6 +574,7 @@ export function buildReport({ plan, results, hostExits, checks }) {
   // so no file means items (f) to (h) are missing.
   const incomplete = [];
   if (!checks) incomplete.push("the checks step wrote no checks.json, so items (f), (g) and (h) are missing");
+  if (plates.length === 0) incomplete.push("no plate was planned, so nothing was sliced");
   // A setup error (a missing machine preset) or missing checks means the run
   // is incomplete, so the gate could not run (exit 2) - but only when nothing
   // failed. A crash, a timeout or an unexplained error on a plate that did run

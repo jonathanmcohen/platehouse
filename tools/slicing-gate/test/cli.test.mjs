@@ -181,3 +181,17 @@ test("plan stops with exit 2 when a selected file is not in the sample folder", 
   assert.equal(plan.status, 2);
   assert.match(plan.stderr, /u\.3mf/);
 });
+
+test("an empty folder ends with report exit 2, the gate could not run, not 1", () => {
+  const { root, out, env } = setup();
+  const empty = join(root, "empty");
+  mkdirSync(empty);
+  assert.equal(node([SELECT, empty, "--json", join(root, "in", "selection.json")], env).status, 0);
+  assert.equal(node([GATE, "plan"], env).status, 0);
+  writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-07T00:00:00.000Z", openscad: null, landrun: null, step: null }));
+  const report = node([GATE, "report"], env);
+  assert.equal(report.status, 2, report.stderr);
+  const summary = readFileSync(join(out, "summary.txt"), "utf8");
+  assert.match(summary, /^Platehouse slicing gate: COULD-NOT-RUN/);
+  assert.match(summary, /incomplete: no plate was planned/);
+});
