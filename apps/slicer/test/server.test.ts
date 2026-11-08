@@ -1,6 +1,7 @@
 // The slicer server (build plan Task 11) against stub programs: contract v1
-// over HTTP, one slice at a time (409), the kill at SLICE_TIMEOUT_SECONDS,
-// the body limits and the Orca arguments of the T1 recipe.
+// over HTTP, one heavy job (slice, render or STEP conversion) at a time with
+// 409 busy for the rest, the kill at SLICE_TIMEOUT_SECONDS, the body limits,
+// the request timeouts and the Orca arguments of the T1 recipe.
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -94,6 +95,17 @@ async function waitFor(check: () => boolean, ms = 5000): Promise<void> {
     if (Date.now() > until) throw new Error("timed out waiting");
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+/** Waits until `file` exists and is not empty. */
+async function waitForFile(file: string): Promise<void> {
+  await waitFor(() => {
+    try {
+      return readFileSync(file, "utf8").length > 0;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function alive(pid: number): boolean {
@@ -559,15 +571,20 @@ describe("OpenSCAD and STEP", () => {
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
-  test("STEP conversions run one at a time; a second waits for the first", async () => {
+  test("a second STEP conversion while one runs is 409 busy at once, and only one worker runs", async () => {
     const stubs = stubDir();
     const log = join(stubs, "step.log");
-    const s = setup({ stepWorker: fakeStepWorker(stubs, { kind: "slow", log, ms: 400 }) });
+    const s = setup({ stepWorker: fakeStepWorker(stubs, { kind: "slow", log, ms: 1500 }) });
     const base = await start(s.config);
     const post = () => fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
-    const results = await Promise.all([post(), post()]);
-    expect(results.map((r) => r.status)).toEqual([200, 200]);
-    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "end", "start", "end"]);
+    const first = post();
+    await waitForFile(log);
+    const second = await post();
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: "busy" });
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start"]);
+    expect((await first).status).toBe(200);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "end"]);
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
@@ -578,5 +595,141 @@ describe("OpenSCAD and STEP", () => {
       "content-length": String(LIMITS.stepBodyBytes + 1),
     });
     expect(res.status).toBe(413);
+  });
+});
+
+// The container runs one heavy job at a time: a slice, an OpenSCAD render
+// (with its sandbox self-test) or a STEP conversion. Its 4g memory limit is
+// sized from a single slice. A request for any of them while one runs gets
+// 409 busy at once, before its body is read, so no socket is held waiting.
+describe("one heavy job at a time", () => {
+  const step = (base: string) =>
+    fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+  const scad = (base: string, kind: "stl" | "png") =>
+    fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+
+  async function expectBusy(res: Response): Promise<void> {
+    expect(res.status).toBe(409);
+    expect(slicerContract.error.parse(await res.json())).toEqual({ error: "busy" });
+  }
+
+  test("STEP and both OpenSCAD routes are 409 busy while a slice runs", async () => {
+    const s = setup({ sliceTimeoutSeconds: 3 }, { kind: "sleep" });
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const first = postSlice(base, sliceable());
+    await waitForFile(s.fake.pids);
+    await expectBusy(await step(base));
+    await expectBusy(await scad(base, "stl"));
+    await expectBusy(await scad(base, "png"));
+    // no render or self-test ran
+    expect(() => readFileSync(lr.runsLog)).toThrow();
+    expect((await first).status).toBe(200);
+    // and once the slice is done, a render runs again
+    expect((await scad(base, "stl")).status).toBe(200);
+  });
+
+  test("a slice, a render and a second STEP are 409 busy while a STEP conversion runs", async () => {
+    const stubs = stubDir();
+    const log = join(stubs, "step.log");
+    const s = setup({ stepWorker: fakeStepWorker(stubs, { kind: "slow", log, ms: 1500 }) });
+    const base = await start(s.config);
+    const first = step(base);
+    await waitForFile(log);
+    const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(health.busy).toBe(true);
+    await expectBusy(await postSlice(base, sliceable()));
+    await expectBusy(await scad(base, "stl"));
+    await expectBusy(await step(base));
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+    expect((await first).status).toBe(200);
+    const after = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+    expect(after.busy).toBe(false);
+  });
+
+  test("a slice, a STEP and a second render are 409 busy while a render runs", async () => {
+    const s = setup({ scadTimeoutSeconds: 2 });
+    // The self-test hangs until the cap, so the first render holds the lock.
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { probe: "hang" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const first = scad(base, "stl");
+    await waitForFile(lr.runsLog);
+    await expectBusy(await postSlice(base, sliceable()));
+    await expectBusy(await step(base));
+    await expectBusy(await scad(base, "png"));
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+    expect((await first).status).toBe(422);
+    expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("a busy answer comes at once, while the running job still runs", async () => {
+    const stubs = stubDir();
+    const log = join(stubs, "step.log");
+    const s = setup({ stepWorker: fakeStepWorker(stubs, { kind: "slow", log, ms: 2000 }) });
+    const base = await start(s.config);
+    const first = step(base);
+    await waitForFile(log);
+    const asked = Date.now();
+    await expectBusy(await step(base));
+    expect(Date.now() - asked).toBeLessThan(1000);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start"]);
+    await first;
+  });
+
+  test("an oversized body is still 413 while busy, not 409", async () => {
+    const s = setup({ sliceTimeoutSeconds: 3 }, { kind: "sleep" });
+    const base = await start(s.config);
+    const first = postSlice(base, sliceable());
+    await waitForFile(s.fake.pids);
+    const res = await headersOnly(`${base}/v1/step/glb`, {
+      "content-type": "application/octet-stream",
+      "content-length": String(LIMITS.stepBodyBytes + 1),
+    });
+    expect(res.status).toBe(413);
+    await first;
+  });
+});
+
+// Node's default requestTimeout (300 s) counts from the first byte of a
+// request until its whole body has arrived, and answers 408 past it. The
+// largest legitimate body is a 512 MiB .3mf, so the server sets its own
+// limits: long enough for that body at 1 MiB/s plus the longest time cap,
+// and never off (0 would let a stalled client hold a socket forever).
+describe("request timeouts", () => {
+  const MIB = 1024 * 1024;
+  const longestUploadSeconds = LIMITS.sliceBodyBytes / MIB; // 512 MiB at 1 MiB/s
+
+  async function serverOf(over: Partial<SlicerConfig>) {
+    const slicer = createSlicer(setup(over).config);
+    running.push(slicer);
+    await new Promise<void>((resolve) => slicer.server.listen(0, "127.0.0.1", resolve));
+    return slicer.server;
+  }
+
+  test("a large body upload is not cut off before its cap", async () => {
+    const server = await serverOf({
+      sliceTimeoutSeconds: 180,
+      scadTimeoutSeconds: 120,
+      stepTimeoutSeconds: 120,
+    });
+    expect(server.requestTimeout).toBeGreaterThan(300_000);
+    expect(server.requestTimeout).toBeGreaterThanOrEqual((longestUploadSeconds + 180) * 1000);
+  });
+
+  test("the request timeout grows with the longest time cap", async () => {
+    const server = await serverOf({
+      sliceTimeoutSeconds: 30,
+      scadTimeoutSeconds: 30,
+      stepTimeoutSeconds: 900,
+    });
+    expect(server.requestTimeout).toBeGreaterThanOrEqual((longestUploadSeconds + 900) * 1000);
+  });
+
+  test("the headers timeout is set, below the request timeout, and neither is off", async () => {
+    const server = await serverOf({});
+    expect(server.headersTimeout).toBe(60_000);
+    expect(server.headersTimeout).toBeLessThanOrEqual(server.requestTimeout);
+    expect(server.requestTimeout).toBeGreaterThan(0);
   });
 });
