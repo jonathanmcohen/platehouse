@@ -23,7 +23,7 @@ printf '%s\\n' "$*" >> "$STUB_LOG"
 case "$1" in
   build) exit "\${STUB_BUILD_RC:-0}" ;;
   info|kill|rm) exit 0 ;;
-  image) [ "$2" = inspect ] && exit "\${STUB_IMAGE_MISSING:-0}"; exit 0 ;;
+  image) [ "$2" = inspect ] && exit "\${STUB_IMAGE_MISSING:-0}"; [ "$2" = rm ] && exit "\${STUB_IMAGE_RM_RC:-0}"; exit 0 ;;
   images) exit 0 ;;
   run)
     out=""
@@ -36,7 +36,11 @@ case "$1" in
       slice) [ "$last1" = j0001 ] && [ -n "\${STUB_SLICE1_RC:-}" ] && exit "$STUB_SLICE1_RC"; [ "$last1" = j0002 ] && exit 124; exit 0 ;;
     esac
     case "$last1" in
-      plan) [ -n "\${STUB_PLAN_RC:-}" ] && exit "$STUB_PLAN_RC"; printf 'j0001\\nj0002\\n' > "$out/jobs.txt"; exit 0 ;;
+      plan)
+        [ -n "\${STUB_PLAN_RC:-}" ] && exit "$STUB_PLAN_RC"
+        [ -n "\${STUB_HOSTEXIT_DIR:-}" ] && mkdir "$out/host-exit.tsv"
+        [ -n "\${STUB_PLAN_NOJOBS:-}" ] && exit 0
+        printf 'j0001\\nj0002\\n' > "$out/jobs.txt"; exit 0 ;;
       checks) exit 0 ;;
       report) exit "\${STUB_VERDICT:-0}" ;;
     esac
@@ -192,4 +196,33 @@ test("run.sh --clean deletes the scratch dir and the image and verifies", () => 
   assert.equal(existsSync(gate), false);
   assert.ok(r.calls.includes("image rm platehouse-gate:t1"));
   assert.match(r.stdout, /neither remains/);
+});
+
+// Under set -euo pipefail any unguarded command that fails ends run.sh with its
+// own status, usually 1, which is the code for a gate FAIL. Each case makes one
+// such setup step fail; every one must exit 2, the gate could not run.
+test("run.sh exits 2, not FAIL, when an unguarded setup step fails", async (t) => {
+  const cases = [
+    {
+      name: "mkdir of the output dir",
+      args: [],
+      prepare: (gate) => {
+        mkdirSync(join(gate, "out"));
+        chmodSync(join(gate, "out"), 0o555);
+      },
+    },
+    { name: "jobs.txt missing after the plan step", args: [], extra: { STUB_PLAN_NOJOBS: "1" } },
+    { name: "the host-exit.tsv append", args: [], extra: { STUB_HOSTEXIT_DIR: "1" } },
+    { name: "docker image rm in --clean", args: ["--clean"], extra: { STUB_IMAGE_RM_RC: "1" } },
+  ];
+  for (const c of cases) {
+    await t.test(c.name, () => {
+      const gate = gateDir();
+      c.prepare?.(gate);
+      const r = run(c.args, { gate, stubDir: stubs(), extra: c.extra ?? {} });
+      assert.equal(r.status, 2, `${c.name}: ${r.stderr}`);
+      assert.match(r.stderr, /the gate could not run/);
+      assert.ok(!r.calls.some((x) => x.endsWith(" report")), "no report runs after a setup failure");
+    });
+  }
 });
