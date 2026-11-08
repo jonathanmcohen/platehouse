@@ -165,9 +165,11 @@ describe("failures that are not an outage", () => {
   });
 
   it("a provider error code that is not a plain word is not copied into the error", async () => {
-    const store = await storeAt(() => s3Error(400, `Bad ${SECRET} <code>`));
+    // Plain text in <Code>, so the SDK passes it on as the error's code.
+    const store = await storeAt(() => s3Error(400, `Bad code ${SECRET}`));
     const err = await errorOf(store.listPrefix("models/"));
     expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).code).toBe("Unknown");
     expect(everyRendering(err)).not.toContain(SECRET);
   });
 
