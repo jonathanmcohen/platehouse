@@ -365,6 +365,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   let headingMarker = -1; // where the open heading's line (indent, "#") begins
   let headingCol = 0; // the column the open heading is written at
   let headingItem: Item | undefined; // the list item the open heading is in
+  let headingLists = 0; // lists open outside cells when the heading opened
+  // A table or list structure ended the open heading before its close tag
+  // (endHeading below); that close tag then must not break the block.
+  let headingEnded = false;
   let itemStart = -1; // where the text of the open list item begins
 
   // A paragraph break; idempotent, so the output never holds more than two
@@ -460,6 +464,35 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     out.truncate(t.cellStart);
     out.append(` ${cell} |`);
   };
+  // Ends the open heading: its text collapsed onto its one line, an empty
+  // heading dropped. CommonMark strips a run of # that ends a heading after
+  // a space, so a trailing # is escaped ("Part #" stays "Part #", and
+  // "Learn C#" is escaped the same way).
+  //
+  // The collapse rewrites everything from headingStart, so no table or list
+  // item may hold a position past headingStart when it runs: a table that
+  // opened in the heading and stayed open past its close once kept its old
+  // header and separator ends, which then pointed into a later row's text,
+  // and the header's pad split a backslash from the "!" it escaped, making
+  // the designer's link an image (issue #40). So a table or list structure
+  // that opens or closes while a heading is open ends the heading first
+  // (onTag), and the rewrite only ever moves text and inline starts, which
+  // Output keeps right.
+  const endHeading = (): void => {
+    if (headingStart < 0) return;
+    const body = out.from(headingStart).replace(/\s+/g, " ").trim();
+    const written = out.from(headingStart);
+    if (!body) out.truncate(headingMarker);
+    else {
+      const text = /#$/.test(body) && !/\\#$/.test(body) ? `${body.slice(0, -1)}\\#` : body;
+      if (text !== written) {
+        out.truncate(headingStart);
+        out.append(text);
+      }
+    }
+    headingStart = -1;
+  };
+
   // Where a line's text would begin if text came next: the end of the output
   // less any spaces after a newline (or the start), or after the open list
   // item's marker. -1 when the output is mid-line.
@@ -515,10 +548,18 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // writes its own block, so text after it does not go back to the item;
     // the close of a nested list, heading or table sets resume again below.
     if (STRUCTURE.test(tag)) resume = undefined;
+    // A table or list structure inside an open heading ends the heading
+    // first (endHeading says why). A heading is never open in a cell: one
+    // opened there writes a space, and a cell opening ends it here.
+    if (headingStart >= 0 && /^(?:ul|ol|li|table|tr|td|th)$/.test(tag)) {
+      endHeading();
+      headingEnded = true;
+    }
 
     if (/^h[1-6]$/.test(tag) && inCell) {
       space();
       headingStart = -1;
+      headingEnded = false;
     } else if (/^h[1-6]$/.test(tag)) {
       if (!closing) {
         dropBareMarker();
@@ -526,26 +567,26 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         headingMarker = out.length;
         headingCol = blockColumn();
         headingItem = items.at(-1);
+        headingLists = lists.length;
+        headingEnded = false;
         out.append(`${" ".repeat(headingCol)}${"#".repeat(Number(tag[1]))} `);
         headingStart = out.length;
-      } else {
-        if (headingStart >= 0) {
-          const body = out.from(headingStart).replace(/\s+/g, " ").trim();
-          // An empty heading would leave a bare "##", which is not a heading
-          // with text; it is dropped. CommonMark strips a run of # that ends
-          // a heading after a space, so a trailing # is escaped ("Part #"
-          // stays "Part #", and "Learn C#" is escaped the same way).
-          const written = out.from(headingStart);
-          if (!body) out.truncate(headingMarker);
-          else {
-            const text = /#$/.test(body) && !/\\#$/.test(body) ? `${body.slice(0, -1)}\\#` : body;
-            if (text !== written) {
-              out.truncate(headingStart);
-              out.append(text);
-            }
-          }
+      } else if (headingEnded) {
+        // The heading already ended where a table or list opened in it. A
+        // paragraph break here would split a table that is still open, so
+        // nothing is written; in a list that opened in the heading the
+        // close is a space, as a paragraph's is in a list.
+        headingEnded = false;
+        if (tables.length > 0) {
+          // nothing
+        } else if (lists.length > headingLists) space();
+        else {
+          breakBlock();
+          resumeAt(headingItem, headingCol);
         }
-        headingStart = -1;
+        headingItem = undefined;
+      } else {
+        endHeading();
         breakBlock();
         resumeAt(headingItem, headingCol);
         headingItem = undefined;
