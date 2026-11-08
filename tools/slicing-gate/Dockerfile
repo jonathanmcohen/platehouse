@@ -59,6 +59,10 @@ COPY check-libs.sh /opt/gate-build/check-libs.sh
 WORKDIR /dl
 
 # OrcaSlicer v2.5.0, Ubuntu 24.04 AppImage (released 2026-11-07).
+# Both AppImage trees get chmod -R a+rX after extraction: read for every user,
+# and execute wherever any execute bit is already set. Without it the gate
+# user could not run libexec/orca-slicer-env ("Permission denied", first CI
+# build, 2026-11-08), while the checks here, run as root, passed.
 # Layout read from this exact file's squashfs on 2026-11-08: AppRun is a bash
 # launcher (mode 0755) that execs libexec/orca-slicer-env bin/orca-slicer, and
 # the env script puts lib/orca-runtime and bin on LD_LIBRARY_PATH. There is no
@@ -76,6 +80,7 @@ RUN source /usr/local/lib/fetch.sh \
  && chmod +x orca.AppImage \
  && ./orca.AppImage --appimage-extract > /dev/null \
  && mv squashfs-root /opt/orca \
+ && chmod -R a+rX /opt/orca \
  && rm orca.AppImage \
  && need -x /opt/orca/AppRun \
  && need -x /opt/orca/libexec/orca-slicer-env \
@@ -131,6 +136,7 @@ RUN source /usr/local/lib/fetch.sh \
  && chmod +x openscad.AppImage \
  && ./openscad.AppImage --appimage-extract > /dev/null \
  && mv squashfs-root /opt/openscad \
+ && chmod -R a+rX /opt/openscad \
  && rm openscad.AppImage \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad
@@ -251,6 +257,24 @@ RUN source /usr/local/lib/need.sh \
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin gate
 USER 10001
+
+# The same checks again as the gate user. Every check above runs as root,
+# and root passes test -x on any execute bit and test -r on any file, so
+# only these show the gate user can start the programs and read its files.
+RUN source /usr/local/lib/need.sh \
+ && need -x /opt/orca/AppRun \
+ && need -x /opt/orca/libexec/orca-slicer-env \
+ && need -x /opt/orca/bin/orca-slicer \
+ && need -r /opt/orca/resources/profiles/BBL.opc \
+ && need -x /opt/openscad/AppRun \
+ && need -x /opt/openscad/usr/bin/openscad \
+ && need -x /usr/local/bin/landrun \
+ && need -x /opt/node/bin/node \
+ && need -r /opt/orca-profiles/BBL.json \
+ && need -r /opt/orca-profiles/OrcaFilamentLibrary.json \
+ && need -r /opt/gate/gate.mjs \
+ && need -r /opt/gate/node_modules/occt-import-js/dist/occt-import-js.wasm
+
 WORKDIR /work
 ENTRYPOINT []
 CMD ["node", "/opt/gate/gate.mjs"]
