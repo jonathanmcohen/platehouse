@@ -226,3 +226,23 @@ test("run.sh exits 2, not FAIL, when an unguarded setup step fails", async (t) =
     });
   }
 });
+
+// --clean runs rm -rf on GATE_DIR, and a case pattern's * also matches "/.."
+// so /tmp/platehouse-gate/../../home/jon passed the old guard. These paths
+// stay inside the test's own scratch dir, so the old code deletes nothing
+// outside it while the test is red.
+test("run.sh refuses a GATE_DIR with a .. segment before --clean deletes anything", () => {
+  const gate = gateDir();
+  mkdirSync(join(gate, "sub"));
+  mkdirSync(join(gate, "victim"));
+  writeFileSync(join(gate, "victim", "keep.txt"), "keep");
+  const sneaky = join(gate, "sub") + "/../victim";
+  const r = run(["--clean"], { gate: sneaky, stubDir: stubs() });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /GATE_DIR must not contain a \.\. segment/);
+  assert.equal(existsSync(join(gate, "victim", "keep.txt")), true, "nothing was deleted");
+  assert.deepEqual(r.calls, [], "docker is never called");
+  const trailing = run([], { gate: `${join(gate, "sub")}/..`, stubDir: stubs() });
+  assert.equal(trailing.status, 2, trailing.stderr);
+  assert.match(trailing.stderr, /GATE_DIR must not contain a \.\. segment/);
+});
