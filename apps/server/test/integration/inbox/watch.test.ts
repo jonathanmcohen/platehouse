@@ -316,9 +316,10 @@ describe("failures", () => {
     expect(await exists(path)).toBe(true);
     expect(await exists(join(inbox, "failed"))).toBe(false);
 
-    // The store comes back: the next poll imports it and deletes the copy.
+    // The store comes back. The check at +5 s failed, so the next is due 10 s
+    // later; that poll imports the file and deletes the copy.
     down = false;
-    const next = await tick(watcher, 5);
+    const next = await tick(watcher, 10);
     expect(next.imported).toHaveLength(1);
     expect(await exists(path)).toBe(false);
     expect((await footprint(env)).models).toBe(before.models + 1);

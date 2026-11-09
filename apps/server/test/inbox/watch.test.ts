@@ -12,6 +12,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   rm,
@@ -23,19 +24,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  BACKOFF_FIRST_MS,
+  BACKOFF_MAX_MS,
   CHANGED_REASON,
   createInboxWatcher,
   FAILED_DIR,
   type ImportedQuery,
+  type InboxProbes,
   inboxName,
   isIgnoredName,
+  MAX_INBOX_BYTES,
   NON_UTF8_REASON,
   REASON_SUFFIX,
+  repeatedErrorReason,
+  STRIKES,
+  TOO_LARGE_REASON,
   UNCONFIRMED_REASON,
-  UNEXPECTED_REASON,
 } from "../../src/inbox/watch.js";
 import { IngestError, type IngestInput } from "../../src/ingest/ingest.js";
-import { StoreError } from "../../src/storage/s3.js";
+import { StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 
 let root: string;
 let inbox: string;
@@ -123,6 +130,25 @@ function watcher(
 async function tick(w: ReturnType<typeof createInboxWatcher>, ms: number) {
   clock += ms;
   return w.pollOnce();
+}
+
+/** An error with a code, as pg and Node give them. */
+const coded = (message: string, code: string) => Object.assign(new Error(message), { code });
+
+/**
+ * Environment checks that fail while down() is true, recording when (on the
+ * injected clock) the database check ran.
+ */
+function checks(down: () => boolean) {
+  const at: number[] = [];
+  const probes: InboxProbes = {
+    database: async () => {
+      at.push(clock);
+      if (down()) throw coded("connect ECONNREFUSED 10.0.0.5:5432", "ECONNREFUSED");
+    },
+    store: async () => undefined,
+  };
+  return { probes, at };
 }
 
 describe("settle window", () => {
@@ -366,18 +392,17 @@ describe("failures", () => {
     );
   });
 
-  test("an unexpected error moves the file to failed with a plain reason and logs the error", async () => {
+  test("a refused file goes to failed at once, without checking the environment", async () => {
     const fake = fakeIngest(() => {
-      throw new TypeError("boom in the parser");
+      throw new IngestError("unsupported_type", "Refused");
     });
-    const w = watcher(fake);
-    await writeFile(join(inbox, "odd.stl"), "solid a\nendsolid a\n");
+    const { probes, at } = checks(() => false);
+    const w = watcher(fake, { probes });
+    await writeFile(join(inbox, "notes.txt"), "not a model\n");
     await w.pollOnce();
     const pass = await tick(w, 15_000);
-    expect(pass.failed).toEqual([{ name: "odd.stl", reason: UNEXPECTED_REASON }]);
-    expect(lines.some((l) => l.includes("odd.stl") && l.includes("boom in the parser"))).toBe(true);
-    await tick(w, 15_000);
-    expect(fake.calls).toEqual(["odd.stl"]);
+    expect(pass.failed).toEqual([{ name: "notes.txt", reason: "Refused." }]);
+    expect(at).toEqual([]);
   });
 
   test("names in failed never collide: (2), (3) and so on, reason files beside each", async () => {
@@ -467,7 +492,8 @@ describe("outages", () => {
         );
       }
     });
-    const w = watcher(fake);
+    const { probes } = checks(() => down);
+    const w = watcher(fake, { probes });
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
     await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
     await w.pollOnce();
@@ -486,6 +512,7 @@ describe("outages", () => {
     const outageLines = lines.filter((l) => l.includes("Storage is unavailable"));
     expect(outageLines).toHaveLength(1);
 
+    // The check at +5 s failed, so the next waits 10 s, until +15 s.
     down = false;
     const back = await tick(w, 5_000);
     expect(back.waiting).toBe(false);
@@ -516,7 +543,8 @@ describe("outages", () => {
     const fake = fakeIngest(() => {
       if (down) throw error;
     });
-    const w = watcher(fake);
+    const { probes } = checks(() => down);
+    const w = watcher(fake, { probes });
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
     await w.pollOnce();
     const pass = await tick(w, 15_000);
@@ -529,60 +557,16 @@ describe("outages", () => {
     expect(await exists(join(inbox, "a.stl"))).toBe(false);
   });
 
-  // A fault in the environment, not the file: every file would meet it, so
-  // none may go to failed for it (a broken store would empty the inbox).
-  test.each([
-    [
-      "storage refusing access (AccessDenied, HTTP 403)",
-      new StoreError("PutObject", "AccessDenied", 403),
-    ],
-    ["a missing bucket (NoSuchBucket, HTTP 404)", new StoreError("PutObject", "NoSuchBucket", 404)],
-    ["a storage server error (HTTP 500)", new StoreError("PutObject", "InternalError", 500)],
-    ["a full storage server (HTTP 507)", new StoreError("PutObject", "InsufficientStorage", 507)],
-    [
-      "a database refusing the login (28P01)",
-      Object.assign(new Error("password authentication failed"), { code: "28P01" }),
-    ],
-    [
-      "a database with a full disk (53100)",
-      Object.assign(new Error("disk full"), { code: "53100" }),
-    ],
-  ])(
-    "an environment fault (%s) leaves every file in place and stops the pass",
-    async (_label, error) => {
-      let down = true;
-      const fake = fakeIngest(() => {
-        if (down) throw error;
-      });
-      const w = watcher(fake);
-      await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
-      await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
-      await w.pollOnce();
-      const pass = await tick(w, 15_000);
-      expect(pass.waiting).toBe(true);
-      expect(pass.failed).toEqual([]);
-      expect(fake.calls).toEqual(["a.stl"]);
-      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
-      await tick(w, 5_000);
-      await tick(w, 5_000);
-      expect(lines.filter((l) => l.includes("left in place"))).toHaveLength(1);
-
-      down = false;
-      const back = await tick(w, 5_000);
-      expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
-      expect(await readdir(inbox)).toEqual([]);
-    },
-  );
-
   test("while the database is down, a file is not uploaded again on every poll", async () => {
-    const refused = () =>
-      Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    const refused = () => coded("connect ECONNREFUSED", "ECONNREFUSED");
     let down = true;
     const fake = fakeIngest(() => {
       if (down) throw refused();
     });
     const lookups: string[] = [];
+    const { probes } = checks(() => down);
     const w = watcher(fake, {
+      probes,
       findImported: async (file) => {
         lookups.push(file.originalName);
         if (down) throw refused();
@@ -603,13 +587,14 @@ describe("outages", () => {
       const pass = await tick(w, 5_000);
       expect(pass.waiting).toBe(true);
     }
-    // Each poll asked the database first and stopped there: no upload.
+    // No file is tried until a check passes: no question, no upload.
     expect(fake.calls).toEqual([]);
-    expect(lookups.length).toBeGreaterThan(1);
-    expect(lines.filter((l) => l.includes("left in place"))).toHaveLength(1);
+    expect(lookups).toEqual(["b.stl"]);
+    expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(1);
 
+    // Checks failed at +5 s and +15 s; the next is due at +35 s.
     down = false;
-    const back = await tick(w, 5_000);
+    const back = await tick(w, 10_000);
     expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
     expect(fake.calls).toEqual(["a.stl", "b.stl"]);
     expect(await readdir(inbox)).toEqual([]);
@@ -649,7 +634,8 @@ describe("outages", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await w.pollOnce();
     const first = await tick(w, 15_000);
-    expect(first.waiting).toBe(true);
+    // The database answers the check, so this is one failed try for the file.
+    expect(first.failed).toEqual([]);
     expect(await exists(path)).toBe(true);
 
     const retry = await tick(w, 5_000);
@@ -698,7 +684,7 @@ describe("outages", () => {
     await writeFile(path, "solid touched\nendsolid touched\n");
     await w.pollOnce();
     const first = await tick(w, 15_000);
-    expect(first.waiting).toBe(true);
+    expect(first.failed).toEqual([]);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     await chmod(path, 0o600);
@@ -741,7 +727,7 @@ describe("outages", () => {
     const before = watcher(fake, { ingest: lostAnswer, findImported });
     await before.pollOnce();
     const first = await tick(before, 15_000);
-    expect(first.waiting).toBe(true);
+    expect(first.failed).toEqual([]);
     expect(await exists(path)).toBe(true);
     await before.stop();
 
@@ -787,7 +773,9 @@ describe("outages", () => {
       if (down) throw new IngestError("storage_unavailable", "Storage is unavailable right now");
     });
     const lookups: string[] = [];
+    const { probes } = checks(() => down);
     const w = watcher(fake, {
+      probes,
       findImported: async (file) => {
         lookups.push(file.originalName);
         return undefined;
@@ -801,6 +789,318 @@ describe("outages", () => {
     expect(fake.calls).toEqual(["a.stl", "a.stl"]);
     expect(lookups).toEqual(["a.stl", "a.stl"]);
     expect(await readdir(inbox)).toEqual([]);
+  });
+});
+
+describe("telling a bad file from an outage", () => {
+  // Errors from every source, none of them on any list: with the checks
+  // failing, none may send a file to failed, or a broken store or database
+  // would empty the inbox one file at a time.
+  const errors: Array<[string, unknown]> = [
+    [
+      "IngestError storage_unavailable",
+      new IngestError("storage_unavailable", "Storage is unavailable right now"),
+    ],
+    ["StoreUnavailable", new StoreUnavailable("PutObject", "ECONNREFUSED")],
+    [
+      "StoreError AccessDenied 403 on HeadObject",
+      new StoreError("HeadObject", "AccessDenied", 403),
+    ],
+    [
+      "StoreError from the upload library, no status",
+      new StoreError("CompleteMultipartUpload", "Error"),
+    ],
+    ["Postgres disk I/O error 58030", coded("could not write to file", "58030")],
+    [
+      "Postgres read-only 25006",
+      coded("cannot execute INSERT in a read-only transaction", "25006"),
+    ],
+    ["Postgres permission denied 42501", coded("permission denied for table files", "42501")],
+    [
+      "Postgres statement timeout 57014",
+      coded("canceling statement due to statement timeout", "57014"),
+    ],
+    ["an error nobody has listed", new Error("something new went wrong")],
+    ["a TypeError", new TypeError("Cannot read properties of undefined")],
+    ["a thrown string", "not even an Error"],
+  ];
+
+  test.each(errors)(
+    "with the checks failing, an ingest error (%s) leaves every file in place and stops the pass",
+    async (_label, error) => {
+      let down = true;
+      const fake = fakeIngest(() => {
+        if (down) throw error;
+      });
+      const { probes } = checks(() => down);
+      const w = watcher(fake, { probes });
+      await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+      await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      expect(fake.calls).toEqual(["a.stl"]);
+      for (let i = 0; i < 60; i += 1) {
+        const later = await tick(w, 5_000);
+        expect(later.failed).toEqual([]);
+      }
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(1);
+
+      down = false;
+      const back = await tick(w, BACKOFF_MAX_MS);
+      expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
+      expect(await readdir(inbox)).toEqual([]);
+      expect(lines.filter((l) => l.includes("importing again"))).toHaveLength(1);
+    },
+  );
+
+  test.each(errors)(
+    "with the checks failing, a findImported error (%s) leaves every file in place and uploads nothing",
+    async (_label, error) => {
+      const fake = fakeIngest();
+      const { probes } = checks(() => true);
+      const w = watcher(fake, {
+        probes,
+        findImported: async () => {
+          throw error;
+        },
+      });
+      await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+      await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      for (let i = 0; i < 60; i += 1) await tick(w, 5_000);
+      expect(fake.calls).toEqual([]);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    },
+  );
+
+  test("during an outage the checks back off: 5 s, doubling each failed check, at most 5 minutes", async () => {
+    const down = true;
+    const fake = fakeIngest(() => {
+      if (down) throw new Error("the import failed");
+    });
+    const { probes, at } = checks(() => down);
+    const w = watcher(fake, { probes });
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    const start = clock;
+    // A poll every 5 s for half an hour.
+    for (let i = 0; i < 360; i += 1) await tick(w, 5_000);
+    const gaps = at.map((t, i) => (i === 0 ? t - start : t - (at[i - 1] ?? 0)));
+    expect(BACKOFF_FIRST_MS).toBe(5_000);
+    expect(BACKOFF_MAX_MS).toBe(300_000);
+    expect(gaps.slice(0, 9)).toEqual([
+      0, 5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000,
+    ]);
+    expect(gaps.every((g) => g <= BACKOFF_MAX_MS)).toBe(true);
+    // The file was tried once, when the outage began, and never again.
+    expect(fake.calls).toEqual(["a.stl"]);
+    expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("importing again"))).toHaveLength(0);
+  });
+
+  test("the outage start is logged with the error, the end once, and the backoff resets after a good pass", async () => {
+    let down = true;
+    const fake = fakeIngest(() => {
+      if (down) throw coded("could not write to file", "58030");
+    });
+    const { probes, at } = checks(() => down);
+    const w = watcher(fake, { probes });
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    for (let i = 0; i < 20; i += 1) await tick(w, 5_000);
+    const started = lines.filter((l) => l.includes("not answering"));
+    expect(started).toHaveLength(1);
+    expect(started[0]).toContain("could not write to file");
+    expect(started[0]).toContain("ECONNREFUSED");
+
+    down = false;
+    await tick(w, BACKOFF_MAX_MS);
+    expect(await exists(join(inbox, "a.stl"))).toBe(false);
+    expect(lines.filter((l) => l.includes("importing again"))).toHaveLength(1);
+
+    // A second outage starts again at 5 s.
+    down = true;
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await tick(w, 5_000);
+    await tick(w, 15_000);
+    const second = clock;
+    const before = at.length;
+    await tick(w, 5_000);
+    expect(at.length).toBe(before + 1);
+    expect((at[at.length - 1] ?? 0) - second).toBe(5_000);
+    expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(2);
+  });
+
+  test("a store that refuses after the upload, with the store check refused too, gets the file uploaded once, not every 5 s", async () => {
+    // A write-only bucket: the upload is stored, HeadObject is denied, and so
+    // is the listing the store check makes.
+    const fake = fakeIngest(() => {
+      throw new StoreError("HeadObject", "AccessDenied", 403);
+    });
+    const probes: InboxProbes = {
+      database: async () => undefined,
+      store: async () => {
+        throw new StoreError("ListObjectsV2", "AccessDenied", 403);
+      },
+    };
+    const w = watcher(fake, { probes });
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    for (let i = 0; i < 120; i += 1) await tick(w, 5_000);
+    expect(fake.calls).toEqual(["a.stl"]);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+  });
+
+  test("a check that does not answer in time counts as failed", async () => {
+    const fake = fakeIngest(() => {
+      throw new Error("the import failed");
+    });
+    const probes: InboxProbes = {
+      database: () => new Promise(() => undefined),
+      store: async () => undefined,
+    };
+    const w = watcher(fake, { probes, probeTimeoutMs: 20 });
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.waiting).toBe(true);
+    expect(pass.failed).toEqual([]);
+    expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(1);
+  });
+
+  test(`with the checks passing, a file that fails ${STRIKES} times in a row moves to failed with the error, and other files import in between`, async () => {
+    const boom = new TypeError("boom in the parser");
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") throw boom;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.waiting).toBe(false);
+    expect(first.failed).toEqual([]);
+    expect(first.imported.map((i) => i.name)).toEqual(["b.stl"]);
+    expect(await exists(join(inbox, "a.stl"))).toBe(true);
+
+    await writeFile(join(inbox, "c.stl"), "solid c\nendsolid c\n");
+    const second = await tick(w, 5_000);
+    expect(second.failed).toEqual([]);
+    expect(await exists(join(inbox, "a.stl"))).toBe(true);
+
+    const third = await tick(w, 5_000);
+    const reason = repeatedErrorReason(boom);
+    expect(third.failed).toEqual([{ name: "a.stl", reason }]);
+    expect(reason).toContain("TypeError: boom in the parser");
+    expect(reason.endsWith(".")).toBe(true);
+    expect(await readFile(join(inbox, FAILED_DIR, `a.stl${REASON_SUFFIX}`), "utf8")).toBe(
+      `${reason}\n`,
+    );
+    expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(STRIKES);
+    // c.stl settled and imported while a.stl was failing.
+    await tick(w, 15_000);
+    expect(fake.calls.filter((n) => n === "c.stl")).toHaveLength(1);
+    expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR]);
+  });
+
+  test("a change to the file resets its count", async () => {
+    const fake = fakeIngest(() => {
+      throw new Error("the import failed");
+    });
+    const w = watcher(fake);
+    const path = join(inbox, "a.stl");
+    await writeFile(path, "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    await tick(w, 5_000);
+    expect(fake.calls).toHaveLength(2);
+
+    await appendFile(path, "more\n");
+    await tick(w, 5_000);
+    await tick(w, 15_000);
+    await tick(w, 5_000);
+    expect(fake.calls).toHaveLength(4);
+    expect(await exists(path)).toBe(true);
+    const pass = await tick(w, 5_000);
+    expect(fake.calls).toHaveLength(5);
+    expect(pass.failed.map((f) => f.name)).toEqual(["a.stl"]);
+  });
+
+  test("a file that fails once and then imports is not in failed", async () => {
+    let fails = 1;
+    const fake = fakeIngest(() => {
+      if (fails > 0) {
+        fails -= 1;
+        throw new Error("a passing hiccup");
+      }
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    const pass = await tick(w, 5_000);
+    expect(pass.imported.map((i) => i.name)).toEqual(["a.stl"]);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+  });
+});
+
+describe("the size limit", () => {
+  /** A sparse file of exactly size bytes, so no disk space is used. */
+  async function sparse(path: string, size: number) {
+    const handle = await open(path, "w");
+    try {
+      await handle.truncate(size);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  test("is the 512 MiB uploads have", () => {
+    expect(MAX_INBOX_BYTES).toBe(536_870_912);
+  });
+
+  test("a file over it moves to failed from its size alone, with nothing read, asked or uploaded", async () => {
+    const lookups: string[] = [];
+    const calls: string[] = [];
+    const w = watcher(fakeIngest(), {
+      ingest: {
+        async ingestFile(input: IngestInput) {
+          calls.push(input.originalName);
+          if (input.originalName === "big.3mf") {
+            throw new IngestError("unsupported_type", "not this one");
+          }
+          return { modelId: "model-x", fileId: "file-x" };
+        },
+      },
+      storedFile: async () => undefined,
+      findImported: async (q) => {
+        lookups.push(`${q.originalName}:${q.size}`);
+        return undefined;
+      },
+    });
+    await sparse(join(inbox, "big.3mf"), MAX_INBOX_BYTES + 1);
+    await sparse(join(inbox, "edge.3mf"), MAX_INBOX_BYTES);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(pass.failed.find((f) => f.name === "big.3mf")).toEqual({
+      name: "big.3mf",
+      reason: TOO_LARGE_REASON,
+    });
+    expect(await readFile(join(inbox, FAILED_DIR, `big.3mf${REASON_SUFFIX}`), "utf8")).toBe(
+      `${TOO_LARGE_REASON}\n`,
+    );
+    expect(calls).toEqual(["edge.3mf"]);
+    expect(lookups).toEqual([`edge.3mf:${MAX_INBOX_BYTES}`]);
   });
 });
 
