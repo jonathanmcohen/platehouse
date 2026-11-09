@@ -579,6 +579,22 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       return;
     }
     if (dropDepth > 0) return;
+    // A close tag with nothing of its kind open is ignored, as a browser
+    // ignores it: a heading close with no heading open (outside a table,
+    // where a heading is just its text), or a </ul> or </ol> that does not
+    // match the innermost list the branches below would close. A paragraph
+    // break or a list pop for it ended the list it sat in (PR #24 review).
+    if (closing) {
+      const table = rowTable();
+      const strayHeading =
+        /^h[1-6]$/.test(tag) && !inCell && tables.length === 0 && headingStart < 0 && !headingEnded;
+      const strayList =
+        (tag === "ul" || tag === "ol") &&
+        !inCell &&
+        !(table && table.lists > 0) &&
+        outerList()?.ordered !== (tag === "ol");
+      if (strayHeading || strayList) return;
+    }
     // A heading, list, item or table after a nested list, heading or table
     // writes its own block, so text after it does not go back to the item;
     // the close of a nested list, heading or table sets resume again below.
