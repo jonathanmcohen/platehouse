@@ -20,24 +20,30 @@
 //      there. GET <prefix>/<id>/result answers pending, done (modelId,
 //      fileId) or failed (a message for Jon).
 //   4. The worker deletes the temp file after ingest, whether it succeeds or
-//      fails (ingestUpload), and keeps the upload's info file for the sweep.
-//      Until then HEAD answers an ingested upload as finished (Upload-Offset
-//      equal to Upload-Length): a client whose last PATCH was answered after
-//      it lost the connection retries with a HEAD, and on a 404 or 410 it
-//      would create the upload again and a second model with it. A failed
-//      ingest is answered as finished too. An upload left untouched for 24
-//      hours, or 24 hours after its ingest, is deleted by the hourly sweep on
-//      the maintenance queue (sweepStaleUploads); a partial one never becomes
-//      a model (Review Focus 5).
-//   5. So the UI's tus-js-client (build plan Task 19) must set
-//      removeFingerprintOnSuccess: true. Its default keeps the resume
-//      fingerprint after success, and that fingerprint is the file and the
-//      endpoint, not modelId or batch: the same file sent again within the
-//      day would resume onto the ingested upload, be told it finished and
-//      send nothing. A retry after a failed ingest would do nothing, and a
-//      send into another model would report the first one. With the setting,
-//      a lost-204 retry still works (it reuses the upload URL it holds in
-//      memory) and a reload before success still finds the fingerprint.
+//      fails (ingestUpload), and keeps the upload's info file for the sweep
+//      with the ingest's outcome written into it. A client whose last PATCH
+//      was answered after it lost the connection retries with a HEAD, and on
+//      a 4xx tus-js-client creates the upload again; so does a client that
+//      kept its resume fingerprint (tus-js-client's default) and sends the
+//      same file again. HEAD on an ingested upload therefore answers by what
+//      the ingest did, whatever the client sets:
+//      - it stored the file: finished (Upload-Offset equal to Upload-Length),
+//        so nothing is sent again and no second model is made;
+//      - it failed with an IngestError: 410, since no row was written and a
+//        fresh send is safe;
+//      - it failed with any other error: finished. That includes a commit
+//        whose outcome the database could not report, where ingest keeps
+//        what it stored and the model may be in the library, so a resend
+//        could make a second one. ingestUpload cannot tell that case apart
+//        from other errors, so all of them take the side that makes no
+//        duplicate, and the result route says the upload could not be
+//        confirmed.
+//      The tidy-up runs under the upload's tus lock, which tus's HEAD and
+//      PATCH take too, so a HEAD never sees the data file gone before the
+//      outcome is written. An upload left untouched for 24 hours, or 24 hours
+//      after its ingest, is deleted by the hourly sweep on the maintenance
+//      queue (sweepStaleUploads); a partial one never becomes a model (Review
+//      Focus 5).
 //
 // Partial uploads live in TMP_DIR/uploads, one data file and one .json info
 // file per upload, both named by the upload id, a UUIDv7. The UI and API
@@ -48,16 +54,17 @@
 // (<prefix>/<id>) and no forwarded or Host header is read, so no URL comes
 // from the request (AC-091). There is no DELETE, GET or OPTIONS on an upload:
 // the API deletes nothing (AC-084), and an abandoned upload is swept.
-import { readdir, rm, stat, utimes } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { FileStore } from "@tus/file-store";
-import { MemoryLocker, Server, type Upload } from "@tus/server";
+import { ERRORS, MemoryLocker, Server, Upload } from "@tus/server";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import { kindFromName } from "../ingest/detect.js";
 import {
+  IngestError,
   type IngestInput,
   type IngestResult,
   type IngestTarget,
@@ -265,11 +272,12 @@ export interface Uploads {
   readonly datastore: FileStore;
   readonly locker: MemoryLocker;
   /**
-   * ingestFile for the ingest queue's worker: runs it, then deletes the
-   * upload's temp file whether it succeeded or failed. The info file is kept
-   * and its time set to now, so HEAD answers the upload as finished until the
-   * sweep deletes it a day later. A path outside TMP_DIR/uploads (an inbox
-   * file) is never deleted here.
+   * ingestFile for the ingest queue's worker: runs it, then, holding the
+   * upload's lock, writes the ingest's outcome into the upload's info file
+   * and deletes its temp file, whether the ingest succeeded or failed. The
+   * rewrite sets the info file's time to now, so HEAD answers by that outcome
+   * until the sweep deletes it a day later. A path outside TMP_DIR/uploads
+   * (an inbox file) is never deleted here.
    */
   ingestUpload(
     ingestFile: (input: IngestInput) => Promise<IngestResult>,
@@ -283,6 +291,49 @@ export interface Uploads {
 
 function errorCode(error: unknown): string | undefined {
   return (error as { code?: string } | null)?.code;
+}
+
+/**
+ * What an upload's ingest did, written into its info file by ingestUpload:
+ * stored the file, failed with an IngestError (nothing saved), or failed
+ * some other way (the outcome is not known).
+ */
+type IngestOutcome = "stored" | "nothing_saved" | "unknown";
+
+/** The info file's contents: tus's own fields, and the outcome once ingested. */
+type UploadInfo = Upload & { ingest?: IngestOutcome };
+
+/** The ingest outcome an info file records, if any. */
+function ingestOutcome(info: Upload | undefined): IngestOutcome | undefined {
+  const value = (info as UploadInfo | undefined)?.ingest;
+  return value === "stored" || value === "nothing_saved" || value === "unknown" ? value : undefined;
+}
+
+/**
+ * The store tus answers HEAD from (registerTus): the shared folder and info
+ * files, read under the same lock. When an upload's data file is gone it
+ * answers by the outcome ingest wrote: finished after "stored" or "unknown",
+ * and tus's own 410 after "nothing_saved" or when no ingest wrote one (the
+ * queue was down, or the sweep got there). Because tus reads this while it
+ * holds the upload's lock, and ingestUpload writes the outcome and deletes
+ * the data file while holding it too, the check and the answer cannot be
+ * split by the tidy-up. The finished answer carries no Upload-Metadata, as
+ * before. PATCH still uses the plain store, so a PATCH after ingest is 410.
+ */
+class HeadStore extends FileStore {
+  override async getUpload(id: string): Promise<Upload> {
+    try {
+      return await super.getUpload(id);
+    } catch (error) {
+      if (error !== ERRORS.FILE_NO_LONGER_EXISTS) throw error;
+      const info = await this.configstore.get(id);
+      const outcome = ingestOutcome(info);
+      const size = info?.size;
+      if (outcome !== "stored" && outcome !== "unknown") throw error;
+      if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) throw error;
+      return new Upload({ id, size, offset: size });
+    }
+  }
 }
 
 /** Deletes an upload's data file and info file; a file already gone is fine. */
@@ -300,27 +351,56 @@ export function createUploads(deps: {
   const dir = uploadsDir(deps.tmpDir);
   const { queue } = deps;
   const log = deps.log ?? ((line: string) => console.info(line));
+  const datastore = new FileStore({ directory: dir });
+  const locker = new MemoryLocker();
+
+  /**
+   * Writes the outcome into the info file, then deletes the data file, both
+   * under the upload's lock (HeadStore). If the outcome cannot be written the
+   * data file stays, so HEAD keeps answering finished by its bytes rather
+   * than 410, and the sweep removes both a day later.
+   */
+  async function tidyUpload(id: string, outcome: IngestOutcome): Promise<void> {
+    const lock = locker.newLock(id);
+    try {
+      // A HEAD or PATCH that wants the lock meanwhile waits; this is brief.
+      await lock.lock(new AbortController().signal, async () => {});
+    } catch {
+      // Only a timeout gets here: a request held the lock for 30 seconds.
+      log(`uploads: could not lock upload ${id} to tidy it after ingest; the sweep will`);
+      return;
+    }
+    try {
+      const info = await datastore.configstore.get(id);
+      if (info !== undefined) {
+        // Rewriting the file also sets its time to now, so the sweep keeps
+        // it for a day after the ingest.
+        await datastore.configstore.set(id, { ...info, ingest: outcome } as UploadInfo);
+      }
+      await rm(join(dir, id), { force: true });
+    } catch (error) {
+      // The ingest's own outcome is what matters; the sweep removes the
+      // files once they are a day old.
+      log(`uploads: could not tidy upload ${id} after ingest (${errorCode(error)})`);
+    } finally {
+      await lock.unlock();
+    }
+  }
 
   function ingestUpload(ingestFile: (input: IngestInput) => Promise<IngestResult>) {
     return async (input: IngestInput): Promise<IngestResult> => {
+      let outcome: IngestOutcome = "unknown";
       try {
-        return await ingestFile(input);
+        const result = await ingestFile(input);
+        outcome = "stored";
+        return result;
+      } catch (error) {
+        if (error instanceof IngestError) outcome = "nothing_saved";
+        throw error;
       } finally {
         const path = resolve(input.tmpPath);
         const id = basename(path);
-        if (dirname(path) === resolve(dir) && UPLOAD_ID.test(id)) {
-          try {
-            await rm(join(dir, id), { force: true });
-            const now = new Date();
-            await utimes(join(dir, `${id}.json`), now, now).catch((error: unknown) => {
-              if (errorCode(error) !== "ENOENT") throw error;
-            });
-          } catch (error) {
-            // The ingest's own outcome is what matters; the sweep removes
-            // the file once it is a day old.
-            log(`uploads: could not tidy upload ${id} after ingest (${errorCode(error)})`);
-          }
-        }
+        if (dirname(path) === resolve(dir) && UPLOAD_ID.test(id)) await tidyUpload(id, outcome);
       }
     };
   }
@@ -374,8 +454,8 @@ export function createUploads(deps: {
   return {
     dir,
     queue,
-    datastore: new FileStore({ directory: dir }),
-    locker: new MemoryLocker(),
+    datastore,
+    locker,
     ingestUpload,
     sweepStaleUploads,
   };
@@ -386,24 +466,6 @@ function sweepLine(r: UploadSweepResult): string {
     `upload sweep: found ${r.listed} uploads, deleted ${r.deleted} untouched for 24 hours, ` +
     `kept ${r.kept}, left ${r.skipped} other files alone`
   );
-}
-
-/**
- * The length of an upload that ingest has already taken (its data file is
- * gone, its info file is kept and an ingest job exists under its id), or
- * undefined for any other upload, which tus answers itself.
- */
-async function ingestedLength(uploads: Uploads, id: string): Promise<number | undefined> {
-  try {
-    await stat(join(uploads.dir, id));
-    return undefined;
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT") return undefined;
-  }
-  const size = (await uploads.datastore.configstore.get(id))?.size;
-  if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) return undefined;
-  if ((await uploads.queue.result(id)) === undefined) return undefined;
-  return size;
 }
 
 /** A Web Request for @tus/server: the canonical path, no Host or forwarded headers. */
@@ -474,14 +536,25 @@ export async function registerTus(
   const { authHook, uploads } = opts;
   const prefix = opts.prefix.replace(/\/+$/, "");
 
-  const tus = new Server({
+  const shared = {
     path: prefix,
-    datastore: uploads.datastore,
     locker: uploads.locker,
     maxSize: MAX_UPLOAD_BYTES,
     relativeLocation: true,
     respectForwardedHeaders: false,
     allowedOrigins: () => false,
+  };
+  // HEAD is answered from HeadStore, under the same lock (HeadStore).
+  const tusHead = new Server({
+    ...shared,
+    datastore: new HeadStore({
+      directory: uploads.dir,
+      configstore: uploads.datastore.configstore,
+    }),
+  });
+  const tus = new Server({
+    ...shared,
+    datastore: uploads.datastore,
     namingFunction: () => uuidv7(),
     onUploadCreate: async (_req, upload: Upload) => {
       try {
@@ -534,30 +607,18 @@ export async function registerTus(
         return sendTusResponse(reply, response);
       });
 
-      const forwardToId = async (request: FastifyRequest, reply: FastifyReply) => {
-        const id = uploadId(request);
-        if (id === undefined) return reply.code(404).send("Not found\n");
-        const response = await tus.handleWeb(tusRequest(request, `${prefix}/${id}`));
-        releaseUnreadBody(request, reply);
-        return sendTusResponse(reply, response);
-      };
-      scope.head("/:id", async (request, reply) => {
-        const id = uploadId(request);
-        const length = id === undefined ? undefined : await ingestedLength(uploads, id);
-        if (length === undefined) return forwardToId(request, reply);
-        // Already ingested, whether it succeeded or failed: finished, so a
-        // resuming client sends nothing more. A resend of the same file is a
-        // new upload only because the UI client drops its fingerprint on
-        // success (removeFingerprintOnSuccess, step 5 at the top of this file).
-        return reply
-          .code(200)
-          .header("tus-resumable", "1.0.0")
-          .header("upload-offset", String(length))
-          .header("upload-length", String(length))
-          .header("cache-control", "no-store")
-          .send("");
-      });
-      scope.patch("/:id", forwardToId);
+      const forwardToId =
+        (server: Server) => async (request: FastifyRequest, reply: FastifyReply) => {
+          const id = uploadId(request);
+          if (id === undefined) return reply.code(404).send("Not found\n");
+          const response = await server.handleWeb(tusRequest(request, `${prefix}/${id}`));
+          releaseUnreadBody(request, reply);
+          return sendTusResponse(reply, response);
+        };
+      // An ingested upload is answered by its ingest's outcome (step 4 at the
+      // top of this file, and HeadStore).
+      scope.head("/:id", forwardToId(tusHead));
+      scope.patch("/:id", forwardToId(tus));
 
       scope.get("/:id/result", async (request, reply) => {
         const id = uploadId(request);
