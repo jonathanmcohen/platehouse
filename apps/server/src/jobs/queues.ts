@@ -137,7 +137,10 @@ export interface QueueDeps {
    * the slicer queue is created but not worked.
    */
   slicerJobs?: SlicerJobHandlers;
-  /** Task 12's Orca-version poll, scheduled every 10 minutes when given. */
+  /**
+   * Task 12's Orca-version poll, when given: scheduled every 10 minutes and
+   * run once at startup by startQueues itself.
+   */
   pollOrca?(): Promise<unknown>;
   /**
    * Runs after a file is ingested, outside the ingest transaction: Task 12
@@ -161,7 +164,8 @@ interface MaintenanceJob {
  * a queue that exists keeps its policy (the slicer queue's retry settings are
  * applied again), and a schedule is keyed, so it is replaced rather than
  * added again. The slicer queue is worked, one job at a time, only when
- * slicerJobs is given; the Orca poll is scheduled only when pollOrca is.
+ * slicerJobs is given; the Orca poll is scheduled, and run once before this
+ * returns, only when pollOrca is.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
@@ -261,4 +265,18 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       }
     },
   );
+
+  // The Orca poll's startup run (Task 12 decision: at startup and every 10
+  // minutes), here beside its schedule. It runs after the workers start, so
+  // the slices it queues are worked at once. A failure, such as a slicer that
+  // is not up yet, is logged and never stops the app: the next scheduled poll
+  // does the same work.
+  if (deps.pollOrca) {
+    try {
+      await deps.pollOrca();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: startup Orca poll: ${message.slice(0, 200)}`);
+    }
+  }
 }

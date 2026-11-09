@@ -8,10 +8,12 @@
 // them differently:
 // - SlicerBusy: 409 busy, the slicer is running another heavy job;
 // - SlicerUnreachable: no connection, a connection lost before the answer
-//   (the slicer restarted mid-slice), or no answer in time;
+//   (the slicer restarted mid-slice), or no answer in time; neverConnected
+//   tells the first, where the slicer never saw the request, from the rest;
 // - SlicerRefused: any other answer that is not a result (400, 404, 413, 422,
 //   a 500 from the slicer, or a body the contract does not allow).
-// The job retries the first two through pg-boss's own retry settings and
+// The job retries the first two through pg-boss's own retry settings (and
+// waits for a slicer that took no connection without using a retry) and
 // records the third as a failed estimate (service.ts).
 //
 // The slicer kills a plate itself at SLICE_TIMEOUT_SECONDS, --mstpp + 60 by
@@ -53,14 +55,36 @@ export class SlicerBusy extends Error {
   }
 }
 
+/**
+ * The network codes that mean no connection was made at all: the slicer is
+ * down, restarting or not on the network, and never saw the request.
+ */
+const NO_CONNECTION_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "EHOSTDOWN",
+  "ENETUNREACH",
+  "ENETDOWN",
+]);
+
 /** No connection, a connection lost before the answer, or no answer in time. */
 export class SlicerUnreachable extends Error {
   readonly reason: string;
+  /**
+   * True when no connection was made, so the slicer never saw the request:
+   * the slicer is down, and the request is not what brought it down. False
+   * when a connection was lost or timed out, which a plate that crashes the
+   * slicer also causes.
+   */
+  readonly neverConnected: boolean;
 
   constructor(reason: string) {
     super(`The slicer could not be reached (${reason})`);
     this.name = "SlicerUnreachable";
     this.reason = reason;
+    this.neverConnected = NO_CONNECTION_CODES.has(reason);
   }
 }
 

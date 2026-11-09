@@ -105,6 +105,8 @@ beforeAll(async () => {
     // The app's retry settings (SLICER_RETRY: 3 retries, backoff) with a
     // one-second delay, so the retry tests take seconds, not minutes.
     jobOptions: { retryDelay: 1, retryDelayMax: 1 },
+    // And a slicer that is down is waited for 1.5 s per job, not 30 s.
+    slicerDown: { waitMs: 1_500, pollMs: 100 },
   });
   await startQueues(boss, {
     ingestFile: (input) => env.ingest.ingestFile(input),
@@ -115,8 +117,8 @@ beforeAll(async () => {
     onIngested: (result) => estimates.enqueueFile(result.fileId),
     pollingIntervalSeconds: 0.5,
   });
-  // At startup, as the app does.
-  await estimates.pollOrca();
+  // startQueues has run the Orca poll once, as at app startup.
+  expect((await env.repos.settings.get()).lastOrcaVersion).toBe("2.5.0");
 });
 
 afterAll(async () => {
@@ -389,6 +391,109 @@ describe("estimates", () => {
       reason: "slicer_error",
       words: "The slicer could not slice this plate.",
     });
+  });
+
+  test("a slicer down for longer than the retries last fails no plate, and the plates land when it is back", async () => {
+    const before = stub.calls.length;
+    await stub.down();
+    let plates: Array<{ id: string; index: number }> = [];
+    try {
+      ({ plates } = await upload({ plates: 3 }));
+      // Far longer than one attempt and three one-second retries take, so
+      // without the wait every plate would have failed by now.
+      await sleep(10_000);
+      for (const plate of plates) {
+        const rows = await platehouseRows(plate.id);
+        expect(rows).toHaveLength(1);
+        expect(["pending", "running"]).toContain(rows[0]?.status);
+      }
+    } finally {
+      await stub.up();
+    }
+    await drain();
+    for (const plate of plates) {
+      expect(await platehouseRows(plate.id)).toEqual([
+        expect.objectContaining({ status: "ok", printerId: P1S }),
+      ]);
+    }
+    // Each plate was sliced once, when the slicer was back.
+    expect(stub.calls.length - before).toBe(3);
+  });
+
+  test("a slice lost while running fails with slicer_error, and a lost pending one is queued again", async () => {
+    // A file ingested without the queue has no estimate and no job. Its two
+    // plates get estimates with no job behind them, as after the app stopped
+    // mid-slice (running) or before it sent the job (pending).
+    const direct = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 2 })),
+      originalName: "Lost.3mf",
+      target: "new",
+    });
+    const plates = await env.repos.plates.listForFile(direct.fileId);
+    const orca = (await env.repos.settings.get()).lastOrcaVersion;
+    if (orca === null) throw new Error("no Orca version stored");
+    const pending = (index: number) =>
+      env.repos.estimates.upsertPending({
+        plateId: plateId(plates, index),
+        printerId: P1S,
+        printerModelId: "C12",
+        nozzle: 0.4,
+        slicer: "OrcaSlicer",
+        slicerVersion: orca,
+      });
+    const running = await pending(1);
+    await env.db
+      .updateTable("estimates")
+      .set({ status: "running" })
+      .where("id", "=", running.id)
+      .execute();
+    const waiting = await pending(2);
+    expect(await boss.findJobs(QUEUE.slicer, { data: { estimateId: running.id } })).toEqual([]);
+    expect(await boss.findJobs(QUEUE.slicer, { data: { estimateId: waiting.id } })).toEqual([]);
+
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(plateId(plates, 1))).toEqual([
+      expect.objectContaining({
+        id: running.id,
+        status: "failed",
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: "The slice was lost before it finished.",
+      }),
+    ]);
+    expect(await platehouseRows(plateId(plates, 2))).toEqual([
+      expect.objectContaining({ id: waiting.id, status: "ok" }),
+    ]);
+  });
+
+  test("the lost-slice check leaves a slice that is running or queued alone", async () => {
+    const before = stub.calls.length;
+    const held = stub.hold();
+    let plates: Array<{ id: string; index: number }> = [];
+    try {
+      ({ plates } = await upload({ plates: 2 }));
+      // Plate 1 is slicing (held in the slicer), plate 2 waits in the queue.
+      await until(
+        () => stub.calls.length - before,
+        (n) => n > 0,
+      );
+      await estimates.pollOrca();
+      for (const plate of plates) {
+        const [row] = await platehouseRows(plate.id);
+        expect(["pending", "running"]).toContain(row?.status);
+        // No second job was sent for it.
+        const jobs = await boss.findJobs(QUEUE.slicer, { data: { estimateId: row?.id } });
+        expect(jobs).toHaveLength(1);
+      }
+    } finally {
+      held.release();
+    }
+    await drain();
+    for (const plate of plates) {
+      expect(await platehouseRows(plate.id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    }
+    expect(stub.calls.length - before).toBe(2);
   });
 
   test("printer change supersedes queued estimates of the previous printer", async () => {

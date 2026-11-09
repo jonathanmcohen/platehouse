@@ -88,6 +88,13 @@ export interface SlicerStub {
   onSlice(decide: (call: StubCall, n: number) => StubOutcome): void;
   /** Holds every slice answer until release() is called (ok answers keep their outcome). */
   hold(): { release(): void };
+  /**
+   * Stops listening and cuts every connection, as a slicer that is stopped
+   * or restarting: every request is refused until up().
+   */
+  down(): Promise<void>;
+  /** Listens again on the same port. */
+  up(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -333,10 +340,19 @@ export async function startSlicerStub(
         },
       };
     },
+    async down() {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const res of hung) res.destroy();
+      for (const socket of sockets) socket.destroy();
+      await closed;
+    },
+    async up() {
+      await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+    },
     async stop() {
       for (const res of hung) res.destroy();
       for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
       await rm(dir, { recursive: true, force: true });
     },
   };

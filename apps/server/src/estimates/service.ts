@@ -15,6 +15,14 @@
 //   answer that is not a result fails it at once with slicer_error. A result
 //   is recorded as it came: numbers, or the slicer's own reason (Orca codes
 //   the slicer reports as slicer_error stay slicer_error).
+// - A slicer that takes no connection at all (down or restarting, so it never
+//   saw the plate) uses no retry: the job waits for /v1/health to answer,
+//   holding the queue's one slot so the plates behind it do not spend their
+//   retries on the same outage, then slices again. When the slicer is still
+//   down after the wait, the plate goes back on the queue as a new job, so an
+//   outage of any length fails no plate. A connection that was made and then
+//   lost still uses a retry, since a plate that crashes the slicer looks like
+//   that, and such a plate must end failed rather than loop.
 // - On a printer change the queued slice jobs of other printers are
 //   cancelled and their waiting estimates deleted; a slice already running
 //   finishes and is kept, labelled with its printer. A job that starts after
@@ -33,6 +41,7 @@
 // - Each slice records the Orca version that produced it (AC-036) and, for
 //   each filament, the preset the slicer used and where it came from:
 //   Bambu's own, Generic, or the file's own filament (PR #55).
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Printer, Profiles, SliceOk } from "@platehouse/slicer-contract";
 import { type Kysely, sql } from "kysely";
 import type { JobWithMetadata, PgBoss } from "pg-boss";
@@ -88,6 +97,14 @@ export interface SliceJobOptions {
   retryDelayMax?: number;
 }
 
+/** How a slice job waits for a slicer that took no connection. */
+export interface SlicerDownWait {
+  /** Longest wait in one job before the plate goes back on the queue. */
+  waitMs: number;
+  /** How often /v1/health is asked meanwhile. */
+  pollMs: number;
+}
+
 export interface EstimatesDeps {
   db: Kysely<DB>;
   boss: PgBoss;
@@ -99,6 +116,8 @@ export interface EstimatesDeps {
    */
   sliceTimeoutMs?: number;
   jobOptions?: SliceJobOptions;
+  /** SLICER_DOWN_WAIT when left out; the tests shorten it. */
+  slicerDown?: SlicerDownWait;
   log?: (line: string) => void;
 }
 
@@ -136,6 +155,13 @@ const DETAIL_CHARS = 2000;
 /** Most jobs read back when looking through the slicer queue. */
 const JOB_PAGE = 100_000;
 
+/**
+ * Waiting for a slicer that is down: 30 s at most in one job, asking every
+ * 5 s. A job may stay active for its slice timeout plus 60 s, so the wait,
+ * a health check that times out (10 s) and a full slice after it all fit.
+ */
+export const SLICER_DOWN_WAIT: SlicerDownWait = Object.freeze({ waitMs: 30_000, pollMs: 5_000 });
+
 function errorDetail(error: unknown): string {
   if (error instanceof SlicerBusy) return "The slicer stayed busy with other work.";
   if (error instanceof SlicerUnreachable)
@@ -168,6 +194,7 @@ function isSliceJob(data: unknown): data is SliceJobData {
 
 export function createEstimates(deps: EstimatesDeps): Estimates {
   const { db, boss, slicer, store } = deps;
+  const slicerDown = deps.slicerDown ?? SLICER_DOWN_WAIT;
   const log = deps.log ?? ((line: string) => console.error(`estimates: ${line}`));
   const repos: Repos = createRepos(db);
   const expireInSeconds = Math.ceil((deps.sliceTimeoutMs ?? sliceTimeoutMs(120)) / 1000) + 60;
@@ -479,41 +506,118 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       .where("id", "=", estimate.id)
       .execute();
     const full: Estimate = { ...estimate, filaments: [] };
-    try {
-      const body = await store.getBlobStream(target.key);
-      const result = await slicer.slice({
-        printerId: estimate.printerId,
-        plate: target.index,
-        body,
-        size: target.size,
-      });
-      if (result.status === "ok") {
-        await recordOk(full, target.fileId, result);
-      } else {
-        await recordFailed(estimate.id, result);
+    const waitUntil = Date.now() + slicerDown.waitMs;
+    for (;;) {
+      try {
+        const body = await store.getBlobStream(target.key);
+        const result = await slicer.slice({
+          printerId: estimate.printerId,
+          plate: target.index,
+          body,
+          size: target.size,
+        });
+        if (result.status === "ok") {
+          await recordOk(full, target.fileId, result);
+        } else {
+          await recordFailed(estimate.id, result);
+        }
+        return;
+      } catch (error) {
+        if (error instanceof SlicerUnreachable && error.neverConnected) {
+          // The slicer is down and never saw this plate: no retry is used.
+          if (await slicerBack(waitUntil)) continue;
+          await requeue(full);
+          return;
+        }
+        if (isRetryable(error) && job.retryCount < job.retryLimit) {
+          await backToPending(estimate.id);
+          throw error;
+        }
+        await recordFailed(estimate.id, {
+          code: null,
+          reason: "slicer_error",
+          detail: errorDetail(error),
+        });
+        return;
       }
-    } catch (error) {
-      if (isRetryable(error) && job.retryCount < job.retryLimit) {
-        await db
-          .updateTable("estimates")
-          .set({ status: "pending" })
-          .where("id", "=", estimate.id)
-          .where("status", "=", "running")
-          .execute();
-        throw error;
-      }
-      await recordFailed(estimate.id, {
-        code: null,
-        reason: "slicer_error",
-        detail: errorDetail(error),
-      });
     }
+  }
+
+  async function backToPending(estimateId: string): Promise<void> {
+    await db
+      .updateTable("estimates")
+      .set({ status: "pending" })
+      .where("id", "=", estimateId)
+      .where("status", "=", "running")
+      .execute();
+  }
+
+  /**
+   * Waits until /v1/health answers or the time is up; true when it answered.
+   * The job holds the singleton queue's one slot meanwhile, so no other slice
+   * starts and fails against the same outage.
+   */
+  async function slicerBack(until: number): Promise<boolean> {
+    for (;;) {
+      const left = until - Date.now();
+      if (left <= 0) return false;
+      await sleep(Math.min(slicerDown.pollMs, left));
+      try {
+        await slicer.health();
+        return true;
+      } catch {
+        // Still down.
+      }
+    }
+  }
+
+  /**
+   * The slicer is still down after the wait: the plate goes back on the
+   * queue as a new job with its retries untouched, and this job ends, so the
+   * outage is waited out a job at a time rather than failing the plate.
+   */
+  async function requeue(estimate: Estimate): Promise<void> {
+    await backToPending(estimate.id);
+    await sendSlice(estimate);
+  }
+
+  /**
+   * The estimate ids of every slice job waiting in the queue (created, or
+   * waiting for a retry), read a page at a time. Only queued jobs are read,
+   * so the finished jobs pg-boss keeps never crowd out a live one.
+   */
+  async function queuedSliceEstimates(): Promise<Set<string>> {
+    const ids = new Set<string>();
+    let after: string | undefined;
+    for (;;) {
+      const page = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
+        queued: true,
+        data: { kind: SLICE_JOB_KIND },
+        limit: JOB_PAGE,
+        ...(after === undefined ? {} : { after }),
+      });
+      for (const job of page) ids.add(job.data.estimateId);
+      const last = page.at(-1);
+      if (page.length < JOB_PAGE || last === undefined) return ids;
+      after = last.id;
+    }
+  }
+
+  /** Whether the estimate has a job queued or active now: its own jobs only. */
+  async function hasLiveJob(estimateId: string): Promise<boolean> {
+    const jobs = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
+      data: { kind: SLICE_JOB_KIND, estimateId },
+      limit: JOB_PAGE,
+    });
+    return jobs.some((j) => j.state === "created" || j.state === "retry" || j.state === "active");
   }
 
   /**
    * Estimates that say pending or running while no job of theirs is queued
    * or active: a running one fails with slicer_error, a pending one is
-   * queued again.
+   * queued again. pg-boss cannot list active jobs alone, so an estimate with
+   * no queued job has its own jobs read; that is the one slicing now, and
+   * any that were lost.
    */
   async function recoverLost(): Promise<void> {
     const waiting = await db
@@ -523,17 +627,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       .where("status", "in", ["pending", "running"])
       .execute();
     if (waiting.length === 0) return;
-    const jobs = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
-      data: { kind: SLICE_JOB_KIND },
-      limit: JOB_PAGE,
-    });
-    const live = new Set(
-      jobs
-        .filter((j) => j.state === "created" || j.state === "retry" || j.state === "active")
-        .map((j) => j.data.estimateId),
-    );
+    const queued = await queuedSliceEstimates();
     for (const row of waiting) {
-      if (live.has(row.id)) continue;
+      if (queued.has(row.id) || (await hasLiveJob(row.id))) continue;
       if (row.status === "running") {
         await db
           .updateTable("estimates")

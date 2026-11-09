@@ -3,6 +3,7 @@
 // connection are told apart from a refusal, because the slice job retries the
 // first two and records the third.
 import { Readable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   createSlicerClient,
@@ -121,9 +122,12 @@ describe("slicer client", () => {
   test("a connection cut mid-slice is SlicerUnreachable", async () => {
     stub.onSlice(() => ({ kind: "drop" }));
     const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
-    await expect(
-      client.slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) }),
-    ).rejects.toBeInstanceOf(SlicerUnreachable);
+    const error = await client
+      .slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SlicerUnreachable);
+    // The slicer had the plate, so the plate may be what brought it down.
+    expect((error as SlicerUnreachable).neverConnected).toBe(false);
   });
 
   test("a slice that never answers is SlicerUnreachable after the timeout", async () => {
@@ -140,9 +144,31 @@ describe("slicer client", () => {
     await down.stop();
     const client = createSlicerClient({ url, plateSeconds: 5 });
     await expect(client.health()).rejects.toBeInstanceOf(SlicerUnreachable);
-    await expect(
-      client.slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) }),
-    ).rejects.toBeInstanceOf(SlicerUnreachable);
+    const error = await client
+      .slice({ printerId: P1S, plate: 1, ...body(build3mf({ plates: 1 })) })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SlicerUnreachable);
+    // No connection was made, so the slicer never saw the plate.
+    expect((error as SlicerUnreachable).neverConnected).toBe(true);
+  });
+
+  test("a slicer that goes down refuses every connection until it is up again", async () => {
+    const restarting = await startSlicerStub();
+    try {
+      const client = createSlicerClient({ url: restarting.url, plateSeconds: 5 });
+      await expect(client.health()).resolves.toMatchObject({ orca: "2.5.0" });
+      await restarting.down();
+      // A pooled keep-alive connection the slicer has just closed reads as a
+      // lost connection until the client sees it close.
+      await sleep(100);
+      const error = await client.health().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SlicerUnreachable);
+      expect((error as SlicerUnreachable).neverConnected).toBe(true);
+      await restarting.up();
+      await expect(client.health()).resolves.toMatchObject({ orca: "2.5.0" });
+    } finally {
+      await restarting.stop();
+    }
   });
 
   test("a body that is not a .3mf and an unknown printer are refusals", async () => {
