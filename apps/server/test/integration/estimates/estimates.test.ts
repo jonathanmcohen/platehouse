@@ -510,6 +510,52 @@ describe("estimates", () => {
     expect(stub.calls.length - before).toBe(4);
   });
 
+  test("a busy retry before a long slicer outage fails with the slicer-down detail, and the poll queues it again once the slicer is back", async () => {
+    // Issue #75: a 409 busy uses a retry, but it is not a lost connection,
+    // so it must not make an outage failure read as a slice that stopped the
+    // slicer, which the poll would leave failed.
+    const before = stub.calls.length;
+    logs.length = 0;
+    let answered = 0;
+    stub.onSlice(() => {
+      answered += 1;
+      if (answered === 1) {
+        // Once the 409 is out, the slicer stops for longer than the 3
+        // requeues' waits; the retry after the busy answer finds it down.
+        setTimeout(() => {
+          void stub.down();
+        }, 300);
+        return { kind: "busy" };
+      }
+      return { kind: "ok" };
+    });
+    let id = "";
+    try {
+      const { plates } = await upload({ plates: 1 });
+      id = plateId(plates, 1);
+      const [row] = await until(
+        () => platehouseRows(id),
+        (rows) => rows[0]?.status === "failed",
+      );
+      expect(row).toMatchObject({
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: SLICER_DOWN_DETAIL,
+      });
+      expect(logs.filter((l) => l.includes("back on the queue"))).toHaveLength(3);
+      // The poll cannot reach the slicer either, so it queues nothing.
+      await expect(estimates.pollOrca()).rejects.toThrow();
+    } finally {
+      await stub.up();
+    }
+    // Only the busy request reached the slicer.
+    expect(stub.calls.length - before).toBe(1);
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(stub.calls.length - before).toBe(2);
+  });
+
   test("a store outage for longer than the retries last fails no plate", async () => {
     const before = stub.calls.length;
     storeDown = true;
