@@ -218,23 +218,12 @@ describe("the image's profile folder", () => {
     const out = scratch();
     buildProfiles(loadIndex(profileTree()), out);
     expect(loadProfiles(out).filaments).toEqual([
-      {
-        printer: "Bambu Lab A1 0.4 nozzle",
-        type: "PLA",
-        profile: "Generic PLA @BBL A1",
-        source: "generic",
-      },
-      {
-        printer: "Bambu Lab P1S 0.4 nozzle",
-        type: "PETG",
-        profile: "Generic PETG",
-        source: "generic",
-      },
+      { printer: "Bambu Lab A1 0.4 nozzle", type: "PLA", profile: "Generic PLA @BBL A1" },
+      { printer: "Bambu Lab P1S 0.4 nozzle", type: "PETG", profile: "Generic PETG" },
       {
         printer: "Bambu Lab P1S 0.4 nozzle",
         type: "PLA",
         profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
-        source: "bambu",
       },
     ]);
   });

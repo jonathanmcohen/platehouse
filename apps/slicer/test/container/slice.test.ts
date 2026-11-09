@@ -1,7 +1,7 @@
 // A real slice in the built image (AC-031, AC-035, and the AC-037 smoke
 // fixture): buildSliceable's two plates, two PLA filaments each, on the P1S
 // and on the A1, each with Bambu's own PLA preset for that printer loaded and
-// reported per filament (build plan Task 11 Decisions, "Filaments").
+// reported in filamentProfiles (build plan Task 11 Decisions, "Filaments").
 import { slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -42,10 +42,7 @@ describe("slicing in the image", () => {
       expect(body.filaments.map((f) => f.slot)).toEqual([1, 2]);
       for (const f of body.filaments) expect(f.grams).toBeGreaterThan(0);
       expect(body.filamentProfiles).toEqual([pla, pla]);
-      expect(body.filaments).toMatchObject([
-        { slot: 1, type: "PLA", profile: pla, profileSource: "bambu" },
-        { slot: 2, type: "PLA", profile: pla, profileSource: "bambu" },
-      ]);
+      expect(body.filaments.map((f) => f.type)).toEqual(["PLA", "PLA"]);
       expect(body.peakRssBytes).toBeGreaterThan(0);
     },
   );

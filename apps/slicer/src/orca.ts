@@ -18,10 +18,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CONTRACT_VERSION,
-  type FilamentSource,
   LIMITS,
   type Reason,
-  type SliceFilament,
   type SliceResult,
 } from "@platehouse/slicer-contract";
 import { orcaMessage, reasonFor } from "./reasons.js";
@@ -132,17 +130,8 @@ export interface SliceContext {
   printer: string;
   process: string | null;
   filamentProfiles: Array<string | null>;
-  /**
-   * The project's filaments, by slot: the type and colour of each, and the
-   * filament preset loaded for it (profile null where the file's own was kept).
-   */
-  projectFilaments: Array<{
-    slot: number;
-    type: string;
-    colour: string | null;
-    profile: string | null;
-    source: FilamentSource | null;
-  }>;
+  /** The project's filaments, by slot, for the type and colour of each. */
+  projectFilaments: Array<{ slot: number; type: string; colour: string | null }>;
   timeoutSeconds: number;
 }
 
@@ -215,12 +204,9 @@ export function sliceOutcome(
     filamentProfiles: ctx.filamentProfiles,
     timeSeconds: time,
     weightGrams: weight,
-    filaments: stats.filaments.map(({ slot, grams }): SliceFilament => {
+    filaments: stats.filaments.map(({ slot, grams }) => {
       const f = ctx.projectFilaments.find((p) => p.slot === slot);
-      const base = { slot, type: f?.type ?? "", color: f?.colour ?? null, grams };
-      return f?.profile && f.source
-        ? { ...base, profile: f.profile, profileSource: f.source }
-        : { ...base, profile: null, profileSource: "file" };
+      return { slot, type: f?.type ?? "", color: f?.colour ?? null, grams };
     }),
     wallMs: run.wallMs,
     peakRssBytes: peakRssFromTimeV(timeText) ?? 0,

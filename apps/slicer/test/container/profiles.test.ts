@@ -72,7 +72,7 @@ describe("slicer image profiles", () => {
     for (const printer of [...digest.printers].sort()) {
       for (const type of types) {
         const pick = pickFilament(candidates, printer, type);
-        if (pick) expected.push({ printer, type, profile: pick.profile, source: pick.source });
+        if (pick) expected.push({ printer, type, profile: pick.profile });
       }
     }
     type Entry = (typeof body.filaments)[number];

@@ -38,7 +38,6 @@ import {
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FILAMENT_SOURCES, type FilamentSource } from "@platehouse/slicer-contract";
 import { z } from "zod";
 
 export const VENDOR = "BBL";
@@ -249,6 +248,13 @@ export interface FilamentCandidate {
   type: string;
   compatible: string[];
 }
+
+/**
+ * Where a printer's default filament for a type comes from. The image's
+ * manifest records it; it is not part of the Slicer HTTP contract v1.
+ */
+export const FILAMENT_SOURCES = ["bambu", "generic"] as const;
+export type FilamentSource = (typeof FILAMENT_SOURCES)[number];
 
 const GENERIC_PREFIX = "Generic ";
 const BAMBU_PREFIX = "Bambu ";
@@ -661,7 +667,7 @@ export function checkProfileVersions(sourceRoot: string, shippedRoot: string): s
 export interface Profiles {
   printers: Array<{ id: string; model: string; modelId: string; nozzle: number }>;
   /** Each menu printer's default filament per type, sorted by printer then type. */
-  filaments: Array<{ printer: string; type: string; profile: string; source: FilamentSource }>;
+  filaments: Array<{ printer: string; type: string; profile: string }>;
   /** Absolute path of a menu printer's flattened machine file, or null. */
   machineFile(printerId: string): string | null;
   /**
@@ -688,7 +694,7 @@ export function loadProfiles(dir: string): Profiles {
     const byType = manifest.filaments[printer] ?? {};
     for (const type of Object.keys(byType).sort()) {
       const pick = byType[type];
-      if (pick) filaments.push({ printer, type, profile: pick.profile, source: pick.source });
+      if (pick) filaments.push({ printer, type, profile: pick.profile });
     }
   }
   return {

@@ -243,13 +243,11 @@ describe("health and profiles", () => {
       printer: P1S,
       type: "PLA",
       profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
-      source: "bambu",
     });
     expect(body.filaments).toContainEqual({
       printer: A1,
       type: "PLA",
       profile: "Generic PLA @BBL A1",
-      source: "generic",
     });
     for (const f of body.filaments) expect(TREE_PRINTERS, JSON.stringify(f)).toContain(f.printer);
   });
@@ -280,22 +278,8 @@ describe("slicing", () => {
       timeSeconds: 1234.5,
       weightGrams: 12.3456,
       filaments: [
-        {
-          slot: 1,
-          type: "PLA",
-          color: "#FFFFFF",
-          grams: 6.1,
-          profile: P1S_PLA,
-          profileSource: "bambu",
-        },
-        {
-          slot: 2,
-          type: "PLA",
-          color: "#1F1F1F",
-          grams: 6.2456,
-          profile: P1S_PLA,
-          profileSource: "bambu",
-        },
+        { slot: 1, type: "PLA", color: "#FFFFFF", grams: 6.1 },
+        { slot: 2, type: "PLA", color: "#1F1F1F", grams: 6.2456 },
       ],
       peakRssBytes: 2048 * 1024,
     });
@@ -312,10 +296,6 @@ describe("slicing", () => {
       status: "ok",
       printer: A1,
       filamentProfiles: ["Generic PLA @BBL A1", "Generic PLA @BBL A1"],
-      filaments: [
-        { slot: 1, profile: "Generic PLA @BBL A1", profileSource: "generic" },
-        { slot: 2, profile: "Generic PLA @BBL A1", profileSource: "generic" },
-      ],
     });
     const args = readFileSync(s.fake.argsLog, "utf8").trimEnd().split("\n");
     const loaded = (args[args.indexOf("--load-filaments") + 1] ?? "").split(";");
@@ -352,10 +332,6 @@ describe("slicing", () => {
     expect(body).toMatchObject({
       status: "ok",
       filamentProfiles: [null, null],
-      filaments: [
-        { slot: 1, profile: null, profileSource: "file" },
-        { slot: 2, profile: null, profileSource: "file" },
-      ],
     });
     const args = readFileSync(s.fake.argsLog, "utf8").trimEnd().split("\n");
     expect(args).not.toContain("--load-filaments");
