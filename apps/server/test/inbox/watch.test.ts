@@ -96,6 +96,7 @@ function watcher(
     settleSeconds: 15,
     ingest: fake.ingest,
     storedFile: async (id) => fake.stored.get(id),
+    findImported: async () => undefined,
     now: () => clock,
     log: (line) => lines.push(line),
     ...extra,
@@ -163,6 +164,26 @@ describe("settle window", () => {
     expect(fake.calls).toEqual([]);
     await tick(w, 1);
     expect(fake.calls).toEqual(["touched.stl"]);
+  });
+
+  test("a slow import earlier in a pass does not shorten the window of a file first seen after it", async () => {
+    // a.stl takes 40 s to import. b.stl is first seen in the same pass, after
+    // that import, so its window starts then, not when the pass began.
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") clock += 40_000;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await tick(w, 15_000);
+    expect(fake.calls).toEqual(["a.stl"]);
+
+    await tick(w, 5_000);
+    await tick(w, 9_999);
+    expect(fake.calls).toEqual(["a.stl"]);
+    await tick(w, 1);
+    expect(fake.calls).toEqual(["a.stl", "b.stl"]);
   });
 
   test("an old mtime does not count as settled: the window starts when the watcher first sees the file", async () => {
@@ -489,6 +510,115 @@ describe("outages", () => {
     down = false;
     await tick(w, 5_000);
     expect(await exists(join(inbox, "a.stl"))).toBe(false);
+  });
+
+  test("while the database is down, a file is not uploaded again on every poll", async () => {
+    const refused = () =>
+      Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    let down = true;
+    const fake = fakeIngest(() => {
+      if (down) throw refused();
+    });
+    const lookups: string[] = [];
+    const w = watcher(fake, {
+      findImported: async (file) => {
+        lookups.push(file.originalName);
+        if (down) throw refused();
+        return undefined;
+      },
+    });
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.waiting).toBe(true);
+    expect(fake.calls).toEqual(["b.stl"]);
+
+    // a.stl settles during the outage; it sorts first, so it is tried first.
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    for (let i = 0; i < 5; i += 1) {
+      const pass = await tick(w, 5_000);
+      expect(pass.waiting).toBe(true);
+    }
+    // Each poll asked the database first and stopped there: no upload.
+    expect(fake.calls).toEqual(["b.stl"]);
+    expect(lookups.length).toBeGreaterThan(0);
+    expect(lines.filter((l) => l.includes("left in place"))).toHaveLength(1);
+
+    down = false;
+    const back = await tick(w, 5_000);
+    expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
+    expect(fake.calls).toEqual(["b.stl", "a.stl", "b.stl"]);
+    expect(await readdir(inbox)).toEqual([]);
+  });
+
+  test("a commit that landed while its answer was lost is found on the retry, not imported twice", async () => {
+    const fake = fakeIngest();
+    let lost = true;
+    const ingest = {
+      async ingestFile(input: IngestInput) {
+        // The rows commit, then the connection drops before the answer comes.
+        await fake.ingest.ingestFile(input);
+        if (lost) {
+          lost = false;
+          throw new Error("Connection terminated unexpectedly");
+        }
+        throw new Error("a retry must not reach ingest");
+      },
+    };
+    const asked: Array<{ originalName: string; size: number; sha256: Buffer; since: Date }> = [];
+    const startedBefore = new Date();
+    const w = watcher(fake, {
+      ingest,
+      findImported: async (file) => {
+        asked.push(file);
+        for (const [fileId, stored] of fake.stored) {
+          if (stored.size === file.size && stored.sha256.equals(file.sha256)) {
+            return { modelId: `model-${fileId.slice(5)}`, fileId };
+          }
+        }
+        return undefined;
+      },
+    });
+    const bytes = Buffer.from("solid lost\nendsolid lost\n");
+    await writeFile(join(inbox, "lost.stl"), bytes);
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.waiting).toBe(true);
+    expect(await exists(join(inbox, "lost.stl"))).toBe(true);
+
+    const retry = await tick(w, 5_000);
+    expect(fake.calls).toEqual(["lost.stl"]);
+    expect(retry.imported).toEqual([{ name: "lost.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(retry.failed).toEqual([]);
+    expect(await exists(join(inbox, "lost.stl"))).toBe(false);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.originalName).toBe("lost.stl");
+    expect(asked[0]?.size).toBe(bytes.length);
+    expect(asked[0]?.sha256.equals(sha256(bytes))).toBe(true);
+    // Only rows written since the attempt that lost its answer count.
+    expect(asked[0]?.since.getTime()).toBeGreaterThanOrEqual(startedBefore.getTime());
+    expect(asked[0]?.since.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  test("after a storage outage the retry goes straight to ingest", async () => {
+    let down = true;
+    const fake = fakeIngest(() => {
+      if (down) throw new IngestError("storage_unavailable", "Storage is unavailable right now");
+    });
+    const lookups: string[] = [];
+    const w = watcher(fake, {
+      findImported: async (file) => {
+        lookups.push(file.originalName);
+        return undefined;
+      },
+    });
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    down = false;
+    await tick(w, 5_000);
+    expect(fake.calls).toEqual(["a.stl", "a.stl"]);
+    expect(lookups).toEqual([]);
   });
 });
 
