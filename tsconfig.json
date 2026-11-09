@@ -4,6 +4,7 @@
     { "path": "./apps/server" },
     { "path": "./apps/slicer" },
     { "path": "./packages/slicer-contract" },
-    { "path": "./packages/threemf" }
+    { "path": "./packages/threemf" },
+    { "path": "./packages/makerworld" }
   ]
 }
