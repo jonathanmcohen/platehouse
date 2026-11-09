@@ -15,8 +15,9 @@
 //      source 'file'). Metadata is filled only into empty fields, so nothing
 //      Jon set is overwritten (AC-022);
 //   5. enqueueing estimates (Task 12) and renders (Task 13) comes after the
-//      commit, and is theirs to add. Nothing here calls the slicer, so ingest
-//      returns before any slice runs (AC-033).
+//      commit, through the afterCommit hook the caller wires in (Task 13's
+//      is derived.afterUpload, which only sends a job). Nothing here calls
+//      the slicer, so ingest returns before any slice runs (AC-033).
 //
 // No row is written before step 4. A failure at any step deletes the objects
 // already put and leaves no rows (AC-012), with two exceptions. When the
@@ -108,7 +109,8 @@ export interface StoredFile extends IngestResult {
 /** The store calls ingest makes; the real one is createBlobStore's. */
 export type IngestStore = Pick<BlobStore, "putBlob" | "deleteBlobs">;
 
-const CONTENT_TYPES: Readonly<Record<FileKind, string>> = {
+/** The Content-Type a source blob of each kind is stored with. */
+export const CONTENT_TYPES: Readonly<Record<FileKind, string>> = {
   "3mf": "model/3mf",
   stl: "model/stl",
   step: "model/step",
@@ -131,7 +133,8 @@ export function batchModelId(batch: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function readFirstBytes(path: string): Promise<Buffer> {
+/** The first FIRST_BYTES bytes of a file, which detectKind reads. */
+export async function readFirstBytes(path: string): Promise<Buffer> {
   const handle = await open(path, "r");
   try {
     const buf = Buffer.alloc(FIRST_BYTES);
@@ -192,14 +195,28 @@ export interface IngestDeps {
   db: Kysely<DB>;
   store: IngestStore;
   /**
-   * Called once a file's rows have committed: Task 13 queues a .scad render
-   * or a STEP mesh here. Interface only in this commit.
+   * Called once a file's rows have committed, before ingestFile returns:
+   * Task 13 queues a .scad render or a STEP mesh here. It never runs a
+   * render itself, so ingest still returns before any slicer work. An error
+   * from it is logged and does not fail the upload, which is stored.
    */
   afterCommit?: (stored: StoredFile) => Promise<void>;
 }
 
 export function createIngest(deps: IngestDeps) {
   const { db, store } = deps;
+
+  /** Runs afterCommit for a committed file; the upload stands whatever it does. */
+  async function committed(result: IngestResult, kind: FileKind): Promise<IngestResult> {
+    if (deps.afterCommit === undefined) return result;
+    try {
+      await deps.afterCommit({ ...result, kind });
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      console.error(`ingest: after-commit work failed for file ${result.fileId}: ${why}`);
+    }
+    return result;
+  }
 
   /** The model the file will join, checked before any byte is stored. */
   async function plannedModel(target: IngestTarget): Promise<string> {
@@ -413,7 +430,7 @@ export function createIngest(deps: IngestDeps) {
       const state = put.length > 0 ? await commitState(xid) : "not_committed";
       // The rows landed and only the answer was lost: the upload is stored,
       // and reporting it as failed would make a retry store it twice.
-      if (state === "committed") return { modelId, fileId };
+      if (state === "committed") return committed({ modelId, fileId }, kind);
       if (put.length > 0 && state === "not_committed") {
         try {
           await store.deleteBlobs(put.map((blob) => blob.key));
@@ -429,7 +446,7 @@ export function createIngest(deps: IngestDeps) {
       }
       throw error;
     }
-    return { modelId, fileId };
+    return committed({ modelId, fileId }, kind);
   }
 
   return { ingestFile };

@@ -152,7 +152,11 @@ describe("OpenSCAD renders (AC-052)", () => {
 
     // A render error is OpenSCAD's answer, not a slicer fault: no retry.
     expect(env.stub.callsTo("/v1/scad/stl")).toHaveLength(1);
-    const [job] = await jobsFor(fileId);
+    // The file is updated inside the job, just before pg-boss completes it.
+    const [job] = await until(
+      () => jobsFor(fileId),
+      (jobs) => jobs[0]?.state === "completed",
+    );
     expect(job?.retryCount).toBe(0);
     expect(job?.output).toMatchObject({ status: "failed", reason: "render_failed" });
   });
@@ -183,7 +187,10 @@ describe("retries through pg-boss", () => {
       "render",
     ]);
 
-    const job = await env.boss.getJobById(QUEUE.slicer, jobId);
+    const job = await until(
+      () => env.boss.getJobById(QUEUE.slicer, jobId),
+      (j) => j?.state === "completed",
+    );
     expect(job).toMatchObject({
       state: "completed",
       retryCount: 2,
@@ -211,6 +218,19 @@ describe("retries through pg-boss", () => {
     expect(job?.retryCount).toBe(3);
     expect(job?.output).toMatchObject({ status: "failed", reason: "slicer_error" });
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
+  });
+});
+
+describe("the slicer queue's worker", () => {
+  test("an unknown slicer task fails its job instead of passing silently", async () => {
+    const id = await env.boss.send(QUEUE.slicer, { task: "no-such-task" }, { retryLimit: 0 });
+    if (id === null) throw new Error("job not created");
+    const job = await until(
+      () => env.boss.getJobById(QUEUE.slicer, id),
+      (j) => j?.state === "failed",
+    );
+    expect(JSON.stringify(job?.output)).toMatch(/no-such-task/);
+    expect(env.stub.calls).toHaveLength(0);
   });
 });
 

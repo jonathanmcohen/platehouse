@@ -3,7 +3,23 @@
 // PR #49: there is no SLICER_CONCURRENCY); Task 12 adds its jobs and its
 // worker with these settings.
 import { describe, expect, test } from "vitest";
-import { INGEST_CONCURRENCY, QUEUE, queueSettings } from "../../src/jobs/queues.js";
+import {
+  INGEST_CONCURRENCY,
+  QUEUE,
+  queueSettings,
+  SLICER_RETRY,
+  SLICER_TASKS,
+} from "../../src/jobs/queues.js";
+
+describe("slicer jobs", () => {
+  test("every slicer job retries 3 times with backoff, through pg-boss's own settings", () => {
+    expect(SLICER_RETRY).toEqual({ retryLimit: 3, retryBackoff: true, retryDelay: 5 });
+  });
+
+  test("Task 13's render and mesh tasks have their own names on the slicer queue", () => {
+    expect(SLICER_TASKS).toEqual({ renderScad: "render-scad", convertStep: "convert-step" });
+  });
+});
 
 describe("queueSettings", () => {
   test("slicer is a singleton queue worked one job at a time", () => {

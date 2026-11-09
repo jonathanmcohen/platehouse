@@ -6,8 +6,10 @@
 //   the slicer's own one-job lock (Jon, 2026-11-08, PR #49: there is no
 //   SLICER_CONCURRENCY, since the singleton policy made it a no-op). Task 12
 //   adds its slice jobs and Task 13 its render and mesh jobs; the slicer
-//   answers 409 busy while any heavy job runs, and those jobs retry on 409.
-//   Nothing here sends to it or works it;
+//   answers 409 busy while any heavy job runs, and those jobs retry on 409
+//   or a lost connection through pg-boss's own retry settings
+//   (SLICER_RETRY). Task 13's render and mesh jobs (derived/derived.ts) are
+//   worked here, by one worker that dispatches on the job's task;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38), and the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time.
@@ -129,8 +131,8 @@ interface MaintenanceJob {
  * Creates the three queues, registers the maintenance schedules and starts
  * the ingest and maintenance workers on a started boss. Safe on every start:
  * a queue that exists is left as it is, and a schedule is keyed, so it is
- * replaced rather than added again. The slicer queue gets no worker here;
- * Task 12 works it with queueSettings().slicer.work.
+ * replaced rather than added again. The slicer queue gets its one worker,
+ * with queueSettings().slicer.work, when deps.runDerived is given.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
@@ -167,6 +169,31 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       return deps.ingestFile(job.data);
     },
   );
+
+  // The slicer queue's one worker: one job at a time (singleton policy and
+  // localConcurrency 1), dispatched by task. Task 12 adds its slice task to
+  // this switch rather than a second worker, which would take jobs of
+  // either kind.
+  const runDerived = deps.runDerived;
+  if (runDerived !== undefined) {
+    // includeMetadata gives the job its retryLimit, which runJob compares
+    // with retryCount to know the last attempt.
+    const options = { ...settings.slicer.work, ...polling, includeMetadata: true as const };
+    await boss.work<DerivedJob, DerivedOutcome, typeof options>(
+      QUEUE.slicer,
+      options,
+      async ([job]) => {
+        if (job === undefined) throw new Error("slicer worker was handed no job");
+        switch (job.data.task) {
+          case SLICER_TASKS.renderScad:
+          case SLICER_TASKS.convertStep:
+            return runDerived(job.data, { retryCount: job.retryCount, retryLimit: job.retryLimit });
+          default:
+            throw new Error(`Unknown slicer task: ${String(job.data.task).slice(0, 64)}`);
+        }
+      },
+    );
+  }
 
   await boss.work<MaintenanceJob>(
     QUEUE.maintenance,
