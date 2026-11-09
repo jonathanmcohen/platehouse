@@ -590,7 +590,13 @@ describe("outages", () => {
     const bytes = Buffer.from("solid lost\nendsolid lost\n");
     const path = join(inbox, "lost.stl");
     await writeFile(path, bytes);
-    const arrived = (await lstat(path)).ctime;
+    // Read as the watcher reads it. A plain lstat rounds ctime to the
+    // millisecond, a bigint one truncates, so the two differ by 1 ms whenever
+    // the sub-millisecond part is 0.5 ms or more.
+    const arrived = (await lstat(path, { bigint: true })).ctime;
+    // Real time passes before the first poll, so a lower bound taken from the
+    // wall clock when the file is first seen cannot equal its ctime.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     await w.pollOnce();
     const first = await tick(w, 15_000);
     expect(first.waiting).toBe(true);
@@ -648,7 +654,11 @@ describe("outages", () => {
     await chmod(path, 0o600);
     const landed = created.get("file-1");
     expect(landed).toBeDefined();
-    expect((await lstat(path)).ctime.getTime()).toBeGreaterThan(landed?.getTime() ?? 0);
+    // Truncated, as the watcher would read it afresh, so a rounded value 1 ms
+    // higher cannot make the gap look real when it is not.
+    expect((await lstat(path, { bigint: true })).ctime.getTime()).toBeGreaterThan(
+      landed?.getTime() ?? 0,
+    );
 
     const retry = await tick(w, 5_000);
     expect(fake.calls).toEqual(["touched.stl"]);
