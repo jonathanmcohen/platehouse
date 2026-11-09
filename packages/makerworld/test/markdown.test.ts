@@ -1367,3 +1367,70 @@ describe("escaped designer text beside misnested inline tags renders literally (
     expect(render(out)).toBe(`<h2>a ${p}C#</h2>\n`);
   });
 });
+
+// A close tag with nothing of its kind open is one a browser ignores. A stray
+// </h2> (no heading open) still wrote a paragraph break, which in a list item
+// pushed the item's later text to column 0 and ended the list; a </ul> or
+// </ol> that did not match the open list closed it anyway, so later items
+// lost their numbering or fell out of the list (PR #24 review). Both are now
+// ignored, so the text runs on as a browser shows it.
+describe("a close tag with nothing of its kind open is ignored", () => {
+  it.each([
+    [
+      "a stray </h2> in an ordered item",
+      "<ol><li>a</h2>b</li><li>c</li></ol>",
+      "1. ab\n2. c",
+      "<ol>\n<li>ab</li>\n<li>c</li>\n</ol>\n",
+    ],
+    [
+      "a stray </h3> in an unordered item",
+      "<ul><li>a</h3>b</li><li>c</li></ul>",
+      "- ab\n- c",
+      "<ul>\n<li>ab</li>\n<li>c</li>\n</ul>\n",
+    ],
+    ["a stray </h2> in a paragraph", "<p>a</h2>b</p>", "ab", para("ab")],
+    [
+      "a stray </h2> after a heading has closed",
+      "<ol><li><h2>h</h2>a</h2>b</li><li>c</li></ol>",
+      null,
+      null,
+    ],
+    [
+      "a </ul> in an ordered list",
+      "<ol><li>a</ul>b</li><li>c</li></ol>",
+      "1. ab\n2. c",
+      "<ol>\n<li>ab</li>\n<li>c</li>\n</ol>\n",
+    ],
+    [
+      "an </ol> in an unordered list",
+      "<ul><li>a</ol>b</li><li>c</li></ul>",
+      "- ab\n- c",
+      "<ul>\n<li>ab</li>\n<li>c</li>\n</ul>\n",
+    ],
+    ["a </ul> with no list open", "<p>a</ul>b</p>", "ab", para("ab")],
+  ])("%s", (_name, html, expected, rendered) => {
+    const out = htmlToMarkdown(html);
+    if (expected !== null) expect(out).toBe(expected);
+    if (rendered !== null) expect(render(out)).toBe(rendered);
+    // Whatever else, the list is one list and its last item stays in it.
+    if (html.startsWith("<ol>")) {
+      const r = render(out);
+      expect(r.match(/<ol>/g)).toHaveLength(1);
+      expect(r).toMatch(/<li>(?:\n<p>)?c(?:<\/p>\n)?<\/li>\n<\/ol>\n$/);
+    }
+  });
+
+  it("a </ul> inside an ordered list nested in an unordered one keeps the numbering", () => {
+    const out = htmlToMarkdown("<ul><li>a<ol><li>b</ul>c</li><li>d</li></ol></li><li>e</li></ul>");
+    expect(out).toBe("- a\n  1. bc\n  2. d\n- e");
+    expect(render(out)).toBe(
+      "<ul>\n<li>a\n<ol>\n<li>bc</li>\n<li>d</li>\n</ol>\n</li>\n<li>e</li>\n</ul>\n",
+    );
+  });
+
+  it("a mismatched heading close still ends the open heading", () => {
+    const out = htmlToMarkdown("<h2>x</h3><p>y</p>");
+    expect(out).toBe("## x\n\ny");
+    expect(render(out)).toBe("<h2>x</h2>\n<p>y</p>\n");
+  });
+});
