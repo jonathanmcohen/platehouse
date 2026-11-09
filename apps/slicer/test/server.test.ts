@@ -2,7 +2,7 @@
 // over HTTP, one heavy job (slice, render or STEP conversion) at a time with
 // 409 busy for the rest, the kill at SLICE_TIMEOUT_SECONDS, the body limits,
 // the request timeouts and the Orca arguments of the T1 recipe.
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,11 +25,16 @@ import {
 
 // node:fs as it is, except that a test can make rmSync fail for the paths it
 // names, the way a recursive delete fails with ENOTEMPTY or EBUSY on a folder
-// a killed program is still writing to.
-const rmFails = vi.hoisted(() => ({ under: null as string | null }));
+// a killed program is still writing to. Every rmSync call is recorded with
+// its options.
+const rmFails = vi.hoisted(() => ({
+  under: null as string | null,
+  calls: [] as { path: string; options: unknown }[],
+}));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   const rmSync: typeof fs.rmSync = (path, options) => {
+    rmFails.calls.push({ path: String(path), options });
     if (rmFails.under !== null && String(path).startsWith(rmFails.under)) {
       throw Object.assign(new Error(`ENOTEMPTY: directory not empty, rmdir '${String(path)}'`), {
         code: "ENOTEMPTY",
@@ -45,6 +50,7 @@ const running: Slicer[] = [];
 
 afterEach(async () => {
   rmFails.under = null;
+  rmFails.calls = [];
   while (running.length) await running.pop()?.close();
 });
 
@@ -76,6 +82,9 @@ function setup(
     stepTimeoutSeconds: 30,
     orcaVersion: "2.5.0",
     openscadVersion: "2026.11-RC0",
+    // The test machine's disk always has a mebibyte free; the floor's own
+    // tests set it high.
+    workMinFreeBytes: 1024 * 1024,
     limits: LIMITS,
     ...over,
   };
@@ -891,6 +900,27 @@ describe("a failed request never takes the server down", () => {
     await expectServing(base);
   });
 
+  // The sandbox self-test runs in its own folder before the first render. A
+  // delete of that folder that fails must not turn a passed check into a 500
+  // for the render that triggered it.
+  test.each(["stl", "png"])(
+    "scad/%s: a render whose self-test folder cannot be deleted still gets its answer",
+    async (kind) => {
+      const s = setup();
+      const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+      const base = await start({ ...s.config, landrunBin: lr.bin });
+      rmFails.under = s.workDir;
+      for (let i = 0; i < 2; i++) {
+        const res = await fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe("solid ok");
+      }
+      // one self-test, which passed and was remembered, then the two renders
+      expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(3);
+      await expectServing(base);
+    },
+  );
+
   test.each(ROUTES)(
     "%s: a client that dies mid-upload frees the lock even when its folder cannot be deleted",
     async (_route, url) => {
@@ -915,4 +945,88 @@ describe("a failed request never takes the server down", () => {
       await expectServing(base);
     },
   );
+});
+
+// A job folder that fails to delete would otherwise stay under /work, a 1g
+// tmpfs, until the container restarts, and one 512 MiB upload's folder can
+// fill half of it. So deletes retry, leftover job folders are swept at
+// start-up and after every job, and health fails while /work, with no job
+// running, has less free space than the floor (WORK_MIN_FREE_MIB).
+describe("leftover job folders and /work space", () => {
+  const JOB_A = "0b6f1d4e-3c2a-4f8e-9a71-5d2c8e6b4a10";
+  const JOB_B = "7e2d9c1b-8a4f-4b3e-a6d5-1f0c9b8e7d62";
+
+  test("start-up removes job folders left in WORK_DIR and nothing else", async () => {
+    const s = setup();
+    mkdirSync(join(s.workDir, JOB_A, "out"), { recursive: true });
+    writeFileSync(join(s.workDir, JOB_A, "input.3mf"), "left behind");
+    mkdirSync(join(s.workDir, JOB_B));
+    // HOME is /work in the image, so other things can live there too
+    mkdirSync(join(s.workDir, ".cache"));
+    writeFileSync(join(s.workDir, "notes.txt"), "not a job folder");
+    await start(s.config);
+    expect(readdirSync(s.workDir).sort()).toEqual([".cache", "notes.txt"]);
+  });
+
+  test("folders failed deletes left behind are removed after the next job", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    rmFails.under = s.workDir;
+    expect((await postSlice(base, sliceable())).status).toBe(200);
+    // a render leaves its own folder and its self-test's
+    const render = await fetch(`${base}/v1/scad/stl`, { method: "POST", body: "cube(1);" });
+    expect(render.status).toBe(200);
+    expect(readdirSync(s.workDir)).toHaveLength(3);
+    rmFails.under = null;
+    expect((await postSlice(base, sliceable())).status).toBe(200);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("a job folder delete retries ENOTEMPTY and EBUSY instead of giving up at once", async () => {
+    const s = setup();
+    const base = await start(s.config);
+    expect((await postSlice(base, sliceable())).status).toBe(200);
+    const deletes = rmFails.calls.filter((c) => c.path.startsWith(s.workDir));
+    expect(deletes.length).toBeGreaterThan(0);
+    for (const d of deletes) {
+      expect(d.options).toMatchObject({ recursive: true, force: true });
+      expect((d.options as { maxRetries?: number }).maxRetries).toBeGreaterThan(0);
+    }
+  });
+
+  test("health is 500 with a plain-text reason when /work has less free space than the floor", async () => {
+    const s = setup({ workMinFreeBytes: Number.MAX_SAFE_INTEGER });
+    const base = await start(s.config);
+    const res = await fetch(`${base}/v1/health`);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toMatch(/^text\/plain/);
+    expect(await res.text()).toMatch(/\/work .*free/);
+  });
+
+  test("a running job's own use of /work never fails health; the floor applies once it is done", async () => {
+    const s = setup(
+      { sliceTimeoutSeconds: 3, workMinFreeBytes: Number.MAX_SAFE_INTEGER },
+      { kind: "sleep" },
+    );
+    const base = await start(s.config);
+    const first = postSlice(base, sliceable());
+    await waitForFile(s.fake.pids);
+    const during = await fetch(`${base}/v1/health`);
+    expect(during.status).toBe(200);
+    expect(slicerContract.health.parse(await during.json()).busy).toBe(true);
+    expect((await first).status).toBe(200);
+    expect((await fetch(`${base}/v1/health`)).status).toBe(500);
+  });
+
+  test("WORK_MIN_FREE_MIB defaults to 640 MiB and can be set", () => {
+    const VERSIONS = { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" };
+    expect(loadConfig(VERSIONS).workMinFreeBytes).toBe(640 * 1024 * 1024);
+    expect(loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "100" }).workMinFreeBytes).toBe(
+      100 * 1024 * 1024,
+    );
+    expect(() => loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "lots" })).toThrow(
+      /WORK_MIN_FREE_MIB/,
+    );
+  });
 });
