@@ -2,10 +2,12 @@
 // the same Postgres, so there is no Redis:
 // - ingest: an uploaded file through the ingest pipeline, two at once, never
 //   retried, so a failed upload fails visibly (AC-012);
-// - slicer: the singleton queue for slicer work, worked at SLICER_CONCURRENCY
-//   (default 1). Task 12 adds its slice jobs and Task 13 its render and mesh
-//   jobs; the slicer answers 409 busy while any heavy job runs, and those
-//   jobs retry on 409. Nothing here sends to it or works it;
+// - slicer: the singleton queue for slicer work, one job at a time, matching
+//   the slicer's own one-job lock (Jon, 2026-11-08, PR #49: there is no
+//   SLICER_CONCURRENCY, since the singleton policy made it a no-op). Task 12
+//   adds its slice jobs and Task 13 its render and mesh jobs; the slicer
+//   answers 409 busy while any heavy job runs, and those jobs retry on 409.
+//   Nothing here sends to it or works it;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38), and the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time.
@@ -32,13 +34,7 @@ export interface QueueSetting {
 }
 
 /** How each queue is created and worked. Task 12 works the slicer queue with its setting. */
-export function queueSettings(opts: {
-  slicerConcurrency: number;
-}): Record<keyof typeof QUEUE, QueueSetting> {
-  const n = opts.slicerConcurrency;
-  if (!Number.isSafeInteger(n) || n < 1) {
-    throw new RangeError("slicerConcurrency must be a whole number of 1 or more");
-  }
+export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   return {
     ingest: {
       name: QUEUE.ingest,
@@ -48,7 +44,7 @@ export function queueSettings(opts: {
     slicer: {
       name: QUEUE.slicer,
       queue: { policy: "singleton" },
-      work: { localConcurrency: n },
+      work: { localConcurrency: 1 },
     },
     maintenance: {
       name: QUEUE.maintenance,
@@ -91,8 +87,6 @@ export interface QueueDeps {
   purgeExpired(now: Date): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
-  /** SLICER_CONCURRENCY. */
-  slicerConcurrency: number;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -111,7 +105,7 @@ interface MaintenanceJob {
  * Task 12 works it with queueSettings().slicer.work.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
-  const settings = queueSettings({ slicerConcurrency: deps.slicerConcurrency });
+  const settings = queueSettings();
   for (const setting of [settings.ingest, settings.slicer, settings.maintenance]) {
     await boss.createQueue(setting.name, setting.queue);
   }

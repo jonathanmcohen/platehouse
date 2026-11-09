@@ -42,7 +42,6 @@ const deps = () => ({
     sweepCalls.push(now);
     return { listed: 0, deleted: 0, outsideLayout: 0 };
   },
-  slicerConcurrency: 1,
   pollingIntervalSeconds: 0.5,
 });
 
