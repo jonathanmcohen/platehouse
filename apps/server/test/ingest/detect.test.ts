@@ -6,12 +6,27 @@ import { detectKind, FIRST_BYTES } from "../../src/ingest/detect.js";
 
 const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]);
 const asciiStl = Buffer.from("solid cube\n facet normal 0 0 1\n", "ascii");
-/** A binary STL: 80-byte header, triangle count, 50 bytes per triangle. */
-function binaryStlOf(triangles: number): Buffer {
+/**
+ * A binary STL: 80-byte header, triangle count, 50 bytes per triangle. The
+ * count written is the number of triangles unless count is given.
+ */
+function binaryStlOf(triangles: number, count = triangles): Buffer {
   const b = Buffer.alloc(84 + 50 * triangles);
   b.write("solid looking header of a binary stl", 0, "ascii");
-  b.writeUInt32LE(triangles, 80);
+  b.writeUInt32LE(count, 80);
   return b;
+}
+/** bytes padded with more of its own kind to 84 bytes plus a whole number of 50-byte facets. */
+function wholeFacets(bytes: Buffer): Buffer {
+  const facets = Math.max(1, Math.ceil((bytes.length - 84) / 50)) + 1;
+  const size = 84 + 50 * facets;
+  const fill = bytes.includes(0)
+    ? Buffer.alloc(size - bytes.length)
+    : Buffer.alloc(size - bytes.length, " ");
+  const out = Buffer.concat([bytes, fill]);
+  // Whatever lands in the count field matches nothing, so only the size could pass it.
+  expect(out.readUInt32LE(80)).not.toBe(facets);
+  return out;
 }
 const binaryStl = binaryStlOf(1);
 /** A PNG signature and IHDR, padded past 84 bytes. */
@@ -51,6 +66,26 @@ describe("detectKind", () => {
     expect(detectKind("big.stl", head, 84 + 50 * triangles)).toBe("stl");
   });
 
+  // Writers that stream triangles can leave the count at 0 or wrong; the
+  // PrusaSlicer family reads such a file when the facets fill it exactly.
+  test.each([
+    ["a count of 0", 0, 3],
+    ["a count lower than its facets", 1, 3],
+    ["a count higher than its facets", 7, 3],
+  ])(
+    "a binary STL with %s is recognised when its size is whole facets",
+    (_label, count, facets) => {
+      const stl = binaryStlOf(facets, count);
+      expect(detectKind("streamed.stl", stl, stl.length)).toBe("stl");
+    },
+  );
+
+  test("a large binary STL with a count of 0 is recognised from its first bytes and its size", () => {
+    const facets = 100_000;
+    const head = binaryStlOf(facets, 0).subarray(0, FIRST_BYTES);
+    expect(detectKind("big.stl", head, 84 + 50 * facets)).toBe("stl");
+  });
+
   test.each([
     ["an unsupported extension", "model.obj", ZIP],
     ["G-code", "plate.gcode", Buffer.from("; G-code\n")],
@@ -79,6 +114,16 @@ describe("detectKind", () => {
       "part.stl",
       binaryStl.subarray(0, binaryStl.length - 1),
     ],
+    [
+      "a binary .stl with a count of 0 and a size that is not whole facets",
+      "part.stl",
+      Buffer.concat([binaryStlOf(3, 0), Buffer.alloc(1)]),
+    ],
+    // The same files at a size that is whole facets, so the count alone
+    // stops them no longer (AC-024).
+    ["a PNG named .stl, sized as whole facets", "part.stl", wholeFacets(png)],
+    ["a zip named .stl, sized as whole facets", "part.stl", wholeFacets(ZIP)],
+    ["G-code named .stl, sized as whole facets", "plate_1.stl", wholeFacets(gcode)],
   ])("refuses %s", (_label, name, bytes) => {
     expect(detectKind(name, bytes, bytes.length)).toBeNull();
   });

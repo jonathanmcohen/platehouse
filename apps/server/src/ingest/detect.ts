@@ -7,7 +7,9 @@
 // - .scad is text: no NUL byte, and valid UTF-8;
 // - .stl is ASCII (starts with "solid" and has no NUL byte) or binary (its
 //   size is exactly the 80-byte header, the 4-byte triangle count and 50
-//   bytes per triangle);
+//   bytes per triangle; or, for a writer that left the count at 0 or wrong,
+//   the header and a whole number of 50-byte facets, when the file is not
+//   text and does not start like a zip, PNG or JPEG);
 // - .step and .stp start with ISO-10303-21, after an optional UTF-8 BOM.
 // Anything else is refused (null), and the caller stores nothing.
 import type { FileKind } from "../db/types.js";
@@ -30,6 +32,12 @@ const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const STEP_MAGIC = Buffer.from("ISO-10303-21", "ascii");
 const STL_BINARY_MIN = 84;
 const STL_TRIANGLE_BYTES = 50;
+/** Other formats a file named .stl may really be; a binary STL whose count is off must not start like one. */
+const NOT_STL_MAGIC: readonly Buffer[] = [
+  ZIP_LOCAL_HEADER,
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), // PNG
+  Buffer.from([0xff, 0xd8, 0xff]), // JPEG
+];
 
 /** The extension of the last path segment, lowercased; "" for none or a dotfile. */
 function extensionOf(name: string): string {
@@ -56,13 +64,27 @@ function startsWithAsciiSolid(bytes: Buffer): boolean {
 
 /**
  * A binary STL is an 80-byte header, a little-endian triangle count and 50
- * bytes per triangle, so its size is exactly 84 + 50 * count. Nothing else
- * in the format can be checked, but this rules out a PNG, a zip or G-code
- * that only carries the name.
+ * bytes per triangle, so its size is 84 + 50 * count. That rules out a PNG,
+ * a zip or G-code that only carries the name.
+ *
+ * Some writers stream the triangles and leave the count at 0 or wrong, and
+ * the PrusaSlicer family (OrcaSlicer, Bambu Studio) still reads such a file
+ * when the facets fill it exactly. So when the count disagrees, the file
+ * passes if its size is the header and one or more whole facets, its facet
+ * bytes are not text (G-code and other text files are), and it does not
+ * start like a zip, PNG or JPEG. A file with trailing bytes after its last
+ * facet is still refused.
  */
 function isBinaryStl(firstBytes: Buffer, size: number): boolean {
   if (firstBytes.length < STL_BINARY_MIN) return false;
-  return size === STL_BINARY_MIN + STL_TRIANGLE_BYTES * firstBytes.readUInt32LE(80);
+  if (size === STL_BINARY_MIN + STL_TRIANGLE_BYTES * firstBytes.readUInt32LE(80)) return true;
+  const facetBytes = size - STL_BINARY_MIN;
+  if (facetBytes <= 0 || facetBytes % STL_TRIANGLE_BYTES !== 0) return false;
+  if (NOT_STL_MAGIC.some((magic) => firstBytes.subarray(0, magic.length).equals(magic))) {
+    return false;
+  }
+  const facets = firstBytes.subarray(STL_BINARY_MIN);
+  return facets.length > 0 && !isText(facets);
 }
 
 /**
