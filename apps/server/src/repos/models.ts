@@ -40,9 +40,10 @@ export interface FoundMetadata {
   licenseSpdx?: string | null;
   /**
    * A licence with no SPDX id, in words ("License on MakerWorld: ...").
-   * Stored as license_note whenever the licence is filled; it is added at
-   * the foot of the description only when the description is empty and
-   * filled here too, since a description already set is never edited (Jon,
+   * Stored as license_note whenever the model has none, whatever its SPDX id
+   * (license_note is always stored); it is added at the foot of the
+   * description only when the description and both licence columns are
+   * empty, since a description already set is never edited (Jon,
    * 2026-11-08). The model page shows license_note (Task 20).
    */
   licenseNote?: string | null;
@@ -241,11 +242,12 @@ export function modelsRepo(db: Kysely<DB>) {
      * Fill-only metadata (AC-022): writes each found value only into a field
      * that is null or empty, so nothing Jon set is overwritten. The name is
      * never touched. A found value that is null, empty or blank writes
-     * nothing. The licence is one field held in two columns: it is filled
-     * only when both licenseSpdx and licenseNote are empty, so a MakerWorld
-     * note never lands beside an SPDX id Jon chose, and the note joins the
-     * foot of the description only when the licence and the description are
-     * both filled here. False when the model is unknown.
+     * nothing. A found licence note is stored whenever licenseNote is empty,
+     * whatever licenseSpdx holds (Jon's decision: license_note is always
+     * stored). A found SPDX id is filled only when both licence columns are
+     * empty, and the note joins the foot of the description only when both
+     * licence columns and the description were empty. False when the model
+     * is unknown.
      */
     async fillMetadata(id: string, found: FoundMetadata): Promise<boolean> {
       if (!isUuid(id)) return false;
@@ -271,7 +273,7 @@ export function modelsRepo(db: Kysely<DB>) {
         const fillLicence =
           empty(row.licenseSpdx) && empty(row.licenseNote) && (spdx ?? note) !== undefined;
         if (fillLicence && spdx !== undefined) set.licenseSpdx = spdx;
-        if (fillLicence && note !== undefined) set.licenseNote = note;
+        if (note !== undefined && empty(row.licenseNote)) set.licenseNote = note;
 
         if (empty(row.descriptionMd)) {
           const parts = [value(found.descriptionMd), fillLicence ? note : undefined];

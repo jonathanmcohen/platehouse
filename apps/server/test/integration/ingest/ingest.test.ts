@@ -397,7 +397,8 @@ describe("metadata is filled, never overwritten", () => {
     expect(after.creator).toBe("Synthetic Designer");
   });
 
-  test("a licence Jon set is kept whole: no MakerWorld note or footer is added beside it", async () => {
+  test("an SPDX licence Jon set is kept and no footer is added beside it; the footer licence is still stored as the licence note", async () => {
+    // Jon's decision: license_note is always stored.
     const model = await env.repos.models.create({
       name: `Licensed ${uuidv7()}`,
       licenseSpdx: "MIT",
@@ -419,8 +420,29 @@ describe("metadata is filled, never overwritten", () => {
     });
     const after = await modelRow(model.id);
     expect(after.licenseSpdx).toBe("MIT");
-    expect(after.licenseNote).toBeNull();
+    expect(after.licenseNote).toBe("License on MakerWorld: Standard Digital File License");
     expect(after.descriptionMd).toBe("Print it.");
+  });
+
+  test("a licence note already on the model is kept: a later file's footer licence does not replace it", async () => {
+    const model = await env.repos.models.create({
+      name: `Noted ${uuidv7()}`,
+      licenseNote: "Jon's own licence note",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: { designer: "Synthetic Designer", license: "Standard Digital File License" },
+        }),
+      ),
+      originalName: "Noted.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.licenseNote).toBe("Jon's own licence note");
+    expect(after.licenseSpdx).toBeNull();
   });
 
   test("a description already set is never edited; a footer licence is still stored as the licence note", async () => {
