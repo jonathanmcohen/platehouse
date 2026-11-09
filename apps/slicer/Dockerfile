@@ -200,8 +200,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime libraries the two AppImages take from the host (Orca's
 # scripts/appimage_lib_policy.sh: GL/EGL, X11, GTK 3, WebKitGTK 4.1,
 # GStreamer, fontconfig, the C++ runtime), Mesa for EGL and software GL, GNU
-# time (Orca's peak RSS for the contract), and libatomic1 for Node. No X
-# server and no Xvfb: gate item (f) rendered OpenSCAD headless with EGL.
+# time (Orca's peak RSS for the contract), libatomic1 for Node, and tini as
+# PID 1 (see ENTRYPOINT). No X server and no Xvfb: gate item (f) rendered
+# OpenSCAD headless with EGL.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
@@ -209,6 +210,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates openssl \
       time \
+      tini \
       libatomic1 \
       libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libegl-mesa0 libgles2 libopengl0 libglu1-mesa \
       libgtk-3-0t64 libwebkit2gtk-4.1-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
@@ -234,6 +236,7 @@ RUN source /usr/local/lib/need.sh \
  && bash /usr/local/lib/check-libs.sh /opt/node/bin/node \
  && need "$(node --version)" = v26.13.0 \
  && need -x /usr/local/bin/landrun \
+ && need -x /usr/bin/tini \
  && need -f /opt/platehouse/app/apps/slicer/dist/src/server.js \
  && need -f /opt/platehouse/app/apps/slicer/node_modules/occt-import-js/dist/occt-import-js.wasm
 
@@ -283,6 +286,7 @@ RUN source /usr/local/lib/need.sh \
  && need -x /opt/openscad/usr/bin/openscad \
  && need -x /usr/local/bin/landrun \
  && need -x /opt/node/bin/node \
+ && need -x /usr/bin/tini \
  && need -r /opt/platehouse/profiles/manifest.json \
  && need -r /opt/platehouse/app/apps/slicer/dist/src/server.js \
  && need -r /opt/platehouse/app/apps/slicer/node_modules/occt-import-js/dist/occt-import-js.wasm \
@@ -308,5 +312,10 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 
-ENTRYPOINT []
+# tini runs as PID 1 and reaps orphans. At a time cap the server SIGKILLs a
+# slice's whole process group, GNU time and Orca together; an Orca that
+# outlives time is re-parented to PID 1, and Node, which waits only on the
+# children it spawned, would leave it a zombie for the life of the container.
+# tini also passes SIGTERM on to the server, which stops itself.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "/opt/platehouse/app/apps/slicer/dist/src/server.js"]

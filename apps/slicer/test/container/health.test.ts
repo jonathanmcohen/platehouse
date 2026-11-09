@@ -32,6 +32,22 @@ describe("slicer image", () => {
     expect(r.stdout.trim()).toBe("10001");
   });
 
+  // At a time cap the server kills a slice's process group; an Orca that
+  // outlives GNU time is re-parented to PID 1. Node never reaps a process it
+  // did not spawn, so PID 1 is tini, which does.
+  test("PID 1 is tini, and it reaps an orphaned process", () => {
+    expect(slicer.exec(["cat", "/proc/1/comm"]).stdout.trim()).toBe("tini");
+    // The subshell exits at once, so its sleep is orphaned to PID 1; once the
+    // sleep ends, no process in the container may be left a zombie.
+    const r = slicer.exec([
+      "sh",
+      "-c",
+      '(sleep 0.5 &); sleep 2; grep -l "^State:[[:space:]]*Z" /proc/[0-9]*/status || true',
+    ]);
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toBe("");
+  });
+
   test("the root filesystem is read-only and /work is writable", () => {
     expect(slicer.exec(["touch", "/opt/platehouse/x"]).code).not.toBe(0);
     expect(slicer.exec(["touch", "/work/x"]).code).toBe(0);
