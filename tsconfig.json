@@ -1,4 +1,8 @@
 {
   "files": [],
-  "references": [{ "path": "./apps/server" }, { "path": "./packages/threemf" }]
+  "references": [
+    { "path": "./apps/server" },
+    { "path": "./packages/threemf" },
+    { "path": "./packages/makerworld" }
+  ]
 }
