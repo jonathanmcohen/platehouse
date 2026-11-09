@@ -39,6 +39,7 @@ import {
   interruptedPatch,
   meta,
   OCTET,
+  patchStillSendingAfterAnswer,
   randomBinaryStl,
   send,
   startApp,
@@ -357,6 +358,28 @@ describe("tus routes", () => {
       sleep(3000).then(() => "still open"),
     ]);
     expect(closed).toBe("closed");
+  });
+
+  test("a client still sending when an early answer arrives can send the rest, and the connection then closes", async () => {
+    // tus answers a wrong offset (409) before reading the body. The answer
+    // goes out at once with Connection: close, and the connection stays open
+    // only until the rest of the body has been read off: a client still
+    // sending must not meet a reset (EPIPE, ECONNRESET), which could cost
+    // it the answer, and the connection must not stay open after.
+    const body = randomBinaryStl(40_000);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body.subarray(0, 1000));
+    const result = await patchStillSendingAfterAnswer(server.base, `${PREFIX}/${id}`, {
+      headers: { ...TUS, ...KEY, "content-type": OCTET, "upload-offset": "0" },
+      body,
+      firstBytes: 64 * 1024,
+      closeWithinMs: 3000,
+    });
+    expect(result.head).toMatch(/^HTTP\/1\.1 409 /);
+    expect(result.head.toLowerCase()).toContain("\r\nconnection: close");
+    expect(result.error).toBeNull();
+    expect(result.written).toBe(body.length);
+    expect(result.closed).toBe(true);
   });
 
   test("a refused request stores nothing and writes nothing", async () => {

@@ -4,8 +4,10 @@
 // node:http (fetch cannot set a Host header), tus metadata, and generated
 // files. Every byte is synthetic; no designer file is read.
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
+import { setTimeout as sleep } from "node:timers/promises";
 import Fastify, { type FastifyInstance } from "fastify";
 
 /** The tus version header every tus request but OPTIONS carries. */
@@ -84,6 +86,90 @@ export function interruptedPatch(
       setTimeout(() => req.destroy(), 200);
     });
   });
+}
+
+export interface LateBodyResult {
+  /** The status line and headers of the answer, as received. */
+  head: string;
+  /** How many body bytes were written before the socket closed or failed. */
+  written: number;
+  /** The socket's error, if it had one (EPIPE or ECONNRESET for a reset). */
+  error: NodeJS.ErrnoException | null;
+  /** Whether the server closed the connection within closeWithinMs. */
+  closed: boolean;
+}
+
+/**
+ * A PATCH over a raw socket that sends only the first `firstBytes` of
+ * `body`, waits for the server's answer, and only then sends the rest, 64 KiB
+ * at a time, as a client on a slow link is still sending when an early
+ * answer (409, 413) arrives. The socket stays open for writing after the
+ * server's FIN (allowHalfOpen), so every byte the server lets it send is
+ * sent. Resolves once the server has closed the connection, or after
+ * closeWithinMs.
+ */
+export async function patchStillSendingAfterAnswer(
+  base: string,
+  path: string,
+  opts: {
+    headers: Record<string, string>;
+    body: Buffer;
+    firstBytes: number;
+    closeWithinMs: number;
+  },
+): Promise<LateBodyResult> {
+  const url = new URL(path, base);
+  const socket = net.connect({ host: url.hostname, port: Number(url.port), allowHalfOpen: true });
+  let received = "";
+  let error: NodeJS.ErrnoException | null = null;
+  let closed = false;
+  const answered = Promise.withResolvers<void>();
+  socket.on("data", (chunk: Buffer) => {
+    received += chunk.toString("latin1");
+    if (received.includes("\r\n\r\n")) answered.resolve();
+  });
+  socket.on("error", (e: NodeJS.ErrnoException) => {
+    error ??= e;
+  });
+  // Not events.once: it rejects on the socket's error, which is recorded instead.
+  const closing = new Promise<void>((resolve) =>
+    socket.once("close", () => {
+      closed = true;
+      answered.resolve();
+      resolve();
+    }),
+  );
+  await once(socket, "connect");
+
+  const head = [
+    `PATCH ${url.pathname} HTTP/1.1`,
+    `Host: ${url.host}`,
+    ...Object.entries(opts.headers).map(([name, value]) => `${name}: ${value}`),
+    `Content-Length: ${opts.body.length}`,
+    "",
+    "",
+  ].join("\r\n");
+  socket.write(head);
+  socket.write(opts.body.subarray(0, opts.firstBytes));
+  let written = opts.firstBytes;
+  await answered.promise;
+  // Let the server finish answering (its response's finish handlers run)
+  // before the rest of the body is sent.
+  await sleep(50);
+
+  const CHUNK_BYTES = 64 * 1024;
+  while (written < opts.body.length && error === null && !closed && !socket.destroyed) {
+    const chunk = opts.body.subarray(written, written + CHUNK_BYTES);
+    const failed = await new Promise<Error | null | undefined>((resolve) =>
+      socket.write(chunk, resolve),
+    );
+    if (failed) break;
+    written += chunk.length;
+  }
+  if (!socket.destroyed) socket.end();
+  await Promise.race([closing, sleep(opts.closeWithinMs)]);
+  socket.destroy();
+  return { head: received.slice(0, received.indexOf("\r\n\r\n")), written, error, closed };
 }
 
 /** The Upload-Metadata header for these fields (tus 1.0.0: key, space, base64 value). */

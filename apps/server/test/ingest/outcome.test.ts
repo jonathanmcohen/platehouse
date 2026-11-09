@@ -7,6 +7,13 @@
 // that cannot be reached when ingest starts included, and only a commit whose
 // outcome the database cannot report may be IngestOutcomeUnknown.
 //
+// Kysely runs the transaction's callback and only then sends COMMIT; a
+// callback that throws is rolled back. So a failure that arrives before the
+// callback has finished cannot have committed, whatever the status lookup
+// says, and only a failure after it finished (at COMMIT) can leave the
+// outcome unknown (#76). The objects behind a COMMIT that may still land are
+// never deleted (#57).
+//
 // These run without Docker: the database is a Kysely whose driver answers
 // from a script, and the store is held in memory. The same cases against a
 // real Postgres and S3 are in test/integration/ingest/ingest.test.ts.
@@ -81,9 +88,14 @@ function memoryStore() {
 
 /**
  * A database whose every query is answered by answer (a result, or an error
- * to throw), or, with answer null, one that refuses every connection.
+ * to throw), or, with answer null, one that refuses every connection. With
+ * failCommit, every query succeeds as answered but COMMIT loses the
+ * connection.
  */
-function scriptedDb(answer: ((sql: string) => QueryResult<unknown> | Error) | null): Kysely<DB> {
+function scriptedDb(
+  answer: ((sql: string) => QueryResult<unknown> | Error) | null,
+  { failCommit = false } = {},
+): Kysely<DB> {
   const connection: DatabaseConnection = {
     async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
       const result = answer?.(query.sql) ?? new Error("no answer");
@@ -101,7 +113,9 @@ function scriptedDb(answer: ((sql: string) => QueryResult<unknown> | Error) | nu
       return connection;
     },
     async beginTransaction() {},
-    async commitTransaction() {},
+    async commitTransaction() {
+      if (failCommit) throw new Error("Connection terminated unexpectedly");
+    },
     async rollbackTransaction() {},
     async releaseConnection() {},
     async destroy() {},
@@ -116,17 +130,54 @@ function scriptedDb(answer: ((sql: string) => QueryResult<unknown> | Error) | nu
   });
 }
 
+/** The status lookup's answer: status, or a failure when status is undefined. */
+function statusAnswer(status: string | null | undefined): QueryResult<unknown> | Error {
+  return status === undefined ? new Error("Connection refused") : { rows: [{ status }] };
+}
+
 /**
- * A transaction that gets its id and then loses its connection: the read of
- * the id is answered, every later query fails, and the status lookup gets
- * status (or fails too, with status undefined).
+ * A transaction that gets its id and then loses its connection on its next
+ * query, inside the callback and so before any COMMIT: the read of the id is
+ * answered, every later query fails, and the status lookup gets status (or
+ * fails too, with status undefined).
  */
 function lostAfterXid(status?: string | null) {
   return scriptedDb((sql) => {
     if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
-    if (/pg_xact_status/.test(sql) && status !== undefined) return { rows: [{ status }] };
+    if (/pg_xact_status/.test(sql)) return statusAnswer(status);
     return new Error("Connection terminated unexpectedly");
   });
+}
+
+/**
+ * A transaction that writes its first rows and loses its connection at the
+ * query matching failAt, still inside the callback. Every other query gets
+ * one empty row, and the status lookup gets status (or fails, with status
+ * undefined).
+ */
+function lostAt(failAt: RegExp, status?: string | null) {
+  return scriptedDb((sql) => {
+    if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+    if (/pg_xact_status/.test(sql)) return statusAnswer(status);
+    if (failAt.test(sql)) return new Error("Connection terminated unexpectedly");
+    return { rows: [{}] };
+  });
+}
+
+/**
+ * A transaction whose callback finishes, every row written, and whose COMMIT
+ * then loses the connection: the status lookup gets status (or fails, with
+ * status undefined).
+ */
+function lostAtCommit(status?: string | null) {
+  return scriptedDb(
+    (sql) => {
+      if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+      if (/pg_xact_status/.test(sql)) return statusAnswer(status);
+      return { rows: [{}] };
+    },
+    { failCommit: true },
+  );
 }
 
 async function failure(promise: Promise<unknown>): Promise<unknown> {
@@ -209,15 +260,86 @@ describe("a failure ingest knows saved nothing is an IngestError", () => {
   });
 });
 
+describe("a failure before the transaction's callback finished saved nothing, whatever the lookup says", () => {
+  // Postgres restarting mid-insert, say: the query fails, and the lookup
+  // cannot answer either, or answers "in progress" because the server has
+  // not yet noticed the dropped socket. No COMMIT was sent, so the objects
+  // go and HEAD answers 410 (#76).
+  const statuses = [
+    ["cannot be read", undefined],
+    ["is still in progress", "in progress"],
+    ["is null", null],
+    ["says committed", "committed"],
+  ] as const;
+
+  test.each(statuses)(
+    "a connection lost on the first row, when the status %s",
+    async (_label, status) => {
+      const { store, held } = memoryStore();
+      const error = await failure(
+        createIngest({ db: lostAfterXid(status), store }).ingestFile({
+          tmpPath: await upload(ASCII_STL),
+          originalName: "Lost on the first row.stl",
+          target: "new",
+        }),
+      );
+      expectNothingSaved(error, "Connection terminated unexpectedly");
+      expect(held.size).toBe(0);
+    },
+  );
+
+  test.each(statuses)(
+    "a connection lost on the file row, the callback's last query, when the status %s",
+    async (_label, status) => {
+      const { store, held } = memoryStore();
+      const error = await failure(
+        createIngest({ db: lostAt(/insert into "files"/, status), store }).ingestFile({
+          tmpPath: await upload(ASCII_STL),
+          originalName: "Lost on the file row.stl",
+          target: "new",
+        }),
+      );
+      expectNothingSaved(error, "Connection terminated unexpectedly");
+      expect(held.size).toBe(0);
+    },
+  );
+
+  test("a model trashed while the bytes were uploading, when the status cannot be read", async () => {
+    // The check inside the transaction finds no live model and ingest's
+    // own IngestError stops the callback.
+    const { store, held } = memoryStore();
+    const db = scriptedDb((sql) => {
+      if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+      if (/pg_xact_status/.test(sql)) return new Error("Connection refused");
+      if (/for update/.test(sql)) return { rows: [] };
+      return { rows: [{}] };
+    });
+    const error = await failure(
+      createIngest({ db, store }).ingestFile({
+        tmpPath: await upload(ASCII_STL),
+        originalName: "Trashed meanwhile.stl",
+        target: { modelId: uuidv7() },
+      }),
+    );
+    expect(error).toBeInstanceOf(IngestError);
+    expect((error as IngestError).code).toBe("model_not_found");
+    expect(held.size).toBe(0);
+  });
+});
+
 describe("only a commit whose outcome is not known is IngestOutcomeUnknown", () => {
+  // The callback finished (here through its early return, as for every file
+  // with no plate data) and the error came at COMMIT, so the status lookup
+  // decides. The .3mf path through the callback's last line is covered
+  // against a real Postgres in test/integration/ingest/ingest.test.ts.
   test.each([
     ["cannot be read", undefined],
     ["is still in progress", "in progress"],
     ["is null", null],
-  ])("a transaction whose status %s keeps its objects", async (_label, status) => {
+  ])("a COMMIT whose status %s keeps its objects", async (_label, status) => {
     const { store, held } = memoryStore();
     const error = await failure(
-      createIngest({ db: lostAfterXid(status), store }).ingestFile({
+      createIngest({ db: lostAtCommit(status), store }).ingestFile({
         tmpPath: await upload(ASCII_STL),
         originalName: "Unknown.stl",
         target: "new",
@@ -226,8 +348,32 @@ describe("only a commit whose outcome is not known is IngestOutcomeUnknown", () 
     expect(error).toBeInstanceOf(IngestOutcomeUnknown);
     expect(error).not.toBeInstanceOf(IngestError);
     expect(((error as Error).cause as Error).message).toBe("Connection terminated unexpectedly");
-    // Kept: the commit may have landed, and the orphan sweep removes them
-    // if no row ever points at them.
+    // Kept: the commit may have landed or may still land, and the orphan
+    // sweep removes them if no row ever points at them (#57).
     expect(held.size).toBe(1);
+  });
+
+  test("a COMMIT Postgres reports as committed is the stored upload", async () => {
+    const { store, held } = memoryStore();
+    const result = await createIngest({ db: lostAtCommit("committed"), store }).ingestFile({
+      tmpPath: await upload(ASCII_STL),
+      originalName: "Committed.stl",
+      target: "new",
+    });
+    expect(result.modelId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(held.size).toBe(1);
+  });
+
+  test("a COMMIT Postgres reports as aborted saved nothing", async () => {
+    const { store, held } = memoryStore();
+    const error = await failure(
+      createIngest({ db: lostAtCommit("aborted"), store }).ingestFile({
+        tmpPath: await upload(ASCII_STL),
+        originalName: "Commit aborted.stl",
+        target: "new",
+      }),
+    );
+    expectNothingSaved(error, "Connection terminated unexpectedly");
+    expect(held.size).toBe(0);
   });
 });
