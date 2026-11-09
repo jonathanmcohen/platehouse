@@ -20,9 +20,14 @@
 //      there. GET <prefix>/<id>/result answers pending, done (modelId,
 //      fileId) or failed (a message for Jon).
 //   4. The worker deletes the temp file after ingest, whether it succeeds or
-//      fails (ingestUpload). An upload left untouched for 24 hours is deleted
-//      by the hourly sweep on the maintenance queue (sweepStaleUploads), and
-//      never becomes a model (Review Focus 5).
+//      fails (ingestUpload), and keeps the upload's info file for the sweep.
+//      Until then HEAD answers an ingested upload as finished (Upload-Offset
+//      equal to Upload-Length): a client whose last PATCH was answered after
+//      it lost the connection retries with a HEAD, and on a 404 or 410 it
+//      would create the upload again and a second model with it. An upload
+//      left untouched for 24 hours, or 24 hours after its ingest, is deleted
+//      by the hourly sweep on the maintenance queue (sweepStaleUploads); a
+//      partial one never becomes a model (Review Focus 5).
 //
 // Partial uploads live in TMP_DIR/uploads, one data file and one .json info
 // file per upload, both named by the upload id, a UUIDv7. The UI and API
@@ -33,7 +38,7 @@
 // (<prefix>/<id>) and no forwarded or Host header is read, so no URL comes
 // from the request (AC-091). There is no DELETE, GET or OPTIONS on an upload:
 // the API deletes nothing (AC-084), and an abandoned upload is swept.
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, rm, stat, utimes } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { FileStore } from "@tus/file-store";
@@ -62,9 +67,14 @@ export const MAX_FILENAME_LENGTH = 1024;
 /** The longest batch id an upload may carry. */
 export const MAX_BATCH_LENGTH = 200;
 
-/** What a failed ingest shows when its error is not one of ingest's own messages. */
+/**
+ * What a failed ingest shows when its error is not one of ingest's own
+ * messages. It promises nothing about what was stored: when the database
+ * cannot say how a commit ended, ingest keeps what it stored and fails with
+ * the database's own error, so the model may be in the library after all.
+ */
 export const UPLOAD_FAILED_MESSAGE =
-  "The upload could not be added to the library; nothing was saved";
+  "The upload could not be confirmed in the library; check the library before sending it again";
 
 const QUEUE_FAILED_MESSAGE = "The upload could not be queued; nothing was saved. Try again.";
 
@@ -246,13 +256,18 @@ export interface Uploads {
   readonly locker: MemoryLocker;
   /**
    * ingestFile for the ingest queue's worker: runs it, then deletes the
-   * upload's temp file and info file whether it succeeded or failed. A path
-   * outside TMP_DIR/uploads (an inbox file) is never deleted here.
+   * upload's temp file whether it succeeded or failed. The info file is kept
+   * and its time set to now, so HEAD answers the upload as finished until the
+   * sweep deletes it a day later. A path outside TMP_DIR/uploads (an inbox
+   * file) is never deleted here.
    */
   ingestUpload(
     ingestFile: (input: IngestInput) => Promise<IngestResult>,
   ): (input: IngestInput) => Promise<IngestResult>;
-  /** The hourly sweep: deletes uploads untouched for 24 hours before now. */
+  /**
+   * The hourly sweep: deletes uploads untouched for 24 hours before now,
+   * an ingested upload's kept info file included.
+   */
   sweepStaleUploads(now: Date): Promise<UploadSweepResult>;
 }
 
@@ -285,11 +300,15 @@ export function createUploads(deps: {
         const id = basename(path);
         if (dirname(path) === resolve(dir) && UPLOAD_ID.test(id)) {
           try {
-            await removeUpload(dir, id);
+            await rm(join(dir, id), { force: true });
+            const now = new Date();
+            await utimes(join(dir, `${id}.json`), now, now).catch((error: unknown) => {
+              if (errorCode(error) !== "ENOENT") throw error;
+            });
           } catch (error) {
             // The ingest's own outcome is what matters; the sweep removes
             // the file once it is a day old.
-            log(`uploads: could not delete upload ${id} after ingest (${errorCode(error)})`);
+            log(`uploads: could not tidy upload ${id} after ingest (${errorCode(error)})`);
           }
         }
       }
@@ -357,6 +376,24 @@ function sweepLine(r: UploadSweepResult): string {
     `upload sweep: found ${r.listed} uploads, deleted ${r.deleted} untouched for 24 hours, ` +
     `kept ${r.kept}, left ${r.skipped} other files alone`
   );
+}
+
+/**
+ * The length of an upload that ingest has already taken (its data file is
+ * gone, its info file is kept and an ingest job exists under its id), or
+ * undefined for any other upload, which tus answers itself.
+ */
+async function ingestedLength(uploads: Uploads, id: string): Promise<number | undefined> {
+  try {
+    await stat(join(uploads.dir, id));
+    return undefined;
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") return undefined;
+  }
+  const size = (await uploads.datastore.configstore.get(id))?.size;
+  if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) return undefined;
+  if ((await uploads.queue.result(id)) === undefined) return undefined;
+  return size;
 }
 
 /** A Web Request for @tus/server: the canonical path, no Host or forwarded headers. */
@@ -494,7 +531,19 @@ export async function registerTus(
         releaseUnreadBody(request, reply);
         return sendTusResponse(reply, response);
       };
-      scope.head("/:id", forwardToId);
+      scope.head("/:id", async (request, reply) => {
+        const id = uploadId(request);
+        const length = id === undefined ? undefined : await ingestedLength(uploads, id);
+        if (length === undefined) return forwardToId(request, reply);
+        // Already ingested: finished, so a resuming client sends nothing more.
+        return reply
+          .code(200)
+          .header("tus-resumable", "1.0.0")
+          .header("upload-offset", String(length))
+          .header("upload-length", String(length))
+          .header("cache-control", "no-store")
+          .send("");
+      });
       scope.patch("/:id", forwardToId);
 
       scope.get("/:id/result", async (request, reply) => {

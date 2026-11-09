@@ -6,12 +6,13 @@
 // The integration suite (test/integration/uploads) runs the same routes with
 // pg-boss, ingestFile, Postgres and the S3 test server.
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { PgBoss } from "pg-boss";
+import { Upload } from "tus-js-client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { IngestError, type IngestInput } from "../../src/ingest/ingest.js";
 import { QUEUE } from "../../src/jobs/queues.js";
@@ -390,6 +391,63 @@ describe("tus routes", () => {
     });
   });
 
+  /** A finished upload that ingest has taken: its data file is gone. */
+  async function ingested(body: Buffer) {
+    const id = idOf((await create(body.length, { filename: "Phone part.stl" })).headers.location);
+    expect((await patch(id, 0, body)).status).toBe(204);
+    const input = queue.enqueued.get(id) as IngestInput;
+    await uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }))(input);
+    queue.results.set(id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+    return id;
+  }
+
+  test("HEAD on an upload already ingested reports it finished", async () => {
+    const body = randomBinaryStl(30);
+    const id = await ingested(body);
+    expect(await tempFiles()).toEqual([`${id}.json`]);
+    const res = await head(id);
+    expect(res.status).toBe(200);
+    expect(res.headers["tus-resumable"]).toBe("1.0.0");
+    expect(res.headers["upload-offset"]).toBe(String(body.length));
+    expect(res.headers["upload-length"]).toBe(String(body.length));
+    expect(res.headers["cache-control"]).toBe("no-store");
+    for (const name of Object.keys(res.headers)) expect(name).not.toMatch(/^access-control-/);
+    expect((await head(id, {})).status).toBe(401);
+  });
+
+  test("a client that lost the last 204 and resumes after ingest sends nothing again", async () => {
+    // tus-js-client retries a failed PATCH with a HEAD; on a 4xx it drops the
+    // upload and creates a new one, which would make a second model.
+    const body = randomBinaryStl(30);
+    const id = await ingested(body);
+    const before = server.requests.length;
+    await new Promise<void>((resolve, reject) => {
+      const upload = new Upload(body, {
+        endpoint: `${server.base}${PREFIX}`,
+        uploadUrl: `${server.base}${PREFIX}/${id}`,
+        retryDelays: null,
+        storeFingerprintForResuming: false,
+        headers: KEY,
+        metadata: { filename: "Phone part.stl" },
+        onSuccess: () => resolve(),
+        onError: (error) => reject(error),
+      });
+      upload.start();
+    });
+    const after = server.requests.slice(before).map((r) => r.method);
+    expect(after).toEqual(["HEAD"]);
+    expect(queue.enqueued.size).toBe(1);
+  });
+
+  test("HEAD on an upload whose data is gone and that was never queued is not finished", async () => {
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await rm(join(uploads.dir, id));
+    const res = await head(id);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+  });
+
   test("there is no DELETE, GET or OPTIONS on an upload", async () => {
     const id = idOf((await create(10, { filename: "a.stl" })).headers.location);
     for (const method of ["DELETE", "GET", "OPTIONS"]) {
@@ -449,7 +507,7 @@ describe("ingestUpload", () => {
     await writeFile(join(uploads.dir, `${name}.json`), "{}");
   }
 
-  test("deletes the temp file and its info file after a successful ingest", async () => {
+  test("deletes the temp file after a successful ingest and keeps its info file for the sweep", async () => {
     const id = idOf((await create(10, { filename: "a.stl" })).headers.location);
     const input: IngestInput = {
       tmpPath: join(uploads.dir, id),
@@ -458,7 +516,7 @@ describe("ingestUpload", () => {
     };
     const ingest = uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }));
     expect(await ingest(input)).toEqual({ modelId: "m", fileId: "f" });
-    expect(await tempFiles()).toEqual([]);
+    expect(await tempFiles()).toEqual([`${id}.json`]);
   });
 
   test("deletes the temp file after a failed ingest and passes the error on", async () => {
@@ -471,7 +529,7 @@ describe("ingestUpload", () => {
     await expect(
       ingest({ tmpPath: join(uploads.dir, id), originalName: "a.stl", target: "new" }),
     ).rejects.toBe(refused);
-    expect(await tempFiles()).toEqual([]);
+    expect(await tempFiles()).toEqual([`${id}.json`]);
   });
 
   test("never deletes a file outside TMP_DIR/uploads", async () => {
@@ -525,6 +583,28 @@ describe("sweepStaleUploads", () => {
     const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
     await patch(id, 0, body);
     queue.results.set(id, { status: "failed", error: "x" });
+    expect((await uploads.sweepStaleUploads(later(PAST_A_DAY))).deleted).toBe(1);
+    expect(await tempFiles()).toEqual([]);
+  });
+
+  test("keeps an ingested upload's info file for a day after its ingest, however old the upload", async () => {
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body);
+    // An upload that took two days to finish.
+    const old = new Date(Date.now() - 2 * STALE_UPLOAD_MS);
+    await utimes(join(uploads.dir, `${id}.json`), old, old);
+    await utimes(join(uploads.dir, id), old, old);
+    await uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }))(
+      queue.enqueued.get(id) as IngestInput,
+    );
+    queue.results.set(id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+
+    expect(await uploads.sweepStaleUploads(later(STALE_UPLOAD_MS - 60_000))).toMatchObject({
+      deleted: 0,
+      kept: 1,
+    });
+    expect(await tempFiles()).toEqual([`${id}.json`]);
     expect((await uploads.sweepStaleUploads(later(PAST_A_DAY))).deleted).toBe(1);
     expect(await tempFiles()).toEqual([]);
   });
@@ -625,6 +705,10 @@ describe("bossUploadQueue", () => {
     const r = await bossUploadQueue(fakeBoss(job).boss).result(randomUUID());
     expect(r?.status).toBe("failed");
     expect(JSON.stringify(r)).not.toMatch(/ECONNREFUSED|10\.0\.0\.1/);
-    expect(r && "error" in r ? r.error : "").toMatch(/nothing was saved/);
+    // Ingest keeps what it stored when it cannot tell whether its commit went
+    // through, so a plain failure must not promise that nothing was saved.
+    const error = r && "error" in r ? r.error : "";
+    expect(error).toMatch(/check the library before sending it again/);
+    expect(error).not.toMatch(/nothing was saved/);
   });
 });

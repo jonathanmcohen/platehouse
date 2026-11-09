@@ -243,7 +243,7 @@ describe("resumable uploads", () => {
       expect(file.originalName).toBe("Generated 90 MB part.stl");
       expect(Number(file.size)).toBe(ninety.length);
       expect(Buffer.from(file.sha256).equals(sha256(ninety))).toBe(true);
-      expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
+      expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([`${id}.json`]);
     },
     NINETY_MB_TIMEOUT,
   );
@@ -275,7 +275,7 @@ describe("resumable uploads", () => {
       const chunks: Buffer[] = [];
       for await (const c of await env.store.getBlobStream(blob.key)) chunks.push(c as Buffer);
       expect(sha256(Buffer.concat(chunks)).equals(sha256(ninety))).toBe(true);
-      expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
+      expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([`${id}.json`]);
     },
     NINETY_MB_TIMEOUT,
   );
@@ -330,14 +330,14 @@ describe("resumable uploads", () => {
     expect(await footprint(env)).toEqual(before);
   });
 
-  test("temp file is deleted after ingest, success or failure", async () => {
+  test("temp file is deleted after ingest, success or failure; the info file waits for the sweep", async () => {
     // Success.
     const good = randomBinaryStl(10);
     const ok = await create(API, BEARER, good.length, { filename: "Small part.stl" });
     const okId = idOf(ok.headers.location);
     await patchAll(API, BEARER, okId, good);
     expect(await result(API, BEARER, okId)).toMatchObject({ status: "done" });
-    expect((await tempFiles()).filter((f) => f.startsWith(okId))).toEqual([]);
+    expect((await tempFiles()).filter((f) => f.startsWith(okId))).toEqual([`${okId}.json`]);
 
     // Failure: named .stl, but the bytes are no STL, so ingest refuses it.
     const before = await footprint(env);
@@ -348,8 +348,47 @@ describe("resumable uploads", () => {
     const failed = await result(API, BEARER, noId);
     expect(failed.status).toBe("failed");
     expect(failed.error).toMatch(/not a supported .*nothing was saved/);
-    expect((await tempFiles()).filter((f) => f.startsWith(noId))).toEqual([]);
+    expect((await tempFiles()).filter((f) => f.startsWith(noId))).toEqual([`${noId}.json`]);
     expect(await footprint(env)).toEqual(before);
+  });
+
+  test("a client that resumes after ingest is told it finished and makes no second model", async () => {
+    // A phone that lost the 204 for its last PATCH retries with a HEAD. On a
+    // 404 or 410, tus-js-client would create the upload again.
+    const body = randomBinaryStl(12);
+    const created = await create(API, BEARER, body.length, { filename: "Lost answer.stl" });
+    const id = idOf(created.headers.location);
+    await patchAll(API, BEARER, id, body);
+    expect(await result(API, BEARER, id)).toMatchObject({ status: "done" });
+    const before = await footprint(env);
+
+    const head = await send(server.base, "HEAD", `${API}/${id}`, {
+      headers: { ...TUS, ...BEARER },
+    });
+    expect(head.status).toBe(200);
+    expect(head.headers["upload-offset"]).toBe(String(body.length));
+    expect(head.headers["upload-length"]).toBe(String(body.length));
+
+    const sent = server.requests.length;
+    await new Promise<void>((resolve, reject) => {
+      const upload = new Upload(body, {
+        endpoint: `${server.base}${API}`,
+        uploadUrl: `${server.base}${API}/${id}`,
+        retryDelays: null,
+        storeFingerprintForResuming: false,
+        headers: BEARER,
+        metadata: { filename: "Lost answer.stl" },
+        onSuccess: () => resolve(),
+        onError: (error) => reject(error),
+      });
+      upload.start();
+    });
+    expect(server.requests.slice(sent).map((r) => r.method)).toEqual(["HEAD"]);
+    expect(await footprint(env)).toEqual(before);
+
+    // A day after its ingest the sweep deletes the info file.
+    await uploads.sweepStaleUploads(new Date(Date.now() + STALE_UPLOAD_MS + 60_000));
+    expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
   });
 
   test("an upload with metadata modelId goes into that model", async () => {
