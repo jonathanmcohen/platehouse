@@ -9,8 +9,9 @@
 //   answers 409 busy while any heavy job runs, and those jobs retry on 409.
 //   Nothing here sends to it or works it;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
-//   runs daily at 03:30 local time (issue #38), and the orphan sweep
-//   (ingest/orphans.ts) daily at 04:00 local time.
+//   runs daily at 03:30 local time (issue #38), the orphan sweep
+//   (ingest/orphans.ts) daily at 04:00 local time, and Task 9's sweep of
+//   partial uploads untouched for 24 hours (uploads/tus.ts) every hour.
 import type { PgBoss } from "pg-boss";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
@@ -54,13 +55,11 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   };
 }
 
-/**
- * The maintenance queue's tasks, each a job { task } and its schedule key.
- * Task 9 adds the hourly sweep of stale partial uploads here.
- */
+/** The maintenance queue's tasks, each a job { task } and its schedule key. */
 export const MAINTENANCE_TASKS = {
   purgeExpired: "purge-expired",
   sweepOrphans: "sweep-orphans",
+  sweepUploads: "sweep-uploads",
 } as const;
 
 /** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
@@ -71,6 +70,9 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
  * deletes objects older than 24 hours.
  */
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
+
+/** Hourly, on the hour (Task 9): the sweep of partial uploads untouched for 24 hours. */
+export const SWEEP_UPLOADS_CRON = "0 * * * *";
 
 /**
  * The process's local time zone, the one "03:30 local time" means: the
@@ -87,6 +89,8 @@ export interface QueueDeps {
   purgeExpired(now: Date): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
+  /** Task 9's sweep of stale partial uploads (uploads/tus.ts's sweepStaleUploads). */
+  sweepUploads(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -125,6 +129,12 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     { task: MAINTENANCE_TASKS.sweepOrphans },
     { tz, key: MAINTENANCE_TASKS.sweepOrphans, missed: "once" },
   );
+  await boss.schedule(
+    QUEUE.maintenance,
+    SWEEP_UPLOADS_CRON,
+    { task: MAINTENANCE_TASKS.sweepUploads },
+    { tz, key: MAINTENANCE_TASKS.sweepUploads, missed: "once" },
+  );
 
   const polling =
     deps.pollingIntervalSeconds === undefined
@@ -151,6 +161,9 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           return;
         case MAINTENANCE_TASKS.sweepOrphans:
           await deps.sweepOrphans(new Date());
+          return;
+        case MAINTENANCE_TASKS.sweepUploads:
+          await deps.sweepUploads(new Date());
           return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
