@@ -162,6 +162,66 @@ describe("files and plates", () => {
     ).toBeUndefined();
   });
 
+  test("files.findImported skips a file whose model is in the trash or being purged", async () => {
+    const { file, modelId } = await seedFile(repos);
+    const query = {
+      originalName: file.originalName,
+      size: file.size,
+      sha256: file.sha256,
+      since: file.createdAt,
+    };
+    expect(await repos.files.findImported(query)).toEqual({ modelId, fileId: file.id });
+
+    // Trashed: an Empty trash or the 30-day purge deletes its stored bytes.
+    await t.db
+      .updateTable("models")
+      .set({ trashedAt: new Date() })
+      .where("id", "=", modelId)
+      .execute();
+    expect(await repos.files.findImported(query)).toBeUndefined();
+
+    // A purge that began: restore refuses it, and its objects may be gone.
+    await t.db
+      .updateTable("models")
+      .set({ purgeStartedAt: new Date() })
+      .where("id", "=", modelId)
+      .execute();
+    expect(await repos.files.findImported(query)).toBeUndefined();
+  });
+
+  test("files.findImported passes over a trashed copy to the live one", async () => {
+    const { file: trashed, modelId: trashedModel } = await seedFile(repos);
+    await t.db
+      .updateTable("models")
+      .set({ trashedAt: new Date() })
+      .where("id", "=", trashedModel)
+      .execute();
+    // The same name and bytes imported again, as a model of its own.
+    const live = await repos.models.create({ name: "Live copy" });
+    const blob = await repos.blobs.insertPending({
+      modelId: live.id,
+      kind: "source",
+      contentType: "model/3mf",
+    });
+    const file = await repos.files.create({
+      modelId: live.id,
+      blobId: blob.id,
+      name: trashed.name,
+      originalName: trashed.originalName,
+      kind: "3mf",
+      size: trashed.size,
+      sha256: trashed.sha256,
+    });
+    expect(
+      await repos.files.findImported({
+        originalName: trashed.originalName,
+        size: trashed.size,
+        sha256: trashed.sha256,
+        since: trashed.createdAt,
+      }),
+    ).toEqual({ modelId: live.id, fileId: file.id });
+  });
+
   test("plates are listed in plate order", async () => {
     const { file } = await seedFile(repos);
     await repos.plates.create({ fileId: file.id, index: 2, objectCount: 1, name: "Lid" });

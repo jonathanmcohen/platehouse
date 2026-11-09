@@ -93,7 +93,10 @@
 //   deleted without a model of its own. A row found is
 //   the import, so it is not made twice; the inbox copy is checked and
 //   deleted as after any import. An earlier import of the same file, before
-//   this copy arrived, does not count. The created_at of the row is the
+//   this copy arrived, does not count, nor does a row whose model is in the
+//   trash or being purged (an upload of the same file that was then
+//   trashed): a purge deletes its stored bytes, so this copy is imported as
+//   a model of its own. The created_at of the row is the
 //   database's clock and the ctime is the inbox host's, so the two must agree
 //   to within the settle window, which is the least time between a file's
 //   last change and its import's commit. The question comes before the
@@ -280,8 +283,9 @@ export interface InboxWatcherDeps {
   storedFile: (fileId: string) => Promise<StoredFile | undefined>;
   /**
    * The file row with this original name, size and SHA-256 created at or
-   * after since (files.created_at), if any (repos files.findImported). since
-   * is on the wall clock, never the injected settle clock.
+   * after since (files.created_at), whose model is neither in the trash nor
+   * being purged, if any (repos files.findImported). since is on the wall
+   * clock, never the injected settle clock.
    */
   findImported: (file: ImportedQuery) => Promise<{ modelId: string; fileId: string } | undefined>;
   /** The environment checks run after an error that is not the file's own (inboxProbes). */
