@@ -40,8 +40,10 @@ export interface FoundMetadata {
   licenseSpdx?: string | null;
   /**
    * A licence with no SPDX id, in words ("License on MakerWorld: ...").
-   * When the licence is filled it is also named at the foot of a filled
-   * description (AC-022).
+   * Stored as license_note whenever the licence is filled; it is added at
+   * the foot of the description only when the description is empty and
+   * filled here too, since a description already set is never edited (Jon,
+   * 2026-11-08). The model page shows license_note (Task 20).
    */
   licenseNote?: string | null;
 }

@@ -146,8 +146,10 @@ function metadataOf(project: Project | null): FoundMetadata {
   if (details === null) return {};
   const license = mapLicense(details.license);
   const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
-  // A footer licence sets no SPDX id; fillMetadata names it at the foot of
-  // the description when it fills the licence.
+  // A footer licence sets no SPDX id. fillMetadata stores it as the licence
+  // note whenever it fills the licence, and adds it at the foot of the
+  // description only when the description is empty (Jon, 2026-11-08: a
+  // description already set is never edited; the model page shows the note).
   return {
     caption: details.title,
     creator: details.designer,
