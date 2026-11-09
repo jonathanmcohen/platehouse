@@ -1,7 +1,8 @@
 // Profiles (build plan Task 11): the T1 recipe, ported from the slicing gate's
 // flatten-profiles.mjs, which Hades run 4 proved. Presets are flattened
 // through inherits at image build; only the machine preset is loaded with
-// --load-settings, one generic filament per type with --load-filaments, and
+// --load-settings, one default filament per type with --load-filaments (Bambu's
+// own preset for the printer, else the generic one; filaments.test.ts), and
 // Orca's process_full folder gets every instantiable machine's default
 // process (without it a printer switch fails with code -3, gate run 3).
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
@@ -170,7 +171,7 @@ describe("process_full", () => {
 });
 
 describe("the image's profile folder", () => {
-  test("buildProfiles writes a loadable machine file per menu printer and a generic filament per type", () => {
+  test("buildProfiles writes a loadable machine file per menu printer and a default filament per type", () => {
     const out = scratch();
     const manifest = buildProfiles(loadIndex(profileTree()), out);
     expect(manifest.printers.map((p) => p.id)).toEqual(TREE_PRINTERS);
@@ -187,24 +188,64 @@ describe("the image's profile folder", () => {
     expect(flat.inherits).toBeUndefined();
     expect(flat.printable_height).toBe("250");
     const pla = profiles.filamentFor("Bambu Lab P1S 0.4 nozzle", "PLA");
-    expect(pla?.profile).toBe("Generic PLA");
-    expect(readJson(pla?.file as string).filament_type).toEqual(["PLA"]);
-    expect(profiles.filamentFor("Bambu Lab A1 0.4 nozzle", "PLA")?.profile).toBe(
-      "Generic PLA @BBL A1",
-    );
+    expect(pla).toMatchObject({ profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle", source: "bambu" });
+    expect(profiles.filamentFor("Bambu Lab P1S 0.4 nozzle", "PETG")).toMatchObject({
+      profile: "Generic PETG",
+      source: "generic",
+    });
+    expect(profiles.filamentFor("Bambu Lab A1 0.4 nozzle", "PLA")).toMatchObject({
+      profile: "Generic PLA @BBL A1",
+      source: "generic",
+    });
     expect(profiles.filamentFor("Bambu Lab A1 0.4 nozzle", "PETG")).toBeNull();
     expect(profiles.filamentFor("Bambu Lab A1 0.4 nozzle", "NOPE")).toBeNull();
     expect(profiles.machineFile("Bambu Lab Retired 0.4 nozzle")).toBeNull();
   });
 
-  test("the flat filament list holds each type and generic profile once, sorted", () => {
+  test("the Bambu preset is written flattened through the filament library", () => {
+    const out = scratch();
+    buildProfiles(loadIndex(profileTree()), out);
+    const pla = loadProfiles(out).filamentFor("Bambu Lab P1S 0.4 nozzle", "PLA");
+    const flat = readJson(pla?.file as string);
+    expect(flat.name).toBe("Bambu PLA Basic @BBL P1S 0.4 nozzle");
+    expect(flat.inherits).toBeUndefined();
+    expect(flat.filament_type).toEqual(["PLA"]);
+    expect(flat.filament_vendor).toEqual(["Bambu Lab"]);
+    expect(flat.library_only).toBe("yes");
+  });
+
+  test("the flat filament list names the printer on every entry, sorted by printer then type", () => {
     const out = scratch();
     buildProfiles(loadIndex(profileTree()), out);
     expect(loadProfiles(out).filaments).toEqual([
-      { type: "PETG", profile: "Generic PETG" },
-      { type: "PLA", profile: "Generic PLA" },
-      { type: "PLA", profile: "Generic PLA @BBL A1" },
+      {
+        printer: "Bambu Lab A1 0.4 nozzle",
+        type: "PLA",
+        profile: "Generic PLA @BBL A1",
+        source: "generic",
+      },
+      {
+        printer: "Bambu Lab P1S 0.4 nozzle",
+        type: "PETG",
+        profile: "Generic PETG",
+        source: "generic",
+      },
+      {
+        printer: "Bambu Lab P1S 0.4 nozzle",
+        type: "PLA",
+        profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
+        source: "bambu",
+      },
     ]);
+  });
+
+  test("a manifest pick with no source is refused at load", () => {
+    const out = scratch();
+    buildProfiles(loadIndex(profileTree()), out);
+    const manifest = readJson(join(out, "manifest.json"));
+    delete manifest.filaments["Bambu Lab P1S 0.4 nozzle"].PLA.source;
+    put(out, "manifest.json", manifest);
+    expect(() => loadProfiles(out)).toThrow(/manifest/);
   });
 
   test("a missing or damaged manifest fails loudly at load, not on the first request", () => {

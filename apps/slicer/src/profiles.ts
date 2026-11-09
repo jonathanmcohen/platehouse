@@ -302,6 +302,44 @@ export function genericFilamentFor(
   return name ? { name, candidates: candidates.length } : null;
 }
 
+/**
+ * Bambu's own filament preset per filament type, preferred over the generic
+ * one wherever Orca has it for the printer (build plan Task 11 Decisions,
+ * Jon 2026-11-08: "I use mostly Bambu Filaments"). The front office's
+ * mapping, which Jon may correct: this table is the one place it lives.
+ * Each value is a preset's base name, the part before " @".
+ */
+export const BAMBU_FILAMENTS: Readonly<Record<string, string>> = Object.freeze({
+  PLA: "Bambu PLA Basic",
+  PETG: "Bambu PETG HF",
+  ABS: "Bambu ABS",
+  ASA: "Bambu ASA",
+  TPU: "Bambu TPU 95A",
+});
+
+/** Where a printer's default filament for a type comes from. */
+export type FilamentSource = "bambu" | "generic";
+
+/** A bundled, instantiable filament preset, flattened. */
+export interface FilamentCandidate {
+  name: string;
+  type: string;
+  compatible: string[];
+}
+
+/**
+ * The default filament for one type on one printer. Not implemented yet: the
+ * tests for it come first.
+ */
+export function pickFilament(
+  _candidates: readonly FilamentCandidate[],
+  _printerName: string,
+  _type: string,
+  _table: Readonly<Record<string, string>> = BAMBU_FILAMENTS,
+): { profile: string; source: FilamentSource } | null {
+  return null;
+}
+
 /** Machine presets the printer menu lists: instantiable, name ending in "nozzle". */
 export function nozzlePrinters(index: ProfileIndex): string[] {
   const out: string[] = [];

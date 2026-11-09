@@ -43,18 +43,58 @@ describe("slicer contract v1", () => {
     expect(slicerContract.health.safeParse({ ...ok, extra: 1 }).success).toBe(false);
   });
 
-  test("profiles parses printers and filaments", () => {
+  test("profiles parses printers and filaments, each filament naming its printer and source", () => {
     const body = {
       contract: 1,
       orca: "2.5.0",
       printers: [
         { id: "Bambu Lab P1S 0.4 nozzle", model: "Bambu Lab P1S", modelId: "C12", nozzle: 0.4 },
       ],
-      filaments: [{ type: "PLA", profile: "Generic PLA" }],
+      filaments: [
+        {
+          printer: "Bambu Lab P1S 0.4 nozzle",
+          type: "PLA",
+          profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
+          source: "bambu",
+        },
+        {
+          printer: "Bambu Lab P1S 0.4 nozzle",
+          type: "PA",
+          profile: "Generic PA",
+          source: "generic",
+        },
+      ],
     };
     expect(slicerContract.profiles.parse(body)).toEqual(body);
     const noNozzle = { ...body, printers: [{ ...body.printers[0], nozzle: "0.4" }] };
     expect(slicerContract.profiles.safeParse(noNozzle).success).toBe(false);
+  });
+
+  test("a profiles filament with no printer, an empty printer or another source is refused", () => {
+    const body = (filament: Record<string, unknown>) => ({
+      contract: 1,
+      orca: "2.5.0",
+      printers: [],
+      filaments: [filament],
+    });
+    const ok = {
+      printer: "Bambu Lab P1S 0.4 nozzle",
+      type: "PLA",
+      profile: "Generic PLA",
+      source: "generic",
+    };
+    expect(slicerContract.profiles.safeParse(body(ok)).success).toBe(true);
+    const { printer: _printer, ...noPrinter } = ok;
+    const { source: _source, ...noSource } = ok;
+    for (const bad of [
+      noPrinter,
+      noSource,
+      { ...ok, printer: "" },
+      { ...ok, source: "file" },
+      { ...ok, source: "user" },
+    ]) {
+      expect(slicerContract.profiles.safeParse(body(bad)).success, JSON.stringify(bad)).toBe(false);
+    }
   });
 
   test("an ok slice parses the plan's example", () => {
@@ -65,15 +105,62 @@ describe("slicer contract v1", () => {
       status: "ok",
       printer: "Bambu Lab P1S 0.4 nozzle",
       process: "0.20mm Standard @BBL X1C",
-      filamentProfiles: ["Generic PLA"],
+      filamentProfiles: ["Bambu PLA Basic @BBL P1S 0.4 nozzle"],
       timeSeconds: 5025,
       weightGrams: 41.37,
-      filaments: [{ slot: 1, type: "PLA", color: "#FFFFFF", grams: 41.37 }],
+      filaments: [
+        {
+          slot: 1,
+          type: "PLA",
+          color: "#FFFFFF",
+          grams: 41.37,
+          profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
+          profileSource: "bambu",
+        },
+      ],
       wallMs: 21000,
       peakRssBytes: 812000000,
     };
     const parsed: SliceResult = slicerContract.sliceResult.parse(body);
     expect(parsed).toEqual(body);
+  });
+
+  test("each sliced filament reports the preset used: Bambu, generic, or the file's own", () => {
+    const body = (filament: Record<string, unknown>) => ({
+      contract: 1,
+      orca: "2.5.0",
+      plate: 1,
+      status: "ok",
+      printer: "Bambu Lab A1 mini 0.4 nozzle",
+      process: null,
+      filamentProfiles: [null],
+      timeSeconds: 1,
+      weightGrams: 1,
+      filaments: [filament],
+      wallMs: 1,
+      peakRssBytes: 1,
+    });
+    const f = { slot: 1, type: "ABS", color: null, grams: 1 };
+    for (const ok of [
+      { ...f, profile: "Bambu ABS @BBL X1C", profileSource: "bambu" },
+      { ...f, profile: "Generic ABS", profileSource: "generic" },
+      { ...f, profile: null, profileSource: "file" },
+    ]) {
+      expect(slicerContract.sliceResult.safeParse(body(ok)).success, JSON.stringify(ok)).toBe(true);
+    }
+    for (const bad of [
+      f,
+      { ...f, profile: null },
+      { ...f, profileSource: "bambu" },
+      { ...f, profile: "Generic ABS", profileSource: "user" },
+      { ...f, profile: null, profileSource: "bambu" },
+      { ...f, profile: null, profileSource: "generic" },
+      { ...f, profile: "Generic ABS", profileSource: "file" },
+    ]) {
+      expect(slicerContract.sliceResult.safeParse(body(bad)).success, JSON.stringify(bad)).toBe(
+        false,
+      );
+    }
   });
 
   test("an ok slice needs a time and a weight above zero", () => {

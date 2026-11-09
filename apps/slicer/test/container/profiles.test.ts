@@ -1,8 +1,15 @@
 // The printer menu comes from the image's own profiles (AC-031): every BBL
 // machine_list entry ending in "nozzle" that is instantiable, and nothing
-// else (56 at Orca v2.5.0: 14 models x 0.2/0.4/0.6/0.8).
+// else (56 at Orca v2.5.0: 14 models x 0.2/0.4/0.6/0.8). Every filament
+// entry names its printer, and the image's default filament per printer and
+// type equals the pick the unit tests check over the real-profile digest
+// (test/fixtures/orca-filaments.json), so the digest cannot drift from the
+// image unnoticed.
+import { readFileSync } from "node:fs";
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { pickFilament } from "../../src/profiles.js";
+import { digestCandidates, type FilamentDigest } from "../support/filament-digest.js";
 import { type RunningSlicer, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
@@ -10,6 +17,12 @@ beforeAll(async () => {
   slicer = await startSlicer();
 });
 afterAll(() => slicer?.stop());
+
+async function profiles() {
+  const res = await fetch(`${slicer.base}/v1/profiles`);
+  expect(res.status).toBe(200);
+  return slicerContract.profiles.parse(await res.json());
+}
 
 describe("slicer image profiles", () => {
   test("profiles lists every BBL nozzle machine in the image's BBL.json and nothing else", async () => {
@@ -20,9 +33,7 @@ describe("slicer image profiles", () => {
       .map((m) => m.name)
       .filter((n) => n.endsWith("nozzle") && !n.includes(" template ") && !n.endsWith("_common"))
       .sort();
-    const res = await fetch(`${slicer.base}/v1/profiles`);
-    expect(res.status).toBe(200);
-    const body = slicerContract.profiles.parse(await res.json());
+    const body = await profiles();
     expect(body.orca).toBe("2.5.0");
     expect(body.printers.map((p) => p.id).sort()).toEqual(expected);
     expect(body.printers.length).toBe(56);
@@ -34,5 +45,41 @@ describe("slicer image profiles", () => {
     });
     for (const p of body.printers) expect(p.id).toBe(`${p.model} ${p.nozzle} nozzle`);
     expect(body.filaments.some((f) => f.type === "PLA")).toBe(true);
+  });
+
+  test("every filament entry names a menu printer, and each printer and type appears once", async () => {
+    const body = await profiles();
+    const menu = new Set(body.printers.map((p) => p.id));
+    const seen = new Set<string>();
+    for (const f of body.filaments as unknown as Array<{ printer: string; type: string }>) {
+      expect(menu.has(f.printer), JSON.stringify(f)).toBe(true);
+      const key = `${f.printer} | ${f.type}`;
+      expect(seen.has(key), key).toBe(false);
+      seen.add(key);
+    }
+  });
+
+  test("the image's default filaments equal the pick over the real-profile digest, for every printer and type", async () => {
+    const digest = JSON.parse(
+      readFileSync(new URL("../fixtures/orca-filaments.json", import.meta.url), "utf8"),
+    ) as FilamentDigest;
+    const body = await profiles();
+    expect(body.orca).toBe(digest.orca);
+    expect(body.printers.map((p) => p.id).sort()).toEqual([...digest.printers].sort());
+    const candidates = digestCandidates(digest);
+    const types = [...new Set(candidates.map((c) => c.type))].sort();
+    const expected: unknown[] = [];
+    for (const printer of [...digest.printers].sort()) {
+      for (const type of types) {
+        const pick = pickFilament(candidates, printer, type);
+        if (pick) expected.push({ printer, type, profile: pick.profile, source: pick.source });
+      }
+    }
+    const key = (f: unknown) => {
+      const { printer, type } = f as { printer: string; type: string };
+      return `${printer}\u0000${type}`;
+    };
+    const order = (a: unknown, b: unknown) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+    expect([...body.filaments].sort(order)).toEqual(expected.sort(order));
   });
 });
