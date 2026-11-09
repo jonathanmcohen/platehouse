@@ -6,11 +6,15 @@
 //   the slicer's own one-job lock (Jon, 2026-11-08, PR #49: there is no
 //   SLICER_CONCURRENCY, since the singleton policy made it a no-op). Task 12
 //   adds its slice jobs and Task 13 its render and mesh jobs; the slicer
-//   answers 409 busy while any heavy job runs, and those jobs retry on 409.
-//   Nothing here sends to it or works it;
+//   answers 409 busy while any heavy job runs, and those jobs retry on 409
+//   through the queue's own retry settings (SLICER_RETRY). Each job names
+//   its kind, and the worker hands it to that kind's handler (slicerJobs);
+// - after an ingest job stores a file, onIngested queues its estimates
+//   (Task 12), outside the ingest transaction;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
-//   runs daily at 03:30 local time (issue #38), and the orphan sweep
-//   (ingest/orphans.ts) daily at 04:00 local time.
+//   runs daily at 03:30 local time (issue #38), the orphan sweep
+//   (ingest/orphans.ts) daily at 04:00 local time, and Task 12's
+//   Orca-version poll every 10 minutes.
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
@@ -154,15 +158,19 @@ interface MaintenanceJob {
 /**
  * Creates the three queues, registers the maintenance schedules and starts
  * the ingest and maintenance workers on a started boss. Safe on every start:
- * a queue that exists is left as it is, and a schedule is keyed, so it is
- * replaced rather than added again. The slicer queue gets no worker here;
- * Task 12 works it with queueSettings().slicer.work.
+ * a queue that exists keeps its policy (the slicer queue's retry settings are
+ * applied again), and a schedule is keyed, so it is replaced rather than
+ * added again. The slicer queue is worked, one job at a time, only when
+ * slicerJobs is given; the Orca poll is scheduled only when pollOrca is.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
   for (const setting of [settings.ingest, settings.slicer, settings.maintenance]) {
     await boss.createQueue(setting.name, setting.queue);
   }
+  // createQueue leaves a queue that exists as it is, so the slicer's retry
+  // settings are applied to one made before they existed too.
+  await boss.updateQueue(QUEUE.slicer, { ...SLICER_RETRY });
 
   // missed: 'once' runs a job the app was down for when it comes back,
   // rather than waiting a day.
@@ -179,6 +187,14 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     { task: MAINTENANCE_TASKS.sweepOrphans },
     { tz, key: MAINTENANCE_TASKS.sweepOrphans, missed: "once" },
   );
+  if (deps.pollOrca) {
+    await boss.schedule(
+      QUEUE.maintenance,
+      POLL_ORCA_CRON,
+      { task: MAINTENANCE_TASKS.pollOrca },
+      { tz, key: MAINTENANCE_TASKS.pollOrca },
+    );
+  }
 
   const polling =
     deps.pollingIntervalSeconds === undefined
@@ -190,9 +206,39 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     { ...settings.ingest.work, ...polling },
     async ([job]) => {
       if (job === undefined) throw new Error("ingest worker was handed no job");
-      return deps.ingestFile(job.data);
+      const result = await deps.ingestFile(job.data);
+      if (deps.onIngested) {
+        try {
+          await deps.onIngested(result);
+        } catch (error) {
+          // The file is stored; the Orca poll queues what was missed here.
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`queues: after ingesting file ${result.fileId}: ${message.slice(0, 200)}`);
+        }
+      }
+      return result;
     },
   );
+
+  const handlers = deps.slicerJobs;
+  if (handlers) {
+    // With metadata, so a handler sees its retry count and limit.
+    const slicerWork = { ...settings.slicer.work, ...polling, includeMetadata: true as const };
+    await boss.work<SlicerJob, unknown, typeof slicerWork>(
+      QUEUE.slicer,
+      slicerWork,
+      async ([job]) => {
+        if (job === undefined) throw new Error("slicer worker was handed no job");
+        const kind = job.data?.kind;
+        const handler =
+          typeof kind === "string" && Object.hasOwn(handlers, kind) ? handlers[kind] : undefined;
+        if (handler === undefined) {
+          throw new Error(`Unknown slicer job kind: ${String(kind).slice(0, 64)}`);
+        }
+        return handler(job);
+      },
+    );
+  }
 
   await boss.work<MaintenanceJob>(
     QUEUE.maintenance,
@@ -205,6 +251,10 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           return;
         case MAINTENANCE_TASKS.sweepOrphans:
           await deps.sweepOrphans(new Date());
+          return;
+        case MAINTENANCE_TASKS.pollOrca:
+          if (!deps.pollOrca) throw new Error("No Orca poll is registered");
+          await deps.pollOrca();
           return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
