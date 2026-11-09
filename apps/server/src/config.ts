@@ -43,7 +43,6 @@ export interface Config {
   readonly linkSecret: string;
   readonly slicer: {
     readonly url: string;
-    readonly concurrency: number;
     readonly plateSeconds: number;
   };
   readonly inbox: {
@@ -151,7 +150,6 @@ const envSchema = z.object({
   OIDC_GROUP: optional("platehouse", text, NOT_EMPTY),
   LINK_SECRET: required(linkKey, `must be at least ${LINK_MIN_BYTES} bytes`),
   SLICER_URL: optional("http://slicer:8080", httpUrl, HTTP_URL),
-  SLICER_CONCURRENCY: optional("1", positiveInt, WHOLE),
   // 120 s from the slicing gate: the worst plate took 55.31 s on Hades (run 4).
   SLICE_PLATE_SECONDS: optional("120", positiveInt, WHOLE),
   INBOX_DIR: optional("/data/inbox", absolutePath, ABSOLUTE),
@@ -200,7 +198,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     linkSecret: e.LINK_SECRET,
     slicer: Object.freeze({
       url: e.SLICER_URL,
-      concurrency: e.SLICER_CONCURRENCY,
       plateSeconds: e.SLICE_PLATE_SECONDS,
     }),
     inbox: Object.freeze({

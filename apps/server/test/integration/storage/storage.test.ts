@@ -209,6 +209,38 @@ describe("listPrefix and deleteBlobs", () => {
   });
 });
 
+describe("listPage", () => {
+  it("lists one page at a time, with each object's last-modified time", async () => {
+    const store = storeFor(await newBucket());
+    const keys = [1, 2, 3].map(() => blobKey(randomUUIDv7(), randomUUIDv7()));
+    const startedAt = Date.now();
+    for (const key of keys) {
+      await store.putBlob(streamOf(randomBytes(8)), { key, size: 8, contentType: "model/stl" });
+    }
+
+    const first = await store.listPage("models/", { maxKeys: 2 });
+    expect(first.objects).toHaveLength(2);
+    expect(first.next).toEqual(expect.any(String));
+    const second = await store.listPage("models/", { token: first.next, maxKeys: 2 });
+    expect(second.objects).toHaveLength(1);
+    expect(second.next).toBeUndefined();
+
+    const listed = [...first.objects, ...second.objects];
+    expect(listed.map((o) => o.key).sort()).toEqual([...keys].sort());
+    for (const o of listed) {
+      expect(o.size).toBe(8);
+      expect(o.lastModified).toBeInstanceOf(Date);
+      // S3 keeps whole seconds; allow for that and for clock skew.
+      expect(Math.abs((o.lastModified?.getTime() ?? 0) - startedAt)).toBeLessThan(120_000);
+    }
+  });
+
+  it("an empty prefix lists no objects and no next page", async () => {
+    const store = storeFor(await newBucket());
+    expect(await store.listPage("models/")).toEqual({ objects: [], next: undefined });
+  });
+});
+
 describe("readVersioning", () => {
   it("versioning off is reported as off (bucket created without versioning)", async () => {
     expect(await storeFor(await newBucket()).readVersioning()).toBe("off");

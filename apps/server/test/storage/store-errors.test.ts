@@ -86,6 +86,7 @@ const operations: Array<[name: string, call: (s: BlobStore) => Promise<unknown>]
   ["getBlobStream", (s) => s.getBlobStream(KEY)],
   ["deleteBlobs", (s) => s.deleteBlobs([KEY])],
   ["listPrefix", (s) => s.listPrefix("models/")],
+  ["listPage", (s) => s.listPage("models/")],
   ["readVersioning", (s) => s.readVersioning()],
 ];
 

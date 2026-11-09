@@ -146,8 +146,6 @@ describe("loadConfig", () => {
     ["LINK_SECRET", "a".repeat(31)],
     ["LINK_SECRET", `${"\u00e9".repeat(15)}a`],
     ["SLICER_URL", "slicer:8080"],
-    ["SLICER_CONCURRENCY", "0"],
-    ["SLICER_CONCURRENCY", "1.5"],
     ["SLICE_PLATE_SECONDS", "0"],
     ["SLICE_PLATE_SECONDS", "two-minutes"],
     ["INBOX_SETTLE_SECONDS", "-15"],
@@ -181,9 +179,7 @@ describe("loadConfig", () => {
     expect(config.port).toBe(3000);
     expect(config.oidc.issuer).toBe("https://id.local.jonco.dev");
     expect(config.oidc.group).toBe("platehouse");
-    expect(config.slicer.url).toBe("http://slicer:8080");
-    expect(config.slicer.concurrency).toBe(1);
-    expect(config.slicer.plateSeconds).toBe(120);
+    expect(config.slicer).toEqual({ url: "http://slicer:8080", plateSeconds: 120 });
     expect(config.inbox.dir).toBe("/data/inbox");
     expect(config.inbox.settleSeconds).toBe(15);
     expect(config.tmpDir).toBe("/data/tmp");
@@ -191,10 +187,10 @@ describe("loadConfig", () => {
 
   it("an empty optional value takes the default", () => {
     const config = loadConfig(
-      withValue(withValue(validEnv(), "OIDC_GROUP", ""), "SLICER_CONCURRENCY", ""),
+      withValue(withValue(validEnv(), "OIDC_GROUP", ""), "SLICE_PLATE_SECONDS", ""),
     );
     expect(config.oidc.group).toBe("platehouse");
-    expect(config.slicer.concurrency).toBe(1);
+    expect(config.slicer.plateSeconds).toBe(120);
   });
 
   it("parses every key in the contract", () => {
@@ -205,7 +201,6 @@ describe("loadConfig", () => {
       OIDC_ISSUER: "https://id.synthetic.example",
       OIDC_GROUP: "printers",
       SLICER_URL: "http://slicer-synthetic:9090",
-      SLICER_CONCURRENCY: "2",
       SLICE_PLATE_SECONDS: "300",
       INBOX_DIR: "/srv/inbox",
       TMP_DIR: "/srv/tmp",
@@ -225,12 +220,15 @@ describe("loadConfig", () => {
     expect(config.oidc.clientSecret).toBe(fakeOidc);
     expect(config.oidc.group).toBe("printers");
     expect(config.linkSecret).toBe(fakeLink);
-    expect(config.slicer.url).toBe("http://slicer-synthetic:9090");
-    expect(config.slicer.concurrency).toBe(2);
-    expect(config.slicer.plateSeconds).toBe(300);
+    expect(config.slicer).toEqual({ url: "http://slicer-synthetic:9090", plateSeconds: 300 });
     expect(config.inbox.dir).toBe("/srv/inbox");
     expect(config.inbox.settleSeconds).toBe(30);
     expect(config.tmpDir).toBe("/srv/tmp");
+  });
+
+  it("SLICER_CONCURRENCY is not read: slices run one at a time (Jon, 2026-11-08, PR #49)", () => {
+    const config = loadConfig(withValue(validEnv(), "SLICER_CONCURRENCY", "0"));
+    expect(config.slicer).toEqual({ url: "http://slicer:8080", plateSeconds: 120 });
   });
 
   it("S3_FORCE_PATH_STYLE true parses as true", () => {
