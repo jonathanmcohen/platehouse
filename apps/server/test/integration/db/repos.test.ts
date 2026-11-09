@@ -129,6 +129,39 @@ describe("files and plates", () => {
     expect(await repos.files.get("not-a-uuid")).toBeUndefined();
   });
 
+  test("files.findImported finds a file by original name, size and SHA-256 written since a time", async () => {
+    const { file, modelId } = await seedFile(repos);
+    // Ingest stores a display name that can differ from the name as uploaded.
+    await t.db
+      .updateTable("files")
+      .set({ name: "Renamed by ingest.3mf" })
+      .where("id", "=", file.id)
+      .execute();
+    const query = {
+      originalName: file.originalName,
+      size: file.size,
+      sha256: file.sha256,
+      since: file.createdAt,
+    };
+
+    expect(await repos.files.findImported(query)).toEqual({ modelId, fileId: file.id });
+    // Matched on original_name, never on name.
+    expect(
+      await repos.files.findImported({ ...query, originalName: "Renamed by ingest.3mf" }),
+    ).toBeUndefined();
+    expect(await repos.files.findImported({ ...query, size: file.size + 1 })).toBeUndefined();
+    expect(
+      await repos.files.findImported({ ...query, sha256: sha256Of("other bytes") }),
+    ).toBeUndefined();
+    // A row written before since is an earlier import, not this one.
+    expect(
+      await repos.files.findImported({
+        ...query,
+        since: new Date(file.createdAt.getTime() + 1000),
+      }),
+    ).toBeUndefined();
+  });
+
   test("plates are listed in plate order", async () => {
     const { file } = await seedFile(repos);
     await repos.plates.create({ fileId: file.id, index: 2, objectCount: 1, name: "Lid" });

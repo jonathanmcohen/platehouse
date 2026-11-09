@@ -30,15 +30,22 @@
 //   unreachable, leaves the file where it is for the next poll, ends the pass
 //   (the next file would meet the same outage), and is logged once when it
 //   starts and once when imports work again.
-// - After a database outage the commit may have landed with its answer lost
-//   (ingest then throws the connection error it met). Before such a file is
-//   given to ingest again, and before any file is while the database is
-//   down, the watcher asks findImported for a file row with the same name,
-//   size and SHA-256 written since that attempt began. A row found is the
-//   import, so it is not made twice; the inbox copy is checked and deleted as
-//   after any import. The question also checks the database answers before a
-//   file is uploaded again, so a database outage does not upload the file to
-//   the bucket on every poll.
+// - A commit can land with its answer lost when the database connection drops
+//   (ingest then throws the connection error it met), and the process can
+//   restart before the file is tried again (a container recreate, a crash, a
+//   host reboot that stops Postgres mid-commit). So before every ingest the
+//   watcher asks findImported (repos files.findImported) for a file row with
+//   the same original name, size and SHA-256 created since the file reached
+//   the inbox: its ctime, which a copy, a move or a rename sets, unlike its
+//   mtime, and which survives a restart because it is on disk. A row found is
+//   the import, so it is not made twice; the inbox copy is checked and
+//   deleted as after any import. An earlier import of the same file, before
+//   this copy arrived, does not count. The created_at of the row is the
+//   database's clock and the ctime is the inbox host's, so the two must agree
+//   to within the settle window, which is the least time between a file's
+//   last change and its import's commit. The question also checks that the
+//   database answers before a file is uploaded, so a database outage does not
+//   upload the file to the bucket on every poll.
 //
 // No file is retried in a loop and none is dropped without a word. A file that
 // cannot be moved to failed (or whose inbox copy cannot be deleted after a
@@ -48,14 +55,16 @@
 // such a file is tried once more.
 //
 // Nothing here starts on import: the server calls start() once at boot and
-// stop() on shutdown. pollOnce() runs one pass and is what the tests drive,
-// with an injected clock instead of real waits.
+// stop() on shutdown, passing the files repository's get as storedFile and
+// its findImported as findImported. pollOnce() runs one pass and is what the
+// tests drive, with an injected clock instead of real waits.
 import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Ingest, IngestError } from "../ingest/ingest.js";
+import type { ImportedQuery } from "../repos/files.js";
 import { StoreUnavailable } from "../storage/s3.js";
 
 /** How often the inbox is polled. */
@@ -122,13 +131,7 @@ export interface StoredFile {
   sha256: Buffer;
 }
 
-/** What findImported looks for. */
-export interface ImportedQuery {
-  originalName: string;
-  size: number;
-  sha256: Buffer;
-  since: Date;
-}
+export type { ImportedQuery };
 
 export interface InboxWatcherDeps {
   /** The inbox folder (INBOX_DIR); created when missing. */
@@ -140,8 +143,8 @@ export interface InboxWatcherDeps {
   storedFile: (fileId: string) => Promise<StoredFile | undefined>;
   /**
    * The file row with this original name, size and SHA-256 created at or
-   * after since (files.created_at), if any. since is on the wall clock, never
-   * the injected settle clock.
+   * after since (files.created_at), if any (repos files.findImported). since
+   * is on the wall clock, never the injected settle clock.
    */
   findImported: (file: ImportedQuery) => Promise<{ modelId: string; fileId: string } | undefined>;
   /** Milliseconds between polls; POLL_MS when left out. */
@@ -166,11 +169,6 @@ interface Seen {
   signature: string;
   /** When a poll first saw this signature, on the injected clock. */
   since: number;
-  /**
-   * Set when an attempt met a database outage, so its commit may have landed:
-   * when that attempt began, on the wall clock.
-   */
-  lostAnswerSince?: Date;
   /** The file's size and SHA-256 while it keeps this signature. */
   hash?: StoredFile;
 }
@@ -182,14 +180,6 @@ function signature(st: BigIntStats): string {
 function codeOf(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : undefined;
-}
-
-/** Whether the failure is an outage of the store, not the database. */
-function isStorageOutage(error: unknown): boolean {
-  return (
-    (error instanceof IngestError && error.code === "storage_unavailable") ||
-    error instanceof StoreUnavailable
-  );
 }
 
 /** Whether the failure is an outage of the store or the database, not the file's fault. */
@@ -294,8 +284,6 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   const handled = new Map<string, string>();
   // Whether the last attempt met an outage, so it is logged once.
   let outage = false;
-  // Whether an outage since the last import was the database's.
-  let databaseDown = false;
 
   async function currentSignature(path: string): Promise<string | undefined> {
     try {
@@ -306,7 +294,6 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   function outageOver(): void {
-    databaseDown = false;
     if (!outage) return;
     outage = false;
     log("inbox: storage and the database answer again; importing again");
@@ -355,52 +342,51 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
-   * The import an earlier attempt made whose answer was lost, if any. Asked
-   * only after a database outage; the question fails while the database is
-   * still down, which keeps the file from being uploaded again.
+   * The import this copy of the file already made, if any: an earlier
+   * attempt, in this process or one before a restart, whose commit landed but
+   * whose answer was lost. The question fails while the database is down,
+   * which keeps the file from being uploaded.
    */
-  async function lostImport(
+  async function earlierImport(
     name: string,
     path: string,
     entry: Seen,
+    arrived: Date,
   ): Promise<{ modelId: string; fileId: string } | undefined> {
-    const since = entry.lostAnswerSince ?? (databaseDown ? new Date() : undefined);
-    if (since === undefined) return undefined;
     entry.hash ??= await hashFile(path);
     const found = await findImported({
       originalName: name,
       size: entry.hash.size,
       sha256: entry.hash.sha256,
-      since,
+      since: arrived,
     });
     if (found !== undefined) {
       log(
-        `inbox: ${name} was imported as model ${found.modelId} by an earlier attempt whose answer ` +
-          "was lost; it is not imported again",
+        `inbox: ${name} was already imported as model ${found.modelId} by an earlier attempt ` +
+          "whose answer was lost; it is not imported again",
       );
     }
     return found;
   }
 
-  /** Imports one settled file. Returns "outage" when the pass must stop. */
+  /**
+   * Imports one settled file; arrived is when it reached the inbox (its
+   * ctime). Returns "outage" when the pass must stop.
+   */
   async function importOne(
     name: string,
     path: string,
     entry: Seen,
+    arrived: Date,
     pass: InboxPass,
   ): Promise<"outage" | "done"> {
     let result: { modelId: string; fileId: string };
-    const began = new Date();
     try {
       result =
-        (await lostImport(name, path, entry)) ??
+        (await earlierImport(name, path, entry, arrived)) ??
         (await ingest.ingestFile({ tmpPath: path, originalName: name, target: "new" }));
     } catch (error) {
       if (isOutage(error)) {
-        if (!isStorageOutage(error)) {
-          databaseDown = true;
-          entry.lostAnswerSince ??= began;
-        }
         if (!outage) {
           outage = true;
           const why = error instanceof IngestError ? error.message : errorText(error);
@@ -516,7 +502,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       }
       if (at - before.since < settleMs) continue;
 
-      if ((await importOne(name, path, before, pass)) === "outage") {
+      if ((await importOne(name, path, before, st.ctime, pass)) === "outage") {
         pass.waiting = true;
         break;
       }

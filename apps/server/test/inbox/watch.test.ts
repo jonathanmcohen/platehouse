@@ -9,6 +9,7 @@ import {
   access,
   appendFile,
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -25,6 +26,7 @@ import {
   CHANGED_REASON,
   createInboxWatcher,
   FAILED_DIR,
+  type ImportedQuery,
   isIgnoredName,
   REASON_SUFFIX,
   UNCONFIRMED_REASON,
@@ -85,6 +87,16 @@ function fakeIngest(behaviour: Behaviour = () => undefined) {
       },
     },
   };
+}
+
+/** The fake's stored file with this size and SHA-256, as files.findImported finds a row. */
+function storedMatch(fake: ReturnType<typeof fakeIngest>, file: ImportedQuery) {
+  for (const [fileId, stored] of fake.stored) {
+    if (stored.size === file.size && stored.sha256.equals(file.sha256)) {
+      return { modelId: `model-${fileId.slice(5)}`, fileId };
+    }
+  }
+  return undefined;
 }
 
 function watcher(
@@ -531,7 +543,9 @@ describe("outages", () => {
     await w.pollOnce();
     const first = await tick(w, 15_000);
     expect(first.waiting).toBe(true);
-    expect(fake.calls).toEqual(["b.stl"]);
+    // The database was asked first and did not answer: nothing was uploaded.
+    expect(lookups).toEqual(["b.stl"]);
+    expect(fake.calls).toEqual([]);
 
     // a.stl settles during the outage; it sorts first, so it is tried first.
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
@@ -540,14 +554,14 @@ describe("outages", () => {
       expect(pass.waiting).toBe(true);
     }
     // Each poll asked the database first and stopped there: no upload.
-    expect(fake.calls).toEqual(["b.stl"]);
-    expect(lookups.length).toBeGreaterThan(0);
+    expect(fake.calls).toEqual([]);
+    expect(lookups.length).toBeGreaterThan(1);
     expect(lines.filter((l) => l.includes("left in place"))).toHaveLength(1);
 
     down = false;
     const back = await tick(w, 5_000);
     expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
-    expect(fake.calls).toEqual(["b.stl", "a.stl", "b.stl"]);
+    expect(fake.calls).toEqual(["a.stl", "b.stl"]);
     expect(await readdir(inbox)).toEqual([]);
   });
 
@@ -565,42 +579,105 @@ describe("outages", () => {
         throw new Error("a retry must not reach ingest");
       },
     };
-    const asked: Array<{ originalName: string; size: number; sha256: Buffer; since: Date }> = [];
-    const startedBefore = new Date();
+    const asked: ImportedQuery[] = [];
     const w = watcher(fake, {
       ingest,
       findImported: async (file) => {
         asked.push(file);
-        for (const [fileId, stored] of fake.stored) {
-          if (stored.size === file.size && stored.sha256.equals(file.sha256)) {
-            return { modelId: `model-${fileId.slice(5)}`, fileId };
-          }
-        }
-        return undefined;
+        return storedMatch(fake, file);
       },
     });
     const bytes = Buffer.from("solid lost\nendsolid lost\n");
-    await writeFile(join(inbox, "lost.stl"), bytes);
+    const path = join(inbox, "lost.stl");
+    await writeFile(path, bytes);
+    const arrived = (await lstat(path)).ctime;
     await w.pollOnce();
     const first = await tick(w, 15_000);
     expect(first.waiting).toBe(true);
-    expect(await exists(join(inbox, "lost.stl"))).toBe(true);
+    expect(await exists(path)).toBe(true);
 
     const retry = await tick(w, 5_000);
     expect(fake.calls).toEqual(["lost.stl"]);
     expect(retry.imported).toEqual([{ name: "lost.stl", modelId: "model-1", fileId: "file-1" }]);
     expect(retry.failed).toEqual([]);
-    expect(await exists(join(inbox, "lost.stl"))).toBe(false);
-    expect(asked).toHaveLength(1);
-    expect(asked[0]?.originalName).toBe("lost.stl");
-    expect(asked[0]?.size).toBe(bytes.length);
-    expect(asked[0]?.sha256.equals(sha256(bytes))).toBe(true);
-    // Only rows written since the attempt that lost its answer count.
-    expect(asked[0]?.since.getTime()).toBeGreaterThanOrEqual(startedBefore.getTime());
-    expect(asked[0]?.since.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await exists(path)).toBe(false);
+    // Asked before the first attempt (nothing yet) and again before the retry.
+    expect(asked).toHaveLength(2);
+    for (const q of asked) {
+      expect(q.originalName).toBe("lost.stl");
+      expect(q.size).toBe(bytes.length);
+      expect(q.sha256.equals(sha256(bytes))).toBe(true);
+      // Only rows written since the file reached the inbox count.
+      expect(q.since.getTime()).toBe(arrived.getTime());
+    }
   });
 
-  test("after a storage outage the retry goes straight to ingest", async () => {
+  test("a commit whose answer was lost before a restart is found by the next process, not imported twice", async () => {
+    // Everything the watcher keeps in memory goes with the process; what the
+    // lost commit wrote stays in the database. created holds each stored
+    // file's created_at, as the files table would.
+    const fake = fakeIngest();
+    const created = new Map<string, Date>();
+    const lostAnswer = {
+      async ingestFile(input: IngestInput) {
+        const result = await fake.ingest.ingestFile(input);
+        created.set(result.fileId, new Date());
+        throw new Error("Connection terminated unexpectedly");
+      },
+    };
+    const findImported = async (file: ImportedQuery) => {
+      const found = storedMatch(fake, file);
+      const at = found === undefined ? undefined : created.get(found.fileId);
+      return at !== undefined && at >= file.since ? found : undefined;
+    };
+    const bytes = Buffer.from("solid restart\nendsolid restart\n");
+    const path = join(inbox, "restart.stl");
+    await writeFile(path, bytes);
+
+    const before = watcher(fake, { ingest: lostAnswer, findImported });
+    await before.pollOnce();
+    const first = await tick(before, 15_000);
+    expect(first.waiting).toBe(true);
+    expect(await exists(path)).toBe(true);
+    await before.stop();
+
+    // A new process: a new watcher sees the file for the first time.
+    const after = watcher(fake, {
+      ingest: {
+        async ingestFile() {
+          throw new Error("the file must not be imported a second time");
+        },
+      },
+      findImported,
+    });
+    await after.pollOnce();
+    const pass = await tick(after, 15_000);
+    expect(pass.imported).toEqual([{ name: "restart.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(pass.failed).toEqual([]);
+    expect(fake.calls).toEqual(["restart.stl"]);
+    expect(await exists(path)).toBe(false);
+  });
+
+  test("the same file imported before it reached the inbox is imported again", async () => {
+    const fake = fakeIngest();
+    const bytes = Buffer.from("solid again\nendsolid again\n");
+    // A model made from the same name and bytes a minute before this copy.
+    fake.stored.set("file-0", { size: bytes.length, sha256: sha256(bytes) });
+    const earlier = new Date(Date.now() - 60_000);
+    const w = watcher(fake, {
+      findImported: async (file) => {
+        const found = storedMatch(fake, file);
+        return found !== undefined && earlier >= file.since ? found : undefined;
+      },
+    });
+    await writeFile(join(inbox, "again.stl"), bytes);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(fake.calls).toEqual(["again.stl"]);
+    expect(pass.imported).toEqual([{ name: "again.stl", modelId: "model-1", fileId: "file-1" }]);
+  });
+
+  test("after a storage outage the retry asks the database again before uploading", async () => {
     let down = true;
     const fake = fakeIngest(() => {
       if (down) throw new IngestError("storage_unavailable", "Storage is unavailable right now");
@@ -618,7 +695,8 @@ describe("outages", () => {
     down = false;
     await tick(w, 5_000);
     expect(fake.calls).toEqual(["a.stl", "a.stl"]);
-    expect(lookups).toEqual([]);
+    expect(lookups).toEqual(["a.stl", "a.stl"]);
+    expect(await readdir(inbox)).toEqual([]);
   });
 });
 

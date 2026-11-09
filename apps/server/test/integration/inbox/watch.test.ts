@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { Kysely, Transaction } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { DB } from "../../../src/db/types.js";
-import { createInboxWatcher, type ImportedQuery, POLL_MS } from "../../../src/inbox/watch.js";
+import { createInboxWatcher, POLL_MS } from "../../../src/inbox/watch.js";
 import { createIngest, type IngestStore } from "../../../src/ingest/ingest.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { build3mf, footprint, type IngestEnv, startIngestEnv } from "../support/ingest.js";
@@ -42,25 +42,14 @@ beforeEach(async () => {
   lines.length = 0;
 });
 
-/** The file row a lost commit wrote, as the server's wiring will look it up. */
-function findImported(q: ImportedQuery) {
-  return env.db
-    .selectFrom("files")
-    .select(["modelId", "id as fileId"])
-    .where("originalName", "=", q.originalName)
-    .where("size", "=", q.size)
-    .where("sha256", "=", q.sha256)
-    .where("createdAt", ">=", q.since)
-    .executeTakeFirst();
-}
-
 function watcherFor(ingest: Pick<ReturnType<typeof createIngest>, "ingestFile">) {
   return createInboxWatcher({
     dir: inbox,
     settleSeconds: SETTLE_SECONDS,
     ingest,
+    // As the server wires it: the files repository answers both questions.
     storedFile: (id) => env.repos.files.get(id),
-    findImported,
+    findImported: (q) => env.repos.files.findImported(q),
     now,
     log: (line) => lines.push(line),
   });
@@ -79,6 +68,39 @@ const exists = (path: string) =>
   );
 
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest();
+
+/**
+ * An ingest whose transaction commits and then loses its answer: the
+ * connection drops before the answer comes, and the server cannot be asked
+ * how the transaction ended. Ingest keeps the objects and throws the
+ * connection error, which the watcher takes for a database outage.
+ */
+function answerLostIngest() {
+  const answerLost = new Proxy(env.db, {
+    get(target, prop) {
+      if (prop === "transaction") {
+        return () => {
+          const real = env.db.transaction();
+          return {
+            execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+              await real.execute(fn);
+              throw new Error("Connection terminated unexpectedly");
+            },
+          };
+        };
+      }
+      // commitState's status query is the only call made through this.
+      if (prop === "getExecutor") {
+        return () => {
+          throw new Error("Connection refused");
+        };
+      }
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as Kysely<DB>;
+  return createIngest({ db: answerLost, store: env.store });
+}
 
 test("the watcher polls every 5 seconds", () => {
   expect(POLL_MS).toBe(5_000);
@@ -254,34 +276,7 @@ describe("failures", () => {
   });
 
   test("a commit that lands while its answer is lost is found on the retry, not made twice", async () => {
-    // The transaction commits, then the connection drops before the answer
-    // comes, and the server cannot be asked how the transaction ended:
-    // ingest keeps the objects and throws the connection error, which the
-    // watcher takes for a database outage.
-    const answerLost = new Proxy(env.db, {
-      get(target, prop) {
-        if (prop === "transaction") {
-          return () => {
-            const real = env.db.transaction();
-            return {
-              execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
-                await real.execute(fn);
-                throw new Error("Connection terminated unexpectedly");
-              },
-            };
-          };
-        }
-        // commitState's status query is the only call made through this.
-        if (prop === "getExecutor") {
-          return () => {
-            throw new Error("Connection refused");
-          };
-        }
-        const value: unknown = Reflect.get(target, prop, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    }) as Kysely<DB>;
-    const lossy = createIngest({ db: answerLost, store: env.store });
+    const lossy = answerLostIngest();
     let calls = 0;
     const watcher = watcherFor({
       ingestFile: (input) => {
@@ -312,6 +307,44 @@ describe("failures", () => {
     expect(file?.sha256.equals(sha256(bytes))).toBe(true);
     expect(await exists(path)).toBe(false);
     expect(await exists(join(inbox, "failed"))).toBe(false);
+  });
+
+  test("a commit whose answer was lost before a restart is found by the next process, not made twice", async () => {
+    // The first process meets the lost answer and stops, as on a container
+    // recreate or a host reboot; a new watcher sees the file for the first
+    // time, with nothing in memory from the first.
+    const lossy = answerLostIngest();
+    const bytes = build3mf({ plates: 1 });
+    const path = join(inbox, "Before a restart.3mf");
+    await writeFile(path, bytes);
+    const before = await footprint(env);
+
+    const first = watcherFor(lossy);
+    await first.pollOnce();
+    const lost = await tick(first, SETTLE_SECONDS);
+    expect(lost.waiting).toBe(true);
+    expect(await exists(path)).toBe(true);
+    expect((await footprint(env)).files).toBe(before.files + 1);
+    await first.stop();
+
+    let calls = 0;
+    const second = watcherFor({
+      ingestFile: (input) => {
+        calls += 1;
+        return env.ingest.ingestFile(input);
+      },
+    });
+    await second.pollOnce();
+    const pass = await tick(second, SETTLE_SECONDS);
+    expect(calls).toBe(0);
+    expect(pass.imported).toHaveLength(1);
+    expect(pass.failed).toEqual([]);
+    const after = await footprint(env);
+    expect(after.models).toBe(before.models + 1);
+    expect(after.files).toBe(before.files + 1);
+    const file = await env.repos.files.get(pass.imported[0]?.fileId ?? "");
+    expect(file?.originalName).toBe("Before a restart.3mf");
+    expect(await exists(path)).toBe(false);
   });
 
   test("ignored names are never imported or moved", async () => {
