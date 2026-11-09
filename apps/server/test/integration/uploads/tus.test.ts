@@ -391,6 +391,44 @@ describe("resumable uploads", () => {
     expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
   });
 
+  test("after a refused ingest HEAD answers 410, so a client resuming it sends the file again", async () => {
+    // Ingest refused the file and saved nothing, so a fresh send is safe. A
+    // client that still holds the upload's URL (a kept resume fingerprint, or
+    // a retry after a lost 204) must be told to start over, not that the
+    // upload finished.
+    const before = await footprint(env);
+    const bad = Buffer.from("this is not an stl file at all\n".repeat(10));
+    const created = await create(API, BEARER, bad.length, { filename: "Broken again.stl" });
+    const id = idOf(created.headers.location);
+    await patchAll(API, BEARER, id, bad);
+    expect(await result(API, BEARER, id)).toMatchObject({ status: "failed" });
+
+    const head = await send(server.base, "HEAD", `${API}/${id}`, {
+      headers: { ...TUS, ...BEARER },
+    });
+    expect(head.status).toBe(410);
+
+    const sent = server.requests.length;
+    const upload = new Upload(bad, {
+      endpoint: `${server.base}${API}`,
+      uploadUrl: `${server.base}${API}/${id}`,
+      retryDelays: null,
+      storeFingerprintForResuming: false,
+      headers: BEARER,
+      metadata: { filename: "Broken again.stl" },
+    });
+    await new Promise<void>((resolve, reject) => {
+      upload.options.onSuccess = () => resolve();
+      upload.options.onError = (error) => reject(error);
+      upload.start();
+    });
+    expect(server.requests.slice(sent).map((r) => r.method)).toEqual(["HEAD", "POST", "PATCH"]);
+    const again = idOf(upload.url ?? "");
+    expect(again).not.toBe(id);
+    expect(await result(API, BEARER, again)).toMatchObject({ status: "failed" });
+    expect(await footprint(env)).toEqual(before);
+  });
+
   test("an upload with metadata modelId goes into that model", async () => {
     const first = randomBinaryStl(5);
     const a = await create(API, BEARER, first.length, { filename: "First.stl" });
