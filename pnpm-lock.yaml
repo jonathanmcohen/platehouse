@@ -190,6 +190,9 @@ importers:
       '@platehouse/makerworld':
         specifier: workspace:*
         version: link:../../packages/makerworld
+      '@platehouse/slicer-contract':
+        specifier: workspace:*
+        version: link:../../packages/slicer-contract
       '@platehouse/threemf':
         specifier: workspace:*
         version: link:../../packages/threemf

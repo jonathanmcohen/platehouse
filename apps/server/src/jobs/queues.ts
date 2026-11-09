@@ -12,6 +12,7 @@
 //   runs daily at 03:30 local time (issue #38), and the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time.
 import type { PgBoss } from "pg-boss";
+import type { DerivedJob, DerivedOutcome } from "../derived/derived.js";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
 export const QUEUE = {
@@ -54,6 +55,25 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   };
 }
 
+/** The slicer queue's tasks, each a job { task, ... }. Task 12 adds its slice task. */
+export const SLICER_TASKS = {
+  renderScad: "render-scad",
+  convertStep: "convert-step",
+} as const;
+
+/**
+ * The retry settings every slicer job is sent with (Tasks 12 and 13). A job
+ * whose slicer answered 409 busy or dropped the connection throws, and
+ * pg-boss runs it again, up to 3 times with exponential backoff from
+ * retryDelay seconds. The app's own code has no retry loop. On the last
+ * attempt the job records slicer_error instead of throwing.
+ */
+export const SLICER_RETRY = {
+  retryLimit: 3,
+  retryBackoff: true,
+  retryDelay: 5,
+} as const;
+
 /**
  * The maintenance queue's tasks, each a job { task } and its schedule key.
  * Task 9 adds the hourly sweep of stale partial uploads here.
@@ -87,6 +107,14 @@ export interface QueueDeps {
   purgeExpired(now: Date): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
+  /**
+   * Runs one Task 13 render or mesh job (derived/derived.ts's runJob). With
+   * it, the slicer queue gets its worker; without it, none.
+   */
+  runDerived?(
+    job: DerivedJob,
+    attempt: { retryCount: number; retryLimit: number },
+  ): Promise<DerivedOutcome>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */

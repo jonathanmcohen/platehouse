@@ -10,6 +10,7 @@
     "@aws-sdk/client-s3": "3.1164.0",
     "@aws-sdk/lib-storage": "3.1164.0",
     "@platehouse/makerworld": "workspace:*",
+    "@platehouse/slicer-contract": "workspace:*",
     "@platehouse/threemf": "workspace:*",
     "kysely": "0.29.8",
     "pg": "8.23.1",

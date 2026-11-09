@@ -100,6 +100,11 @@ export interface IngestResult {
   fileId: string;
 }
 
+/** A file whose rows have committed, as afterCommit is handed it. */
+export interface StoredFile extends IngestResult {
+  kind: FileKind;
+}
+
 /** The store calls ingest makes; the real one is createBlobStore's. */
 export type IngestStore = Pick<BlobStore, "putBlob" | "deleteBlobs">;
 
@@ -183,7 +188,17 @@ interface PutBlob {
   sha256: Buffer;
 }
 
-export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
+export interface IngestDeps {
+  db: Kysely<DB>;
+  store: IngestStore;
+  /**
+   * Called once a file's rows have committed: Task 13 queues a .scad render
+   * or a STEP mesh here. Interface only in this commit.
+   */
+  afterCommit?: (stored: StoredFile) => Promise<void>;
+}
+
+export function createIngest(deps: IngestDeps) {
   const { db, store } = deps;
 
   /** The model the file will join, checked before any byte is stored. */
