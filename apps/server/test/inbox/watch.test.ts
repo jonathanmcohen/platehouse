@@ -32,6 +32,7 @@ import {
   type ImportedQuery,
   type InboxProbes,
   inboxName,
+  inboxProbes,
   isIgnoredName,
   MAX_INBOX_BYTES,
   NON_UTF8_REASON,
@@ -41,7 +42,12 @@ import {
   TOO_LARGE_REASON,
   UNCONFIRMED_REASON,
 } from "../../src/inbox/watch.js";
-import { IngestError, type IngestInput } from "../../src/ingest/ingest.js";
+import {
+  INGEST_FAILED_MESSAGE,
+  IngestError,
+  type IngestInput,
+  IngestOutcomeUnknown,
+} from "../../src/ingest/ingest.js";
 import { StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 
 let root: string;
@@ -1053,6 +1059,190 @@ describe("telling a bad file from an outage", () => {
   });
 });
 
+describe("ingest's error codes", () => {
+  // Since Task 9, ingestFile wraps any failure that is not its own (the
+  // database, the filesystem, the store refusing) in IngestError
+  // ingest_failed, with the original error as its cause. That says nothing
+  // about the file, so only unsupported_type and model_not_found send a file
+  // to failed at once.
+  const wrapped = (cause?: unknown) =>
+    new IngestError(
+      "ingest_failed",
+      INGEST_FAILED_MESSAGE,
+      cause === undefined ? undefined : { cause },
+    );
+  const diskFull = coded("could not extend file: No space left on device", "53100");
+
+  test.each([
+    ["unsupported_type", "This file is not a supported file; nothing was saved"],
+    ["model_not_found", "That model does not exist or is in the trash; nothing was saved"],
+  ] as const)(
+    "IngestError %s moves the file to failed at once, without checking the environment",
+    async (code, message) => {
+      const fake = fakeIngest(() => {
+        throw new IngestError(code, message);
+      });
+      const { probes, at } = checks(() => false);
+      const w = watcher(fake, { probes });
+      await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+      expect(pass.failed).toEqual([{ name: "a.stl", reason: `${message}.` }]);
+      expect(at).toEqual([]);
+    },
+  );
+
+  const notTheFiles: Array<[string, unknown]> = [
+    ["ingest_failed from a full disk (53100)", wrapped(diskFull)],
+    ["ingest_failed from a TypeError", wrapped(new TypeError("Cannot read properties"))],
+    ["ingest_failed from a refused connection", wrapped(coded("connect", "ECONNREFUSED"))],
+    ["ingest_failed with no cause", wrapped()],
+    ["IngestOutcomeUnknown", new IngestOutcomeUnknown(coded("connection lost", "08006"))],
+  ];
+
+  test.each(notTheFiles)(
+    "with the checks failing, %s leaves every file in place and stops the pass",
+    async (_label, error) => {
+      let down = true;
+      const fake = fakeIngest(() => {
+        if (down) throw error;
+      });
+      const { probes } = checks(() => down);
+      const w = watcher(fake, { probes });
+      await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+      await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      expect(fake.calls).toEqual(["a.stl"]);
+      for (let i = 0; i < 60; i += 1) expect((await tick(w, 5_000)).failed).toEqual([]);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+
+      down = false;
+      const back = await tick(w, BACKOFF_MAX_MS);
+      expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
+    },
+  );
+
+  test(`with the checks passing, ingest_failed counts against the file: it moves to failed after ${STRIKES} tries, its cause in the reason`, async () => {
+    const error = wrapped(new TypeError("boom in the parser"));
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") throw error;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.failed).toEqual([]);
+    expect(first.imported.map((i) => i.name)).toEqual(["b.stl"]);
+    expect((await tick(w, 5_000)).failed).toEqual([]);
+    const third = await tick(w, 5_000);
+    expect(third.failed).toEqual([{ name: "a.stl", reason: repeatedErrorReason(error) }]);
+    // The reason names what went wrong, not only ingest's general message.
+    expect(repeatedErrorReason(error)).toContain("TypeError: boom in the parser");
+    expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(STRIKES);
+  });
+
+  test("two files whose ingest_failed errors have different causes each take their strikes; the inbox is not held", async () => {
+    const boom = wrapped(new TypeError("boom in the parser"));
+    const denied = wrapped(coded("EACCES: permission denied, open 'b.stl'", "EACCES"));
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") throw boom;
+      if (input.originalName === "b.stl") throw denied;
+    });
+    const w = watcher(fake);
+    for (const name of ["a.stl", "b.stl", "c.stl"]) {
+      await writeFile(join(inbox, name), `solid ${name}\nendsolid ${name}\n`);
+    }
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.waiting).toBe(false);
+    expect(first.imported.map((i) => i.name)).toEqual(["c.stl"]);
+    await tick(w, 5_000);
+    const last = await tick(w, 5_000);
+    expect(last.failed.map((f) => f.name)).toEqual(["a.stl", "b.stl"]);
+    expect(lines.filter((l) => l.includes("the checks cannot see"))).toEqual([]);
+  });
+
+  test("two files whose ingest_failed errors have the same cause hold the inbox", async () => {
+    const fake = fakeIngest(() => {
+      throw wrapped(coded("could not extend file: No space left on device", "53100"));
+    });
+    const w = watcher(fake);
+    for (const name of ["a.stl", "b.stl", "c.stl"]) {
+      await writeFile(join(inbox, name), `solid ${name}\nendsolid ${name}\n`);
+    }
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.waiting).toBe(true);
+    expect(fake.calls).toEqual(["a.stl", "b.stl"]);
+    const started = lines.filter((l) => l.includes("the checks cannot see"));
+    expect(started).toHaveLength(1);
+    expect(started[0]).toContain("No space left on device");
+  });
+
+  test("a file removed while ingest reads it (ENOENT inside ingest_failed) is forgotten, not counted or moved", async () => {
+    const fake = fakeIngest(async (input) => {
+      await rm(input.tmpPath);
+      throw wrapped(coded(`ENOENT: no such file or directory, open '${input.tmpPath}'`, "ENOENT"));
+    });
+    const { probes, at } = checks(() => false);
+    const w = watcher(fake, { probes });
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.failed).toEqual([]);
+    expect(pass.waiting).toBe(false);
+    expect(at).toEqual([]);
+    expect(
+      lines.some((l) => l.includes("was removed from the inbox while it was being imported")),
+    ).toBe(true);
+  });
+});
+
+describe("the checks", () => {
+  // The store check itself; the database check needs a real Postgres and is
+  // in test/integration/inbox/.
+  const listed = { objects: [], next: undefined };
+
+  test("the store check fails when the store will not take a write, though it still lists", async () => {
+    const store = {
+      listPage: async () => listed,
+      checkWrite: async () => {
+        throw new StoreError("PutObject", "QuotaExceeded", 403);
+      },
+    };
+    const probes = inboxProbes({ db: {} as never, store });
+    await expect(probes.store()).rejects.toThrow(/QuotaExceeded/);
+  });
+
+  test("the store check fails when the listing fails, though writes work", async () => {
+    const store = {
+      listPage: async () => {
+        throw new StoreError("ListObjectsV2", "AccessDenied", 403);
+      },
+      checkWrite: async () => undefined,
+    };
+    const probes = inboxProbes({ db: {} as never, store });
+    await expect(probes.store()).rejects.toThrow(/AccessDenied/);
+  });
+
+  test("the store check passes when the store lists and takes a write", async () => {
+    let writes = 0;
+    const store = {
+      listPage: async () => listed,
+      checkWrite: async () => {
+        writes += 1;
+      },
+    };
+    const probes = inboxProbes({ db: {} as never, store });
+    await expect(probes.store()).resolves.toBeUndefined();
+    expect(writes).toBe(1);
+  });
+});
+
 describe("a fault the checks cannot see", () => {
   // The database check only reads, so a fault that breaks writes and not
   // reads passes it: the data disk full (53100) or a write-side I/O error
@@ -1248,6 +1438,72 @@ describe("a fault the checks cannot see", () => {
     expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR]);
     expect(lines.filter((l) => l.includes("the checks cannot see"))).toHaveLength(1);
     expect(lines.filter((l) => l.includes("now count against"))).toHaveLength(1);
+  });
+
+  test("files taken out during the hold leave no memory of it: a later pair failing the same way is held from the start, 5 s first, and logged", async () => {
+    const tries: number[] = [];
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "c.stl") tries.push(clock);
+      throw diskFull;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    expect((await tick(w, 15_000)).waiting).toBe(true);
+
+    // Jon takes both files out during the hold; the retry finds nothing to try.
+    await rm(join(inbox, "a.stl"));
+    await rm(join(inbox, "b.stl"));
+    const empty = await tick(w, BACKOFF_FIRST_MS);
+    expect(empty.waiting).toBe(false);
+    expect(fake.calls).toEqual(["a.stl", "b.stl"]);
+    // The end of the hold is logged even though no file was tried.
+    expect(lines.filter((l) => l.includes("hold") && l.includes("over"))).toHaveLength(1);
+
+    // Days later, two new files meet a full disk.
+    clock += 3 * 86_400_000;
+    await writeFile(join(inbox, "c.stl"), "solid c\nendsolid c\n");
+    await writeFile(join(inbox, "d.stl"), "solid d\nendsolid d\n");
+    await w.pollOnce();
+    const held = await tick(w, 15_000);
+    expect(held.waiting).toBe(true);
+    expect(held.failed).toEqual([]);
+    expect(lines.filter((l) => l.includes("the checks cannot see"))).toHaveLength(2);
+    // 50 s of polls: tries 5 s, 15 s and 35 s after the first.
+    for (let i = 0; i < 10; i += 1) await tick(w, 5_000);
+    // A new hold: its first wait is 5 s, then 10 s, then 20 s.
+    expect(tries.slice(1, 4).map((t, i) => t - (tries[i] ?? 0))).toEqual([5_000, 10_000, 20_000]);
+  });
+
+  test("files that reached failed while held tries counted leave no memory of it: a later pair failing the same way is held again, not counted at once", async () => {
+    const fake = fakeIngest(() => {
+      throw diskFull;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    // 25 minutes: seven held tries, then STRIKES that counted, and both are
+    // in failed.
+    for (let i = 0; i < 300; i += 1) await tick(w, 5_000);
+    expect(
+      (await readdir(join(inbox, FAILED_DIR))).filter((n) => !n.endsWith(REASON_SUFFIX)),
+    ).toEqual(["a.stl", "b.stl"]);
+    expect(lines.filter((l) => l.includes("now count against"))).toHaveLength(1);
+
+    // Days later, two new files meet the same fault.
+    clock += 3 * 86_400_000;
+    await writeFile(join(inbox, "c.stl"), "solid c\nendsolid c\n");
+    await writeFile(join(inbox, "d.stl"), "solid d\nendsolid d\n");
+    await w.pollOnce();
+    const held = await tick(w, 15_000);
+    expect(held.waiting).toBe(true);
+    expect(lines.filter((l) => l.includes("the checks cannot see"))).toHaveLength(2);
+    // Ten minutes of held tries: neither takes a strike or reaches failed.
+    for (let i = 0; i < 120; i += 1) expect((await tick(w, 5_000)).failed).toEqual([]);
+    expect((await readdir(inbox)).sort()).toEqual(["c.stl", "d.stl", FAILED_DIR]);
   });
 });
 
