@@ -84,9 +84,11 @@ import type { BigIntStats, PathLike } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
+import type { Kysely } from "kysely";
+import type { DB } from "../db/types.js";
 import { type Ingest, IngestError } from "../ingest/ingest.js";
 import type { ImportedQuery } from "../repos/files.js";
-import { StoreError, StoreUnavailable } from "../storage/s3.js";
+import { type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 
 /** How often the inbox is polled. */
 export const POLL_MS = 5_000;
@@ -112,6 +114,54 @@ export const NON_UTF8_REASON =
 /** Reason for a failure that is neither a refusal nor an outage. */
 export const UNEXPECTED_REASON =
   "Platehouse could not import this file because of an unexpected error; the server log has the details.";
+
+/**
+ * The largest file the inbox takes, in bytes: 512 MiB, the same limit as an
+ * upload (MAX_UPLOAD_BYTES in uploads/tus.ts, Task 9).
+ */
+export const MAX_INBOX_BYTES = 536_870_912;
+
+/** Reason when the file is larger than MAX_INBOX_BYTES. */
+export const TOO_LARGE_REASON =
+  `Platehouse could not import this file because it is larger than ${MAX_INBOX_BYTES} bytes ` +
+  "(512 MiB), the most it takes; nothing was uploaded.";
+
+/** Failures in a row, with storage and the database answering, before a file moves to failed. */
+export const STRIKES = 3;
+
+/** How long each environment check may take before it counts as failed. */
+export const PROBE_TIMEOUT_MS = 5_000;
+
+/** The wait before the first retry after an outage starts; it doubles on each failed check. */
+export const BACKOFF_FIRST_MS = 5_000;
+
+/** The longest wait between checks during an outage. */
+export const BACKOFF_MAX_MS = 300_000;
+
+/** The reason a file takes when it failed STRIKES times while storage and the database answered. */
+export function repeatedErrorReason(error: unknown): string {
+  return (
+    `Platehouse tried to import this file ${STRIKES} times while storage and the database were ` +
+    `answering and it failed each time, last with "${errorText(error)}".`
+  );
+}
+
+/** Cheap checks that the database and the store answer; each rejects when it does not. */
+export interface InboxProbes {
+  database(): Promise<unknown>;
+  store(): Promise<unknown>;
+}
+
+/** The checks the server wires in: one small query and one small listing. */
+export function inboxProbes(_deps: {
+  db: Kysely<DB>;
+  store: Pick<BlobStore, "listPage">;
+}): InboxProbes {
+  return {
+    database: async () => undefined,
+    store: async () => undefined,
+  };
+}
 
 const IGNORED_SUFFIXES = [".part", ".crdownload", ".tmp"];
 
@@ -197,6 +247,10 @@ export interface InboxWatcherDeps {
    * is on the wall clock, never the injected settle clock.
    */
   findImported: (file: ImportedQuery) => Promise<{ modelId: string; fileId: string } | undefined>;
+  /** The environment checks run after an error that is not the file's own (inboxProbes). */
+  probes: InboxProbes;
+  /** How long each check may take; PROBE_TIMEOUT_MS when left out. */
+  probeTimeoutMs?: number;
   /** Milliseconds between polls; POLL_MS when left out. */
   pollMs?: number;
   /** The clock the settle window is measured on, in ms; Date.now when left out. */

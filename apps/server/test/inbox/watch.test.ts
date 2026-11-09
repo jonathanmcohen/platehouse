@@ -112,6 +112,8 @@ function watcher(
     ingest: fake.ingest,
     storedFile: async (id) => fake.stored.get(id),
     findImported: async () => undefined,
+    // Storage and the database answer unless a test says otherwise.
+    probes: { database: async () => undefined, store: async () => undefined },
     now: () => clock,
     log: (line) => lines.push(line),
     ...extra,

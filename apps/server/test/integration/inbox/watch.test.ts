@@ -8,15 +8,27 @@
 // The poll is driven by calling pollOnce() with an injected clock, so the
 // 5-second polls and the 15-second settle window take no real time. Every
 // file is built by the test suite; no designer file is read or committed.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { access, appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Kysely, Transaction } from "kysely";
+import { type Kysely, sql, type Transaction } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { createDb } from "../../../src/db/kysely.js";
 import type { DB } from "../../../src/db/types.js";
-import { createInboxWatcher, POLL_MS } from "../../../src/inbox/watch.js";
+import {
+  BACKOFF_MAX_MS,
+  createInboxWatcher,
+  FAILED_DIR,
+  type InboxProbes,
+  inboxProbes,
+  POLL_MS,
+  REASON_SUFFIX,
+  repeatedErrorReason,
+  STRIKES,
+} from "../../../src/inbox/watch.js";
 import { createIngest, type IngestStore } from "../../../src/ingest/ingest.js";
-import { StoreUnavailable } from "../../../src/storage/s3.js";
+import { createRepos } from "../../../src/repos/index.js";
+import { StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { build3mf, footprint, type IngestEnv, startIngestEnv } from "../support/ingest.js";
 
 let env: IngestEnv;
@@ -42,17 +54,45 @@ beforeEach(async () => {
   lines.length = 0;
 });
 
-function watcherFor(ingest: Pick<ReturnType<typeof createIngest>, "ingestFile">) {
+function watcherFor(
+  ingest: Pick<ReturnType<typeof createIngest>, "ingestFile">,
+  extra: Partial<Parameters<typeof createInboxWatcher>[0]> = {},
+) {
   return createInboxWatcher({
     dir: inbox,
     settleSeconds: SETTLE_SECONDS,
     ingest,
-    // As the server wires it: the files repository answers both questions.
+    // As the server wires it: the files repository answers both questions,
+    // and the checks run against the same database and bucket.
     storedFile: (id) => env.repos.files.get(id),
     findImported: (q) => env.repos.files.findImported(q),
+    probes: inboxProbes({ db: env.db, store: env.store }),
     now,
     log: (line) => lines.push(line),
+    ...extra,
   });
+}
+
+/** Runs one statement as the superuser the env connects as. */
+const asAdmin = (statement: string) => sql`${sql.raw(statement)}`.execute(env.db);
+
+/**
+ * A connection to the test database as a new login role. setup runs as the
+ * superuser once the role exists, with the role's name, to grant or
+ * configure it. The role's credential is random and lives only in this
+ * throwaway container.
+ */
+async function connectAsRole(
+  name: string,
+  setup: (role: string) => Promise<void>,
+): Promise<Kysely<DB>> {
+  const credential = randomBytes(12).toString("hex");
+  await asAdmin(`create role ${name} login password '${credential}'`);
+  await setup(name);
+  const url = new URL(env.url);
+  url.username = name;
+  url.password = credential;
+  return createDb(url.toString());
 }
 
 /** Moves the injected clock on and runs one poll, as the 5-second timer would. */
@@ -246,7 +286,16 @@ describe("failures", () => {
         return env.store.deleteBlobs(keys);
       },
     };
-    const watcher = watcherFor(createIngest({ db: env.db, store: flaky }));
+    // The store check meets the same outage.
+    const real = inboxProbes({ db: env.db, store: env.store });
+    const probes: InboxProbes = {
+      database: () => real.database(),
+      store: async () => {
+        if (down) throw new StoreUnavailable("ListObjectsV2", "ECONNREFUSED");
+        return real.store();
+      },
+    };
+    const watcher = watcherFor(createIngest({ db: env.db, store: flaky }), { probes });
     const bytes = build3mf({ plates: 1 });
     const path = join(inbox, "During the outage.3mf");
     await writeFile(path, bytes);
@@ -291,7 +340,9 @@ describe("failures", () => {
 
     await watcher.pollOnce();
     const first = await tick(watcher, SETTLE_SECONDS);
-    expect(first.waiting).toBe(true);
+    // The database answers the check, so this counts as one failed try for
+    // the file; it stays in the inbox for the retry.
+    expect(first.failed).toEqual([]);
     expect(await exists(path)).toBe(true);
     expect((await footprint(env)).files).toBe(before.files + 1);
 
@@ -322,7 +373,7 @@ describe("failures", () => {
     const first = watcherFor(lossy);
     await first.pollOnce();
     const lost = await tick(first, SETTLE_SECONDS);
-    expect(lost.waiting).toBe(true);
+    expect(lost.failed).toEqual([]);
     expect(await exists(path)).toBe(true);
     expect((await footprint(env)).files).toBe(before.files + 1);
     await first.stop();
@@ -360,5 +411,183 @@ describe("failures", () => {
     expect(await footprint(env)).toEqual(before);
     expect((await readdir(inbox)).sort()).toEqual([...names].sort());
     await rm(inbox, { recursive: true, force: true });
+  });
+});
+
+describe("telling a bad file from an outage", () => {
+  test("a database role with no grant on files (42501) moves no file to failed, and the inbox waits", async () => {
+    const noGrant = await connectAsRole("inbox_no_grant", async (role) => {
+      await asAdmin(`grant usage on schema public to ${role}`);
+    });
+    try {
+      let broken = true;
+      const healthy = inboxProbes({ db: env.db, store: env.store });
+      const denied = inboxProbes({ db: noGrant, store: env.store });
+      const deniedRepos = createRepos(noGrant);
+      const watcher = watcherFor(env.ingest, {
+        findImported: (q) => (broken ? deniedRepos : env.repos).files.findImported(q),
+        probes: {
+          database: () => (broken ? denied : healthy).database(),
+          store: () => (broken ? denied : healthy).store(),
+        },
+      });
+      await writeFile(join(inbox, "A grant missing.3mf"), build3mf({ plates: 1 }));
+      await writeFile(join(inbox, "B grant missing.3mf"), build3mf({ plates: 2 }));
+      const before = await footprint(env);
+
+      await watcher.pollOnce();
+      const pass = await tick(watcher, SETTLE_SECONDS);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      for (let i = 0; i < 10; i += 1) {
+        const later = await tick(watcher, 5);
+        expect(later.failed).toEqual([]);
+      }
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect((await readdir(inbox)).sort()).toEqual(["A grant missing.3mf", "B grant missing.3mf"]);
+      expect(await footprint(env)).toEqual(before);
+      expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(1);
+
+      // The grant is fixed: once the backoff has passed, both import.
+      broken = false;
+      const back = await tick(watcher, BACKOFF_MAX_MS / 1000);
+      expect(back.imported.map((i) => i.name)).toEqual([
+        "A grant missing.3mf",
+        "B grant missing.3mf",
+      ]);
+      expect(await readdir(inbox)).toEqual([]);
+      expect(lines.filter((l) => l.includes("importing again"))).toHaveLength(1);
+    } finally {
+      await noGrant.destroy();
+    }
+  });
+
+  test("a database in read-only mode (25006) moves no file to failed, and nothing is uploaded again while it lasts", async () => {
+    const readOnly = await connectAsRole("inbox_read_only", async (role) => {
+      await asAdmin(`grant usage on schema public to ${role}`);
+      await asAdmin(
+        `grant select, insert, update, delete on all tables in schema public to ${role}`,
+      );
+      await asAdmin(`grant usage, select on all sequences in schema public to ${role}`);
+      // As after a failover to a standby, or with default_transaction_read_only set.
+      await asAdmin(`alter role ${role} set default_transaction_read_only = on`);
+    });
+    try {
+      let uploads = 0;
+      const counting: IngestStore = {
+        putBlob: (stream, opts) => {
+          uploads += 1;
+          return env.store.putBlob(stream, opts);
+        },
+        deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+      };
+      const roRepos = createRepos(readOnly);
+      const watcher = watcherFor(createIngest({ db: readOnly, store: counting }), {
+        findImported: (q) => roRepos.files.findImported(q),
+        probes: inboxProbes({ db: readOnly, store: env.store }),
+      });
+      await writeFile(join(inbox, "A read only.3mf"), build3mf({ plates: 1 }));
+      await writeFile(join(inbox, "B read only.3mf"), build3mf({ plates: 1 }));
+      const before = await footprint(env);
+
+      await watcher.pollOnce();
+      const pass = await tick(watcher, SETTLE_SECONDS);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      const afterFirst = uploads;
+      // Ten minutes of polls: no file goes to failed and nothing is uploaded
+      // again while the database stays read-only.
+      for (let i = 0; i < 120; i += 1) await tick(watcher, 5);
+      expect(uploads).toBe(afterFirst);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect((await readdir(inbox)).sort()).toEqual(["A read only.3mf", "B read only.3mf"]);
+      expect((await footprint(env)).models).toBe(before.models);
+    } finally {
+      await readOnly.destroy();
+    }
+  });
+
+  test("a store that takes the upload, then refuses it and refuses the check, gets the file uploaded once, not on every poll", async () => {
+    // A write-only bucket policy (s3:PutObject only): the body is stored,
+    // the size check (HeadObject) is denied, and so is the listing the
+    // store check makes.
+    let broken = true;
+    let uploads = 0;
+    const writeOnly: IngestStore = {
+      putBlob: async (stream, opts) => {
+        uploads += 1;
+        const stored = await env.store.putBlob(stream, opts);
+        if (broken) throw new StoreError("HeadObject", "AccessDenied", 403);
+        return stored;
+      },
+      deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+    };
+    const real = inboxProbes({ db: env.db, store: env.store });
+    const watcher = watcherFor(createIngest({ db: env.db, store: writeOnly }), {
+      probes: {
+        database: () => real.database(),
+        store: async () => {
+          if (broken) throw new StoreError("ListObjectsV2", "AccessDenied", 403);
+          return real.store();
+        },
+      },
+    });
+    const path = join(inbox, "Write only.3mf");
+    await writeFile(path, build3mf({ plates: 1 }));
+
+    await watcher.pollOnce();
+    const pass = await tick(watcher, SETTLE_SECONDS);
+    expect(pass.waiting).toBe(true);
+    expect(uploads).toBe(1);
+    for (let i = 0; i < 120; i += 1) await tick(watcher, 5);
+    expect(uploads).toBe(1);
+    expect(await exists(path)).toBe(true);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+
+    broken = false;
+    const back = await tick(watcher, BACKOFF_MAX_MS / 1000);
+    expect(back.imported).toHaveLength(1);
+    expect(uploads).toBe(2);
+    expect(await exists(path)).toBe(false);
+  });
+
+  test(`with storage and the database answering, a file that fails ${STRIKES} times moves to failed with the error, and the file after it still imports`, async () => {
+    const boom = new TypeError("boom in a parser nobody expected");
+    const watcher = watcherFor({
+      ingestFile: (input) => {
+        if (input.originalName === "A fails.3mf") return Promise.reject(boom);
+        return env.ingest.ingestFile(input);
+      },
+    });
+    const bad = join(inbox, "A fails.3mf");
+    await writeFile(bad, build3mf({ plates: 1 }));
+    await writeFile(join(inbox, "B imports.3mf"), build3mf({ plates: 1 }));
+
+    await watcher.pollOnce();
+    const first = await tick(watcher, SETTLE_SECONDS);
+    expect(first.waiting).toBe(false);
+    expect(first.failed).toEqual([]);
+    // The file after it imports in the same pass.
+    expect(first.imported.map((i) => i.name)).toEqual(["B imports.3mf"]);
+    expect(await exists(bad)).toBe(true);
+
+    const second = await tick(watcher, 5);
+    expect(second.failed).toEqual([]);
+    expect(await exists(bad)).toBe(true);
+
+    const third = await tick(watcher, 5);
+    const reason = repeatedErrorReason(boom);
+    expect(third.failed).toEqual([{ name: "A fails.3mf", reason }]);
+    expect(await readFile(join(inbox, FAILED_DIR, `A fails.3mf${REASON_SUFFIX}`), "utf8")).toBe(
+      `${reason}\n`,
+    );
+    expect(reason).toContain("boom in a parser nobody expected");
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+  });
+
+  test("the server's checks pass against a database and a bucket that answer", async () => {
+    const probes = inboxProbes({ db: env.db, store: env.store });
+    await expect(probes.database()).resolves.toBeUndefined();
+    await expect(probes.store()).resolves.toBeUndefined();
   });
 });
