@@ -28,7 +28,7 @@ import {
 } from "../../../src/inbox/watch.js";
 import { createIngest, type IngestStore } from "../../../src/ingest/ingest.js";
 import { createRepos } from "../../../src/repos/index.js";
-import { StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
+import { createBlobStore, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { build3mf, footprint, type IngestEnv, startIngestEnv } from "../support/ingest.js";
 
 let env: IngestEnv;
@@ -591,5 +591,119 @@ describe("telling a bad file from an outage", () => {
     const probes = inboxProbes({ db: env.db, store: env.store });
     await expect(probes.database()).resolves.toBeUndefined();
     await expect(probes.store()).resolves.toBeUndefined();
+  });
+});
+
+describe("the checks write", () => {
+  // A write fault that leaves reads working: the data disk full (53100), a
+  // write-side I/O error, a tablespace on a filesystem gone read-only. The
+  // role keeps its grants and the session is not read-only, so a check that
+  // only reads passes. A trigger stands in for the fault: it fails every
+  // insert into one table with the SQLSTATE a full disk gives.
+  async function failWrites(table: string): Promise<() => Promise<void>> {
+    await asAdmin(
+      "create or replace function inbox_test_disk_full() returns trigger language plpgsql as " +
+        "$$ begin raise exception 'could not extend file: No space left on device' " +
+        "using errcode = '53100'; end $$",
+    );
+    await asAdmin(
+      `create trigger inbox_test_disk_full before insert on ${table} ` +
+        "for each row execute function inbox_test_disk_full()",
+    );
+    return async () => {
+      await asAdmin(`drop trigger if exists inbox_test_disk_full on ${table}`);
+    };
+  }
+
+  test.each(["models", "blobs", "files"])(
+    "the database check fails when an insert into %s fails, though reads work",
+    async (table) => {
+      const restore = await failWrites(table);
+      try {
+        const probes = inboxProbes({ db: env.db, store: env.store });
+        await expect(probes.database()).rejects.toThrow(/No space left on device/);
+      } finally {
+        await restore();
+      }
+    },
+  );
+
+  test("the database check leaves no row behind", async () => {
+    const before = await footprint(env);
+    const probes = inboxProbes({ db: env.db, store: env.store });
+    for (let i = 0; i < 3; i += 1) await probes.database();
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("a database that reads but cannot write moves no file to failed, and the inbox waits until it can", async () => {
+    const restore = await failWrites("files");
+    let restored = false;
+    try {
+      const watcher = watcherFor(env.ingest);
+      await writeFile(join(inbox, "A disk full.3mf"), build3mf({ plates: 1 }));
+      await writeFile(join(inbox, "B disk full.3mf"), build3mf({ plates: 2 }));
+      const before = await footprint(env);
+
+      await watcher.pollOnce();
+      const pass = await tick(watcher, SETTLE_SECONDS);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      // Half an hour of polls: past the point where held tries would count.
+      for (let i = 0; i < 360; i += 1) {
+        const later = await tick(watcher, 5);
+        expect(later.failed).toEqual([]);
+      }
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect((await readdir(inbox)).sort()).toEqual(["A disk full.3mf", "B disk full.3mf"]);
+      expect(await footprint(env)).toEqual(before);
+      // Seen as an outage by the checks, not guessed from two files failing.
+      const started = lines.filter((l) => l.includes("not answering"));
+      expect(started).toHaveLength(1);
+      expect(started[0]).toContain("No space left on device");
+      expect(lines.filter((l) => l.includes("the checks cannot see"))).toEqual([]);
+
+      await restore();
+      restored = true;
+      const back = await tick(watcher, BACKOFF_MAX_MS / 1000);
+      expect(back.imported.map((i) => i.name)).toEqual(["A disk full.3mf", "B disk full.3mf"]);
+      expect(await readdir(inbox)).toEqual([]);
+    } finally {
+      if (!restored) await restore();
+    }
+  });
+
+  /** The store's write check (s3.ts), or a rejection while it has none. */
+  const checkWrite = (store: unknown): Promise<unknown> => {
+    const check = (store as { checkWrite?: () => Promise<unknown> }).checkWrite;
+    return check === undefined
+      ? Promise.reject(new Error("the store has no write check"))
+      : check.call(store);
+  };
+
+  test("the store's write check passes on a bucket that takes writes, and leaves nothing behind", async () => {
+    const before = await env.store.listPrefix("");
+    await expect(checkWrite(env.store)).resolves.toBeUndefined();
+    await expect(checkWrite(env.store)).resolves.toBeUndefined();
+    // Nothing is left anywhere in the bucket, models/ included.
+    expect(await env.store.listPrefix("")).toEqual(before);
+  });
+
+  test("the store's write check fails as StoreUnavailable when the store does not answer", async () => {
+    const dead = createBlobStore(
+      {
+        endpoint: "http://127.0.0.1:9",
+        region: "us-east-1",
+        bucket: "platehouse-nowhere",
+        accessKeyId: "test-only-key-id",
+        secretAccessKey: "test-only-secret",
+        forcePathStyle: true,
+      },
+      { maxAttempts: 1, connectionTimeoutMs: 1_000 },
+    );
+    try {
+      await expect(checkWrite(dead)).rejects.toBeInstanceOf(StoreUnavailable);
+    } finally {
+      dead.destroy();
+    }
   });
 });
