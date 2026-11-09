@@ -1202,6 +1202,84 @@ describe("escaped designer text beside misnested inline tags renders literally (
     expect(html).toContain("<td>b</td>");
   });
 
+  // Text directly in a <tr>, outside any cell, was deleted when the row had
+  // no cell, and written after the row's last pipe when it came after a
+  // cell, which broke the header row or was dropped from a body row (issue
+  // #42). A row with no cell now keeps its text as a one-cell row; text after
+  // a row's last cell ends that row and goes on a line of its own, which
+  // markdown-it reads as a one-cell row. Text before a row's first cell
+  // still joins that cell (above).
+  it.each([
+    ["a row with no cell", "<tr><td>a</td></tr><tr>Note</tr>", "| a |\n| --- |\n| Note |"],
+    ["the only row, with no cell", "<tr>Note</tr>", "| Note |\n| --- |"],
+    ["a row with no cell left open", "<tr><td>a</td></tr><tr>Note", "| a |\n| --- |\n| Note |"],
+    [
+      "a row with no cell before the next row",
+      "<tr>Note<tr><td>b</td></tr>",
+      "| Note |\n| --- |\n| b |",
+    ],
+    [
+      "after the header row's last cell",
+      "<tr><td>a</td>Note</tr><tr><td>b</td></tr>",
+      "| a |\n| --- |\nNote\n| b |",
+    ],
+    [
+      "after a body row's last cell",
+      "<tr><td>x</td></tr><tr><td>a</td>Note</tr>",
+      "| x |\n| --- |\n| a |\nNote",
+    ],
+    ["after a <br> after the last cell", "<tr><td>a</td><br>Note</tr>", "| a |\n| --- |\nNote"],
+    ["in a <p> after the last cell", "<tr><td>a</td><p>Note</p></tr>", "| a |\n| --- |\nNote"],
+    [
+      "in a list after the last cell",
+      "<tr><td>a</td><ul><li>Note</li></ul></tr>",
+      "| a |\n| --- |\nNote",
+    ],
+    [
+      "in bold after the last cell",
+      "<tr><td>a</td><b>Note</b></tr><tr><td>b</td></tr>",
+      "| a |\n| --- |\nNote\n| b |",
+    ],
+    ["between two cells", "<tr><td>a</td>Note<td>b</td></tr>", "| a |\n| --- |\nNote\n| b |"],
+  ])("text in a table row outside any cell is kept: %s", (_name, rows, expected) => {
+    const out = htmlToMarkdown(`<table>${rows}</table>`);
+    expect(out).toBe(expected);
+    const html = render(out);
+    expect(html.match(/<table>/g)).toHaveLength(1);
+    expect(html).toMatch(/^<table>/);
+    expect(html).toMatch(/<t[dh]>Note<\/t[dh]>/);
+  });
+
+  it("text in a row outside any cell of a table in a list item stays in the item", () => {
+    const out = htmlToMarkdown(
+      "<ul><li>i<table><tr><td>a</td>Note</tr><tr>More</tr></table></li><li>j</li></ul>",
+    );
+    expect(out).toBe("- i\n\n  | a |\n  | --- |\n  Note\n  | More |\n\n- j");
+    expect(render(out)).toBe(
+      "<ul>\n<li>\n<p>i</p>\n<table>\n<thead>\n<tr>\n<th>a</th>\n</tr>\n</thead>\n" +
+        "<tbody>\n<tr>\n<td>Note</td>\n</tr>\n<tr>\n<td>More</td>\n</tr>\n</tbody>\n</table>\n</li>\n" +
+        "<li>\n<p>j</p>\n</li>\n</ul>\n",
+    );
+  });
+
+  it.each([
+    ["a row with no cell", (p: string) => `<tr><td>a</td></tr><tr>w${p}z</tr>`],
+    ["after the header row's last cell", (p: string) => `<tr><td>a</td>w${p}z</tr>`],
+    [
+      "after a body row's last cell",
+      (p: string) => `<tr><td>a</td></tr><tr><td>b</td>w${p}z</tr><tr><td>c</td></tr>`,
+    ],
+  ])("designer text in a table row outside any cell renders literally: %s", (_name, rows) => {
+    for (const payload of DESIGNER_PAYLOADS) {
+      const p = htmlEscape(payload);
+      const out = htmlToMarkdown(`<table>${rows(p)}</table>`);
+      const html = render(out);
+      expect(renderWithImages(out), payload).not.toMatch(/<img/);
+      expect(html.match(/<table>/g), payload).toHaveLength(1);
+      expect(html, payload).toContain(`<td>w${p}z</td>`);
+    }
+  });
+
   it.each(DESIGNER_PAYLOADS)("a list between a table's rows: %j", (payload) => {
     const p = htmlEscape(payload);
     const out = htmlToMarkdown(
