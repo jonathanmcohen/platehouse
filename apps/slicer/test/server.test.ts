@@ -830,4 +830,31 @@ describe("a failed request never takes the server down", () => {
       await expectServing(base);
     },
   );
+
+  // The crash guard's 500 goes out before the body is read, as a refusal
+  // does, so it closes the same way: lingering, so a client still sending a
+  // large file reads the 500 instead of a reset (ECONNRESET or EPIPE).
+  // Chunked, a 64 MiB body reaches the job folder on every route; sent by
+  // fetch with its Content-Length it is 413 on the OpenSCAD routes, before
+  // any folder is made, and 500 on the others.
+  const BIG = 64 * 1024 * 1024;
+  test.each([
+    ["slice", (base: string) => sliceUrl(base, P1S, 1), 500],
+    ["scad/stl", (base: string) => `${base}/v1/scad/stl`, 413],
+    ["scad/png", (base: string) => `${base}/v1/scad/png`, 413],
+    ["step/glb", (base: string) => `${base}/v1/step/glb`, 500],
+  ] as const)(
+    "%s: a large body to a job folder that cannot be made still gets its 500, not a reset",
+    async (_route, url, declared) => {
+      const s = setup();
+      const workDir = join(s.stubs, "work-is-a-file");
+      writeFileSync(workDir, "");
+      const base = await start({ ...s.config, workDir });
+      const res = await streamChunked(url(base), BIG, { chunk: 1024 * 1024 });
+      expect(res).toEqual({ status: 500, body: "internal error\n" });
+      const fetched = await fetch(url(base), { method: "POST", body: Buffer.alloc(BIG, 1) });
+      expect(fetched.status).toBe(declared);
+      await expectServing(base);
+    },
+  );
 });
