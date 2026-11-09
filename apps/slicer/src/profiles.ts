@@ -38,6 +38,7 @@ import {
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FILAMENT_SOURCES, type FilamentSource } from "@platehouse/slicer-contract";
 import { z } from "zod";
 
 export const VENDOR = "BBL";
@@ -241,9 +242,6 @@ function baseName(name: string): string {
 function isTemplateOrCommon(name: string): boolean {
   return name.includes(TEMPLATE_MARKER) || name.endsWith("_common");
 }
-
-/** Where a printer's default filament for a type comes from. */
-export type FilamentSource = "bambu" | "generic";
 
 /** A bundled, instantiable filament preset, flattened. */
 export interface FilamentCandidate {
@@ -501,7 +499,7 @@ const manifestSchema = z.strictObject({
       z.strictObject({
         profile: z.string().min(1),
         file: z.string().min(1),
-        source: z.enum(["bambu", "generic"]),
+        source: z.enum(FILAMENT_SOURCES),
       }),
     ),
   ),
