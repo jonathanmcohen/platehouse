@@ -541,6 +541,18 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       return;
     }
     if (!inCell) {
+      // Text in a row after its last cell, outside any cell, ends the row:
+      // written after the row's last pipe it broke the header row or was
+      // dropped from a body row (issue #42). It goes on a line of its own
+      // below, which markdown-it reads as a one-cell row. A link or emphasis
+      // opened in the row cannot span the row's end, so it is dropped and
+      // its text kept. (Text in a row before its first cell joins that cell;
+      // in a row with no cell at all, closeRow keeps it as one.)
+      const row = tables.at(-1);
+      if (row?.rowOpen && row.cells > 0 && t.trim()) {
+        out.endInlineFrom(row.rowStart);
+        closeRow(row);
+      }
       const lineStart = textLineStart();
       if (lineStart >= 0) {
         out.truncate(lineStart);
@@ -864,6 +876,15 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   // so a wider last row lost the cells past the header (issue #41).
   const closeRow = (t: Table): void => {
     t.rowOpen = false;
+    // A row with no cell but text in it (written straight after its pipe) is
+    // a one-cell row; it was cut as empty, which deleted the text (issue #42).
+    const textStart = t.rowStart + t.indent.length + 1;
+    if (t.cells === 0 && out.hasTextFrom(textStart)) {
+      t.cellStart = textStart;
+      t.cells = 1;
+      inCell = true;
+      closeCell(t);
+    }
     if (t.cells === 0) {
       out.truncate(t.rowStart); // an empty row leaves nothing
       return;
