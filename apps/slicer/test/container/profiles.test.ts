@@ -51,7 +51,7 @@ describe("slicer image profiles", () => {
     const body = await profiles();
     const menu = new Set(body.printers.map((p) => p.id));
     const seen = new Set<string>();
-    for (const f of body.filaments as unknown as Array<{ printer: string; type: string }>) {
+    for (const f of body.filaments) {
       expect(menu.has(f.printer), JSON.stringify(f)).toBe(true);
       const key = `${f.printer} | ${f.type}`;
       expect(seen.has(key), key).toBe(false);
@@ -68,18 +68,16 @@ describe("slicer image profiles", () => {
     expect(body.printers.map((p) => p.id).sort()).toEqual([...digest.printers].sort());
     const candidates = digestCandidates(digest);
     const types = [...new Set(candidates.map((c) => c.type))].sort();
-    const expected: unknown[] = [];
+    const expected: typeof body.filaments = [];
     for (const printer of [...digest.printers].sort()) {
       for (const type of types) {
         const pick = pickFilament(candidates, printer, type);
         if (pick) expected.push({ printer, type, profile: pick.profile, source: pick.source });
       }
     }
-    const key = (f: unknown) => {
-      const { printer, type } = f as { printer: string; type: string };
-      return `${printer}\u0000${type}`;
-    };
-    const order = (a: unknown, b: unknown) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+    type Entry = (typeof body.filaments)[number];
+    const key = (f: Entry) => `${f.printer}\u0000${f.type}`;
+    const order = (a: Entry, b: Entry) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
     expect([...body.filaments].sort(order)).toEqual(expected.sort(order));
   });
 });

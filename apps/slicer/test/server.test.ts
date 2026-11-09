@@ -251,10 +251,7 @@ describe("health and profiles", () => {
       profile: "Generic PLA @BBL A1",
       source: "generic",
     });
-    const menu = new Set<unknown>(TREE_PRINTERS);
-    for (const f of body.filaments as unknown[]) {
-      expect(menu.has((f as { printer?: unknown }).printer), JSON.stringify(f)).toBe(true);
-    }
+    for (const f of body.filaments) expect(TREE_PRINTERS, JSON.stringify(f)).toContain(f.printer);
   });
 
   test("an unknown path is 404 not_found", async () => {

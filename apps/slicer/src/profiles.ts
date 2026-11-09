@@ -15,7 +15,10 @@
 //   bundled presets carry no sentinels to strip;
 // - the menu printers are the instantiable machine presets whose names end
 //   in "nozzle" (not templates, not _common); each gets a flattened machine
-//   file, and each filament type gets one generic filament per printer;
+//   file, and each filament type gets one default filament per printer:
+//   Bambu's own preset for that printer where BAMBU_FILAMENTS maps the type
+//   and Orca has one, else the generic preset for that printer (Jon,
+//   2026-11-08: "I use mostly Bambu Filaments");
 // - Orca's process_full folder gets the flattened default process of every
 //   instantiable machine. Orca 2.5.0 loads that file on a printer switch and
 //   the AppImage ships none, so without it the switch fails with code -3
@@ -239,20 +242,33 @@ function isTemplateOrCommon(name: string): boolean {
   return name.includes(TEMPLATE_MARKER) || name.endsWith("_common");
 }
 
-interface GenericFilament {
+/** Where a printer's default filament for a type comes from. */
+export type FilamentSource = "bambu" | "generic";
+
+/** A bundled, instantiable filament preset, flattened. */
+export interface FilamentCandidate {
   name: string;
   type: string;
   compatible: string[];
 }
 
-function genericFilaments(index: ProfileIndex): GenericFilament[] {
+const GENERIC_PREFIX = "Generic ";
+const BAMBU_PREFIX = "Bambu ";
+
+/**
+ * The presets a default filament is picked from: every bundled, instantiable
+ * "Generic ..." or "Bambu ..." filament preset (not a template), with its
+ * flattened filament_type and compatible_printers.
+ */
+export function filamentCandidates(index: ProfileIndex): FilamentCandidate[] {
   const names = new Set([
     ...index.vendor.filament.keys(),
     ...(index.library?.filament.keys() ?? []),
   ]);
-  const out: GenericFilament[] = [];
+  const out: FilamentCandidate[] = [];
   for (const name of names) {
-    if (!name.startsWith("Generic ") || name.includes(TEMPLATE_MARKER)) continue;
+    if (!name.startsWith(GENERIC_PREFIX) && !name.startsWith(BAMBU_PREFIX)) continue;
+    if (name.includes(TEMPLATE_MARKER)) continue;
     let flat: Preset;
     try {
       flat = flattenPreset(index, "filament", name).profile;
@@ -270,6 +286,11 @@ function genericFilaments(index: ProfileIndex): GenericFilament[] {
   return out;
 }
 
+function byLengthThenName(a: string, b: string): number {
+  if (a.length !== b.length) return a.length - b.length;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function pickGeneric(candidates: string[], type: string): string | null {
   if (candidates.length === 0) return null;
   const exact = `Generic ${type}`;
@@ -277,8 +298,7 @@ function pickGeneric(candidates: string[], type: string): string | null {
     const ea = baseName(a) === exact ? 0 : 1;
     const eb = baseName(b) === exact ? 0 : 1;
     if (ea !== eb) return ea - eb;
-    if (a.length !== b.length) return a.length - b.length;
-    return a < b ? -1 : a > b ? 1 : 0;
+    return byLengthThenName(a, b);
   });
   return sorted[0] ?? null;
 }
@@ -295,8 +315,11 @@ export function genericFilamentFor(
   printerName: string,
   type: string,
 ): { name: string; candidates: number } | null {
-  const candidates = genericFilaments(index)
-    .filter((g) => g.type === type && g.compatible.includes(printerName))
+  const candidates = filamentCandidates(index)
+    .filter(
+      (g) =>
+        g.name.startsWith(GENERIC_PREFIX) && g.type === type && g.compatible.includes(printerName),
+    )
     .map((g) => g.name);
   const name = pickGeneric(candidates, type);
   return name ? { name, candidates: candidates.length } : null;
@@ -317,27 +340,35 @@ export const BAMBU_FILAMENTS: Readonly<Record<string, string>> = Object.freeze({
   TPU: "Bambu TPU 95A",
 });
 
-/** Where a printer's default filament for a type comes from. */
-export type FilamentSource = "bambu" | "generic";
-
-/** A bundled, instantiable filament preset, flattened. */
-export interface FilamentCandidate {
-  name: string;
-  type: string;
-  compatible: string[];
-}
-
 /**
- * The default filament for one type on one printer. Not implemented yet: the
- * tests for it come first.
+ * The default filament for one type on one printer: Bambu's own preset for
+ * the printer where the table maps the type (an instantiable preset whose
+ * base name is the table's, whose filament_type is the type and whose
+ * compatible_printers names the printer; shorter name, then name order, if
+ * there were ever two), else the generic preset for the printer (the merged
+ * ranking, genericFilamentFor), else null: the slice keeps the file's own
+ * filament for that slot.
  */
 export function pickFilament(
-  _candidates: readonly FilamentCandidate[],
-  _printerName: string,
-  _type: string,
-  _table: Readonly<Record<string, string>> = BAMBU_FILAMENTS,
+  candidates: readonly FilamentCandidate[],
+  printerName: string,
+  type: string,
+  table: Readonly<Record<string, string>> = BAMBU_FILAMENTS,
 ): { profile: string; source: FilamentSource } | null {
-  return null;
+  const fits = (c: FilamentCandidate) => c.type === type && c.compatible.includes(printerName);
+  const bambuName = Object.hasOwn(table, type) ? table[type] : undefined;
+  if (bambuName) {
+    const bambu = candidates
+      .filter((c) => fits(c) && baseName(c.name) === bambuName)
+      .map((c) => c.name)
+      .sort(byLengthThenName);
+    if (bambu[0]) return { profile: bambu[0], source: "bambu" };
+  }
+  const generic = pickGeneric(
+    candidates.filter((c) => fits(c) && c.name.startsWith(GENERIC_PREFIX)).map((c) => c.name),
+    type,
+  );
+  return generic ? { profile: generic, source: "generic" } : null;
 }
 
 /** Machine presets the printer menu lists: instantiable, name ending in "nozzle". */
@@ -465,7 +496,14 @@ const manifestSchema = z.strictObject({
   ),
   filaments: z.record(
     z.string(),
-    z.record(z.string(), z.strictObject({ profile: z.string().min(1), file: z.string().min(1) })),
+    z.record(
+      z.string(),
+      z.strictObject({
+        profile: z.string().min(1),
+        file: z.string().min(1),
+        source: z.enum(["bambu", "generic"]),
+      }),
+    ),
   ),
 });
 
@@ -479,7 +517,8 @@ function safeFile(name: string): string {
 
 /**
  * Writes the image's profile folder: one flattened machine file per menu
- * printer, one flattened generic filament file per profile picked, and
+ * printer, one flattened filament file per default filament picked
+ * (pickFilament: Bambu's own preset, else the generic one), and
  * manifest.json naming them (paths relative to outDir). Fails when a menu
  * printer has no printer_model, no model_id for it, or no nozzle size, so the
  * menu never shows a printer the app cannot match to a file's printer.
@@ -490,8 +529,8 @@ export function buildProfiles(index: ProfileIndex, outDir: string): Manifest {
   const modelIds = Object.fromEntries(
     Object.entries(machineModels(index)).map(([id, m]) => [m, id]),
   );
-  const generics = genericFilaments(index);
-  const types = [...new Set(generics.map((g) => g.type))].sort();
+  const candidates = filamentCandidates(index);
+  const types = [...new Set(candidates.map((c) => c.type))].sort();
   const written = new Map<string, string>();
   const writePreset = (category: Category, name: string): string => {
     const key = `${category}\u0000${name}`;
@@ -519,13 +558,16 @@ export function buildProfiles(index: ProfileIndex, outDir: string): Manifest {
       continue;
     }
     manifest.printers.push({ id, model, modelId, nozzle, file: writePreset("machine", id) });
-    const byType: Record<string, { profile: string; file: string }> = {};
+    const byType: Manifest["filaments"][string] = {};
     for (const type of types) {
-      const name = pickGeneric(
-        generics.filter((g) => g.type === type && g.compatible.includes(id)).map((g) => g.name),
-        type,
-      );
-      if (name) byType[type] = { profile: name, file: writePreset("filament", name) };
+      const pick = pickFilament(candidates, id, type);
+      if (pick) {
+        byType[type] = {
+          profile: pick.profile,
+          file: writePreset("filament", pick.profile),
+          source: pick.source,
+        };
+      }
     }
     manifest.filaments[id] = byType;
   }
@@ -620,12 +662,18 @@ export function checkProfileVersions(sourceRoot: string, shippedRoot: string): s
 
 export interface Profiles {
   printers: Array<{ id: string; model: string; modelId: string; nozzle: number }>;
-  /** Each type and generic profile once, sorted by type then profile. */
-  filaments: Array<{ type: string; profile: string }>;
+  /** Each menu printer's default filament per type, sorted by printer then type. */
+  filaments: Array<{ printer: string; type: string; profile: string; source: FilamentSource }>;
   /** Absolute path of a menu printer's flattened machine file, or null. */
   machineFile(printerId: string): string | null;
-  /** The generic filament for a type on a menu printer, or null. */
-  filamentFor(printerId: string, type: string): { profile: string; file: string } | null;
+  /**
+   * The default filament for a type on a menu printer, or null: the slice
+   * then keeps the file's own filament for that slot.
+   */
+  filamentFor(
+    printerId: string,
+    type: string,
+  ): { profile: string; file: string; source: FilamentSource } | null;
 }
 
 /** Reads the image's profile folder. Throws at start-up on a bad manifest. */
@@ -637,15 +685,14 @@ export function loadProfiles(dir: string): Profiles {
     throw new Error(`cannot read the profile manifest in ${dir}: ${(err as Error).message}`);
   }
   const byId = new Map(manifest.printers.map((p) => [p.id, p]));
-  const pairs = new Map<string, { type: string; profile: string }>();
-  for (const byType of Object.values(manifest.filaments)) {
-    for (const [type, pick] of Object.entries(byType)) {
-      pairs.set(`${type}\u0000${pick.profile}`, { type, profile: pick.profile });
+  const filaments: Profiles["filaments"] = [];
+  for (const printer of [...byId.keys()].sort()) {
+    const byType = manifest.filaments[printer] ?? {};
+    for (const type of Object.keys(byType).sort()) {
+      const pick = byType[type];
+      if (pick) filaments.push({ printer, type, profile: pick.profile, source: pick.source });
     }
   }
-  const filaments = [...pairs.values()].sort((a, b) =>
-    a.type === b.type ? (a.profile < b.profile ? -1 : 1) : a.type < b.type ? -1 : 1,
-  );
   return {
     printers: manifest.printers.map(({ id, model, modelId, nozzle }) => ({
       id,
@@ -660,8 +707,11 @@ export function loadProfiles(dir: string): Profiles {
     },
     filamentFor: (printerId, type) => {
       if (!byId.has(printerId)) return null;
-      const pick = manifest.filaments[printerId]?.[type];
-      return pick ? { profile: pick.profile, file: join(dir, pick.file) } : null;
+      const byType = manifest.filaments[printerId];
+      const pick = byType && Object.hasOwn(byType, type) ? byType[type] : undefined;
+      return pick
+        ? { profile: pick.profile, file: join(dir, pick.file), source: pick.source }
+        : null;
     },
   };
 }
