@@ -10,7 +10,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { CreateBucketCommand } from "@aws-sdk/client-s3";
-import { type Kysely, sql, type Transaction } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import type { DB } from "../../../src/db/types.js";
@@ -600,6 +600,23 @@ function dbWith(overrides: Record<string, unknown>): Kysely<DB> {
   });
 }
 
+// Well under the integration test timeout, so a wait that never ends fails
+// the test quickly and its finally still runs.
+const WAIT_MS = 15_000;
+
+/** The promise, or a failure naming what it was waiting for after WAIT_MS. */
+async function within<T>(promise: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), WAIT_MS);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 describe("a failed commit never deletes what may have been committed", () => {
   test("a commit that succeeds but reports an error is reported as stored, with its objects kept", async () => {
     // The connection drops after COMMIT reached the server: the rows are
@@ -665,61 +682,71 @@ describe("a failed commit never deletes what may have been committed", () => {
     // (flushing WAL, waiting on a synchronous standby). A lookup of the file
     // row on another connection does not see it yet, so it cannot tell this
     // from a COMMIT that never happened; the transaction's own status can.
-    let landCommit: () => void = () => {};
+    //
+    // ingest is handed a real transaction (a Kysely ControlledTransaction)
+    // whose rows are all written but whose COMMIT is held back until the test
+    // lets it go. It has to be a real Transaction: the repositories open their
+    // own transaction on anything that is not one, and on a plain connection
+    // that inner COMMIT would commit everything at once.
+    // Shared with the finally below, so a transaction that only starts after
+    // a timeout there still commits at once instead of holding its connection.
+    const commitNow = Promise.withResolvers<void>();
+    const landCommit = commitNow.resolve;
     let landed: Promise<void> = Promise.resolve();
     const inFlight = dbWith({
       transaction: () => ({
         execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
-          const rowsWritten = Promise.withResolvers<void>();
-          const commitNow = Promise.withResolvers<void>();
-          landCommit = commitNow.resolve;
-          landed = env.db.connection().execute(async (conn) => {
-            await sql`begin`.execute(conn);
-            try {
-              await fn(conn as unknown as Transaction<DB>);
-            } catch (error) {
-              await sql`rollback`.execute(conn);
-              rowsWritten.reject(error);
-              return;
-            }
-            rowsWritten.resolve();
-            await commitNow.promise;
-            await sql`commit`.execute(conn);
-          });
-          await rowsWritten.promise;
+          const trx = await env.db.startTransaction().execute();
+          try {
+            await fn(trx);
+          } catch (error) {
+            await trx.rollback().execute();
+            throw error;
+          }
+          landed = commitNow.promise.then(() => trx.commit().execute());
           throw new Error("Connection terminated unexpectedly");
         },
       }),
     });
-    const before = await footprint(env);
-    const error = await createIngest({ db: inFlight, store: env.store })
-      .ingestFile({
-        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
-        originalName: "Commit in flight.3mf",
-        target: "new",
-      })
-      .catch((e: unknown) => e);
-    expect((error as Error).message).toBe("Connection terminated unexpectedly");
-    const during = await footprint(env);
-    expect(during.files).toBe(before.files);
-    // Kept: the COMMIT may still land.
-    expect(during.objects - before.objects).toBe(2);
+    try {
+      const before = await footprint(env);
+      const error = await within(
+        createIngest({ db: inFlight, store: env.store })
+          .ingestFile({
+            tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+            originalName: "Commit in flight.3mf",
+            target: "new",
+          })
+          .catch((e: unknown) => e),
+        "ingestFile",
+      );
+      expect((error as Error).message).toBe("Connection terminated unexpectedly");
+      const during = await footprint(env);
+      expect(during.files).toBe(before.files);
+      // Kept: the COMMIT may still land.
+      expect(during.objects - before.objects).toBe(2);
 
-    landCommit();
-    await landed;
-    const after = await footprint(env);
-    expect(after.files - before.files).toBe(1);
-    expect(after.blobs - before.blobs).toBe(2);
-    expect(after.objects - before.objects).toBe(2);
-    // Every committed blob row still has its bytes.
-    const file = await env.db
-      .selectFrom("files")
-      .select(["modelId"])
-      .where("originalName", "=", "Commit in flight.3mf")
-      .executeTakeFirstOrThrow();
-    const keys = (await env.store.listPrefix(`models/${file.modelId}/`)).map((o) => o.key);
-    expect(keys).toHaveLength(2);
-    for (const key of keys) expect((await readObject(key)).length).toBeGreaterThan(0);
+      landCommit();
+      await within(landed, "the held COMMIT");
+      const after = await footprint(env);
+      expect(after.files - before.files).toBe(1);
+      expect(after.blobs - before.blobs).toBe(2);
+      expect(after.objects - before.objects).toBe(2);
+      // Every committed blob row still has its bytes.
+      const file = await env.db
+        .selectFrom("files")
+        .select(["modelId"])
+        .where("originalName", "=", "Commit in flight.3mf")
+        .executeTakeFirstOrThrow();
+      const keys = (await env.store.listPrefix(`models/${file.modelId}/`)).map((o) => o.key);
+      expect(keys).toHaveLength(2);
+      for (const key of keys) expect((await readObject(key)).length).toBeGreaterThan(0);
+    } finally {
+      // Whatever failed above, the held transaction is let go, so its
+      // connection goes back to the pool and afterAll can stop the database.
+      landCommit();
+      await within(landed, "the held COMMIT").catch(() => {});
+    }
   });
 
   test("a transaction that rolled back after writing its rows deletes the objects and leaves no rows", async () => {
