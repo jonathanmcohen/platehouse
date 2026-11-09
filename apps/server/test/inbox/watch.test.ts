@@ -1075,7 +1075,9 @@ describe("a fault the checks cannot see", () => {
     // The pass stopped at the second failure; c.stl was not tried.
     expect(fake.calls).toEqual(["a.stl", "b.stl"]);
 
-    for (let i = 0; i < 360; i += 1) {
+    // Ten minutes, short of the first try after the wait reaches 5 minutes
+    // (5 + 10 + ... + 160 + 300 s = 615 s), when tries count again.
+    for (let i = 0; i < 120; i += 1) {
       const later = await tick(w, 5_000);
       expect(later.failed).toEqual([]);
     }
@@ -1108,17 +1110,25 @@ describe("a fault the checks cannot see", () => {
     // A poll every 5 s for half an hour.
     for (let i = 0; i < 360; i += 1) await tick(w, 5_000);
     const gaps = tries.slice(1).map((t, i) => t - (tries[i] ?? 0));
-    expect(gaps.slice(0, 8)).toEqual([
-      5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000,
+    // Once the wait is 5 minutes each try counts against the files, so they
+    // move to failed after STRIKES such tries and are not tried again.
+    expect(gaps).toEqual([
+      5_000,
+      10_000,
+      20_000,
+      40_000,
+      80_000,
+      160_000,
+      ...Array(STRIKES).fill(BACKOFF_MAX_MS),
     ]);
     expect(gaps.every((g) => g <= BACKOFF_MAX_MS)).toBe(true);
-    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
   });
 
   test("the first file's failure in a held pass does not count against it", async () => {
-    // a.stl is truly bad; b.stl fails only while the disk is full.
+    // a.stl fails the same way as the fault, and keeps failing once it is
+    // over, so it is bad on its own; b.stl fails only while the disk is full.
     let broken = true;
-    const boom = new TypeError("boom in the parser");
+    const boom = diskFull;
     const fake = fakeIngest((input) => {
       if (input.originalName === "a.stl") throw boom;
       if (broken) throw diskFull;
@@ -1142,11 +1152,11 @@ describe("a fault the checks cannot see", () => {
     expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(STRIKES + 1);
   });
 
-  test("a file's last strike does not move it to failed when a second file fails in the same pass", async () => {
+  test("a file's last strike does not move it to failed when a second file fails the same way in the same pass", async () => {
+    // The fault meets a.stl alone first, while b.stl has not settled.
     let broken = false;
-    const boom = new TypeError("boom in the parser");
     const fake = fakeIngest((input) => {
-      if (input.originalName === "a.stl") throw boom;
+      if (input.originalName === "a.stl") throw diskFull;
       if (broken) throw diskFull;
     });
     const w = watcher(fake);
@@ -1168,6 +1178,76 @@ describe("a fault the checks cannot see", () => {
     expect(pass.failed).toEqual([]);
     expect(await exists(join(inbox, "a.stl"))).toBe(true);
     expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+  });
+
+  test("two files that each fail on their own, with different errors, each take their strikes and move to failed, and the file after them imports", async () => {
+    // a.stl breaks the parser; b.stl was dropped in by another uid with mode
+    // 0600, so reading it fails with EACCES. The checks pass for both.
+    const boom = new TypeError("boom in the parser");
+    const denied = coded("EACCES: permission denied, open 'b.stl'", "EACCES");
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") throw boom;
+      if (input.originalName === "b.stl") throw denied;
+    });
+    const w = watcher(fake);
+    for (const name of ["a.stl", "b.stl", "c.stl"]) {
+      await writeFile(join(inbox, name), `solid ${name}\nendsolid ${name}\n`);
+    }
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.waiting).toBe(false);
+    expect(first.imported.map((i) => i.name)).toEqual(["c.stl"]);
+    await tick(w, 5_000);
+    const last = await tick(w, 5_000);
+    expect(last.failed).toEqual([
+      { name: "a.stl", reason: repeatedErrorReason(boom) },
+      { name: "b.stl", reason: repeatedErrorReason(denied) },
+    ]);
+    expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(STRIKES);
+    expect(fake.calls.filter((n) => n === "b.stl")).toHaveLength(STRIKES);
+    expect(lines.filter((l) => l.includes("the checks cannot see"))).toEqual([]);
+    expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR]);
+  });
+
+  test("two files that each fail on their own the same way are held at first, then once the wait is 5 minutes their tries count, so they reach failed and the file after them imports", async () => {
+    // Each throws its own TypeError with the same message: nothing tells it
+    // from a fault the checks cannot see, so the inbox is held at first.
+    const reasons = new Map<string, TypeError>();
+    const imported: number[] = [];
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "c.stl") {
+        imported.push(clock);
+        return;
+      }
+      const error = new TypeError("boom in the parser");
+      reasons.set(input.originalName, error);
+      throw error;
+    });
+    const w = watcher(fake);
+    for (const name of ["a.stl", "b.stl", "c.stl"]) {
+      await writeFile(join(inbox, name), `solid ${name}\nendsolid ${name}\n`);
+    }
+    await w.pollOnce();
+    const held = await tick(w, 15_000);
+    const start = clock;
+    expect(held.waiting).toBe(true);
+    expect(fake.calls).toEqual(["a.stl", "b.stl"]);
+
+    const failed: Array<{ name: string; reason: string }> = [];
+    // A poll every 5 s for 25 minutes.
+    for (let i = 0; i < 300; i += 1) failed.push(...(await tick(w, 5_000)).failed);
+
+    // c.stl imports at the first try after a 5-minute wait: 615 s in.
+    expect(imported).toEqual([start + 615_000]);
+    expect(failed).toEqual([
+      { name: "a.stl", reason: repeatedErrorReason(reasons.get("a.stl")) },
+      { name: "b.stl", reason: repeatedErrorReason(reasons.get("b.stl")) },
+    ]);
+    // Seven held tries, then STRIKES that counted.
+    expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(7 + STRIKES);
+    expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR]);
+    expect(lines.filter((l) => l.includes("the checks cannot see"))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("now count against"))).toHaveLength(1);
   });
 });
 
