@@ -672,18 +672,10 @@ describe("the checks write", () => {
     }
   });
 
-  /** The store's write check (s3.ts), or a rejection while it has none. */
-  const checkWrite = (store: unknown): Promise<unknown> => {
-    const check = (store as { checkWrite?: () => Promise<unknown> }).checkWrite;
-    return check === undefined
-      ? Promise.reject(new Error("the store has no write check"))
-      : check.call(store);
-  };
-
   test("the store's write check passes on a bucket that takes writes, and leaves nothing behind", async () => {
     const before = await env.store.listPrefix("");
-    await expect(checkWrite(env.store)).resolves.toBeUndefined();
-    await expect(checkWrite(env.store)).resolves.toBeUndefined();
+    await expect(env.store.checkWrite()).resolves.toBeUndefined();
+    await expect(env.store.checkWrite()).resolves.toBeUndefined();
     // Nothing is left anywhere in the bucket, models/ included.
     expect(await env.store.listPrefix("")).toEqual(before);
   });
@@ -701,7 +693,7 @@ describe("the checks write", () => {
       { maxAttempts: 1, connectionTimeoutMs: 1_000 },
     );
     try {
-      await expect(checkWrite(dead)).rejects.toBeInstanceOf(StoreUnavailable);
+      await expect(dead.checkWrite()).rejects.toBeInstanceOf(StoreUnavailable);
     } finally {
       dead.destroy();
     }

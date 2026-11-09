@@ -23,7 +23,7 @@
 //   meantime, or the record cannot be read, the copy is moved to failed with
 //   a reason that says a model was made, so it is neither lost nor imported a
 //   second time.
-// - A file ingest refuses or fails on moves to failed/<name> ("<stem> (2)<ext>"
+// - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence.
 // - The folder is listed as raw bytes, so a name that is not valid UTF-8 (a
@@ -31,18 +31,31 @@
 //   Ingest takes the file by a string path, which cannot spell such a name,
 //   so once settled the file moves to failed under its name with each bad
 //   byte shown as U+FFFD, with a reason that says to rename it.
-// - A settled file larger than MAX_INBOX_BYTES (512 MiB, the limit uploads
-//   have) moves to failed from its size alone, before anything is read or
-//   uploaded.
-// - A file goes to failed only for a reason that belongs to the file: one of
-//   ingest's own refusals (an IngestError other than storage_unavailable:
-//   the wrong type or content), the size limit, or a name that is not UTF-8.
-//   There is no list of outage errors. Any other error, from any source (the
-//   store, the database, findImported, the upload library, anything
-//   unexpected), is not the file's fault until shown to be: the file stays
-//   where it is, the pass stops, and the watcher checks the environment once
-//   (probes: a small database query and a small store listing, each with a
-//   PROBE_TIMEOUT_MS limit).
+// - A settled file larger than MAX_INBOX_BYTES (the upload limit,
+//   MAX_UPLOAD_BYTES from uploads/tus.ts: 512 MiB) moves to failed from its
+//   size alone, before anything is read or uploaded.
+// - A file goes to failed at once only for a reason that belongs to the
+//   file: ingest's IngestError with code unsupported_type (its type or
+//   content) or model_not_found (FILE_FAULTS), or the watcher's own
+//   refusals, the size limit and a name that is not UTF-8. Since Task 9,
+//   ingest wraps every failure that is not its own in IngestError
+//   ingest_failed, with the error it met as the cause: a database or
+//   filesystem fault, or anything else that failed before COMMIT. That says
+//   the save failed, not that the file is bad, so ingest_failed,
+//   storage_unavailable, IngestOutcomeUnknown (the commit's outcome is not
+//   known) and any other error, from any source (the store, the database,
+//   findImported, anything unexpected), are not the file's fault until shown
+//   to be. A damaged .3mf is not a failure at all: ingest stores it as a
+//   model with parse status no_plate_data (AC-023). For such an error the
+//   file stays where it is, the pass stops, and the watcher checks the
+//   environment once (probes, inboxProbes): the database check reads, then
+//   in a transaction it rolls back writes a model, a pending blob and a file
+//   row, the rows every import writes; the store check lists under models/,
+//   then puts and deletes the store's write-check object, whose key is
+//   outside models/ so the orphan sweep never sees it. Each check has
+//   PROBE_TIMEOUT_MS (5 s). Logs and reasons quote the error with its
+//   causes, and two errors are compared by the cause inside ingest's
+//   wrappers (faultOf), not by the wrapper's code.
 //   - A check fails: it is an outage. It is logged once when it starts, with
 //     the error, and once when it ends. No file is tried, and so none is
 //     uploaded, until a check passes. The checks back off: the next comes
@@ -50,6 +63,10 @@
 //     check up to BACKOFF_MAX_MS (5 minutes), and it starts again at 5 s
 //     after a good pass. A fault in the environment never moves the inbox to
 //     failed one file at a time, and never uploads a file on every poll.
+//     Because the checks write, a fault that breaks the writes an import
+//     makes but not reads (the data disk full, 53100; a write I/O error,
+//     58030; a bucket that lists but refuses writes) is seen here, as an
+//     outage, whenever it also fails the checks' own writes.
 //   - Both checks pass: the error counts against that file. After STRIKES
 //     (3) such failures in a row while its size, mtime and inode stay the
 //     same, it moves to failed with a reason quoting the error; a change to
@@ -59,19 +76,23 @@
 //   - Both checks pass, and another file has already failed in this pass
 //     with both checks passing and the same fault (the same error code, or,
 //     when neither has a code, the same error name): the fault is taken to be
-//     one the checks cannot see, not the files'. The database check only
-//     reads, so a fault that breaks writes and not reads passes it (the data
-//     disk full, 53100, or a write-side I/O error, 58030), as does a full
-//     bucket that still lists. Neither failure counts against its file (the
-//     first file's strike is taken back, and it is not moved to failed even
-//     on what would have been its last), the files stay where they are and
-//     the pass stops. It is logged once when it starts, with both errors, and
-//     once when it ends. The checks cannot say when such a fault ends, so a
-//     try of the files does: the next comes BACKOFF_FIRST_MS later and, while
-//     each try ends the same way, the wait doubles up to BACKOFF_MAX_MS as
-//     above. It ends at the first pass that tries a file without two failing
-//     the same way. Two files that fail with different errors are each taken
-//     to be bad on their own: each takes its strike and the pass goes on.
+//     one the checks cannot see, not the files'. The checks' writes are
+//     small and rolled back or deleted, so a fault can still miss them: a
+//     full disk fails an insert only when the table file must grow, and a
+//     rolled-back write is not flushed. Neither failure counts against its
+//     file (the first file's strike is taken back, and it is not moved to
+//     failed even on what would have been its last), the files stay where
+//     they are and the pass stops. It is logged once when it starts, with
+//     both errors, and once when it ends. The checks cannot say when such a
+//     fault ends, so a try of the files does: the next comes
+//     BACKOFF_FIRST_MS later and, while each try ends the same way, the wait
+//     doubles up to BACKOFF_MAX_MS as above. It ends at the first pass that
+//     leaves no hold armed: one that tries a file without two failing the
+//     same way, or one with no held file left to try (taken out of the inbox,
+//     or moved to failed). The hold's memory (unseenTries) is cleared then,
+//     so a later fault starts a hold of its own, from 5 s and logged. Two
+//     files that fail with different errors are each taken to be bad on
+//     their own: each takes its strike and the pass goes on.
 //   - Two files can each be bad on their own and fail the same way (two
 //     unreadable files, EACCES; two that break the parser alike), which
 //     nothing tells from such a fault. So the hold does not last for ever:
@@ -82,10 +103,11 @@
 //     when they start to count. So two such files reach failed after
 //     STRIKES of those tries, and the files after them import at the first.
 //     A fault the checks cannot see that lasts that long (about 10 minutes of
-//     held tries, then STRIKES tries 5 minutes apart) moves the files it
-//     meets to failed, as does one with only one file in the inbox, or files
-//     settling far enough apart that no two are tried in one pass, which
-//     cost each file 3 tries before it moves to failed.
+//     held tries, then STRIKES tries 5 minutes apart, about 20 minutes in
+//     all) moves the files it meets to failed, as does one with only one
+//     file in the inbox, or files settling far enough apart that no two are
+//     tried in one pass, which cost each file 3 tries before it moves to
+//     failed.
 // - A commit can land with its answer lost when the database connection drops
 //   (ingest then throws the connection error it met), and the process can
 //   restart before the file is tried again (a container recreate, a crash, a
@@ -137,10 +159,18 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { type Kysely, sql } from "kysely";
+import { uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
-import { type Ingest, IngestError } from "../ingest/ingest.js";
+import {
+  type Ingest,
+  IngestError,
+  type IngestErrorCode,
+  IngestOutcomeUnknown,
+} from "../ingest/ingest.js";
 import type { ImportedQuery } from "../repos/files.js";
+import { createRepos } from "../repos/index.js";
 import type { BlobStore } from "../storage/s3.js";
+import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
 
 /** How often the inbox is polled. */
 export const POLL_MS = 5_000;
@@ -164,10 +194,20 @@ export const NON_UTF8_REASON =
   "Platehouse could not import this file because its name is not valid UTF-8; rename it and add it again.";
 
 /**
- * The largest file the inbox takes, in bytes: 512 MiB, the same limit as an
- * upload (MAX_UPLOAD_BYTES in uploads/tus.ts, Task 9).
+ * The largest file the inbox takes, in bytes: the upload limit
+ * (MAX_UPLOAD_BYTES in uploads/tus.ts, Task 9), 512 MiB.
  */
-export const MAX_INBOX_BYTES = 536_870_912;
+export const MAX_INBOX_BYTES = MAX_UPLOAD_BYTES;
+
+/**
+ * The IngestError codes that are about the file itself, so the file moves to
+ * failed at once: its type or content (unsupported_type), or the model it
+ * was meant for (model_not_found; the inbox always asks for a new model, so
+ * this one is for completeness). Every other failure of ingest, ingest_failed
+ * and storage_unavailable and IngestOutcomeUnknown among them, says nothing
+ * about the file and goes through the checks.
+ */
+const FILE_FAULTS: ReadonlySet<IngestErrorCode> = new Set(["unsupported_type", "model_not_found"]);
 
 /** Reason when the file is larger than MAX_INBOX_BYTES. */
 export const TOO_LARGE_REASON =
@@ -200,19 +240,27 @@ export interface InboxProbes {
   store(): Promise<unknown>;
 }
 
+/** Thrown inside the database check's transaction so that it rolls back. */
+class RollBack extends Error {}
+
 /**
- * The checks the server wires in. The database check is one small query: it
- * reads from files (so a role with no grant fails it), and fails when the
- * session is read-only (a standby after a failover, or
- * default_transaction_read_only) or the role may not insert into files. It
- * writes nothing, so a fault that breaks writes and not reads (the data disk
- * full) passes it; the watcher catches that by two files failing the same
- * way in one pass (createInboxWatcher). The store check lists at most one
- * object under models/, where ingest writes.
+ * The checks the server wires in. Each reads and writes, as an import does.
+ *
+ * The database check reads from files (so a role with no grant fails it),
+ * fails when the session is read-only (a standby after a failover, or
+ * default_transaction_read_only) or the role may not insert into files, and
+ * then, in one transaction it rolls back, inserts a model, a pending blob and
+ * a file row: the rows every import writes, through the same repositories.
+ * So a fault that breaks writes and not reads fails it whenever it fails
+ * those inserts, and nothing is left behind.
+ *
+ * The store check lists at most one object under models/, where ingest
+ * writes, and puts and deletes the store's own write-check object
+ * (BlobStore.checkWrite), whose key is outside models/.
  */
 export function inboxProbes(deps: {
   db: Kysely<DB>;
-  store: Pick<BlobStore, "listPage">;
+  store: Pick<BlobStore, "listPage" | "checkWrite">;
 }): InboxProbes {
   return {
     async database() {
@@ -225,9 +273,36 @@ export function inboxProbes(deps: {
       if (row === undefined) throw new Error("the database check returned no row");
       if (row.ro !== "off") throw new Error("the database is read-only");
       if (!row.ins) throw new Error("the database role may not insert into files");
+      try {
+        await deps.db.transaction().execute(async (trx) => {
+          const repos = createRepos(trx);
+          const model = await repos.models.create({ name: "inbox write check" });
+          const blobId = uuidv7();
+          await repos.blobs.insertPending({
+            id: blobId,
+            modelId: model.id,
+            kind: "source",
+            contentType: "model/stl",
+            size: 0,
+          });
+          await repos.files.create({
+            modelId: model.id,
+            blobId,
+            name: "inbox write check.stl",
+            originalName: "inbox write check.stl",
+            kind: "stl",
+            size: 0,
+            sha256: Buffer.alloc(32),
+          });
+          throw new RollBack();
+        });
+      } catch (error) {
+        if (!(error instanceof RollBack)) throw error;
+      }
     },
     async store() {
       await deps.store.listPage("models/", { maxKeys: 1 });
+      await deps.store.checkWrite();
     },
   };
 }
@@ -375,23 +450,53 @@ function codeOf(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+// How many causes deep the watcher looks into an error.
+const CAUSE_DEPTH = 4;
+
 /**
- * Whether two errors look like the same fault: the same code when either has
- * one, otherwise the same error name.
+ * The error that says what went wrong: the cause inside ingest's wrappers
+ * (IngestError ingest_failed and IngestOutcomeUnknown carry the error they
+ * met as their cause), or the error itself.
  */
-function sameFault(a: unknown, b: unknown): boolean {
+function faultOf(error: unknown): unknown {
+  let fault = error;
+  for (let depth = 0; depth < CAUSE_DEPTH; depth += 1) {
+    const wrapper =
+      (fault instanceof IngestError && fault.code === "ingest_failed") ||
+      fault instanceof IngestOutcomeUnknown;
+    if (!wrapper || (fault as Error).cause === undefined) return fault;
+    fault = (fault as Error).cause;
+  }
+  return fault;
+}
+
+/**
+ * Whether two errors look like the same fault: compared by what is inside
+ * ingest's wrappers (faultOf), the same code when either has one, otherwise
+ * the same error name.
+ */
+function sameFault(first: unknown, second: unknown): boolean {
+  const a = faultOf(first);
+  const b = faultOf(second);
   const code = codeOf(a);
   if (code !== undefined || codeOf(b) !== undefined) return code === codeOf(b);
   const name = (error: unknown) => (error instanceof Error ? error.name : undefined);
   return name(a) === name(b);
 }
 
-/** One line of an error for the log, capped. */
+/** One line of an error and its causes for the log, capped. */
 function errorText(error: unknown): string {
-  const text =
-    error instanceof Error
-      ? `${error.name}: ${error.message}`
-      : `non-error thrown: ${String(error)}`;
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < CAUSE_DEPTH && current !== undefined; depth += 1) {
+    parts.push(
+      current instanceof Error
+        ? `${current.name}: ${current.message}`
+        : `non-error thrown: ${String(current)}`,
+    );
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  const text = parts.join(", caused by ");
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > ERROR_TEXT_MAX ? `${line.slice(0, ERROR_TEXT_MAX)}...` : line;
 }
@@ -694,14 +799,14 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         (await earlierImport(name, path, entry, arrived)) ??
         (await ingest.ingestFile({ tmpPath: path, originalName: name, target: "new" }));
     } catch (error) {
-      if (codeOf(error) === "ENOENT" && !(await exists(path))) {
+      if (codeOf(faultOf(error)) === "ENOENT" && !(await exists(path))) {
         // Taken away while it was being read: nothing left to import or move.
         seen.delete(name);
         strikes.delete(name);
         log(`inbox: ${name} was removed from the inbox while it was being imported`);
         return "done";
       }
-      if (error instanceof IngestError && error.code !== "storage_unavailable") {
+      if (error instanceof IngestError && FILE_FAULTS.has(error.code)) {
         // Ingest's own refusal: the file's type or content.
         strikes.delete(name);
         await fail(name, name, path, sentence(error.message), pass);
@@ -886,11 +991,17 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       const checks = unseenTries + 1;
       outage = { checks, retryAt: now() + backoffMs(checks), unseen: true };
     }
-    if (unseenTries > 0 && state.tried && outage === undefined) {
+    if (unseenTries > 0 && outage === undefined) {
+      // After every pass that leaves no hold armed, whether or not it tried a
+      // file (the held files may have been taken out, or have reached
+      // failed), so a later fault starts a hold of its own, logged.
       const tries = `${unseenTries} held tr${unseenTries === 1 ? "y" : "ies"}`;
+      const why = state.tried
+        ? "no second file failed the same way in this pass"
+        : "no held file was left to try";
       log(
-        `inbox: no second file failed in this pass after ${tries}, so the fault the checks ` +
-          "could not see is over; importing again",
+        `inbox: ${why} after ${tries}, so the hold on a fault the checks could not see is ` +
+          "over; importing again",
       );
       endUnseen();
     }

@@ -356,10 +356,12 @@ describe("after ingest", () => {
     },
   );
 
-  test("an inbox copy that cannot be deleted is not imported again", async () => {
+  test("an inbox copy that cannot be deleted is not imported again", async (ctx) => {
     if (process.getuid?.() === 0) {
-      // Root ignores the folder's mode, so the unlink cannot be made to fail.
-      return;
+      // Written reason for the skip: root ignores the folder's mode, so the
+      // unlink cannot be made to fail. Skipped, not passed, so the report
+      // says this checked nothing.
+      return ctx.skip();
     }
     const fake = fakeIngest(async () => {
       await chmod(inbox, 0o555);
@@ -1560,7 +1562,7 @@ describe("the size limit", () => {
 
 describe("names that are not UTF-8", () => {
   const latin1 = (stem: number[]) => Buffer.concat([Buffer.from(stem), Buffer.from(".stl")]);
-  // "café.stl" and "cafè.stl" as Latin-1: one byte each, neither valid UTF-8.
+  // "caf\u00e9.stl" and "caf\u00e8.stl" as Latin-1: one byte each, neither valid UTF-8.
   const cafe = latin1([0x63, 0x61, 0x66, 0xe9]);
   const cafe2 = latin1([0x63, 0x61, 0x66, 0xe8]);
 

@@ -14,6 +14,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
@@ -72,6 +73,14 @@ export interface BlobStore {
   ): Promise<{ objects: ListedObject[]; next: string | undefined }>;
   /** The bucket's versioning state (AC-013). */
   readVersioning(): Promise<VersioningState>;
+  /**
+   * Checks that the store takes a write: puts a few bytes at WRITE_CHECK_KEY,
+   * then deletes them. The key is fixed and outside models/, so neither the
+   * reconciliation count nor the orphan sweep (both look only under models/)
+   * ever sees it, and no caller can name a key outside the blob layout. A
+   * failure is StoreUnavailable or StoreError, as for putBlob.
+   */
+  checkWrite(): Promise<void>;
   /** Closes the client's sockets. */
   destroy(): void;
 }
@@ -83,6 +92,13 @@ export interface ListedObject {
   /** When the object was last written; undefined if the store did not say. */
   lastModified: Date | undefined;
 }
+
+/**
+ * The one key outside the blob layout the store writes: checkWrite's, put
+ * and deleted again at once. A copy left by a delete that failed is
+ * overwritten by the next check, so there is never more than one.
+ */
+export const WRITE_CHECK_KEY = "checks/write-check";
 
 // DeleteObjects takes at most 1000 keys per request.
 const DELETE_BATCH = 1000;
@@ -265,6 +281,26 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
 
     readVersioning() {
       return readVersioning(client, bucket);
+    },
+
+    async checkWrite() {
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: WRITE_CHECK_KEY,
+            Body: "platehouse write check\n",
+            ContentType: "text/plain; charset=utf-8",
+          }),
+        );
+      } catch (err) {
+        throw toStoreError(err, "PutObject");
+      }
+      try {
+        await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: WRITE_CHECK_KEY }));
+      } catch (err) {
+        throw toStoreError(err, "DeleteObject");
+      }
     },
 
     destroy() {
