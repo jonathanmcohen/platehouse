@@ -8,6 +8,11 @@
       "source": "./src/index.ts",
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./test/sliceable": {
+      "source": "./test/support/sliceable.ts",
+      "types": "./dist/test/support/sliceable.d.ts",
+      "default": "./dist/test/support/sliceable.js"
     }
   },
   "scripts": {

@@ -1,0 +1,18 @@
+# Build context filter for apps/slicer/Dockerfile (BuildKit reads
+# <Dockerfile>.dockerignore beside the Dockerfile). The context is the repo
+# root; only what the Dockerfile copies goes in.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!packages/threemf/package.json
+!packages/threemf/tsconfig.json
+!packages/threemf/src
+!packages/slicer-contract/package.json
+!packages/slicer-contract/tsconfig.json
+!packages/slicer-contract/src
+!apps/slicer/package.json
+!apps/slicer/tsconfig.json
+!apps/slicer/src
+!apps/slicer/docker
