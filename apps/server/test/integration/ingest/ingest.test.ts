@@ -770,6 +770,54 @@ describe("a failed commit never deletes what may have been committed", () => {
     expect(after.objects - before.objects).toBe(2);
   });
 
+  test("a failure part way through the transaction saved nothing, even when its status cannot be read", async () => {
+    // Postgres restarts while ingest is still writing rows: the files insert
+    // fails with the connection, and the status lookup cannot be answered
+    // either. Kysely sends COMMIT only after the transaction's callback
+    // returns, and rolls back when it throws, so no COMMIT was ever sent:
+    // the objects are deleted and the failure says nothing was saved, so
+    // the upload's HEAD answers 410 and the file can be sent again (#76).
+    const filesInsertFails = (trx: Transaction<DB>): Transaction<DB> =>
+      new Proxy(trx, {
+        get(target, prop) {
+          if (prop === "insertInto") {
+            const insertInto: Transaction<DB>["insertInto"] = (table) => {
+              if (table === "files") throw new Error("Connection terminated unexpectedly");
+              return target.insertInto(table);
+            };
+            return insertInto;
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const lostMidBody = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) =>
+            real.execute((trx) => fn(filesInsertFails(trx))),
+        };
+      },
+      // commitState's status query is the only call made through this.
+      getExecutor: () => {
+        throw new Error("Connection refused");
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: lostMidBody, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Lost part way.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection terminated unexpectedly");
+    // No model, file or blob row, and the source and thumbnail objects were
+    // put and then deleted.
+    expect(await footprint(env)).toEqual(before);
+  });
+
   test("a COMMIT still in flight when the error arrives keeps the objects, and they serve the rows once it lands", async () => {
     // The connection drops while the server is still finishing COMMIT
     // (flushing WAL, waiting on a synchronous standby). A lookup of the file
