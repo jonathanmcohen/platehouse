@@ -51,6 +51,7 @@ class FakeQueue implements UploadQueue {
   readonly enqueued = new Map<string, IngestInput>();
   readonly results = new Map<string, UploadResult>();
   failEnqueue = false;
+  failResult = false;
 
   async enqueue(id: string, input: IngestInput): Promise<void> {
     if (this.failEnqueue) throw new Error("queue is down");
@@ -58,6 +59,7 @@ class FakeQueue implements UploadQueue {
   }
 
   async result(id: string): Promise<UploadResult | undefined> {
+    if (this.failResult) throw new Error("connect ECONNREFUSED 10.9.8.7:5432");
     return this.results.get(id) ?? (this.enqueued.has(id) ? { status: "pending" } : undefined);
   }
 }
@@ -421,6 +423,22 @@ describe("tus routes", () => {
       status: 200,
       body: { status: "failed", error: "Nope; nothing was saved" },
     });
+  });
+
+  test("the result route answers 503 in plain words when the queue cannot be read", async () => {
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body);
+    queue.failResult = true;
+    const res = await resultOf(id);
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({
+      error: "unavailable",
+      message: "The upload's result cannot be read right now. Try again shortly.",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("ECONNREFUSED");
+    queue.failResult = false;
+    expect(await resultOf(id)).toEqual({ status: 200, body: { status: "pending" } });
   });
 
   /** A finished upload that ingest has taken: its data file is gone. */

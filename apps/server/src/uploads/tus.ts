@@ -104,6 +104,13 @@ export const UPLOAD_FAILED_MESSAGE =
 
 const QUEUE_FAILED_MESSAGE = "The upload could not be queued; nothing was saved. Try again.";
 
+/**
+ * What GET <prefix>/:id/result answers (503) when the ingest queue cannot be
+ * read, for example while Postgres restarts. The cause goes to the log only.
+ */
+const RESULT_UNAVAILABLE_MESSAGE =
+  "The upload's result cannot be read right now. Try again shortly.";
+
 const LENGTH_REQUIRED_MESSAGE =
   `Upload-Length is required: Platehouse takes uploads of a known size, ` +
   `at most ${MAX_UPLOAD_BYTES} bytes`;
@@ -659,7 +666,16 @@ export async function registerTus(
       scope.get("/:id/result", async (request, reply) => {
         const id = uploadId(request);
         if (id === undefined) return reply.code(404).send({ error: "not_found" });
-        const result = await uploads.queue.result(id);
+        let result: UploadResult | undefined;
+        try {
+          result = await uploads.queue.result(id);
+        } catch (error) {
+          // A database error (its host, its port) never reaches the client.
+          request.log.warn({ err: error, uploadId: id }, "uploads: could not read the result");
+          return reply
+            .code(503)
+            .send({ error: "unavailable", message: RESULT_UNAVAILABLE_MESSAGE });
+        }
         if (result !== undefined) return reply.send(result);
         // Still uploading: its info file is there and nothing is queued yet.
         try {
