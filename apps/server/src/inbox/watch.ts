@@ -37,7 +37,18 @@
 //   watcher asks findImported (repos files.findImported) for a file row with
 //   the same original name, size and SHA-256 created since the file reached
 //   the inbox: its ctime, which a copy, a move or a rename sets, unlike its
-//   mtime, and which survives a restart because it is on disk. A row found is
+//   mtime, and which survives a restart because it is on disk. ctime also
+//   moves on any metadata change (chmod, chown, an xattr or ACL write such as
+//   Samba storing a Finder xattr, a link-count change), so the watcher takes
+//   it when a poll first sees the file's size, mtime and inode and keeps that
+//   value while they stay the same: a metadata change during an outage does
+//   not move it. That memory is the process's own. After a restart the next
+//   process reads the ctime afresh, so a metadata change made after a lost
+//   answer and before a restart can still let the file be imported twice.
+//   Birth time is not used instead: a move within one filesystem keeps the
+//   inode and its birth time from before the file reached the inbox, so an
+//   earlier import of the same file would count and the new copy would be
+//   deleted without a model of its own. A row found is
 //   the import, so it is not made twice; the inbox copy is checked and
 //   deleted as after any import. An earlier import of the same file, before
 //   this copy arrived, does not count. The created_at of the row is the
@@ -169,6 +180,12 @@ interface Seen {
   signature: string;
   /** When a poll first saw this signature, on the injected clock. */
   since: number;
+  /**
+   * The file's ctime when a poll first saw this signature: when it reached
+   * the inbox. Held so that a later metadata change (chmod, chown, an xattr
+   * or ACL write) does not move it while the signature stays the same.
+   */
+  arrived: Date;
   /** The file's size and SHA-256 while it keeps this signature. */
   hash?: StoredFile;
 }
@@ -371,7 +388,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
 
   /**
    * Imports one settled file; arrived is when it reached the inbox (its
-   * ctime). Returns "outage" when the pass must stop.
+   * ctime when first seen). Returns "outage" when the pass must stop.
    */
   async function importOne(
     name: string,
@@ -497,12 +514,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
 
       const before = seen.get(name);
       if (before === undefined || before.signature !== sig) {
-        seen.set(name, { signature: sig, since: at });
+        seen.set(name, { signature: sig, since: at, arrived: st.ctime });
         continue;
       }
       if (at - before.since < settleMs) continue;
 
-      if ((await importOne(name, path, before, st.ctime, pass)) === "outage") {
+      if ((await importOne(name, path, before, before.arrived, pass)) === "outage") {
         pass.waiting = true;
         break;
       }

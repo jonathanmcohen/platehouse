@@ -612,6 +612,50 @@ describe("outages", () => {
     }
   });
 
+  test("a metadata change between a lost answer and the retry does not make a second model", async () => {
+    // chmod, chown or an xattr write (Samba storing a Finder xattr when the
+    // share is opened) moves the file's ctime past the landed row's
+    // created_at; the retry must still find the row.
+    const fake = fakeIngest();
+    const created = new Map<string, Date>();
+    let lost = true;
+    const ingest = {
+      async ingestFile(input: IngestInput) {
+        const result = await fake.ingest.ingestFile(input);
+        created.set(result.fileId, new Date());
+        if (lost) {
+          lost = false;
+          throw new Error("Connection terminated unexpectedly");
+        }
+        return result;
+      },
+    };
+    const w = watcher(fake, {
+      ingest,
+      findImported: async (file) => {
+        const found = storedMatch(fake, file);
+        const at = found === undefined ? undefined : created.get(found.fileId);
+        return at !== undefined && at >= file.since ? found : undefined;
+      },
+    });
+    const path = join(inbox, "touched.stl");
+    await writeFile(path, "solid touched\nendsolid touched\n");
+    await w.pollOnce();
+    const first = await tick(w, 15_000);
+    expect(first.waiting).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await chmod(path, 0o600);
+    const landed = created.get("file-1");
+    expect(landed).toBeDefined();
+    expect((await lstat(path)).ctime.getTime()).toBeGreaterThan(landed?.getTime() ?? 0);
+
+    const retry = await tick(w, 5_000);
+    expect(fake.calls).toEqual(["touched.stl"]);
+    expect(retry.imported).toEqual([{ name: "touched.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(await exists(path)).toBe(false);
+  });
+
   test("a commit whose answer was lost before a restart is found by the next process, not imported twice", async () => {
     // Everything the watcher keeps in memory goes with the process; what the
     // lost commit wrote stays in the database. created holds each stored
