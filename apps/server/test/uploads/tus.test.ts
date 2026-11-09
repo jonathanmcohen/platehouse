@@ -165,7 +165,8 @@ describe("parseUploadMetadata", () => {
   });
 
   test("a long name, spaces and non-ASCII are kept as sent", () => {
-    const name = `${"Long name with spaces and éè ".repeat(8)}.3mf`;
+    const accents = String.fromCodePoint(0xe9, 0xe8);
+    const name = `${`Long name with spaces and ${accents} `.repeat(8)}.3mf`;
     expect(name.length).toBeGreaterThan(200);
     expect(parseUploadMetadata({ filename: name }).originalName).toBe(name);
   });

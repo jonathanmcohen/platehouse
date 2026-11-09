@@ -55,7 +55,7 @@ import { detectKind, FIRST_BYTES } from "./detect.js";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "Storage is unavailable right now; nothing was saved";
 
-const UNSUPPORTED_MESSAGE =
+export const UNSUPPORTED_MESSAGE =
   "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved";
 
 const MODEL_NOT_FOUND_MESSAGE = "That model does not exist or is in the trash; nothing was saved";

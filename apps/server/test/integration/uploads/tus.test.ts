@@ -47,6 +47,9 @@ const UI = "/app/uploads";
 const TOKEN = ["Bearer", "synthetic-test-value"].join(" ");
 const BEARER = { authorization: TOKEN };
 const SESSION = { cookie: "ph_test_session=ok" };
+// The two 90 MB tests each move the file several times (upload, resume,
+// store, read back), so they get longer than the project's 60 s.
+const NINETY_MB_TIMEOUT = 180_000;
 
 let env: IngestEnv;
 let boss: PgBoss;
@@ -176,98 +179,106 @@ async function removeUpload(id: string) {
 }
 
 describe("resumable uploads", () => {
-  test("a 90 MB generated upload completes in 5 MiB chunks with a resume in the middle", async () => {
-    expect(ninety.length).toBe(94_371_834);
-    const options = {
-      endpoint: `${server.base}${UI}`,
-      chunkSize: CHUNK,
-      retryDelays: null,
-      storeFingerprintForResuming: false,
-      headers: SESSION,
-      metadata: { filename: "Generated 90 MB part.stl" },
-    };
+  test(
+    "a 90 MB generated upload completes in 5 MiB chunks with a resume in the middle",
+    async () => {
+      expect(ninety.length).toBe(94_371_834);
+      const options = {
+        endpoint: `${server.base}${UI}`,
+        chunkSize: CHUNK,
+        retryDelays: null,
+        storeFingerprintForResuming: false,
+        headers: SESSION,
+        metadata: { filename: "Generated 90 MB part.stl" },
+      };
 
-    // First attempt: cut off part way, as a phone switching from the LAN to
-    // Tailscale would be.
-    let uploadUrl: string | null = null;
-    const first = new Upload(ninety, {
-      ...options,
-      onProgress: (sent) => {
-        if (sent > 47 * 1024 * 1024 && uploadUrl === null) {
-          uploadUrl = first.url;
-          void first.abort();
-        }
-      },
-      onError: () => {},
-    });
-    first.start();
-    const deadline = Date.now() + 60_000;
-    while (uploadUrl === null) {
-      if (Date.now() > deadline) throw new Error("the first attempt never got past 47 MiB");
-      await sleep(50);
-    }
-    const url: string = uploadUrl;
-    const id = idOf(url);
-    const offset = await settledOffset(UI, SESSION, id);
-    expect(offset).toBeGreaterThan(0);
-    expect(offset).toBeLessThan(ninety.length);
-
-    // Second attempt: resumes from the server's offset, never from zero.
-    const before = server.requests.length;
-    await new Promise<void>((resolve, reject) => {
-      const second = new Upload(ninety, {
+      // First attempt: cut off part way, as a phone switching from the LAN to
+      // Tailscale would be.
+      let uploadUrl: string | null = null;
+      const first = new Upload(ninety, {
         ...options,
-        uploadUrl: url,
-        onSuccess: () => resolve(),
-        onError: (error) => reject(error),
+        onProgress: (sent) => {
+          if (sent > 47 * 1024 * 1024 && uploadUrl === null) {
+            uploadUrl = first.url;
+            void first.abort();
+          }
+        },
+        onError: () => {},
       });
-      second.start();
-    });
-    const patches = server.requests
-      .slice(before)
-      .filter((r) => r.method === "PATCH" && r.url.endsWith(id));
-    expect(patches[0]?.uploadOffset).toBe(String(offset));
-    for (const p of patches) expect(Number(p.contentLength)).toBeLessThanOrEqual(CHUNK);
-    const sent = patches.reduce((sum, p) => sum + Number(p.contentLength), 0);
-    expect(sent).toBe(ninety.length - offset);
+      first.start();
+      const deadline = Date.now() + 60_000;
+      while (uploadUrl === null) {
+        if (Date.now() > deadline) throw new Error("the first attempt never got past 47 MiB");
+        await sleep(50);
+      }
+      const url: string = uploadUrl;
+      const id = idOf(url);
+      const offset = await settledOffset(UI, SESSION, id);
+      expect(offset).toBeGreaterThan(0);
+      expect(offset).toBeLessThan(ninety.length);
 
-    const done = await result(UI, SESSION, id);
-    expect(done).toMatchObject({ status: "done" });
-    const file = await fileRow(done.fileId as string);
-    expect(file.modelId).toBe(done.modelId);
-    expect(file.originalName).toBe("Generated 90 MB part.stl");
-    expect(Number(file.size)).toBe(ninety.length);
-    expect(Buffer.from(file.sha256).equals(sha256(ninety))).toBe(true);
-    expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
-  });
+      // Second attempt: resumes from the server's offset, never from zero.
+      const before = server.requests.length;
+      await new Promise<void>((resolve, reject) => {
+        const second = new Upload(ninety, {
+          ...options,
+          uploadUrl: url,
+          onSuccess: () => resolve(),
+          onError: (error) => reject(error),
+        });
+        second.start();
+      });
+      const patches = server.requests
+        .slice(before)
+        .filter((r) => r.method === "PATCH" && r.url.endsWith(id));
+      expect(patches[0]?.uploadOffset).toBe(String(offset));
+      for (const p of patches) expect(Number(p.contentLength)).toBeLessThanOrEqual(CHUNK);
+      const sent = patches.reduce((sum, p) => sum + Number(p.contentLength), 0);
+      expect(sent).toBe(ninety.length - offset);
 
-  test("curl-style single PATCH upload completes (one PATCH carrying the whole body)", async () => {
-    const created = await create(API, BEARER, ninety.length, { filename: "Curl upload.stl" });
-    expect(created.status).toBe(201);
-    const id = idOf(created.headers.location);
+      const done = await result(UI, SESSION, id);
+      expect(done).toMatchObject({ status: "done" });
+      const file = await fileRow(done.fileId as string);
+      expect(file.modelId).toBe(done.modelId);
+      expect(file.originalName).toBe("Generated 90 MB part.stl");
+      expect(Number(file.size)).toBe(ninety.length);
+      expect(Buffer.from(file.sha256).equals(sha256(ninety))).toBe(true);
+      expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
+    },
+    NINETY_MB_TIMEOUT,
+  );
 
-    const before = server.requests.length;
-    const patched = await patchAll(API, BEARER, id, ninety);
-    expect(patched.headers["upload-offset"]).toBe(String(ninety.length));
-    const patches = server.requests.slice(before).filter((r) => r.method === "PATCH");
-    expect(patches).toHaveLength(1);
+  test(
+    "curl-style single PATCH upload completes (one PATCH carrying the whole body)",
+    async () => {
+      const created = await create(API, BEARER, ninety.length, { filename: "Curl upload.stl" });
+      expect(created.status).toBe(201);
+      const id = idOf(created.headers.location);
 
-    const done = await result(API, BEARER, id);
-    expect(done).toMatchObject({ status: "done" });
-    const file = await fileRow(done.fileId as string);
-    expect(Number(file.size)).toBe(ninety.length);
-    expect(Buffer.from(file.sha256).equals(sha256(ninety))).toBe(true);
-    // The bytes in the bucket are the bytes sent.
-    const blob = await env.db
-      .selectFrom("blobs")
-      .select("key")
-      .where("id", "=", file.blobId)
-      .executeTakeFirstOrThrow();
-    const chunks: Buffer[] = [];
-    for await (const c of await env.store.getBlobStream(blob.key)) chunks.push(c as Buffer);
-    expect(sha256(Buffer.concat(chunks)).equals(sha256(ninety))).toBe(true);
-    expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
-  });
+      const before = server.requests.length;
+      const patched = await patchAll(API, BEARER, id, ninety);
+      expect(patched.headers["upload-offset"]).toBe(String(ninety.length));
+      const patches = server.requests.slice(before).filter((r) => r.method === "PATCH");
+      expect(patches).toHaveLength(1);
+
+      const done = await result(API, BEARER, id);
+      expect(done).toMatchObject({ status: "done" });
+      const file = await fileRow(done.fileId as string);
+      expect(Number(file.size)).toBe(ninety.length);
+      expect(Buffer.from(file.sha256).equals(sha256(ninety))).toBe(true);
+      // The bytes in the bucket are the bytes sent.
+      const blob = await env.db
+        .selectFrom("blobs")
+        .select("key")
+        .where("id", "=", file.blobId)
+        .executeTakeFirstOrThrow();
+      const chunks: Buffer[] = [];
+      for await (const c of await env.store.getBlobStream(blob.key)) chunks.push(c as Buffer);
+      expect(sha256(Buffer.concat(chunks)).equals(sha256(ninety))).toBe(true);
+      expect((await tempFiles()).filter((f) => f.startsWith(id))).toEqual([]);
+    },
+    NINETY_MB_TIMEOUT,
+  );
 
   test("missing filename metadata is 400", async () => {
     const before = await footprint(env);
