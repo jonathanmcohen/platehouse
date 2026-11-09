@@ -22,19 +22,37 @@ Every dependency is pinned to an exact version in `package.json` and `pnpm-lock.
 Run these from the repository root. Each one must pass before a pull request.
 
 ```sh
-pnpm vitest run --project unit          # every test outside a test/integration/ folder
+pnpm vitest run --project unit          # every test outside a test/integration/ or test/container/ folder
 pnpm vitest run --project integration   # the test/integration/ folders; needs Docker
+pnpm vitest run --project container     # the test/container/ folders; needs Docker and STEP_SAMPLE
 pnpm biome check .                      # lint and format
 pnpm tsc -b                             # type check
 ```
 
 The integration tests start Postgres and the S3 test server in containers through
-testcontainers, so they need a running Docker. A plain `pnpm vitest run` runs both projects.
+testcontainers, so they need a running Docker.
+
+The container tests build the slicer image from `apps/slicer/Dockerfile` and test it over HTTP.
+They need a running Docker on an amd64 host (the image is amd64 only). The first build downloads
+OrcaSlicer, OpenSCAD and Node and takes minutes, which is why the project allows its setup an
+hour. `apps/slicer/test/container/step.test.ts` also needs `STEP_SAMPLE` set to the path of the
+NIST CTC-01 STEP file (`nist_ctc_01_asme1_rd.stp`, public NIST test data) and fails without it.
+The "Fetch the STEP sample" step of the container job in `.github/workflows/ci.yml` downloads
+that file and checks it against its sha256; do the same, then run:
+
+```sh
+STEP_SAMPLE=/path/to/nist_ctc_01_asme1_rd.stp pnpm vitest run --project container
+```
+
+A plain `pnpm vitest run` runs all three projects, the container tests included, so on a machine
+without Docker run the projects one by one as above.
 
 To run one test file, name it: `pnpm vitest run apps/server/test/config.test.ts`.
 
-CI (`.github/workflows/ci.yml`) runs the same four checks on every pull request and on every
-push to main or a release branch, and fails a test job when no test ran.
+CI (`.github/workflows/ci.yml`) runs Biome, the type check, the unit tests and the integration
+tests on every pull request and on every push to main or a release branch. It runs the container
+tests, in their own job, when the slicer or anything its image is built from changes. It fails a
+test job when no test ran.
 
 The slicing gate in `tools/slicing-gate` is not part of the pnpm workspace and Biome does not
 check it. Its tests use Node's own test runner and need no install:

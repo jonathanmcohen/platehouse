@@ -207,6 +207,21 @@ importers:
         specifier: 12.2.1
         version: 12.2.1(bare-buffer@3.7.1)
 
+  apps/slicer:
+    dependencies:
+      '@platehouse/slicer-contract':
+        specifier: workspace:*
+        version: link:../../packages/slicer-contract
+      '@platehouse/threemf':
+        specifier: workspace:*
+        version: link:../../packages/threemf
+      occt-import-js:
+        specifier: 0.0.23
+        version: 0.0.23
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
   packages/makerworld:
     dependencies:
       dompurify:
@@ -219,6 +234,12 @@ importers:
       jsdom:
         specifier: 31.0.0
         version: 31.0.0
+
+  packages/slicer-contract:
+    dependencies:
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/threemf:
     dependencies:
@@ -1274,6 +1295,9 @@ packages:
   obug@3.0.0:
     resolution: {integrity: sha512-5vvB5+W7ePv+p3uqxi+RcW1XAzLW0/hxt3/4X4Lc4qHudzOhmBiBwOY6DRob4WnanAEGvNcLjF+KNOufrUoEQw==}
     engines: {node: '>=12.20.0'}
+
+  occt-import-js@0.0.23:
+    resolution: {integrity: sha512-RFfYQXYFX5C1mB1Aywm0ShcUKzXOr/VzTnlzhBSDJOR6YCAPt1HYCzeXWg1vwwjn/cUxwqRNhhtf1dlewoZYCQ==}
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
@@ -2728,6 +2752,8 @@ snapshots:
   normalize-path@3.0.0: {}
 
   obug@3.0.0: {}
+
+  occt-import-js@0.0.23: {}
 
   once@1.4.0:
     dependencies:
