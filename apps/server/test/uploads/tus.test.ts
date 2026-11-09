@@ -14,7 +14,12 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { PgBoss } from "pg-boss";
 import { Upload } from "tus-js-client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { IngestError, type IngestInput } from "../../src/ingest/ingest.js";
+import {
+  INGEST_FAILED_MESSAGE,
+  IngestError,
+  type IngestInput,
+  IngestOutcomeUnknown,
+} from "../../src/ingest/ingest.js";
 import { QUEUE } from "../../src/jobs/queues.js";
 import {
   bossUploadQueue,
@@ -478,14 +483,20 @@ describe("tus routes", () => {
     expect(await tempFiles()).toEqual([`${id}.json`]);
   });
 
-  test("HEAD after an ingest whose outcome is unknown still answers finished", async () => {
+  test.each([
+    [
+      "IngestOutcomeUnknown",
+      new IngestOutcomeUnknown(new Error("Connection terminated unexpectedly")),
+    ],
+    ["any error that is not ingest's own", new Error("Connection terminated unexpectedly")],
+  ])("HEAD after an ingest that failed with %s still answers finished", async (_label, lost) => {
     // When the database cannot say whether the commit landed, ingest keeps
-    // what it stored and throws the database's own error: the model may be
-    // in the library, and a resend could make a second one.
+    // what it stored and throws IngestOutcomeUnknown: the model may be in the
+    // library, and a resend could make a second one. An error ingest never
+    // throws is taken the same way, on the side that makes no duplicate.
     const body = randomBinaryStl(30);
     const id = idOf((await create(body.length, { filename: "Phone part.stl" })).headers.location);
     expect((await patch(id, 0, body)).status).toBe(204);
-    const lost = new Error("Connection terminated unexpectedly");
     await expect(
       uploads.ingestUpload(async () => {
         throw lost;
@@ -882,20 +893,30 @@ describe("bossUploadQueue", () => {
     ).toEqual({ status: "done", ...output });
   });
 
-  test("an IngestError's message is shown as written", async () => {
-    const output = {
-      name: "IngestError",
-      message: "Storage is unavailable right now; nothing was saved",
-    };
-    expect(
-      await bossUploadQueue(fakeBoss({ state: "failed", output }).boss).result(randomUUID()),
-    ).toEqual({ status: "failed", error: output.message });
-  });
+  test.each(["Storage is unavailable right now; nothing was saved", INGEST_FAILED_MESSAGE])(
+    "an IngestError's message is shown as written: %s",
+    async (message) => {
+      const output = { name: "IngestError", message };
+      expect(
+        await bossUploadQueue(fakeBoss({ state: "failed", output }).boss).result(randomUUID()),
+      ).toEqual({ status: "failed", error: output.message });
+    },
+  );
 
   test.each([
     [
       "any other error",
       { state: "failed", output: { name: "Error", message: "connect ECONNREFUSED 10.0.0.1:5432" } },
+    ],
+    [
+      "a commit whose outcome is not known",
+      {
+        state: "failed",
+        output: {
+          name: "IngestOutcomeUnknown",
+          message: "The commit's outcome is not known: connect ECONNREFUSED 10.0.0.1:5432",
+        },
+      },
     ],
     ["a cancelled job", { state: "cancelled", output: null }],
     ["a completed job with no result", { state: "completed", output: null }],
