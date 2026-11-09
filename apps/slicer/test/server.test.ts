@@ -13,7 +13,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
 import { streamChunked } from "./support/http.js";
-import { profileTree, TREE_PRINTERS } from "./support/profiles.js";
+import { profileTree, put, TREE_PRINTERS } from "./support/profiles.js";
 import {
   fakeLandrun,
   fakeOrca,
@@ -60,6 +60,8 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const P1S = "Bambu Lab P1S 0.4 nozzle";
+const A1 = "Bambu Lab A1 0.4 nozzle";
+const P1S_PLA = "Bambu PLA Basic @BBL P1S 0.4 nozzle";
 const running: Slicer[] = [];
 
 afterEach(async () => {
@@ -72,10 +74,11 @@ afterEach(async () => {
 function setup(
   over: Partial<SlicerConfig> = {},
   orca: OrcaMode = { kind: "ok", time: 1, weight: 1, grams: [1] },
+  tree: string = profileTree(),
 ) {
   const stubs = stubDir();
   const profilesDir = mkdtempSync(join(tmpdir(), "slicer-profiles-"));
-  buildProfiles(loadIndex(profileTree()), profilesDir);
+  buildProfiles(loadIndex(tree), profilesDir);
   const workDir = mkdtempSync(join(tmpdir(), "slicer-work-"));
   const fake = fakeOrca(stubs, orca);
   const sandboxProbe = join(stubs, "sandbox-probe.stl");
@@ -236,7 +239,17 @@ describe("health and profiles", () => {
       modelId: "C12",
       nozzle: 0.4,
     });
-    expect(body.filaments).toContainEqual({ type: "PLA", profile: "Generic PLA" });
+    expect(body.filaments).toContainEqual({
+      printer: P1S,
+      type: "PLA",
+      profile: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
+    });
+    expect(body.filaments).toContainEqual({
+      printer: A1,
+      type: "PLA",
+      profile: "Generic PLA @BBL A1",
+    });
+    for (const f of body.filaments) expect(TREE_PRINTERS, JSON.stringify(f)).toContain(f.printer);
   });
 
   test("an unknown path is 404 not_found", async () => {
@@ -261,7 +274,7 @@ describe("slicing", () => {
       status: "ok",
       printer: P1S,
       process: "0.20mm Standard @BBL X1C",
-      filamentProfiles: ["Generic PLA", "Generic PLA"],
+      filamentProfiles: [P1S_PLA, P1S_PLA],
       timeSeconds: 1234.5,
       weightGrams: 12.3456,
       filaments: [
@@ -273,7 +286,58 @@ describe("slicing", () => {
     expect(readdirSync(s.workDir)).toEqual([]);
   });
 
-  test("Orca gets the T1 recipe: one plate, statistics, --mstpp, the machine preset alone and a generic filament per slot", async () => {
+  test("a printer with no Bambu preset for the type loads the generic one and reports it", async () => {
+    const s = setup({}, { kind: "ok", time: 10, weight: 2, grams: [1, 1] });
+    const base = await start(s.config);
+    const body = slicerContract.sliceResult.parse(
+      await (await postSlice(base, sliceable(), A1, 1)).json(),
+    );
+    expect(body).toMatchObject({
+      status: "ok",
+      printer: A1,
+      filamentProfiles: ["Generic PLA @BBL A1", "Generic PLA @BBL A1"],
+    });
+    const args = readFileSync(s.fake.argsLog, "utf8").trimEnd().split("\n");
+    const loaded = (args[args.indexOf("--load-filaments") + 1] ?? "").split(";");
+    expect(loaded.map((f) => JSON.parse(readFileSync(f, "utf8")).name)).toEqual([
+      "Generic PLA @BBL A1",
+      "Generic PLA @BBL A1",
+    ]);
+  });
+
+  test("with neither a Bambu nor a generic preset the file keeps its own filament and says so", async () => {
+    const tree = profileTree();
+    // No PLA preset of any kind is compatible with the A1 in this tree.
+    put(tree, "BBL/filament/A1/Generic PLA @BBL A1.json", {
+      type: "filament",
+      name: "Generic PLA @BBL A1",
+      inherits: "Generic PLA @base",
+      from: "system",
+      instantiation: "true",
+      compatible_printers: [],
+    });
+    put(tree, "BBL/filament/Generic PLA Silk.json", {
+      type: "filament",
+      name: "Generic PLA Silk",
+      inherits: "Generic PLA @base",
+      from: "system",
+      instantiation: "true",
+      compatible_printers: [P1S],
+    });
+    const s = setup({}, { kind: "ok", time: 10, weight: 2, grams: [1, 1] }, tree);
+    const base = await start(s.config);
+    const body = slicerContract.sliceResult.parse(
+      await (await postSlice(base, sliceable(), A1, 1)).json(),
+    );
+    expect(body).toMatchObject({
+      status: "ok",
+      filamentProfiles: [null, null],
+    });
+    const args = readFileSync(s.fake.argsLog, "utf8").trimEnd().split("\n");
+    expect(args).not.toContain("--load-filaments");
+  });
+
+  test("Orca gets the T1 recipe: one plate, statistics, --mstpp, the machine preset alone and the printer's default filament per slot", async () => {
     const s = setup({ slicePlateSeconds: 95 });
     const base = await start(s.config);
     await postSlice(base, sliceable(), P1S, 2);
@@ -288,7 +352,7 @@ describe("slicing", () => {
     expect(JSON.parse(readFileSync(settings, "utf8")).name).toBe(P1S);
     const filaments = after("--load-filaments").split(";");
     expect(filaments).toHaveLength(2);
-    for (const f of filaments) expect(JSON.parse(readFileSync(f, "utf8")).name).toBe("Generic PLA");
+    for (const f of filaments) expect(JSON.parse(readFileSync(f, "utf8")).name).toBe(P1S_PLA);
     expect(after("--outputdir").startsWith(s.workDir)).toBe(true);
     expect(after("--datadir").startsWith(s.workDir)).toBe(true);
     expect(args.at(-1)?.startsWith(s.workDir)).toBe(true);

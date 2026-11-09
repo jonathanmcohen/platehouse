@@ -24,10 +24,18 @@
 // Where the plan leaves a case open, these schemas settle it, and the PR
 // says so: a malformed query or an unknown printer is 400 bad_request, an
 // unknown path is 404 not_found, a failed slice with no Orca return code (the
-// slicer's own kill, or no result.json) has code null, an ok slice's process
-// is null when the file names none, and a filamentProfiles entry is null for
-// a slot whose type has no generic profile (the file's own filament is kept,
-// as in the T1 recipe).
+// slicer's own kill, or no result.json) has code null, and an ok slice's
+// process is null when the file names none.
+//
+// Filaments (build plan Task 11 Decisions, Jon 2026-11-08: "I use mostly
+// Bambu Filaments"): a printer's default filament for a type is Bambu's own
+// preset for that printer where Orca has one, else the Generic preset for
+// that printer. /v1/profiles lists that default once per printer and type,
+// naming the printer; a printer and type with neither is not listed, and a
+// slice keeps the file's own filament there. A slice reports the preset used
+// for each project slot in filamentProfiles (null where the file's own was
+// kept). The filament entries carry only the fields the plan's contract
+// names: where a preset came from is not part of contract v1.
 import { z } from "zod";
 
 export const CONTRACT_VERSION = 1;
@@ -83,7 +91,10 @@ export const printer = z.strictObject({
   nozzle: z.number().positive(),
 });
 
+/** A printer's default filament preset for one filament type. */
 export const filamentProfile = z.strictObject({
+  /** The menu printer (a printers[].id) this default is for. */
+  printer: z.string().min(1),
   type: z.string().min(1),
   profile: z.string().min(1),
 });
@@ -105,6 +116,7 @@ export const sliceQuery = z.strictObject({
     .pipe(z.number().int().min(1).max(LIMITS.maxPlate)),
 });
 
+/** One filament's numbers on a sliced plate. */
 export const sliceFilament = z.strictObject({
   slot: z.number().int().min(1),
   type: z.string(),

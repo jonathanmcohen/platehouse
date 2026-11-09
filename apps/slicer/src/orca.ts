@@ -4,7 +4,7 @@
 //   orca --datadir <job>/data --slice <plate> --export-statistics
 //        --mstpp <SLICE_PLATE_SECONDS> --allow-newer-file --outputdir <job>/out
 //        --load-settings <flattened machine preset>
-//        [--load-filaments <generic per slot, "" keeps the file's own>]
+//        [--load-filaments <the printer's default per slot, "" keeps the file's own>]
 //        <job>/input.3mf
 //
 // Only the machine preset goes in --load-settings, so the file's own process

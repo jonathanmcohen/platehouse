@@ -2,7 +2,8 @@
 // tree plus OrcaFilamentLibrary), small enough to reason about in a test.
 // Ported from tools/slicing-gate/test/support/profiles.mjs, with one more
 // machine: a nozzle preset that is not instantiable, which the printer menu
-// must leave out.
+// must leave out; and Bambu PLA Basic for the P1S only, so the P1S gets
+// Bambu's preset for PLA while the A1 falls back to its generic one.
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -45,6 +46,11 @@ export function profileTree(): string {
       f("Generic PLA Silk"),
       f("Generic PLA @BBL A1", "filament/A1/Generic PLA @BBL A1.json"),
       f("Generic PETG"),
+      f("Bambu PLA Basic @base"),
+      f(
+        "Bambu PLA Basic @BBL P1S 0.4 nozzle",
+        "filament/P1S/Bambu PLA Basic @BBL P1S 0.4 nozzle.json",
+      ),
       f("Dangling"),
       f("Loop A"),
       f("Loop B"),
@@ -186,6 +192,22 @@ export function profileTree(): string {
     from: "system",
     instantiation: "true",
     filament_type: ["PETG"],
+    compatible_printers: ["Bambu Lab P1S 0.4 nozzle"],
+  });
+  put(root, "BBL/filament/Bambu PLA Basic @base.json", {
+    type: "filament",
+    name: "Bambu PLA Basic @base",
+    inherits: "fdm_filament_pla",
+    from: "system",
+    instantiation: "false",
+    filament_vendor: ["Bambu Lab"],
+  });
+  put(root, "BBL/filament/P1S/Bambu PLA Basic @BBL P1S 0.4 nozzle.json", {
+    type: "filament",
+    name: "Bambu PLA Basic @BBL P1S 0.4 nozzle",
+    inherits: "Bambu PLA Basic @base",
+    from: "system",
+    instantiation: "true",
     compatible_printers: ["Bambu Lab P1S 0.4 nozzle"],
   });
   put(root, "BBL/filament/Dangling.json", {

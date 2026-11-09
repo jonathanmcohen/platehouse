@@ -249,7 +249,8 @@ RUN source /usr/local/lib/need.sh \
 #   BBL/: Orca still installs BBL from BBL.opc, and the checks fail the
 #   build if the folder was already there or a BBL.json appears;
 # - /opt/platehouse/profiles gets a flattened machine file per menu printer
-#   and a generic filament per type, named in manifest.json.
+#   and a default filament per printer and type (Bambu's own preset where
+#   Orca has one, else the generic one), named in manifest.json.
 RUN source /usr/local/lib/need.sh \
  && need ! -e /opt/orca/resources/profiles/BBL/process_full -- "the AppImage ships no process_full, so nothing of Orca's is replaced" \
  && node /opt/platehouse/app/apps/slicer/dist/src/profiles.js \
