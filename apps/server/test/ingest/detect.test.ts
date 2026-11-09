@@ -2,7 +2,7 @@
 // The name picks the kind; the first bytes, and for a binary STL the size,
 // must agree with it.
 import { describe, expect, test } from "vitest";
-import { detectKind, FIRST_BYTES } from "../../src/ingest/detect.js";
+import { detectKind, FIRST_BYTES, kindFromName } from "../../src/ingest/detect.js";
 
 const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]);
 const asciiStl = Buffer.from("solid cube\n facet normal 0 0 1\n", "ascii");
@@ -41,6 +41,26 @@ const gcode = Buffer.from(
 );
 const step = Buffer.from("ISO-10303-21;\nHEADER;\n", "ascii");
 const scad = Buffer.from("cube([10, 10, 10]);\n", "utf8");
+
+describe("kindFromName", () => {
+  test.each([
+    ["Benchy.3mf", "3mf"],
+    ["PART.STL", "stl"],
+    ["bracket.step", "step"],
+    ["bracket.STP", "step"],
+    ["box.scad", "scad"],
+    ["folder/inner.3mf", "3mf"],
+  ])("%s claims %s", (name, kind) => {
+    expect(kindFromName(name)).toBe(kind);
+  });
+
+  test.each(["notes.txt", "archive.zip", "README", ".stl", "model.3mf.zip", "stl"])(
+    "%s claims nothing",
+    (name) => {
+      expect(kindFromName(name)).toBeNull();
+    },
+  );
+});
 
 describe("detectKind", () => {
   test.each([

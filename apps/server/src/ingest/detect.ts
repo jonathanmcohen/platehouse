@@ -87,6 +87,11 @@ function isBinaryStl(firstBytes: Buffer, size: number): boolean {
   return facets.length > 0 && !isText(facets);
 }
 
+/** STUB (Task 9): the kind a file name claims by its extension. */
+export function kindFromName(_name: string): Kind | null {
+  return null;
+}
+
 /**
  * The kind of an upload from its name, its first bytes (FIRST_BYTES of them,
  * or the whole file if shorter) and its size in bytes, or null when

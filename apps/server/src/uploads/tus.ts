@@ -65,6 +65,14 @@ export function createUploads(deps: {
   };
 }
 
+export class UploadRefused extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export function parseUploadMetadata(_metadata: Record<string, string | null> | undefined): {
   originalName: string;
   target: IngestTarget;
