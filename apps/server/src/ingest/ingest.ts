@@ -19,13 +19,11 @@
 //      returns before any slice runs (AC-033).
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012), with two exceptions. When the
-// transaction turns out to have committed (a COMMIT that succeeded but
-// reported an error), the whole upload landed, so the objects are kept and
-// ingestFile returns its result. When the database cannot say, or the COMMIT
-// is still in flight, the objects are kept and the error is thrown. Which of
-// these it is comes from pg_xact_status on the transaction's own id, read as
-// its first statement (commitState). An object left with no row is removed later by the orphan sweep
+// already put and leaves no rows (AC-012), with two exceptions. When the file
+// row turns out to exist (a COMMIT that succeeded but reported an error), the
+// whole upload landed, so the objects are kept and ingestFile returns its
+// result. When the database cannot say, the objects are kept and the error is
+// thrown. An object left with no row is removed later by the orphan sweep
 // (orphans.ts). A store outage fails
 // visibly with STORAGE_UNAVAILABLE_MESSAGE. The uploaded file at tmpPath is
 // never deleted
@@ -66,8 +64,8 @@ export type IngestErrorCode = "unsupported_type" | "storage_unavailable" | "mode
  * (a filesystem error reading the upload, a database error) reaches the
  * caller unchanged. Either way no row was written. The objects already put
  * are deleted, except when the database could not say whether the rows were
- * committed, a COMMIT still in flight included: then they are kept, and the
- * orphan sweep removes them once no row points at them. A commit that landed but reported an error is not a
+ * committed: then they are kept, and the orphan sweep removes them once no
+ * row points at them. A commit that landed but reported an error is not a
  * failure: ingestFile returns its result.
  */
 export class IngestError extends Error {
@@ -208,42 +206,21 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
   /**
    * After a failure: whether the transaction committed after all. An error
    * from the transaction can come from a COMMIT that reached the server (the
-   * connection dropped while the answer was on its way), and the server may
-   * still be finishing that COMMIT (flushing WAL, waiting on a synchronous
-   * standby) when this runs. A lookup of the rows cannot tell that apart from
-   * a COMMIT that never happened, so the transaction's own id (xid, read as
-   * its first statement) is asked instead: pg_xact_status says "committed"
-   * only once the commit is done, "in progress" while it is not, and
-   * "aborted" once it never can be. "committed" means the whole upload
-   * landed. "not_committed" only for "aborted". "unknown" for anything else
-   * ("in progress", null, or a lookup that fails): the objects are then kept,
-   * and if no row ever points at them the orphan sweep removes them after 24
-   * hours. Deleting the bytes behind committed rows cannot be undone.
-   *
-   * With no xid the transaction failed on its first statement, so no COMMIT
-   * was ever sent; the file row is looked up all the same, so that a database
-   * that cannot answer still means "unknown".
+   * connection dropped while the answer was on its way), so the file row is
+   * looked up before any object is deleted. "committed" when the row is
+   * there: a commit is atomic, so the whole upload landed. "unknown" when the
+   * lookup itself fails: the objects are then kept, and if no row points at
+   * them the orphan sweep removes them after 24 hours. Deleting the bytes
+   * behind committed rows cannot be undone.
    */
-  async function commitState(
-    fileId: string,
-    xid: string | null,
-  ): Promise<"committed" | "not_committed" | "unknown"> {
+  async function commitState(fileId: string): Promise<"committed" | "not_committed" | "unknown"> {
     try {
-      if (xid === null) {
-        const row = await db
-          .selectFrom("files")
-          .select("id")
-          .where("id", "=", fileId)
-          .executeTakeFirst();
-        return row === undefined ? "not_committed" : "committed";
-      }
-      const { rows } = await sql<{ status: string | null }>`
-        select pg_xact_status(${xid}::xid8) as status
-      `.execute(db);
-      const status = rows[0]?.status;
-      if (status === "committed") return "committed";
-      if (status === "aborted") return "not_committed";
-      return "unknown";
+      const row = await db
+        .selectFrom("files")
+        .select("id")
+        .where("id", "=", fileId)
+        .executeTakeFirst();
+      return row === undefined ? "not_committed" : "committed";
     } catch {
       return "unknown";
     }
@@ -272,8 +249,6 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
     };
 
     const fileId = uuidv7();
-    // The transaction's id, once it has one (commitState).
-    let xid: string | null = null;
     try {
       const source = await putOne("source", createReadStream(tmpPath), size, CONTENT_TYPES[kind]);
 
@@ -291,12 +266,6 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
       }
 
       await db.transaction().execute(async (trx) => {
-        // First, before any row: after a failure, commitState asks the
-        // server whether this id committed.
-        const { rows } = await sql<{ xid: string }>`
-          select pg_current_xact_id()::text as xid
-        `.execute(trx);
-        xid = rows[0]?.xid ?? null;
         const repos = createRepos(trx);
         const found = metadataOf(project);
 
@@ -396,7 +365,7 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
     } catch (error) {
       // With nothing put, the failure came before the transaction, so no row
       // can exist and there is nothing to look up or delete.
-      const state = put.length > 0 ? await commitState(fileId, xid) : "not_committed";
+      const state = put.length > 0 ? await commitState(fileId) : "not_committed";
       // The rows landed and only the answer was lost: the upload is stored,
       // and reporting it as failed would make a retry store it twice.
       if (state === "committed") return { modelId, fileId };
