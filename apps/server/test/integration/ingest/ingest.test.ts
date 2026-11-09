@@ -16,7 +16,9 @@ import { uuidv7 } from "../../../src/db/ids.js";
 import type { DB } from "../../../src/db/types.js";
 import {
   createIngest,
+  INGEST_FAILED_MESSAGE,
   IngestError,
+  IngestOutcomeUnknown,
   type IngestStore,
   STORAGE_UNAVAILABLE_MESSAGE,
 } from "../../../src/ingest/ingest.js";
@@ -617,6 +619,29 @@ async function within<T>(promise: Promise<T>, what: string): Promise<T> {
   }
 }
 
+/**
+ * A failure ingest knows saved nothing: an IngestError with the plain
+ * message, the database's own error kept as its cause. The upload's HEAD
+ * then answers 410, so the same file can be sent again.
+ */
+function expectNothingSaved(error: unknown, cause: string): void {
+  expect(error).toBeInstanceOf(IngestError);
+  expect((error as IngestError).code).toBe("ingest_failed");
+  expect((error as IngestError).message).toBe(INGEST_FAILED_MESSAGE);
+  expect(((error as IngestError).cause as Error).message).toBe(cause);
+}
+
+/**
+ * A failure whose commit may have landed: IngestOutcomeUnknown, never an
+ * IngestError, with the database's own error as its cause. The upload's HEAD
+ * then answers finished, so a resend makes no second model.
+ */
+function expectOutcomeUnknown(error: unknown, cause: string): void {
+  expect(error).toBeInstanceOf(IngestOutcomeUnknown);
+  expect(error).not.toBeInstanceOf(IngestError);
+  expect(((error as Error).cause as Error).message).toBe(cause);
+}
+
 describe("a failed commit never deletes what may have been committed", () => {
   test("a commit that succeeds but reports an error is reported as stored, with its objects kept", async () => {
     // The connection drops after COMMIT reached the server: the rows are
@@ -673,12 +698,36 @@ describe("a failed commit never deletes what may have been committed", () => {
         target: "new",
       })
       .catch((e: unknown) => e);
-    expect((error as Error).message).toBe("Connection refused");
+    expectNothingSaved(error, "Connection refused");
     const after = await footprint(env);
     expect(after.files).toBe(before.files);
     expect(after.blobs).toBe(before.blobs);
     // The source and thumbnail objects were put and then deleted.
     expect(after.objects).toBe(before.objects);
+  });
+
+  test("a database that is down when ingest starts fails with nothing saved", async () => {
+    // The check that the target model exists is the first query, before any
+    // byte is stored (a postgres restart, say). Nothing was put and no
+    // transaction began, so the failure says nothing was saved.
+    const unreachable = () => {
+      throw new Error("Connection refused");
+    };
+    const down = dbWith({
+      transaction: () => ({ execute: async () => unreachable() }),
+      selectFrom: unreachable,
+      getExecutor: unreachable,
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: down, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, ASCII_STL),
+        originalName: "Database down at start.stl",
+        target: { modelId: uuidv7() },
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection refused");
+    expect(await footprint(env)).toEqual(before);
   });
 
   test("when the transaction's status cannot be read, the objects are kept for the orphan sweep", async () => {
@@ -712,13 +761,61 @@ describe("a failed commit never deletes what may have been committed", () => {
         target: "new",
       })
       .catch((e: unknown) => e);
-    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    expectOutcomeUnknown(error, "Connection terminated unexpectedly");
     const after = await footprint(env);
     expect(after.files).toBe(before.files);
     expect(after.blobs).toBe(before.blobs);
     // Left in place: no row points at them, so the orphan sweep removes
     // them after 24 hours.
     expect(after.objects - before.objects).toBe(2);
+  });
+
+  test("a failure part way through the transaction saved nothing, even when its status cannot be read", async () => {
+    // Postgres restarts while ingest is still writing rows: the files insert
+    // fails with the connection, and the status lookup cannot be answered
+    // either. Kysely sends COMMIT only after the transaction's callback
+    // returns, and rolls back when it throws, so no COMMIT was ever sent:
+    // the objects are deleted and the failure says nothing was saved, so
+    // the upload's HEAD answers 410 and the file can be sent again (#76).
+    const filesInsertFails = (trx: Transaction<DB>): Transaction<DB> =>
+      new Proxy(trx, {
+        get(target, prop) {
+          if (prop === "insertInto") {
+            const insertInto: Transaction<DB>["insertInto"] = (table) => {
+              if (table === "files") throw new Error("Connection terminated unexpectedly");
+              return target.insertInto(table);
+            };
+            return insertInto;
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const lostMidBody = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) =>
+            real.execute((trx) => fn(filesInsertFails(trx))),
+        };
+      },
+      // commitState's status query is the only call made through this.
+      getExecutor: () => {
+        throw new Error("Connection refused");
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: lostMidBody, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Lost part way.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection terminated unexpectedly");
+    // No model, file or blob row, and the source and thumbnail objects were
+    // put and then deleted.
+    expect(await footprint(env)).toEqual(before);
   });
 
   test("a COMMIT still in flight when the error arrives keeps the objects, and they serve the rows once it lands", async () => {
@@ -764,7 +861,7 @@ describe("a failed commit never deletes what may have been committed", () => {
           .catch((e: unknown) => e),
         "ingestFile",
       );
-      expect((error as Error).message).toBe("Connection terminated unexpectedly");
+      expectOutcomeUnknown(error, "Connection terminated unexpectedly");
       const during = await footprint(env);
       expect(during.files).toBe(before.files);
       // Kept: the COMMIT may still land.
@@ -816,7 +913,7 @@ describe("a failed commit never deletes what may have been committed", () => {
         target: "new",
       })
       .catch((e: unknown) => e);
-    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    expectNothingSaved(error, "Connection terminated unexpectedly");
     expect(await footprint(env)).toEqual(before);
   });
 
@@ -844,7 +941,7 @@ describe("a failed commit never deletes what may have been committed", () => {
         target: "new",
       })
       .catch((e: unknown) => e);
-    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    expectOutcomeUnknown(error, "Connection terminated unexpectedly");
     const after = await footprint(env);
     // It did commit; unable to say so, ingest reports the failure but keeps
     // every object.
