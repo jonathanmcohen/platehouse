@@ -12,7 +12,7 @@
 //   tells the first, where the slicer never saw the request, from the rest;
 // - SlicerRefused: any other answer that is not a result (400, 404, 413, 422,
 //   a 500 from the slicer, or a body the contract does not allow).
-// The job retries the first two through pg-boss's own retry settings (and
+// The job retries the first two with the slicer queue's retry settings (and
 // waits for a slicer that took no connection without using a retry) and
 // records the third as a failed estimate (service.ts).
 //

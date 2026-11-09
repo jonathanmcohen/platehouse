@@ -32,9 +32,12 @@ export const INGEST_CONCURRENCY = 2;
 /**
  * How a slicer job is retried when the slicer answers 409 busy or the
  * connection to it is lost (build plan Task 12; Task 13's render and mesh
- * jobs too): by pg-boss itself, three retries with exponential backoff from
- * 10 s, capped at 2 minutes, so a slicer that is restarting has time to come
- * back. The handler records the failure once the last retry is used.
+ * jobs too): three retries with exponential backoff from 10 s, capped at 2
+ * minutes, so a slicer that is restarting has time to come back. pg-boss
+ * runs them itself, except that a slice job retries a lost connection as a
+ * new job with the same backoff, so that its job data can count the lost
+ * connections (estimates/service.ts). The handler records the failure once
+ * the last retry is used.
  */
 export const SLICER_RETRY = Object.freeze({
   retryLimit: 3,
