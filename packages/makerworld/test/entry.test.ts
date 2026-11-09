@@ -47,8 +47,16 @@ describe("the built package under plain node", () => {
   });
 
   it("points its entry at the build output, and the build writes those files", () => {
+    // "source" is the TypeScript entry Vitest resolves (vitest.config.ts), so
+    // the server's tests import the package without a build. Node and tsc do
+    // not know that condition and take types and default; the plain node
+    // import below proves it.
     expect(manifest.exports).toEqual({
-      ".": { types: "./dist/src/index.d.ts", default: "./dist/src/index.js" },
+      ".": {
+        source: "./src/index.ts",
+        types: "./dist/src/index.d.ts",
+        default: "./dist/src/index.js",
+      },
     });
     expect(existsSync(join(PKG, "dist/src/index.d.ts"))).toBe(true);
     expect(existsSync(join(PKG, "dist/src/index.js"))).toBe(true);

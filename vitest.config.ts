@@ -10,12 +10,24 @@ import { defineConfig } from "vitest/config";
 //   containers (Postgres and the S3 test server) through testcontainers and
 //   need Docker. Container start-up includes an image pull, hence the longer
 //   timeouts.
+//
+// Workspace packages export their TypeScript source under the "source"
+// condition, so tests import them without a build; Node and tsc use the
+// built dist/ files.
 const INTEGRATION = [
   "apps/*/test/integration/**/*.test.ts",
   "packages/*/test/integration/**/*.test.ts",
 ];
 
 export default defineConfig({
+  resolve: {
+    conditions: ["source"],
+  },
+  ssr: {
+    resolve: {
+      conditions: ["source"],
+    },
+  },
   test: {
     projects: [
       {
