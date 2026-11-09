@@ -1,11 +1,13 @@
 // Which uploads Platehouse takes (build plan Task 8; AC-020, AC-024). The
 // supported types are exactly .3mf, .stl, .step, .stp and .scad (Global
 // Constraints). The file name's extension picks the kind, compared without
-// regard to case, and the first bytes must agree with it:
+// regard to case, and the first bytes (and for a binary STL the size) must
+// agree with it:
 // - .3mf is a zip: it starts with a zip local file header (PK 03 04);
 // - .scad is text: no NUL byte, and valid UTF-8;
-// - .stl is ASCII (starts with "solid" and has no NUL byte) or binary (at
-//   least its 80-byte header and its 4-byte triangle count);
+// - .stl is ASCII (starts with "solid" and has no NUL byte) or binary (its
+//   size is exactly the 80-byte header, the 4-byte triangle count and 50
+//   bytes per triangle);
 // - .step and .stp start with ISO-10303-21, after an optional UTF-8 BOM.
 // Anything else is refused (null), and the caller stores nothing.
 import type { FileKind } from "../db/types.js";
@@ -27,6 +29,7 @@ const ZIP_LOCAL_HEADER = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const STEP_MAGIC = Buffer.from("ISO-10303-21", "ascii");
 const STL_BINARY_MIN = 84;
+const STL_TRIANGLE_BYTES = 50;
 
 /** The extension of the last path segment, lowercased; "" for none or a dotfile. */
 function extensionOf(name: string): string {
@@ -52,11 +55,22 @@ function startsWithAsciiSolid(bytes: Buffer): boolean {
 }
 
 /**
- * The kind of an upload from its name and its first bytes (FIRST_BYTES of
- * them, or the whole file if shorter), or null when Platehouse does not take
- * it.
+ * A binary STL is an 80-byte header, a little-endian triangle count and 50
+ * bytes per triangle, so its size is exactly 84 + 50 * count. Nothing else
+ * in the format can be checked, but this rules out a PNG, a zip or G-code
+ * that only carries the name.
  */
-export function detectKind(name: string, firstBytes: Buffer, _size: number): Kind | null {
+function isBinaryStl(firstBytes: Buffer, size: number): boolean {
+  if (firstBytes.length < STL_BINARY_MIN) return false;
+  return size === STL_BINARY_MIN + STL_TRIANGLE_BYTES * firstBytes.readUInt32LE(80);
+}
+
+/**
+ * The kind of an upload from its name, its first bytes (FIRST_BYTES of them,
+ * or the whole file if shorter) and its size in bytes, or null when
+ * Platehouse does not take it.
+ */
+export function detectKind(name: string, firstBytes: Buffer, size: number): Kind | null {
   const kind = EXTENSIONS.get(extensionOf(name));
   switch (kind) {
     case "3mf":
@@ -65,7 +79,7 @@ export function detectKind(name: string, firstBytes: Buffer, _size: number): Kin
       return isText(firstBytes) ? kind : null;
     case "stl": {
       const ascii = startsWithAsciiSolid(firstBytes) && !firstBytes.includes(0);
-      return ascii || firstBytes.length >= STL_BINARY_MIN ? kind : null;
+      return ascii || isBinaryStl(firstBytes, size) ? kind : null;
     }
     case "step": {
       const body = firstBytes.subarray(0, 3).equals(UTF8_BOM) ? firstBytes.subarray(3) : firstBytes;
