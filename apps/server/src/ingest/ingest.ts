@@ -19,8 +19,10 @@
 //      returns before any slice runs (AC-033).
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012); an object that cannot be deleted
-// is removed later by the orphan sweep (orphans.ts). A store outage fails
+// already put and leaves no rows (AC-012), unless the file row turns out to
+// exist (a COMMIT that succeeded but reported an error) or the database
+// cannot say; then the objects are kept. An object left with no row is
+// removed later by the orphan sweep (orphans.ts). A store outage fails
 // visibly with STORAGE_UNAVAILABLE_MESSAGE. The uploaded file at tmpPath is
 // never deleted
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
@@ -193,6 +195,28 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
     return id;
   }
 
+  /**
+   * After a failure: whether the transaction may have committed after all.
+   * An error from the transaction can come from a COMMIT that reached the
+   * server (the connection dropped while the answer was on its way), so the
+   * file row is looked up before any object is deleted. True when the row is
+   * there, and also when the lookup itself fails: the objects are then kept,
+   * and if no row points at them the orphan sweep removes them after 24
+   * hours. Deleting the bytes behind committed rows cannot be undone.
+   */
+  async function mayHaveCommitted(fileId: string): Promise<boolean> {
+    try {
+      const row = await db
+        .selectFrom("files")
+        .select("id")
+        .where("id", "=", fileId)
+        .executeTakeFirst();
+      return row !== undefined;
+    } catch {
+      return true;
+    }
+  }
+
   async function ingestFile(input: IngestInput): Promise<IngestResult> {
     const { tmpPath, originalName, target } = input;
     const { size } = await stat(tmpPath);
@@ -330,7 +354,7 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
         }
       });
     } catch (error) {
-      if (put.length > 0) {
+      if (put.length > 0 && !(await mayHaveCommitted(fileId))) {
         try {
           await store.deleteBlobs(put.map((blob) => blob.key));
         } catch {
