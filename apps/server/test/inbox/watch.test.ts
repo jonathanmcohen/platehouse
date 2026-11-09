@@ -27,12 +27,15 @@ import {
   createInboxWatcher,
   FAILED_DIR,
   type ImportedQuery,
+  inboxName,
   isIgnoredName,
+  NON_UTF8_REASON,
   REASON_SUFFIX,
   UNCONFIRMED_REASON,
   UNEXPECTED_REASON,
 } from "../../src/inbox/watch.js";
 import { IngestError, type IngestInput } from "../../src/ingest/ingest.js";
+import { StoreError } from "../../src/storage/s3.js";
 
 let root: string;
 let inbox: string;
@@ -524,6 +527,51 @@ describe("outages", () => {
     expect(await exists(join(inbox, "a.stl"))).toBe(false);
   });
 
+  // A fault in the environment, not the file: every file would meet it, so
+  // none may go to failed for it (a broken store would empty the inbox).
+  test.each([
+    [
+      "storage refusing access (AccessDenied, HTTP 403)",
+      new StoreError("PutObject", "AccessDenied", 403),
+    ],
+    ["a missing bucket (NoSuchBucket, HTTP 404)", new StoreError("PutObject", "NoSuchBucket", 404)],
+    ["a storage server error (HTTP 500)", new StoreError("PutObject", "InternalError", 500)],
+    ["a full storage server (HTTP 507)", new StoreError("PutObject", "InsufficientStorage", 507)],
+    [
+      "a database refusing the login (28P01)",
+      Object.assign(new Error("password authentication failed"), { code: "28P01" }),
+    ],
+    [
+      "a database with a full disk (53100)",
+      Object.assign(new Error("disk full"), { code: "53100" }),
+    ],
+  ])(
+    "an environment fault (%s) leaves every file in place and stops the pass",
+    async (_label, error) => {
+      let down = true;
+      const fake = fakeIngest(() => {
+        if (down) throw error;
+      });
+      const w = watcher(fake);
+      await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+      await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+      expect(pass.waiting).toBe(true);
+      expect(pass.failed).toEqual([]);
+      expect(fake.calls).toEqual(["a.stl"]);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      await tick(w, 5_000);
+      await tick(w, 5_000);
+      expect(lines.filter((l) => l.includes("left in place"))).toHaveLength(1);
+
+      down = false;
+      const back = await tick(w, 5_000);
+      expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl"]);
+      expect(await readdir(inbox)).toEqual([]);
+    },
+  );
+
   test("while the database is down, a file is not uploaded again on every poll", async () => {
     const refused = () =>
       Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
@@ -751,6 +799,68 @@ describe("outages", () => {
     expect(fake.calls).toEqual(["a.stl", "a.stl"]);
     expect(lookups).toEqual(["a.stl", "a.stl"]);
     expect(await readdir(inbox)).toEqual([]);
+  });
+});
+
+describe("names that are not UTF-8", () => {
+  const latin1 = (stem: number[]) => Buffer.concat([Buffer.from(stem), Buffer.from(".stl")]);
+  // "café.stl" and "cafè.stl" as Latin-1: one byte each, neither valid UTF-8.
+  const cafe = latin1([0x63, 0x61, 0x66, 0xe9]);
+  const cafe2 = latin1([0x63, 0x61, 0x66, 0xe8]);
+
+  test("a UTF-8 name is its own key", () => {
+    expect(inboxName(Buffer.from("caf\u00e9.stl"))).toEqual({
+      key: "caf\u00e9.stl",
+      name: "caf\u00e9.stl",
+      utf8: true,
+    });
+  });
+
+  test("names that decode alike keep keys of their own, which no UTF-8 name can equal", () => {
+    const a = inboxName(cafe);
+    const b = inboxName(cafe2);
+    expect(a.utf8).toBe(false);
+    expect(a.name).toBe("caf\ufffd.stl");
+    expect(b.name).toBe(a.name);
+    expect(b.key).not.toBe(a.key);
+    expect(a.key.startsWith("/")).toBe(true);
+  });
+
+  test("a settled file whose name is not UTF-8 moves to failed with a reason, not skipped without a word", async (ctx) => {
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    const inboxBytes = Buffer.from(`${inbox}/`);
+    try {
+      await writeFile(Buffer.concat([inboxBytes, cafe]), "solid a\nendsolid a\n");
+    } catch (error) {
+      // Written reason for the skip: APFS (macOS) refuses a name that is not
+      // UTF-8 with EILSEQ, so no such file can exist there to test. ext4 on
+      // Hades and the ubuntu CI runner take any bytes, and this test runs there.
+      if ((error as { code?: string }).code === "EILSEQ") return ctx.skip();
+      throw error;
+    }
+    await writeFile(Buffer.concat([inboxBytes, cafe2]), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    const early = await tick(w, 14_999);
+    expect(early.failed).toEqual([]);
+
+    const pass = await tick(w, 1);
+    expect(pass.failed).toEqual([
+      { name: "caf\ufffd.stl", reason: NON_UTF8_REASON },
+      { name: "caf\ufffd.stl", reason: NON_UTF8_REASON },
+    ]);
+    expect(fake.calls).toEqual([]);
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    expect((await readdir(join(inbox, FAILED_DIR))).sort()).toEqual([
+      "caf\ufffd (2).stl",
+      `caf\ufffd (2).stl${REASON_SUFFIX}`,
+      "caf\ufffd.stl",
+      `caf\ufffd.stl${REASON_SUFFIX}`,
+    ]);
+    // Each is logged with its bytes, so the original name is not lost.
+    for (const raw of [cafe, cafe2]) {
+      expect(lines.filter((l) => l.includes(`bytes ${raw.toString("hex")}`))).toHaveLength(1);
+    }
   });
 });
 

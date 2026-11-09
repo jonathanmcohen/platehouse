@@ -26,10 +26,19 @@
 // - A file ingest refuses or fails on moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence.
-// - An outage is not the file's fault: storage unavailable, or the database
-//   unreachable, leaves the file where it is for the next poll, ends the pass
-//   (the next file would meet the same outage), and is logged once when it
-//   starts and once when imports work again.
+// - The folder is listed as raw bytes, so a name that is not valid UTF-8 (a
+//   Latin-1 name from an old archive, say) still reaches lstat and the move.
+//   Ingest takes the file by a string path, which cannot spell such a name,
+//   so once settled the file moves to failed under its name with each bad
+//   byte shown as U+FFFD, with a reason that says to rename it.
+// - An outage is not the file's fault: storage unavailable or refusing (a
+//   StoreError: access denied after a key rotation, a missing bucket, a
+//   server error that outlasts the SDK's retries), or the database
+//   unreachable, refusing the login or out of resources (SQLSTATE classes 08,
+//   28 and 53, such as a full disk), leaves the file where it is for the next
+//   poll, ends the pass (the next file would meet the same fault), and is
+//   logged once when it starts and once when imports work again. A fault in
+//   the environment never moves the inbox to failed one file at a time.
 // - A commit can land with its answer lost when the database connection drops
 //   (ingest then throws the connection error it met), and the process can
 //   restart before the file is tried again (a container recreate, a crash, a
@@ -69,14 +78,15 @@
 // stop() on shutdown, passing the files repository's get as storedFile and
 // its findImported as findImported. pollOnce() runs one pass and is what the
 // tests drive, with an injected clock instead of real waits.
+import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
-import type { BigIntStats } from "node:fs";
+import type { BigIntStats, PathLike } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { type Ingest, IngestError } from "../ingest/ingest.js";
 import type { ImportedQuery } from "../repos/files.js";
-import { StoreUnavailable } from "../storage/s3.js";
+import { StoreError, StoreUnavailable } from "../storage/s3.js";
 
 /** How often the inbox is polled. */
 export const POLL_MS = 5_000;
@@ -94,6 +104,10 @@ export const CHANGED_REASON =
 /** Reason when the stored copy's record could not be read back. */
 export const UNCONFIRMED_REASON =
   "Platehouse imported this file but could not confirm the stored copy, so it was kept here; check the library before adding it again.";
+
+/** Reason when the file's name is not valid UTF-8. */
+export const NON_UTF8_REASON =
+  "Platehouse could not import this file because its name is not valid UTF-8; rename it and add it again.";
 
 /** Reason for a failure that is neither a refusal nor an outage. */
 export const UNEXPECTED_REASON =
@@ -122,9 +136,15 @@ const NETWORK_CODES = new Set([
   "EPIPE",
 ]);
 
-// Postgres SQLSTATEs for a database that is down, restarting or full of
-// connections. Class 08 (connection exception) is matched by prefix.
-const DATABASE_DOWN_STATES = new Set(["57P01", "57P02", "57P03", "53300"]);
+// Postgres SQLSTATEs for a database that is down or restarting. Whole classes
+// are matched by DATABASE_DOWN_CLASSES.
+const DATABASE_DOWN_STATES = new Set(["57P01", "57P02", "57P03"]);
+
+// SQLSTATE classes that are the database's fault, never the file's: 08
+// connection exception, 28 invalid authorization (a changed password, 28P01),
+// 53 insufficient resources (a full disk 53100, out of memory 53200, too many
+// connections 53300).
+const DATABASE_DOWN_CLASSES = /^(08|28|53)[0-9A-Z]{3}$/;
 
 // What pg and pg-pool say when a connection cannot be had or was lost.
 const DATABASE_DOWN_MESSAGE = /timeout exceeded when trying to connect|connection terminated/i;
@@ -134,6 +154,25 @@ export function isIgnoredName(name: string): boolean {
   if (name.startsWith(".")) return true;
   const lower = name.toLowerCase();
   return IGNORED_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
+/** A listed name: the key the watcher remembers it by and the name it shows. */
+export interface InboxName {
+  /** The name itself, or "/" and its bytes in hex when it is not UTF-8. */
+  key: string;
+  /** The name decoded as UTF-8, each bad byte shown as U+FFFD. */
+  name: string;
+  /** Whether the bytes are valid UTF-8, so the name can be passed as a string. */
+  utf8: boolean;
+}
+
+/** How the watcher names a file it listed as raw bytes. */
+export function inboxName(raw: Buffer): InboxName {
+  const name = raw.toString("utf8");
+  if (isUtf8(raw)) return { key: name, name, utf8: true };
+  // Two such names can decode alike, so the key is the bytes. "/" cannot occur
+  // in a file name, so this key never equals a UTF-8 name.
+  return { key: `/${raw.toString("hex")}`, name, utf8: false };
 }
 
 /** What ingest recorded for a stored file. */
@@ -199,14 +238,18 @@ function codeOf(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** Whether the failure is an outage of the store or the database, not the file's fault. */
+/**
+ * Whether the failure is an outage or fault of the store or the database, not
+ * the file's fault. A StoreError is the store answering and refusing (or a
+ * stored object failing its size check), which a file's bytes cannot cause.
+ */
 function isOutage(error: unknown): boolean {
   if (error instanceof IngestError) return error.code === "storage_unavailable";
-  if (error instanceof StoreUnavailable) return true;
+  if (error instanceof StoreUnavailable || error instanceof StoreError) return true;
   const code = codeOf(error);
   if (code !== undefined) {
     if (NETWORK_CODES.has(code) || DATABASE_DOWN_STATES.has(code)) return true;
-    if (/^08[0-9A-Z]{3}$/.test(code)) return true;
+    if (DATABASE_DOWN_CLASSES.test(code)) return true;
   }
   return error instanceof Error && DATABASE_DOWN_MESSAGE.test(error.message);
 }
@@ -260,7 +303,7 @@ export function failedName(name: string, n: number): string {
   return `${truncateUtf8(stem, budget)}${suffix}${ext}`;
 }
 
-async function exists(path: string): Promise<boolean> {
+async function exists(path: PathLike): Promise<boolean> {
   try {
     await lstat(path);
     return true;
@@ -302,7 +345,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Whether the last attempt met an outage, so it is logged once.
   let outage = false;
 
-  async function currentSignature(path: string): Promise<string | undefined> {
+  async function currentSignature(path: PathLike): Promise<string | undefined> {
     try {
       return signature(await lstat(path, { bigint: true }));
     } catch {
@@ -317,7 +360,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /** Moves the file to failed with its reason file; returns the name it took. */
-  async function moveToFailed(name: string, path: string, reason: string): Promise<string> {
+  async function moveToFailed(name: string, path: PathLike, reason: string): Promise<string> {
     await mkdir(failedDir, { recursive: true });
     for (let n = 1; n <= 1000; n += 1) {
       const candidate = failedName(name, n);
@@ -342,15 +385,22 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     throw new Error("no free name in the failed folder after 1000 tries");
   }
 
-  async function fail(name: string, path: string, reason: string, pass: InboxPass): Promise<void> {
-    seen.delete(name);
+  /** Moves the file to failed; key is what seen and handled know it by. */
+  async function fail(
+    key: string,
+    name: string,
+    path: PathLike,
+    reason: string,
+    pass: InboxPass,
+  ): Promise<void> {
+    seen.delete(key);
     try {
       const moved = await moveToFailed(name, path, reason);
       pass.failed.push({ name, reason });
       log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
     } catch (error) {
       const sig = await currentSignature(path);
-      if (sig !== undefined) handled.set(name, sig);
+      if (sig !== undefined) handled.set(key, sig);
       log(
         `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays in the ` +
           `inbox and is not tried again until it changes. Why it failed: ${reason}`,
@@ -419,10 +469,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         return "done";
       }
       if (error instanceof IngestError) {
-        await fail(name, path, sentence(error.message), pass);
+        await fail(name, name, path, sentence(error.message), pass);
       } else {
         log(`inbox: ${name} could not be imported: ${errorText(error)}`);
-        await fail(name, path, UNEXPECTED_REASON, pass);
+        await fail(name, name, path, UNEXPECTED_REASON, pass);
       }
       return "done";
     }
@@ -464,19 +514,22 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       }
       return "done";
     }
-    await fail(name, path, verdict === "changed" ? CHANGED_REASON : UNCONFIRMED_REASON, pass);
+    await fail(name, name, path, verdict === "changed" ? CHANGED_REASON : UNCONFIRMED_REASON, pass);
     return "done";
   }
 
   async function runPass(): Promise<InboxPass> {
     const pass: InboxPass = { imported: [], failed: [], waiting: false };
-    let names: string[];
+    let names: Array<InboxName & { raw: Buffer }>;
     try {
-      const entries = await readdir(dir, { withFileTypes: true });
+      // Raw bytes: a name that is not UTF-8 would otherwise come back with
+      // U+FFFD in it, lstat would not find it, and it would sit unseen.
+      const entries = await readdir(dir, { withFileTypes: true, encoding: "buffer" });
       names = entries
-        .filter((e) => e.isFile() && e.name !== FAILED_DIR && !isIgnoredName(e.name))
-        .map((e) => e.name)
-        .sort();
+        .filter((e) => e.isFile())
+        .map((e) => ({ ...inboxName(e.name), raw: e.name }))
+        .filter((n) => n.name !== FAILED_DIR && !isIgnoredName(n.name))
+        .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     } catch (error) {
       if (codeOf(error) === "ENOENT") {
         try {
@@ -491,34 +544,40 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     }
 
     // Forget files no longer in the inbox.
-    const present = new Set(names);
-    for (const name of seen.keys()) if (!present.has(name)) seen.delete(name);
-    for (const name of handled.keys()) if (!present.has(name)) handled.delete(name);
+    const present = new Set(names.map((n) => n.key));
+    for (const key of seen.keys()) if (!present.has(key)) seen.delete(key);
+    for (const key of handled.keys()) if (!present.has(key)) handled.delete(key);
 
-    for (const name of names) {
-      const path = join(dir, name);
+    for (const { key, name, utf8, raw } of names) {
+      // Only a UTF-8 name has a string path; ingest takes nothing else.
+      const path = utf8 ? join(dir, name) : Buffer.concat([Buffer.from(dir + sep), raw]);
       let st: BigIntStats;
       try {
         st = await lstat(path, { bigint: true });
       } catch {
         // Gone since the listing.
-        seen.delete(name);
+        seen.delete(key);
         continue;
       }
       if (!st.isFile()) continue;
       // Read per file: an import earlier in this pass may have taken a while.
       const at = now();
       const sig = signature(st);
-      if (handled.get(name) === sig) continue;
-      handled.delete(name);
+      if (handled.get(key) === sig) continue;
+      handled.delete(key);
 
-      const before = seen.get(name);
+      const before = seen.get(key);
       if (before === undefined || before.signature !== sig) {
-        seen.set(name, { signature: sig, since: at, arrived: st.ctime });
+        seen.set(key, { signature: sig, since: at, arrived: st.ctime });
         continue;
       }
       if (at - before.since < settleMs) continue;
 
+      if (typeof path !== "string") {
+        log(`inbox: ${name} has a name that is not valid UTF-8 (bytes ${raw.toString("hex")})`);
+        await fail(key, name, path, NON_UTF8_REASON, pass);
+        continue;
+      }
       if ((await importOne(name, path, before, before.arrived, pass)) === "outage") {
         pass.waiting = true;
         break;
