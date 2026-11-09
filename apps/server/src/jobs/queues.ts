@@ -8,6 +8,8 @@
 //   jobs retry on 409. Nothing here sends to it or works it;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38).
+import type { PgBoss } from "pg-boss";
+import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
 export const QUEUE = {
   ingest: "ingest",
@@ -53,4 +55,27 @@ export function queueSettings(opts: {
       work: { localConcurrency: 1 },
     },
   };
+}
+
+// Stub below: the interface only, so the failing tests compile; the
+// implementation follows in the next commit.
+
+export const MAINTENANCE_TASKS = { purgeExpired: "purge-expired" } as const;
+
+export const PURGE_EXPIRED_CRON = "30 3 * * *";
+
+export function localTimeZone(): string {
+  throw new Error("localTimeZone is not implemented yet");
+}
+
+export interface QueueDeps {
+  ingestFile(input: IngestInput): Promise<IngestResult>;
+  purgeExpired(now: Date): Promise<unknown>;
+  slicerConcurrency: number;
+  timeZone?: string;
+  pollingIntervalSeconds?: number;
+}
+
+export async function startQueues(_boss: PgBoss, _deps: QueueDeps): Promise<void> {
+  throw new Error("startQueues is not implemented yet");
 }
