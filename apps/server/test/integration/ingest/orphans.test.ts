@@ -2,13 +2,17 @@
 // is left behind when the process dies between an upload and its commit, or
 // when the cleanup delete fails during a store outage; no purge ever reaches
 // it. The sweep deletes such objects once they are older than 24 hours,
-// listing the bucket a page at a time, and is safe to run again.
+// listing the bucket a page at a time, and is safe to run again. The bucket is
+// the only copy of the bytes, so the sweep deletes nothing when the blobs
+// table holds no stored rows (a database that has lost its rows) or when a
+// run would delete more than its limit (PR #49 review, round 1).
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import {
   createOrphanSweep,
+  ORPHAN_DELETE_FLOOR,
   ORPHAN_MIN_AGE_MS,
   type OrphanStore,
 } from "../../../src/ingest/orphans.js";
@@ -54,7 +58,34 @@ async function exists(key: string): Promise<boolean> {
   return (await env.store.listPrefix(key)).some((o) => o.key === key);
 }
 
+// Runs first, while the migrated database still holds no blob rows: the state
+// an empty Postgres volume, a wrong DATABASE_URL or a second instance on the
+// same bucket would leave.
+describe("the orphan sweep against an empty migrated database", () => {
+  test("deletes nothing from a populated bucket, and logs why", async () => {
+    const rows = await env.db.selectFrom("blobs").select("id").execute();
+    expect(rows).toHaveLength(0);
+    const library = await Promise.all([1, 2, 3, 4, 5].map(() => putOrphan()));
+    lines.length = 0;
+    const result = await sweeper().sweepOrphans(dayLater());
+    for (const key of library) expect(await exists(key)).toBe(true);
+    expect(result.deleted).toBe(0);
+    expect(result.orphans).toBe(library.length);
+    expect(result.refused).toContain("no stored rows");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("deleted nothing");
+    expect(lines[0]).toContain("no stored rows");
+    await env.store.deleteBlobs(library);
+  });
+});
+
 describe("the orphan sweep", () => {
+  beforeAll(async () => {
+    // A library with a stored blob, as every library that has ingested one has.
+    const model = await env.repos.models.create({ name: `Library ${uuidv7()}` });
+    await storeBlob(env, model.id, "source", randomBytes(24));
+  });
+
   test("ORPHAN_MIN_AGE_MS is 24 hours", () => {
     expect(ORPHAN_MIN_AGE_MS).toBe(24 * 60 * 60 * 1000);
   });
@@ -133,5 +164,30 @@ describe("the orphan sweep", () => {
     expect(lines[0]).toContain(`deleted ${result.deleted}`);
     expect(lines[0]).toContain(`left ${result.outsideLayout} outside the key layout`);
     expect(result.deleted).toBe(1);
+  });
+
+  test("deletes nothing when a run would delete more than its limit, and logs why", async () => {
+    const many = await Promise.all(
+      Array.from({ length: ORPHAN_DELETE_FLOOR + 1 }, () => putOrphan()),
+    );
+    lines.length = 0;
+    const result = await sweeper().sweepOrphans(dayLater());
+    for (const key of many) expect(await exists(key)).toBe(true);
+    expect(result.deleted).toBe(0);
+    expect(result.orphans).toBe(many.length);
+    expect(result.refused).toContain(`limit of ${ORPHAN_DELETE_FLOOR}`);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("deleted nothing");
+    await env.store.deleteBlobs(many);
+  });
+
+  test("deletes a run's orphans when they are exactly at the limit", async () => {
+    const atLimit = await Promise.all(
+      Array.from({ length: ORPHAN_DELETE_FLOOR }, () => putOrphan()),
+    );
+    const result = await sweeper().sweepOrphans(dayLater());
+    for (const key of atLimit) expect(await exists(key)).toBe(false);
+    expect(result.refused).toBeUndefined();
+    expect(result.deleted).toBe(atLimit.length);
   });
 });
