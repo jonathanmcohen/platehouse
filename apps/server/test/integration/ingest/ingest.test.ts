@@ -652,13 +652,18 @@ describe("a failed commit never deletes what may have been committed", () => {
     expect(files[0]?.originalName).toBe("Committed after all.3mf");
   });
 
-  test("when the database cannot say whether the rows were committed, the objects are kept for the orphan sweep", async () => {
+  test("a transaction that never started deletes its objects, with no lookup", async () => {
+    // The database is unreachable at BEGIN. With no transaction id nothing
+    // ran, so no COMMIT was ever sent and nothing can have committed: the
+    // objects are deleted rather than left for every retry to add to. Every
+    // query is refused too, so a lookup would turn this into "unknown".
     const unreachable = () => {
       throw new Error("Connection refused");
     };
     const down = dbWith({
       transaction: () => ({ execute: async () => unreachable() }),
       selectFrom: unreachable,
+      getExecutor: unreachable,
     });
     const before = await footprint(env);
     const error = await createIngest({ db: down, store: env.store })
@@ -669,6 +674,45 @@ describe("a failed commit never deletes what may have been committed", () => {
       })
       .catch((e: unknown) => e);
     expect((error as Error).message).toBe("Connection refused");
+    const after = await footprint(env);
+    expect(after.files).toBe(before.files);
+    expect(after.blobs).toBe(before.blobs);
+    // The source and thumbnail objects were put and then deleted.
+    expect(after.objects).toBe(before.objects);
+  });
+
+  test("when the transaction's status cannot be read, the objects are kept for the orphan sweep", async () => {
+    // The transaction got its id and wrote its rows, then the connection
+    // dropped, and the server cannot be asked how it ended. (It was rolled
+    // back here, so a status that could be read would say "aborted" and the
+    // objects would go; they are kept only because it cannot be read.)
+    const unreachable = () => {
+      throw new Error("Connection refused");
+    };
+    const lost = dbWith({
+      transaction: () => ({
+        execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+          const trx = await env.db.startTransaction().execute();
+          try {
+            await fn(trx);
+          } finally {
+            await trx.rollback().execute();
+          }
+          throw new Error("Connection terminated unexpectedly");
+        },
+      }),
+      selectFrom: unreachable,
+      getExecutor: unreachable,
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: lost, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Status unreadable.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe("Connection terminated unexpectedly");
     const after = await footprint(env);
     expect(after.files).toBe(before.files);
     expect(after.blobs).toBe(before.blobs);
