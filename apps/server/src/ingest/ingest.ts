@@ -24,11 +24,18 @@
 // reported an error), the whole upload landed, so the objects are kept and
 // ingestFile returns its result. When the transaction has its id but the
 // database cannot say how it ended, or the COMMIT is still in flight, the
-// objects are kept and the error is thrown. Which of
+// objects are kept and IngestOutcomeUnknown is thrown. Which of
 // these it is comes from pg_xact_status on the transaction's own id, read as
 // its first statement (commitState). An object left with no row is removed later by the orphan sweep
-// (orphans.ts). A store outage fails
-// visibly with STORAGE_UNAVAILABLE_MESSAGE. The uploaded file at tmpPath is
+// (orphans.ts).
+//
+// So ingestFile fails in one of two ways, and the tus HEAD answers by which
+// (uploads/tus.ts). IngestError means nothing was saved: a refusal, a store
+// outage (STORAGE_UNAVAILABLE_MESSAGE), or any other failure before or
+// during the transaction that cannot have committed, a database that cannot
+// be reached when ingest starts included (INGEST_FAILED_MESSAGE, with the
+// original error as its cause). IngestOutcomeUnknown means only that the
+// commit's outcome is not known. The uploaded file at tmpPath is
 // never deleted
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
 // after an outage.
@@ -60,24 +67,51 @@ export const UNSUPPORTED_MESSAGE =
 
 const MODEL_NOT_FOUND_MESSAGE = "That model does not exist or is in the trash; nothing was saved";
 
-export type IngestErrorCode = "unsupported_type" | "storage_unavailable" | "model_not_found";
+/**
+ * What an upload shows when it failed for a reason that is not Jon's to fix
+ * (a database that cannot be reached, a filesystem error reading the upload)
+ * and nothing was committed. The cause stays on the error, for the logs.
+ */
+export const INGEST_FAILED_MESSAGE =
+  "The upload could not be saved because of a server error; nothing was saved. Try again.";
+
+export type IngestErrorCode =
+  | "unsupported_type"
+  | "storage_unavailable"
+  | "model_not_found"
+  | "ingest_failed";
 
 /**
- * An upload refused or failed with a plain message for Jon. Any other error
- * (a filesystem error reading the upload, a database error) reaches the
- * caller unchanged. Either way no row was written. The objects already put
- * are deleted, except when the database could not say whether the rows were
- * committed, a COMMIT still in flight included: then they are kept, and the
- * orphan sweep removes them once no row points at them. A commit that landed but reported an error is not a
- * failure: ingestFile returns its result.
+ * An upload refused or failed with a plain message for Jon, and nothing was
+ * saved: no row was committed. Every failure of ingestFile is one of these
+ * except IngestOutcomeUnknown. A failure with no message of its own (a
+ * filesystem error reading the upload, a database error) is code
+ * ingest_failed, with the original error as its cause. The objects already
+ * put are deleted, except when the database could not say how the
+ * transaction ended: then they are kept, and the orphan sweep removes them
+ * once no row points at them. A commit that landed but reported an error is
+ * not a failure: ingestFile returns its result.
  */
 export class IngestError extends Error {
   readonly code: IngestErrorCode;
 
-  constructor(code: IngestErrorCode, message: string) {
-    super(message);
+  constructor(code: IngestErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "IngestError";
     this.code = code;
+  }
+}
+
+/**
+ * The transaction had its id and failed, and the database could not say
+ * whether it committed (the status lookup failed, or the COMMIT is still in
+ * flight). The rows may be in the library, so the objects are kept and a
+ * resend could make a second model. The database's own error is the cause.
+ */
+export class IngestOutcomeUnknown extends Error {
+  constructor(cause: unknown) {
+    super("The upload's commit could not be confirmed", { cause });
+    this.name = "IngestOutcomeUnknown";
   }
 }
 
@@ -244,7 +278,22 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
     }
   }
 
+  /**
+   * ingestOnce, with every failure that is not already ingest's own made an
+   * IngestError: whatever failed before the transaction (reading the upload,
+   * the target model's check) or in a transaction that cannot have committed
+   * saved nothing.
+   */
   async function ingestFile(input: IngestInput): Promise<IngestResult> {
+    try {
+      return await ingestOnce(input);
+    } catch (error) {
+      if (error instanceof IngestError || error instanceof IngestOutcomeUnknown) throw error;
+      throw new IngestError("ingest_failed", INGEST_FAILED_MESSAGE, { cause: error });
+    }
+  }
+
+  async function ingestOnce(input: IngestInput): Promise<IngestResult> {
     const { tmpPath, originalName, target } = input;
     const { size } = await stat(tmpPath);
     const kind = detectKind(originalName, await readFirstBytes(tmpPath), size);
@@ -411,6 +460,11 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
       }
       if (error instanceof StoreUnavailable) {
         throw new IngestError("storage_unavailable", STORAGE_UNAVAILABLE_MESSAGE);
+      }
+      // An IngestError thrown inside the transaction stopped it before any
+      // COMMIT was sent, so it saved nothing whatever the lookup said.
+      if (state === "unknown" && !(error instanceof IngestError)) {
+        throw new IngestOutcomeUnknown(error);
       }
       throw error;
     }

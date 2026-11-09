@@ -26,18 +26,27 @@
 //      a 4xx tus-js-client creates the upload again; so does a client that
 //      kept its resume fingerprint (tus-js-client's default) and sends the
 //      same file again. HEAD on an ingested upload therefore answers by what
-//      the ingest did, whatever the client sets:
+//      the ingest did:
 //      - it stored the file: finished (Upload-Offset equal to Upload-Length),
 //        so nothing is sent again and no second model is made;
-//      - it failed with an IngestError: 410, since no row was written and a
-//        fresh send is safe;
-//      - it failed with any other error: finished. That includes a commit
-//        whose outcome the database could not report, where ingest keeps
-//        what it stored and the model may be in the library, so a resend
-//        could make a second one. ingestUpload cannot tell that case apart
-//        from other errors, so all of them take the side that makes no
-//        duplicate, and the result route says the upload could not be
-//        confirmed.
+//      - it failed with an IngestError: 410, since nothing was saved and a
+//        fresh send is safe. Ingest makes every failure that cannot have
+//        committed an IngestError, a database that is down when it starts
+//        included;
+//      - it failed with IngestOutcomeUnknown, a commit whose outcome the
+//        database could not report: finished, since ingest kept what it
+//        stored and the model may be in the library, so a resend could make
+//        a second one; the result route says the upload could not be
+//        confirmed. Any other error, which ingest does not throw, is taken
+//        the same way, on the side that makes no duplicate.
+//      HEAD carries no metadata, so the finished answer is the same whatever
+//      target the new send names. tus-js-client's fingerprint is the file and
+//      the endpoint, not the metadata, so a client that keeps it after
+//      success would resume a stored upload when the same file is later
+//      dropped on another model or batch, and store nothing there. The web
+//      client (Task 19) must therefore either put the target (modelId, batch,
+//      combine) into its fingerprint or drop the fingerprint once an upload
+//      succeeds.
 //      The tidy-up runs under the upload's tus lock, which tus's HEAD and
 //      PATCH take too, so a HEAD never sees the data file gone before the
 //      outcome is written. An upload left untouched for 24 hours, or 24 hours
@@ -85,10 +94,10 @@ export const MAX_FILENAME_LENGTH = 1024;
 export const MAX_BATCH_LENGTH = 200;
 
 /**
- * What a failed ingest shows when its error is not one of ingest's own
- * messages. It promises nothing about what was stored: when the database
- * cannot say how a commit ended, ingest keeps what it stored and fails with
- * the database's own error, so the model may be in the library after all.
+ * What a failed ingest shows when its error is not an IngestError. It
+ * promises nothing about what was stored: when the database cannot say how a
+ * commit ended, ingest keeps what it stored and fails with
+ * IngestOutcomeUnknown, so the model may be in the library after all.
  */
 export const UPLOAD_FAILED_MESSAGE =
   "The upload could not be confirmed in the library; check the library before sending it again";
@@ -296,7 +305,7 @@ function errorCode(error: unknown): string | undefined {
 /**
  * What an upload's ingest did, written into its info file by ingestUpload:
  * stored the file, failed with an IngestError (nothing saved), or failed
- * some other way (the outcome is not known).
+ * with IngestOutcomeUnknown or any other error (the outcome is not known).
  */
 type IngestOutcome = "stored" | "nothing_saved" | "unknown";
 
@@ -395,6 +404,8 @@ export function createUploads(deps: {
         outcome = "stored";
         return result;
       } catch (error) {
+        // IngestError: nothing saved. IngestOutcomeUnknown, or anything
+        // else, stays "unknown", the side that makes no duplicate.
         if (error instanceof IngestError) outcome = "nothing_saved";
         throw error;
       } finally {
