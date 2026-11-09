@@ -9,9 +9,9 @@
 //   conversion. The container's 4g is sized from a single slice, so a
 //   request for any of them while one runs is 409 busy, answered before its
 //   body is read and with the connection closed, so no socket waits. The
-//   close lingers (closeLingering): the server drains a body still arriving
-//   for up to LINGER_MS before it drops the socket, so a client sending a
-//   large file reads its 409 instead of a reset. The caller retries.
+//   close lingers (closeLingering, guard.ts): the server drains a body still
+//   arriving for up to LINGER_MS before it drops the socket, so a client
+//   sending a large file reads its 409 instead of a reset. The caller retries.
 // - The server sets its own request and headers timeouts (requestTimeouts):
 //   Node's default would cut a slow 512 MiB upload off with a 408.
 // - Every request works in its own folder under WORK_DIR (/work, a tmpfs),
@@ -20,12 +20,12 @@
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
 // - An error in a request costs that request, never the process (guard.ts):
 //   it is answered 500, or its connection is closed, and its job is undone
-//   (program killed, folder deleted, lock freed).
+//   (program killed, folder deleted, lock freed). The 500 closes with the
+//   same lingering close as a refusal.
 import { randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -38,7 +38,7 @@ import {
 } from "@platehouse/slicer-contract";
 import { readProject } from "@platehouse/threemf";
 import { z } from "zod";
-import { guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
+import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import { runGroup } from "./sandbox.js";
@@ -155,37 +155,6 @@ function sendError(res: ServerResponse, status: number, body: ErrorBody): void {
 function sendBytes(res: ServerResponse, contentType: string, bytes: Buffer): void {
   res.writeHead(200, { "content-type": contentType, "content-length": bytes.length });
   res.end(bytes);
-}
-
-/**
- * How long a refused connection is drained before it is dropped: time enough
- * for the client to read the answer, short enough that a client still
- * sending a 512 MiB body cannot hold the socket.
- */
-const LINGER_MS = 5_000;
-
-const lingering = new WeakSet<Socket>();
-
-/**
- * Closes a refused connection without losing its answer (a lingering close).
- * Closing a socket with unread bytes in its receive queue makes the kernel
- * reset the connection, and the reset can throw away the answer before the
- * client reads it: the client sees ECONNRESET or EPIPE, never the 409. So
- * this half-closes instead (FIN after the answer), reads and discards
- * whatever still arrives, and destroys the socket once the client ends or
- * errors, or after LINGER_MS, whichever comes first. Safe to call twice.
- */
-function closeLingering(socket: Socket): void {
-  if (socket.destroyed || lingering.has(socket)) return;
-  lingering.add(socket);
-  const timer = setTimeout(() => socket.destroy(), LINGER_MS);
-  timer.unref();
-  socket.once("close", () => clearTimeout(timer));
-  socket.once("end", () => socket.destroy());
-  socket.on("error", () => socket.destroy());
-  socket.on("data", () => {});
-  socket.resume();
-  socket.end();
 }
 
 /**

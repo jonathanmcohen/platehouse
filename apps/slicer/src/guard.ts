@@ -47,17 +47,59 @@ export function whenRequestFails(cleanup: () => void): void {
   scopes.getStore()?.cleanups.push(cleanup);
 }
 
+/**
+ * How long a connection answered early is drained before it is dropped: time
+ * enough for the client to read the answer, short enough that a client still
+ * sending a 512 MiB body cannot hold the socket.
+ */
+const LINGER_MS = 5_000;
+
+const lingering = new WeakSet<Socket>();
+
+/**
+ * Closes a connection answered early without losing its answer (a lingering
+ * close): a refusal (server.ts refuseEarly) or the crash guard's 500.
+ * Closing a socket with unread bytes in its receive queue makes the kernel
+ * reset the connection, and the reset can throw away the answer before the
+ * client reads it: the client sees ECONNRESET or EPIPE, never the answer. So
+ * this half-closes instead (FIN after the answer), reads and discards
+ * whatever still arrives, and destroys the socket once the client ends or
+ * errors, or after LINGER_MS, whichever comes first. Safe to call twice.
+ */
+export function closeLingering(socket: Socket): void {
+  if (socket.destroyed || lingering.has(socket)) return;
+  lingering.add(socket);
+  const timer = setTimeout(() => socket.destroy(), LINGER_MS);
+  timer.unref();
+  socket.once("close", () => clearTimeout(timer));
+  socket.once("end", () => socket.destroy());
+  socket.on("error", () => socket.destroy());
+  socket.on("data", () => {});
+  socket.resume();
+  socket.end();
+}
+
 function describe(err: unknown): string {
   return err instanceof Error ? (err.stack ?? err.message) : String(err);
 }
 
-/** Answers 500 if nothing has been sent yet, else closes the connection. Never throws. */
+/**
+ * Answers 500 if nothing has been sent yet, else closes the connection. Never throws.
+ *
+ * The 500 can go out before the request's body is read (its job folder
+ * could not be made, say), so it closes the way a refusal does: lingering
+ * (closeLingering), with the socket's destroySoon replaced so Node's own
+ * Connection: close handling does not reset the connection under the answer.
+ */
 function answerFailure(scope: Scope): void {
   const { res, socket } = scope;
   try {
     if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+      if (socket) socket.destroySoon = () => closeLingering(socket);
       res.writeHead(500, { "content-type": "text/plain", connection: "close" });
-      res.end("internal error\n", () => socket?.destroy());
+      res.end("internal error\n", () => {
+        if (socket) closeLingering(socket);
+      });
       return;
     }
   } catch {
