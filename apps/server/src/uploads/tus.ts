@@ -24,10 +24,20 @@
 //      Until then HEAD answers an ingested upload as finished (Upload-Offset
 //      equal to Upload-Length): a client whose last PATCH was answered after
 //      it lost the connection retries with a HEAD, and on a 404 or 410 it
-//      would create the upload again and a second model with it. An upload
-//      left untouched for 24 hours, or 24 hours after its ingest, is deleted
-//      by the hourly sweep on the maintenance queue (sweepStaleUploads); a
-//      partial one never becomes a model (Review Focus 5).
+//      would create the upload again and a second model with it. A failed
+//      ingest is answered as finished too. An upload left untouched for 24
+//      hours, or 24 hours after its ingest, is deleted by the hourly sweep on
+//      the maintenance queue (sweepStaleUploads); a partial one never becomes
+//      a model (Review Focus 5).
+//   5. So the UI's tus-js-client (build plan Task 19) must set
+//      removeFingerprintOnSuccess: true. Its default keeps the resume
+//      fingerprint after success, and that fingerprint is the file and the
+//      endpoint, not modelId or batch: the same file sent again within the
+//      day would resume onto the ingested upload, be told it finished and
+//      send nothing. A retry after a failed ingest would do nothing, and a
+//      send into another model would report the first one. With the setting,
+//      a lost-204 retry still works (it reuses the upload URL it holds in
+//      memory) and a reload before success still finds the fingerprint.
 //
 // Partial uploads live in TMP_DIR/uploads, one data file and one .json info
 // file per upload, both named by the upload id, a UUIDv7. The UI and API
@@ -535,7 +545,10 @@ export async function registerTus(
         const id = uploadId(request);
         const length = id === undefined ? undefined : await ingestedLength(uploads, id);
         if (length === undefined) return forwardToId(request, reply);
-        // Already ingested: finished, so a resuming client sends nothing more.
+        // Already ingested, whether it succeeded or failed: finished, so a
+        // resuming client sends nothing more. A resend of the same file is a
+        // new upload only because the UI client drops its fingerprint on
+        // success (removeFingerprintOnSuccess, step 5 at the top of this file).
         return reply
           .code(200)
           .header("tus-resumable", "1.0.0")

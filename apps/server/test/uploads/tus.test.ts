@@ -59,6 +59,10 @@ class FakeQueue implements UploadQueue {
 const PREFIX = "/api/v1/uploads";
 const KEY = { "x-test-key": "letmein" };
 
+/** tus-js-client's URL storage and its entries; the package does not export the names. */
+type UrlStorage = NonNullable<Upload["options"]["urlStorage"]>;
+type PreviousUpload = Awaited<ReturnType<Upload["findPreviousUploads"]>>[number];
+
 async function keyHook(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers["x-test-key"] !== KEY["x-test-key"]) {
     return reply.code(401).send({ error: "unauthorized" });
@@ -446,6 +450,80 @@ describe("tus routes", () => {
     const res = await head(id);
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(res.status).toBeLessThan(500);
+  });
+
+  test("the UI client must drop its resume fingerprint on success, or a resend of the same file sends nothing", async () => {
+    // HEAD answers an ingested upload as finished for a day (above), failed
+    // ingests included. tus-js-client's fingerprint is the file and the
+    // endpoint, not the metadata, so a client that keeps it after success
+    // (its default) would resume a resend of the same file onto the old
+    // upload and send no bytes. Task 19 sets removeFingerprintOnSuccess: true.
+    const body = randomBinaryStl(30);
+    const urls = new Map<string, { fingerprint: string; upload: PreviousUpload }>();
+    let key = 0;
+    const urlStorage: UrlStorage = {
+      findAllUploads: async () => [...urls.values()].map((u) => u.upload),
+      findUploadsByFingerprint: async (fingerprint) =>
+        [...urls.entries()]
+          .filter(([, u]) => u.fingerprint === fingerprint)
+          .map(([urlStorageKey, u]) => ({ ...u.upload, urlStorageKey })),
+      removeUpload: async (urlStorageKey) => {
+        urls.delete(urlStorageKey);
+      },
+      addUpload: async (fingerprint, upload) => {
+        key += 1;
+        urls.set(String(key), { fingerprint, upload });
+        return String(key);
+      },
+    };
+    const sendOnce = async (removeFingerprintOnSuccess: boolean) => {
+      const upload = new Upload(body, {
+        endpoint: `${server.base}${PREFIX}`,
+        retryDelays: null,
+        urlStorage,
+        storeFingerprintForResuming: true,
+        removeFingerprintOnSuccess,
+        headers: KEY,
+        metadata: { filename: "Phone part.stl" },
+      });
+      const previous = await upload.findPreviousUploads();
+      if (previous[0] !== undefined) upload.resumeFromPreviousUpload(previous[0]);
+      const sent = server.requests.length;
+      await new Promise<void>((resolve, reject) => {
+        upload.options.onSuccess = () => resolve();
+        upload.options.onError = (error) => reject(error);
+        upload.start();
+      });
+      const id = idOf(upload.url ?? "");
+      if (queue.results.get(id) === undefined) {
+        // The first ingest fails with nothing saved, and Jon sends it again.
+        await uploads
+          .ingestUpload(async () => {
+            throw new IngestError("storage_unavailable", "Storage is unavailable right now");
+          })(queue.enqueued.get(id) as IngestInput)
+          .catch(() => undefined);
+        queue.results.set(id, { status: "failed", error: "Storage is unavailable right now" });
+      }
+      return { id, methods: server.requests.slice(sent).map((r) => r.method) };
+    };
+
+    // With the setting: the resend is a new upload and a new ingest.
+    const first = await sendOnce(true);
+    expect(first.methods).toEqual(["POST", "PATCH"]);
+    expect(urls.size).toBe(0);
+    const again = await sendOnce(true);
+    expect(again.methods).toEqual(["POST", "PATCH"]);
+    expect(again.id).not.toBe(first.id);
+    expect(queue.enqueued.size).toBe(2);
+
+    // Without it (tus-js-client's default): the resend resumes the ingested
+    // upload, is told it finished, and sends no bytes.
+    const kept = await sendOnce(false);
+    expect(urls.size).toBe(1);
+    const lost = await sendOnce(false);
+    expect(lost.methods).toEqual(["HEAD"]);
+    expect(lost.id).toBe(kept.id);
+    expect(queue.enqueued.size).toBe(3);
   });
 
   test("there is no DELETE, GET or OPTIONS on an upload", async () => {
