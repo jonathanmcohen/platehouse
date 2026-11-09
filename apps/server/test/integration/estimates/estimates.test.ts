@@ -11,10 +11,17 @@ import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createSlicerClient, type SlicerClient } from "../../../src/estimates/client.js";
-import { createEstimates, type Estimates, UnknownPrinter } from "../../../src/estimates/service.js";
+import {
+  createEstimates,
+  type Estimates,
+  SLICER_DOWN_DETAIL,
+  STORE_DOWN_DETAIL,
+  UnknownPrinter,
+} from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { MAINTENANCE_TASKS, QUEUE, startQueues } from "../../../src/jobs/queues.js";
+import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { type SlicerStub, STUB_PRINTERS, startSlicerStub } from "../../support/slicer-stub.js";
 import {
   build3mf,
@@ -33,6 +40,10 @@ let stub: SlicerStub;
 let boss: PgBoss;
 let slicer: SlicerClient;
 let estimates: Estimates;
+/** The service's log lines. */
+const logs: string[] = [];
+/** While true, every read of a stored file fails as a store outage does. */
+let storeDown = false;
 
 async function until<T>(read: () => Promise<T> | T, done: (v: T) => boolean, ms = 45_000) {
   const end = Date.now() + ms;
@@ -101,12 +112,19 @@ beforeAll(async () => {
     db: env.db,
     boss,
     slicer,
-    store: env.store,
+    store: {
+      getBlobStream: (key) =>
+        storeDown
+          ? Promise.reject(new StoreUnavailable("GetObject", "test outage"))
+          : env.store.getBlobStream(key),
+    },
     // The app's retry settings (SLICER_RETRY: 3 retries, backoff) with a
     // one-second delay, so the retry tests take seconds, not minutes.
     jobOptions: { retryDelay: 1, retryDelayMax: 1 },
-    // And a slicer that is down is waited for 1.5 s per job, not 30 s.
-    slicerDown: { waitMs: 1_500, pollMs: 100 },
+    // And a slicer or store that is down is waited for 2 s per job, not
+    // 30 s, with the app's 3 requeues before the plate fails.
+    slicerDown: { waitMs: 2_000, pollMs: 100, requeues: 3 },
+    log: (line) => logs.push(line),
   });
   await startQueues(boss, {
     ingestFile: (input) => env.ingest.ingestFile(input),
@@ -129,6 +147,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   stub.onSlice(() => ({ kind: "ok" }));
+  storeDown = false;
   await drain();
   if ((await env.repos.settings.get()).printerId !== P1S) {
     await estimates.setPrinter(P1S);
@@ -400,8 +419,9 @@ describe("estimates", () => {
     try {
       ({ plates } = await upload({ plates: 3 }));
       // Far longer than one attempt and three one-second retries take, so
-      // without the wait every plate would have failed by now.
-      await sleep(10_000);
+      // without the wait every plate would have failed by now; and short of
+      // the 4 two-second waits each of the 3 plates may spend in turn.
+      await sleep(8_000);
       for (const plate of plates) {
         const rows = await platehouseRows(plate.id);
         expect(rows).toHaveLength(1);
@@ -418,6 +438,128 @@ describe("estimates", () => {
     }
     // Each plate was sliced once, when the slicer was back.
     expect(stub.calls.length - before).toBe(3);
+  });
+
+  test("a slicer that stays down fails the plate after 3 requeues, and the poll queues it again once the slicer is back", async () => {
+    const before = stub.calls.length;
+    logs.length = 0;
+    await stub.down();
+    let id = "";
+    try {
+      const { plates } = await upload({ plates: 1 });
+      id = plateId(plates, 1);
+      const [row] = await until(
+        () => platehouseRows(id),
+        (rows) => rows[0]?.status === "failed",
+      );
+      expect(row).toMatchObject({
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: SLICER_DOWN_DETAIL,
+      });
+      expect((await estimates.plateNumbers(id)).failure).toMatchObject({
+        reason: "slicer_error",
+        words: "The slicer could not slice this plate.",
+      });
+      // Each requeue and the failure were logged.
+      expect(logs.filter((l) => l.includes("back on the queue"))).toHaveLength(3);
+      expect(logs.filter((l) => l.includes("still down"))).toHaveLength(1);
+      // The poll cannot reach the slicer either, so it queues nothing.
+      await expect(estimates.pollOrca()).rejects.toThrow();
+    } finally {
+      await stub.up();
+    }
+    expect(stub.calls.length - before).toBe(0);
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(stub.calls.length - before).toBe(1);
+  });
+
+  test("a plate that lost the slicer mid-slice keeps the retries it used when an outage puts it back on the queue", async () => {
+    const before = stub.calls.length;
+    logs.length = 0;
+    let crashes = 0;
+    stub.onSlice(() => {
+      crashes += 1;
+      if (crashes === 1) {
+        // The first crash takes the slicer down for longer than a retry's
+        // delay and a whole wait, so the plate goes back on the queue.
+        setTimeout(() => {
+          void stub.down().then(() => sleep(6_000).then(() => stub.up()));
+        }, 0);
+      }
+      return { kind: "drop" };
+    });
+    const { plates } = await upload({ plates: 1 });
+    const id = plateId(plates, 1);
+    const [row] = await until(
+      () => platehouseRows(id),
+      (rows) => rows[0]?.status === "failed",
+    );
+    expect(logs.filter((l) => l.includes("back on the queue")).length).toBeGreaterThanOrEqual(1);
+    // One attempt and three retries in all, the requeue between them
+    // included: the requeued job did not start a fresh count.
+    expect(stub.calls.length - before).toBe(4);
+    expect(row).toMatchObject({ failureCode: null, failureReason: "slicer_error" });
+    expect(row?.failureDetail).not.toBe(SLICER_DOWN_DETAIL);
+    // Such a plate may be what brings the slicer down: the poll leaves it.
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "failed" })]);
+    expect(stub.calls.length - before).toBe(4);
+  });
+
+  test("a store outage for longer than the retries last fails no plate", async () => {
+    const before = stub.calls.length;
+    storeDown = true;
+    let plates: Array<{ id: string; index: number }> = [];
+    try {
+      ({ plates } = await upload({ plates: 2 }));
+      // Longer than one attempt and three one-second retries take.
+      await sleep(7_000);
+      for (const plate of plates) {
+        const rows = await platehouseRows(plate.id);
+        expect(rows).toHaveLength(1);
+        expect(["pending", "running"]).toContain(rows[0]?.status);
+      }
+    } finally {
+      storeDown = false;
+    }
+    await drain();
+    for (const plate of plates) {
+      expect(await platehouseRows(plate.id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    }
+    expect(stub.calls.length - before).toBe(2);
+  });
+
+  test("a store that stays down fails the plate, and the poll queues it again once the store answers", async () => {
+    const before = stub.calls.length;
+    storeDown = true;
+    let id = "";
+    try {
+      const { plates } = await upload({ plates: 1 });
+      id = plateId(plates, 1);
+      const [row] = await until(
+        () => platehouseRows(id),
+        (rows) => rows[0]?.status === "failed",
+      );
+      expect(row).toMatchObject({
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: STORE_DOWN_DETAIL,
+      });
+      // The slicer answers but the store does not: the poll leaves the plate.
+      await estimates.pollOrca();
+      await sleep(500);
+      expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "failed" })]);
+    } finally {
+      storeDown = false;
+    }
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(stub.calls.length - before).toBe(1);
   });
 
   test("a slice lost while running fails with slicer_error, and a lost pending one is queued again", async () => {

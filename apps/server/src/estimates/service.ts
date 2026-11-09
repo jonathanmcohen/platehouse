@@ -11,18 +11,25 @@
 // - Each estimate is one job on the singleton slicer queue (Task 8), so one
 //   slice runs at a time. A 409 busy or a lost connection is retried by
 //   pg-boss's own retry settings (SLICER_RETRY: 3 retries with backoff); once
-//   the last retry is used the estimate fails with slicer_error. Any other
-//   answer that is not a result fails it at once with slicer_error. A result
-//   is recorded as it came: numbers, or the slicer's own reason (Orca codes
-//   the slicer reports as slicer_error stay slicer_error).
-// - A slicer that takes no connection at all (down or restarting, so it never
-//   saw the plate) uses no retry: the job waits for /v1/health to answer,
-//   holding the queue's one slot so the plates behind it do not spend their
-//   retries on the same outage, then slices again. When the slicer is still
-//   down after the wait, the plate goes back on the queue as a new job, so an
-//   outage of any length fails no plate. A connection that was made and then
-//   lost still uses a retry, since a plate that crashes the slicer looks like
-//   that, and such a plate must end failed rather than loop.
+//   the last retry is used the estimate fails with slicer_error. The retries
+//   an estimate used are carried in its job data when an outage puts it back
+//   on the queue, so a requeue never starts a fresh count. Any other answer
+//   that is not a result fails it at once with slicer_error. A result is
+//   recorded as it came: numbers, or the slicer's own reason (Orca codes the
+//   slicer reports as slicer_error stay slicer_error).
+// - An outage uses no retry: a slicer that takes no connection at all (down
+//   or restarting, so it never saw the plate), or a store that cannot be
+//   reached. The job waits for it, holding the queue's one slot so the plates
+//   behind it do not spend their retries on the same outage, then slices
+//   again. When it is still down after the wait, the plate goes back on the
+//   queue as a new job, at most 3 times (SLICER_DOWN_WAIT.requeues), and each
+//   requeue is logged. After that the plate fails with slicer_error, so it
+//   never shows "estimating" forever, and the Orca poll queues it again once
+//   /v1/health answers (and, for a store outage, once the store answers). A
+//   connection that was made and then lost still uses a retry, since a plate
+//   that crashes the slicer looks like that, and such a plate must end failed
+//   rather than loop: one that had lost a connection before the outage fails
+//   with a detail the poll does not queue again.
 // - On a printer change the queued slice jobs of other printers are
 //   cancelled and their waiting estimates deleted; a slice already running
 //   finishes and is kept, labelled with its printer. A job that starts after
@@ -36,8 +43,9 @@
 //   every live plate. Every poll also finds slices that were lost (a job gone
 //   while its estimate still says pending or running, as after the app itself
 //   stopped mid-slice): a running one fails with slicer_error, a pending one
-//   is queued again. Then it queues any live plate that still has no
-//   estimate, so a plate whose queueing failed at upload is not left out.
+//   is queued again. It queues again the plates an outage failed (above).
+//   Then it queues any live plate that still has no estimate, so a plate
+//   whose queueing failed at upload is not left out.
 // - Each slice records the Orca version that produced it (AC-036) and, for
 //   each filament, the preset the slicer used and where it came from:
 //   Bambu's own, Generic, or the file's own filament (PR #55).
@@ -76,6 +84,10 @@ export interface SliceJobData {
   kind: typeof SLICE_JOB_KIND;
   estimateId: string;
   printerId: string;
+  /** Retries the estimate's earlier jobs used, carried over a requeue. */
+  retriesUsed?: number;
+  /** How many times an outage has put the estimate back on the queue. */
+  requeues?: number;
 }
 
 /** Why every live plate is being looked at: logged, nothing else. */
@@ -97,12 +109,14 @@ export interface SliceJobOptions {
   retryDelayMax?: number;
 }
 
-/** How a slice job waits for a slicer that took no connection. */
+/** How a slice job waits out an outage: a slicer that took no connection, or the store. */
 export interface SlicerDownWait {
   /** Longest wait in one job before the plate goes back on the queue. */
   waitMs: number;
-  /** How often /v1/health is asked meanwhile. */
+  /** How often /v1/health (or the store) is asked meanwhile. */
   pollMs: number;
+  /** How many times the plate goes back on the queue before it fails. */
+  requeues: number;
 }
 
 export interface EstimatesDeps {
@@ -156,28 +170,66 @@ const DETAIL_CHARS = 2000;
 const JOB_PAGE = 100_000;
 
 /**
- * Waiting for a slicer that is down: 30 s at most in one job, asking every
- * 5 s. A job may stay active for its slice timeout plus 60 s, so the wait,
- * a health check that times out (10 s) and a full slice after it all fit.
+ * Waiting out an outage: 30 s at most in one job, asking every 5 s, and the
+ * plate back on the queue 3 times (the slicer queue's retry limit) before it
+ * fails, so about 2 minutes of waits. A job may stay active for its slice
+ * timeout plus 60 s, so the wait, a health check that times out (10 s) and a
+ * full slice after it all fit.
  */
-export const SLICER_DOWN_WAIT: SlicerDownWait = Object.freeze({ waitMs: 30_000, pollMs: 5_000 });
+export const SLICER_DOWN_WAIT: SlicerDownWait = Object.freeze({
+  waitMs: 30_000,
+  pollMs: 5_000,
+  requeues: SLICER_RETRY.retryLimit,
+});
+
+/**
+ * The detail of a plate failed because the slicer took no connection all
+ * the while it waited. The Orca poll queues such a plate again.
+ */
+export const SLICER_DOWN_DETAIL = "The slicer was not running all the while this plate waited.";
+
+/**
+ * The detail of a plate failed because its file could not be read from the
+ * store. The Orca poll queues such a plate again once the store answers.
+ */
+export const STORE_DOWN_DETAIL = "The file could not be read from storage.";
+
+/**
+ * The detail of a plate failed by a slicer outage after it had already lost
+ * a connection mid-slice. Such a plate may be what brings the slicer down,
+ * so the poll does not queue it again; the retry button still does.
+ */
+const DOWN_AFTER_LOST_DETAIL =
+  "The slicer stopped during a slice of this plate and was not back in time.";
+
+/** The failure details the Orca poll queues again once the outage is over. */
+const OUTAGE_DETAILS = [SLICER_DOWN_DETAIL, STORE_DOWN_DETAIL];
 
 function errorDetail(error: unknown): string {
   if (error instanceof SlicerBusy) return "The slicer stayed busy with other work.";
   if (error instanceof SlicerUnreachable)
     return `The slicer could not be reached: ${error.reason}.`;
   if (error instanceof SlicerRefused) return error.message;
-  if (error instanceof StoreUnavailable) return "The file could not be read from storage.";
+  if (error instanceof StoreUnavailable) return STORE_DOWN_DETAIL;
   return "The slice could not be run.";
 }
 
-/** Busy, a lost connection or a store outage: worth another try. */
+/** Busy, or a connection made and then lost: worth another try, using a retry. */
 function isRetryable(error: unknown): boolean {
-  return (
-    error instanceof SlicerBusy ||
-    error instanceof SlicerUnreachable ||
-    error instanceof StoreUnavailable
-  );
+  return error instanceof SlicerBusy || error instanceof SlicerUnreachable;
+}
+
+type Outage = "slicer" | "store";
+
+/** A slicer that took no connection, or a store that cannot be reached: no retry is used. */
+function outageOf(error: unknown): Outage | null {
+  if (error instanceof SlicerUnreachable && error.neverConnected) return "slicer";
+  if (error instanceof StoreUnavailable) return "store";
+  return null;
+}
+
+function isCount(value: unknown): boolean {
+  return value === undefined || (Number.isInteger(value) && (value as number) >= 0);
 }
 
 function isSliceJob(data: unknown): data is SliceJobData {
@@ -188,7 +240,9 @@ function isSliceJob(data: unknown): data is SliceJobData {
     d.kind === SLICE_JOB_KIND &&
     typeof d.estimateId === "string" &&
     isUuid(d.estimateId) &&
-    typeof d.printerId === "string"
+    typeof d.printerId === "string" &&
+    isCount(d.retriesUsed) &&
+    isCount(d.requeues)
   );
 }
 
@@ -226,11 +280,15 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     return orca;
   }
 
-  async function sendSlice(estimate: Estimate): Promise<void> {
+  async function sendSlice(
+    estimate: Estimate,
+    carried: { retriesUsed: number; requeues: number } | null = null,
+  ): Promise<void> {
     const data: SliceJobData = {
       kind: SLICE_JOB_KIND,
       estimateId: estimate.id,
       printerId: estimate.printerId,
+      ...(carried ?? {}),
     };
     await boss.send(QUEUE.slicer, data, { expireInSeconds, ...retryOverrides });
   }
@@ -506,6 +564,8 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       .where("id", "=", estimate.id)
       .execute();
     const full: Estimate = { ...estimate, filaments: [] };
+    // Retries this estimate has used so far, its earlier jobs' included.
+    const retriesUsed = (job.data.retriesUsed ?? 0) + job.retryCount;
     const waitUntil = Date.now() + slicerDown.waitMs;
     for (;;) {
       try {
@@ -523,13 +583,15 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         }
         return;
       } catch (error) {
-        if (error instanceof SlicerUnreachable && error.neverConnected) {
-          // The slicer is down and never saw this plate: no retry is used.
-          if (await slicerBack(waitUntil)) continue;
-          await requeue(full);
+        const outage = outageOf(error);
+        if (outage !== null) {
+          // The slicer never saw this plate, or its file could not be read:
+          // no retry is used.
+          if (await outageOver(outage, waitUntil)) continue;
+          await requeue(full, job.data.requeues ?? 0, retriesUsed, outage);
           return;
         }
-        if (isRetryable(error) && job.retryCount < job.retryLimit) {
+        if (isRetryable(error) && retriesUsed < job.retryLimit) {
           await backToPending(estimate.id);
           throw error;
         }
@@ -572,13 +634,92 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   /**
-   * The slicer is still down after the wait: the plate goes back on the
-   * queue as a new job with its retries untouched, and this job ends, so the
-   * outage is waited out a job at a time rather than failing the plate.
+   * Waits out an outage until the time is up; true when it is worth trying
+   * again. The store has no health check of its own here, so for a store
+   * outage the next read is the check.
    */
-  async function requeue(estimate: Estimate): Promise<void> {
+  async function outageOver(outage: Outage, until: number): Promise<boolean> {
+    if (outage === "slicer") return slicerBack(until);
+    const left = until - Date.now();
+    if (left <= 0) return false;
+    await sleep(Math.min(slicerDown.pollMs, left));
+    return true;
+  }
+
+  /**
+   * Still down after the wait: the plate goes back on the queue as a new job
+   * carrying the retries it used, and this job ends, so a short outage is
+   * waited out a job at a time rather than failing the plate. Once it has
+   * gone back slicerDown.requeues times, the plate fails with slicer_error.
+   */
+  async function requeue(
+    estimate: Estimate,
+    requeues: number,
+    retriesUsed: number,
+    outage: Outage,
+  ): Promise<void> {
+    if (requeues >= slicerDown.requeues) {
+      const detail =
+        outage === "store"
+          ? STORE_DOWN_DETAIL
+          : retriesUsed > 0
+            ? DOWN_AFTER_LOST_DETAIL
+            : SLICER_DOWN_DETAIL;
+      await recordFailed(estimate.id, { code: null, reason: "slicer_error", detail });
+      log(
+        `estimate ${estimate.id}: the ${outage} is still down after ${requeues} requeue(s); failed`,
+      );
+      return;
+    }
     await backToPending(estimate.id);
-    await sendSlice(estimate);
+    await sendSlice(estimate, { retriesUsed, requeues: requeues + 1 });
+    log(
+      `estimate ${estimate.id}: the ${outage} is down; back on the queue (${requeues + 1} of ${slicerDown.requeues})`,
+    );
+  }
+
+  /** Whether the store answers a read of key; only a store outage counts as no. */
+  async function storeAnswers(key: string): Promise<boolean> {
+    try {
+      (await store.getBlobStream(key)).destroy();
+      return true;
+    } catch (error) {
+      return !(error instanceof StoreUnavailable);
+    }
+  }
+
+  /**
+   * Queues again the estimates an outage failed (SLICER_DOWN_DETAIL and
+   * STORE_DOWN_DETAIL) for the selected printer and this Orca version. The
+   * poll calls it only once /v1/health has answered; a store failure is
+   * queued only when the store answers a read of that plate's file.
+   */
+  async function requeueOutageFailures(orca: string): Promise<void> {
+    const { printerId } = await repos.settings.get();
+    const failed = await db
+      .selectFrom("estimates")
+      .select(["id", "plateId", "failureDetail"])
+      .where("source", "=", "platehouse")
+      .where("status", "=", "failed")
+      .where("failureCode", "is", null)
+      .where("failureReason", "=", "slicer_error")
+      .where("failureDetail", "in", OUTAGE_DETAILS)
+      .where("printerId", "=", printerId)
+      .where("slicerVersion", "=", orca)
+      .orderBy("createdAt")
+      .execute();
+    let storeUp: boolean | undefined;
+    let queued = 0;
+    for (const row of failed) {
+      if (row.failureDetail === STORE_DOWN_DETAIL) {
+        const target = await liveTarget(row.plateId);
+        if (target === undefined) continue;
+        storeUp ??= await storeAnswers(target.key);
+        if (!storeUp) continue;
+      }
+      if (await retryEstimate(row.id)) queued += 1;
+    }
+    if (queued > 0) log(`queued ${queued} estimate(s) again that an outage had failed`);
   }
 
   /**
@@ -659,6 +800,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       log(`slicer reports Orca ${orca} (was ${stored ?? "unknown"})`);
     }
     await recoverLost();
+    await requeueOutageFailures(orca);
     await reestimateAll(changed ? "orca" : "poll");
     return { orca, changed };
   }
