@@ -601,9 +601,11 @@ function dbWith(overrides: Record<string, unknown>): Kysely<DB> {
 }
 
 describe("a failed commit never deletes what may have been committed", () => {
-  test("a commit that succeeds but reports an error keeps its objects behind its rows", async () => {
+  test("a commit that succeeds but reports an error is reported as stored, with its objects kept", async () => {
     // The connection drops after COMMIT reached the server: the rows are
-    // committed, but ingest only sees an error.
+    // committed, but ingest only sees an error. A commit is atomic, so a
+    // file row that is there means the whole upload landed, and ingest says
+    // so rather than failing a stored file, which a retry would store twice.
     const committedThenLost = dbWith({
       transaction: () => {
         const real = env.db.transaction();
@@ -616,20 +618,21 @@ describe("a failed commit never deletes what may have been committed", () => {
       },
     });
     const before = await footprint(env);
-    const error = await createIngest({ db: committedThenLost, store: env.store })
-      .ingestFile({
-        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
-        originalName: "Committed after all.3mf",
-        target: "new",
-      })
-      .catch((e: unknown) => e);
-    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    const result = await createIngest({ db: committedThenLost, store: env.store }).ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+      originalName: "Committed after all.3mf",
+      target: "new",
+    });
     const after = await footprint(env);
     // The file, its source blob and its thumbnail blob were committed, and
     // both objects are still in the bucket.
     expect(after.files - before.files).toBe(1);
     expect(after.blobs - before.blobs).toBe(2);
     expect(after.objects - before.objects).toBe(2);
+    // The result names the rows that were committed.
+    const files = await filesOf(result.modelId);
+    expect(files.map((f) => f.id)).toEqual([result.fileId]);
+    expect(files[0]?.originalName).toBe("Committed after all.3mf");
   });
 
   test("when the database cannot say whether the rows were committed, the objects are kept for the orphan sweep", async () => {

@@ -19,10 +19,12 @@
 //      returns before any slice runs (AC-033).
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012), unless the file row turns out to
-// exist (a COMMIT that succeeded but reported an error) or the database
-// cannot say; then the objects are kept. An object left with no row is
-// removed later by the orphan sweep (orphans.ts). A store outage fails
+// already put and leaves no rows (AC-012), with two exceptions. When the file
+// row turns out to exist (a COMMIT that succeeded but reported an error), the
+// whole upload landed, so the objects are kept and ingestFile returns its
+// result. When the database cannot say, the objects are kept and the error is
+// thrown. An object left with no row is removed later by the orphan sweep
+// (orphans.ts). A store outage fails
 // visibly with STORAGE_UNAVAILABLE_MESSAGE. The uploaded file at tmpPath is
 // never deleted
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
@@ -60,7 +62,11 @@ export type IngestErrorCode = "unsupported_type" | "storage_unavailable" | "mode
 /**
  * An upload refused or failed with a plain message for Jon. Any other error
  * (a filesystem error reading the upload, a database error) reaches the
- * caller unchanged; either way nothing is left behind.
+ * caller unchanged. Either way no row was written. The objects already put
+ * are deleted, except when the database could not say whether the rows were
+ * committed: then they are kept, and the orphan sweep removes them once no
+ * row points at them. A commit that landed but reported an error is not a
+ * failure: ingestFile returns its result.
  */
 export class IngestError extends Error {
   readonly code: IngestErrorCode;
@@ -198,24 +204,25 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
   }
 
   /**
-   * After a failure: whether the transaction may have committed after all.
-   * An error from the transaction can come from a COMMIT that reached the
-   * server (the connection dropped while the answer was on its way), so the
-   * file row is looked up before any object is deleted. True when the row is
-   * there, and also when the lookup itself fails: the objects are then kept,
-   * and if no row points at them the orphan sweep removes them after 24
-   * hours. Deleting the bytes behind committed rows cannot be undone.
+   * After a failure: whether the transaction committed after all. An error
+   * from the transaction can come from a COMMIT that reached the server (the
+   * connection dropped while the answer was on its way), so the file row is
+   * looked up before any object is deleted. "committed" when the row is
+   * there: a commit is atomic, so the whole upload landed. "unknown" when the
+   * lookup itself fails: the objects are then kept, and if no row points at
+   * them the orphan sweep removes them after 24 hours. Deleting the bytes
+   * behind committed rows cannot be undone.
    */
-  async function mayHaveCommitted(fileId: string): Promise<boolean> {
+  async function commitState(fileId: string): Promise<"committed" | "not_committed" | "unknown"> {
     try {
       const row = await db
         .selectFrom("files")
         .select("id")
         .where("id", "=", fileId)
         .executeTakeFirst();
-      return row !== undefined;
+      return row === undefined ? "not_committed" : "committed";
     } catch {
-      return true;
+      return "unknown";
     }
   }
 
@@ -356,7 +363,13 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
         }
       });
     } catch (error) {
-      if (put.length > 0 && !(await mayHaveCommitted(fileId))) {
+      // With nothing put, the failure came before the transaction, so no row
+      // can exist and there is nothing to look up or delete.
+      const state = put.length > 0 ? await commitState(fileId) : "not_committed";
+      // The rows landed and only the answer was lost: the upload is stored,
+      // and reporting it as failed would make a retry store it twice.
+      if (state === "committed") return { modelId, fileId };
+      if (put.length > 0 && state === "not_committed") {
         try {
           await store.deleteBlobs(put.map((blob) => blob.key));
         } catch {
