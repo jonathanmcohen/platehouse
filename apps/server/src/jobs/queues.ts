@@ -61,6 +61,7 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
 export const MAINTENANCE_TASKS = {
   purgeExpired: "purge-expired",
   sweepOrphans: "sweep-orphans",
+  sweepUploads: "sweep-uploads",
 } as const;
 
 /** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
@@ -71,6 +72,9 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
  * deletes objects older than 24 hours.
  */
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
+
+/** Hourly, on the hour (Task 9): the sweep of partial uploads untouched for 24 hours. */
+export const SWEEP_UPLOADS_CRON = "0 * * * *";
 
 /**
  * The process's local time zone, the one "03:30 local time" means: the
@@ -87,6 +91,8 @@ export interface QueueDeps {
   purgeExpired(now: Date): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
+  /** Task 9's sweep of stale partial uploads (uploads/tus.ts's sweepStaleUploads). */
+  sweepUploads(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
