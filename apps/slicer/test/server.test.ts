@@ -1001,7 +1001,9 @@ describe("leftover job folders and /work space", () => {
     const res = await fetch(`${base}/v1/health`);
     expect(res.status).toBe(500);
     expect(res.headers.get("content-type")).toMatch(/^text\/plain/);
-    expect(await res.text()).toMatch(/\/work .*free/);
+    expect(await res.text()).toMatch(
+      / has \d+ MiB free, below the \d+ MiB floor \(WORK_MIN_FREE_MIB\)\n$/,
+    );
   });
 
   test("a running job's own use of /work never fails health; the floor applies once it is done", async () => {

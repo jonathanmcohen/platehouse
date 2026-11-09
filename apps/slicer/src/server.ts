@@ -15,7 +15,11 @@
 // - The server sets its own request and headers timeouts (requestTimeouts):
 //   Node's default would cut a slow 512 MiB upload off with a 408.
 // - Every request works in its own folder under WORK_DIR (/work, a tmpfs),
-//   deleted afterwards, success or failure.
+//   deleted afterwards, success or failure. A delete that fails is logged,
+//   never changes the answer, and is tried again: job folders left behind
+//   are swept at start-up and after every job. /v1/health answers 500 while
+//   no job runs and WORK_DIR has less free space than WORK_MIN_FREE_MIB, so
+//   Docker's health check sees a /work that leftovers have filled.
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
 // - An error in a request costs that request, never the process (guard.ts):
@@ -23,7 +27,14 @@
 //   (program killed, folder deleted, lock freed). The 500 closes with the
 //   same lingering close as a refusal.
 import { randomUUID } from "node:crypto";
-import { createWriteStream, mkdirSync, realpathSync, rmSync } from "node:fs";
+import {
+  createWriteStream,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statfsSync,
+} from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -67,6 +78,11 @@ export interface SlicerConfig {
   stepTimeoutSeconds: number;
   orcaVersion: string;
   openscadVersion: string;
+  /**
+   * /v1/health fails while no job runs and WORK_DIR has less free space than
+   * this (WORK_MIN_FREE_MIB).
+   */
+  workMinFreeBytes: number;
   limits: Limits;
 }
 
@@ -76,6 +92,17 @@ const seconds = (key: string) =>
     .regex(/^\d+$/, `${key} must be a whole number of seconds`)
     .transform(Number)
     .pipe(z.number().int().min(1, `${key} must be at least 1`));
+
+/**
+ * The default WORK_MIN_FREE_MIB: room for the largest job the contract
+ * takes, a 512 MiB .3mf (LIMITS.sliceBodyBytes), plus 128 MiB for Orca's
+ * output and scratch beside it. The 128 MiB is an allowance, not a
+ * measurement. With no job running, less free space than this means the
+ * next large slice would fail with ENOSPC. The image's /work is a 1g tmpfs,
+ * so one leftover folder from a large upload is enough to trip it.
+ */
+const WORK_MIN_FREE_MIB = 640;
+const MIB = 1024 * 1024;
 
 const envSchema = z.object({
   PORT: z
@@ -100,6 +127,11 @@ const envSchema = z.object({
   SLICE_TIMEOUT_SECONDS: seconds("SLICE_TIMEOUT_SECONDS").optional(),
   SCAD_TIMEOUT_SECONDS: seconds("SCAD_TIMEOUT_SECONDS").default(120),
   STEP_TIMEOUT_SECONDS: seconds("STEP_TIMEOUT_SECONDS").default(120),
+  WORK_MIN_FREE_MIB: z
+    .string()
+    .regex(/^\d+$/, "WORK_MIN_FREE_MIB must be a whole number of MiB")
+    .transform(Number)
+    .default(WORK_MIN_FREE_MIB),
   ORCA_VERSION: z.string({ error: "ORCA_VERSION is required" }).min(1, "ORCA_VERSION is required"),
   OPENSCAD_VERSION: z
     .string({ error: "OPENSCAD_VERSION is required" })
@@ -135,6 +167,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     stepTimeoutSeconds: e.STEP_TIMEOUT_SECONDS,
     orcaVersion: e.ORCA_VERSION,
     openscadVersion: e.OPENSCAD_VERSION,
+    workMinFreeBytes: e.WORK_MIN_FREE_MIB * MIB,
     limits: LIMITS,
   };
 }
@@ -241,6 +274,9 @@ export function requestTimeouts(config: SlicerConfig): {
   };
 }
 
+/** The name jobDir gives a job folder; the sweep removes nothing else. */
+const JOB_DIR_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const ZIP_MAGIC = [Buffer.from("PK\x03\x04", "latin1"), Buffer.from("PK\x05\x06", "latin1")];
 
 export interface Slicer {
@@ -288,15 +324,78 @@ export function createSlicer(config: SlicerConfig): Slicer {
     });
   };
 
-  const removeJobDir = (dir: string): void => {
+  /**
+   * Deletes a job folder, best effort: retries the ENOTEMPTY or EBUSY of a
+   * killed program still finishing a write (Node's rmSync retries none by
+   * default), then logs a delete that still fails and returns false. It
+   * never throws, so it never changes a request's answer; the sweep tries
+   * again after the next job.
+   */
+  const removeJobDir = (dir: string): boolean => {
     try {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      return true;
     } catch (err) {
       log(
         `job folder ${dir} could not be deleted: ${err instanceof Error ? err.message : String(err)}`,
       );
+      return false;
     }
   };
+
+  /**
+   * Removes job folders left under WORK_DIR by a delete that failed. Called
+   * at start-up and by a job's release() while that job still holds the
+   * lock: one heavy job runs at a time, so no other job owns a folder then.
+   * Only folders named the way jobDir names them are touched, since HOME is
+   * /work in the image and other things can live there. `skip` is the
+   * releasing job's own folder, which it has just tried to delete.
+   */
+  const sweepJobDirs = (skip: string | null): void => {
+    let names: string[];
+    try {
+      names = readdirSync(config.workDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && JOB_DIR_NAME.test(e.name))
+        .map((e) => e.name);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      log(
+        `job folders in ${config.workDir} could not be listed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    for (const name of names) {
+      const dir = join(config.workDir, name);
+      if (dir === skip) continue;
+      if (removeJobDir(dir)) log(`removed leftover job folder ${dir}`);
+    }
+  };
+
+  /** WORK_DIR's free space in bytes, or null if it cannot be read. */
+  const workFreeBytes = (): number | null => {
+    try {
+      const fs = statfsSync(config.workDir);
+      return fs.bavail * fs.bsize;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Why /v1/health should fail, or null when it should not. Only checked
+   * while no job runs: a running job's own files are not a leak, and its
+   * release() sweeps any left behind. With no job running, low free space
+   * means leftovers the sweep could not delete are filling WORK_DIR.
+   */
+  const workSpaceProblem = (): string | null => {
+    if (holder) return null;
+    const free = workFreeBytes();
+    if (free === null) return `the free space of ${config.workDir} could not be read`;
+    if (free >= config.workMinFreeBytes) return null;
+    return `${config.workDir} has ${Math.floor(free / MIB)} MiB free, below the ${Math.floor(config.workMinFreeBytes / MIB)} MiB floor (WORK_MIN_FREE_MIB)`;
+  };
+
+  sweepJobDirs(null);
 
   const jobDir = (): string => {
     const dir = join(config.workDir, randomUUID());
@@ -327,6 +426,7 @@ export function createSlicer(config: SlicerConfig): Slicer {
         try {
           job.track.killNow();
           if (dir) removeJobDir(dir);
+          if (holder === job) sweepJobDirs(dir);
         } finally {
           if (holder === job) holder = null;
         }
@@ -364,7 +464,9 @@ export function createSlicer(config: SlicerConfig): Slicer {
         log(`sandbox self-test: FAILED: ${detail}`);
         return { ok: false, detail };
       } finally {
-        if (dir) rmSync(dir, { recursive: true, force: true });
+        // Best effort, like every job folder delete: a folder that will not
+        // go must not turn a passed check into a 500 for the render.
+        if (dir) removeJobDir(dir);
       }
     })().then((result) => {
       if (!result.ok && sandbox === check) sandbox = null;
@@ -495,13 +597,28 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const url = new URL(req.url ?? "/", "http://slicer");
     const route = `${req.method} ${url.pathname}`;
     switch (route) {
-      case "GET /v1/health":
+      case "GET /v1/health": {
+        // A full /work fails every upload with ENOSPC, so health fails too.
+        // The contract lets any route answer 500 with a plain-text body,
+        // and the health schema itself is unchanged.
+        const problem = workSpaceProblem();
+        if (problem) {
+          log(`health: ${problem}`);
+          const text = `${problem}\n`;
+          res.writeHead(500, {
+            "content-type": "text/plain",
+            "content-length": Buffer.byteLength(text),
+          });
+          res.end(text);
+          return;
+        }
         return send(res, 200, {
           contract: CONTRACT_VERSION,
           orca: config.orcaVersion,
           openscad: config.openscadVersion,
           busy: holder !== null,
         });
+      }
       case "GET /v1/profiles":
         return send(res, 200, {
           contract: CONTRACT_VERSION,
