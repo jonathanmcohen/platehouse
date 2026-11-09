@@ -142,13 +142,12 @@ function metadataOf(project: Project | null): FoundMetadata {
   if (details === null) return {};
   const license = mapLicense(details.license);
   const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
-  // A footer licence sets no SPDX id and is named at the foot of the
-  // description; licenseNote keeps the same words for the model's licence field.
-  const description = [markdown, license.footer ?? ""].filter((part) => part !== "").join("\n\n");
+  // A footer licence sets no SPDX id; fillMetadata names it at the foot of
+  // the description when it fills the licence.
   return {
     caption: details.title,
     creator: details.designer,
-    descriptionMd: description === "" ? null : description,
+    descriptionMd: markdown === "" ? null : markdown,
     licenseSpdx: license.spdx ?? null,
     licenseNote: license.footer ?? null,
   };
@@ -246,7 +245,6 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
             .forUpdate()
             .executeTakeFirst();
           if (live === undefined) throw new IngestError("model_not_found", MODEL_NOT_FOUND_MESSAGE);
-          await repos.models.fillMetadata(modelId, found);
         } else if (target !== "new" && target.combine) {
           await sql`select pg_advisory_xact_lock(hashtext(${target.batch}))`.execute(trx);
           const existing = await trx
@@ -256,15 +254,15 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
             .forUpdate()
             .executeTakeFirst();
           if (existing === undefined) {
-            await repos.models.create({ id: modelId, name: modelNameOf(originalName), ...found });
+            await repos.models.create({ id: modelId, name: modelNameOf(originalName) });
           } else if (existing.trashedAt !== null) {
             throw new IngestError("model_not_found", MODEL_NOT_FOUND_MESSAGE);
-          } else {
-            await repos.models.fillMetadata(modelId, found);
           }
         } else {
-          await repos.models.create({ id: modelId, name: modelNameOf(originalName), ...found });
+          await repos.models.create({ id: modelId, name: modelNameOf(originalName) });
         }
+        // One fill rule for a new model and an existing one (AC-022).
+        await repos.models.fillMetadata(modelId, found);
 
         for (const blob of put) {
           await repos.blobs.insertPending({

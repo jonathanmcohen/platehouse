@@ -389,6 +389,32 @@ describe("metadata is filled, never overwritten", () => {
     expect(after.creator).toBe("Synthetic Designer");
   });
 
+  test("a licence Jon set is kept whole: no MakerWorld note or footer is added beside it", async () => {
+    const model = await env.repos.models.create({
+      name: `Licensed ${uuidv7()}`,
+      licenseSpdx: "MIT",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: {
+            designer: "Synthetic Designer",
+            descriptionHtml: "<p>Print it.</p>",
+            license: "Standard Digital File License",
+          },
+        }),
+      ),
+      originalName: "Licensed.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.licenseSpdx).toBe("MIT");
+    expect(after.licenseNote).toBeNull();
+    expect(after.descriptionMd).toBe("Print it.");
+  });
+
   test("a creator Jon set is kept", async () => {
     const model = await env.repos.models.create({
       name: `Credited ${uuidv7()}`,

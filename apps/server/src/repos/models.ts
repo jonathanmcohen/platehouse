@@ -34,9 +34,15 @@ export interface NewModel {
 /** Metadata a parse or an import found; fillMetadata writes only into empty fields. */
 export interface FoundMetadata {
   caption?: string | null;
+  /** The description as Markdown, without any licence footer. */
   descriptionMd?: string | null;
   creator?: string | null;
   licenseSpdx?: string | null;
+  /**
+   * A licence with no SPDX id, in words ("License on MakerWorld: ...").
+   * When the licence is filled it is also named at the foot of a filled
+   * description (AC-022).
+   */
   licenseNote?: string | null;
 }
 
@@ -233,11 +239,16 @@ export function modelsRepo(db: Kysely<DB>) {
      * Fill-only metadata (AC-022): writes each found value only into a field
      * that is null or empty, so nothing Jon set is overwritten. The name is
      * never touched. A found value that is null, empty or blank writes
-     * nothing. False when the model is unknown.
+     * nothing. The licence is one field held in two columns: it is filled
+     * only when both licenseSpdx and licenseNote are empty, so a MakerWorld
+     * note never lands beside an SPDX id Jon chose, and the note joins the
+     * foot of the description only when the licence and the description are
+     * both filled here. False when the model is unknown.
      */
     async fillMetadata(id: string, found: FoundMetadata): Promise<boolean> {
       if (!isUuid(id)) return false;
       const value = (v: string | null | undefined) => (v?.trim() ? v : undefined);
+      const empty = (v: string | null) => v === null || v === "";
       return inTransaction(db, async (trx) => {
         // The row is locked, so the fields read here are the ones updated.
         const row = await trx
@@ -250,9 +261,20 @@ export function modelsRepo(db: Kysely<DB>) {
         const set: Partial<
           Record<"caption" | "descriptionMd" | "licenseSpdx" | "licenseNote" | "creatorId", string>
         > = {};
-        for (const column of ["caption", "descriptionMd", "licenseSpdx", "licenseNote"] as const) {
-          const v = value(found[column]);
-          if (v !== undefined && (row[column] === null || row[column] === "")) set[column] = v;
+        const caption = value(found.caption);
+        if (caption !== undefined && empty(row.caption)) set.caption = caption;
+
+        const spdx = value(found.licenseSpdx);
+        const note = value(found.licenseNote);
+        const fillLicence =
+          empty(row.licenseSpdx) && empty(row.licenseNote) && (spdx ?? note) !== undefined;
+        if (fillLicence && spdx !== undefined) set.licenseSpdx = spdx;
+        if (fillLicence && note !== undefined) set.licenseNote = note;
+
+        if (empty(row.descriptionMd)) {
+          const parts = [value(found.descriptionMd), fillLicence ? note : undefined];
+          const description = parts.filter((p) => p !== undefined).join("\n\n");
+          if (description !== "") set.descriptionMd = description;
         }
         // The creator row is made only when it will be used, so no creator
         // is left in the sidebar without a model.
