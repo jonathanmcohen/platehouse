@@ -452,13 +452,108 @@ describe("tus routes", () => {
     expect(res.status).toBeLessThan(500);
   });
 
-  test("the UI client must drop its resume fingerprint on success, or a resend of the same file sends nothing", async () => {
-    // HEAD answers an ingested upload as finished for a day (above), failed
-    // ingests included. tus-js-client's fingerprint is the file and the
-    // endpoint, not the metadata, so a client that keeps it after success
-    // (its default) would resume a resend of the same file onto the old
-    // upload and send no bytes. Task 19 sets removeFingerprintOnSuccess: true.
+  test("HEAD after an ingest that failed with nothing saved answers 410", async () => {
+    // An IngestError means no row was written, so sending the file again is
+    // safe. tus-js-client meets a 4xx on HEAD by creating a new upload.
     const body = randomBinaryStl(30);
+    const id = idOf((await create(body.length, { filename: "Phone part.stl" })).headers.location);
+    expect((await patch(id, 0, body)).status).toBe(204);
+    const refused = new IngestError("storage_unavailable", "Storage is unavailable right now");
+    await expect(
+      uploads.ingestUpload(async () => {
+        throw refused;
+      })(queue.enqueued.get(id) as IngestInput),
+    ).rejects.toBe(refused);
+    queue.results.set(id, { status: "failed", error: refused.message });
+
+    const res = await head(id);
+    expect(res.status).toBe(410);
+    expect(res.headers["tus-resumable"]).toBe("1.0.0");
+    for (const name of Object.keys(res.headers)) expect(name).not.toMatch(/^access-control-/);
+    expect((await head(id, {})).status).toBe(401);
+    expect(await resultOf(id)).toEqual({
+      status: 200,
+      body: { status: "failed", error: refused.message },
+    });
+    expect(await tempFiles()).toEqual([`${id}.json`]);
+  });
+
+  test("HEAD after an ingest whose outcome is unknown still answers finished", async () => {
+    // When the database cannot say whether the commit landed, ingest keeps
+    // what it stored and throws the database's own error: the model may be
+    // in the library, and a resend could make a second one.
+    const body = randomBinaryStl(30);
+    const id = idOf((await create(body.length, { filename: "Phone part.stl" })).headers.location);
+    expect((await patch(id, 0, body)).status).toBe(204);
+    const lost = new Error("Connection terminated unexpectedly");
+    await expect(
+      uploads.ingestUpload(async () => {
+        throw lost;
+      })(queue.enqueued.get(id) as IngestInput),
+    ).rejects.toBe(lost);
+    queue.results.set(id, { status: "failed", error: "could not be confirmed" });
+
+    const res = await head(id);
+    expect(res.status).toBe(200);
+    expect(res.headers["upload-offset"]).toBe(String(body.length));
+    expect(res.headers["upload-length"]).toBe(String(body.length));
+  });
+
+  test("HEAD that meets ingest tidying the upload answers finished, never 410", async () => {
+    // A lost-204 retry arrives at a time unrelated to the ingest. Here the
+    // ingest finishes while tus is part way through answering the HEAD:
+    // after it read the info file and before it looked at the data file. A
+    // 410 would make tus-js-client send the whole file again and make a
+    // second model.
+    const body = randomBinaryStl(30);
+    const id = idOf((await create(body.length, { filename: "Phone part.stl" })).headers.location);
+    expect((await patch(id, 0, body)).status).toBe(204);
+
+    const configstore = uploads.datastore.configstore;
+    const get = configstore.get.bind(configstore);
+    let reached = () => {};
+    let release = () => {};
+    const atInfoRead = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = true;
+    configstore.get = async (key) => {
+      if (armed && key === id) {
+        armed = false;
+        reached();
+        await gate;
+      }
+      return get(key);
+    };
+
+    const answer = head(id);
+    await atInfoRead;
+    const ingest = uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }))(
+      queue.enqueued.get(id) as IngestInput,
+    );
+    // Let the ingest finish its tidy-up now if anything lets it.
+    await Promise.race([ingest, sleep(200)]);
+    release();
+    const res = await answer;
+    await ingest;
+    queue.results.set(id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["upload-offset"]).toBe(String(body.length));
+    expect(res.headers["upload-length"]).toBe(String(body.length));
+    expect(await tempFiles()).toEqual([`${id}.json`]);
+    expect((await head(id)).headers["upload-offset"]).toBe(String(body.length));
+  });
+
+  test("a default tus-js-client sends a file again after a failed ingest, and not after a good one", async () => {
+    // tus-js-client keeps its resume fingerprint after success by default
+    // (removeFingerprintOnSuccess false), and the fingerprint is the file and
+    // the endpoint, not the metadata, so a second send of the same file
+    // resumes the first upload with a HEAD. The server's answer decides what
+    // happens next, whatever the client sets.
     const urls = new Map<string, { fingerprint: string; upload: PreviousUpload }>();
     let key = 0;
     const urlStorage: UrlStorage = {
@@ -476,16 +571,16 @@ describe("tus routes", () => {
         return String(key);
       },
     };
-    const sendOnce = async (removeFingerprintOnSuccess: boolean) => {
+    const sendOnce = async (body: Buffer) => {
       const upload = new Upload(body, {
         endpoint: `${server.base}${PREFIX}`,
         retryDelays: null,
         urlStorage,
         storeFingerprintForResuming: true,
-        removeFingerprintOnSuccess,
         headers: KEY,
         metadata: { filename: "Phone part.stl" },
       });
+      expect(upload.options.removeFingerprintOnSuccess).toBe(false);
       const previous = await upload.findPreviousUploads();
       if (previous[0] !== undefined) upload.resumeFromPreviousUpload(previous[0]);
       const sent = server.requests.length;
@@ -494,36 +589,43 @@ describe("tus routes", () => {
         upload.options.onError = (error) => reject(error);
         upload.start();
       });
-      const id = idOf(upload.url ?? "");
-      if (queue.results.get(id) === undefined) {
-        // The first ingest fails with nothing saved, and Jon sends it again.
-        await uploads
-          .ingestUpload(async () => {
-            throw new IngestError("storage_unavailable", "Storage is unavailable right now");
-          })(queue.enqueued.get(id) as IngestInput)
-          .catch(() => undefined);
-        queue.results.set(id, { status: "failed", error: "Storage is unavailable right now" });
-      }
-      return { id, methods: server.requests.slice(sent).map((r) => r.method) };
+      return {
+        id: idOf(upload.url ?? ""),
+        methods: server.requests.slice(sent).map((r) => r.method),
+      };
     };
+    const ingest = (id: string, ingestFile: Parameters<Uploads["ingestUpload"]>[0]) =>
+      uploads
+        .ingestUpload(ingestFile)(queue.enqueued.get(id) as IngestInput)
+        .catch(() => undefined);
 
-    // With the setting: the resend is a new upload and a new ingest.
-    const first = await sendOnce(true);
-    expect(first.methods).toEqual(["POST", "PATCH"]);
-    expect(urls.size).toBe(0);
-    const again = await sendOnce(true);
-    expect(again.methods).toEqual(["POST", "PATCH"]);
-    expect(again.id).not.toBe(first.id);
-    expect(queue.enqueued.size).toBe(2);
-
-    // Without it (tus-js-client's default): the resend resumes the ingested
-    // upload, is told it finished, and sends no bytes.
-    const kept = await sendOnce(false);
+    // A good ingest: the same file sent again is told it finished and sends
+    // nothing, so no second model.
+    const good = randomBinaryStl(30);
+    const stored = await sendOnce(good);
+    expect(stored.methods).toEqual(["POST", "PATCH"]);
+    await ingest(stored.id, async () => ({ modelId: "m", fileId: "f" }));
+    queue.results.set(stored.id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
     expect(urls.size).toBe(1);
-    const lost = await sendOnce(false);
-    expect(lost.methods).toEqual(["HEAD"]);
-    expect(lost.id).toBe(kept.id);
+    const repeat = await sendOnce(good);
+    expect(repeat.methods).toEqual(["HEAD"]);
+    expect(repeat.id).toBe(stored.id);
+    expect(queue.enqueued.size).toBe(1);
+
+    // A failed ingest that saved nothing: the same file sent again is told
+    // the upload is gone, and goes as a new upload into a new ingest.
+    const other = randomBinaryStl(31);
+    const failed = await sendOnce(other);
+    expect(failed.methods).toEqual(["POST", "PATCH"]);
+    await ingest(failed.id, async () => {
+      throw new IngestError("storage_unavailable", "Storage is unavailable right now");
+    });
+    queue.results.set(failed.id, { status: "failed", error: "Storage is unavailable right now" });
+    const resend = await sendOnce(other);
+    expect(resend.methods).toEqual(["HEAD", "POST", "PATCH"]);
+    expect(resend.id).not.toBe(failed.id);
     expect(queue.enqueued.size).toBe(3);
+    expect(queue.enqueued.get(resend.id)?.originalName).toBe("Phone part.stl");
   });
 
   test("there is no DELETE, GET or OPTIONS on an upload", async () => {
@@ -607,6 +709,24 @@ describe("ingestUpload", () => {
     await expect(
       ingest({ tmpPath: join(uploads.dir, id), originalName: "a.stl", target: "new" }),
     ).rejects.toBe(refused);
+    expect(await tempFiles()).toEqual([`${id}.json`]);
+  });
+
+  test("tidies an upload only while it holds the upload's lock", async () => {
+    // tus's HEAD and PATCH take the same lock, so neither can see the upload
+    // half tidied.
+    const id = idOf((await create(10, { filename: "a.stl" })).headers.location);
+    const held = uploads.locker.newLock(id);
+    await held.lock(new AbortController().signal, async () => {});
+    const ingest = uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }))({
+      tmpPath: join(uploads.dir, id),
+      originalName: "a.stl",
+      target: "new",
+    });
+    await Promise.race([ingest, sleep(200)]);
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
+    await held.unlock();
+    expect(await ingest).toEqual({ modelId: "m", fileId: "f" });
     expect(await tempFiles()).toEqual([`${id}.json`]);
   });
 
