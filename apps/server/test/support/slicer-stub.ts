@@ -93,14 +93,49 @@ export interface SlicerStub {
 
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
 
-function sendJson(res: ServerResponse, status: number, body: unknown, close = false): void {
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
-    ...(close ? { connection: "close" } : {}),
   });
   res.end(text);
+}
+
+/**
+ * Half-closes after the answer and discards whatever body still arrives, so
+ * the client reads the answer instead of a reset: the real slicer's
+ * closeLingering (apps/slicer/src/guard.ts), for the same reason.
+ */
+function closeLingering(socket: Socket): void {
+  if (socket.destroyed) return;
+  const timer = setTimeout(() => socket.destroy(), 5_000);
+  timer.unref();
+  socket.once("close", () => clearTimeout(timer));
+  socket.once("end", () => socket.destroy());
+  socket.on("error", () => socket.destroy());
+  socket.on("data", () => {});
+  socket.resume();
+  socket.end();
+}
+
+/**
+ * A refusal answered before the body is read, with Connection: close, as the
+ * real slicer's refuseEarly: Node's own destroySoon is replaced so the
+ * connection is not reset under the answer.
+ */
+function refuseEarly(res: ServerResponse, status: number, body: unknown): void {
+  const socket = res.socket;
+  if (socket) socket.destroySoon = () => closeLingering(socket);
+  const text = JSON.stringify(body);
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(text),
+    connection: "close",
+  });
+  res.end(text, () => {
+    if (socket) closeLingering(socket);
+  });
 }
 
 async function readBody(req: IncomingMessage): Promise<Buffer | null> {
@@ -144,18 +179,15 @@ export async function startSlicerStub(
     calls.push(call);
     const outcome = decide(call, calls.length);
     if (outcome.kind === "busy") {
-      // As the real slicer: answered before the body is read, then closed.
-      sendJson(res, 409, slicerContract.error.parse({ error: "busy" }), true);
-      req.resume();
-      return;
+      return refuseEarly(res, 409, slicerContract.error.parse({ error: "busy" }));
     }
     if (length > LIMITS.sliceBodyBytes) {
-      req.resume();
-      return sendJson(res, 413, slicerContract.error.parse({ error: "too_large" }), true);
+      return refuseEarly(res, 413, slicerContract.error.parse({ error: "too_large" }));
     }
     const body = await readBody(req);
-    if (body === null)
-      return sendJson(res, 413, slicerContract.error.parse({ error: "too_large" }));
+    if (body === null) {
+      return refuseEarly(res, 413, slicerContract.error.parse({ error: "too_large" }));
+    }
     call.bytes = body.length;
     if (!body.subarray(0, 4).equals(ZIP_MAGIC)) {
       return sendJson(res, 422, slicerContract.error.parse({ error: "not_3mf" }));

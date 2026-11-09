@@ -19,6 +19,7 @@ export type ParseStatus = "pending" | "ok" | "no_plate_data" | "unavailable";
 export type EstimateSource = "file" | "platehouse";
 export type EstimateStatus = "pending" | "running" | "ok" | "failed";
 export type BucketVersioning = "enabled" | "suspended" | "off" | "unknown";
+export type FilamentProfileSource = "bambu" | "generic" | "file";
 
 type CreatedAt = Generated<Date>;
 // A timestamp the app may also set on update.
@@ -130,7 +131,8 @@ export interface EstimatesTable {
   slicer: string | null;
   slicerVersion: string | null;
   processProfile: string | null;
-  filamentProfiles: Generated<string[]>;
+  /** The filament preset per project slot, in slot order; null where the file's own was kept. */
+  filamentProfiles: Generated<(string | null)[]>;
   status: Generated<EstimateStatus>;
   timeSeconds: number | null;
   weightGrams: number | null;
@@ -148,6 +150,14 @@ export interface EstimateFilamentsTable {
   type: string;
   color: string | null;
   grams: number | null;
+  /** The preset the slicer used for the slot (0003); null for the file's own filament. */
+  profile: ColumnType<string | null, string | null | undefined, string | null>;
+  /** 'bambu', 'generic' or 'file' (0003); null on a file's own numbers. */
+  profileSource: ColumnType<
+    FilamentProfileSource | null,
+    FilamentProfileSource | null | undefined,
+    FilamentProfileSource | null
+  >;
 }
 
 export interface SettingsTable {

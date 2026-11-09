@@ -63,7 +63,7 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
     },
     slicer: {
       name: QUEUE.slicer,
-      queue: { policy: "singleton" },
+      queue: { policy: "singleton", ...SLICER_RETRY },
       work: { localConcurrency: 1 },
     },
     maintenance: {
