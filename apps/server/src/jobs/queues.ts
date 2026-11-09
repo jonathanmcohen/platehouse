@@ -57,25 +57,88 @@ export function queueSettings(opts: {
   };
 }
 
-// Stub below: the interface only, so the failing tests compile; the
-// implementation follows in the next commit.
-
+/**
+ * The maintenance queue's tasks, each a job { task } and its schedule key.
+ * Task 9 adds the hourly sweep of stale partial uploads here.
+ */
 export const MAINTENANCE_TASKS = { purgeExpired: "purge-expired" } as const;
 
+/** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
 export const PURGE_EXPIRED_CRON = "30 3 * * *";
 
+/**
+ * The process's local time zone, the one "03:30 local time" means: the
+ * container's TZ, or UTC when none is set.
+ */
 export function localTimeZone(): string {
-  throw new Error("localTimeZone is not implemented yet");
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 export interface QueueDeps {
+  /** Runs one ingest job: ingest.ts's ingestFile. */
   ingestFile(input: IngestInput): Promise<IngestResult>;
+  /** Task 14's purgeExpired (library/trash.ts). */
   purgeExpired(now: Date): Promise<unknown>;
+  /** SLICER_CONCURRENCY. */
   slicerConcurrency: number;
+  /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
+  /** How often idle workers poll; pg-boss's default when left out. */
   pollingIntervalSeconds?: number;
 }
 
-export async function startQueues(_boss: PgBoss, _deps: QueueDeps): Promise<void> {
-  throw new Error("startQueues is not implemented yet");
+interface MaintenanceJob {
+  task: string;
+}
+
+/**
+ * Creates the three queues, registers the maintenance schedules and starts
+ * the ingest and maintenance workers on a started boss. Safe on every start:
+ * a queue that exists is left as it is, and a schedule is keyed, so it is
+ * replaced rather than added again. The slicer queue gets no worker here;
+ * Task 12 works it with queueSettings().slicer.work.
+ */
+export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
+  const settings = queueSettings({ slicerConcurrency: deps.slicerConcurrency });
+  for (const setting of [settings.ingest, settings.slicer, settings.maintenance]) {
+    await boss.createQueue(setting.name, setting.queue);
+  }
+
+  // missed: 'once' runs a purge the app was down for when it comes back,
+  // rather than waiting a day.
+  await boss.schedule(
+    QUEUE.maintenance,
+    PURGE_EXPIRED_CRON,
+    { task: MAINTENANCE_TASKS.purgeExpired },
+    { tz: deps.timeZone ?? localTimeZone(), key: MAINTENANCE_TASKS.purgeExpired, missed: "once" },
+  );
+
+  const polling =
+    deps.pollingIntervalSeconds === undefined
+      ? {}
+      : { pollingIntervalSeconds: deps.pollingIntervalSeconds };
+
+  await boss.work<IngestInput, IngestResult>(
+    QUEUE.ingest,
+    { ...settings.ingest.work, ...polling },
+    async ([job]) => {
+      if (job === undefined) throw new Error("ingest worker was handed no job");
+      return deps.ingestFile(job.data);
+    },
+  );
+
+  await boss.work<MaintenanceJob>(
+    QUEUE.maintenance,
+    { ...settings.maintenance.work, ...polling },
+    async ([job]) => {
+      if (job === undefined) throw new Error("maintenance worker was handed no job");
+      switch (job.data.task) {
+        case MAINTENANCE_TASKS.purgeExpired:
+          await deps.purgeExpired(new Date());
+          return;
+        default:
+          throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
+      }
+    },
+  );
 }

@@ -31,6 +31,15 @@ export interface NewModel {
   externalRef?: string | null;
 }
 
+/** Metadata a parse or an import found; fillMetadata writes only into empty fields. */
+export interface FoundMetadata {
+  caption?: string | null;
+  descriptionMd?: string | null;
+  creator?: string | null;
+  licenseSpdx?: string | null;
+  licenseNote?: string | null;
+}
+
 export interface SearchQuery {
   /** Matched anywhere in name, caption, creator or a tag, ignoring case. */
   q: string;
@@ -219,6 +228,47 @@ export function modelsRepo(db: Kysely<DB>) {
 
     /** A model by id; a trashed one only with includeTrashed. */
     get,
+
+    /**
+     * Fill-only metadata (AC-022): writes each found value only into a field
+     * that is null or empty, so nothing Jon set is overwritten. The name is
+     * never touched. A found value that is null, empty or blank writes
+     * nothing. False when the model is unknown.
+     */
+    async fillMetadata(id: string, found: FoundMetadata): Promise<boolean> {
+      if (!isUuid(id)) return false;
+      const value = (v: string | null | undefined) => (v?.trim() ? v : undefined);
+      return inTransaction(db, async (trx) => {
+        // The row is locked, so the fields read here are the ones updated.
+        const row = await trx
+          .selectFrom("models")
+          .select(["caption", "descriptionMd", "licenseSpdx", "licenseNote", "creatorId"])
+          .where("id", "=", id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined) return false;
+        const set: Partial<
+          Record<"caption" | "descriptionMd" | "licenseSpdx" | "licenseNote" | "creatorId", string>
+        > = {};
+        for (const column of ["caption", "descriptionMd", "licenseSpdx", "licenseNote"] as const) {
+          const v = value(found[column]);
+          if (v !== undefined && (row[column] === null || row[column] === "")) set[column] = v;
+        }
+        // The creator row is made only when it will be used, so no creator
+        // is left in the sidebar without a model.
+        const creator = value(found.creator)?.trim();
+        if (creator !== undefined && row.creatorId === null) {
+          set.creatorId = await creatorId(trx, creator);
+        }
+        if (Object.keys(set).length === 0) return true;
+        const result = await trx
+          .updateTable("models")
+          .set({ ...set, updatedAt: sql`now()` })
+          .where("id", "=", id)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
+    },
 
     /**
      * Live models whose name, caption, creator or any tag contains q,

@@ -24,7 +24,7 @@ describe("detectKind", () => {
     ["bracket.stp", step, "step"],
     ["bracket.STP", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), step]), "step"],
     ["box.scad", scad, "scad"],
-    ["box.scad", Buffer.from("// café – a comment\ncube(1);\n", "utf8"), "scad"],
+    ["box.scad", Buffer.from("// caf\u00e9 \u2013 a comment\ncube(1);\n", "utf8"), "scad"],
     ["dir/sub dir/Plate one.3mf", ZIP, "3mf"],
   ])("%s is %s", (name, bytes, kind) => {
     expect(detectKind(name, bytes)).toBe(kind);
@@ -49,7 +49,7 @@ describe("detectKind", () => {
   });
 
   test("a .scad cut mid-character at the end of the sample is still text", () => {
-    const text = Buffer.from(`${"x".repeat(FIRST_BYTES - 1)}é`, "utf8");
+    const text = Buffer.from(`${"x".repeat(FIRST_BYTES - 1)}\u00e9`, "utf8");
     expect(detectKind("box.scad", text.subarray(0, FIRST_BYTES))).toBe("scad");
   });
 });

@@ -312,6 +312,25 @@ describe("what a stored file records", () => {
     expect((await readObject(source?.key ?? "")).equals(bytes)).toBe(true);
   });
 
+  test("a sliced plate that repeats a filament id is stored with the first one", async () => {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({ plates: 1, sliced: [1], sliceFilamentIds: [1, 1] }),
+      ),
+      originalName: "Repeated filament.3mf",
+      target: "new",
+    });
+    const rows = await env.db
+      .selectFrom("estimateFilaments")
+      .innerJoin("estimates", "estimates.id", "estimateFilaments.estimateId")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select(["estimateFilaments.slot", "estimateFilaments.type"])
+      .where("plates.fileId", "=", r.fileId)
+      .execute();
+    expect(rows).toEqual([{ slot: 1, type: "PLA" }]);
+  });
+
   test("the footer licences name the licence and set no SPDX id", async () => {
     const r = await env.ingest.ingestFile({
       tmpPath: await writeUpload(

@@ -19,6 +19,7 @@ import { startTestPostgres, type TestPostgres } from "../support/db.js";
 
 let pgc: TestPostgres;
 let boss: PgBoss;
+let dbUrl: string;
 const purgeCalls: Date[] = [];
 const ingestCalls: IngestInput[] = [];
 let ingestImpl: (input: IngestInput) => Promise<IngestResult> = async () => ({
@@ -52,7 +53,8 @@ async function until<T>(read: () => Promise<T> | T, done: (v: T) => boolean, ms 
 beforeAll(async () => {
   pgc = await startTestPostgres();
   const t = await pgc.freshDatabase();
-  boss = createBoss({ databaseUrl: t.url });
+  dbUrl = t.url;
+  boss = createBoss({ databaseUrl: dbUrl });
   await boss.start();
   await startQueues(boss, deps());
 });
@@ -77,8 +79,16 @@ describe("queues", () => {
   });
 
   test("starting the queues again, as a restart does, changes nothing", async () => {
-    await startQueues(boss, deps());
+    // A second process on the same database, as after a restart.
+    const again = createBoss({ databaseUrl: dbUrl });
+    await again.start();
+    try {
+      await startQueues(again, deps());
+    } finally {
+      await again.stop({ graceful: false });
+    }
     expect((await boss.getQueue(QUEUE.slicer))?.policy).toBe("singleton");
+    expect((await boss.getQueue(QUEUE.ingest))?.retryLimit).toBe(0);
     expect(await boss.getSchedules(QUEUE.maintenance)).toHaveLength(1);
   });
 });

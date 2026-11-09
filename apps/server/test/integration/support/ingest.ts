@@ -119,10 +119,12 @@ export interface MakerWorldSpec {
 }
 
 export interface ThreeMfSpec {
-  /** Plates numbered from 1, each with this many objects. */
+  /** How many plates, numbered from 1, each holding one object. */
   plates: number;
   /** Plates that carry Bambu's own slice numbers, sliced on a P1S (BBL C12). */
   sliced?: number[];
+  /** The filament ids on each sliced plate; [1] when left out. */
+  sliceFilamentIds?: number[];
   makerWorld?: MakerWorldSpec;
 }
 
@@ -194,7 +196,12 @@ export function build3mf(spec: ThreeMfSpec): Buffer {
               '    <metadata key="nozzle_diameters" value="0.4"/>\n' +
               `    <metadata key="prediction" value="${1000 * n}"/>\n` +
               `    <metadata key="weight" value="${10 * n}.5"/>\n` +
-              `    <filament id="1" type="PLA" color="#00AE42" used_m="1.00" used_g="${10 * n}.5" />\n` +
+              (spec.sliceFilamentIds ?? [1])
+                .map(
+                  (id, i) =>
+                    `    <filament id="${id}" type="${i === 0 ? "PLA" : "PETG"}" color="#00AE42" used_m="1.00" used_g="${10 * n}.5" />\n`,
+                )
+                .join("") +
               "  </plate>\n",
           )
           .join("") +
