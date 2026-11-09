@@ -19,8 +19,10 @@
 //      returns before any slice runs (AC-033).
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012); a store outage fails visibly with
-// STORAGE_UNAVAILABLE_MESSAGE. The uploaded file at tmpPath is never deleted
+// already put and leaves no rows (AC-012); an object that cannot be deleted
+// is removed later by the orphan sweep (orphans.ts). A store outage fails
+// visibly with STORAGE_UNAVAILABLE_MESSAGE. The uploaded file at tmpPath is
+// never deleted
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
 // after an outage.
 //
@@ -333,8 +335,9 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
           await store.deleteBlobs(put.map((blob) => blob.key));
         } catch {
           // The failure that matters is already being thrown, and during an
-          // outage this delete fails too. An object left behind has no row,
-          // so AC-010 reconciliation finds it; the model was never created.
+          // outage this delete fails too. An object left behind has no blob
+          // row, so the orphan sweep (orphans.ts) deletes it once it is 24
+          // hours old; AC-010's reconciliation would only count it.
         }
       }
       if (error instanceof StoreUnavailable) {

@@ -7,7 +7,8 @@
 //   jobs; the slicer answers 409 busy while any heavy job runs, and those
 //   jobs retry on 409. Nothing here sends to it or works it;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
-//   runs daily at 03:30 local time (issue #38).
+//   runs daily at 03:30 local time (issue #38), and the orphan sweep
+//   (ingest/orphans.ts) daily at 04:00 local time.
 import type { PgBoss } from "pg-boss";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
@@ -69,7 +70,10 @@ export const MAINTENANCE_TASKS = {
 /** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
 export const PURGE_EXPIRED_CRON = "30 3 * * *";
 
-/** Daily at 04:00 local time, after the purge. */
+/**
+ * Daily at 04:00 local time, after the purge. Any hour works: the sweep only
+ * deletes objects older than 24 hours.
+ */
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
 
 /**
@@ -85,7 +89,7 @@ export interface QueueDeps {
   ingestFile(input: IngestInput): Promise<IngestResult>;
   /** Task 14's purgeExpired (library/trash.ts). */
   purgeExpired(now: Date): Promise<unknown>;
-  /** The orphan sweep (ingest/orphans.ts). */
+  /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
   /** SLICER_CONCURRENCY. */
   slicerConcurrency: number;
@@ -112,13 +116,20 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     await boss.createQueue(setting.name, setting.queue);
   }
 
-  // missed: 'once' runs a purge the app was down for when it comes back,
+  // missed: 'once' runs a job the app was down for when it comes back,
   // rather than waiting a day.
+  const tz = deps.timeZone ?? localTimeZone();
   await boss.schedule(
     QUEUE.maintenance,
     PURGE_EXPIRED_CRON,
     { task: MAINTENANCE_TASKS.purgeExpired },
-    { tz: deps.timeZone ?? localTimeZone(), key: MAINTENANCE_TASKS.purgeExpired, missed: "once" },
+    { tz, key: MAINTENANCE_TASKS.purgeExpired, missed: "once" },
+  );
+  await boss.schedule(
+    QUEUE.maintenance,
+    SWEEP_ORPHANS_CRON,
+    { task: MAINTENANCE_TASKS.sweepOrphans },
+    { tz, key: MAINTENANCE_TASKS.sweepOrphans, missed: "once" },
   );
 
   const polling =
@@ -143,6 +154,9 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       switch (job.data.task) {
         case MAINTENANCE_TASKS.purgeExpired:
           await deps.purgeExpired(new Date());
+          return;
+        case MAINTENANCE_TASKS.sweepOrphans:
+          await deps.sweepOrphans(new Date());
           return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);

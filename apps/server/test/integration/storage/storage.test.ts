@@ -231,7 +231,7 @@ describe("listPage", () => {
       expect(o.size).toBe(8);
       expect(o.lastModified).toBeInstanceOf(Date);
       // S3 keeps whole seconds; allow for that and for clock skew.
-      expect(Math.abs(o.lastModified.getTime() - startedAt)).toBeLessThan(120_000);
+      expect(Math.abs((o.lastModified?.getTime() ?? 0) - startedAt)).toBeLessThan(120_000);
     }
   });
 

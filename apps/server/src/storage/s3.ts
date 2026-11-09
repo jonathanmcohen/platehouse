@@ -80,7 +80,8 @@ export interface BlobStore {
 export interface ListedObject {
   key: string;
   size: number;
-  lastModified: Date;
+  /** When the object was last written; undefined if the store did not say. */
+  lastModified: Date | undefined;
 }
 
 // DeleteObjects takes at most 1000 keys per request.
@@ -241,8 +242,25 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       return objects;
     },
 
-    async listPage(_prefix, _opts) {
-      throw new Error("listPage is not implemented yet");
+    async listPage(prefix, opts = {}) {
+      try {
+        const out = await client.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            ContinuationToken: opts.token,
+            MaxKeys: opts.maxKeys,
+          }),
+        );
+        const objects: ListedObject[] = [];
+        for (const o of out.Contents ?? []) {
+          if (o.Key === undefined) continue;
+          objects.push({ key: o.Key, size: o.Size ?? 0, lastModified: o.LastModified });
+        }
+        return { objects, next: out.IsTruncated ? out.NextContinuationToken : undefined };
+      } catch (err) {
+        throw toStoreError(err, "ListObjectsV2");
+      }
     },
 
     readVersioning() {
