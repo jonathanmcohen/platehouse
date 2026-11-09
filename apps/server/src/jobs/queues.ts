@@ -61,10 +61,16 @@ export function queueSettings(opts: {
  * The maintenance queue's tasks, each a job { task } and its schedule key.
  * Task 9 adds the hourly sweep of stale partial uploads here.
  */
-export const MAINTENANCE_TASKS = { purgeExpired: "purge-expired" } as const;
+export const MAINTENANCE_TASKS = {
+  purgeExpired: "purge-expired",
+  sweepOrphans: "sweep-orphans",
+} as const;
 
 /** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
 export const PURGE_EXPIRED_CRON = "30 3 * * *";
+
+/** Daily at 04:00 local time, after the purge. */
+export const SWEEP_ORPHANS_CRON = "0 4 * * *";
 
 /**
  * The process's local time zone, the one "03:30 local time" means: the
@@ -79,6 +85,8 @@ export interface QueueDeps {
   ingestFile(input: IngestInput): Promise<IngestResult>;
   /** Task 14's purgeExpired (library/trash.ts). */
   purgeExpired(now: Date): Promise<unknown>;
+  /** The orphan sweep (ingest/orphans.ts). */
+  sweepOrphans(now: Date): Promise<unknown>;
   /** SLICER_CONCURRENCY. */
   slicerConcurrency: number;
   /** The zone the cron schedules run in; localTimeZone() when left out. */

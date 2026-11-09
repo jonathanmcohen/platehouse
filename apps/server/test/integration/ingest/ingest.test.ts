@@ -10,9 +10,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { CreateBucketCommand } from "@aws-sdk/client-s3";
+import type { Kysely, Transaction } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
+import type { DB } from "../../../src/db/types.js";
 import {
+  createIngest,
   IngestError,
   type IngestStore,
   STORAGE_UNAVAILABLE_MESSAGE,
@@ -525,6 +528,78 @@ describe("a store outage leaves nothing behind (AC-012)", () => {
     expect((error as IngestError).code).toBe("storage_unavailable");
     expect(await footprint(env)).toEqual(before);
     expect((await modelRow(model.id)).caption).toBeNull();
+  });
+});
+
+/**
+ * The database with some of its methods replaced. Everything else is the
+ * real database, bound to it.
+ */
+function dbWith(overrides: Record<string, unknown>): Kysely<DB> {
+  return new Proxy(env.db, {
+    get(target, prop) {
+      if (typeof prop === "string" && Object.hasOwn(overrides, prop)) return overrides[prop];
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+describe("a failed commit never deletes what may have been committed", () => {
+  test("a commit that succeeds but reports an error keeps its objects behind its rows", async () => {
+    // The connection drops after COMMIT reached the server: the rows are
+    // committed, but ingest only sees an error.
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: committedThenLost, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Committed after all.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    const after = await footprint(env);
+    // The file, its source blob and its thumbnail blob were committed, and
+    // both objects are still in the bucket.
+    expect(after.files - before.files).toBe(1);
+    expect(after.blobs - before.blobs).toBe(2);
+    expect(after.objects - before.objects).toBe(2);
+  });
+
+  test("when the database cannot say whether the rows were committed, the objects are kept for the orphan sweep", async () => {
+    const unreachable = () => {
+      throw new Error("Connection refused");
+    };
+    const down = dbWith({
+      transaction: () => ({ execute: async () => unreachable() }),
+      selectFrom: unreachable,
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: down, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Database down.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe("Connection refused");
+    const after = await footprint(env);
+    expect(after.files).toBe(before.files);
+    expect(after.blobs).toBe(before.blobs);
+    // Left in place: no row points at them, so the orphan sweep removes
+    // them after 24 hours.
+    expect(after.objects - before.objects).toBe(2);
   });
 });
 
