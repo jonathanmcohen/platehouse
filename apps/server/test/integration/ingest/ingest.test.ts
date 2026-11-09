@@ -1,14 +1,14 @@
 // Build plan Task 8: the ingest pipeline. AC-020 (server side), AC-022
-// (fill-only metadata), AC-024 (unsupported types store nothing), AC-033
-// (ingest never waits on a slice) and AC-012 (an upload during a store
-// outage leaves nothing behind).
+// (fill-only metadata), AC-024 (unsupported types store nothing) and AC-012
+// (an upload during a store outage leaves nothing behind). AC-033 (ingest
+// never waits on a slice) is checked from the source, in
+// test/ingest/no-slicer.test.ts.
 //
 // Order under test: detect -> hash and put the source blob -> parse (each
 // thumbnail put as it comes) -> one transaction for the rows. A failure before
 // the transaction deletes the objects it put and leaves no rows.
 import { createHash, randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
 import { CreateBucketCommand } from "@aws-sdk/client-s3";
 import type { Kysely, Transaction } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -29,6 +29,7 @@ import {
   footprint,
   type IngestEnv,
   plainZip,
+  png,
   SCAD_TEXT,
   STEP_TEXT,
   startIngestEnv,
@@ -87,6 +88,10 @@ describe("unsupported files", () => {
     ["a .scad that is binary", "box.scad", Buffer.from([0x63, 0x00, 0x01, 0x02])],
     ["a .step without its header", "part.step", Buffer.from("HEADER;\nENDSEC;\n")],
     ["an empty .stl", "part.stl", Buffer.alloc(0)],
+    // 84 bytes or more and named .stl, but not an STL.
+    ["a PNG named .stl", "part.stl", Buffer.concat([png("not an stl"), Buffer.alloc(200)])],
+    ["a zip named .stl", "part.stl", build3mf({ plates: 1 })],
+    ["G-code named .stl", "plate_1.stl", Buffer.from(`; G-code\nG28\n${"G1 X1 Y1\n".repeat(20)}`)],
   ])("%s is refused and stores nothing: no rows, no objects", async (_label, name, bytes) => {
     const before = await footprint(env);
     const tmpPath = await writeUpload(env, bytes);
@@ -418,6 +423,34 @@ describe("metadata is filled, never overwritten", () => {
     expect(after.descriptionMd).toBe("Print it.");
   });
 
+  test("a description already set is never edited; a footer licence is still stored as the licence note", async () => {
+    // Jon, 2026-11-08: the footer goes into the description only when it is
+    // empty; the model page (Task 20) shows models.license_note.
+    const model = await env.repos.models.create({
+      name: `Described ${uuidv7()}`,
+      descriptionMd: "Jon's own description.",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: {
+            designer: "Synthetic Designer",
+            descriptionHtml: "<p>From MakerWorld.</p>",
+            license: "MakerWorld Exclusive License",
+          },
+        }),
+      ),
+      originalName: "Described.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.descriptionMd).toBe("Jon's own description.");
+    expect(after.licenseSpdx).toBeNull();
+    expect(after.licenseNote).toBe("License on MakerWorld: MakerWorld Exclusive License");
+  });
+
   test("a creator Jon set is kept", async () => {
     const model = await env.repos.models.create({
       name: `Credited ${uuidv7()}`,
@@ -600,34 +633,5 @@ describe("a failed commit never deletes what may have been committed", () => {
     // Left in place: no row points at them, so the orphan sweep removes
     // them after 24 hours.
     expect(after.objects - before.objects).toBe(2);
-  });
-});
-
-describe("ingest never waits on a slice (AC-033)", () => {
-  let slicer: Server;
-  let calls = 0;
-
-  beforeAll(async () => {
-    // A stand-in for the slicer container: it counts every request.
-    slicer = createServer((_req, res) => {
-      calls += 1;
-      res.writeHead(409, { "content-type": "application/json" }).end('{"error":"busy"}');
-    });
-    await new Promise<void>((resolve) => slicer.listen(0, "127.0.0.1", resolve));
-  });
-
-  afterAll(async () => {
-    await new Promise<void>((resolve) => slicer.close(() => resolve()));
-  });
-
-  test("ingest returns before any slice runs (the slicer stub is never called inside ingest)", async () => {
-    const r = await env.ingest.ingestFile({
-      tmpPath: await writeUpload(env, build3mf({ plates: 3, sliced: [1] })),
-      originalName: "Unsliced plates.3mf",
-      target: "new",
-    });
-    // Plates 2 and 3 have no numbers; their estimates are background work.
-    expect(await env.repos.plates.listForFile(r.fileId)).toHaveLength(3);
-    expect(calls).toBe(0);
   });
 });

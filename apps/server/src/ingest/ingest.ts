@@ -193,10 +193,10 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
 
   async function ingestFile(input: IngestInput): Promise<IngestResult> {
     const { tmpPath, originalName, target } = input;
-    const kind = detectKind(originalName, await readFirstBytes(tmpPath));
+    const { size } = await stat(tmpPath);
+    const kind = detectKind(originalName, await readFirstBytes(tmpPath), size);
     if (kind === null) throw new IngestError("unsupported_type", UNSUPPORTED_MESSAGE);
     const modelId = await plannedModel(target);
-    const { size } = await stat(tmpPath);
 
     const put: PutBlob[] = [];
     const putOne = async (

@@ -56,7 +56,7 @@ function startsWithAsciiSolid(bytes: Buffer): boolean {
  * them, or the whole file if shorter), or null when Platehouse does not take
  * it.
  */
-export function detectKind(name: string, firstBytes: Buffer): Kind | null {
+export function detectKind(name: string, firstBytes: Buffer, _size: number): Kind | null {
   const kind = EXTENSIONS.get(extensionOf(name));
   switch (kind) {
     case "3mf":
