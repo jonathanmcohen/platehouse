@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
 import { streamChunked } from "./support/http.js";
@@ -23,10 +23,28 @@ import {
   stubDir,
 } from "./support/stubs.js";
 
+// node:fs as it is, except that a test can make rmSync fail for the paths it
+// names, the way a recursive delete fails with ENOTEMPTY or EBUSY on a folder
+// a killed program is still writing to.
+const rmFails = vi.hoisted(() => ({ under: null as string | null }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  const rmSync: typeof fs.rmSync = (path, options) => {
+    if (rmFails.under !== null && String(path).startsWith(rmFails.under)) {
+      throw Object.assign(new Error(`ENOTEMPTY: directory not empty, rmdir '${String(path)}'`), {
+        code: "ENOTEMPTY",
+      });
+    }
+    return fs.rmSync(path, options);
+  };
+  return { ...fs, default: { ...fs, rmSync }, rmSync };
+});
+
 const P1S = "Bambu Lab P1S 0.4 nozzle";
 const running: Slicer[] = [];
 
 afterEach(async () => {
+  rmFails.under = null;
   while (running.length) await running.pop()?.close();
 });
 
@@ -854,6 +872,46 @@ describe("a failed request never takes the server down", () => {
       expect(res).toEqual({ status: 500, body: "internal error\n" });
       const fetched = await fetch(url(base), { method: "POST", body: Buffer.alloc(BIG, 1) });
       expect(fetched.status).toBe(declared);
+      await expectServing(base);
+    },
+  );
+
+  // The lock is freed even when the job folder cannot be deleted: a delete
+  // that throws must not leave the server answering 409 busy to every job
+  // while /v1/health still says it is up.
+  test("a job folder that cannot be deleted still frees the lock, and the next slice runs", async () => {
+    const s = setup();
+    const base = await start(s.config);
+    rmFails.under = s.workDir;
+    for (let i = 0; i < 2; i++) {
+      const res = await postSlice(base, sliceable());
+      expect(res.status).toBe(200);
+      expect(slicerContract.sliceResult.parse(await res.json()).status).toBe("ok");
+    }
+    await expectServing(base);
+  });
+
+  test.each(ROUTES)(
+    "%s: a client that dies mid-upload frees the lock even when its folder cannot be deleted",
+    async (_route, url) => {
+      const s = setup();
+      const base = await start(s.config);
+      rmFails.under = s.workDir;
+      const res = await streamChunked(url(base), 1024 * 1024, { chunk: 4096, abortAfter: 16384 });
+      expect(res).toEqual({ error: "aborted by the client" });
+      let busy = true;
+      const until = Date.now() + 3000;
+      while (busy && Date.now() < until) {
+        const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+        busy = health.busy;
+        if (busy) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(busy).toBe(false);
+      // the folder it could not delete is still there
+      expect(readdirSync(s.workDir)).toHaveLength(1);
+      rmFails.under = null;
+      const next = await postSlice(base, sliceable());
+      expect(next.status).toBe(200);
       await expectServing(base);
     },
   );

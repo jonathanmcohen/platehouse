@@ -288,6 +288,16 @@ export function createSlicer(config: SlicerConfig): Slicer {
     });
   };
 
+  const removeJobDir = (dir: string): void => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      log(
+        `job folder ${dir} could not be deleted: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   const jobDir = (): string => {
     const dir = join(config.workDir, randomUUID());
     mkdirSync(dir, { recursive: true });
@@ -306,12 +316,20 @@ export function createSlicer(config: SlicerConfig): Slicer {
     const job: Job = {
       dir: "",
       track: track(),
+      // The lock is freed whatever happens to the kill or the delete: a lock
+      // left held would answer 409 busy to every later job while
+      // /v1/health still reports the server up. A folder that cannot be
+      // deleted (ENOTEMPTY or EBUSY while a killed program finishes a
+      // write) is logged and left behind, and the job's answer stands.
       release: () => {
         if (released) return;
         released = true;
-        job.track.killNow();
-        if (dir) rmSync(dir, { recursive: true, force: true });
-        if (holder === job) holder = null;
+        try {
+          job.track.killNow();
+          if (dir) removeJobDir(dir);
+        } finally {
+          if (holder === job) holder = null;
+        }
       },
     };
     holder = job;
