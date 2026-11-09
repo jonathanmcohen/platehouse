@@ -13,9 +13,9 @@ import { type StartedS3, startS3 } from "./containers.js";
 import { startTestPostgres, type TestPostgres } from "./db.js";
 
 export interface LibraryEnv {
-  /** The database's connection URL, for a pg-boss on the same database. */
-  url: string;
   db: Kysely<DB>;
+  /** The database's URL, for a pg-boss instance on the same database. */
+  url: string;
   repos: Repos;
   store: BlobStore;
   /**
@@ -52,7 +52,7 @@ export async function startLibraryEnv(): Promise<LibraryEnv> {
     const putRaw = async (key: string, bytes: Buffer) => {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes }));
     };
-    return { url: t.url, db: t.db, repos: createRepos(t.db), store, putRaw, stop };
+    return { db: t.db, url: t.url, repos: createRepos(t.db), store, putRaw, stop };
   } catch (error) {
     await stop();
     throw error;

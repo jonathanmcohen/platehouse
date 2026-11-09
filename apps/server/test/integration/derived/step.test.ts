@@ -7,8 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { DerivedJob } from "../../../src/derived/derived.js";
-import { QUEUE, SLICER_TASKS } from "../../../src/jobs/queues.js";
+import { DERIVED_KINDS, type DerivedJob } from "../../../src/derived/derived.js";
+import { QUEUE } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
 import {
   blobsOf,
@@ -78,7 +78,7 @@ describe("STEP meshes (AC-050)", () => {
     expect(calls[0]?.contentType).toBe("application/octet-stream");
 
     const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
-    expect(jobs.map((j) => j.data.task)).toEqual([SLICER_TASKS.convertStep]);
+    expect(jobs.map((j) => j.data.kind)).toEqual([DERIVED_KINDS.convertStep]);
   });
 
   test("a .stp upload is meshed the same way", async () => {

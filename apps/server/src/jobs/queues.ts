@@ -7,14 +7,14 @@
 //   SLICER_CONCURRENCY, since the singleton policy made it a no-op). Task 12
 //   adds its slice jobs and Task 13 its render and mesh jobs; the slicer
 //   answers 409 busy while any heavy job runs, and those jobs retry on 409
-//   or a lost connection through pg-boss's own retry settings
-//   (SLICER_RETRY). Task 13's render and mesh jobs (derived/derived.ts) are
-//   worked here, by one worker that dispatches on the job's task;
+//   through the queue's own retry settings (SLICER_RETRY). Each job names
+//   its kind, and the worker hands it to that kind's handler (slicerJobs);
+//   Task 13's render and mesh kinds come from derived/derived.ts
+//   (derivedJobHandlers);
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38), and the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time.
-import type { PgBoss } from "pg-boss";
-import type { DerivedJob, DerivedOutcome } from "../derived/derived.js";
+import type { JobWithMetadata, PgBoss } from "pg-boss";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
 export const QUEUE = {
@@ -28,10 +28,30 @@ export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
 /** Ingest jobs worked at once (Task 8 Interfaces). */
 export const INGEST_CONCURRENCY = 2;
 
+/**
+ * How a slicer job is retried when the slicer answers 409 busy or the
+ * connection to it is lost (build plan Task 12; Task 13's render and mesh
+ * jobs too): by pg-boss itself, three retries with exponential backoff from
+ * 10 s, capped at 2 minutes, so a slicer that is restarting has time to come
+ * back. The handler records the failure once the last retry is used.
+ */
+export const SLICER_RETRY = Object.freeze({
+  retryLimit: 3,
+  retryBackoff: true,
+  retryDelay: 10,
+  retryDelayMax: 120,
+});
+
 export interface QueueSetting {
   name: QueueName;
   /** createQueue options. */
-  queue: { policy: "standard" | "singleton"; retryLimit?: number };
+  queue: {
+    policy: "standard" | "singleton";
+    retryLimit?: number;
+    retryBackoff?: boolean;
+    retryDelay?: number;
+    retryDelayMax?: number;
+  };
   /** work options. */
   work: { localConcurrency: number };
 }
@@ -46,7 +66,7 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
     },
     slicer: {
       name: QUEUE.slicer,
-      queue: { policy: "singleton" },
+      queue: { policy: "singleton", ...SLICER_RETRY },
       work: { localConcurrency: 1 },
     },
     maintenance: {
@@ -57,25 +77,6 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   };
 }
 
-/** The slicer queue's tasks, each a job { task, ... }. Task 12 adds its slice task. */
-export const SLICER_TASKS = {
-  renderScad: "render-scad",
-  convertStep: "convert-step",
-} as const;
-
-/**
- * The retry settings every slicer job is sent with (Tasks 12 and 13). A job
- * whose slicer answered 409 busy or dropped the connection throws, and
- * pg-boss runs it again, up to 3 times with exponential backoff from
- * retryDelay seconds. The app's own code has no retry loop. On the last
- * attempt the job records slicer_error instead of throwing.
- */
-export const SLICER_RETRY = {
-  retryLimit: 3,
-  retryBackoff: true,
-  retryDelay: 5,
-} as const;
-
 /**
  * The maintenance queue's tasks, each a job { task } and its schedule key.
  * Task 9 adds the hourly sweep of stale partial uploads here.
@@ -84,6 +85,20 @@ export const MAINTENANCE_TASKS = {
   purgeExpired: "purge-expired",
   sweepOrphans: "sweep-orphans",
 } as const;
+
+/** A job on the slicer queue names its kind; each kind has one handler. */
+export interface SlicerJob {
+  kind: string;
+}
+
+/**
+ * The slicer queue's handlers by job kind: Task 12's "slice", and Task 13's
+ * render and mesh kinds. A handler gets the job with its retry count and
+ * limit, so it can tell the last attempt.
+ */
+export type SlicerJobHandlers = Readonly<
+  Record<string, (job: JobWithMetadata<SlicerJob>) => Promise<unknown>>
+>;
 
 /** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
 export const PURGE_EXPIRED_CRON = "30 3 * * *";
@@ -110,13 +125,10 @@ export interface QueueDeps {
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
   /**
-   * Runs one Task 13 render or mesh job (derived/derived.ts's runJob). With
-   * it, the slicer queue gets its worker; without it, none.
+   * The slicer queue's handlers by job kind (Task 12, Task 13). With none,
+   * the slicer queue is created but not worked.
    */
-  runDerived?(
-    job: DerivedJob,
-    attempt: { retryCount: number; retryLimit: number },
-  ): Promise<DerivedOutcome>;
+  slicerJobs?: SlicerJobHandlers;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -130,15 +142,19 @@ interface MaintenanceJob {
 /**
  * Creates the three queues, registers the maintenance schedules and starts
  * the ingest and maintenance workers on a started boss. Safe on every start:
- * a queue that exists is left as it is, and a schedule is keyed, so it is
- * replaced rather than added again. The slicer queue gets its one worker,
- * with queueSettings().slicer.work, when deps.runDerived is given.
+ * a queue that exists keeps its policy (the slicer queue's retry settings are
+ * applied again), and a schedule is keyed, so it is replaced rather than
+ * added again. The slicer queue is worked, one job at a time, only when
+ * slicerJobs is given.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
   for (const setting of [settings.ingest, settings.slicer, settings.maintenance]) {
     await boss.createQueue(setting.name, setting.queue);
   }
+  // createQueue leaves a queue that exists as it is, so the slicer's retry
+  // settings are applied to one made before they existed too.
+  await boss.updateQueue(QUEUE.slicer, { ...SLICER_RETRY });
 
   // missed: 'once' runs a job the app was down for when it comes back,
   // rather than waiting a day.
@@ -170,27 +186,22 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     },
   );
 
-  // The slicer queue's one worker: one job at a time (singleton policy and
-  // localConcurrency 1), dispatched by task. Task 12 adds its slice task to
-  // this switch rather than a second worker, which would take jobs of
-  // either kind.
-  const runDerived = deps.runDerived;
-  if (runDerived !== undefined) {
-    // includeMetadata gives the job its retryLimit, which runJob compares
-    // with retryCount to know the last attempt.
-    const options = { ...settings.slicer.work, ...polling, includeMetadata: true as const };
-    await boss.work<DerivedJob, DerivedOutcome, typeof options>(
+  const handlers = deps.slicerJobs;
+  if (handlers) {
+    // With metadata, so a handler sees its retry count and limit.
+    const slicerWork = { ...settings.slicer.work, ...polling, includeMetadata: true as const };
+    await boss.work<SlicerJob, unknown, typeof slicerWork>(
       QUEUE.slicer,
-      options,
+      slicerWork,
       async ([job]) => {
         if (job === undefined) throw new Error("slicer worker was handed no job");
-        switch (job.data.task) {
-          case SLICER_TASKS.renderScad:
-          case SLICER_TASKS.convertStep:
-            return runDerived(job.data, { retryCount: job.retryCount, retryLimit: job.retryLimit });
-          default:
-            throw new Error(`Unknown slicer task: ${String(job.data.task).slice(0, 64)}`);
+        const kind = job.data?.kind;
+        const handler =
+          typeof kind === "string" && Object.hasOwn(handlers, kind) ? handlers[kind] : undefined;
+        if (handler === undefined) {
+          throw new Error(`Unknown slicer job kind: ${String(kind).slice(0, 64)}`);
         }
+        return handler(job);
       },
     );
   }

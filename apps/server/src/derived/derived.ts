@@ -5,6 +5,10 @@
 // STEP file's row commits, ingest's afterCommit (afterUpload here) sends a
 // job to Task 8's singleton slicer queue, and runJob does the work there.
 //
+// The jobs are kinds on the slicer queue (DERIVED_KINDS): the queue's one
+// worker hands each to its handler from derivedJobHandlers, beside Task 12's
+// "slice" handler, so there is never a second worker on that queue.
+//
 // Retries (Tasks 12 and 13): every job is sent with SLICER_RETRY. When the
 // slicer answers 409 busy or the connection is lost, runJob throws and
 // pg-boss runs the job again with backoff; there is no retry loop here. On
@@ -41,7 +45,7 @@ import {
   STORAGE_UNAVAILABLE_MESSAGE,
   type StoredFile,
 } from "../ingest/ingest.js";
-import { QUEUE, SLICER_RETRY, SLICER_TASKS } from "../jobs/queues.js";
+import { QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
@@ -62,11 +66,21 @@ export { DERIVED_MESSAGES } from "./client.js";
 /** files.derived_status values. */
 export type DerivedStatus = "pending" | "ok" | "failed";
 
-export type DerivedTask = (typeof SLICER_TASKS)[keyof typeof SLICER_TASKS];
+/**
+ * Task 13's job kinds on the slicer queue. The queue's one worker hands each
+ * job to its kind's handler (slicerJobs in jobs/queues.ts); derivedJobHandlers
+ * gives these two, beside Task 12's "slice".
+ */
+export const DERIVED_KINDS = {
+  renderScad: "render-scad",
+  convertStep: "convert-step",
+} as const;
 
-/** A slicer queue job that makes a file's derived blobs. */
+export type DerivedKind = (typeof DERIVED_KINDS)[keyof typeof DERIVED_KINDS];
+
+/** A slicer queue job that makes a file's derived blobs; its kind picks the handler. */
 export interface DerivedJob {
-  task: DerivedTask;
+  kind: DerivedKind;
   fileId: string;
   /** The source blob to render: the file's own, or a replacement not yet swapped in. */
   sourceBlobId: string;
@@ -118,9 +132,9 @@ export function hasDerived(kind: FileKind): kind is "scad" | "step" {
   return kind === "scad" || kind === "step";
 }
 
-const TASK_OF: Readonly<Record<"scad" | "step", DerivedTask>> = {
-  scad: SLICER_TASKS.renderScad,
-  step: SLICER_TASKS.convertStep,
+const JOB_KIND_OF: Readonly<Record<"scad" | "step", DerivedKind>> = {
+  scad: DERIVED_KINDS.renderScad,
+  step: DERIVED_KINDS.convertStep,
 };
 
 /** The file columns that point at each kind's derived blobs. */
@@ -132,9 +146,9 @@ const COLUMN_OF: Readonly<Record<RenderOutput["kind"], DerivedColumn>> = {
   mesh_glb: "meshBlobId",
 };
 
-const COLUMNS_OF_TASK: Readonly<Record<DerivedTask, readonly DerivedColumn[]>> = {
-  [SLICER_TASKS.renderScad]: ["renderStlBlobId", "renderPngBlobId"],
-  [SLICER_TASKS.convertStep]: ["meshBlobId"],
+const COLUMNS_OF_KIND: Readonly<Record<DerivedKind, readonly DerivedColumn[]>> = {
+  [DERIVED_KINDS.renderScad]: ["renderStlBlobId", "renderPngBlobId"],
+  [DERIVED_KINDS.convertStep]: ["meshBlobId"],
 };
 
 /** The job's view of the file changed under it: a newer source landed, or the file or model went. */
@@ -227,7 +241,7 @@ export function createDerived(deps: DerivedDeps) {
     if (file.kind !== kind) throw new DerivedError("not_derivable", NOT_DERIVABLE_MESSAGE);
     await setStatus(file.id, "pending", null);
     try {
-      return await send({ task: TASK_OF[kind], fileId: file.id, sourceBlobId: file.blobId });
+      return await send({ kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId });
     } catch (error) {
       await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch(() => {});
       throw error;
@@ -328,7 +342,7 @@ export function createDerived(deps: DerivedDeps) {
     }
 
     try {
-      await send({ task: TASK_OF[kind], fileId: file.id, sourceBlobId: blobId });
+      await send({ kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: blobId });
     } catch (error) {
       await discardStaged(blobId).catch(() => {});
       await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch(() => {});
@@ -388,14 +402,14 @@ export function createDerived(deps: DerivedDeps) {
 
   /**
    * Points the file at a replacement source (when replacing) and at new
-   * derived blobs for the task (none on a render error), deletes the rows of
+   * derived blobs for the job kind (none on a render error), deletes the rows of
    * the blobs that replaces, and returns their keys for deleting after the
    * commit.
    */
   async function swapIn(
     trx: Transaction<DB>,
     row: ModelFile,
-    task: DerivedTask,
+    jobKind: DerivedKind,
     source: Blob,
     replacing: boolean,
     outputs: readonly PutOutput[],
@@ -412,7 +426,7 @@ export function createDerived(deps: DerivedDeps) {
       });
       await r.blobs.markStored(out.id, { size: out.size, sha256: out.sha256 });
     }
-    const columns = COLUMNS_OF_TASK[task];
+    const columns = COLUMNS_OF_KIND[jobKind];
     const old = columns.map((c) => row[c]).filter((id): id is string => id !== null);
     if (replacing) old.push(row.blobId);
     const derived: Partial<Record<DerivedColumn, string | null>> = {};
@@ -439,7 +453,7 @@ export function createDerived(deps: DerivedDeps) {
 
   /** Stores new derived blobs and swaps them in; the old ones go after the commit. */
   async function commitOutputs(
-    task: DerivedTask,
+    jobKind: DerivedKind,
     file: ModelFile,
     source: Blob,
     replacing: boolean,
@@ -467,7 +481,7 @@ export function createDerived(deps: DerivedDeps) {
     try {
       await db.transaction().execute(async (trx) => {
         const row = await lockFor(trx, file, source, replacing);
-        oldKeys = await swapIn(trx, row, task, source, replacing, put, {
+        oldKeys = await swapIn(trx, row, jobKind, source, replacing, put, {
           status: "ok",
           message: null,
         });
@@ -484,7 +498,7 @@ export function createDerived(deps: DerivedDeps) {
 
   /** Records a render or conversion error, swapping a replacement in. */
   async function commitRenderError(
-    task: DerivedTask,
+    jobKind: DerivedKind,
     file: ModelFile,
     source: Blob,
     replacing: boolean,
@@ -494,7 +508,7 @@ export function createDerived(deps: DerivedDeps) {
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
       if (replacing) {
-        oldKeys = await swapIn(trx, row, task, source, true, [], { status: "failed", message });
+        oldKeys = await swapIn(trx, row, jobKind, source, true, [], { status: "failed", message });
       } else {
         await trx
           .updateTable("files")
@@ -540,7 +554,7 @@ export function createDerived(deps: DerivedDeps) {
     attempt: { retryCount: number; retryLimit: number },
   ): Promise<DerivedOutcome> {
     const stale: DerivedOutcome = { status: "skipped", reason: "stale" };
-    const kind = job.task === SLICER_TASKS.renderScad ? "scad" : "step";
+    const kind = job.kind === DERIVED_KINDS.renderScad ? "scad" : "step";
     const file = isUuid(job.fileId) ? await repos.files.get(job.fileId) : undefined;
     const source = isUuid(job.sourceBlobId) ? await repos.blobs.get(job.sourceBlobId) : undefined;
     if (file === undefined || file.kind !== kind) return stale;
@@ -566,7 +580,7 @@ export function createDerived(deps: DerivedDeps) {
         kind === "scad"
           ? await renderScadOutputs(target, size, () => readAll(source.key))
           : await convertStepOutputs(target, () => store.getBlobStream(source.key), size);
-      await commitOutputs(job.task, file, source, replacing, outputs);
+      await commitOutputs(job.kind, file, source, replacing, outputs);
       return { status: "ok" };
     } catch (error) {
       if (error instanceof Superseded) {
@@ -575,7 +589,7 @@ export function createDerived(deps: DerivedDeps) {
       }
       if (error instanceof RenderFailed) {
         try {
-          await commitRenderError(job.task, file, source, replacing, error.message);
+          await commitRenderError(job.kind, file, source, replacing, error.message);
         } catch (recordError) {
           if (recordError instanceof Superseded) return stale;
           throw recordError;
@@ -600,3 +614,18 @@ export function createDerived(deps: DerivedDeps) {
 }
 
 export type Derived = ReturnType<typeof createDerived>;
+
+/**
+ * Task 13's entries for the slicer queue's handler map (QueueDeps.slicerJobs):
+ * the render and mesh kinds, each running runJob with the job's retry count
+ * and limit, so the last attempt records slicer_error. Spread beside Task
+ * 12's "slice" entry: { ...derivedJobHandlers(derived), slice: ... }.
+ */
+export function derivedJobHandlers(derived: Pick<Derived, "runJob">): SlicerJobHandlers {
+  const handle: SlicerJobHandlers[string] = (job) =>
+    derived.runJob(job.data as unknown as DerivedJob, {
+      retryCount: job.retryCount,
+      retryLimit: job.retryLimit,
+    });
+  return { [DERIVED_KINDS.renderScad]: handle, [DERIVED_KINDS.convertStep]: handle };
+}

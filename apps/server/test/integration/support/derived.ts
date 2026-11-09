@@ -6,7 +6,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import type { ModelFile } from "../../../src/db/types.js";
-import { createDerived, type Derived } from "../../../src/derived/derived.js";
+import { createDerived, type Derived, derivedJobHandlers } from "../../../src/derived/derived.js";
 import { createIngest, type Ingest } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
@@ -48,7 +48,7 @@ export async function startDerivedEnv(
       },
       purgeExpired: async () => ({}),
       sweepOrphans: async () => ({}),
-      runDerived: (job, attempt) => derived.runJob(job, attempt),
+      slicerJobs: derivedJobHandlers(derived),
       pollingIntervalSeconds: 0.5,
     });
     const startedBoss = boss;

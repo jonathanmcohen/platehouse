@@ -10,9 +10,15 @@
 import { randomBytes } from "node:crypto";
 import { LIMITS } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { DERIVED_MESSAGES, DerivedError, type DerivedJob } from "../../../src/derived/derived.js";
+import {
+  DERIVED_KINDS,
+  DERIVED_MESSAGES,
+  DerivedError,
+  type DerivedJob,
+  derivedJobHandlers,
+} from "../../../src/derived/derived.js";
 import { createIngest } from "../../../src/ingest/ingest.js";
-import { QUEUE, SLICER_RETRY, SLICER_TASKS } from "../../../src/jobs/queues.js";
+import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
 import {
   blobsOf,
@@ -122,7 +128,7 @@ describe("OpenSCAD renders (AC-052)", () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0]).toMatchObject({
       name: QUEUE.slicer,
-      data: { task: SLICER_TASKS.renderScad, fileId },
+      data: { kind: DERIVED_KINDS.renderScad, fileId },
       retryLimit: SLICER_RETRY.retryLimit,
       retryBackoff: true,
     });
@@ -222,15 +228,22 @@ describe("retries through pg-boss", () => {
 });
 
 describe("the slicer queue's worker", () => {
-  test("an unknown slicer task fails its job instead of passing silently", async () => {
-    const id = await env.boss.send(QUEUE.slicer, { task: "no-such-task" }, { retryLimit: 0 });
+  test("an unknown slicer job kind fails its job instead of passing silently", async () => {
+    const id = await env.boss.send(QUEUE.slicer, { kind: "no-such-kind" }, { retryLimit: 0 });
     if (id === null) throw new Error("job not created");
     const job = await until(
       () => env.boss.getJobById(QUEUE.slicer, id),
       (j) => j?.state === "failed",
     );
-    expect(JSON.stringify(job?.output)).toMatch(/no-such-task/);
+    expect(JSON.stringify(job?.output)).toMatch(/Unknown slicer job kind: no-such-kind/);
     expect(env.stub.calls).toHaveLength(0);
+  });
+
+  test("the render and mesh kinds register into the slicer queue's one handler map", () => {
+    expect(Object.keys(derivedJobHandlers(env.derived)).sort()).toEqual(
+      [DERIVED_KINDS.convertStep, DERIVED_KINDS.renderScad].sort(),
+    );
+    expect(DERIVED_KINDS).toEqual({ renderScad: "render-scad", convertStep: "convert-step" });
   });
 });
 

@@ -7,7 +7,7 @@
   "include": ["src", "test"],
   "references": [
     { "path": "../../packages/makerworld" },
-    { "path": "../../packages/threemf" },
-    { "path": "../../packages/slicer-contract" }
+    { "path": "../../packages/slicer-contract" },
+    { "path": "../../packages/threemf" }
   ]
 }
