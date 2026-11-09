@@ -61,10 +61,27 @@ export interface BlobStore {
   deleteBlobs(keys: readonly string[]): Promise<void>;
   /** Every object under prefix, following continuation tokens to the end. */
   listPrefix(prefix: string): Promise<Array<{ key: string; size: number }>>;
+  /**
+   * One page of the objects under prefix, at most maxKeys of them (the
+   * store's own limit, 1000 on S3, when left out), each with the time it was
+   * last written, and the token for the next page, or undefined on the last.
+   */
+  listPage(
+    prefix: string,
+    opts?: { token?: string | undefined; maxKeys?: number },
+  ): Promise<{ objects: ListedObject[]; next: string | undefined }>;
   /** The bucket's versioning state (AC-013). */
   readVersioning(): Promise<VersioningState>;
   /** Closes the client's sockets. */
   destroy(): void;
+}
+
+/** An object as a listing returns it. */
+export interface ListedObject {
+  key: string;
+  size: number;
+  /** When the object was last written; undefined if the store did not say. */
+  lastModified: Date | undefined;
 }
 
 // DeleteObjects takes at most 1000 keys per request.
@@ -223,6 +240,27 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
         }
       } while (token !== undefined);
       return objects;
+    },
+
+    async listPage(prefix, opts = {}) {
+      try {
+        const out = await client.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            ContinuationToken: opts.token,
+            MaxKeys: opts.maxKeys,
+          }),
+        );
+        const objects: ListedObject[] = [];
+        for (const o of out.Contents ?? []) {
+          if (o.Key === undefined) continue;
+          objects.push({ key: o.Key, size: o.Size ?? 0, lastModified: o.LastModified });
+        }
+        return { objects, next: out.IsTruncated ? out.NextContinuationToken : undefined };
+      } catch (err) {
+        throw toStoreError(err, "ListObjectsV2");
+      }
     },
 
     readVersioning() {

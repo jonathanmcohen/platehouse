@@ -31,6 +31,24 @@ export interface NewModel {
   externalRef?: string | null;
 }
 
+/** Metadata a parse or an import found; fillMetadata writes only into empty fields. */
+export interface FoundMetadata {
+  caption?: string | null;
+  /** The description as Markdown, without any licence footer. */
+  descriptionMd?: string | null;
+  creator?: string | null;
+  licenseSpdx?: string | null;
+  /**
+   * A licence with no SPDX id, in words ("License on MakerWorld: ...").
+   * Stored as license_note whenever the model has none, whatever its SPDX id
+   * (license_note is always stored); it is added at the foot of the
+   * description only when the description and both licence columns are
+   * empty, since a description already set is never edited (Jon,
+   * 2026-11-08). The model page shows license_note (Task 20).
+   */
+  licenseNote?: string | null;
+}
+
 export interface SearchQuery {
   /** Matched anywhere in name, caption, creator or a tag, ignoring case. */
   q: string;
@@ -219,6 +237,64 @@ export function modelsRepo(db: Kysely<DB>) {
 
     /** A model by id; a trashed one only with includeTrashed. */
     get,
+
+    /**
+     * Fill-only metadata (AC-022): writes each found value only into a field
+     * that is null or empty, so nothing Jon set is overwritten. The name is
+     * never touched. A found value that is null, empty or blank writes
+     * nothing. A found licence note is stored whenever licenseNote is empty,
+     * whatever licenseSpdx holds (Jon's decision: license_note is always
+     * stored). A found SPDX id is filled only when both licence columns are
+     * empty, and the note joins the foot of the description only when both
+     * licence columns and the description were empty. False when the model
+     * is unknown.
+     */
+    async fillMetadata(id: string, found: FoundMetadata): Promise<boolean> {
+      if (!isUuid(id)) return false;
+      const value = (v: string | null | undefined) => (v?.trim() ? v : undefined);
+      const empty = (v: string | null) => v === null || v === "";
+      return inTransaction(db, async (trx) => {
+        // The row is locked, so the fields read here are the ones updated.
+        const row = await trx
+          .selectFrom("models")
+          .select(["caption", "descriptionMd", "licenseSpdx", "licenseNote", "creatorId"])
+          .where("id", "=", id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined) return false;
+        const set: Partial<
+          Record<"caption" | "descriptionMd" | "licenseSpdx" | "licenseNote" | "creatorId", string>
+        > = {};
+        const caption = value(found.caption);
+        if (caption !== undefined && empty(row.caption)) set.caption = caption;
+
+        const spdx = value(found.licenseSpdx);
+        const note = value(found.licenseNote);
+        const fillLicence =
+          empty(row.licenseSpdx) && empty(row.licenseNote) && (spdx ?? note) !== undefined;
+        if (fillLicence && spdx !== undefined) set.licenseSpdx = spdx;
+        if (note !== undefined && empty(row.licenseNote)) set.licenseNote = note;
+
+        if (empty(row.descriptionMd)) {
+          const parts = [value(found.descriptionMd), fillLicence ? note : undefined];
+          const description = parts.filter((p) => p !== undefined).join("\n\n");
+          if (description !== "") set.descriptionMd = description;
+        }
+        // The creator row is made only when it will be used, so no creator
+        // is left in the sidebar without a model.
+        const creator = value(found.creator)?.trim();
+        if (creator !== undefined && row.creatorId === null) {
+          set.creatorId = await creatorId(trx, creator);
+        }
+        if (Object.keys(set).length === 0) return true;
+        const result = await trx
+          .updateTable("models")
+          .set({ ...set, updatedAt: sql`now()` })
+          .where("id", "=", id)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
+    },
 
     /**
      * Live models whose name, caption, creator or any tag contains q,

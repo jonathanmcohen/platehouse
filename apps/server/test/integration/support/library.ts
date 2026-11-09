@@ -2,7 +2,7 @@
 // tests (build plan Task 14). Every model, file and byte here is synthetic.
 import { createHash, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
-import { CreateBucketCommand } from "@aws-sdk/client-s3";
+import { CreateBucketCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { type Kysely, sql } from "kysely";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { migrate } from "../../../src/db/migrate.js";
@@ -16,6 +16,11 @@ export interface LibraryEnv {
   db: Kysely<DB>;
   repos: Repos;
   store: BlobStore;
+  /**
+   * Writes an object straight to the bucket, past the store's key check, as
+   * something other than the app might.
+   */
+  putRaw(key: string, bytes: Buffer): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -41,7 +46,11 @@ export async function startLibraryEnv(): Promise<LibraryEnv> {
       secretAccessKey: s3.secretAccessKey,
       forcePathStyle: true,
     });
-    return { db: t.db, repos: createRepos(t.db), store, stop };
+    const client = s3.client;
+    const putRaw = async (key: string, bytes: Buffer) => {
+      await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes }));
+    };
+    return { db: t.db, repos: createRepos(t.db), store, putRaw, stop };
   } catch (error) {
     await stop();
     throw error;
