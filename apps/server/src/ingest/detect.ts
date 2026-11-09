@@ -88,12 +88,22 @@ function isBinaryStl(firstBytes: Buffer, size: number): boolean {
 }
 
 /**
+ * The kind a file name claims by its extension, before any byte is read, or
+ * null when Platehouse takes no file with that extension. An upload is refused
+ * on this alone before its bytes are sent (Task 9); detectKind still checks
+ * the bytes once they arrive.
+ */
+export function kindFromName(name: string): Kind | null {
+  return EXTENSIONS.get(extensionOf(name)) ?? null;
+}
+
+/**
  * The kind of an upload from its name, its first bytes (FIRST_BYTES of them,
  * or the whole file if shorter) and its size in bytes, or null when
  * Platehouse does not take it.
  */
 export function detectKind(name: string, firstBytes: Buffer, size: number): Kind | null {
-  const kind = EXTENSIONS.get(extensionOf(name));
+  const kind = kindFromName(name);
   switch (kind) {
     case "3mf":
       return firstBytes.subarray(0, 4).equals(ZIP_LOCAL_HEADER) ? kind : null;

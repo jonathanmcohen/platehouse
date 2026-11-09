@@ -87,6 +87,7 @@ function deps(extra: Partial<QueueDeps>): QueueDeps {
     },
     purgeExpired: async () => undefined,
     sweepOrphans: async () => undefined,
+    sweepUploads: async () => undefined,
     timeZone: "UTC",
     ...extra,
   };

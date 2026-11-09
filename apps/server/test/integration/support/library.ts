@@ -52,7 +52,7 @@ export async function startLibraryEnv(): Promise<LibraryEnv> {
     const putRaw = async (key: string, bytes: Buffer) => {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes }));
     };
-    return { db: t.db, url: t.url, repos: createRepos(t.db), store, putRaw, stop };
+    return { url: t.url, db: t.db, repos: createRepos(t.db), store, putRaw, stop };
   } catch (error) {
     await stop();
     throw error;

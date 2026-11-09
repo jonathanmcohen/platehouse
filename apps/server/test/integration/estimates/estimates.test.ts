@@ -130,6 +130,7 @@ beforeAll(async () => {
     ingestFile: (input) => env.ingest.ingestFile(input),
     purgeExpired: async () => ({ purged: [] }),
     sweepOrphans: async () => ({ listed: 0, deleted: 0, outsideLayout: 0 }),
+    sweepUploads: async () => undefined,
     slicerJobs: estimates.slicerJobs,
     pollOrca: () => estimates.pollOrca(),
     onIngested: (result) => estimates.enqueueFile(result.fileId),
