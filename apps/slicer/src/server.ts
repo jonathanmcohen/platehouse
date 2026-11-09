@@ -9,7 +9,9 @@
 //   conversion. The container's 4g is sized from a single slice, so a
 //   request for any of them while one runs is 409 busy, answered before its
 //   body is read and with the connection closed, so no socket waits. The
-//   caller retries.
+//   close lingers (closeLingering): the server drains a body still arriving
+//   for up to LINGER_MS before it drops the socket, so a client sending a
+//   large file reads its 409 instead of a reset. The caller retries.
 // - The server sets its own request and headers timeouts (requestTimeouts):
 //   Node's default would cut a slow 512 MiB upload off with a 408.
 // - Every request works in its own folder under WORK_DIR (/work, a tmpfs),
@@ -23,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -155,8 +158,46 @@ function sendBytes(res: ServerResponse, contentType: string, bytes: Buffer): voi
 }
 
 /**
+ * How long a refused connection is drained before it is dropped: time enough
+ * for the client to read the answer, short enough that a client still
+ * sending a 512 MiB body cannot hold the socket.
+ */
+const LINGER_MS = 5_000;
+
+const lingering = new WeakSet<Socket>();
+
+/**
+ * Closes a refused connection without losing its answer (a lingering close).
+ * Closing a socket with unread bytes in its receive queue makes the kernel
+ * reset the connection, and the reset can throw away the answer before the
+ * client reads it: the client sees ECONNRESET or EPIPE, never the 409. So
+ * this half-closes instead (FIN after the answer), reads and discards
+ * whatever still arrives, and destroys the socket once the client ends or
+ * errors, or after LINGER_MS, whichever comes first. Safe to call twice.
+ */
+function closeLingering(socket: Socket): void {
+  if (socket.destroyed || lingering.has(socket)) return;
+  lingering.add(socket);
+  const timer = setTimeout(() => socket.destroy(), LINGER_MS);
+  timer.unref();
+  socket.once("close", () => clearTimeout(timer));
+  socket.once("end", () => socket.destroy());
+  socket.on("error", () => socket.destroy());
+  socket.on("data", () => {});
+  socket.resume();
+  socket.end();
+}
+
+/**
  * Refuses a request before reading its body (or once a body runs past its
- * limit): answers, then drops the connection so the client stops sending.
+ * limit): answers with Connection: close, then closes the connection so the
+ * client stops sending, lingering so the answer is not lost (closeLingering).
+ *
+ * Node's server ends a Connection: close response by calling the socket's
+ * destroySoon(), which destroys it as soon as the answer is flushed, unread
+ * body or not: the reset closeLingering exists to prevent. So this
+ * connection's destroySoon is replaced with closeLingering before the answer
+ * is sent. The server tests post a 64 MiB body while busy to hold this.
  *
  * The connection is taken from res, before the answer is sent. req.socket is
  * no use here: once a body error has made stream.pipeline destroy the
@@ -165,13 +206,16 @@ function sendBytes(res: ServerResponse, contentType: string, bytes: Buffer): voi
  */
 function refuseEarly(res: ServerResponse, status: number, body: ErrorBody): void {
   const socket = res.socket;
+  if (socket) socket.destroySoon = () => closeLingering(socket);
   const text = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
     connection: "close",
   });
-  res.end(text, () => socket?.destroy());
+  res.end(text, () => {
+    if (socket) closeLingering(socket);
+  });
 }
 
 class TooLarge extends Error {}

@@ -681,6 +681,36 @@ describe("one heavy job at a time", () => {
     await first;
   });
 
+  // A refusal closes the connection while the client may still be sending a
+  // large body. Closed with unread bytes in its receive queue, a socket is
+  // reset, and the reset can throw away the answer before the client reads
+  // it, so the server lingers: it half-closes, drains what still arrives and
+  // drops the socket only once the client has gone or the drain time is up.
+  // Sent chunked, a 64 MiB body is 409 on every route. Sent by fetch with its
+  // Content-Length, it is 413 on the OpenSCAD routes (over their 1 MiB) and
+  // 409 on the others; either way the answer arrives.
+  const BIG = 64 * 1024 * 1024;
+  test.each([
+    ["slice", (base: string) => sliceUrl(base, P1S, 1), 409],
+    ["scad/stl", (base: string) => `${base}/v1/scad/stl`, 413],
+    ["scad/png", (base: string) => `${base}/v1/scad/png`, 413],
+    ["step/glb", (base: string) => `${base}/v1/step/glb`, 409],
+  ] as const)(
+    "%s: a large body sent while busy still gets its answer, not a reset",
+    async (_route, url, declared) => {
+      const s = setup({ sliceTimeoutSeconds: 3 }, { kind: "sleep" });
+      const base = await start(s.config);
+      const first = postSlice(base, sliceable());
+      await waitForFile(s.fake.pids);
+      const res = await streamChunked(url(base), BIG, { chunk: 1024 * 1024 });
+      expect(res).toEqual({ status: 409, body: JSON.stringify({ error: "busy" }) });
+      const fetched = await fetch(url(base), { method: "POST", body: Buffer.alloc(BIG, 1) });
+      expect(fetched.status).toBe(declared);
+      expect(await fetched.json()).toEqual({ error: declared === 409 ? "busy" : "too_large" });
+      expect((await first).status).toBe(200);
+    },
+  );
+
   test("an oversized body is still 413 while busy, not 409", async () => {
     const s = setup({ sliceTimeoutSeconds: 3 }, { kind: "sleep" });
     const base = await start(s.config);
