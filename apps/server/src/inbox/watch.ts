@@ -31,14 +31,32 @@
 //   Ingest takes the file by a string path, which cannot spell such a name,
 //   so once settled the file moves to failed under its name with each bad
 //   byte shown as U+FFFD, with a reason that says to rename it.
-// - An outage is not the file's fault: storage unavailable or refusing (a
-//   StoreError: access denied after a key rotation, a missing bucket, a
-//   server error that outlasts the SDK's retries), or the database
-//   unreachable, refusing the login or out of resources (SQLSTATE classes 08,
-//   28 and 53, such as a full disk), leaves the file where it is for the next
-//   poll, ends the pass (the next file would meet the same fault), and is
-//   logged once when it starts and once when imports work again. A fault in
-//   the environment never moves the inbox to failed one file at a time.
+// - A settled file larger than MAX_INBOX_BYTES (512 MiB, the limit uploads
+//   have) moves to failed from its size alone, before anything is read or
+//   uploaded.
+// - A file goes to failed only for a reason that belongs to the file: one of
+//   ingest's own refusals (an IngestError other than storage_unavailable:
+//   the wrong type or content), the size limit, or a name that is not UTF-8.
+//   There is no list of outage errors. Any other error, from any source (the
+//   store, the database, findImported, the upload library, anything
+//   unexpected), is not the file's fault until shown to be: the file stays
+//   where it is, the pass stops, and the watcher checks the environment once
+//   (probes: a small database query and a small store listing, each with a
+//   PROBE_TIMEOUT_MS limit).
+//   - A check fails: it is an outage. It is logged once when it starts, with
+//     the error, and once when it ends. No file is tried, and so none is
+//     uploaded, until a check passes. The checks back off: the next comes
+//     BACKOFF_FIRST_MS (5 s) later, the wait doubles after each failed
+//     check up to BACKOFF_MAX_MS (5 minutes), and it starts again at 5 s
+//     after a good pass. A fault in the environment never moves the inbox to
+//     failed one file at a time, and never uploads a file on every poll.
+//   - Both checks pass: the error counts against that file. After STRIKES
+//     (3) such failures in a row while its size, mtime and inode stay the
+//     same, it moves to failed with a reason quoting the error; a change to
+//     the file starts its count again. The pass goes on to the next file, so
+//     one file cannot hold up the inbox. A fault the checks cannot see (a
+//     full bucket that still lists, say) therefore still costs each file 3
+//     tries before it moves to failed.
 // - A commit can land with its answer lost when the database connection drops
 //   (ingest then throws the connection error it met), and the process can
 //   restart before the file is tried again (a container recreate, a crash, a
@@ -63,9 +81,9 @@
 //   this copy arrived, does not count. The created_at of the row is the
 //   database's clock and the ctime is the inbox host's, so the two must agree
 //   to within the settle window, which is the least time between a file's
-//   last change and its import's commit. The question also checks that the
-//   database answers before a file is uploaded, so a database outage does not
-//   upload the file to the bucket on every poll.
+//   last change and its import's commit. The question comes before the
+//   upload, so a database that does not answer it stops the file before
+//   anything reaches the bucket.
 //
 // No file is retried in a loop and none is dropped without a word. A file that
 // cannot be moved to failed (or whose inbox copy cannot be deleted after a
@@ -75,20 +93,22 @@
 // such a file is tried once more.
 //
 // Nothing here starts on import: the server calls start() once at boot and
-// stop() on shutdown, passing the files repository's get as storedFile and
-// its findImported as findImported. pollOnce() runs one pass and is what the
-// tests drive, with an injected clock instead of real waits.
+// stop() on shutdown, passing the files repository's get as storedFile, its
+// findImported as findImported, and inboxProbes({ db, store }) as probes.
+// pollOnce() runs one pass and is what the tests drive, with an injected
+// clock instead of real waits; during an outage a pass before the next check
+// is due tries no file.
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { BigIntStats, PathLike } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import type { DB } from "../db/types.js";
 import { type Ingest, IngestError } from "../ingest/ingest.js";
 import type { ImportedQuery } from "../repos/files.js";
-import { type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
+import type { BlobStore } from "../storage/s3.js";
 
 /** How often the inbox is polled. */
 export const POLL_MS = 5_000;
@@ -110,10 +130,6 @@ export const UNCONFIRMED_REASON =
 /** Reason when the file's name is not valid UTF-8. */
 export const NON_UTF8_REASON =
   "Platehouse could not import this file because its name is not valid UTF-8; rename it and add it again.";
-
-/** Reason for a failure that is neither a refusal nor an outage. */
-export const UNEXPECTED_REASON =
-  "Platehouse could not import this file because of an unexpected error; the server log has the details.";
 
 /**
  * The largest file the inbox takes, in bytes: 512 MiB, the same limit as an
@@ -152,15 +168,46 @@ export interface InboxProbes {
   store(): Promise<unknown>;
 }
 
-/** The checks the server wires in: one small query and one small listing. */
-export function inboxProbes(_deps: {
+/**
+ * The checks the server wires in. The database check is one small query: it
+ * reads from files (so a role with no grant fails it), and fails when the
+ * session is read-only (a standby after a failover, or
+ * default_transaction_read_only) or the role may not insert into files. The
+ * store check lists at most one object under models/, where ingest writes.
+ */
+export function inboxProbes(deps: {
   db: Kysely<DB>;
   store: Pick<BlobStore, "listPage">;
 }): InboxProbes {
   return {
-    database: async () => undefined,
-    store: async () => undefined,
+    async database() {
+      const { rows } = await sql<{ ro: string; ins: boolean; found: boolean }>`
+        select current_setting('transaction_read_only') as ro,
+               has_table_privilege('files', 'INSERT') as ins,
+               exists (select 1 from files) as found
+      `.execute(deps.db);
+      const row = rows[0];
+      if (row === undefined) throw new Error("the database check returned no row");
+      if (row.ro !== "off") throw new Error("the database is read-only");
+      if (!row.ins) throw new Error("the database role may not insert into files");
+    },
+    async store() {
+      await deps.store.listPage("models/", { maxKeys: 1 });
+    },
   };
+}
+
+/** Runs one check, failing it when it takes longer than ms. */
+async function withTimeout(check: () => Promise<unknown>, what: string, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`the ${what} check took longer than ${ms} ms`)), ms);
+  });
+  try {
+    await Promise.race([Promise.resolve().then(check), late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const IGNORED_SUFFIXES = [".part", ".crdownload", ".tmp"];
@@ -170,34 +217,6 @@ const NAME_MAX_BYTES = 255;
 
 // The longest error text the log takes from one error.
 const ERROR_TEXT_MAX = 500;
-
-// Socket codes that mean the store or the database could not be reached.
-const NETWORK_CODES = new Set([
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "ECONNABORTED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ETIMEDOUT",
-  "EHOSTUNREACH",
-  "EHOSTDOWN",
-  "ENETUNREACH",
-  "ENETDOWN",
-  "EPIPE",
-]);
-
-// Postgres SQLSTATEs for a database that is down or restarting. Whole classes
-// are matched by DATABASE_DOWN_CLASSES.
-const DATABASE_DOWN_STATES = new Set(["57P01", "57P02", "57P03"]);
-
-// SQLSTATE classes that are the database's fault, never the file's: 08
-// connection exception, 28 invalid authorization (a changed password, 28P01),
-// 53 insufficient resources (a full disk 53100, out of memory 53200, too many
-// connections 53300).
-const DATABASE_DOWN_CLASSES = /^(08|28|53)[0-9A-Z]{3}$/;
-
-// What pg and pg-pool say when a connection cannot be had or was lost.
-const DATABASE_DOWN_MESSAGE = /timeout exceeded when trying to connect|connection terminated/i;
 
 /** Whether the watcher leaves a file with this name alone. */
 export function isIgnoredName(name: string): boolean {
@@ -265,7 +284,7 @@ export interface InboxPass {
   imported: Array<{ name: string; modelId: string; fileId: string }>;
   /** Files moved to failed, with the sentence written beside each. */
   failed: Array<{ name: string; reason: string }>;
-  /** True when the pass stopped on an outage and left its file for the next poll. */
+  /** True when an outage held back the imports of this pass; the files wait in the inbox. */
   waiting: boolean;
 }
 
@@ -290,22 +309,6 @@ function signature(st: BigIntStats): string {
 function codeOf(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : undefined;
-}
-
-/**
- * Whether the failure is an outage or fault of the store or the database, not
- * the file's fault. A StoreError is the store answering and refusing (or a
- * stored object failing its size check), which a file's bytes cannot cause.
- */
-function isOutage(error: unknown): boolean {
-  if (error instanceof IngestError) return error.code === "storage_unavailable";
-  if (error instanceof StoreUnavailable || error instanceof StoreError) return true;
-  const code = codeOf(error);
-  if (code !== undefined) {
-    if (NETWORK_CODES.has(code) || DATABASE_DOWN_STATES.has(code)) return true;
-    if (DATABASE_DOWN_CLASSES.test(code)) return true;
-  }
-  return error instanceof Error && DATABASE_DOWN_MESSAGE.test(error.message);
 }
 
 /** One line of an error for the log, capped. */
@@ -378,8 +381,9 @@ async function hashFile(path: string): Promise<StoredFile> {
 }
 
 export function createInboxWatcher(deps: InboxWatcherDeps) {
-  const { dir, ingest, storedFile, findImported } = deps;
+  const { dir, ingest, storedFile, findImported, probes } = deps;
   const pollMs = deps.pollMs ?? POLL_MS;
+  const probeTimeoutMs = deps.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
   const log = deps.log ?? ((line: string) => console.info(line));
   if (!Number.isSafeInteger(deps.settleSeconds) || deps.settleSeconds < 1) {
@@ -387,6 +391,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
   if (!Number.isSafeInteger(pollMs) || pollMs < 1) {
     throw new RangeError("pollMs must be a whole number of 1 or more");
+  }
+  if (!Number.isSafeInteger(probeTimeoutMs) || probeTimeoutMs < 1) {
+    throw new RangeError("probeTimeoutMs must be a whole number of 1 or more");
   }
   const settleMs = deps.settleSeconds * 1000;
   const failedDir = join(dir, FAILED_DIR);
@@ -396,8 +403,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Files not to try again while their signature holds: they could not be
   // moved to failed, or their inbox copy could not be deleted after import.
   const handled = new Map<string, string>();
-  // Whether the last attempt met an outage, so it is logged once.
-  let outage = false;
+  // Failures of a file while storage and the database answered, by key,
+  // for the signature they were counted against.
+  const strikes = new Map<string, { signature: string; count: number }>();
+  // The outage in progress: how many checks have failed in a row, and when
+  // (on the injected clock) the next is due.
+  let outage: { checks: number; retryAt: number } | undefined;
 
   async function currentSignature(path: PathLike): Promise<string | undefined> {
     try {
@@ -407,10 +418,38 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     }
   }
 
-  function outageOver(): void {
-    if (!outage) return;
-    outage = false;
-    log("inbox: storage and the database answer again; importing again");
+  /** Runs both checks; returns what failed, or undefined when both pass. */
+  async function checkEnvironment(): Promise<string | undefined> {
+    const [database, store] = await Promise.allSettled([
+      withTimeout(probes.database, "database", probeTimeoutMs),
+      withTimeout(probes.store, "storage", probeTimeoutMs),
+    ]);
+    const failed: string[] = [];
+    if (database.status === "rejected") failed.push(`database: ${errorText(database.reason)}`);
+    if (store.status === "rejected") failed.push(`storage: ${errorText(store.reason)}`);
+    return failed.length === 0 ? undefined : failed.join("; ");
+  }
+
+  function backoffMs(checks: number): number {
+    return Math.min(BACKOFF_FIRST_MS * 2 ** (checks - 1), BACKOFF_MAX_MS);
+  }
+
+  /**
+   * Whether an outage still holds the imports back. When the next check is
+   * due it runs: a failure doubles the wait, a pass ends the outage.
+   */
+  async function outageHolds(): Promise<boolean> {
+    if (outage === undefined) return false;
+    if (now() < outage.retryAt) return true;
+    if ((await checkEnvironment()) !== undefined) {
+      outage.checks += 1;
+      outage.retryAt = now() + backoffMs(outage.checks);
+      return true;
+    }
+    const checks = `${outage.checks} failed check${outage.checks === 1 ? "" : "s"}`;
+    log(`inbox: storage and the database answer again after ${checks}; importing again`);
+    outage = undefined;
+    return false;
   }
 
   /** Moves the file to failed with its reason file; returns the name it took. */
@@ -491,6 +530,32 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
+   * Counts a failure against the file, storage and the database having
+   * answered; the STRIKES-th in a row for the same signature moves it to
+   * failed with the error as its reason.
+   */
+  async function strike(
+    name: string,
+    path: string,
+    entry: Seen,
+    error: unknown,
+    pass: InboxPass,
+  ): Promise<void> {
+    const prior = strikes.get(name);
+    const count = prior?.signature === entry.signature ? prior.count + 1 : 1;
+    log(
+      `inbox: ${name} could not be imported (try ${count} of ${STRIKES}; storage and the ` +
+        `database answer, so it counts against the file): ${errorText(error)}`,
+    );
+    if (count < STRIKES) {
+      strikes.set(name, { signature: entry.signature, count });
+      return;
+    }
+    strikes.delete(name);
+    await fail(name, name, path, repeatedErrorReason(error), pass);
+  }
+
+  /**
    * Imports one settled file; arrived is when it reached the inbox (its
    * ctime when first seen). Returns "outage" when the pass must stop.
    */
@@ -507,30 +572,35 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         (await earlierImport(name, path, entry, arrived)) ??
         (await ingest.ingestFile({ tmpPath: path, originalName: name, target: "new" }));
     } catch (error) {
-      if (isOutage(error)) {
-        if (!outage) {
-          outage = true;
-          const why = error instanceof IngestError ? error.message : errorText(error);
-          log(`inbox: ${name} is left in place for the next poll: ${why}`);
-        }
-        return "outage";
-      }
-      outageOver();
       if (codeOf(error) === "ENOENT" && !(await exists(path))) {
         // Taken away while it was being read: nothing left to import or move.
         seen.delete(name);
+        strikes.delete(name);
         log(`inbox: ${name} was removed from the inbox while it was being imported`);
         return "done";
       }
-      if (error instanceof IngestError) {
+      if (error instanceof IngestError && error.code !== "storage_unavailable") {
+        // Ingest's own refusal: the file's type or content.
+        strikes.delete(name);
         await fail(name, name, path, sentence(error.message), pass);
-      } else {
-        log(`inbox: ${name} could not be imported: ${errorText(error)}`);
-        await fail(name, name, path, UNEXPECTED_REASON, pass);
+        return "done";
       }
+      // Not the file's fault until shown to be: check the environment.
+      const why = await checkEnvironment();
+      if (why !== undefined) {
+        outage = { checks: 1, retryAt: now() + BACKOFF_FIRST_MS };
+        log(
+          `inbox: storage or the database is not answering (${why}); ${name} and the files ` +
+            `after it stay in the inbox, and no file is tried until a check passes, the next in ` +
+            `${BACKOFF_FIRST_MS / 1000} s, then backing off to every ${BACKOFF_MAX_MS / 60_000} ` +
+            `minutes. The import failed with: ${errorText(error)}`,
+        );
+        return "outage";
+      }
+      await strike(name, path, entry, error, pass);
       return "done";
     }
-    outageOver();
+    strikes.delete(name);
     seen.delete(name);
     pass.imported.push({ name, ...result });
 
@@ -601,6 +671,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     const present = new Set(names.map((n) => n.key));
     for (const key of seen.keys()) if (!present.has(key)) seen.delete(key);
     for (const key of handled.keys()) if (!present.has(key)) handled.delete(key);
+    for (const key of strikes.keys()) if (!present.has(key)) strikes.delete(key);
+
+    // During an outage no file is tried until a check passes.
+    if (await outageHolds()) pass.waiting = true;
 
     for (const { key, name, utf8, raw } of names) {
       // Only a UTF-8 name has a string path; ingest takes nothing else.
@@ -632,6 +706,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         await fail(key, name, path, NON_UTF8_REASON, pass);
         continue;
       }
+      if (st.size > BigInt(MAX_INBOX_BYTES)) {
+        log(`inbox: ${name} is ${st.size} bytes, over the ${MAX_INBOX_BYTES}-byte limit`);
+        strikes.delete(key);
+        await fail(key, name, path, TOO_LARGE_REASON, pass);
+        continue;
+      }
+      if (pass.waiting) continue;
       if ((await importOne(name, path, before, before.arrived, pass)) === "outage") {
         pass.waiting = true;
         break;
@@ -661,7 +742,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     } catch (error) {
       log(`inbox: a poll failed: ${errorText(error)}`);
     }
-    if (!stopped) timer = setTimeout(loop, pollMs);
+    // During an outage the next pass comes when the next check is due.
+    const wait = outage === undefined ? pollMs : Math.max(pollMs, outage.retryAt - now());
+    if (!stopped) timer = setTimeout(loop, wait);
   }
 
   return {
