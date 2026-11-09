@@ -26,10 +26,14 @@ import {
 // node:fs as it is, except that a test can make rmSync fail for the paths it
 // names, the way a recursive delete fails with ENOTEMPTY or EBUSY on a folder
 // a killed program is still writing to. Every rmSync call is recorded with
-// its options.
+// its options. A test can also set the free space statfsSync reports for a
+// path, so /work can be made to fill up and empty again.
 const rmFails = vi.hoisted(() => ({
   under: null as string | null,
   calls: [] as { path: string; options: unknown }[],
+}));
+const workSpace = vi.hoisted(() => ({
+  free: null as ((path: string) => number) | null,
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
@@ -42,7 +46,17 @@ vi.mock("node:fs", async (importOriginal) => {
     }
     return fs.rmSync(path, options);
   };
-  return { ...fs, default: { ...fs, rmSync }, rmSync };
+  const statfsSync = ((path: import("node:fs").PathLike, options?: unknown) => {
+    const real = fs.statfsSync(path, options as never);
+    if (workSpace.free === null) return real;
+    return { ...real, bavail: workSpace.free(String(path)), bsize: 1 };
+  }) as typeof fs.statfsSync;
+  return {
+    ...fs,
+    default: { ...fs, rmSync, statfsSync },
+    rmSync,
+    statfsSync,
+  };
 });
 
 const P1S = "Bambu Lab P1S 0.4 nozzle";
@@ -51,6 +65,7 @@ const running: Slicer[] = [];
 afterEach(async () => {
   rmFails.under = null;
   rmFails.calls = [];
+  workSpace.free = null;
   while (running.length) await running.pop()?.close();
 });
 
@@ -1019,6 +1034,36 @@ describe("leftover job folders and /work space", () => {
     expect(slicerContract.health.parse(await during.json()).busy).toBe(true);
     expect((await first).status).toBe(200);
     expect((await fetch(`${base}/v1/health`)).status).toBe(500);
+  });
+
+  test("health sweeps leftover job folders when /work is below the floor, so it recovers without a job or a restart", async () => {
+    const s = setup({ workMinFreeBytes: 640 * 1024 * 1024 });
+    const base = await start(s.config);
+    // /work is full while any job folder is left in it, and roomy once empty
+    workSpace.free = () => (readdirSync(s.workDir).length > 0 ? 0 : 1024 * 1024 * 1024);
+    rmFails.under = s.workDir;
+    expect((await postSlice(base, sliceable())).status).toBe(200);
+    expect(readdirSync(s.workDir)).toHaveLength(1);
+    // the folder still will not delete, so health stays 500
+    expect((await fetch(`${base}/v1/health`)).status).toBe(500);
+    expect(readdirSync(s.workDir)).toHaveLength(1);
+    // a moment later it deletes, and the next health check clears it with no
+    // job in between
+    rmFails.under = null;
+    const res = await fetch(`${base}/v1/health`);
+    expect(res.status).toBe(200);
+    expect(slicerContract.health.parse(await res.json()).busy).toBe(false);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("health above the floor sweeps nothing", async () => {
+    const s = setup();
+    const base = await start(s.config);
+    mkdirSync(join(s.workDir, JOB_A));
+    rmFails.calls = [];
+    expect((await fetch(`${base}/v1/health`)).status).toBe(200);
+    expect(rmFails.calls).toEqual([]);
+    expect(readdirSync(s.workDir)).toEqual([JOB_A]);
   });
 
   test("WORK_MIN_FREE_MIB defaults to 640 MiB and can be set", () => {

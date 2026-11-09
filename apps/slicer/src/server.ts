@@ -345,8 +345,10 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   /**
    * Removes job folders left under WORK_DIR by a delete that failed. Called
-   * at start-up and by a job's release() while that job still holds the
-   * lock: one heavy job runs at a time, so no other job owns a folder then.
+   * at start-up, by a job's release() while that job still holds the lock,
+   * and by a health check that finds WORK_DIR below the floor while no job
+   * holds it: one heavy job runs at a time, so no other job owns a folder
+   * then.
    * Only folders named the way jobDir names them are touched, since HOME is
    * /work in the image and other things can live there. `skip` is the
    * releasing job's own folder, which it has just tried to delete.
@@ -385,11 +387,19 @@ export function createSlicer(config: SlicerConfig): Slicer {
    * Why /v1/health should fail, or null when it should not. Only checked
    * while no job runs: a running job's own files are not a leak, and its
    * release() sweeps any left behind. With no job running, low free space
-   * means leftovers the sweep could not delete are filling WORK_DIR.
+   * means leftovers the last sweep could not delete are filling WORK_DIR,
+   * so it sweeps again and measures again before failing: a folder that was
+   * busy a moment ago often deletes now, and without this nothing would try
+   * again until the next job, which a caller may not send to a slicer whose
+   * health fails.
    */
   const workSpaceProblem = (): string | null => {
     if (holder) return null;
-    const free = workFreeBytes();
+    let free = workFreeBytes();
+    if (free !== null && free < config.workMinFreeBytes) {
+      sweepJobDirs(null);
+      free = workFreeBytes();
+    }
     if (free === null) return `the free space of ${config.workDir} could not be read`;
     if (free >= config.workMinFreeBytes) return null;
     return `${config.workDir} has ${Math.floor(free / MIB)} MiB free, below the ${Math.floor(config.workMinFreeBytes / MIB)} MiB floor (WORK_MIN_FREE_MIB)`;
