@@ -19,23 +19,27 @@
 //      returns before any slice runs (AC-033).
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012), with two exceptions. When the
-// transaction turns out to have committed (a COMMIT that succeeded but
-// reported an error), the whole upload landed, so the objects are kept and
-// ingestFile returns its result. When the transaction has its id but the
-// database cannot say how it ended, or the COMMIT is still in flight, the
-// objects are kept and IngestOutcomeUnknown is thrown. Which of
-// these it is comes from pg_xact_status on the transaction's own id, read as
-// its first statement (commitState). An object left with no row is removed later by the orphan sweep
-// (orphans.ts).
+// already put and leaves no rows (AC-012), with two exceptions, both only
+// for a failure after the transaction's callback finished, at COMMIT. Kysely
+// sends COMMIT only once the callback has returned, and rolls back when it
+// throws, so a failure that arrives while the callback is still running
+// never reached COMMIT and saved nothing, whatever the database would say
+// (#76). After the callback: when the transaction turns out to have
+// committed (a COMMIT that succeeded but reported an error), the whole
+// upload landed, so the objects are kept and ingestFile returns its result.
+// When the database cannot say how it ended, or the COMMIT is still in
+// flight, the objects are kept and IngestOutcomeUnknown is thrown (#57).
+// Which of these it is comes from pg_xact_status on the transaction's own
+// id, read as its first statement (commitState). An object left with no row
+// is removed later by the orphan sweep (orphans.ts).
 //
 // So ingestFile fails in one of two ways, and the tus HEAD answers by which
 // (uploads/tus.ts). IngestError means nothing was saved: a refusal, a store
-// outage (STORAGE_UNAVAILABLE_MESSAGE), or any other failure before or
-// during the transaction that cannot have committed, a database that cannot
-// be reached when ingest starts included (INGEST_FAILED_MESSAGE, with the
-// original error as its cause). IngestOutcomeUnknown means only that the
-// commit's outcome is not known. The uploaded file at tmpPath is
+// outage (STORAGE_UNAVAILABLE_MESSAGE), or any other failure before the
+// transaction or inside its callback, or a COMMIT the database reports as
+// aborted, a database that cannot be reached when ingest starts included
+// (INGEST_FAILED_MESSAGE, with the original error as its cause).
+// IngestOutcomeUnknown means only that the commit's outcome is not known. The uploaded file at tmpPath is
 // never deleted
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
 // after an outage.
@@ -51,7 +55,7 @@ import { open, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { extractMakerWorld, htmlToMarkdown, mapLicense } from "@platehouse/makerworld";
 import { type Project, readProject } from "@platehouse/threemf";
-import { type Kysely, sql } from "kysely";
+import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
@@ -103,9 +107,9 @@ export class IngestError extends Error {
 }
 
 /**
- * The transaction had its id and failed, and the database could not say
- * whether it committed (the status lookup failed, or the COMMIT is still in
- * flight). The rows may be in the library, so the objects are kept and a
+ * The transaction's callback had finished and the failure came at COMMIT,
+ * and the database could not say whether it committed (the status lookup
+ * failed, or the COMMIT is still in flight). The rows may be in the library, so the objects are kept and a
  * resend could make a second model. The database's own error is the cause.
  */
 export class IngestOutcomeUnknown extends Error {
@@ -241,7 +245,9 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
   }
 
   /**
-   * After a failure: whether the transaction committed after all. An error
+   * After a failure at COMMIT, once the transaction's callback had finished
+   * (a failure before that never reached COMMIT, and is not looked up):
+   * whether the transaction committed after all. An error
    * from the transaction can come from a COMMIT that reached the server (the
    * connection dropped while the answer was on its way), and the server may
    * still be finishing that COMMIT (flushing WAL, waiting on a synchronous
@@ -318,6 +324,9 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
     const fileId = uuidv7();
     // The transaction's id, once it has one (commitState).
     let xid: string | null = null;
+    // Set as the callback's last step, once every row is written. Until then
+    // Kysely has sent no COMMIT, so a failure saved nothing (#76).
+    let callbackFinished = false;
     try {
       const source = await putOne("source", createReadStream(tmpPath), size, CONTENT_TYPES[kind]);
 
@@ -334,7 +343,9 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
         if (project === null) parseStatus = "no_plate_data";
       }
 
-      await db.transaction().execute(async (trx) => {
+      // The transaction's callback. It returns early for a file with no plate
+      // data, so the flag is set by the callback below, after it returns.
+      const writeRows = async (trx: Transaction<DB>): Promise<void> => {
         // First, before any row: after a failure, commitState asks the
         // server whether this id committed.
         const { rows } = await sql<{ xid: string }>`
@@ -440,11 +451,21 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
             })),
           });
         }
+      };
+      await db.transaction().execute(async (trx) => {
+        await writeRows(trx);
+        callbackFinished = true;
       });
     } catch (error) {
       // With nothing put, the failure came before the transaction, so no row
-      // can exist and there is nothing to look up or delete.
-      const state = put.length > 0 ? await commitState(xid) : "not_committed";
+      // can exist and there is nothing to look up or delete. A failure before
+      // the callback finished never reached COMMIT, so it saved nothing
+      // whatever the status lookup would say: an unreadable status, or one
+      // still "in progress" because the server has not yet seen the dropped
+      // socket, must not keep the objects and answer HEAD as finished (#76).
+      // Only a failure at COMMIT is looked up, and its objects are kept
+      // unless the lookup says aborted (#57).
+      const state = put.length > 0 && callbackFinished ? await commitState(xid) : "not_committed";
       // The rows landed and only the answer was lost: the upload is stored,
       // and reporting it as failed would make a retry store it twice.
       if (state === "committed") return { modelId, fileId };
@@ -461,11 +482,7 @@ export function createIngest(deps: { db: Kysely<DB>; store: IngestStore }) {
       if (error instanceof StoreUnavailable) {
         throw new IngestError("storage_unavailable", STORAGE_UNAVAILABLE_MESSAGE);
       }
-      // An IngestError thrown inside the transaction stopped it before any
-      // COMMIT was sent, so it saved nothing whatever the lookup said.
-      if (state === "unknown" && !(error instanceof IngestError)) {
-        throw new IngestOutcomeUnknown(error);
-      }
+      if (state === "unknown") throw new IngestOutcomeUnknown(error);
       throw error;
     }
     return { modelId, fileId };

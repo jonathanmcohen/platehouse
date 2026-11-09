@@ -505,22 +505,47 @@ const DRAIN_MS = 5000;
 
 /**
  * When tus answered before reading the whole body (409 wrong offset, 413),
- * the rest is read off and dropped so the client can read the answer rather
- * than meet a reset, for at most DRAIN_MS, and the connection then closes.
- * Node cannot do this itself here: once Readable.toWeb has started reading a
- * request, Node no longer dumps its unread body when the response ends, and
- * the connection would stay busy for good.
+ * the answer goes out at once with Connection: close, and the rest of the
+ * body is read off and dropped, for at most DRAIN_MS, before the connection
+ * closes. Closing it any earlier resets a client that is still sending, and
+ * the reset can cost it the answer (a lingering close, RFC 9112 section
+ * 9.6). Node does neither itself here. Once Readable.toWeb has started
+ * reading a request, Node no longer dumps its unread body when the response
+ * ends, so the connection would stay busy for good. And for a Connection:
+ * close answer, Node destroys the socket (socket.destroySoon, from the
+ * response's finish) as soon as the answer is written, with the body still
+ * arriving. So for this request that call only ends the writing side, and
+ * the socket is closed once the body has been read or DRAIN_MS has passed.
+ * The slicer closes its early answers the same way (closeLingering in
+ * apps/slicer/src/guard.ts).
  */
 function releaseUnreadBody(request: FastifyRequest, reply: FastifyReply): void {
   const raw = request.raw;
   if (raw.complete || raw.destroyed) return;
   reply.header("connection", "close");
+  const socket = raw.socket;
+  const destroySoon = socket.destroySoon;
+  let answered = false;
+  socket.destroySoon = () => {
+    // The answer is written: end it with a FIN, and keep reading.
+    answered = true;
+    socket.end();
+  };
+  const timer = setTimeout(() => socket.destroy(), DRAIN_MS);
+  timer.unref();
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    clearTimeout(timer);
+    socket.destroySoon = destroySoon;
+    // Answered already: close now. Otherwise Node closes it once it is.
+    if (answered) socket.destroySoon();
+  };
+  raw.once("end", release);
+  raw.once("close", release);
   raw.removeAllListeners("data");
   raw.on("data", () => {});
-  const timer = setTimeout(() => raw.destroy(), DRAIN_MS);
-  timer.unref();
-  raw.once("end", () => clearTimeout(timer));
-  raw.once("close", () => clearTimeout(timer));
   raw.resume();
 }
 
