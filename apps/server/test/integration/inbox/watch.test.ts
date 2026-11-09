@@ -513,10 +513,11 @@ describe("telling a bad file from an outage", () => {
     // the size check (HeadObject) is denied, and so is the listing the
     // store check makes.
     let broken = true;
+    // Uploads of the file itself; a good import also puts its plate thumbnail.
     let uploads = 0;
     const writeOnly: IngestStore = {
       putBlob: async (stream, opts) => {
-        uploads += 1;
+        if (opts.contentType === "model/3mf") uploads += 1;
         const stored = await env.store.putBlob(stream, opts);
         if (broken) throw new StoreError("HeadObject", "AccessDenied", 403);
         return stored;
