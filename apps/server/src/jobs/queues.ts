@@ -11,7 +11,7 @@
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38), and the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time.
-import type { PgBoss } from "pg-boss";
+import type { JobWithMetadata, PgBoss } from "pg-boss";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
 export const QUEUE = {
@@ -25,10 +25,30 @@ export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
 /** Ingest jobs worked at once (Task 8 Interfaces). */
 export const INGEST_CONCURRENCY = 2;
 
+/**
+ * How a slicer job is retried when the slicer answers 409 busy or the
+ * connection to it is lost (build plan Task 12; Task 13's render and mesh
+ * jobs too): by pg-boss itself, three retries with exponential backoff from
+ * 10 s, capped at 2 minutes, so a slicer that is restarting has time to come
+ * back. The handler records the failure once the last retry is used.
+ */
+export const SLICER_RETRY = Object.freeze({
+  retryLimit: 3,
+  retryBackoff: true,
+  retryDelay: 10,
+  retryDelayMax: 120,
+});
+
 export interface QueueSetting {
   name: QueueName;
   /** createQueue options. */
-  queue: { policy: "standard" | "singleton"; retryLimit?: number };
+  queue: {
+    policy: "standard" | "singleton";
+    retryLimit?: number;
+    retryBackoff?: boolean;
+    retryDelay?: number;
+    retryDelayMax?: number;
+  };
   /** work options. */
   work: { localConcurrency: number };
 }
@@ -61,7 +81,28 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
 export const MAINTENANCE_TASKS = {
   purgeExpired: "purge-expired",
   sweepOrphans: "sweep-orphans",
+  pollOrca: "poll-orca",
 } as const;
+
+/**
+ * Every 10 minutes (Task 12 decision): the Orca-version poll, which also runs
+ * once at startup.
+ */
+export const POLL_ORCA_CRON = "*/10 * * * *";
+
+/** A job on the slicer queue names its kind; each kind has one handler. */
+export interface SlicerJob {
+  kind: string;
+}
+
+/**
+ * The slicer queue's handlers by job kind: Task 12's "slice", and Task 13's
+ * render and mesh kinds. A handler gets the job with its retry count and
+ * limit, so it can tell the last attempt.
+ */
+export type SlicerJobHandlers = Readonly<
+  Record<string, (job: JobWithMetadata<SlicerJob>) => Promise<unknown>>
+>;
 
 /** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
 export const PURGE_EXPIRED_CRON = "30 3 * * *";
@@ -87,6 +128,19 @@ export interface QueueDeps {
   purgeExpired(now: Date): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
+  /**
+   * The slicer queue's handlers by job kind (Task 12, Task 13). With none,
+   * the slicer queue is created but not worked.
+   */
+  slicerJobs?: SlicerJobHandlers;
+  /** Task 12's Orca-version poll, scheduled every 10 minutes when given. */
+  pollOrca?(): Promise<unknown>;
+  /**
+   * Runs after a file is ingested, outside the ingest transaction: Task 12
+   * queues the file's estimates here. A failure is logged, never thrown,
+   * since the file is already stored.
+   */
+  onIngested?(result: IngestResult): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
