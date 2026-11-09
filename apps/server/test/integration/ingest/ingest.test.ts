@@ -10,7 +10,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { CreateBucketCommand } from "@aws-sdk/client-s3";
-import type { Kysely, Transaction } from "kysely";
+import { type Kysely, sql, type Transaction } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import type { DB } from "../../../src/db/types.js";
@@ -657,6 +657,127 @@ describe("a failed commit never deletes what may have been committed", () => {
     expect(after.blobs).toBe(before.blobs);
     // Left in place: no row points at them, so the orphan sweep removes
     // them after 24 hours.
+    expect(after.objects - before.objects).toBe(2);
+  });
+
+  test("a COMMIT still in flight when the error arrives keeps the objects, and they serve the rows once it lands", async () => {
+    // The connection drops while the server is still finishing COMMIT
+    // (flushing WAL, waiting on a synchronous standby). A lookup of the file
+    // row on another connection does not see it yet, so it cannot tell this
+    // from a COMMIT that never happened; the transaction's own status can.
+    let landCommit: () => void = () => {};
+    let landed: Promise<void> = Promise.resolve();
+    const inFlight = dbWith({
+      transaction: () => ({
+        execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+          const rowsWritten = Promise.withResolvers<void>();
+          const commitNow = Promise.withResolvers<void>();
+          landCommit = commitNow.resolve;
+          landed = env.db.connection().execute(async (conn) => {
+            await sql`begin`.execute(conn);
+            try {
+              await fn(conn as unknown as Transaction<DB>);
+            } catch (error) {
+              await sql`rollback`.execute(conn);
+              rowsWritten.reject(error);
+              return;
+            }
+            rowsWritten.resolve();
+            await commitNow.promise;
+            await sql`commit`.execute(conn);
+          });
+          await rowsWritten.promise;
+          throw new Error("Connection terminated unexpectedly");
+        },
+      }),
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: inFlight, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Commit in flight.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    const during = await footprint(env);
+    expect(during.files).toBe(before.files);
+    // Kept: the COMMIT may still land.
+    expect(during.objects - before.objects).toBe(2);
+
+    landCommit();
+    await landed;
+    const after = await footprint(env);
+    expect(after.files - before.files).toBe(1);
+    expect(after.blobs - before.blobs).toBe(2);
+    expect(after.objects - before.objects).toBe(2);
+    // Every committed blob row still has its bytes.
+    const file = await env.db
+      .selectFrom("files")
+      .select(["modelId"])
+      .where("originalName", "=", "Commit in flight.3mf")
+      .executeTakeFirstOrThrow();
+    const keys = (await env.store.listPrefix(`models/${file.modelId}/`)).map((o) => o.key);
+    expect(keys).toHaveLength(2);
+    for (const key of keys) expect((await readObject(key)).length).toBeGreaterThan(0);
+  });
+
+  test("a transaction that rolled back after writing its rows deletes the objects and leaves no rows", async () => {
+    // The transaction had its id, so its status is asked: "aborted" is the
+    // one answer that lets the objects go.
+    const rolledBack = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) =>
+            real.execute(async (trx) => {
+              await fn(trx);
+              throw new Error("Connection terminated unexpectedly");
+            }),
+        };
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: rolledBack, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Rolled back.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("when the status of the transaction cannot be read, the objects are kept", async () => {
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+      // commitState's status query is the only call made through this.
+      getExecutor: () => {
+        throw new Error("Connection refused");
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: committedThenLost, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Status unknown.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe("Connection terminated unexpectedly");
+    const after = await footprint(env);
+    // It did commit; unable to say so, ingest reports the failure but keeps
+    // every object.
+    expect(after.files - before.files).toBe(1);
     expect(after.objects - before.objects).toBe(2);
   });
 });
