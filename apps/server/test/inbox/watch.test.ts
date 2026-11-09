@@ -1053,6 +1053,124 @@ describe("telling a bad file from an outage", () => {
   });
 });
 
+describe("a fault the checks cannot see", () => {
+  // The database check only reads, so a fault that breaks writes and not
+  // reads passes it: the data disk full (53100) or a write-side I/O error
+  // (58030). Every file fails then, with both checks passing.
+  const diskFull = coded("could not extend file: No space left on device", "53100");
+
+  test("a second file failing in the same pass, with the checks passing, holds the inbox: no file takes a strike or moves to failed", async () => {
+    let broken = true;
+    const fake = fakeIngest(() => {
+      if (broken) throw diskFull;
+    });
+    const w = watcher(fake);
+    for (const name of ["a.stl", "b.stl", "c.stl"]) {
+      await writeFile(join(inbox, name), `solid ${name}\nendsolid ${name}\n`);
+    }
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.waiting).toBe(true);
+    expect(pass.failed).toEqual([]);
+    // The pass stopped at the second failure; c.stl was not tried.
+    expect(fake.calls).toEqual(["a.stl", "b.stl"]);
+
+    for (let i = 0; i < 360; i += 1) {
+      const later = await tick(w, 5_000);
+      expect(later.failed).toEqual([]);
+    }
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    expect(fake.calls).not.toContain("c.stl");
+    const started = lines.filter((l) => l.includes("the checks cannot see"));
+    expect(started).toHaveLength(1);
+    expect(started[0]).toContain("a.stl");
+    expect(started[0]).toContain("b.stl");
+    expect(started[0]).toContain("could not extend file");
+
+    broken = false;
+    const back = await tick(w, BACKOFF_MAX_MS);
+    expect(back.imported.map((i) => i.name)).toEqual(["a.stl", "b.stl", "c.stl"]);
+    expect(await readdir(inbox)).toEqual([]);
+    expect(lines.filter((l) => l.includes("importing again"))).toHaveLength(1);
+  });
+
+  test("while such a fault lasts the tries back off: 5 s, doubling, at most 5 minutes", async () => {
+    const tries: number[] = [];
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") tries.push(clock);
+      throw diskFull;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    // A poll every 5 s for half an hour.
+    for (let i = 0; i < 360; i += 1) await tick(w, 5_000);
+    const gaps = tries.slice(1).map((t, i) => t - (tries[i] ?? 0));
+    expect(gaps.slice(0, 8)).toEqual([
+      5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000,
+    ]);
+    expect(gaps.every((g) => g <= BACKOFF_MAX_MS)).toBe(true);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+  });
+
+  test("the first file's failure in a held pass does not count against it", async () => {
+    // a.stl is truly bad; b.stl fails only while the disk is full.
+    let broken = true;
+    const boom = new TypeError("boom in the parser");
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") throw boom;
+      if (broken) throw diskFull;
+    });
+    const w = watcher(fake);
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    await w.pollOnce();
+    const held = await tick(w, 15_000);
+    expect(held.waiting).toBe(true);
+
+    broken = false;
+    const next = await tick(w, BACKOFF_FIRST_MS);
+    expect(next.waiting).toBe(false);
+    expect(next.imported.map((i) => i.name)).toEqual(["b.stl"]);
+    expect(next.failed).toEqual([]);
+    await tick(w, 5_000);
+    const last = await tick(w, 5_000);
+    expect(last.failed).toEqual([{ name: "a.stl", reason: repeatedErrorReason(boom) }]);
+    // Tried once in the held pass, then STRIKES times that counted.
+    expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(STRIKES + 1);
+  });
+
+  test("a file's last strike does not move it to failed when a second file fails in the same pass", async () => {
+    let broken = false;
+    const boom = new TypeError("boom in the parser");
+    const fake = fakeIngest((input) => {
+      if (input.originalName === "a.stl") throw boom;
+      if (broken) throw diskFull;
+    });
+    const w = watcher(fake);
+    const b = join(inbox, "b.stl");
+    await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    await writeFile(b, "solid b\n");
+    await w.pollOnce();
+    // b.stl grows, so it settles 15 s after a.stl does.
+    await appendFile(b, "endsolid b\n");
+    await tick(w, 15_000);
+    await tick(w, 14_999);
+    expect(fake.calls).toEqual(Array(STRIKES - 1).fill("a.stl"));
+
+    // a.stl's last try and b.stl's first come in the same pass, the disk full.
+    broken = true;
+    const pass = await tick(w, 1);
+    expect(fake.calls).toEqual([...Array(STRIKES).fill("a.stl"), "b.stl"]);
+    expect(pass.waiting).toBe(true);
+    expect(pass.failed).toEqual([]);
+    expect(await exists(join(inbox, "a.stl"))).toBe(true);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+  });
+});
+
 describe("the size limit", () => {
   /** A sparse file of exactly size bytes, so no disk space is used. */
   async function sparse(path: string, size: number) {

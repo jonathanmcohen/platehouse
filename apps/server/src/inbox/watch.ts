@@ -54,9 +54,24 @@
 //     (3) such failures in a row while its size, mtime and inode stay the
 //     same, it moves to failed with a reason quoting the error; a change to
 //     the file starts its count again. The pass goes on to the next file, so
-//     one file cannot hold up the inbox. A fault the checks cannot see (a
-//     full bucket that still lists, say) therefore still costs each file 3
-//     tries before it moves to failed.
+//     one file cannot hold up the inbox. The move of a file on its last
+//     strike waits for the end of the pass, for the rule below.
+//   - Both checks pass, and a second file has already failed in this pass
+//     with both checks passing: the fault is taken to be one the checks
+//     cannot see, not the files'. The database check only reads, so a fault
+//     that breaks writes and not reads passes it (the data disk full, 53100,
+//     or a write-side I/O error, 58030), as does a full bucket that still
+//     lists. Neither failure counts against its file (the first file's
+//     strike is taken back, and it is not moved to failed even on what would
+//     have been its last), the files stay where they are and the pass stops.
+//     It is logged once when it starts, with both errors, and once when it
+//     ends. The checks cannot say when such a fault ends, so a try of the
+//     files does: the next comes BACKOFF_FIRST_MS later and, while each try
+//     ends the same way, the wait doubles up to BACKOFF_MAX_MS as above. It
+//     ends at the first pass that tries a file without two failing. Only one
+//     file in the inbox, or files settling far enough apart that no two are
+//     tried in one pass, still cost each file 3 tries under such a fault
+//     before it moves to failed.
 // - A commit can land with its answer lost when the database connection drops
 //   (ingest then throws the connection error it met), and the process can
 //   restart before the file is tried again (a container recreate, a crash, a
@@ -172,8 +187,11 @@ export interface InboxProbes {
  * The checks the server wires in. The database check is one small query: it
  * reads from files (so a role with no grant fails it), and fails when the
  * session is read-only (a standby after a failover, or
- * default_transaction_read_only) or the role may not insert into files. The
- * store check lists at most one object under models/, where ingest writes.
+ * default_transaction_read_only) or the role may not insert into files. It
+ * writes nothing, so a fault that breaks writes and not reads (the data disk
+ * full) passes it; the watcher catches that by two files failing in one pass
+ * (createInboxWatcher). The store check lists at most one object under
+ * models/, where ingest writes.
  */
 export function inboxProbes(deps: {
   db: Kysely<DB>;
@@ -286,6 +304,27 @@ export interface InboxPass {
   failed: Array<{ name: string; reason: string }>;
   /** True when an outage held back the imports of this pass; the files wait in the inbox. */
   waiting: boolean;
+}
+
+/** A strike taken in the pass under way, settled when the pass ends. */
+interface PassStrike {
+  name: string;
+  path: string;
+  error: unknown;
+  /** The file's count before this strike, put back if the strike is taken back. */
+  prior: { signature: string; count: number } | undefined;
+  count: number;
+}
+
+/** What the pass under way has learnt, beside what it returns. */
+interface PassState {
+  pass: InboxPass;
+  /** The one file that failed in this pass with the checks passing, if any. */
+  struck?: PassStrike;
+  /** Whether a file was tried. */
+  tried: boolean;
+  /** Whether a second such failure held the pass: a fault the checks cannot see. */
+  unseen: boolean;
 }
 
 interface Seen {
@@ -406,9 +445,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Failures of a file while storage and the database answered, by key,
   // for the signature they were counted against.
   const strikes = new Map<string, { signature: string; count: number }>();
-  // The outage in progress: how many checks have failed in a row, and when
-  // (on the injected clock) the next is due.
-  let outage: { checks: number; retryAt: number } | undefined;
+  // The outage in progress: how many checks (or, for a fault the checks
+  // cannot see, held tries) have failed in a row, when (on the injected
+  // clock) the next is due, and whether the checks can see it.
+  let outage: { checks: number; retryAt: number; unseen: boolean } | undefined;
+  // Held tries in a row under a fault the checks cannot see, 0 when none: it
+  // outlives the outage record, which ends at each try.
+  let unseenTries = 0;
 
   async function currentSignature(path: PathLike): Promise<string | undefined> {
     try {
@@ -441,14 +484,31 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   async function outageHolds(): Promise<boolean> {
     if (outage === undefined) return false;
     if (now() < outage.retryAt) return true;
-    if ((await checkEnvironment()) !== undefined) {
+    const why = await checkEnvironment();
+    if (why !== undefined) {
+      if (outage.unseen) {
+        // The fault the checks could not see is one they see now.
+        outage.unseen = false;
+        unseenTries = 0;
+        log(
+          `inbox: storage or the database is not answering (${why}); no file is tried until a ` +
+            "check passes",
+        );
+      }
       outage.checks += 1;
       outage.retryAt = now() + backoffMs(outage.checks);
       return true;
     }
+    if (outage.unseen) {
+      // The checks passed before and pass now; only a try of the files tells.
+      unseenTries = outage.checks;
+      outage = undefined;
+      return false;
+    }
     const checks = `${outage.checks} failed check${outage.checks === 1 ? "" : "s"}`;
     log(`inbox: storage and the database answer again after ${checks}; importing again`);
     outage = undefined;
+    unseenTries = 0;
     return false;
   }
 
@@ -531,28 +591,43 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
 
   /**
    * Counts a failure against the file, storage and the database having
-   * answered; the STRIKES-th in a row for the same signature moves it to
-   * failed with the error as its reason.
+   * answered. The strike holds until the pass ends (settleStrike), since a
+   * second file failing in the same pass takes it back.
    */
-  async function strike(
-    name: string,
-    path: string,
-    entry: Seen,
-    error: unknown,
-    pass: InboxPass,
-  ): Promise<void> {
+  function strike(name: string, path: string, entry: Seen, error: unknown, state: PassState): void {
     const prior = strikes.get(name);
     const count = prior?.signature === entry.signature ? prior.count + 1 : 1;
     log(
       `inbox: ${name} could not be imported (try ${count} of ${STRIKES}; storage and the ` +
         `database answer, so it counts against the file): ${errorText(error)}`,
     );
-    if (count < STRIKES) {
-      strikes.set(name, { signature: entry.signature, count });
+    strikes.set(name, { signature: entry.signature, count });
+    state.struck = { name, path, error, prior, count };
+  }
+
+  /**
+   * At the end of a pass: takes back its strike when a fault the checks
+   * cannot see held the pass; otherwise moves a file on its STRIKES-th
+   * strike in a row for the same signature to failed, with the error as its
+   * reason.
+   */
+  async function settleStrike(state: PassState): Promise<void> {
+    const struck = state.struck;
+    if (struck === undefined) return;
+    if (state.unseen) {
+      if (struck.prior === undefined) strikes.delete(struck.name);
+      else strikes.set(struck.name, struck.prior);
       return;
     }
-    strikes.delete(name);
-    await fail(name, name, path, repeatedErrorReason(error), pass);
+    if (struck.count < STRIKES) return;
+    strikes.delete(struck.name);
+    await fail(
+      struck.name,
+      struck.name,
+      struck.path,
+      repeatedErrorReason(struck.error),
+      state.pass,
+    );
   }
 
   /**
@@ -564,8 +639,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     path: string,
     entry: Seen,
     arrived: Date,
-    pass: InboxPass,
+    state: PassState,
   ): Promise<"outage" | "done"> {
+    const { pass } = state;
+    state.tried = true;
     let result: { modelId: string; fileId: string };
     try {
       result =
@@ -588,7 +665,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       // Not the file's fault until shown to be: check the environment.
       const why = await checkEnvironment();
       if (why !== undefined) {
-        outage = { checks: 1, retryAt: now() + BACKOFF_FIRST_MS };
+        outage = { checks: 1, retryAt: now() + BACKOFF_FIRST_MS, unseen: false };
         log(
           `inbox: storage or the database is not answering (${why}); ${name} and the files ` +
             `after it stay in the inbox, and no file is tried until a check passes, the next in ` +
@@ -597,7 +674,27 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         );
         return "outage";
       }
-      await strike(name, path, entry, error, pass);
+      const first = state.struck;
+      if (first !== undefined) {
+        // A second file failing in one pass, with the checks passing: the
+        // fault is one the checks cannot see, such as a write fault.
+        const checks = unseenTries + 1;
+        const wait = backoffMs(checks);
+        outage = { checks, retryAt: now() + wait, unseen: true };
+        state.unseen = true;
+        if (unseenTries === 0) {
+          log(
+            `inbox: ${first.name} and ${name} both failed in this pass while storage and the ` +
+              "database answered their checks, so the fault is taken to be one the checks cannot " +
+              "see (a full database disk, say), not the files': neither counts against its file, " +
+              `and they and the files after them stay in the inbox. The next try is in ` +
+              `${wait / 1000} s, backing off to every ${BACKOFF_MAX_MS / 60_000} minutes. The ` +
+              `errors: ${errorText(first.error)}; ${errorText(error)}`,
+          );
+        }
+        return "outage";
+      }
+      strike(name, path, entry, error, state);
       return "done";
     }
     strikes.delete(name);
@@ -644,6 +741,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
 
   async function runPass(): Promise<InboxPass> {
     const pass: InboxPass = { imported: [], failed: [], waiting: false };
+    const state: PassState = { pass, tried: false, unseen: false };
     let names: Array<InboxName & { raw: Buffer }>;
     try {
       // Raw bytes: a name that is not UTF-8 would otherwise come back with
@@ -713,10 +811,19 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         continue;
       }
       if (pass.waiting) continue;
-      if ((await importOne(name, path, before, before.arrived, pass)) === "outage") {
+      if ((await importOne(name, path, before, before.arrived, state)) === "outage") {
         pass.waiting = true;
         break;
       }
+    }
+    await settleStrike(state);
+    if (unseenTries > 0 && state.tried && outage === undefined) {
+      const tries = `${unseenTries} held tr${unseenTries === 1 ? "y" : "ies"}`;
+      log(
+        `inbox: no second file failed in this pass after ${tries}, so the fault the checks ` +
+          "could not see is over; importing again",
+      );
+      unseenTries = 0;
     }
     return pass;
   }
