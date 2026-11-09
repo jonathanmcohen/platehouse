@@ -223,8 +223,8 @@ describe("escaped designer text beside a link renders literally through renderMa
   }
 
   it("a ! right before a link stays text and the link stays a link", () => {
-    const html = renderMarkdown(htmlToMarkdown(`<p>Get the files here!${LINK}</p>`));
-    expectTextAndLink(html, "Get the files here!store");
+    const html = renderMarkdown(htmlToMarkdown(`<p>Sample line ends here!${LINK}</p>`));
+    expectTextAndLink(html, "Sample line ends here!store");
   });
 
   it.each(DESIGNER_PAYLOADS)("directly before a link: %j", (payload) => {

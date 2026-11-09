@@ -13,51 +13,51 @@ import { htmlToMarkdown } from "../src/markdown.js";
 // own &#39;.
 const PREFIX = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">
- <metadata name="Application">BambuStudio-02.08.02.61</metadata>
+ <metadata name="Application">BambuStudio-01.02.03.04</metadata>
  <metadata name="BambuStudio:3mfVersion">1</metadata>
  <metadata name="CopyRight">[]</metadata>
- <metadata name="CreationDate">2026-10-26</metadata>
- <metadata name="Description">&amp;lt;h2&amp;gt;Spool Helper Kit&amp;lt;/h2&amp;gt;&amp;lt;p&amp;gt;won&amp;amp;#39;t&amp;lt;/p&amp;gt;</metadata>
+ <metadata name="CreationDate">2001-02-03</metadata>
+ <metadata name="Description">&amp;lt;h2&amp;gt;Example Kit Alpha&amp;lt;/h2&amp;gt;&amp;lt;p&amp;gt;isn&amp;amp;#39;t&amp;lt;/p&amp;gt;</metadata>
  <metadata name="Designer">Example Designer</metadata>
  <metadata name="License">MakerWorld Exclusive License</metadata>
  <metadata name="Origin">profile</metadata>
- <metadata name="Title">Spool Helper Kit | Card &amp;amp; Empty Spool Fix</metadata>
+ <metadata name="Title">Example Kit Alpha | Part A &amp;amp; Part B</metadata>
  `;
 
 describe("extractMakerWorld", () => {
   it("extracts title, designer, description and license from a real-shaped prefix", () => {
     const mw = extractMakerWorld(PREFIX);
     expect(mw).not.toBeNull();
-    expect(mw?.title).toBe("Spool Helper Kit | Card & Empty Spool Fix");
+    expect(mw?.title).toBe("Example Kit Alpha | Part A & Part B");
     expect(mw?.designer).toBe("Example Designer");
     expect(mw?.license).toBe("MakerWorld Exclusive License");
-    expect(mw?.descriptionHtml).toBe("<h2>Spool Helper Kit</h2><p>won&#39;t</p>");
+    expect(mw?.descriptionHtml).toBe("<h2>Example Kit Alpha</h2><p>isn&#39;t</p>");
   });
 
   it("the description becomes Markdown with the double-encoded apostrophe decoded once", () => {
     const mw = extractMakerWorld(PREFIX);
-    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("## Spool Helper Kit\n\nwon't");
+    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("## Example Kit Alpha\n\nisn't");
   });
 
   it("a description escaped only once gives the same Markdown", () => {
     const mw = extractMakerWorld(
-      '<metadata name="Designer">D</metadata><metadata name="Description">&lt;h2&gt;Spool Helper Kit&lt;/h2&gt;&lt;p&gt;won&amp;#39;t&lt;/p&gt;</metadata>',
+      '<metadata name="Designer">D</metadata><metadata name="Description">&lt;h2&gt;Example Kit Alpha&lt;/h2&gt;&lt;p&gt;isn&amp;#39;t&lt;/p&gt;</metadata>',
     );
-    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("## Spool Helper Kit\n\nwon't");
+    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("## Example Kit Alpha\n\nisn't");
   });
 
   it("a non-breaking space escaped twice disappears from the Markdown", () => {
     const mw = extractMakerWorld(
-      '<metadata name="Designer">D</metadata><metadata name="Description">&amp;lt;p&amp;gt;Print 3 times.&amp;amp;nbsp;&amp;lt;/p&amp;gt;&amp;lt;p&amp;gt;&amp;amp;nbsp;&amp;lt;/p&amp;gt;</metadata>',
+      '<metadata name="Designer">D</metadata><metadata name="Description">&amp;lt;p&amp;gt;Rinse 2 times.&amp;amp;nbsp;&amp;lt;/p&amp;gt;&amp;lt;p&amp;gt;&amp;amp;nbsp;&amp;lt;/p&amp;gt;</metadata>',
     );
-    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("Print 3 times.");
+    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("Rinse 2 times.");
   });
 
   it("a double-encoded title is decoded to the real character", () => {
     const mw = extractMakerWorld(
-      '<metadata name="Designer">D</metadata><metadata name="Title">Don&amp;#39;t Panic &amp;amp; Print</metadata>',
+      '<metadata name="Designer">D</metadata><metadata name="Title">Can&amp;#39;t Stop &amp;amp; Glue</metadata>',
     );
-    expect(mw?.title).toBe("Don't Panic & Print");
+    expect(mw?.title).toBe("Can't Stop & Glue");
   });
 
   it("a title MakerWorld stored with an entity in it reads as text", () => {
@@ -75,13 +75,13 @@ describe("extractMakerWorld", () => {
     // A MakerLab parametric export: no Designer, no Title.
     expect(
       extractMakerWorld(
-        '<metadata name="Designer"></metadata><metadata name="MakerLab">Parametric Model Maker</metadata><metadata name="Title"></metadata>',
+        '<metadata name="Designer"></metadata><metadata name="MakerLab">Sample Generator</metadata><metadata name="Title"></metadata>',
       ),
     ).toBeNull();
     // Another tool's export: a placeholder Title and nothing else.
     expect(
       extractMakerWorld(
-        '<metadata name="Copyright">Copyright (c) 2023. All rights reserved.</metadata><metadata name="Designer"></metadata><metadata name="License"></metadata><metadata name="Title">Exported 3D Model</metadata>',
+        '<metadata name="Copyright">Copyright (c) 2001 Example Tool.</metadata><metadata name="Designer"></metadata><metadata name="License"></metadata><metadata name="Title">Placeholder Part</metadata>',
       ),
     ).toBeNull();
   });
@@ -89,12 +89,12 @@ describe("extractMakerWorld", () => {
   it("returns null when the Designer is the Gridfinity Layout Tool generator, case and spacing folded", () => {
     expect(
       extractMakerWorld(
-        '<metadata name="Designer">Gridfinity Layout Tool</metadata><metadata name="Title">Untitled Bin</metadata>',
+        '<metadata name="Designer">Gridfinity Layout Tool</metadata><metadata name="Title">Sample Tray</metadata>',
       ),
     ).toBeNull();
     expect(
       extractMakerWorld(
-        '<metadata name="Designer">  gridfinity   LAYOUT tool </metadata><metadata name="Title">Untitled Bin</metadata>',
+        '<metadata name="Designer">  gridfinity   LAYOUT tool </metadata><metadata name="Title">Sample Tray</metadata>',
       ),
     ).toBeNull();
     // A person's name that merely contains the words is still a designer.
@@ -131,11 +131,11 @@ describe("extractMakerWorld", () => {
 
   it("a twice-escaped tag-like word in a real description reaches the Markdown escaped", () => {
     const mw = extractMakerWorld(
-      '<metadata name="Description">&amp;lt;p&amp;gt;Use &amp;amp;lt;M3x8&amp;amp;gt; screws&amp;lt;/p&amp;gt;</metadata><metadata name="Designer">D</metadata>',
+      '<metadata name="Description">&amp;lt;p&amp;gt;Fit &amp;amp;lt;Q7&amp;amp;gt; pins&amp;lt;/p&amp;gt;</metadata><metadata name="Designer">D</metadata>',
     );
     // CommonMark form: the < and > are backslash-escaped, so markdown-it shows
     // them as text and never reads an autolink or a tag.
-    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("Use \\<M3x8\\> screws");
+    expect(htmlToMarkdown(mw?.descriptionHtml)).toBe("Fit \\<Q7\\> pins");
   });
 
   it("decodeEntities leaves invalid numeric references alone", () => {

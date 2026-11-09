@@ -225,26 +225,26 @@ describe("htmlToMarkdown: ported cases", () => {
 
   it("htmlToMarkdown: a table becomes a pipe table with the first row as header", () => {
     const html =
-      "<p>Storage:</p><table><tbody>" +
-      "<tr><td><p><strong>Rank</strong></p></td><td><p><strong>Storage Type</strong></p></td></tr>" +
-      "<tr><td><p>1</p></td><td><p>Foil bag<br>with clip | zip</p></td></tr>" +
+      "<p>Sizes:</p><table><tbody>" +
+      "<tr><td><p><strong>Code</strong></p></td><td><p><strong>Pad Size</strong></p></td></tr>" +
+      "<tr><td><p>1</p></td><td><p>Small pad<br>with glue | tape</p></td></tr>" +
       "<tr></tr>" +
-      "<tr><td>2</td><td>&lt;US$1</td></tr>" +
+      "<tr><td>2</td><td>&lt;X$9</td></tr>" +
       "</tbody></table><p>After.</p>";
     const out = htmlToMarkdown(html);
     // CommonMark: < is \<, and $ needs no escape.
     expect(out).toBe(
-      "Storage:\n\n| **Rank** | **Storage Type** |\n| --- | --- |\n| 1 | Foil bag with clip \\| zip |\n| 2 | \\<US$1 |\n\nAfter.",
+      "Sizes:\n\n| **Code** | **Pad Size** |\n| --- | --- |\n| 1 | Small pad with glue \\| tape |\n| 2 | \\<X$9 |\n\nAfter.",
     );
     expect(render(out)).toBe(
-      "<p>Storage:</p>\n<table>\n<thead>\n<tr>\n<th><strong>Rank</strong></th>\n<th><strong>Storage Type</strong></th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td>Foil bag with clip | zip</td>\n</tr>\n<tr>\n<td>2</td>\n<td>&lt;US$1</td>\n</tr>\n</tbody>\n</table>\n<p>After.</p>\n",
+      "<p>Sizes:</p>\n<table>\n<thead>\n<tr>\n<th><strong>Code</strong></th>\n<th><strong>Pad Size</strong></th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td>Small pad with glue | tape</td>\n</tr>\n<tr>\n<td>2</td>\n<td>&lt;X$9</td>\n</tr>\n</tbody>\n</table>\n<p>After.</p>\n",
     );
   });
 
   it("block syntax: the reviewer's tilde fence stays text", () => {
-    const out = htmlToMarkdown("<p>Notes<br>~~~~~~</p><p>Use M3*8</p><p>~~~~~~</p>");
-    expect(out).toBe("Notes\n\\~\\~\\~\\~\\~\\~\n\nUse M3\\*8\n\n\\~\\~\\~\\~\\~\\~");
-    expect(render(out)).toBe("<p>Notes<br>\n~~~~~~</p>\n<p>Use M3*8</p>\n<p>~~~~~~</p>\n");
+    const out = htmlToMarkdown("<p>Notes<br>~~~~~~</p><p>Mix 2*3</p><p>~~~~~~</p>");
+    expect(out).toBe("Notes\n\\~\\~\\~\\~\\~\\~\n\nMix 2\\*3\n\n\\~\\~\\~\\~\\~\\~");
+    expect(render(out)).toBe("<p>Notes<br>\n~~~~~~</p>\n<p>Mix 2*3</p>\n<p>~~~~~~</p>\n");
   });
 
   it("block syntax: a backtick fence stays text", () => {
@@ -254,10 +254,10 @@ describe("htmlToMarkdown: ported cases", () => {
   });
 
   it("block syntax: a line starting with # is not a heading", () => {
-    expect(htmlToMarkdown("<p># of parts: 12</p>")).toBe("\\# of parts: 12");
-    expect(render("\\# of parts: 12")).toBe(para("# of parts: 12"));
-    expect(htmlToMarkdown("<p>Intro<br># of parts</p>")).toBe("Intro\n\\# of parts");
-    expect(render("Intro\n\\# of parts")).toBe(para("Intro<br>\n# of parts"));
+    expect(htmlToMarkdown("<p># of pins: 12</p>")).toBe("\\# of pins: 12");
+    expect(render("\\# of pins: 12")).toBe(para("# of pins: 12"));
+    expect(htmlToMarkdown("<p>Intro<br># of pins</p>")).toBe("Intro\n\\# of pins");
+    expect(render("Intro\n\\# of pins")).toBe(para("Intro<br>\n# of pins"));
     expect(htmlToMarkdown("<p>  ## spaced</p>")).toBe("\\## spaced");
   });
 
@@ -309,9 +309,9 @@ describe("htmlToMarkdown: ported cases", () => {
   });
 
   it("block syntax: ~~ pairs are not strikethrough", () => {
-    const out = htmlToMarkdown("<p>~~3h, filament ~~40g</p>");
-    expect(out).toBe("\\~\\~3h, filament \\~\\~40g");
-    expect(render(out)).toBe(para("~~3h, filament ~~40g"));
+    const out = htmlToMarkdown("<p>~~5m, glue ~~9 dabs</p>");
+    expect(out).toBe("\\~\\~5m, glue \\~\\~9 dabs");
+    expect(render(out)).toBe(para("~~5m, glue ~~9 dabs"));
   });
 
   it("block syntax: definition lists, math, attribute lists and end-of-block markers stay text", () => {
@@ -342,8 +342,8 @@ describe("htmlToMarkdown: ported cases", () => {
     expect(htmlToMarkdown("<p>&nbsp;<span># x</span></p>")).toBe("\\# x");
     expect(htmlToMarkdown("<p><strong> </strong>- x</p>")).toBe("\\- x");
     expect(
-      htmlToMarkdown("<p>&nbsp;<span># of parts</span></p><p><strong> </strong>- 2 pcs</p>"),
-    ).toBe("\\# of parts\n\n\\- 2 pcs");
+      htmlToMarkdown("<p>&nbsp;<span># of pins</span></p><p><strong> </strong>- 2 pcs</p>"),
+    ).toBe("\\# of pins\n\n\\- 2 pcs");
     expect(htmlToMarkdown("<ul><li>&nbsp;<span>+ x</span></li></ul>")).toBe("- \\+ x");
     expect(htmlToMarkdown("<p>a<br>&nbsp;<em> </em>1. x</p>")).toBe("a\n1\\. x");
   });
@@ -366,9 +366,9 @@ describe("htmlToMarkdown: ported cases", () => {
   it("htmlToMarkdown: two paragraphs in one table cell or list item keep a space between them", () => {
     expect(
       htmlToMarkdown(
-        "<table><tr><td>Item</td></tr><tr><td><p>Foil bag</p><p>with clip</p></td></tr></table>",
+        "<table><tr><td>Item</td></tr><tr><td><p>Small pad</p><p>with glue</p></td></tr></table>",
       ),
-    ).toBe("| Item |\n| --- |\n| Foil bag with clip |");
+    ).toBe("| Item |\n| --- |\n| Small pad with glue |");
     expect(htmlToMarkdown("<ul><li><p>First</p><p>Second</p></li></ul>")).toBe("- First Second");
     expect(htmlToMarkdown("<ol><li><div>a</div><div>b</div></li><li>c</li></ol>")).toBe(
       "1. a b\n2. c",
@@ -521,8 +521,8 @@ describe("htmlToMarkdown: ported cases", () => {
   });
 
   it("htmlToMarkdown: text that looks like a tag stays text", () => {
-    expect(htmlToMarkdown("<p>Use &lt;M3x8&gt; screws</p>")).toBe("Use \\<M3x8\\> screws");
-    expect(render("Use \\<M3x8\\> screws")).toBe(para("Use &lt;M3x8&gt; screws"));
+    expect(htmlToMarkdown("<p>Fit &lt;Q7&gt; pins</p>")).toBe("Fit \\<Q7\\> pins");
+    expect(render("Fit \\<Q7\\> pins")).toBe(para("Fit &lt;Q7&gt; pins"));
     const img = htmlToMarkdown('<p>&lt;img src="https://example.com/a.png"&gt;</p>');
     expect(img).toBe('\\<img src="https://example.com/a.png"\\>');
     expect(render(img)).toBe(para("&lt;img src=&quot;https://example.com/a.png&quot;&gt;"));
@@ -533,17 +533,17 @@ describe("htmlToMarkdown: ported cases", () => {
   });
 
   it("htmlToMarkdown: Markdown span characters in text stay text", () => {
-    expect(htmlToMarkdown("<p>Use M3*8 and M4*10 bolts</p>")).toBe("Use M3\\*8 and M4\\*10 bolts");
+    expect(htmlToMarkdown("<p>Mix 2*3 and 4*10 parts</p>")).toBe("Mix 2\\*3 and 4\\*10 parts");
     const spans = htmlToMarkdown("<p>**not bold** _x_ `code` [t](https://e.test) a\\b</p>");
     expect(spans).toBe("\\*\\*not bold\\*\\* \\_x\\_ \\`code\\` \\[t\\](https://e.test) a\\\\b");
     expect(render(spans)).toBe(para("**not bold** _x_ `code` [t](https://e.test) a\\b"));
     // The converter's own markup is left alone; escaped text inside it stays escaped.
     const own = htmlToMarkdown(
-      '<p><strong>M3*8</strong> <em>a_b</em> <a href="https://e.test/a_b">[x]</a></p>',
+      '<p><strong>2*3</strong> <em>a_b</em> <a href="https://e.test/a_b">[x]</a></p>',
     );
-    expect(own).toBe("**M3\\*8** *a\\_b* [\\[x\\]](https://e.test/a_b)");
+    expect(own).toBe("**2\\*3** *a\\_b* [\\[x\\]](https://e.test/a_b)");
     expect(render(own)).toBe(
-      para('<strong>M3*8</strong> <em>a_b</em> <a href="https://e.test/a_b">[x]</a>'),
+      para('<strong>2*3</strong> <em>a_b</em> <a href="https://e.test/a_b">[x]</a>'),
     );
     // A pipe in a table cell is still escaped after a backslash in the text.
     const cell = htmlToMarkdown("<table><tr><td>a\\|b</td></tr></table>");
@@ -849,9 +849,9 @@ describe("escaped designer text beside converter markup renders literally (markd
   const LINK_OUT = '<a href="https://shop.example/x">store</a>';
 
   it("a ! right before a link keeps the link and the !", () => {
-    const out = htmlToMarkdown(`<p>Get the files here!${LINK}</p>`);
-    expect(out).toBe("Get the files here\\![store](https://shop.example/x)");
-    expect(render(out)).toBe(para(`Get the files here!${LINK_OUT}`));
+    const out = htmlToMarkdown(`<p>Sample line ends here!${LINK}</p>`);
+    expect(out).toBe("Sample line ends here\\![store](https://shop.example/x)");
+    expect(render(out)).toBe(para(`Sample line ends here!${LINK_OUT}`));
   });
 
   it.each(DESIGNER_PAYLOADS)("directly before a link: %j", (payload) => {
