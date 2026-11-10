@@ -43,6 +43,7 @@ import {
   repeatedErrorReason,
   STRIKES,
   TOO_LARGE_REASON,
+  tooLargeReason,
   UNCONFIRMED_REASON,
 } from "../../src/inbox/watch.js";
 import {
@@ -1692,6 +1693,17 @@ describe("the size limit", () => {
 
   test("is the 512 MiB uploads have", () => {
     expect(MAX_INBOX_BYTES).toBe(536_870_912);
+  });
+
+  test("its reason gives the limit in bytes and in MiB, both worked out from the limit", () => {
+    expect(TOO_LARGE_REASON).toBe(tooLargeReason(MAX_INBOX_BYTES));
+    expect(TOO_LARGE_REASON).toContain("536870912 bytes (512 MiB)");
+    // Another limit gives its own figures, not today's.
+    expect(tooLargeReason(1_048_576)).toBe(
+      "Platehouse could not import this file because it is larger than 1048576 bytes " +
+        "(1 MiB), the most it takes; nothing was uploaded.",
+    );
+    expect(tooLargeReason(1_572_864)).toContain("1572864 bytes (1.5 MiB)");
   });
 
   test("a file over it moves to failed from its size alone, with nothing read, asked or uploaded", async () => {

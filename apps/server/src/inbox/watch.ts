@@ -215,10 +215,21 @@ export const MAX_INBOX_BYTES = MAX_UPLOAD_BYTES;
  */
 const FILE_FAULTS: ReadonlySet<IngestErrorCode> = new Set(["unsupported_type", "model_not_found"]);
 
+/**
+ * The reason for a file larger than maxBytes, giving the limit in bytes and
+ * in MiB (to one decimal place, with no trailing .0), both worked out from
+ * maxBytes so that neither goes stale when the upload limit changes.
+ */
+export function tooLargeReason(maxBytes: number): string {
+  const mib = Number((maxBytes / 1_048_576).toFixed(1));
+  return (
+    `Platehouse could not import this file because it is larger than ${maxBytes} bytes ` +
+    `(${mib} MiB), the most it takes; nothing was uploaded.`
+  );
+}
+
 /** Reason when the file is larger than MAX_INBOX_BYTES. */
-export const TOO_LARGE_REASON =
-  `Platehouse could not import this file because it is larger than ${MAX_INBOX_BYTES} bytes ` +
-  "(512 MiB), the most it takes; nothing was uploaded.";
+export const TOO_LARGE_REASON = tooLargeReason(MAX_INBOX_BYTES);
 
 /** Failures in a row, with storage and the database answering, before a file moves to failed. */
 export const STRIKES = 3;
