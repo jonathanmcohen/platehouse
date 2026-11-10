@@ -10,6 +10,7 @@ import {
   access,
   appendFile,
   chmod,
+  type FileHandle,
   lstat,
   mkdir,
   mkdtemp,
@@ -23,7 +24,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { Readable } from "node:stream";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Estimates } from "../../src/estimates/service.js";
 import {
   BACKOFF_FIRST_MS,
@@ -57,6 +59,59 @@ import {
 } from "../../src/ingest/ingest.js";
 import { StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 
+/**
+ * A hook into node:fs/promises open, for faults a real folder cannot give on
+ * demand (a full disk part way through a copy, an inbox file that will not
+ * read). Every other open, and every open while no test sets wrap, reaches
+ * the real one; afterEach clears it.
+ */
+const fsHooks = vi.hoisted(() => ({
+  /** What an open of path returns in place of the real handle. */
+  wrap: undefined as ((path: string, handle: FileHandle) => FileHandle) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const open = async (...args: Parameters<typeof actual.open>): Promise<FileHandle> => {
+    const handle = await actual.open(...args);
+    return fsHooks.wrap?.(String(args[0]), handle) ?? handle;
+  };
+  return { ...actual, default: { ...actual, open }, open };
+});
+
+/** The handle with some methods replaced; every other call reaches the real handle. */
+function patched(handle: FileHandle, methods: Record<string, unknown>): FileHandle {
+  return new Proxy(handle, {
+    get(target, prop) {
+      if (typeof prop === "string" && Object.hasOwn(methods, prop)) return methods[prop];
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/**
+ * Makes the first open of the inbox file at path run change just after the
+ * watcher's fstat on it, as a writer appending or truncating in that moment
+ * would: the file has settled and been checked, and only then changes.
+ */
+function changeAfterCheck(path: string, change: () => Promise<void>): void {
+  let pending = true;
+  fsHooks.wrap = (opened, handle) => {
+    if (opened !== path) return handle;
+    return patched(handle, {
+      stat: async (...args: unknown[]) => {
+        const st: unknown = await Reflect.apply(handle.stat, handle, args);
+        if (pending) {
+          pending = false;
+          await change();
+        }
+        return st;
+      },
+    });
+  };
+}
+
 let root: string;
 let inbox: string;
 let clock: number;
@@ -71,7 +126,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  fsHooks.wrap = undefined;
   await chmod(inbox, 0o755).catch(() => undefined);
+  await chmod(join(root, "tmp", "inbox-copies"), 0o755).catch(() => undefined);
   await rm(root, { recursive: true, force: true });
 });
 
@@ -167,8 +224,12 @@ function watcher(
     findImported: async () => [],
     // Required; the tests under "after ingest" pass their own to watch it.
     onIngested: async () => undefined,
-    // Storage and the database answer unless a test says otherwise.
-    probes: { database: async () => undefined, store: async () => undefined },
+    // Storage, the database and the temp folder answer unless a test says otherwise.
+    probes: {
+      database: async () => undefined,
+      store: async () => undefined,
+      tmpDir: async () => undefined,
+    },
     now: () => clock,
     log: (line) => lines.push(line),
     ...extra,
@@ -195,6 +256,7 @@ function checks(down: () => boolean) {
       if (down()) throw coded("connect ECONNREFUSED 10.0.0.5:5432", "ECONNREFUSED");
     },
     store: async () => undefined,
+    tmpDir: async () => undefined,
   };
   return { probes, at };
 }
@@ -523,7 +585,11 @@ describe("after ingest", () => {
       ingest: fake.ingest,
       storedFile: async (id) => fake.stored.get(id),
       findImported: async () => [],
-      probes: { database: async () => undefined, store: async () => undefined },
+      probes: {
+        database: async () => undefined,
+        store: async () => undefined,
+        tmpDir: async () => undefined,
+      },
       now: () => clock,
       log: (line) => lines.push(line),
     };
@@ -634,6 +700,103 @@ describe("a symlink swapped in for a settled file", () => {
     expect((await lstat(join(inbox, "model.scad"))).isSymbolicLink()).toBe(true);
     expect(await readFile(outside, "utf8")).toBe(OUTSIDE_TEXT);
     expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+  });
+});
+
+describe("a file that changes after it settles", () => {
+  // The settle window and the fstat after the open say the file is done. A
+  // writer can still append or truncate after that check (a stalled copy that
+  // resumes, a writer that keeps appending). What is imported must be the
+  // file that settled, never more or less of it.
+
+  test("a file appended after it settles is not imported on that pass, and is imported whole once it settles again", async () => {
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    const path = join(inbox, "grow.stl");
+    await writeFile(path, "solid a\n");
+    changeAfterCheck(path, () => appendFile(path, "endsolid a\n"));
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(fake.calls).toEqual([]);
+    expect(pass.imported).toEqual([]);
+    expect(pass.failed).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe("solid a\nendsolid a\n");
+    expect(lines.some((l) => l.includes("counts against the file"))).toBe(false);
+
+    // Its settle window starts again at the next poll.
+    await tick(w, 5_000);
+    await tick(w, 14_999);
+    expect(fake.calls).toEqual([]);
+    const again = await tick(w, 1);
+    expect(fake.calls).toEqual(["grow.stl"]);
+    expect(again.imported).toHaveLength(1);
+    const fileId = again.imported[0]?.fileId ?? "";
+    expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from("solid a\nendsolid a\n")));
+    expect(await exists(path)).toBe(false);
+  });
+
+  test("a file truncated after it settles is not imported on that pass, and is imported as it is once it settles again", async () => {
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    const path = join(inbox, "shrink.stl");
+    await writeFile(path, "solid a\nendsolid a\n");
+    changeAfterCheck(path, async () => {
+      const handle = await open(path, "r+");
+      try {
+        await handle.truncate(8);
+      } finally {
+        await handle.close();
+      }
+    });
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(fake.calls).toEqual([]);
+    expect(pass.imported).toEqual([]);
+    expect(pass.failed).toEqual([]);
+
+    await tick(w, 5_000);
+    const again = await tick(w, 15_000);
+    expect(fake.calls).toEqual(["shrink.stl"]);
+    const fileId = again.imported[0]?.fileId ?? "";
+    expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from("solid a\n")));
+  });
+
+  test("a file that grows past the size limit after it settles is never imported as an oversized model", async () => {
+    // What each ingest call was handed, by size; nothing is read.
+    const sizes: number[] = [];
+    const w = watcher(fakeIngest(), {
+      ingest: {
+        async ingestFile(input: IngestInput) {
+          sizes.push((await lstat(input.tmpPath)).size);
+          return { modelId: "model-x", fileId: "file-x" };
+        },
+      },
+      storedFile: async () => undefined,
+    });
+    const path = join(inbox, "swelling.3mf");
+    await writeFile(path, "small at first\n");
+    changeAfterCheck(path, async () => {
+      // Sparse, so no disk space is used.
+      const handle = await open(path, "r+");
+      try {
+        await handle.truncate(MAX_INBOX_BYTES + 1);
+      } finally {
+        await handle.close();
+      }
+    });
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(sizes).toEqual([]);
+    expect(pass.imported).toEqual([]);
+    expect(pass.failed).toEqual([]);
+
+    // Once it settles at its new size, the size limit refuses it.
+    await tick(w, 5_000);
+    const later = await tick(w, 15_000);
+    expect(later.failed).toEqual([{ name: "swelling.3mf", reason: TOO_LARGE_REASON }]);
+    expect(sizes).toEqual([]);
   });
 });
 
@@ -1374,6 +1537,7 @@ describe("telling a bad file from an outage", () => {
       store: async () => {
         throw new StoreError("ListObjectsV2", "AccessDenied", 403);
       },
+      tmpDir: async () => undefined,
     };
     const w = watcher(fake, { probes });
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
@@ -1391,6 +1555,7 @@ describe("telling a bad file from an outage", () => {
     const probes: InboxProbes = {
       database: () => new Promise(() => undefined),
       store: async () => undefined,
+      tmpDir: async () => undefined,
     };
     const w = watcher(fake, { probes, probeTimeoutMs: 20 });
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
@@ -1622,10 +1787,192 @@ describe("ingest's error codes", () => {
   });
 });
 
+describe("a temp folder that will not take the copy", () => {
+  // Ingest reads a copy the watcher writes in TMP_DIR/inbox-copies. A copy
+  // that cannot be written (TMP_DIR full, read-only, unwritable or gone) is
+  // the environment's fault, never the file's: it is an outage, not a strike.
+  const copies = () => join(root, "tmp", "inbox-copies");
+
+  /** Each way of breaking the temp folder, with how to mend it; undefined when it cannot run here. */
+  const breakers: Array<[string, () => Promise<(() => Promise<void>) | undefined>]> = [
+    [
+      "full part way through the copy (ENOSPC)",
+      async () => {
+        fsHooks.wrap = (path, handle) => {
+          if (!path.startsWith(copies())) return handle;
+          const full = async () => {
+            throw coded("ENOSPC: no space left on device, write", "ENOSPC");
+          };
+          return patched(handle, { write: full, writeFile: full });
+        };
+        return async () => {
+          fsHooks.wrap = undefined;
+        };
+      },
+    ],
+    [
+      "unwritable (EACCES)",
+      async () => {
+        // Root ignores the folder's mode, so this case cannot run as root.
+        if (process.getuid?.() === 0) return undefined;
+        await mkdir(copies(), { recursive: true });
+        await chmod(copies(), 0o500);
+        return async () => {
+          await chmod(copies(), 0o700);
+        };
+      },
+    ],
+  ];
+
+  test.for(breakers)(
+    "a temp folder %s leaves the file in place with no strike, backs off, and imports once it takes writes",
+    async ([, breakIt], ctx) => {
+      const fake = fakeIngest();
+      const w = watcher(fake);
+      const path = join(inbox, "a.stl");
+      await writeFile(path, "solid a\nendsolid a\n");
+      const mend = await breakIt();
+      if (mend === undefined) {
+        // Written reason for the skip: root ignores the folder's mode. Skipped,
+        // not passed, so the report says this checked nothing.
+        return ctx.skip();
+      }
+      await w.pollOnce();
+      const first = await tick(w, 15_000);
+      expect(first.waiting).toBe(true);
+      expect(first.failed).toEqual([]);
+      // The second try comes 5 s later, the third 10 s after that.
+      expect((await tick(w, 5_000)).waiting).toBe(true);
+      expect((await tick(w, 5_000)).waiting).toBe(true);
+      expect((await tick(w, 5_000)).waiting).toBe(true);
+
+      // Three failed copies: nothing counted against the file, nothing moved.
+      expect(fake.calls).toEqual([]);
+      expect(await readFile(path, "utf8")).toBe("solid a\nendsolid a\n");
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect(lines.some((l) => l.includes("counts against the file"))).toBe(false);
+      expect(lines.some((l) => l.includes("a.stl") && l.includes("temp folder"))).toBe(true);
+
+      // Mended. The next try is due 20 s after the third, not at the next poll.
+      await mend();
+      const early = await tick(w, 15_000);
+      expect(early.imported).toEqual([]);
+      expect(early.waiting).toBe(true);
+      const back = await tick(w, 5_000);
+      expect(back.imported.map((i) => i.name)).toEqual(["a.stl"]);
+      expect(await exists(path)).toBe(false);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    },
+  );
+
+  test("a TMP_DIR that is not a folder is an outage the temp folder check confirms, and the inbox imports once it is a folder", async () => {
+    const tmp = join(root, "tmp");
+    await writeFile(tmp, "a file where the temp folder should be\n");
+    const real = inboxProbes({ db: {} as never, store: {} as never, tmpDir: tmp });
+    const fake = fakeIngest();
+    const w = watcher(fake, {
+      probes: {
+        database: async () => undefined,
+        store: async () => undefined,
+        tmpDir: () => real.tmpDir(),
+      },
+    });
+    const path = join(inbox, "a.stl");
+    await writeFile(path, "solid a\nendsolid a\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.waiting).toBe(true);
+    expect(pass.failed).toEqual([]);
+    for (let i = 0; i < 10; i += 1) expect((await tick(w, 5_000)).failed).toEqual([]);
+    expect(fake.calls).toEqual([]);
+    expect(await exists(path)).toBe(true);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    const outage = lines.filter((l) => l.includes("not answering"));
+    expect(outage).toHaveLength(1);
+    expect(outage[0]).toContain("temp folder");
+
+    await rm(tmp);
+    await mkdir(tmp);
+    const back = await tick(w, BACKOFF_MAX_MS);
+    expect(back.imported.map((i) => i.name)).toEqual(["a.stl"]);
+    expect(lines.filter((l) => l.includes("importing again"))).toHaveLength(1);
+  });
+
+  test("a failure reading the inbox file itself still counts against the file", async () => {
+    const path = join(inbox, "unreadable.stl");
+    const eio = coded("EIO: i/o error, read", "EIO");
+    fsHooks.wrap = (opened, handle) =>
+      opened !== path
+        ? handle
+        : patched(handle, {
+            read: async () => {
+              throw eio;
+            },
+            createReadStream: () =>
+              new Readable({
+                read() {
+                  this.destroy(eio);
+                },
+              }),
+          });
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    await writeFile(path, "solid a\nendsolid a\n");
+    await w.pollOnce();
+    await tick(w, 15_000);
+    await tick(w, 5_000);
+    const third = await tick(w, 5_000);
+    expect(third.failed).toEqual([{ name: "unreadable.stl", reason: repeatedErrorReason(eio) }]);
+    expect(fake.calls).toEqual([]);
+  });
+});
+
 describe("the checks", () => {
-  // The store check itself; the database check needs a real Postgres and is
-  // in test/integration/inbox/.
+  // The store and temp folder checks themselves; the database check needs a
+  // real Postgres and is in test/integration/inbox/.
   const listed = { objects: [], next: undefined };
+
+  test("the temp folder check passes on a folder that takes a write, and leaves nothing behind", async () => {
+    const tmp = join(root, "tmp");
+    const probes = inboxProbes({ db: {} as never, store: {} as never, tmpDir: tmp });
+    await expect(probes.tmpDir()).resolves.toBeUndefined();
+    await expect(probes.tmpDir()).resolves.toBeUndefined();
+    expect(await readdir(join(tmp, "inbox-copies"))).toEqual([]);
+  });
+
+  test("the temp folder check fails when TMP_DIR is not a folder", async () => {
+    const tmp = join(root, "tmp");
+    await writeFile(tmp, "not a folder\n");
+    const probes = inboxProbes({ db: {} as never, store: {} as never, tmpDir: tmp });
+    await expect(probes.tmpDir()).rejects.toThrow();
+  });
+
+  test("the temp folder check fails when the disk is full, and leaves nothing behind", async () => {
+    const tmp = join(root, "tmp");
+    fsHooks.wrap = (path, handle) => {
+      if (!path.startsWith(join(tmp, "inbox-copies"))) return handle;
+      const full = async () => {
+        throw coded("ENOSPC: no space left on device, write", "ENOSPC");
+      };
+      return patched(handle, { write: full, writeFile: full });
+    };
+    const probes = inboxProbes({ db: {} as never, store: {} as never, tmpDir: tmp });
+    await expect(probes.tmpDir()).rejects.toThrow(/ENOSPC/);
+    fsHooks.wrap = undefined;
+    expect(await readdir(join(tmp, "inbox-copies"))).toEqual([]);
+  });
+
+  test("the temp folder check fails when the copy folder cannot be written", async (ctx) => {
+    if (process.getuid?.() === 0) {
+      // Written reason for the skip: root ignores the folder's mode.
+      return ctx.skip();
+    }
+    const tmp = join(root, "tmp");
+    await mkdir(join(tmp, "inbox-copies"), { recursive: true });
+    await chmod(join(tmp, "inbox-copies"), 0o500);
+    const probes = inboxProbes({ db: {} as never, store: {} as never, tmpDir: tmp });
+    await expect(probes.tmpDir()).rejects.toThrow(/EACCES/);
+  });
 
   test("the store check fails when the store will not take a write, though it still lists", async () => {
     const store = {
