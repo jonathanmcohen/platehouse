@@ -16,7 +16,14 @@
 //   source's mtime (rsync -t, cp -p) would otherwise look settled at once.
 //   The clock is read for each file as it is looked at, not once per pass,
 //   so a slow import earlier in a pass does not shorten a later file's window.
-// - A settled file goes to ingestFile. Once it returns, the watcher reads
+// - A settled file goes to ingestFile. Once it returns, the watcher runs
+//   onIngested with the stored file, as the ingest queue's worker does
+//   (jobs/queues.ts), so an inbox file's plates are queued for estimates
+//   (Task 12) as soon as it is stored, not at the next Orca poll. It runs too
+//   for an earlier attempt's import found by its id (below), since that
+//   attempt's answer was lost before it could. A failure there is logged,
+//   never thrown: the file is stored, and the Orca poll queues what was
+//   missed. Then the watcher reads
 //   the size and SHA-256 that ingest recorded for the stored file and hashes
 //   the inbox copy again; the copy is deleted only when both match (AC-021:
 //   deleted once the upload is verified). If the copy changed in the
@@ -172,6 +179,7 @@ import {
   IngestError,
   type IngestErrorCode,
   IngestOutcomeUnknown,
+  type IngestResult,
 } from "../ingest/ingest.js";
 import type { ImportedFile, ImportedQuery } from "../repos/files.js";
 import { createRepos } from "../repos/index.js";
@@ -434,6 +442,13 @@ export interface InboxWatcherDeps {
    * attempt; ids with no row are left out.
    */
   findImported: (file: ImportedQuery) => Promise<ImportedFile[]>;
+  /**
+   * Runs after a file is stored, before its inbox copy is checked, as
+   * QueueDeps.onIngested does for the ingest queue: Task 12 queues the file's
+   * estimates here (estimates.enqueueFile). A failure is logged, never
+   * thrown, since the file is already stored.
+   */
+  onIngested?: (result: IngestResult) => Promise<unknown>;
   /** The environment checks run after an error that is not the file's own (inboxProbes). */
   probes: InboxProbes;
   /** How long each check may take; PROBE_TIMEOUT_MS when left out. */
@@ -943,6 +958,18 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     strikes.delete(name);
     seen.delete(name);
     pass.imported.push({ name, ...result });
+
+    if (deps.onIngested) {
+      try {
+        await deps.onIngested(result);
+      } catch (error) {
+        // The file is stored; the Orca poll queues what was missed here.
+        log(
+          `inbox: imported ${name} as model ${result.modelId}, but the work queued after an ` +
+            `import (its estimates) failed: ${errorText(error)}`,
+        );
+      }
+    }
 
     let verdict: "match" | "changed" | "unconfirmed";
     try {
