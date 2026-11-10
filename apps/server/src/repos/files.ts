@@ -15,9 +15,12 @@ export interface NewFile {
   parseStatus?: ParseStatus;
 }
 
-/** What findImported looks for: the id an inbox attempt chose for its file row. */
+/**
+ * What findImported looks for: every id an inbox copy's attempts can have
+ * chosen for its file row.
+ */
 export interface ImportedQuery {
-  fileId: string;
+  fileIds: readonly string[];
 }
 
 /** The row findImported found, and whether its model is live. */
@@ -55,19 +58,22 @@ export function filesRepo(db: Kysely<DB>) {
     },
 
     /**
-     * The file row with this id, if any, with its model and whether that
-     * model is live: how the inbox watcher (inbox/watch.ts) tells that its
-     * own earlier attempt already made a model. The watcher chooses the id
-     * before it calls ingest (inboxFileId), so only a row that attempt wrote
-     * can match; an upload of the same name and bytes through the web UI or
-     * the API has an id of its own and never does. A row whose model is in
-     * the trash or being purged comes back with live false: an Empty trash or
-     * the purge (library/trash.ts) deletes its stored bytes, so the watcher
-     * does not stand it in for the inbox copy, and imports under another id.
+     * The file rows with these ids, in one query, each with its model and
+     * whether that model is live: how the inbox watcher (inbox/watch.ts)
+     * tells that one of its own earlier attempts already made a model. The
+     * watcher chooses the ids before it calls ingest (inboxFileId), so only a
+     * row an attempt wrote can match; an upload of the same name and bytes
+     * through the web UI or the API has an id of its own and never does. A
+     * row whose model is in the trash or being purged comes back with live
+     * false: an Empty trash or the purge (library/trash.ts) deletes its
+     * stored bytes, so the watcher does not stand it in for the inbox copy.
+     * Ids with no row, and any that are not UUIDs, are left out; the rows
+     * come back in no set order.
      */
-    async findImported(q: ImportedQuery): Promise<ImportedFile | undefined> {
-      if (!isUuid(q.fileId)) return undefined;
-      const row = await db
+    async findImported(q: ImportedQuery): Promise<ImportedFile[]> {
+      const ids = q.fileIds.filter((id) => isUuid(id));
+      if (ids.length === 0) return [];
+      const rows = await db
         .selectFrom("files")
         .innerJoin("models", "models.id", "files.modelId")
         .select([
@@ -76,14 +82,13 @@ export function filesRepo(db: Kysely<DB>) {
           "models.trashedAt",
           "models.purgeStartedAt",
         ])
-        .where("files.id", "=", q.fileId)
-        .executeTakeFirst();
-      if (row === undefined) return undefined;
-      return {
+        .where("files.id", "in", ids)
+        .execute();
+      return rows.map((row) => ({
         modelId: row.modelId,
         fileId: row.fileId,
         live: row.trashedAt === null && row.purgeStartedAt === null,
-      };
+      }));
     },
   };
 }

@@ -115,8 +115,9 @@
 //   file row's id itself and passes it to ingest (inboxFileId): UUIDv7-shaped,
 //   derived from the file's name, size, SHA-256 and the time it reached the
 //   inbox, so the same copy gets the same id in this process and the next.
-//   Before every ingest it asks findImported (repos files.findImported) for
-//   the row under that id. Only an inbox attempt for this copy can have
+//   Before every ingest it asks findImported (repos files.findImported), in
+//   one query, for the rows under every id this copy can have (attempt 0 up
+//   to MAX_INBOX_IDS). Only an inbox attempt for this copy can have
 //   written it: an upload of the same name and bytes through the web UI or
 //   the API (tus) gets a random id, so it never stands in for the inbox copy,
 //   whenever it came. The arrival time is the file's ctime, which a copy, a
@@ -132,14 +133,17 @@
 //   instead: a move within one filesystem keeps the inode and its birth time
 //   from before the file reached the inbox, so the same file moved in again
 //   after an earlier import would get that import's id and be deleted
-//   without a model of its own. A live row found is the
+//   without a model of its own. A live row under any of the ids is the
 //   import, so it is not made twice; the inbox copy is checked and deleted
-//   as after any import. A row under the id whose model is in the trash or
-//   being purged (the lost answer's model, trashed before the retry) does
-//   not count: a purge deletes its stored bytes, so this copy is imported as
-//   a model of its own under the next id (attempt 1, 2 and so on, up to
-//   MAX_INBOX_IDS). The question comes before the upload, so a database that
-//   does not answer it stops the file before anything reaches the bucket.
+//   as after any import. A row whose model is in the trash or being purged
+//   (the lost answer's model, trashed before the retry) does not count: a
+//   purge deletes its stored bytes, so with no live row this copy is
+//   imported as a model of its own under the lowest id with no row (attempt
+//   1, 2 and so on, up to MAX_INBOX_IDS). Every id is asked about, not only
+//   those up to the first with no row, because a purge can delete an
+//   earlier attempt's row after a later attempt committed with its answer
+//   lost. The question comes before the upload, so a database that does not
+//   answer it stops the file before anything reaches the bucket.
 //
 // No file is retried in a loop and none is dropped without a word. A file that
 // cannot be moved to failed (or whose inbox copy cannot be deleted after a
@@ -231,7 +235,8 @@ export const BACKOFF_MAX_MS = 300_000;
 /**
  * How many file ids one inbox copy can go through (inboxFileId's attempt,
  * 0 up): one more each time the row under the last one belongs to a model
- * in the trash or being purged.
+ * in the trash or being purged. All of them are asked about in one query
+ * before every ingest.
  */
 export const MAX_INBOX_IDS = 100;
 
@@ -412,11 +417,12 @@ export interface InboxWatcherDeps {
   /** The recorded size and SHA-256 of a stored file (repos files.get). */
   storedFile: (fileId: string) => Promise<StoredFile | undefined>;
   /**
-   * The file row with this id, if any, and whether its model is live, being
-   * neither in the trash nor purged (repos files.findImported). The ids
-   * asked about are inboxFileId's.
+   * The file rows with these ids, in one query, and whether each one's model
+   * is live, being neither in the trash nor purged (repos
+   * files.findImported). The ids asked about are inboxFileId's for every
+   * attempt; ids with no row are left out.
    */
-  findImported: (file: ImportedQuery) => Promise<ImportedFile | undefined>;
+  findImported: (file: ImportedQuery) => Promise<ImportedFile[]>;
   /** The environment checks run after an error that is not the file's own (inboxProbes). */
   probes: InboxProbes;
   /** How long each check may take; PROBE_TIMEOUT_MS when left out. */
@@ -755,9 +761,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * The import this copy of the file already made, if any: an earlier
    * attempt, in this process or one before a restart, whose commit landed but
    * whose answer was lost, found by the id that attempt chose (inboxFileId).
-   * Otherwise the id the next attempt uses: the first one with no row, past
-   * any whose model is in the trash or being purged. The question fails
-   * while the database is down, which keeps the file from being uploaded.
+   * All MAX_INBOX_IDS ids are asked about in one query, and a live row under
+   * any of them is the import, the lowest attempt first. Otherwise the id the
+   * next attempt uses: the lowest attempt with no row, past any whose model
+   * is in the trash or being purged. The question fails while the database
+   * is down, which keeps the file from being uploaded.
    */
   async function earlierImport(
     name: string,
@@ -766,24 +774,23 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     arrived: Date,
   ): Promise<{ found: { modelId: string; fileId: string } } | { fileId: string }> {
     entry.hash ??= await hashFile(path);
-    for (let attempt = 0; attempt < MAX_INBOX_IDS; attempt += 1) {
-      const fileId = inboxFileId({
-        name,
-        size: entry.hash.size,
-        sha256: entry.hash.sha256,
-        arrived,
-        attempt,
-      });
-      const row = await findImported({ fileId });
-      if (row === undefined) return { fileId };
-      if (row.live) {
-        log(
-          `inbox: ${name} was already imported as model ${row.modelId} by an earlier attempt ` +
-            "whose answer was lost; it is not imported again",
-        );
-        return { found: { modelId: row.modelId, fileId: row.fileId } };
-      }
+    const hash = entry.hash;
+    const ids = Array.from({ length: MAX_INBOX_IDS }, (_, attempt) =>
+      inboxFileId({ name, size: hash.size, sha256: hash.sha256, arrived, attempt }),
+    );
+    // Every id in one question: a purge can delete an earlier attempt's row
+    // after a later attempt committed, so a gap does not end the search.
+    const rows = new Map((await findImported({ fileIds: ids })).map((row) => [row.fileId, row]));
+    const live = ids.map((id) => rows.get(id)).find((row) => row?.live === true);
+    if (live !== undefined) {
+      log(
+        `inbox: ${name} was already imported as model ${live.modelId} by an earlier attempt ` +
+          "whose answer was lost; it is not imported again",
+      );
+      return { found: { modelId: live.modelId, fileId: live.fileId } };
     }
+    const free = ids.find((id) => !rows.has(id));
+    if (free !== undefined) return { fileId: free };
     throw new Error(
       `every one of the ${MAX_INBOX_IDS} file ids for this copy belongs to a model in the trash`,
     );

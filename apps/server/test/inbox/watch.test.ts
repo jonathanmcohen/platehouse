@@ -116,23 +116,25 @@ function fakeIngest(behaviour: Behaviour = () => undefined) {
   };
 }
 
-/** The fake's file row with the id asked about, as files.findImported finds it. */
-function storedRow(
-  fake: ReturnType<typeof fakeIngest>,
-  q: ImportedQuery,
-): ImportedFile | undefined {
-  const modelId = fake.models.get(q.fileId);
-  return modelId === undefined ? undefined : { modelId, fileId: q.fileId, live: true };
+/** The fake's file rows with the ids asked about, as files.findImported finds them. */
+function storedRow(fake: ReturnType<typeof fakeIngest>, q: ImportedQuery): ImportedFile[] {
+  return q.fileIds.flatMap((fileId) => {
+    const modelId = fake.models.get(fileId);
+    return modelId === undefined ? [] : [{ modelId, fileId, live: true }];
+  });
 }
+
+/** The id of attempt 0 in a query: it names the copy the watcher asked about. */
+const copyAsked = (q: ImportedQuery) => q.fileIds[0] ?? "";
 
 /**
  * A findImported that answers from a fixed set of rows, keyed by file id,
  * recording each query it is asked.
  */
 function rowsIn(rows: Map<string, ImportedFile>, queries: ImportedQuery[] = []) {
-  return async (q: ImportedQuery): Promise<ImportedFile | undefined> => {
+  return async (q: ImportedQuery): Promise<ImportedFile[]> => {
     queries.push(q);
-    return rows.get(q.fileId);
+    return q.fileIds.flatMap((id) => rows.get(id) ?? []);
   };
 }
 
@@ -157,7 +159,7 @@ function watcher(
     settleSeconds: 15,
     ingest: fake.ingest,
     storedFile: async (id) => fake.stored.get(id),
-    findImported: async () => undefined,
+    findImported: async () => [],
     // Storage and the database answer unless a test says otherwise.
     probes: { database: async () => undefined, store: async () => undefined },
     now: () => clock,
@@ -610,9 +612,9 @@ describe("outages", () => {
     const w = watcher(fake, {
       probes,
       findImported: async (file) => {
-        lookups.push(file.fileId);
+        lookups.push(copyAsked(file));
         if (down) throw refused();
-        return undefined;
+        return [];
       },
     });
     await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
@@ -693,8 +695,8 @@ describe("outages", () => {
     expect(retry.failed).toEqual([]);
     expect(await exists(path)).toBe(false);
     // Asked before the first attempt (nothing yet) and again before the
-    // retry, both times for the row under that id and no other.
-    expect(asked).toEqual([{ fileId: id }, { fileId: id }]);
+    // retry, both times for this copy's ids, attempt 0's first.
+    expect(asked.map(copyAsked)).toEqual([id, id]);
   });
 
   test("the file id is the same for the same copy and differs for any change to it", () => {
@@ -840,20 +842,23 @@ describe("outages", () => {
     // The lost answer's model was trashed before the retry: a purge deletes
     // its bytes, so the copy gets a model of its own, under the next id.
     const fake = fakeIngest();
-    const asked: string[] = [];
+    const asked: ImportedQuery[] = [];
     await writeFile(join(inbox, "trashed.stl"), "solid trashed\nendsolid trashed\n");
     const first = await inboxIdOf("trashed.stl", 0);
     const second = await inboxIdOf("trashed.stl", 1);
     const w = watcher(fake, {
       findImported: async (file) => {
-        asked.push(file.fileId);
-        if (file.fileId === first) return { modelId: "model-trashed", fileId: first, live: false };
-        return storedRow(fake, file);
+        asked.push(file);
+        const trashed = file.fileIds.includes(first)
+          ? [{ modelId: "model-trashed", fileId: first, live: false }]
+          : [];
+        return [...trashed, ...storedRow(fake, file)];
       },
     });
     await w.pollOnce();
     const pass = await tick(w, 15_000);
-    expect(asked).toEqual([first, second]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.fileIds.slice(0, 2)).toEqual([first, second]);
     expect(fake.ids).toEqual([second]);
     expect(pass.imported).toEqual([{ name: "trashed.stl", modelId: "model-1", fileId: second }]);
     expect(lines.filter((l) => l.includes("already imported"))).toEqual([]);
@@ -903,7 +908,10 @@ describe("outages", () => {
   test("the database is asked about every id of the copy in one query per try", async () => {
     const fake = fakeIngest();
     await writeFile(join(inbox, "once.stl"), "solid once\nendsolid once\n");
-    const first = await inboxIdOf("once.stl", 0);
+    const all = await Promise.all(
+      Array.from({ length: MAX_INBOX_IDS }, (_, attempt) => inboxIdOf("once.stl", attempt)),
+    );
+    const first = all[0] as string;
     const queries: ImportedQuery[] = [];
     const rows = new Map<string, ImportedFile>([
       [first, { modelId: "model-trashed", fileId: first, live: false }],
@@ -913,21 +921,24 @@ describe("outages", () => {
     await tick(w, 15_000);
     expect(fake.calls).toEqual(["once.stl"]);
     expect(queries).toHaveLength(1);
+    // Every id this copy can have, attempt 0 first.
+    expect(queries[0]?.fileIds).toEqual(all);
   });
 
   test(`after ${MAX_INBOX_IDS} ids all taken by trashed models, nothing is uploaded and the try counts against the file`, async () => {
     const fake = fakeIngest();
-    let asked = 0;
+    const asked: ImportedQuery[] = [];
     const w = watcher(fake, {
       findImported: async (file) => {
-        asked += 1;
-        return { modelId: "model-trashed", fileId: file.fileId, live: false };
+        asked.push(file);
+        return file.fileIds.map((fileId) => ({ modelId: "model-trashed", fileId, live: false }));
       },
     });
     await writeFile(join(inbox, "full.stl"), "solid full\nendsolid full\n");
     await w.pollOnce();
     const pass = await tick(w, 15_000);
-    expect(asked).toBe(MAX_INBOX_IDS);
+    expect(asked).toHaveLength(1);
+    expect(new Set(asked[0]?.fileIds).size).toBe(MAX_INBOX_IDS);
     expect(fake.calls).toEqual([]);
     expect(pass.failed).toEqual([]);
     expect(lines.some((l) => l.includes(`try 1 of ${STRIKES}`))).toBe(true);
@@ -943,8 +954,8 @@ describe("outages", () => {
     const w = watcher(fake, {
       probes,
       findImported: async (file) => {
-        lookups.push(file.fileId);
-        return undefined;
+        lookups.push(copyAsked(file));
+        return [];
       },
     });
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
@@ -1698,8 +1709,8 @@ describe("the size limit", () => {
       },
       storedFile: async () => undefined,
       findImported: async (q) => {
-        lookups.push(q.fileId);
-        return undefined;
+        lookups.push(copyAsked(q));
+        return [];
       },
     });
     await sparse(join(inbox, "big.3mf"), MAX_INBOX_BYTES + 1);
