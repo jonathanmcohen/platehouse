@@ -63,22 +63,36 @@ import {
 import { StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 
 /**
- * Hooks into node:fs/promises open and link, for faults and races a real
- * folder cannot give on demand (a full disk part way through a copy, an inbox
- * file that will not read, a file put under a name at one exact moment).
- * Every other call, and every call while no test sets a hook, reaches the
- * real one; afterEach clears them.
+ * Hooks into node:fs/promises, for faults and races a real folder cannot give
+ * on demand (a full disk part way through a copy, an inbox file that will not
+ * read, a file put under a name at one exact moment, a filesystem with no
+ * hard links). Every other call, and every call while no test sets a hook,
+ * reaches the real one; afterEach clears them.
  */
 const fsHooks = vi.hoisted(() => ({
   /** What an open of path returns in place of the real handle. */
   wrap: undefined as ((path: string, handle: FileHandle) => FileHandle) | undefined,
-  /** Runs before a hard link to newPath is made, as another writer would in that moment. */
+  /**
+   * Runs before a hard link to newPath is made, as another writer would in
+   * that moment; when it throws, the link fails with that error, as on a
+   * filesystem that refuses hard links.
+   */
   beforeLink: undefined as ((newPath: string) => Promise<void>) | undefined,
+  /**
+   * Runs just before anything is made under newPath by a rename onto it, a
+   * symlink at it, a copy to it or an open that may create it: the last
+   * moment another writer can take the name first.
+   */
+  beforeCreate: undefined as ((newPath: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const { constants } = await import("node:fs");
+  const creates = (flags: unknown) =>
+    typeof flags === "number" ? (flags & constants.O_CREAT) !== 0 : /[wax]/.test(String(flags));
   const open = async (...args: Parameters<typeof actual.open>): Promise<FileHandle> => {
+    if (args[1] !== undefined && creates(args[1])) await fsHooks.beforeCreate?.(String(args[0]));
     const handle = await actual.open(...args);
     return fsHooks.wrap?.(String(args[0]), handle) ?? handle;
   };
@@ -86,7 +100,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     await fsHooks.beforeLink?.(String(args[1]));
     return actual.link(...args);
   };
-  return { ...actual, default: { ...actual, open, link }, open, link };
+  const rename = async (...args: Parameters<typeof actual.rename>): Promise<void> => {
+    await fsHooks.beforeCreate?.(String(args[1]));
+    return actual.rename(...args);
+  };
+  const symlink = async (...args: Parameters<typeof actual.symlink>): Promise<void> => {
+    await fsHooks.beforeCreate?.(String(args[1]));
+    return actual.symlink(...args);
+  };
+  const copyFile = async (...args: Parameters<typeof actual.copyFile>): Promise<void> => {
+    await fsHooks.beforeCreate?.(String(args[1]));
+    return actual.copyFile(...args);
+  };
+  const hooked = { open, link, rename, symlink, copyFile };
+  return { ...actual, default: { ...actual, ...hooked }, ...hooked };
 });
 
 /** The handle with some methods replaced; every other call reaches the real handle. */
@@ -138,6 +165,7 @@ beforeEach(async () => {
 afterEach(async () => {
   fsHooks.wrap = undefined;
   fsHooks.beforeLink = undefined;
+  fsHooks.beforeCreate = undefined;
   await chmod(inbox, 0o755).catch(() => undefined);
   await chmod(join(root, "tmp", "inbox-copies"), 0o755).catch(() => undefined);
   await rm(root, { recursive: true, force: true });
@@ -836,6 +864,323 @@ describe("a file put under an imported file's name while it is checked", () => {
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
     expect(fake.calls).toEqual([]);
   });
+});
+
+describe("a file put under an imported file's name during the import", () => {
+  // A writer can rename a new file over the name while ingest uploads the old
+  // one (the longest step) or while onIngested runs. That new file was never
+  // imported: it stays in the inbox, untouched, and is imported later as a
+  // file of its own, never moved to failed with a reason that says a model
+  // was made from it. The import that finished stands.
+  const FIRST = "solid first\nendsolid first\n";
+  const SECOND = "solid second, a different file\nendsolid second\n";
+
+  test.each([
+    ["during ingest", "ingest", "found"],
+    ["while onIngested runs", "onIngested", "found"],
+    ["during ingest, with no record of the stored file", "ingest", "missing"],
+  ])(
+    "a new file renamed over the name %s stays in the inbox and is imported later as its own model",
+    async (_l, when, record) => {
+      let ingested = 0;
+      const fake = fakeIngest(() => {
+        ingested += 1;
+        // Ingest has the watcher's copy; the swap lands while it uploads.
+        if (when === "ingest" && ingested === 1) renameOverSync("part.stl", SECOND);
+      });
+      let pending = true;
+      const w = watcher(fake, {
+        onIngested: async () => {
+          if (when === "onIngested" && pending) {
+            pending = false;
+            renameOverSync("part.stl", SECOND);
+          }
+        },
+        // The first import's record is missing in the "missing" case; the
+        // later import of the new file is confirmed as usual.
+        storedFile: async (id) =>
+          record === "missing" && fake.calls.length === 1 ? undefined : fake.stored.get(id),
+      });
+      const path = join(inbox, "part.stl");
+      await writeFile(path, FIRST);
+      const firstId = await inboxIdOf("part.stl");
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      // The first import stands.
+      expect(pass.imported).toEqual([{ name: "part.stl", modelId: "model-1", fileId: firstId }]);
+      expect(fake.stored.get(firstId)?.sha256).toEqual(sha256(Buffer.from(FIRST)));
+      // The new file is left under the name, untouched, and nothing went to failed.
+      expect(pass.failed).toEqual([]);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect(await readFile(path, "utf8")).toBe(SECOND);
+      expect(await readdir(inbox)).toEqual(["part.stl"]);
+      expect(lines.some((l) => l.includes(`moved part.stl to ${FAILED_DIR}`))).toBe(false);
+
+      // It is a new file: it settles and is imported as a model of its own.
+      await tick(w, 5_000);
+      const again = await tick(w, 15_000);
+      expect(fake.calls).toEqual(["part.stl", "part.stl"]);
+      expect(again.imported).toHaveLength(1);
+      const secondId = again.imported[0]?.fileId ?? "";
+      expect(secondId).not.toBe(firstId);
+      expect(fake.stored.get(secondId)?.sha256).toEqual(sha256(Buffer.from(SECOND)));
+      expect(again.failed).toEqual([]);
+      expect(await readdir(inbox)).toEqual([]);
+    },
+  );
+
+  test.each([
+    ["no record of the stored file is found", "missing"],
+    ["the stored record does not match", "mismatch"],
+  ])(
+    "when %s, a new file renamed over the name before it is moved is not moved to failed, and is imported later",
+    async (_l, record) => {
+      const fake = fakeIngest();
+      const path = join(inbox, "part.stl");
+      let first = true;
+      const swapOnce = () => {
+        if (!first) return;
+        first = false;
+        renameOverSync("part.stl", SECOND);
+      };
+      const w = watcher(fake, {
+        storedFile: async (id) => {
+          const real = fake.stored.get(id);
+          if (fake.calls.length > 1) return real;
+          if (record === "missing") {
+            // The record read is the last step before the move.
+            swapOnce();
+            return undefined;
+          }
+          return { size: 1, sha256: Buffer.alloc(32) };
+        },
+      });
+      if (record === "mismatch") {
+        // The check hashes the open file with createReadStream (the copy
+        // before it reads with read), and then moves what holds the name.
+        fsHooks.wrap = (opened, handle) => {
+          if (opened !== path) return handle;
+          return patched(handle, {
+            createReadStream: (...args: unknown[]) => {
+              swapOnce();
+              return Reflect.apply(handle.createReadStream, handle, args);
+            },
+          });
+        };
+      }
+      await writeFile(path, FIRST);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      expect(first).toBe(false);
+      expect(pass.imported.map((i) => i.name)).toEqual(["part.stl"]);
+      expect(pass.failed).toEqual([]);
+      expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+      expect(await readFile(path, "utf8")).toBe(SECOND);
+      expect(await readdir(inbox)).toEqual(["part.stl"]);
+
+      await tick(w, 5_000);
+      const again = await tick(w, 15_000);
+      expect(again.imported).toHaveLength(1);
+      const fileId = again.imported[0]?.fileId ?? "";
+      expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from(SECOND)));
+      expect(await readdir(inbox)).toEqual([]);
+    },
+  );
+
+  test("a file that changed during its import, with no usable failed folder, stays in the inbox and is not tried again until it changes", async () => {
+    const fake = fakeIngest();
+    const ingest = {
+      async ingestFile(input: IngestInput) {
+        const result = await fake.ingest.ingestFile(input);
+        await appendFile(join(inbox, "changing.stl"), "more bytes\n");
+        return result;
+      },
+    };
+    const w = watcher(fake, { ingest });
+    // A plain file where the failed folder should be: nothing can move into it.
+    await writeFile(join(inbox, FAILED_DIR), "in the way\n");
+    const path = join(inbox, "changing.stl");
+    await writeFile(path, "solid a\nendsolid a\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(pass.failed).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe("solid a\nendsolid a\nmore bytes\n");
+    expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, "changing.stl"].sort());
+    expect(lines.some((l) => l.includes("changing.stl") && l.includes("could not move"))).toBe(
+      true,
+    );
+    await tick(w, 15_000);
+    await tick(w, 15_000);
+    expect(fake.calls).toEqual(["changing.stl"]);
+  });
+});
+
+describe("putting a file back under its name without hard links", () => {
+  // A file found under an imported file's name is put back there, never over
+  // a file that took the name since. Hard links make that one step; without
+  // them (EPERM under fs.protected_hardlinks for a file the watcher does not
+  // own, or a filesystem with none), or for a symlink, the put-back must
+  // still refuse to replace what took the name.
+  const FIRST = "solid first\nendsolid first\n";
+  const SECOND = "solid second, a different file\nendsolid second\n";
+  const THIRD = "solid third\nendsolid third\n";
+
+  /** Makes every hard link to path fail as fs.protected_hardlinks does. */
+  function noHardLinks(path: string, onRefuse: () => void = () => undefined): void {
+    fsHooks.beforeLink = async (newPath) => {
+      if (newPath !== path) return;
+      onRefuse();
+      throw coded(`EPERM: operation not permitted, link '${newPath}'`, "EPERM");
+    };
+  }
+
+  test.each([
+    ["a regular file, with link() refused", "file"],
+    ["a symlink", "link"],
+  ])(
+    "putting back %s never overwrites a file that takes the name just before it",
+    async (_l, what) => {
+      const fake = fakeIngest();
+      const path = join(inbox, "part.stl");
+      const outside = join(root, "outside.stl");
+      await writeFile(outside, "not the inbox's\n");
+      // Armed once the put-back starts: the next thing made under the name.
+      let armed = what === "link";
+      noHardLinks(path, () => {
+        armed = true;
+      });
+      let swapped = false;
+      fsHooks.beforeCreate = async (newPath) => {
+        if (!armed || !swapped || newPath !== path) return;
+        armed = false;
+        // A third file takes the name between any check and the put-back.
+        renameOverSync("part.stl", THIRD);
+      };
+      const w = watcher(fake, {
+        storedFile: async (id) => {
+          if (!swapped) {
+            swapped = true;
+            if (what === "file") renameOverSync("part.stl", SECOND);
+            else {
+              symlinkSync(outside, join(inbox, "part.link.part"));
+              renameSync(join(inbox, "part.link.part"), path);
+            }
+          }
+          return fake.stored.get(id);
+        },
+      });
+      await writeFile(path, FIRST);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      expect(armed).toBe(false);
+      expect(pass.imported.map((i) => i.name)).toEqual(["part.stl"]);
+      // The third file is never overwritten.
+      expect((await lstat(path)).isFile()).toBe(true);
+      expect(await readFile(path, "utf8")).toBe(THIRD);
+      // What was held goes to failed, kept, with the reason that says so.
+      expect(pass.failed).toEqual([{ name: "part.stl", reason: SWAPPED_REASON }]);
+      const kept = join(inbox, FAILED_DIR, "part.stl");
+      if (what === "file") expect(await readFile(kept, "utf8")).toBe(SECOND);
+      else expect((await lstat(kept)).isSymbolicLink()).toBe(true);
+      expect(await readFile(outside, "utf8")).toBe("not the inbox's\n");
+      expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, "part.stl"].sort());
+    },
+  );
+
+  test("with link() refused and the name free, the file is put back whole and imported later as its own model", async () => {
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    noHardLinks(path);
+    let swapped = false;
+    const w = watcher(fake, {
+      storedFile: async (id) => {
+        if (!swapped) {
+          swapped = true;
+          renameOverSync("part.stl", SECOND);
+        }
+        return fake.stored.get(id);
+      },
+    });
+    await writeFile(path, FIRST);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(pass.failed).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe(SECOND);
+    expect(await readdir(inbox)).toEqual(["part.stl"]);
+
+    await tick(w, 5_000);
+    const again = await tick(w, 15_000);
+    expect(again.imported).toHaveLength(1);
+    const fileId = again.imported[0]?.fileId ?? "";
+    expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from(SECOND)));
+    expect(await readdir(inbox)).toEqual([]);
+  });
+
+  test.each([
+    ["nothing else takes the name", false],
+    ["another file is renamed over the part-written copy", true],
+  ])(
+    "with link() refused, a put-back that fails part way leaves nothing part-written under the name and loses no file (%s)",
+    async (_l, newcomer) => {
+      const fake = fakeIngest();
+      const path = join(inbox, "part.stl");
+      const FOURTH = "solid fourth\nendsolid fourth\n";
+      let refused = false;
+      noHardLinks(path, () => {
+        refused = true;
+      });
+      // Once link() is refused, an open of the name for writing gets a handle
+      // whose writes fail after the first byte, as a full disk would.
+      fsHooks.wrap = (opened, handle) => {
+        if (!refused || opened !== path) return handle;
+        let writes = 0;
+        return patched(handle, {
+          write: async (...args: unknown[]) => {
+            writes += 1;
+            if (writes > 1) {
+              if (newcomer) renameOverSync("part.stl", FOURTH);
+              throw coded("ENOSPC: no space left on device, write", "ENOSPC");
+            }
+            const [buffer, offset] = args as [Buffer, number];
+            return Reflect.apply(handle.write, handle, [buffer, offset, 1, 0]);
+          },
+        });
+      };
+      let swapped = false;
+      const w = watcher(fake, {
+        storedFile: async (id) => {
+          if (!swapped) {
+            swapped = true;
+            renameOverSync("part.stl", SECOND);
+          }
+          return fake.stored.get(id);
+        },
+      });
+      await writeFile(path, FIRST);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      expect(refused).toBe(true);
+      const failed = await readdir(join(inbox, FAILED_DIR));
+      const kept = await Promise.all(
+        failed
+          .filter((f) => !f.endsWith(REASON_SUFFIX))
+          .map((f) => readFile(join(inbox, FAILED_DIR, f), "utf8")),
+      );
+      // The held file is kept in failed; a newcomer is never deleted.
+      expect(kept.sort()).toEqual((newcomer ? [SECOND, FOURTH] : [SECOND]).sort());
+      expect(pass.failed.map((f) => f.reason)).toEqual(
+        newcomer ? [SWAPPED_REASON, SWAPPED_REASON] : [SWAPPED_REASON],
+      );
+      // Nothing part-written is left under the name, or anywhere in the inbox.
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    },
+  );
 });
 
 describe("a file put under a failing file's name before it is moved to failed", () => {
