@@ -17,6 +17,14 @@
 //   is ignored as any symlink is. Everything after reads that open file,
 //   never the inbox path again: its hash, and a copy in TMP_DIR/inbox-copies
 //   that ingest reads and that is deleted once ingest is done with it.
+// - The copy holds no more than the size that settled (the fstat size), so
+//   bytes appended after the check never reach it and what ingest stores is
+//   never larger than the size the size limit was checked against. After
+//   the copy, the copy's size and a fresh fstat must still match what
+//   settled. A file that grew, shrank or was written to after it settled (a
+//   stalled copy that resumed, a writer still appending) is not imported on
+//   that pass and takes no strike: it is looked at again from the start and
+//   imported as it is once it settles again.
 // - A file is settled when its size and mtime (and device and inode, so a
 //   replaced file counts as new) are unchanged across consecutive polls for
 //   INBOX_SETTLE_SECONDS. The window starts when a poll first sees the
@@ -72,10 +80,22 @@
 //   in a transaction it rolls back writes a model, a pending blob and a file
 //   row, the rows every import writes; the store check lists under models/,
 //   then puts and deletes the store's write-check object, whose key is
-//   outside models/ so the orphan sweep never sees it. Each check has
-//   PROBE_TIMEOUT_MS (5 s). Logs and reasons quote the error with its
+//   outside models/ so the orphan sweep never sees it; the temp folder check
+//   writes a 4 KiB file in TMP_DIR/inbox-copies, flushes it and deletes it.
+//   Each check has PROBE_TIMEOUT_MS (5 s). Logs and reasons quote the error with its
 //   causes, and two errors are compared by the cause inside ingest's
 //   wrappers (faultOf), not by the wrapper's code.
+//   - A copy that cannot be written in TMP_DIR/inbox-copies (TMP_DIR full,
+//     read-only, unwritable, not a folder or gone: ENOSPC, EROFS, EACCES,
+//     EPERM, ENOTDIR, ENOENT and the like, from making the folder, creating
+//     the file, writing or closing it) is the environment's fault, never the
+//     file's, so it never counts against the file. The checks run: when one
+//     fails, it is an outage as below. When they all pass (a temp folder with
+//     room for the check but not the copy), it is still an outage: the file
+//     and those after it wait, the next try comes BACKOFF_FIRST_MS later,
+//     doubling with each copy that fails in a row up to BACKOFF_MAX_MS, and
+//     the first copy that is written ends it, logged. A failure reading the
+//     inbox file itself is not this: it is handled like any other error.
 //   - A check fails: it is an outage. It is logged once when it starts, with
 //     the error, and once when it ends. No file is tried, and so none is
 //     uploaded, until a check passes. The checks back off: the next comes
@@ -87,14 +107,14 @@
 //     makes but not reads (the data disk full, 53100; a write I/O error,
 //     58030; a bucket that lists but refuses writes) is seen here, as an
 //     outage, whenever it also fails the checks' own writes.
-//   - Both checks pass: the error counts against that file. After STRIKES
+//   - All three checks pass: the error counts against that file. After STRIKES
 //     (3) such failures in a row while its size, mtime and inode stay the
 //     same, it moves to failed with a reason quoting the error; a change to
 //     the file starts its count again. The pass goes on to the next file, so
 //     one file cannot hold up the inbox. The move of a file on its last
 //     strike waits for the end of the pass, for the rule below.
-//   - Both checks pass, and another file has already failed in this pass
-//     with both checks passing and the same fault (the same error code, or,
+//   - All three checks pass, and another file has already failed in this pass
+//     with the checks passing and the same fault (the same error code, or,
 //     when neither has a code, the same error name): the fault is taken to be
 //     one the checks cannot see, not the files'. The checks' writes are
 //     small and rolled back or deleted, so a fault can still miss them: a
@@ -173,17 +193,21 @@
 // such a file is tried once more.
 //
 // Nothing here starts on import: the server calls start() once at boot and
-// stop() on shutdown. Besides dir (INBOX_DIR), settleSeconds
-// (INBOX_SETTLE_SECONDS) and tmpDir (TMP_DIR, where ingest's copies go), it
-// must pass every one of these, and the type requires each:
-//   ingest:       the ingest service (createIngest), for its ingestFile
-//   storedFile:   (id) => files.get(id), from the files repository
-//   findImported: (q) => files.findImported(q), from the files repository
-//   onIngested:   (r) => estimates.enqueueFile(r.fileId), the estimates
-//                 service (createEstimates), so an inbox file's plates are
-//                 queued at once; enqueueFile takes the file id, not the
-//                 IngestResult, so it cannot be passed bare
-//   probes:       inboxProbes({ db, store })
+// stop() on shutdown (plan Task 30 builds that code). It must pass every one
+// of these, and the type requires each:
+//   dir:           INBOX_DIR, the inbox folder
+//   settleSeconds: INBOX_SETTLE_SECONDS
+//   tmpDir:        TMP_DIR, where the copies ingest reads go
+//   ingest:        the ingest service (createIngest), for its ingestFile
+//   storedFile:    (id) => files.get(id), from the files repository
+//   findImported:  (q) => files.findImported(q), from the files repository
+//   onIngested:    (r) => estimates.enqueueFile(r.fileId), the estimates
+//                  service (createEstimates), so an inbox file's plates are
+//                  queued at once; enqueueFile takes the file id, not the
+//                  IngestResult, so it cannot be passed bare
+//   probes:        inboxProbes({ db, store, tmpDir }), with db the Kysely
+//                  database, store the real blob store (it needs checkWrite
+//                  as well as listPage) and tmpDir the same TMP_DIR as above
 // The rest (probeTimeoutMs, pollMs, now, log) have defaults.
 // pollOnce() runs one pass and is what the tests drive, with an injected
 // clock instead of real waits; during an outage a pass before the next check
@@ -191,7 +215,7 @@
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { BigIntStats, PathLike } from "node:fs";
-import { constants, createWriteStream } from "node:fs";
+import { constants } from "node:fs";
 import {
   type FileHandle,
   lstat,
@@ -204,7 +228,6 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { type Kysely, sql } from "kysely";
 import { uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
@@ -273,7 +296,7 @@ export function tooLargeReason(maxBytes: number): string {
 /** Reason when the file is larger than MAX_INBOX_BYTES. */
 export const TOO_LARGE_REASON = tooLargeReason(MAX_INBOX_BYTES);
 
-/** Failures in a row, with storage and the database answering, before a file moves to failed. */
+/** Failures in a row, with the checks passing, before a file moves to failed. */
 export const STRIKES = 3;
 
 /** How long each environment check may take before it counts as failed. */
@@ -333,10 +356,40 @@ export function repeatedErrorReason(error: unknown): string {
   );
 }
 
-/** Cheap checks that the database and the store answer; each rejects when it does not. */
+/** The folder in TMP_DIR that ingest reads the watcher's copies from. */
+export const COPY_DIR = "inbox-copies";
+
+/** What ends the name of each copy in COPY_DIR, so a sweep removes only those. */
+const COPY_SUFFIX = ".inbox-copy";
+
+/** What the temp folder check writes: one 4 KiB block, so a full filesystem refuses it. */
+const TMP_CHECK_BYTES = Buffer.alloc(4096);
+
+/** How much of the inbox file the copy reads and writes at a time. */
+const COPY_CHUNK_BYTES = 1_048_576;
+
+/**
+ * A failure writing the copy in TMP_DIR/inbox-copies (making the folder,
+ * creating the file, writing or closing it): the environment's fault, never
+ * the file's, so it is an outage and never a strike. A failure reading the
+ * inbox file is not one of these.
+ */
+class CopyWriteError extends Error {
+  constructor(folder: string, cause: unknown) {
+    super(`could not write the copy ingest reads in the temp folder ${folder}`, { cause });
+    this.name = "CopyWriteError";
+  }
+}
+
+/**
+ * Cheap checks that the database, the store and the temp folder answer; each
+ * rejects when it does not.
+ */
 export interface InboxProbes {
   database(): Promise<unknown>;
   store(): Promise<unknown>;
+  /** That TMP_DIR/inbox-copies takes a write, as the copy ingest reads needs. */
+  tmpDir(): Promise<unknown>;
 }
 
 /** Thrown inside the database check's transaction so that it rolls back. */
@@ -356,10 +409,20 @@ class RollBack extends Error {}
  * The store check lists at most one object under models/, where ingest
  * writes, and puts and deletes the store's own write-check object
  * (BlobStore.checkWrite), whose key is outside models/.
+ *
+ * The temp folder check makes TMP_DIR/inbox-copies when it is missing, as
+ * the copy does, then writes TMP_CHECK_BYTES to a new file there, flushes it
+ * to disk and deletes it. So a TMP_DIR that is full, read-only, unwritable,
+ * not a folder or gone fails it. tmpDir is the same TMP_DIR the watcher is
+ * given as its own tmpDir. Like the other checks it cannot see every fault:
+ * a temp folder with a little room left takes the check and can still
+ * refuse a large copy, which is why a copy that cannot be written is an
+ * outage whatever the checks say.
  */
 export function inboxProbes(deps: {
   db: Kysely<DB>;
   store: Pick<BlobStore, "listPage" | "checkWrite">;
+  tmpDir: string;
 }): InboxProbes {
   return {
     async database() {
@@ -402,6 +465,23 @@ export function inboxProbes(deps: {
     async store() {
       await deps.store.listPage("models/", { maxKeys: 1 });
       await deps.store.checkWrite();
+    },
+    async tmpDir() {
+      const folder = join(deps.tmpDir, COPY_DIR);
+      await mkdir(folder, { recursive: true });
+      // Ends in COPY_SUFFIX, so a check cut short is swept with the copies.
+      const path = join(folder, `write-check-${uuidv7()}${COPY_SUFFIX}`);
+      const handle = await open(path, "wx", 0o600);
+      try {
+        try {
+          await handle.write(TMP_CHECK_BYTES);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await rm(path, { force: true });
+      }
     },
   };
 }
@@ -681,12 +761,6 @@ async function exists(path: PathLike): Promise<boolean> {
  */
 const OPEN_SETTLED = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
-/** The folder in TMP_DIR that ingest reads the watcher's copies from. */
-export const COPY_DIR = "inbox-copies";
-
-/** What ends the name of each copy in COPY_DIR, so a sweep removes only those. */
-const COPY_SUFFIX = ".inbox-copy";
-
 /** The size and SHA-256 of an open file, read from its start. */
 async function hashHandle(handle: FileHandle): Promise<StoredFile> {
   const hash = createHash("sha256");
@@ -725,13 +799,18 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Files not to try again while their signature holds: they could not be
   // moved to failed, or their inbox copy could not be deleted after import.
   const handled = new Map<string, string>();
-  // Failures of a file while storage and the database answered, by key,
+  // Failures of a file while the checks passed, by key,
   // for the signature they were counted against.
   const strikes = new Map<string, { signature: string; count: number }>();
   // The outage in progress: how many checks (or, for a fault the checks
   // cannot see, held tries) have failed in a row, when (on the injected
-  // clock) the next is due, and whether the checks can see it.
-  let outage: { checks: number; retryAt: number; unseen: boolean } | undefined;
+  // clock) the next is due, whether the checks can see it, and whether it is
+  // a copy that could not be written while the checks passed (copy), which
+  // only a try of the copy can show is over.
+  let outage: { checks: number; retryAt: number; unseen: boolean; copy?: boolean } | undefined;
+  // Copies in a row that could not be written in the temp folder, 0 when
+  // the last one could: the wait before the next try doubles with each.
+  let copyFaults = 0;
   // Held tries in a row under a fault the checks cannot see, 0 when none: it
   // outlives the outage record, which ends at each try.
   let unseenTries = 0;
@@ -753,16 +832,59 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     }
   }
 
-  /** Runs both checks; returns what failed, or undefined when both pass. */
+  /** Runs the three checks; returns what failed, or undefined when all pass. */
   async function checkEnvironment(): Promise<string | undefined> {
-    const [database, store] = await Promise.allSettled([
+    const [database, store, tmp] = await Promise.allSettled([
       withTimeout(probes.database, "database", probeTimeoutMs),
       withTimeout(probes.store, "storage", probeTimeoutMs),
+      withTimeout(probes.tmpDir, "temp folder", probeTimeoutMs),
     ]);
     const failed: string[] = [];
     if (database.status === "rejected") failed.push(`database: ${errorText(database.reason)}`);
     if (store.status === "rejected") failed.push(`storage: ${errorText(store.reason)}`);
+    if (tmp.status === "rejected") failed.push(`temp folder: ${errorText(tmp.reason)}`);
     return failed.length === 0 ? undefined : failed.join("; ");
+  }
+
+  /** Starts an outage the checks see, logging it once with what failed. */
+  function startOutage(name: string, why: string, error: unknown): "outage" {
+    outage = { checks: 1, retryAt: now() + BACKOFF_FIRST_MS, unseen: false };
+    log(
+      `inbox: storage, the database or the temp folder is not answering (${why}); ${name} and ` +
+        `the files after it stay in the inbox, and no file is tried until a check passes, the ` +
+        `next in ${BACKOFF_FIRST_MS / 1000} s, then backing off to every ` +
+        `${BACKOFF_MAX_MS / 60_000} minutes. The import failed with: ${errorText(error)}`,
+    );
+    return "outage";
+  }
+
+  /**
+   * A copy that could not be written in the temp folder. It is never the
+   * file's fault, so nothing counts against the file. When a check fails too,
+   * it is an outage like any other. When the checks pass (a temp folder with
+   * room for the check but not the copy, say), it is still an outage: the
+   * file and those after it wait, the next try comes BACKOFF_FIRST_MS later,
+   * doubling with each copy that fails in a row up to BACKOFF_MAX_MS, and
+   * the first copy that is written ends it. Should a check fail later, the
+   * outage the checks watch takes over, as if it had started that way.
+   */
+  async function copyFault(name: string, error: CopyWriteError): Promise<"outage"> {
+    const why = await checkEnvironment();
+    if (why !== undefined) {
+      // The checks see it, so the outage they watch owns it from here.
+      copyFaults = 0;
+      return startOutage(name, why, error);
+    }
+    copyFaults += 1;
+    const wait = backoffMs(copyFaults);
+    outage = { checks: copyFaults, retryAt: now() + wait, unseen: false, copy: true };
+    log(
+      `inbox: ${name} could not be copied into the temp folder for ingest (${errorText(error)}), ` +
+        "though the checks pass; that is not the file's fault, so nothing counts against it, and " +
+        `it and the files after it stay in the inbox. The next try is in ${wait / 1000} s, ` +
+        `backing off to every ${BACKOFF_MAX_MS / 60_000} minutes while copies still fail`,
+    );
+    return "outage";
   }
 
   function backoffMs(checks: number): number {
@@ -778,13 +900,15 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     if (now() < outage.retryAt) return true;
     const why = await checkEnvironment();
     if (why !== undefined) {
-      if (outage.unseen) {
+      if (outage.unseen || outage.copy) {
         // The fault the checks could not see is one they see now.
+        if (outage.unseen) endUnseen();
+        if (outage.copy) copyFaults = 0;
         outage.unseen = false;
-        endUnseen();
+        outage.copy = false;
         log(
-          `inbox: storage or the database is not answering (${why}); no file is tried until a ` +
-            "check passes",
+          `inbox: storage, the database or the temp folder is not answering (${why}); no file ` +
+            "is tried until a check passes",
         );
       }
       outage.checks += 1;
@@ -797,8 +921,16 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       outage = undefined;
       return false;
     }
+    if (outage.copy) {
+      // Only a try of the copy tells whether the temp folder takes it now.
+      outage = undefined;
+      return false;
+    }
     const checks = `${outage.checks} failed check${outage.checks === 1 ? "" : "s"}`;
-    log(`inbox: storage and the database answer again after ${checks}; importing again`);
+    log(
+      `inbox: storage, the database and the temp folder answer again after ${checks}; ` +
+        "importing again",
+    );
     outage = undefined;
     endUnseen();
     return false;
@@ -919,12 +1051,16 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   /**
    * Opens the settled file without following a symlink and checks, on the
    * open file, that it is still the regular file the settle window watched
-   * (the same device, inode, size and mtime). Returns undefined, with nothing
-   * left open, when it is not: a symlink, FIFO or other file renamed over the
-   * name after the listing's lstat, or the file changed since. Any other
-   * error is thrown, as a read of the file would throw it.
+   * (the same device, inode, size and mtime). Returns the open file with the
+   * size that settled, or undefined, with nothing left open, when it is not:
+   * a symlink, FIFO or other file renamed over the name after the listing's
+   * lstat, or the file changed since. Any other error is thrown, as a read of
+   * the file would throw it.
    */
-  async function openSettled(path: string, entry: Seen): Promise<FileHandle | undefined> {
+  async function openSettled(
+    path: string,
+    entry: Seen,
+  ): Promise<{ handle: FileHandle; size: number } | undefined> {
     let handle: FileHandle;
     try {
       handle = await open(path, OPEN_SETTLED);
@@ -940,46 +1076,75 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       await handle.close();
       throw error;
     }
-    if (st.isFile() && signature(st) === entry.signature) return handle;
+    if (st.isFile() && signature(st) === entry.signature) return { handle, size: Number(st.size) };
     await handle.close();
     return undefined;
   }
 
   /**
-   * Copies the open file into TMP_DIR/inbox-copies for ingest to read,
-   * hashing it on the way, and returns the copy's path with the size and
-   * SHA-256 of what was copied. The copy is removed if the copy fails.
+   * Copies at most size bytes (the size that settled) of the open file into
+   * TMP_DIR/inbox-copies for ingest to read, hashing them on the way, and
+   * returns the copy's path with the size and SHA-256 of what was copied. So
+   * nothing appended after the file settled reaches the copy, and the copy is
+   * never larger than the size the size limit was checked against. A file
+   * that shrank gives a shorter copy, which the caller refuses. Any failure
+   * writing the copy is thrown as CopyWriteError; a failure reading the
+   * inbox file is thrown as it is. The copy is removed if the copy fails.
    */
-  async function copyOut(handle: FileHandle): Promise<{ path: string; hash: StoredFile }> {
-    await mkdir(copyDir, { recursive: true });
-    if (!copiesSwept) {
-      for (const entry of await readdir(copyDir, { withFileTypes: true })) {
-        if (entry.isFile() && entry.name.endsWith(COPY_SUFFIX)) {
-          await rm(join(copyDir, entry.name), { force: true });
-        }
-      }
-      copiesSwept = true;
-    }
+  async function copyOut(
+    handle: FileHandle,
+    size: number,
+  ): Promise<{ path: string; hash: StoredFile }> {
     const path = join(copyDir, `${uuidv7()}${COPY_SUFFIX}`);
-    const hash = createHash("sha256");
-    let size = 0;
+    let out: FileHandle;
     try {
-      await pipeline(
-        handle.createReadStream({ start: 0, autoClose: false }),
-        async function* (source: AsyncIterable<Buffer>) {
-          for await (const chunk of source) {
-            hash.update(chunk);
-            size += chunk.length;
-            yield chunk;
+      await mkdir(copyDir, { recursive: true });
+      if (!copiesSwept) {
+        for (const entry of await readdir(copyDir, { withFileTypes: true })) {
+          if (entry.isFile() && entry.name.endsWith(COPY_SUFFIX)) {
+            await rm(join(copyDir, entry.name), { force: true });
           }
-        },
-        createWriteStream(path, { flags: "wx", mode: 0o600 }),
-      );
+        }
+        copiesSwept = true;
+      }
+      out = await open(path, "wx", 0o600);
     } catch (error) {
-      await rm(path, { force: true });
+      throw new CopyWriteError(copyDir, error);
+    }
+    const hash = createHash("sha256");
+    let copied = 0;
+    try {
+      const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(size, COPY_CHUNK_BYTES)));
+      while (copied < size) {
+        const want = Math.min(buffer.length, size - copied);
+        // A read error is the inbox file's, not the temp folder's.
+        const { bytesRead } = await handle.read(buffer, 0, want, copied);
+        // The end came early: the file is shorter than when it settled.
+        if (bytesRead === 0) break;
+        const chunk = buffer.subarray(0, bytesRead);
+        hash.update(chunk);
+        try {
+          let written = 0;
+          while (written < chunk.length) {
+            written += (await out.write(chunk, written, chunk.length - written)).bytesWritten;
+          }
+        } catch (error) {
+          throw new CopyWriteError(copyDir, error);
+        }
+        copied += bytesRead;
+      }
+    } catch (error) {
+      await out.close().catch(() => undefined);
+      await rm(path, { force: true }).catch(() => undefined);
       throw error;
     }
-    return { path, hash: { size, sha256: hash.digest() } };
+    try {
+      await out.close();
+    } catch (error) {
+      await rm(path, { force: true }).catch(() => undefined);
+      throw new CopyWriteError(copyDir, error);
+    }
+    return { path, hash: { size: copied, sha256: hash.digest() } };
   }
 
   /**
@@ -994,16 +1159,16 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
-   * Counts a failure against the file, storage and the database having
-   * answered. The strike holds until the pass ends (settleStrikes), since a
-   * second file failing the same way in the same pass takes it back.
+   * Counts a failure against the file, the checks having passed. The strike
+   * holds until the pass ends (settleStrikes), since a second file failing
+   * the same way in the same pass takes it back.
    */
   function strike(name: string, path: string, entry: Seen, error: unknown, state: PassState): void {
     const prior = strikes.get(name);
     const count = prior?.signature === entry.signature ? prior.count + 1 : 1;
     log(
-      `inbox: ${name} could not be imported (try ${count} of ${STRIKES}; storage and the ` +
-        `database answer, so it counts against the file): ${errorText(error)}`,
+      `inbox: ${name} could not be imported (try ${count} of ${STRIKES}; storage, the database ` +
+        `and the temp folder answer, so it counts against the file): ${errorText(error)}`,
     );
     strikes.set(name, { signature: entry.signature, count });
     state.struck.push({ name, path, error, prior, count });
@@ -1073,17 +1238,32 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     let result: { modelId: string; fileId: string };
     let handle: FileHandle | undefined;
     try {
-      handle = await openSettled(path, entry);
-      if (handle === undefined) {
+      const settled = await openSettled(path, entry);
+      if (settled === undefined) {
         return notSettled(
           name,
           "was replaced (by a symlink, say) or changed after it settled and before it was read",
         );
       }
+      handle = settled.handle;
       held.handle = handle;
       // One read makes the copy and its hash; the copy is what ingest reads.
-      const copy = await copyOut(handle);
+      const copy = await copyOut(handle, settled.size);
       held.copy = copy.path;
+      if (copyFaults > 0) {
+        log(
+          `inbox: the temp folder takes the copy again after ${copyFaults} that could not be ` +
+            "written; importing again",
+        );
+        copyFaults = 0;
+      }
+      // Only the file that settled goes on: not one that grew, shrank or was
+      // written to after the check (a stalled copy that resumed, a writer
+      // still appending). It settles again from the start, with no strike.
+      const current = await handle.stat({ bigint: true });
+      if (copy.hash.size !== settled.size || signature(current) !== entry.signature) {
+        return notSettled(name, "grew, shrank or was written to after it settled");
+      }
       entry.hash ??= copy.hash;
       const hash = entry.hash;
       if (hash.size !== copy.hash.size || !hash.sha256.equals(copy.hash.sha256)) {
@@ -1100,6 +1280,8 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
               fileId: earlier.fileId,
             });
     } catch (error) {
+      // The temp folder would not take the copy: never the file's fault.
+      if (error instanceof CopyWriteError) return await copyFault(name, error);
       if (codeOf(faultOf(error)) === "ENOENT" && !(await exists(path))) {
         // Taken away while it was being read: nothing left to import or move.
         seen.delete(name);
@@ -1115,16 +1297,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       }
       // Not the file's fault until shown to be: check the environment.
       const why = await checkEnvironment();
-      if (why !== undefined) {
-        outage = { checks: 1, retryAt: now() + BACKOFF_FIRST_MS, unseen: false };
-        log(
-          `inbox: storage or the database is not answering (${why}); ${name} and the files ` +
-            `after it stay in the inbox, and no file is tried until a check passes, the next in ` +
-            `${BACKOFF_FIRST_MS / 1000} s, then backing off to every ${BACKOFF_MAX_MS / 60_000} ` +
-            `minutes. The import failed with: ${errorText(error)}`,
-        );
-        return "outage";
-      }
+      if (why !== undefined) return startOutage(name, why, error);
       const first = state.struck.find((s) => sameFault(s.error, error));
       if (first !== undefined && unseenTries > 0 && backoffMs(unseenTries) >= BACKOFF_MAX_MS) {
         // Still failing the same way after the hold reached its longest

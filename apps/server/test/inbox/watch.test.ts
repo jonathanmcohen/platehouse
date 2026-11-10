@@ -1981,7 +1981,7 @@ describe("the checks", () => {
         throw new StoreError("PutObject", "QuotaExceeded", 403);
       },
     };
-    const probes = inboxProbes({ db: {} as never, store });
+    const probes = inboxProbes({ db: {} as never, store, tmpDir: join(root, "tmp") });
     await expect(probes.store()).rejects.toThrow(/QuotaExceeded/);
   });
 
@@ -1992,7 +1992,7 @@ describe("the checks", () => {
       },
       checkWrite: async () => undefined,
     };
-    const probes = inboxProbes({ db: {} as never, store });
+    const probes = inboxProbes({ db: {} as never, store, tmpDir: join(root, "tmp") });
     await expect(probes.store()).rejects.toThrow(/AccessDenied/);
   });
 
@@ -2004,7 +2004,7 @@ describe("the checks", () => {
         writes += 1;
       },
     };
-    const probes = inboxProbes({ db: {} as never, store });
+    const probes = inboxProbes({ db: {} as never, store, tmpDir: join(root, "tmp") });
     await expect(probes.store()).resolves.toBeUndefined();
     expect(writes).toBe(1);
   });
