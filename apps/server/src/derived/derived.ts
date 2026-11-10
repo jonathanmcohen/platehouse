@@ -19,9 +19,12 @@
 // exactly as written. It is text, for the page to show as text, never HTML.
 //
 // Replacing a file (replaceFile) stores the new source as a blob of its own,
-// next to the file's current one, and queues a job for it. Only when that
-// job has stored the new renders does one transaction point the file at the
-// new source and renders and delete the old rows; the old objects are
+// next to the file's current one, and queues a job for it. The staged
+// source's row and its job are written in one transaction, so a staged
+// source always has a job that will either swap it in or discard it, and a
+// crash cannot leave a staged row, or a file pending, with no job. Only when
+// that job has stored the new renders does one transaction point the file at
+// the new source and renders and delete the old rows; the old objects are
 // deleted after that commit. So a failure at any point before it (a store
 // outage, a slicer that stays away) leaves the previous version whole: its
 // source, its renders and its rows. A replacement whose render fails with
@@ -30,11 +33,14 @@
 // crash between steps is removed by the orphan sweep (ingest/orphans.ts).
 //
 // derived_status is 'pending' while a job is queued or running, then 'ok' or
-// 'failed'; it stays null for kinds with nothing derived (.3mf, .stl).
+// 'failed'; it stays null for kinds with nothing derived (.3mf, .stl). A job
+// that finishes while a newer replacement of the file is still queued leaves
+// the file 'pending' (newerQueued), so the file never reads as done, or as
+// failed, before its last upload has rendered.
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { type Kysely, sql, type Transaction } from "kysely";
+import { CompiledQuery, type Kysely, sql, type Transaction } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { Blob, DB, FileKind, ModelFile } from "../db/types.js";
@@ -53,6 +59,7 @@ import {
   DERIVED_MESSAGES,
   isRetryable,
   RENDER_TIMEOUT_MS,
+  RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
   type RenderOutput,
   SlicerFault,
@@ -119,12 +126,14 @@ export interface DerivedDeps {
   store: DerivedStore;
   /** SLICER_URL. */
   slicerUrl: string;
-  /** Sends the jobs; the started pg-boss. */
-  queue: Pick<PgBoss, "send">;
+  /** Sends the jobs, and finds a file's queued ones; the started pg-boss. */
+  queue: Pick<PgBoss, "send" | "findJobs">;
   /** Seconds before the first retry; SLICER_RETRY's when left out. */
   retryDelaySeconds?: number;
-  /** One render request's time limit; RENDER_TIMEOUT_MS when left out. */
+  /** A render request's wait for its answer once sent; RENDER_TIMEOUT_MS when left out. */
   requestTimeoutMs?: number;
+  /** The time a streamed body may take to send; RENDER_UPLOAD_TIMEOUT_MS when left out. */
+  uploadTimeoutMs?: number;
 }
 
 /** The kinds that have derived blobs. */
@@ -172,12 +181,28 @@ function describe(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
+/**
+ * pg-boss's db option over a Kysely transaction, so a job is sent, or a
+ * file's jobs are read, inside that transaction. Without plugins, so the
+ * CamelCasePlugin leaves pg-boss's own SQL and rows alone.
+ */
+function bossDb(trx: Transaction<DB>) {
+  const raw = trx.withoutPlugins();
+  return {
+    async executeSql(text: string, values: unknown[] = []) {
+      const result = await raw.executeQuery(CompiledQuery.raw(text, values));
+      return { rows: result.rows as unknown[] };
+    },
+  };
+}
+
 export function createDerived(deps: DerivedDeps) {
   const { db, store } = deps;
   const repos = createRepos(db);
   const target: SlicerTarget = {
     baseUrl: deps.slicerUrl,
     timeoutMs: deps.requestTimeoutMs ?? RENDER_TIMEOUT_MS,
+    uploadTimeoutMs: deps.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
   };
   const retry = {
     ...SLICER_RETRY,
@@ -194,14 +219,12 @@ export function createDerived(deps: DerivedDeps) {
     fileId: string,
     status: DerivedStatus,
     message: string | null,
-    onlyWhileSource?: string,
   ): Promise<void> {
-    let q = db
+    await db
       .updateTable("files")
       .set({ derivedStatus: status, derivedMessage: message, updatedAt: sql<Date>`now()` })
-      .where("id", "=", fileId);
-    if (onlyWhileSource !== undefined) q = q.where("blobId", "=", onlyWhileSource);
-    await q.execute();
+      .where("id", "=", fileId)
+      .execute();
   }
 
   /** Deletes objects, best effort: one left behind has no row, and the orphan sweep removes it. */
@@ -237,7 +260,9 @@ export function createDerived(deps: DerivedDeps) {
   /** Queues a render or mesh of the file's current source and marks it pending. */
   async function queueFor(fileId: string, kind: "scad" | "step"): Promise<string> {
     const file = isUuid(fileId) ? await repos.files.get(fileId) : undefined;
-    if (file === undefined) throw new DerivedError("not_found", NOT_FOUND_MESSAGE);
+    if (file === undefined || (await repos.models.get(file.modelId)) === undefined) {
+      throw new DerivedError("not_found", NOT_FOUND_MESSAGE);
+    }
     if (file.kind !== kind) throw new DerivedError("not_derivable", NOT_DERIVABLE_MESSAGE);
     await setStatus(file.id, "pending", null);
     try {
@@ -307,45 +332,54 @@ export function createDerived(deps: DerivedDeps) {
       throw error;
     }
 
+    // The staged source's row, the file marked pending, and its job, in one
+    // transaction.
+    const stage = async (trx: Transaction<DB>): Promise<void> => {
+      const live = await trx
+        .selectFrom("models")
+        .select("id")
+        .where("id", "=", file.modelId)
+        .where("trashedAt", "is", null)
+        .where("purgeStartedAt", "is", null)
+        .forShare()
+        .executeTakeFirst();
+      if (live === undefined) throw new DerivedError("not_found", NOT_FOUND_MESSAGE);
+      const r = createRepos(trx);
+      await r.blobs.insertPending({
+        id: blobId,
+        modelId: file.modelId,
+        kind: "source",
+        contentType,
+        size,
+      });
+      await r.blobs.markStored(blobId, stored);
+      await trx
+        .updateTable("files")
+        .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
+        .where("id", "=", file.id)
+        .execute();
+      const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: blobId };
+      const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
+      if (id === null) throw new Error("pg-boss created no job");
+    };
+
+    // Set when the transaction's own work threw, so it rolled back and
+    // nothing in it committed.
+    let rolledBack = false;
     try {
       await db.transaction().execute(async (trx) => {
-        const live = await trx
-          .selectFrom("models")
-          .select("id")
-          .where("id", "=", file.modelId)
-          .where("trashedAt", "is", null)
-          .where("purgeStartedAt", "is", null)
-          .forShare()
-          .executeTakeFirst();
-        if (live === undefined) throw new DerivedError("not_found", NOT_FOUND_MESSAGE);
-        const r = createRepos(trx);
-        await r.blobs.insertPending({
-          id: blobId,
-          modelId: file.modelId,
-          kind: "source",
-          contentType,
-          size,
-        });
-        await r.blobs.markStored(blobId, stored);
-        await trx
-          .updateTable("files")
-          .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
-          .where("id", "=", file.id)
-          .execute();
+        try {
+          await stage(trx);
+        } catch (error) {
+          rolledBack = true;
+          throw error;
+        }
       });
     } catch (error) {
-      // Refused inside the transaction, so nothing committed and the object
-      // can go. Any other failure may have committed: the object is kept,
-      // and if no row points at it the orphan sweep removes it.
-      if (error instanceof DerivedError) await deleteQuietly([key]);
-      throw error;
-    }
-
-    try {
-      await send({ kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: blobId });
-    } catch (error) {
-      await discardStaged(blobId).catch(() => {});
-      await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch(() => {});
+      // Refused or failed inside the transaction, so nothing committed and
+      // the object can go. A failed commit may have committed: the object is
+      // kept, and if no row points at it the orphan sweep removes it.
+      if (rolledBack) await deleteQuietly([key]);
       throw error;
     }
     return { fileId: file.id, sourceBlobId: blobId };
@@ -398,6 +432,53 @@ export function createDerived(deps: DerivedDeps) {
       if (staged === undefined) throw new Superseded();
     }
     return row;
+  }
+
+  /**
+   * Whether a job queued for the file will render a source newer than
+   * sourceId: a replacement staged after it. Read in trx once the file row
+   * is locked, so a replaceFile that commits later sets 'pending' itself
+   * after this job's write, and one that committed earlier is seen here
+   * (replaceFile writes the staged row and its job in one transaction). The
+   * slicer queue runs one job at a time, so any other job for the file is
+   * queued, not running.
+   */
+  async function newerQueued(
+    trx: Transaction<DB>,
+    fileId: string,
+    sourceId: string,
+  ): Promise<boolean> {
+    const queued = await deps.queue.findJobs<DerivedJob>(QUEUE.slicer, {
+      data: { fileId },
+      queued: true,
+      db: bossDb(trx),
+    });
+    const others = queued
+      .map((j) => j.data?.sourceBlobId)
+      .filter((id): id is string => typeof id === "string" && id !== sourceId && isUuid(id));
+    if (others.length === 0) return false;
+    const { rows } = await sql<{ newer: boolean }>`
+      select exists (
+        select 1 from blobs s, blobs mine
+         where mine.id = ${sourceId}
+           and s.id in (${sql.join(others)})
+           and s.kind = 'source' and s.state = 'stored'
+           and s.created_at > mine.created_at
+      ) as newer
+    `.execute(trx);
+    return rows[0]?.newer ?? false;
+  }
+
+  /** outcome, or 'pending' with no message while a newer replacement is queued. */
+  async function settledOutcome(
+    trx: Transaction<DB>,
+    fileId: string,
+    sourceId: string,
+    outcome: { status: DerivedStatus; message: string | null },
+  ): Promise<{ status: DerivedStatus; message: string | null }> {
+    return (await newerQueued(trx, fileId, sourceId))
+      ? { status: "pending", message: null }
+      : outcome;
   }
 
   /**
@@ -481,10 +562,11 @@ export function createDerived(deps: DerivedDeps) {
     try {
       await db.transaction().execute(async (trx) => {
         const row = await lockFor(trx, file, source, replacing);
-        oldKeys = await swapIn(trx, row, jobKind, source, replacing, put, {
+        const outcome = await settledOutcome(trx, file.id, source.id, {
           status: "ok",
           message: null,
         });
+        oldKeys = await swapIn(trx, row, jobKind, source, replacing, put, outcome);
       });
     } catch (error) {
       // Superseded is decided inside the transaction, before any write, so
@@ -507,12 +589,17 @@ export function createDerived(deps: DerivedDeps) {
     let oldKeys: string[] = [];
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
+      const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
       if (replacing) {
-        oldKeys = await swapIn(trx, row, jobKind, source, true, [], { status: "failed", message });
+        oldKeys = await swapIn(trx, row, jobKind, source, true, [], outcome);
       } else {
         await trx
           .updateTable("files")
-          .set({ derivedStatus: "failed", derivedMessage: message, updatedAt: sql<Date>`now()` })
+          .set({
+            derivedStatus: outcome.status,
+            derivedMessage: outcome.message,
+            updatedAt: sql<Date>`now()`,
+          })
           .where("id", "=", row.id)
           .execute();
       }
@@ -520,18 +607,37 @@ export function createDerived(deps: DerivedDeps) {
     await deleteQuietly(oldKeys);
   }
 
-  /** Records slicer_error; a replacement is dropped and the previous version kept. */
+  /**
+   * Records slicer_error, while the file still has the source the job started
+   * from; a replacement is dropped and the previous version kept.
+   */
   async function commitSlicerError(
     file: ModelFile,
     source: Blob,
     replacing: boolean,
   ): Promise<void> {
-    if (replacing) {
-      await discardStaged(source.id);
-      await setStatus(file.id, "failed", DERIVED_MESSAGES.replaceFailed, file.blobId);
-    } else {
-      await setStatus(file.id, "failed", DERIVED_MESSAGES.slicerError, source.id);
-    }
+    const message = replacing ? DERIVED_MESSAGES.replaceFailed : DERIVED_MESSAGES.slicerError;
+    await db.transaction().execute(async (trx) => {
+      const row = await trx
+        .selectFrom("files")
+        .select("id")
+        .where("id", "=", file.id)
+        .where("blobId", "=", file.blobId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return;
+      const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
+      await trx
+        .updateTable("files")
+        .set({
+          derivedStatus: outcome.status,
+          derivedMessage: outcome.message,
+          updatedAt: sql<Date>`now()`,
+        })
+        .where("id", "=", row.id)
+        .execute();
+    });
+    if (replacing) await discardStaged(source.id);
   }
 
   /** Whether staged was stored after current (compared in Postgres, to the microsecond). */

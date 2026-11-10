@@ -26,12 +26,25 @@ export const DERIVED_MESSAGES = {
 } as const;
 
 /**
- * How long one render request may take: the slicer's own time cap for a
- * render or a STEP conversion (SCAD_TIMEOUT_SECONDS and STEP_TIMEOUT_SECONDS,
- * both 120 s by default in apps/slicer), plus 30 s, as the plan sets the
- * app's slice timeout. Past it the request counts as a lost connection.
+ * How long a render request may wait for its answer once its body is sent:
+ * the slicer's own time cap for a render or a STEP conversion
+ * (SCAD_TIMEOUT_SECONDS and STEP_TIMEOUT_SECONDS, both 120 s by default in
+ * apps/slicer), plus 30 s, as the plan sets the app's slice timeout. Past it
+ * the request counts as a lost connection.
  */
 export const RENDER_TIMEOUT_MS = (120 + 30) * 1000;
+
+/**
+ * How long a streamed body (a STEP file, up to 256 MiB, read from the bucket
+ * as it is sent) may take to send: the slicer's own allowance for a body,
+ * UPLOAD_SECONDS in apps/slicer/src/server.ts. RENDER_TIMEOUT_MS starts only
+ * once the body has been read to its end, so a slow bucket does not eat the
+ * program's time; a body that stalls past this counts as a lost connection.
+ * Both together, 750 s, fit inside pg-boss's default 15-minute job expiry. A
+ * .scad body is at most 1 MiB and in memory, so it gets RENDER_TIMEOUT_MS
+ * alone.
+ */
+export const RENDER_UPLOAD_TIMEOUT_MS = 600 * 1000;
 
 /** The slicer answered 409 busy: another heavy job holds its lock. Retryable. */
 export class SlicerBusy extends Error {
@@ -77,7 +90,10 @@ export function isRetryable(error: unknown): boolean {
 export interface SlicerTarget {
   /** SLICER_URL. */
   baseUrl: string;
+  /** The wait for an answer once the body is sent (RENDER_TIMEOUT_MS). */
   timeoutMs: number;
+  /** The time a streamed body may take to send (RENDER_UPLOAD_TIMEOUT_MS). */
+  uploadTimeoutMs: number;
 }
 
 export interface RenderRequest {
@@ -103,6 +119,24 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
     req.body instanceof Readable
       ? (Readable.toWeb(req.body) as ReadableStream<Uint8Array>)
       : new Uint8Array(req.body.buffer, req.body.byteOffset, req.body.byteLength);
+  // Two timers, one after the other: the upload allowance while a streamed
+  // body is read, then the program's time once it has ended.
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  let settled = false;
+  const arm = (ms: number, what: string): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new Error(`${what} within ${ms} ms`)), ms);
+  };
+  const answerTimer = (): void => {
+    if (!settled) arm(target.timeoutMs, "no answer");
+  };
+  if (req.body instanceof Readable) {
+    arm(target.uploadTimeoutMs, "the body was not sent");
+    req.body.once("end", answerTimer);
+  } else {
+    answerTimer();
+  }
   let status: number;
   let type: string;
   let bytes: Buffer;
@@ -112,7 +146,7 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
       headers: { "content-type": req.contentType },
       body,
       duplex: "half",
-      signal: AbortSignal.timeout(target.timeoutMs),
+      signal: controller.signal,
     });
     status = res.status;
     type = mediaType(res.headers.get("content-type"));
@@ -120,7 +154,12 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
   } catch (error) {
     throw new SlicerUnreachable(req.route, error);
   } finally {
-    if (req.body instanceof Readable) req.body.destroy();
+    settled = true;
+    clearTimeout(timer);
+    if (req.body instanceof Readable) {
+      req.body.off("end", answerTimer);
+      req.body.destroy();
+    }
   }
 
   switch (status) {

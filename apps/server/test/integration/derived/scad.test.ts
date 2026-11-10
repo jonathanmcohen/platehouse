@@ -9,10 +9,13 @@
 // OpenSCAD's message in files.derived_message, as text.
 import { randomBytes } from "node:crypto";
 import { LIMITS } from "@platehouse/slicer-contract";
+import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
+  createDerived,
   DERIVED_KINDS,
   DERIVED_MESSAGES,
+  type DerivedDeps,
   DerivedError,
   type DerivedJob,
   derivedJobHandlers,
@@ -63,6 +66,21 @@ async function jobsFor(fileId: string) {
 }
 
 const unique = (label: string) => `// ${label} ${randomBytes(6).toString("hex")}\n${SCAD_TEXT}`;
+
+/**
+ * A second createDerived on the same database, bucket, slicer and pg-boss,
+ * with deps overridden. Its jobs are run by the env's worker all the same.
+ */
+function derivedWith(overrides: Partial<DerivedDeps>) {
+  return createDerived({
+    db: env.db,
+    store: env.store,
+    slicerUrl: env.stub.url,
+    queue: env.boss,
+    retryDelaySeconds: 1,
+    ...overrides,
+  });
+}
 
 describe("OpenSCAD renders (AC-052)", () => {
   test("a .scad upload produces an STL and a PNG blob", async () => {
@@ -227,6 +245,26 @@ describe("retries through pg-boss", () => {
   });
 });
 
+describe("renders of a trashed model", () => {
+  test("renderScad refuses a file whose model is in the trash and queues nothing", async () => {
+    const { modelId, fileId } = await storeScad(unique("trashed"));
+    const before = await env.repos.files.get(fileId);
+    expect(await env.repos.models.trash(modelId)).toBe(true);
+
+    const error = await env.derived.renderScad(fileId).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(DerivedError);
+    expect((error as DerivedError).code).toBe("not_found");
+    expect(await jobsFor(fileId)).toEqual([]);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: before?.derivedStatus ?? null,
+    });
+    expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
+  });
+});
+
 describe("the slicer queue's worker", () => {
   test("an unknown slicer job kind fails its job instead of passing silently", async () => {
     const id = await env.boss.send(QUEUE.slicer, { kind: "no-such-kind" }, { retryLimit: 0 });
@@ -345,6 +383,118 @@ describe("replacing a .scad (AC-053)", () => {
     );
     expect(blobs).toHaveLength(3);
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
+  });
+
+  test("a replacement made before the first render finishes keeps the file pending until it lands", async () => {
+    const first = unique("first render");
+    const second = unique("replaced early");
+    const { fileId } = await storeScad(first);
+    const original = await env.repos.files.get(fileId);
+    if (!original) throw new Error("file not stored");
+
+    // The replacement's first attempt finds the slicer busy, and pg-boss
+    // holds it 5 to 10 s before the retry: a newer source is queued.
+    env.stub.renders.queue("/v1/scad/stl", { kind: "busy" });
+    await derivedWith({ retryDelaySeconds: 5 }).replaceFile(fileId, await writeUpload(env, second));
+    await until(
+      () => env.stub.renders.callsTo("/v1/scad/stl").length,
+      (n) => n === 1,
+    );
+
+    // Meanwhile the first render, of the source being replaced, finishes.
+    const outcome = await env.derived.runJob(
+      { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: original.blobId },
+      { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+    );
+    expect(outcome).toEqual({ status: "ok" });
+    const between = await env.repos.files.get(fileId);
+    expect(between).toMatchObject({ blobId: original.blobId, derivedStatus: "pending" });
+    expect(between?.renderStlBlobId).not.toBeNull();
+
+    // The replacement lands and the file is done.
+    const after = await until(
+      () => env.repos.files.get(fileId),
+      (f) => f?.blobId !== original.blobId && f?.derivedStatus === "ok",
+    );
+    const blobs = await blobsOf(env, after?.modelId ?? "");
+    const byId = new Map(blobs.map((b) => [b.id, b]));
+    expect(await readObject(env, byId.get(after?.renderStlBlobId ?? "")?.key ?? "")).toEqual(
+      renderedBytes("/v1/scad/stl", second),
+    );
+  });
+
+  test("a replacement that ends in slicer_error while a newer one is queued leaves the file pending", async () => {
+    const { modelId, fileId } = await uploadScad(unique("base"));
+    const before = await settledFile(env, fileId);
+    const older = unique("older replacement");
+    const newer = unique("newer replacement");
+
+    // Both replacements' first attempts find the slicer busy, so both wait
+    // 5 to 10 s for a retry.
+    env.stub.renders.queue("/v1/scad/stl", { kind: "busy" }, { kind: "busy" });
+    const slow = derivedWith({ retryDelaySeconds: 5 });
+    const staged = await slow.replaceFile(fileId, await writeUpload(env, older));
+    await slow.replaceFile(fileId, await writeUpload(env, newer));
+    await until(
+      () => env.stub.renders.callsTo("/v1/scad/stl").length,
+      (n) => n === 2,
+    );
+
+    // The older replacement's last attempt loses the slicer.
+    env.stub.renders.always("/v1/scad/stl", { kind: "drop" });
+    const outcome = await env.derived.runJob(
+      { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: staged.sourceBlobId },
+      { retryCount: SLICER_RETRY.retryLimit, retryLimit: SLICER_RETRY.retryLimit },
+    );
+    env.stub.renders.always("/v1/scad/stl", { kind: "render" });
+    expect(outcome).toEqual({ status: "failed", reason: "slicer_error" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
+    expect((await blobsOf(env, modelId)).some((b) => b.id === staged.sourceBlobId)).toBe(false);
+
+    // The newer replacement lands.
+    const after = await until(
+      () => env.repos.files.get(fileId),
+      (f) => f?.blobId !== before.blobId && f?.derivedStatus === "ok",
+    );
+    const blobs = await blobsOf(env, modelId);
+    const byId = new Map(blobs.map((b) => [b.id, b]));
+    expect(await readObject(env, byId.get(after?.blobId ?? "")?.key ?? "")).toEqual(
+      Buffer.from(newer),
+    );
+  });
+
+  test("the staged source and its job commit together: a send that fails leaves neither", async () => {
+    const { modelId, fileId } = await uploadScad(unique("atomic"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    const oldKeys = await keysOf(env, modelId);
+
+    // The job is written, then the process "dies" before replaceFile returns.
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      await (env.boss.send as (...a: unknown[]) => Promise<string | null>)(...args);
+      throw new Error("the process died after sending the job");
+    };
+    const dying = derivedWith({
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+    });
+    await expect(
+      dying.replaceFile(fileId, await writeUpload(env, unique("never"))),
+    ).rejects.toThrow("the process died");
+
+    // No job, no staged row, no object, and the file as it was.
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => j.data.sourceBlobId !== before.blobId)).toEqual([]);
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
+    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      derivedStatus: "ok",
+      derivedMessage: null,
+    });
   });
 
   test("replaceFile refuses a file that is not a .scad and stores nothing", async () => {
