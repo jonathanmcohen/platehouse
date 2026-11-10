@@ -13,8 +13,8 @@
 // slicer answers 409 busy or the connection is lost, runJob throws and
 // pg-boss runs the job again with backoff; there is no retry loop here. On
 // the last attempt runJob records slicer_error instead (DERIVED_MESSAGES)
-// and the job completes, so the file does not wait on a render forever
-// (except in the gap described below). A render or conversion error is the
+// and the job completes, so the file does not wait on a render forever (a
+// last attempt that dies first is settled by the render check below). A render or conversion error is the
 // program's own answer: it is never retried, the source is kept, and the
 // program's message goes into files.derived_message exactly as written. It
 // is text, for the page to show as text, never HTML.
@@ -32,16 +32,26 @@
 // the same, with the message, since the new source is the file Jon uploaded. An object left with no row by a
 // crash between steps is removed by the orphan sweep (ingest/orphans.ts).
 //
-// A known gap, left as a follow-up: if a job's last attempt ends before it
-// records its outcome - the process dies, pg-boss expires the job, or
-// commitSlicerError's own transaction fails (a Postgres restart, say) -
-// pg-boss marks the job failed and nothing settles the file. The file stays
-// 'pending'. For a replacement, the staged source's row (kind 'source',
-// state 'stored') and its object also stay, with no file pointing at them,
-// because discardStaged never ran. The orphan sweep does not remove that
-// object, since it still has a row; only purging the model clears it. A
-// periodic check that discards such staged sources and resets the file would
-// close this.
+// The render check (checkRenders, issues #90 and #91) repairs what a job or
+// an upload that died part way leaves behind. It is a maintenance-queue job
+// (CHECK_RENDERS_CRON, every 15 minutes; Task 30 registers the schedule),
+// and it acts only on rows written more than RENDER_CHECK_GRACE_MS ago,
+// twice a render job's 15-minute expiry. Each step re-checks, holding the
+// row's lock, that no queued or active job owns what it changes:
+// - If the database fails right after ingest commits, afterUpload cannot
+//   queue the job or record queueFailed, and the .scad or STEP file is left
+//   with derived_status null and no job. The check queues it.
+// - If a job's last attempt ends before it records its outcome (the process
+//   dies, pg-boss expires the job, or commitSlicerError's transaction fails
+//   during a Postgres restart), pg-boss marks the job failed and the file
+//   stays 'pending'. The check marks it failed ("The render did not
+//   finish.") and does not queue it again, so a file that kills the slicer
+//   cannot loop.
+// - For a replacement in that case, the staged source's row (kind 'source',
+//   state 'stored') and its object are left with no file pointing at them,
+//   and the orphan sweep skips an object that has a row. The check deletes
+//   them, object first, then row, so a run that fails part way is finished
+//   by the next one.
 //
 // derived_status is 'pending' while a job is queued or running, then 'ok' or
 // 'failed'; it stays null for kinds with nothing derived (.3mf, .stl). A job
@@ -96,6 +106,9 @@ export const DERIVED_KINDS = {
 
 export type DerivedKind = (typeof DERIVED_KINDS)[keyof typeof DERIVED_KINDS];
 
+/** pg-boss job states in which a job still owns its file and source: queued or running. */
+const LIVE_STATES: ReadonlySet<string> = new Set(["created", "retry", "active"]);
+
 /** A slicer queue job that makes a file's derived blobs; its kind picks the handler. */
 export interface DerivedJob {
   kind: DerivedKind;
@@ -148,12 +161,25 @@ export interface DerivedDeps {
 }
 
 /**
- * How long the render check waits after a file or staged source was written
- * before it acts on it. Longer than a render job's expiry.
+ * How long a render job may run before pg-boss expires it: pg-boss's default
+ * of 15 minutes, since neither the slicer queue (jobs/queues.ts) nor a render
+ * job sets its own. A job that is still 'active' past this is failed, or
+ * retried, by pg-boss itself.
  */
-export const RENDER_CHECK_GRACE_MS = 30 * 60 * 1000;
+const RENDER_JOB_EXPIRY_MS = 15 * 60 * 1000;
 
-/** The render check's suggested cadence on the maintenance queue. */
+/**
+ * How long the render check (checkRenders) leaves a file or a staged source
+ * alone after it was written: twice a render job's expiry, so a job that
+ * died while active has been expired by pg-boss, and an upload's own
+ * afterUpload has long since had its turn, before the check looks at it.
+ */
+export const RENDER_CHECK_GRACE_MS = 2 * RENDER_JOB_EXPIRY_MS;
+
+/**
+ * The render check's suggested cadence on the maintenance queue: every 15
+ * minutes. Task 30 registers the schedule; checkRenders(now) is its handler.
+ */
 export const CHECK_RENDERS_CRON = "*/15 * * * *";
 
 /** What one run of the render check did. */
@@ -305,7 +331,14 @@ export function createDerived(deps: DerivedDeps) {
         return id;
       });
     } catch (error) {
-      await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch(() => {});
+      // The queueing error is the one rethrown. If the database is what
+      // failed, this write fails too and the file keeps derived_status null
+      // with no job; the render check (checkRenders) queues it later.
+      await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch((statusError) => {
+        console.error(
+          `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
+        );
+      });
       throw error;
     }
   }
@@ -324,7 +357,8 @@ export function createDerived(deps: DerivedDeps) {
    * Ingest's afterCommit: queues the render of a .scad or the mesh of a STEP
    * file whose row has committed. It never throws: the upload is stored
    * whatever happens here, and a job that cannot be queued leaves the file
-   * failed with DERIVED_MESSAGES.queueFailed.
+   * failed with DERIVED_MESSAGES.queueFailed, or, when the database cannot
+   * take even that, with derived_status null for the render check to queue.
    */
   async function afterUpload(stored: StoredFile): Promise<void> {
     if (!hasDerived(stored.kind)) return;
@@ -753,8 +787,217 @@ export function createDerived(deps: DerivedDeps) {
     }
   }
 
-  async function checkRenders(_now: Date): Promise<RenderCheckResult> {
-    throw new Error("not implemented");
+  /** The file's render and mesh jobs, oldest first, read in trx. */
+  async function jobsOfFile(trx: Transaction<DB>, fileId: string) {
+    return deps.queue.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId }, db: bossDb(trx) });
+  }
+
+  /**
+   * Locks the model row for share when it has no purge begun (and, when
+   * live, is not in the trash), the order lockFor and a purge take locks in.
+   */
+  async function lockModel(trx: Transaction<DB>, modelId: string, live: boolean) {
+    let q = trx
+      .selectFrom("models")
+      .select("id")
+      .where("id", "=", modelId)
+      .where("purgeStartedAt", "is", null);
+    if (live) q = q.where("trashedAt", "is", null);
+    return (await q.forShare().executeTakeFirst()) !== undefined;
+  }
+
+  /**
+   * Issue #91: queues a .scad or STEP file that still has derived_status null
+   * and no queued or active job, with its status, in one transaction.
+   * Returns whether it queued one.
+   */
+  async function queueUnqueued(fileId: string, modelId: string): Promise<boolean> {
+    return db.transaction().execute(async (trx) => {
+      if (!(await lockModel(trx, modelId, true))) return false;
+      const row = await trx
+        .selectFrom("files")
+        .select(["id", "kind", "blobId"])
+        .where("id", "=", fileId)
+        .where("derivedStatus", "is", null)
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined || !hasDerived(row.kind)) return false;
+      if ((await jobsOfFile(trx, row.id)).some((j) => LIVE_STATES.has(j.state))) return false;
+      await trx
+        .updateTable("files")
+        .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
+        .where("id", "=", row.id)
+        .execute();
+      const job: DerivedJob = {
+        kind: JOB_KIND_OF[row.kind],
+        fileId: row.id,
+        sourceBlobId: row.blobId,
+      };
+      const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
+      if (id === null) throw new Error("pg-boss created no job");
+      return true;
+    });
+  }
+
+  /**
+   * Issue #90: a file still 'pending' with no queued or active job, whose
+   * newest job ended failed: its last attempt died before it recorded an
+   * outcome. The file is marked failed and not queued again, so a file that
+   * kills the slicer cannot loop. Returns whether it marked one.
+   */
+  async function settleLost(fileId: string, modelId: string): Promise<boolean> {
+    return db.transaction().execute(async (trx) => {
+      if (!(await lockModel(trx, modelId, false))) return false;
+      const row = await trx
+        .selectFrom("files")
+        .select(["id", "blobId"])
+        .where("id", "=", fileId)
+        .where("derivedStatus", "=", "pending")
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return false;
+      const jobs = await jobsOfFile(trx, row.id);
+      if (jobs.some((j) => LIVE_STATES.has(j.state))) return false;
+      const last = jobs.at(-1);
+      if (last === undefined || last.state !== "failed") return false;
+      const replacing = last.data?.sourceBlobId !== row.blobId;
+      await trx
+        .updateTable("files")
+        .set({
+          derivedStatus: "failed",
+          derivedMessage: replacing ? DERIVED_MESSAGES.replaceLost : DERIVED_MESSAGES.renderLost,
+          updatedAt: sql<Date>`now()`,
+        })
+        .where("id", "=", row.id)
+        .execute();
+      return true;
+    });
+  }
+
+  /**
+   * Issue #90: deletes a staged replacement source (kind 'source', state
+   * 'stored') that no file points at and no queued or active job names: its
+   * object first, then its row, with the row locked throughout. A store
+   * that fails leaves the row, so the next run tries again; an object
+   * already gone is not an error. Returns whether it deleted one.
+   */
+  async function discardLost(blobId: string, modelId: string): Promise<boolean> {
+    return db.transaction().execute(async (trx) => {
+      if (!(await lockModel(trx, modelId, false))) return false;
+      const blob = await trx
+        .selectFrom("blobs")
+        .select(["id", "key"])
+        .where("id", "=", blobId)
+        .where("kind", "=", "source")
+        .where("state", "=", "stored")
+        .forUpdate()
+        .executeTakeFirst();
+      if (blob === undefined) return false;
+      const { rows } = await sql<{ used: boolean }>`
+        select exists (
+          select 1 from files f
+           where f.blob_id = ${blob.id} or f.render_stl_blob_id = ${blob.id}
+              or f.render_png_blob_id = ${blob.id} or f.mesh_blob_id = ${blob.id}
+        ) as used
+      `.execute(trx);
+      if (rows[0]?.used !== false) return false;
+      const jobs = await deps.queue.findJobs<DerivedJob>(QUEUE.slicer, {
+        data: { sourceBlobId: blob.id },
+        db: bossDb(trx),
+      });
+      if (jobs.some((j) => LIVE_STATES.has(j.state))) return false;
+      await store.deleteBlobs([blob.key]);
+      await trx.deleteFrom("blobs").where("id", "=", blob.id).execute();
+      return true;
+    });
+  }
+
+  /**
+   * The render check (issues #90 and #91), a maintenance-queue job run every
+   * CHECK_RENDERS_CRON. It acts only on files and staged sources written
+   * more than RENDER_CHECK_GRACE_MS before now, and each step re-checks, in
+   * a transaction holding the row's lock, that no queued or active job owns
+   * what it changes:
+   * - a .scad or STEP file in a live model with derived_status null and no
+   *   job is queued (a database failure right after ingest committed);
+   * - a pending file whose newest job ended failed is marked failed with
+   *   DERIVED_MESSAGES.renderLost (replaceLost for a replacement), and is
+   *   not queued again;
+   * - a staged replacement source no file points at and no live job names
+   *   is deleted, object first, then row.
+   * One item that fails is logged and left for the next run; the others go
+   * on. A second run finds nothing to do.
+   */
+  async function checkRenders(now: Date): Promise<RenderCheckResult> {
+    const cutoff = new Date(now.getTime() - RENDER_CHECK_GRACE_MS);
+    const result: RenderCheckResult = { queued: [], failed: [], discarded: [] };
+    const attempt = async (
+      what: string,
+      step: () => Promise<boolean>,
+      into: string[],
+      id: string,
+    ) => {
+      try {
+        if (await step()) into.push(id);
+      } catch (error) {
+        console.error(`render check: ${what} ${id} left for the next run: ${describe(error)}`);
+      }
+    };
+
+    const unqueued = await db
+      .selectFrom("files as f")
+      .innerJoin("models as m", "m.id", "f.modelId")
+      .select(["f.id", "f.modelId"])
+      .where("f.kind", "in", ["scad", "step"])
+      .where("f.derivedStatus", "is", null)
+      .where("f.createdAt", "<", cutoff)
+      .where("m.trashedAt", "is", null)
+      .where("m.purgeStartedAt", "is", null)
+      .orderBy("f.createdAt")
+      .execute();
+    for (const f of unqueued) {
+      await attempt("file", () => queueUnqueued(f.id, f.modelId), result.queued, f.id);
+    }
+
+    const pending = await db
+      .selectFrom("files as f")
+      .innerJoin("models as m", "m.id", "f.modelId")
+      .select(["f.id", "f.modelId"])
+      .where("f.derivedStatus", "=", "pending")
+      .where("f.updatedAt", "<", cutoff)
+      .where("m.purgeStartedAt", "is", null)
+      .orderBy("f.updatedAt")
+      .execute();
+    for (const f of pending) {
+      await attempt("file", () => settleLost(f.id, f.modelId), result.failed, f.id);
+    }
+
+    const { rows: staged } = await sql<{ id: string; modelId: string }>`
+      select b.id, b.model_id as "modelId"
+        from blobs b
+        join models m on m.id = b.model_id
+       where b.kind = 'source' and b.state = 'stored'
+         and b.created_at < ${cutoff}
+         and m.purge_started_at is null
+         and not exists (
+           select 1 from files f
+            where f.blob_id = b.id or f.render_stl_blob_id = b.id
+               or f.render_png_blob_id = b.id or f.mesh_blob_id = b.id)
+       order by b.created_at
+    `.execute(db.withoutPlugins());
+    for (const b of staged) {
+      await attempt("staged source", () => discardLost(b.id, b.modelId), result.discarded, b.id);
+    }
+
+    const { queued, failed, discarded } = result;
+    if (queued.length + failed.length + discarded.length > 0) {
+      console.info(
+        `render check: queued ${queued.length} file(s) that had no render job, marked ` +
+          `${failed.length} render(s) that did not finish failed, removed ` +
+          `${discarded.length} staged source(s)`,
+      );
+    }
+    return result;
   }
 
   return { renderScad, convertStep, replaceFile, afterUpload, runJob, checkRenders };
