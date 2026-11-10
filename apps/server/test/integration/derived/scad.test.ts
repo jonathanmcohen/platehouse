@@ -8,6 +8,8 @@
 // attempt records slicer_error. A render error keeps the source and stores
 // OpenSCAD's message in files.derived_message, as text.
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { LIMITS } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -296,6 +298,90 @@ describe("queueing a render", () => {
   });
 });
 
+/** A URL on 127.0.0.1 where nothing listens, so a connection is refused. */
+async function nothingListening(): Promise<string> {
+  const s = createServer();
+  await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", () => resolve()));
+  const { port } = s.address() as AddressInfo;
+  await new Promise<void>((resolve) => s.close(() => resolve()));
+  return `http://127.0.0.1:${port}`;
+}
+
+const SANDBOX_OFF_MESSAGE =
+  "OpenSCAD renders are off: the sandbox self-test failed (synthetic probe readable).";
+
+describe("a slicer that cannot render right now (uses no retry)", () => {
+  test("a slicer that takes no connection: the job waits for it, and the render lands once it answers", async () => {
+    const { fileId } = await storeScad(unique("refused"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    // An attempt that has already used one retry (say, on a busy answer),
+    // run against a slicer that is stopped.
+    const down = derivedWith({ slicerUrl: await nothingListening() });
+    const outcome = await down.runJob(job, {
+      retryCount: 1,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "requeued", reason: "slicer_down" });
+    expect((await env.repos.files.get(fileId))?.derivedStatus).not.toBe("failed");
+
+    // The env's worker runs the job it queued, against a slicer that answers.
+    const done = await settledFile(env, fileId);
+    expect(done.derivedStatus).toBe("ok");
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+    const jobs = await jobsFor(fileId);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.data).toEqual({ ...job, waits: 1 });
+    // The outage used no retry, and the one used before it stays used.
+    expect(jobs[0]?.retryLimit).toBe(SLICER_RETRY.retryLimit - 1);
+  });
+
+  test("a replacement sent while OpenSCAD renders are off keeps the previous version and renders once they are back", async () => {
+    const { modelId, fileId } = await uploadScad(unique("sandbox before"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+
+    env.stub.renders.always("/v1/scad/stl", { kind: "failed", message: SANDBOX_OFF_MESSAGE });
+    const second = unique("sandbox after");
+    const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, second));
+
+    // The job asks again, waiting longer each time, and never records the
+    // slicer's message as the file's verdict or swaps the replacement in.
+    await until(
+      () => env.stub.renders.callsTo("/v1/scad/stl").length,
+      (n) => n >= 3,
+    );
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
+    const waiting = new Set((await blobsOf(env, modelId)).map((b) => b.id));
+    for (const old of oldBlobs) expect(waiting.has(old.id)).toBe(true);
+    expect(waiting.has(sourceBlobId)).toBe(true);
+
+    // The sandbox works again.
+    env.stub.renders.reset();
+    const after = await until(
+      () => env.repos.files.get(fileId),
+      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok",
+    );
+    const byId = new Map((await blobsOf(env, modelId)).map((b) => [b.id, b]));
+    expect(await readObject(env, byId.get(after?.renderStlBlobId ?? "")?.key ?? "")).toEqual(
+      renderedBytes("/v1/scad/stl", second),
+    );
+    const jobs = await jobsFor(fileId);
+    const waits = jobs.filter(
+      (j) => (j.output as { reason?: string } | null)?.reason === "slicer_down",
+    );
+    expect(waits.length).toBeGreaterThanOrEqual(3);
+    expect(jobs.every((j) => j.retryCount === 0)).toBe(true);
+  });
+});
+
 describe("the slicer queue's worker", () => {
   test("an unknown slicer job kind fails its job instead of passing silently", async () => {
     const id = await env.boss.send(QUEUE.slicer, { kind: "no-such-kind" }, { retryLimit: 0 });
@@ -543,6 +629,33 @@ describe("replacing a .scad (AC-053)", () => {
     expect(await keysOf(env, modelId)).toEqual(keys);
     expect(await env.repos.files.get(fileId)).toMatchObject({
       blobId: before.blobId,
+      derivedStatus: "ok",
+    });
+  });
+
+  test("replaceFile refuses a .scad over the renderer's 1 MiB limit and stores nothing", async () => {
+    const { modelId, fileId } = await uploadScad(unique("too large"));
+    const before = await settledFile(env, fileId);
+    const keys = await keysOf(env, modelId);
+    const blobs = (await blobsOf(env, modelId)).map((b) => b.id);
+    const jobCount = (await jobsFor(fileId)).length;
+    const path = await writeUpload(env, `// ${"x".repeat(LIMITS.scadBodyBytes)}\n${SCAD_TEXT}`);
+
+    const error = await env.derived.replaceFile(fileId, path).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(DerivedError);
+    expect((error as DerivedError).code).toBe("too_large");
+    expect((error as DerivedError).message).toMatch(/1 MiB/);
+    expect(await keysOf(env, modelId)).toEqual(keys);
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(blobs);
+    expect(await jobsFor(fileId)).toHaveLength(jobCount);
+    expect(env.stub.renders.calls).toHaveLength(0);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
       derivedStatus: "ok",
     });
   });

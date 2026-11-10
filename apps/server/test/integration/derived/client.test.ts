@@ -5,14 +5,24 @@
 // eat the program's time, and a body that stalls must still be given up on.
 // These need no containers: the slicer is a plain node:http server on
 // 127.0.0.1 that holds nothing but synthetic bytes.
+//
+// It also pins how the client tells a slicer that cannot render right now (it
+// takes no connection, or its OpenSCAD sandbox self-test failed) from a lost
+// connection and from OpenSCAD's own verdict on the file.
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  isRetryable,
   postRender,
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
+  RenderFailed,
+  SANDBOX_OFF_PREFIX,
+  SlicerDown,
   SlicerUnreachable,
 } from "../../../src/derived/client.js";
 
@@ -114,5 +124,99 @@ describe("render request timers", () => {
     expect(RENDER_TIMEOUT_MS).toBe(150_000);
     // Both together fit inside pg-boss's default 15-minute job expiry.
     expect(RENDER_UPLOAD_TIMEOUT_MS + RENDER_TIMEOUT_MS).toBeLessThan(15 * 60 * 1000);
+  });
+});
+
+/** A slicer that answers every request with status and a JSON body. */
+async function answering(status: number, body: unknown): Promise<string> {
+  server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
+  });
+  await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", () => resolve()));
+  const { port } = server.address() as AddressInfo;
+  return `http://127.0.0.1:${port}`;
+}
+
+/** A URL on 127.0.0.1 where nothing listens, so a connection is refused. */
+async function nothingListening(): Promise<string> {
+  const s = createServer();
+  await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", () => resolve()));
+  const { port } = s.address() as AddressInfo;
+  await new Promise<void>((resolve) => s.close(() => resolve()));
+  return `http://127.0.0.1:${port}`;
+}
+
+function scadRequest() {
+  return {
+    route: "/v1/scad/stl" as const,
+    body: Buffer.from("cube([10, 10, 10]);\n"),
+    contentType: "text/plain; charset=utf-8",
+    accept: "model/stl",
+    refusal: "render" as const,
+    tooLarge: "too large",
+  };
+}
+
+const failure = (p: Promise<unknown>): Promise<unknown> =>
+  p.then(
+    () => null,
+    (e: unknown) => e,
+  );
+
+const target = (baseUrl: string) => ({ baseUrl, timeoutMs: 5_000, uploadTimeoutMs: 5_000 });
+
+describe("a slicer that cannot render right now", () => {
+  test("a slicer that takes no connection is down, not a lost connection, and uses no retry", async () => {
+    const error = await failure(postRender(target(await nothingListening()), scadRequest()));
+    expect(error).toBeInstanceOf(SlicerDown);
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  test("a STEP body sent to a slicer that takes no connection is down too", async () => {
+    const baseUrl = await nothingListening();
+    const error = await failure(postRender(target(baseUrl), stepRequest(trickle(2, 10))));
+    expect(error).toBeInstanceOf(SlicerDown);
+  });
+
+  test("a connection the slicer took and then lost is still a lost connection", async () => {
+    server = createServer((req: IncomingMessage) => {
+      req.resume();
+      req.on("end", () => req.socket.destroy());
+    });
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    const error = await failure(postRender(target(`http://127.0.0.1:${port}`), scadRequest()));
+    expect(error).toBeInstanceOf(SlicerUnreachable);
+    expect(isRetryable(error)).toBe(true);
+  });
+
+  test("a 422 saying OpenSCAD renders are off is the slicer's fault, not the file's", async () => {
+    const message = `${SANDBOX_OFF_PREFIX} the sandbox self-test failed (the probe was readable).`;
+    const baseUrl = await answering(422, { error: "render_failed", message });
+    const error = await failure(postRender(target(baseUrl), scadRequest()));
+    expect(error).toBeInstanceOf(SlicerDown);
+    expect(error).not.toBeInstanceOf(RenderFailed);
+    expect((error as Error).message).toContain(message);
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  test("OpenSCAD's own render error is still the file's: RenderFailed with its message", async () => {
+    const message = 'ERROR: Parser error in file "input.scad", line 3: syntax error';
+    const baseUrl = await answering(422, { error: "render_failed", message });
+    const error = await failure(postRender(target(baseUrl), scadRequest()));
+    expect(error).toBeInstanceOf(RenderFailed);
+    expect((error as Error).message).toBe(message);
+  });
+
+  test("the sandbox-off prefix is the one the slicer writes in apps/slicer/src/server.ts", async () => {
+    const slicerServer = await readFile(
+      fileURLToPath(new URL("../../../../slicer/src/server.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(slicerServer).toContain(`message: \`${SANDBOX_OFF_PREFIX} `);
   });
 });

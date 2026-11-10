@@ -19,6 +19,18 @@
 // program's message goes into files.derived_message exactly as written. It
 // is text, for the page to show as text, never HTML.
 //
+// A slicer that cannot render right now uses no retry (SlicerDown): one
+// that takes no connection at all (stopped, restarting or being re-pulled,
+// so it never saw the file), or one that answers that OpenSCAD renders are
+// off because its sandbox self-test failed. Neither says anything about the
+// file, so the job records nothing: it sends the same job again to start
+// after a wait (retryDelay doubled on each wait, at most
+// SLICER_DOWN_MAX_WAIT_SECONDS) and completes. The file stays 'pending', a
+// replacement keeps the previous version until it renders, and the new job
+// keeps the retries the old one had left, so a file that crashes the slicer
+// (a connection lost mid-render) still runs out of retries and cannot loop
+// through the restarts it causes.
+//
 // Replacing a file (replaceFile) stores the new source as a blob of its own,
 // next to the file's current one, and queues a job for it. The staged
 // source's row, the file marked pending, and its job are written in one
@@ -31,6 +43,9 @@
 // replacement whose render fails with OpenSCAD's own error is swapped in all
 // the same, with the message, since the new source is the file Jon uploaded. An object left with no row by a
 // crash between steps is removed by the orphan sweep (ingest/orphans.ts).
+// A replacement over the renderer's limit (a .scad over 1 MiB, a STEP file
+// over 256 MiB) is refused by replaceFile before anything is stored, since
+// it could never render and would otherwise be swapped in that way.
 //
 // The render check (checkRenders, issues #90 and #91) repairs what a job or
 // an upload that died part way leaves behind. It is a maintenance-queue job
@@ -61,6 +76,7 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
+import { LIMITS } from "@platehouse/slicer-contract";
 import { CompiledQuery, type Kysely, sql, type Transaction } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
@@ -83,6 +99,7 @@ import {
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
   type RenderOutput,
+  SlicerDown,
   SlicerFault,
   type SlicerTarget,
 } from "./client.js";
@@ -115,15 +132,23 @@ export interface DerivedJob {
   fileId: string;
   /** The source blob to render: the file's own, or a replacement not yet swapped in. */
   sourceBlobId: string;
+  /** How many times the job has been sent again to wait for a slicer that was down; 0 when left out. */
+  waits?: number;
 }
 
 /** What a job ends with, kept by pg-boss as its output. */
 export interface DerivedOutcome {
-  status: "ok" | "failed" | "skipped";
-  reason?: "render_failed" | "slicer_error" | "stale";
+  /** requeued: the slicer was down, and the same job was sent again to wait for it. */
+  status: "ok" | "failed" | "skipped" | "requeued";
+  reason?: "render_failed" | "slicer_error" | "stale" | "slicer_down";
 }
 
-export type DerivedErrorCode = "not_found" | "not_derivable" | "wrong_type" | "storage_unavailable";
+export type DerivedErrorCode =
+  | "not_found"
+  | "not_derivable"
+  | "wrong_type"
+  | "too_large"
+  | "storage_unavailable";
 
 /** A call refused with a plain message for Jon. */
 export class DerivedError extends Error {
@@ -141,6 +166,15 @@ const NOT_DERIVABLE_MESSAGE = "Only .scad and STEP files have renders";
 const WRONG_TYPE_MESSAGE: Readonly<Record<"scad" | "step", string>> = {
   scad: "The replacement is not a .scad file; nothing was saved",
   step: "The replacement is not a STEP file; nothing was saved",
+};
+const TOO_LARGE_MESSAGE: Readonly<Record<"scad" | "step", string>> = {
+  scad: "The replacement is larger than the 1 MiB the renderer takes; nothing was saved",
+  step: "The replacement is larger than the 256 MiB the converter takes; nothing was saved",
+};
+/** The renderer's limit for each kind's source (the contract's, which scad.ts and step.ts enforce). */
+const BODY_LIMIT: Readonly<Record<"scad" | "step", number>> = {
+  scad: LIMITS.scadBodyBytes,
+  step: LIMITS.stepBodyBytes,
 };
 
 export type DerivedStore = Pick<BlobStore, "putBlob" | "getBlobStream" | "deleteBlobs">;
@@ -181,6 +215,12 @@ export const RENDER_CHECK_GRACE_MS = 2 * RENDER_JOB_EXPIRY_MS;
  * minutes. Task 30 registers the schedule; checkRenders(now) is its handler.
  */
 export const CHECK_RENDERS_CRON = "*/15 * * * *";
+
+/**
+ * The longest a render job waits for a slicer that is down before it asks
+ * again: 15 minutes. The waits start at the retry delay and double.
+ */
+export const SLICER_DOWN_MAX_WAIT_SECONDS = 15 * 60;
 
 /** What one run of the render check did. */
 export interface RenderCheckResult {
@@ -371,9 +411,10 @@ export function createDerived(deps: DerivedDeps) {
 
   /**
    * Replaces a .scad or STEP file's source with the file at tmpPath, which
-   * must be of the same kind, and queues its render. The file keeps its
-   * previous source and renders until the new renders are stored (runJob).
-   * The file at tmpPath is left for its owner to delete.
+   * must be of the same kind and within the renderer's limit, and queues its
+   * render. The file keeps its previous source and renders until the new
+   * renders are stored (runJob). The file at tmpPath is left for its owner
+   * to delete.
    */
   async function replaceFile(
     fileId: string,
@@ -389,6 +430,9 @@ export function createDerived(deps: DerivedDeps) {
     if (detectKind(file.originalName, await readFirstBytes(tmpPath), size) !== kind) {
       throw new DerivedError("wrong_type", WRONG_TYPE_MESSAGE[kind]);
     }
+    // One the renderer would refuse could never render, and a render error
+    // swaps a replacement in, so it is refused here, before anything is stored.
+    if (size > BODY_LIMIT[kind]) throw new DerivedError("too_large", TOO_LARGE_MESSAGE[kind]);
 
     const blobId = uuidv7();
     const key = blobKey(file.modelId, blobId);
@@ -722,9 +766,36 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /**
+   * Sends the job again, to start after a wait, for a slicer that was down
+   * (SlicerDown), and returns the outcome that completes this one. The new
+   * job has the retries this one had left, so a wait never hands a job a
+   * fresh set.
+   */
+  async function waitForSlicer(
+    job: DerivedJob,
+    attempt: { retryCount: number; retryLimit: number },
+    error: SlicerDown,
+  ): Promise<DerivedOutcome> {
+    const waits = job.waits ?? 0;
+    const startAfter = Math.min(retry.retryDelay * 2 ** waits, SLICER_DOWN_MAX_WAIT_SECONDS);
+    const next: DerivedJob = { ...job, waits: waits + 1 };
+    const id = await deps.queue.send(QUEUE.slicer, next, {
+      ...retry,
+      retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
+      startAfter,
+    });
+    if (id === null) throw new Error("pg-boss created no job");
+    console.warn(
+      `derived: file ${job.fileId} waits for the slicer, asking again in ${startAfter} s: ${error.message}`,
+    );
+    return { status: "requeued", reason: "slicer_down" };
+  }
+
+  /**
    * Runs one render or mesh job (the slicer queue's worker calls this).
    * Throws only to have pg-boss retry: on a 409 busy, a lost connection or a
-   * store outage before the last attempt, or an unexpected error.
+   * store outage before the last attempt, or an unexpected error. A slicer
+   * that is down sends the job again instead (waitForSlicer).
    */
   async function runJob(
     job: DerivedJob,
@@ -764,6 +835,9 @@ export function createDerived(deps: DerivedDeps) {
         if (replacing) await discardStaged(source.id);
         return stale;
       }
+      // Not the file's doing and not a retry: nothing is recorded, and the
+      // previous version of a replacement stays until it renders.
+      if (error instanceof SlicerDown) return waitForSlicer(job, attempt, error);
       if (error instanceof RenderFailed) {
         try {
           await commitRenderError(job.kind, file, source, replacing, error.message);

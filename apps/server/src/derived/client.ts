@@ -3,7 +3,10 @@
 // no retry here: what went wrong is reported as one of the errors below, and
 // the job decides (derived.ts). A 409 busy or a lost connection is
 // retryable, and pg-boss retries the job under its own settings
-// (SLICER_RETRY); a 422 is the program's own answer and final.
+// (SLICER_RETRY); a 422 is the program's own answer and final. A slicer
+// that takes no connection, or answers that OpenSCAD renders are off
+// because its sandbox self-test failed, is SlicerDown: not the file's
+// doing, so the job waits for the slicer without using a retry.
 import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
@@ -63,6 +66,54 @@ export class SlicerUnreachable extends Error {
   constructor(route: string, cause: unknown) {
     super(`The slicer could not be reached (${route})`, { cause });
     this.name = "SlicerUnreachable";
+  }
+}
+
+/**
+ * The start of the 422 render_failed message the slicer sends when its
+ * OpenSCAD sandbox self-test failed (apps/slicer/src/server.ts): renders are
+ * off on the slicer, which says nothing about the file. Contract v1 gives
+ * it no error code of its own, so the message is matched; a test pins it to
+ * the slicer's source.
+ */
+export const SANDBOX_OFF_PREFIX = "OpenSCAD renders are off:";
+
+/**
+ * The network codes that mean no connection was made at all: the slicer is
+ * stopped, restarting or not on the network, and never saw the request.
+ * The same set as Task 12's (estimates/client.ts).
+ */
+const NO_CONNECTION_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "EHOSTDOWN",
+  "ENETUNREACH",
+  "ENETDOWN",
+]);
+
+/** The no-connection code in a fetch rejection or its causes, if there is one. */
+function noConnectionCode(error: unknown): string | undefined {
+  let e: unknown = error;
+  for (let depth = 0; depth < 5 && e instanceof Error; depth += 1) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && NO_CONNECTION_CODES.has(code)) return code;
+    e = e.cause;
+  }
+  return undefined;
+}
+
+/**
+ * The slicer cannot render right now, and the file is not why: it took no
+ * connection (stopped, restarting or being re-pulled), or it answered that
+ * OpenSCAD renders are off because its sandbox self-test failed. Not a
+ * pg-boss retry: the job waits for the slicer without using one (runJob).
+ */
+export class SlicerDown extends Error {
+  constructor(route: string, detail: string) {
+    super(`The slicer cannot render now (${route}): ${detail}`);
+    this.name = "SlicerDown";
   }
 }
 
@@ -156,6 +207,8 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
     type = mediaType(res.headers.get("content-type"));
     bytes = Buffer.from(await res.arrayBuffer());
   } catch (error) {
+    const code = noConnectionCode(error);
+    if (code !== undefined) throw new SlicerDown(req.route, `no connection (${code})`);
     throw new SlicerUnreachable(req.route, error);
   } finally {
     settled = true;
@@ -187,6 +240,9 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
         req.refusal === "render" ? slicerContract.renderError : slicerContract.convertError;
       const refusal = schema.safeParse(parsed);
       if (!refusal.success) throw new SlicerFault(req.route, "422 outside the contract");
+      if (req.refusal === "render" && refusal.data.message.startsWith(SANDBOX_OFF_PREFIX)) {
+        throw new SlicerDown(req.route, refusal.data.message);
+      }
       throw new RenderFailed(refusal.data.message);
     }
     default:

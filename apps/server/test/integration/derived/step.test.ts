@@ -5,10 +5,13 @@
 // packages/slicer-contract) and stores the GLB as a new mesh_glb blob, which
 // is all the browser ever loads for a STEP file.
 import { randomBytes } from "node:crypto";
+import { truncate } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { LIMITS } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   DERIVED_KINDS,
+  DerivedError,
   type DerivedJob,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
@@ -125,6 +128,33 @@ describe("STEP meshes (AC-050)", () => {
     for (const old of oldBlobs) {
       await expect(env.store.getBlobStream(old.key)).rejects.toBeInstanceOf(BlobNotFound);
     }
+  });
+
+  test("replaceFile refuses a STEP file over the converter's 256 MiB limit and stores nothing", async () => {
+    const { modelId, fileId } = await uploadStep(uniqueStep("too large"));
+    const before = await settledFile(env, fileId);
+    const keys = await keysOf(env, modelId);
+    const jobCount = (await env.boss.findJobs(QUEUE.slicer, { data: { fileId } })).length;
+    // A real STEP header, then extended past the limit without writing the
+    // bytes (a sparse file), since nothing is meant to read them.
+    const path = await writeUpload(env, uniqueStep("too large replacement"));
+    await truncate(path, LIMITS.stepBodyBytes + 1);
+
+    const error = await env.derived.replaceFile(fileId, path).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(DerivedError);
+    expect((error as DerivedError).code).toBe("too_large");
+    expect((error as DerivedError).message).toMatch(/256 MiB/);
+    expect(await keysOf(env, modelId)).toEqual(keys);
+    expect(await env.boss.findJobs(QUEUE.slicer, { data: { fileId } })).toHaveLength(jobCount);
+    expect(env.stub.renders.calls).toHaveLength(0);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "ok",
+    });
   });
 
   test("an .stl upload queues nothing and never reaches the slicer", async () => {
