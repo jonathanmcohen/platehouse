@@ -765,7 +765,7 @@ describe("a store that answers and refuses (issue #102)", () => {
     expect(await readObject(env, await sourceKeyOf(file.blobId))).toEqual(Buffer.from(text));
   });
 
-  test("a GetObject that answers 500 before the last attempt is left to pg-boss to retry", async () => {
+  test("a GetObject that answers 500 is left to pg-boss to retry, and only the last attempt records the storage message", async () => {
     const { fileId } = await storeScad(unique("store answers 500, early attempt"));
     const file = await env.repos.files.get(fileId);
     if (!file) throw new Error("no file");
@@ -774,12 +774,27 @@ describe("a store that answers and refuses (issue #102)", () => {
       store: await refusingStore({ reads: s3Error(500, "InternalError") }),
     });
 
-    await expect(
-      refusing.runJob(job, { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit }),
-    ).rejects.toBeInstanceOf(StoreError);
-    const after = await env.repos.files.get(fileId);
-    expect(after?.derivedStatus).not.toBe("failed");
-    expect(after?.derivedMessage).toBeNull();
+    for (const retryCount of [0, SLICER_RETRY.retryLimit - 1]) {
+      await expect(
+        refusing.runJob(job, { retryCount, retryLimit: SLICER_RETRY.retryLimit }),
+      ).rejects.toBeInstanceOf(StoreError);
+      const waiting = await env.repos.files.get(fileId);
+      expect(waiting?.derivedStatus).not.toBe("failed");
+      expect(waiting?.derivedMessage).toBeNull();
+    }
+
+    // The last attempt settles the file, so nothing is left for the render
+    // check to find.
+    expect(
+      await refusing.runJob(job, {
+        retryCount: SLICER_RETRY.retryLimit,
+        retryLimit: SLICER_RETRY.retryLimit,
+      }),
+    ).toEqual({ status: "failed", reason: "store_refused" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: STORE_REFUSED_MESSAGE,
+    });
   });
 
   test("a replacement whose GetObject answers 500 on the last attempt keeps the previous version and discards the staged source", async () => {
