@@ -332,7 +332,7 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
     expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
     const jobs = await jobsFor(fileId);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0]?.data).toEqual({ ...job, waits: 1 });
+    expect(jobs[0]?.data).toMatchObject({ ...job, waits: 1 });
     // The outage used no retry, and the one used before it stays used.
     expect(jobs[0]?.retryLimit).toBe(SLICER_RETRY.retryLimit - 1);
   });
@@ -381,6 +381,160 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
     );
     expect(waits.length).toBeGreaterThanOrEqual(3);
     expect(jobs.every((j) => j.retryCount === 0)).toBe(true);
+  });
+});
+
+/** How long a job waits for a slicer that is down before the render ends. */
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const SLICER_DOWN_MESSAGE =
+  "The slicer is not answering. The render will need to be started again.";
+const REPLACE_SLICER_DOWN_MESSAGE =
+  "The slicer is not answering, so the previous version is kept. The replacement will need to be sent again.";
+const LIVE = new Set(["created", "retry", "active"]);
+
+/** DerivedDeps.now: a clock the test moves by hand. */
+function clocked(now: () => Date): Partial<DerivedDeps> {
+  return { now } as unknown as Partial<DerivedDeps>;
+}
+
+/**
+ * A queue that holds each job an hour, with the retries it was sent with,
+ * so the env's worker leaves it for the test to run.
+ */
+function holdingQueue(): DerivedDeps["queue"] {
+  const send: PgBoss["send"] = async (...args: unknown[]) => {
+    const [name, data, options] = args as [string, object, Record<string, unknown>];
+    return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+      ...options,
+      startAfter: 3600,
+    });
+  };
+  return { send, findJobs: env.boss.findJobs.bind(env.boss) };
+}
+
+/**
+ * Takes the file's one held job off the queue and runs it with derived, as
+ * the worker would on its first attempt.
+ */
+async function runHeld(fileId: string, derived: ReturnType<typeof createDerived>) {
+  const held = (await jobsFor(fileId)).filter((j) => j.state === "created");
+  expect(held).toHaveLength(1);
+  const job = held[0];
+  if (!job) throw new Error("no held job");
+  await env.boss.cancel(QUEUE.slicer, job.id);
+  return derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+}
+
+describe("a slicer that stays down (issue #100)", () => {
+  test("a replacement whose slicer refuses connections for more than 2 hours ends failed, keeps the previous version and drops its staged source", async () => {
+    const { modelId, fileId } = await uploadScad(unique("down for good"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    const oldKeys = await keysOf(env, modelId);
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const refused = await nothingListening();
+    // A fresh createDerived for each run, as after a restart: only what the
+    // job itself carries is kept between runs.
+    const down = () =>
+      derivedWith({ slicerUrl: refused, queue: holdingQueue(), ...clocked(clock) });
+    const staged = await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("never renders")),
+    );
+    const stagedBlob = (await blobsOf(env, modelId)).find((b) => b.id === staged.sourceBlobId);
+    if (!stagedBlob) throw new Error("no staged source row");
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "slicer_down" });
+    // Just inside 2 hours of the first refusal, the job still waits.
+    now += TWO_HOURS_MS - 60_000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "slicer_down" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
+
+    // Past 2 hours, the render ends.
+    now += 2 * 60_000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "slicer_down" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: REPLACE_SLICER_DOWN_MESSAGE,
+    });
+    // The staged source's row and object are gone; the previous version is whole.
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
+    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
+
+    // It stopped waiting, and the wait used none of the job's retries.
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
+    const replacementJobs = jobs.filter((j) => j.data.sourceBlobId === staged.sourceBlobId);
+    expect(replacementJobs).toHaveLength(3);
+    expect(replacementJobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
+  });
+
+  test("a render whose slicer refuses connections for more than 2 hours ends failed with a plain message", async () => {
+    const { fileId } = await storeScad(unique("first render, down for good"));
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const refused = await nothingListening();
+    const down = () =>
+      derivedWith({ slicerUrl: refused, queue: holdingQueue(), ...clocked(clock) });
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "slicer_down" });
+    now += TWO_HOURS_MS + 1000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "slicer_down" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: SLICER_DOWN_MESSAGE,
+      renderStlBlobId: null,
+      renderPngBlobId: null,
+    });
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
+    expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
+  });
+
+  test("a slicer that answers again before 2 hours have passed renders the replacement normally", async () => {
+    const { modelId, fileId } = await uploadScad(unique("down for a while"));
+    const before = await settledFile(env, fileId);
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const refused = await nothingListening();
+    const second = unique("renders after the outage");
+    const staged = await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, second),
+    );
+
+    const down = derivedWith({ slicerUrl: refused, queue: holdingQueue(), ...clocked(clock) });
+    expect(await runHeld(fileId, down)).toEqual({ status: "requeued", reason: "slicer_down" });
+
+    // The slicer is back just before the 2 hours are up.
+    now += TWO_HOURS_MS - 60_000;
+    const back = derivedWith({ queue: holdingQueue(), ...clocked(clock) });
+    expect(await runHeld(fileId, back)).toEqual({ status: "ok" });
+    const after = await env.repos.files.get(fileId);
+    expect(after).toMatchObject({
+      blobId: staged.sourceBlobId,
+      derivedStatus: "ok",
+      derivedMessage: null,
+    });
+    expect(after?.renderStlBlobId).not.toBe(before.renderStlBlobId);
+    const byId = new Map((await blobsOf(env, modelId)).map((b) => [b.id, b]));
+    expect(await readObject(env, byId.get(after?.renderStlBlobId ?? "")?.key ?? "")).toEqual(
+      renderedBytes("/v1/scad/stl", second),
+    );
+
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
+    expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
   });
 });
 
