@@ -88,17 +88,17 @@ function memoryStore() {
 
 /**
  * A database whose every query is answered by answer (a result, or an error
- * to throw), or, with answer null, one that refuses every connection. With
- * failCommit, every query succeeds as answered but COMMIT loses the
- * connection.
+ * to throw), given the statement and its parameters, or, with answer null,
+ * one that refuses every connection. With failCommit, every query succeeds
+ * as answered but COMMIT loses the connection.
  */
 function scriptedDb(
-  answer: ((sql: string) => QueryResult<unknown> | Error) | null,
+  answer: ((sql: string, parameters: readonly unknown[]) => QueryResult<unknown> | Error) | null,
   { failCommit = false } = {},
 ): Kysely<DB> {
   const connection: DatabaseConnection = {
     async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
-      const result = answer?.(query.sql) ?? new Error("no answer");
+      const result = answer?.(query.sql, query.parameters) ?? new Error("no answer");
       if (result instanceof Error) throw result;
       return result as QueryResult<R>;
     },
@@ -374,6 +374,58 @@ describe("only a commit whose outcome is not known is IngestOutcomeUnknown", () 
       }),
     );
     expectNothingSaved(error, "Connection terminated unexpectedly");
+    expect(held.size).toBe(0);
+  });
+});
+
+describe("a file id the caller chooses", () => {
+  // The inbox watcher (inbox/watch.ts) chooses the id so that, after a lost
+  // answer, it can look up its own row and no other.
+  test("is the file row's id and the id ingest answers with", async () => {
+    const chosen = uuidv7();
+    const inserts: unknown[][] = [];
+    const db = scriptedDb((sql, parameters) => {
+      if (/pg_current_xact_id/.test(sql)) return { rows: [{ xid: "4242" }] };
+      if (/insert into "files"/.test(sql)) inserts.push([...parameters]);
+      return { rows: [{}] };
+    });
+    const { store } = memoryStore();
+    const result = await createIngest({ db, store }).ingestFile({
+      tmpPath: await upload(ASCII_STL),
+      originalName: "Chosen.stl",
+      target: "new",
+      fileId: chosen,
+    });
+    expect(result.fileId).toBe(chosen);
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]?.[0]).toBe(chosen);
+  });
+
+  test("is the id answered when the commit's answer was lost but it committed", async () => {
+    const chosen = uuidv7();
+    const { store } = memoryStore();
+    const result = await createIngest({ db: lostAtCommit("committed"), store }).ingestFile({
+      tmpPath: await upload(ASCII_STL),
+      originalName: "Chosen committed.stl",
+      target: "new",
+      fileId: chosen,
+    });
+    expect(result.fileId).toBe(chosen);
+  });
+
+  test("that is not a UUID is refused before anything is stored", async () => {
+    const { store, held } = memoryStore();
+    const error = await failure(
+      createIngest({ db: lostAtCommit("committed"), store }).ingestFile({
+        tmpPath: await upload(ASCII_STL),
+        originalName: "Bad id.stl",
+        target: "new",
+        fileId: "not-a-uuid",
+      }),
+    );
+    expect(error).toBeInstanceOf(IngestError);
+    expect((error as IngestError).code).toBe("ingest_failed");
+    expect((error as IngestError).cause).toBeInstanceOf(TypeError);
     expect(held.size).toBe(0);
   });
 });

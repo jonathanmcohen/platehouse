@@ -129,48 +129,43 @@ describe("files and plates", () => {
     expect(await repos.files.get("not-a-uuid")).toBeUndefined();
   });
 
-  test("files.findImported finds a file by original name, size and SHA-256 written since a time", async () => {
+  test("files.findImported finds a file by its id, with its model, and nothing else", async () => {
     const { file, modelId } = await seedFile(repos);
-    // Ingest stores a display name that can differ from the name as uploaded.
-    await t.db
-      .updateTable("files")
-      .set({ name: "Renamed by ingest.3mf" })
-      .where("id", "=", file.id)
-      .execute();
-    const query = {
+    expect(await repos.files.findImported({ fileId: file.id })).toEqual({
+      modelId,
+      fileId: file.id,
+      live: true,
+    });
+    // Another row with the same original name, size and SHA-256, as an upload
+    // of the same file through the UI or the API would write: it is a row of
+    // its own and never answers for the first one's id, nor the first for it.
+    const other = await repos.models.create({ name: "Same file, uploaded" });
+    const blob = await repos.blobs.insertPending({
+      modelId: other.id,
+      kind: "source",
+      contentType: "model/3mf",
+    });
+    const twin = await repos.files.create({
+      modelId: other.id,
+      blobId: blob.id,
+      name: file.name,
       originalName: file.originalName,
+      kind: "3mf",
       size: file.size,
       sha256: file.sha256,
-      since: file.createdAt,
-    };
-
-    expect(await repos.files.findImported(query)).toEqual({ modelId, fileId: file.id });
-    // Matched on original_name, never on name.
-    expect(
-      await repos.files.findImported({ ...query, originalName: "Renamed by ingest.3mf" }),
-    ).toBeUndefined();
-    expect(await repos.files.findImported({ ...query, size: file.size + 1 })).toBeUndefined();
-    expect(
-      await repos.files.findImported({ ...query, sha256: sha256Of("other bytes") }),
-    ).toBeUndefined();
-    // A row written before since is an earlier import, not this one.
-    expect(
-      await repos.files.findImported({
-        ...query,
-        since: new Date(file.createdAt.getTime() + 1000),
-      }),
-    ).toBeUndefined();
+    });
+    expect(await repos.files.findImported({ fileId: file.id })).toMatchObject({ modelId });
+    expect(await repos.files.findImported({ fileId: twin.id })).toMatchObject({
+      modelId: other.id,
+    });
+    // An id with no row, and text that is not a UUID, find nothing.
+    expect(await repos.files.findImported({ fileId: uuidv7() })).toBeUndefined();
+    expect(await repos.files.findImported({ fileId: "not-a-uuid" })).toBeUndefined();
   });
 
-  test("files.findImported skips a file whose model is in the trash or being purged", async () => {
+  test("files.findImported says when a file's model is in the trash or being purged", async () => {
     const { file, modelId } = await seedFile(repos);
-    const query = {
-      originalName: file.originalName,
-      size: file.size,
-      sha256: file.sha256,
-      since: file.createdAt,
-    };
-    expect(await repos.files.findImported(query)).toEqual({ modelId, fileId: file.id });
+    expect(await repos.files.findImported({ fileId: file.id })).toMatchObject({ live: true });
 
     // Trashed: an Empty trash or the 30-day purge deletes its stored bytes.
     await t.db
@@ -178,7 +173,11 @@ describe("files and plates", () => {
       .set({ trashedAt: new Date() })
       .where("id", "=", modelId)
       .execute();
-    expect(await repos.files.findImported(query)).toBeUndefined();
+    expect(await repos.files.findImported({ fileId: file.id })).toEqual({
+      modelId,
+      fileId: file.id,
+      live: false,
+    });
 
     // A purge that began: restore refuses it, and its objects may be gone.
     await t.db
@@ -186,40 +185,7 @@ describe("files and plates", () => {
       .set({ purgeStartedAt: new Date() })
       .where("id", "=", modelId)
       .execute();
-    expect(await repos.files.findImported(query)).toBeUndefined();
-  });
-
-  test("files.findImported passes over a trashed copy to the live one", async () => {
-    const { file: trashed, modelId: trashedModel } = await seedFile(repos);
-    await t.db
-      .updateTable("models")
-      .set({ trashedAt: new Date() })
-      .where("id", "=", trashedModel)
-      .execute();
-    // The same name and bytes imported again, as a model of its own.
-    const live = await repos.models.create({ name: "Live copy" });
-    const blob = await repos.blobs.insertPending({
-      modelId: live.id,
-      kind: "source",
-      contentType: "model/3mf",
-    });
-    const file = await repos.files.create({
-      modelId: live.id,
-      blobId: blob.id,
-      name: trashed.name,
-      originalName: trashed.originalName,
-      kind: "3mf",
-      size: trashed.size,
-      sha256: trashed.sha256,
-    });
-    expect(
-      await repos.files.findImported({
-        originalName: trashed.originalName,
-        size: trashed.size,
-        sha256: trashed.sha256,
-        since: trashed.createdAt,
-      }),
-    ).toEqual({ modelId: live.id, fileId: file.id });
+    expect(await repos.files.findImported({ fileId: file.id })).toMatchObject({ live: false });
   });
 
   test("plates are listed in plate order", async () => {

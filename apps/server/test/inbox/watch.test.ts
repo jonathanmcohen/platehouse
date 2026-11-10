@@ -29,12 +29,15 @@ import {
   CHANGED_REASON,
   createInboxWatcher,
   FAILED_DIR,
+  type ImportedFile,
   type ImportedQuery,
   type InboxProbes,
+  inboxFileId,
   inboxName,
   inboxProbes,
   isIgnoredName,
   MAX_INBOX_BYTES,
+  MAX_INBOX_IDS,
   NON_UTF8_REASON,
   REASON_SUFFIX,
   repeatedErrorReason,
@@ -80,39 +83,58 @@ type Behaviour = (input: IngestInput) => Promise<void> | void;
 
 /**
  * An ingest that records each call and, unless told otherwise, "stores" the
- * file: it reads the bytes and remembers their size and SHA-256 under a new
- * file id, as ingestFile does.
+ * file: it reads the bytes and remembers their size and SHA-256 under the
+ * file id the caller chose (a new one when none was), as ingestFile does.
+ * models holds each stored file's model, as the files table would.
  */
 function fakeIngest(behaviour: Behaviour = () => undefined) {
   const calls: string[] = [];
+  const ids: Array<string | undefined> = [];
   const stored = new Map<string, { size: number; sha256: Buffer }>();
+  const models = new Map<string, string>();
   let n = 0;
   return {
     calls,
+    ids,
     stored,
+    models,
     ingest: {
       async ingestFile(input: IngestInput) {
         calls.push(input.originalName);
+        ids.push(input.fileId);
         expect(input.target).toBe("new");
         await behaviour(input);
         const bytes = await readFile(input.tmpPath);
         n += 1;
-        const fileId = `file-${n}`;
+        const fileId = input.fileId ?? `file-${n}`;
+        const modelId = `model-${n}`;
         stored.set(fileId, { size: bytes.length, sha256: sha256(bytes) });
-        return { modelId: `model-${n}`, fileId };
+        models.set(fileId, modelId);
+        return { modelId, fileId };
       },
     },
   };
 }
 
-/** The fake's stored file with this size and SHA-256, as files.findImported finds a row. */
-function storedMatch(fake: ReturnType<typeof fakeIngest>, file: ImportedQuery) {
-  for (const [fileId, stored] of fake.stored) {
-    if (stored.size === file.size && stored.sha256.equals(file.sha256)) {
-      return { modelId: `model-${fileId.slice(5)}`, fileId };
-    }
-  }
-  return undefined;
+/** The fake's file row with the id asked about, as files.findImported finds it. */
+function storedRow(
+  fake: ReturnType<typeof fakeIngest>,
+  q: ImportedQuery,
+): ImportedFile | undefined {
+  const modelId = fake.models.get(q.fileId);
+  return modelId === undefined ? undefined : { modelId, fileId: q.fileId, live: true };
+}
+
+/**
+ * The id the watcher chooses for an inbox file as it is now on disk, its
+ * ctime read as the watcher reads it (a bigint lstat, truncated to the
+ * millisecond).
+ */
+async function inboxIdOf(name: string, attempt = 0): Promise<string> {
+  const path = join(inbox, name);
+  const bytes = await readFile(path);
+  const { ctime } = await lstat(path, { bigint: true });
+  return inboxFileId({ name, size: bytes.length, sha256: sha256(bytes), arrived: ctime, attempt });
 }
 
 function watcher(
@@ -162,6 +184,7 @@ describe("settle window", () => {
     const fake = fakeIngest();
     const w = watcher(fake);
     await writeFile(join(inbox, "cube.stl"), "solid cube\nendsolid cube\n");
+    const id = await inboxIdOf("cube.stl");
 
     await w.pollOnce();
     await tick(w, 5_000);
@@ -169,7 +192,7 @@ describe("settle window", () => {
     expect(fake.calls).toEqual([]);
     const pass = await tick(w, 1);
     expect(fake.calls).toEqual(["cube.stl"]);
-    expect(pass.imported).toEqual([{ name: "cube.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(pass.imported).toEqual([{ name: "cube.stl", modelId: "model-1", fileId: id }]);
     expect(await exists(join(inbox, "cube.stl"))).toBe(false);
   });
 
@@ -576,17 +599,18 @@ describe("outages", () => {
     const w = watcher(fake, {
       probes,
       findImported: async (file) => {
-        lookups.push(file.originalName);
+        lookups.push(file.fileId);
         if (down) throw refused();
         return undefined;
       },
     });
     await writeFile(join(inbox, "b.stl"), "solid b\nendsolid b\n");
+    const b = await inboxIdOf("b.stl");
     await w.pollOnce();
     const first = await tick(w, 15_000);
     expect(first.waiting).toBe(true);
     // The database was asked first and did not answer: nothing was uploaded.
-    expect(lookups).toEqual(["b.stl"]);
+    expect(lookups).toEqual([b]);
     expect(fake.calls).toEqual([]);
 
     // a.stl settles during the outage; it sorts first, so it is tried first.
@@ -597,7 +621,7 @@ describe("outages", () => {
     }
     // No file is tried until a check passes: no question, no upload.
     expect(fake.calls).toEqual([]);
-    expect(lookups).toEqual(["b.stl"]);
+    expect(lookups).toEqual([b]);
     expect(lines.filter((l) => l.includes("not answering"))).toHaveLength(1);
 
     // Checks failed at +5 s and +15 s; the next is due at +35 s.
@@ -627,7 +651,7 @@ describe("outages", () => {
       ingest,
       findImported: async (file) => {
         asked.push(file);
-        return storedMatch(fake, file);
+        return storedRow(fake, file);
       },
     });
     const bytes = Buffer.from("solid lost\nendsolid lost\n");
@@ -637,42 +661,87 @@ describe("outages", () => {
     // millisecond, a bigint one truncates, so the two differ by 1 ms whenever
     // the sub-millisecond part is 0.5 ms or more.
     const arrived = (await lstat(path, { bigint: true })).ctime;
-    // Real time passes before the first poll, so a lower bound taken from the
-    // wall clock when the file is first seen cannot equal its ctime.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const id = inboxFileId({
+      name: "lost.stl",
+      size: bytes.length,
+      sha256: sha256(bytes),
+      arrived,
+      attempt: 0,
+    });
     await w.pollOnce();
     const first = await tick(w, 15_000);
     // The database answers the check, so this is one failed try for the file.
     expect(first.failed).toEqual([]);
     expect(await exists(path)).toBe(true);
+    // Ingest was asked to write its row under the id the watcher chose.
+    expect(fake.ids).toEqual([id]);
 
     const retry = await tick(w, 5_000);
     expect(fake.calls).toEqual(["lost.stl"]);
-    expect(retry.imported).toEqual([{ name: "lost.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(retry.imported).toEqual([{ name: "lost.stl", modelId: "model-1", fileId: id }]);
     expect(retry.failed).toEqual([]);
     expect(await exists(path)).toBe(false);
-    // Asked before the first attempt (nothing yet) and again before the retry.
-    expect(asked).toHaveLength(2);
-    for (const q of asked) {
-      expect(q.originalName).toBe("lost.stl");
-      expect(q.size).toBe(bytes.length);
-      expect(q.sha256.equals(sha256(bytes))).toBe(true);
-      // Only rows written since the file reached the inbox count.
-      expect(q.since.getTime()).toBe(arrived.getTime());
-    }
+    // Asked before the first attempt (nothing yet) and again before the
+    // retry, both times for the row under that id and no other.
+    expect(asked).toEqual([{ fileId: id }, { fileId: id }]);
+  });
+
+  test("the file id is the same for the same copy and differs for any change to it", () => {
+    const base = {
+      name: "part.3mf",
+      size: 10,
+      sha256: sha256(Buffer.from("ten bytes!")),
+      arrived: new Date(1_767_225_600_123),
+      attempt: 0,
+    };
+    const id = inboxFileId(base);
+    expect(inboxFileId({ ...base })).toBe(id);
+    // UUIDv7-shaped, lowercase, its time field the arrival.
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(Number.parseInt(id.replaceAll("-", "").slice(0, 12), 16)).toBe(1_767_225_600_123);
+    const others = [
+      inboxFileId({ ...base, name: "Part.3mf" }),
+      inboxFileId({ ...base, size: 11 }),
+      inboxFileId({ ...base, sha256: sha256(Buffer.from("other one!")) }),
+      inboxFileId({ ...base, arrived: new Date(1_767_225_600_124) }),
+      inboxFileId({ ...base, attempt: 1 }),
+    ];
+    expect(new Set([id, ...others]).size).toBe(6);
+  });
+
+  test("an upload of the same name and bytes while the inbox copy waits is not taken for its import", async () => {
+    // The web UI or the API (tus) stores the same file, under an id of its
+    // own, after the inbox copy arrived and before the watcher tries it.
+    const fake = fakeIngest();
+    const bytes = Buffer.from("solid twin\nendsolid twin\n");
+    const w = watcher(fake, { findImported: async (file) => storedRow(fake, file) });
+    await writeFile(join(inbox, "twin.stl"), bytes);
+    await w.pollOnce();
+    await fake.ingest.ingestFile({
+      tmpPath: join(inbox, "twin.stl"),
+      originalName: "twin.stl",
+      target: "new",
+    });
+    expect([...fake.stored.keys()]).toEqual(["file-1"]);
+
+    const pass = await tick(w, 15_000);
+    // The inbox copy made a model of its own, and no line claims otherwise.
+    expect(fake.calls).toEqual(["twin.stl", "twin.stl"]);
+    expect(pass.imported).toEqual([
+      { name: "twin.stl", modelId: "model-2", fileId: expect.not.stringMatching(/^file-1$/) },
+    ]);
+    expect(lines.filter((l) => l.includes("already imported"))).toEqual([]);
   });
 
   test("a metadata change between a lost answer and the retry does not make a second model", async () => {
     // chmod, chown or an xattr write (Samba storing a Finder xattr when the
-    // share is opened) moves the file's ctime past the landed row's
-    // created_at; the retry must still find the row.
+    // share is opened) moves the file's ctime; the retry must still ask for
+    // the id the first attempt used.
     const fake = fakeIngest();
-    const created = new Map<string, Date>();
     let lost = true;
     const ingest = {
       async ingestFile(input: IngestInput) {
         const result = await fake.ingest.ingestFile(input);
-        created.set(result.fileId, new Date());
         if (lost) {
           lost = false;
           throw new Error("Connection terminated unexpectedly");
@@ -680,57 +749,41 @@ describe("outages", () => {
         return result;
       },
     };
-    const w = watcher(fake, {
-      ingest,
-      findImported: async (file) => {
-        const found = storedMatch(fake, file);
-        const at = found === undefined ? undefined : created.get(found.fileId);
-        return at !== undefined && at >= file.since ? found : undefined;
-      },
-    });
+    const w = watcher(fake, { ingest, findImported: async (file) => storedRow(fake, file) });
     const path = join(inbox, "touched.stl");
     await writeFile(path, "solid touched\nendsolid touched\n");
+    const id = await inboxIdOf("touched.stl");
     await w.pollOnce();
     const first = await tick(w, 15_000);
     expect(first.failed).toEqual([]);
+    expect(fake.ids).toEqual([id]);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     await chmod(path, 0o600);
-    const landed = created.get("file-1");
-    expect(landed).toBeDefined();
-    // Truncated, as the watcher would read it afresh, so a rounded value 1 ms
-    // higher cannot make the gap look real when it is not.
-    expect((await lstat(path, { bigint: true })).ctime.getTime()).toBeGreaterThan(
-      landed?.getTime() ?? 0,
-    );
+    // Read afresh, the ctime would now give another id.
+    expect(await inboxIdOf("touched.stl")).not.toBe(id);
 
     const retry = await tick(w, 5_000);
     expect(fake.calls).toEqual(["touched.stl"]);
-    expect(retry.imported).toEqual([{ name: "touched.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(retry.imported).toEqual([{ name: "touched.stl", modelId: "model-1", fileId: id }]);
     expect(await exists(path)).toBe(false);
   });
 
   test("a commit whose answer was lost before a restart is found by the next process, not imported twice", async () => {
     // Everything the watcher keeps in memory goes with the process; what the
-    // lost commit wrote stays in the database. created holds each stored
-    // file's created_at, as the files table would.
+    // lost commit wrote stays in the database, as the fake's rows do.
     const fake = fakeIngest();
-    const created = new Map<string, Date>();
     const lostAnswer = {
       async ingestFile(input: IngestInput) {
-        const result = await fake.ingest.ingestFile(input);
-        created.set(result.fileId, new Date());
+        await fake.ingest.ingestFile(input);
         throw new Error("Connection terminated unexpectedly");
       },
     };
-    const findImported = async (file: ImportedQuery) => {
-      const found = storedMatch(fake, file);
-      const at = found === undefined ? undefined : created.get(found.fileId);
-      return at !== undefined && at >= file.since ? found : undefined;
-    };
+    const findImported = async (file: ImportedQuery) => storedRow(fake, file);
     const bytes = Buffer.from("solid restart\nendsolid restart\n");
     const path = join(inbox, "restart.stl");
     await writeFile(path, bytes);
+    const id = await inboxIdOf("restart.stl");
 
     const before = watcher(fake, { ingest: lostAnswer, findImported });
     await before.pollOnce();
@@ -750,7 +803,7 @@ describe("outages", () => {
     });
     await after.pollOnce();
     const pass = await tick(after, 15_000);
-    expect(pass.imported).toEqual([{ name: "restart.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(pass.imported).toEqual([{ name: "restart.stl", modelId: "model-1", fileId: id }]);
     expect(pass.failed).toEqual([]);
     expect(fake.calls).toEqual(["restart.stl"]);
     expect(await exists(path)).toBe(false);
@@ -759,20 +812,58 @@ describe("outages", () => {
   test("the same file imported before it reached the inbox is imported again", async () => {
     const fake = fakeIngest();
     const bytes = Buffer.from("solid again\nendsolid again\n");
-    // A model made from the same name and bytes a minute before this copy.
+    // A model made from the same name and bytes a minute before this copy,
+    // under an id of its own.
     fake.stored.set("file-0", { size: bytes.length, sha256: sha256(bytes) });
-    const earlier = new Date(Date.now() - 60_000);
-    const w = watcher(fake, {
-      findImported: async (file) => {
-        const found = storedMatch(fake, file);
-        return found !== undefined && earlier >= file.since ? found : undefined;
-      },
-    });
+    fake.models.set("file-0", "model-0");
+    const w = watcher(fake, { findImported: async (file) => storedRow(fake, file) });
     await writeFile(join(inbox, "again.stl"), bytes);
+    const id = await inboxIdOf("again.stl");
     await w.pollOnce();
     const pass = await tick(w, 15_000);
     expect(fake.calls).toEqual(["again.stl"]);
-    expect(pass.imported).toEqual([{ name: "again.stl", modelId: "model-1", fileId: "file-1" }]);
+    expect(pass.imported).toEqual([{ name: "again.stl", modelId: "model-1", fileId: id }]);
+  });
+
+  test("a row under the copy's id whose model is in the trash is passed over for the next id", async () => {
+    // The lost answer's model was trashed before the retry: a purge deletes
+    // its bytes, so the copy gets a model of its own, under the next id.
+    const fake = fakeIngest();
+    const asked: string[] = [];
+    await writeFile(join(inbox, "trashed.stl"), "solid trashed\nendsolid trashed\n");
+    const first = await inboxIdOf("trashed.stl", 0);
+    const second = await inboxIdOf("trashed.stl", 1);
+    const w = watcher(fake, {
+      findImported: async (file) => {
+        asked.push(file.fileId);
+        if (file.fileId === first) return { modelId: "model-trashed", fileId: first, live: false };
+        return storedRow(fake, file);
+      },
+    });
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(asked).toEqual([first, second]);
+    expect(fake.ids).toEqual([second]);
+    expect(pass.imported).toEqual([{ name: "trashed.stl", modelId: "model-1", fileId: second }]);
+    expect(lines.filter((l) => l.includes("already imported"))).toEqual([]);
+  });
+
+  test(`after ${MAX_INBOX_IDS} ids all taken by trashed models, nothing is uploaded and the try counts against the file`, async () => {
+    const fake = fakeIngest();
+    let asked = 0;
+    const w = watcher(fake, {
+      findImported: async (file) => {
+        asked += 1;
+        return { modelId: "model-trashed", fileId: file.fileId, live: false };
+      },
+    });
+    await writeFile(join(inbox, "full.stl"), "solid full\nendsolid full\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(asked).toBe(MAX_INBOX_IDS);
+    expect(fake.calls).toEqual([]);
+    expect(pass.failed).toEqual([]);
+    expect(lines.some((l) => l.includes(`try 1 of ${STRIKES}`))).toBe(true);
   });
 
   test("after a storage outage the retry asks the database again before uploading", async () => {
@@ -785,17 +876,18 @@ describe("outages", () => {
     const w = watcher(fake, {
       probes,
       findImported: async (file) => {
-        lookups.push(file.originalName);
+        lookups.push(file.fileId);
         return undefined;
       },
     });
     await writeFile(join(inbox, "a.stl"), "solid a\nendsolid a\n");
+    const a = await inboxIdOf("a.stl");
     await w.pollOnce();
     await tick(w, 15_000);
     down = false;
     await tick(w, 5_000);
     expect(fake.calls).toEqual(["a.stl", "a.stl"]);
-    expect(lookups).toEqual(["a.stl", "a.stl"]);
+    expect(lookups).toEqual([a, a]);
     expect(await readdir(inbox)).toEqual([]);
   });
 });
@@ -1539,12 +1631,13 @@ describe("the size limit", () => {
       },
       storedFile: async () => undefined,
       findImported: async (q) => {
-        lookups.push(`${q.originalName}:${q.size}`);
+        lookups.push(q.fileId);
         return undefined;
       },
     });
     await sparse(join(inbox, "big.3mf"), MAX_INBOX_BYTES + 1);
     await sparse(join(inbox, "edge.3mf"), MAX_INBOX_BYTES);
+    const edge = await inboxIdOf("edge.3mf");
     await w.pollOnce();
     const pass = await tick(w, 15_000);
 
@@ -1556,7 +1649,8 @@ describe("the size limit", () => {
       `${TOO_LARGE_REASON}\n`,
     );
     expect(calls).toEqual(["edge.3mf"]);
-    expect(lookups).toEqual([`edge.3mf:${MAX_INBOX_BYTES}`]);
+    // Only edge.3mf was asked about, under the id of its own size and bytes.
+    expect(lookups).toEqual([edge]);
   });
 });
 

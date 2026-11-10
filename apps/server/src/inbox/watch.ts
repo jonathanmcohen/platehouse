@@ -111,33 +111,35 @@
 // - A commit can land with its answer lost when the database connection drops
 //   (ingest then throws the connection error it met), and the process can
 //   restart before the file is tried again (a container recreate, a crash, a
-//   host reboot that stops Postgres mid-commit). So before every ingest the
-//   watcher asks findImported (repos files.findImported) for a file row with
-//   the same original name, size and SHA-256 created since the file reached
-//   the inbox: its ctime, which a copy, a move or a rename sets, unlike its
-//   mtime, and which survives a restart because it is on disk. ctime also
-//   moves on any metadata change (chmod, chown, an xattr or ACL write such as
-//   Samba storing a Finder xattr, a link-count change), so the watcher takes
-//   it when a poll first sees the file's size, mtime and inode and keeps that
-//   value while they stay the same: a metadata change during an outage does
-//   not move it. That memory is the process's own. After a restart the next
-//   process reads the ctime afresh, so a metadata change made after a lost
-//   answer and before a restart can still let the file be imported twice.
-//   Birth time is not used instead: a move within one filesystem keeps the
-//   inode and its birth time from before the file reached the inbox, so an
-//   earlier import of the same file would count and the new copy would be
-//   deleted without a model of its own. A row found is
-//   the import, so it is not made twice; the inbox copy is checked and
-//   deleted as after any import. An earlier import of the same file, before
-//   this copy arrived, does not count, nor does a row whose model is in the
-//   trash or being purged (an upload of the same file that was then
-//   trashed): a purge deletes its stored bytes, so this copy is imported as
-//   a model of its own. The created_at of the row is the
-//   database's clock and the ctime is the inbox host's, so the two must agree
-//   to within the settle window, which is the least time between a file's
-//   last change and its import's commit. The question comes before the
-//   upload, so a database that does not answer it stops the file before
-//   anything reaches the bucket.
+//   host reboot that stops Postgres mid-commit). So the watcher chooses the
+//   file row's id itself and passes it to ingest (inboxFileId): UUIDv7-shaped,
+//   derived from the file's name, size, SHA-256 and the time it reached the
+//   inbox, so the same copy gets the same id in this process and the next.
+//   Before every ingest it asks findImported (repos files.findImported) for
+//   the row under that id. Only an inbox attempt for this copy can have
+//   written it: an upload of the same name and bytes through the web UI or
+//   the API (tus) gets a random id, so it never stands in for the inbox copy,
+//   whenever it came. The arrival time is the file's ctime, which a copy, a
+//   move or a rename sets, unlike its mtime, and which survives a restart
+//   because it is on disk. ctime also moves on any metadata change (chmod,
+//   chown, an xattr or ACL write such as Samba storing a Finder xattr, a
+//   link-count change), so the watcher takes it when a poll first sees the
+//   file's size, mtime and inode and keeps that value while they stay the
+//   same: a metadata change during an outage does not move it. That memory
+//   is the process's own. After a restart the next process reads the ctime
+//   afresh, so a metadata change made after a lost answer and before a
+//   restart can still let the file be imported twice. Birth time is not used
+//   instead: a move within one filesystem keeps the inode and its birth time
+//   from before the file reached the inbox, so the same file moved in again
+//   after an earlier import would get that import's id and be deleted
+//   without a model of its own. A live row found is the
+//   import, so it is not made twice; the inbox copy is checked and deleted
+//   as after any import. A row under the id whose model is in the trash or
+//   being purged (the lost answer's model, trashed before the retry) does
+//   not count: a purge deletes its stored bytes, so this copy is imported as
+//   a model of its own under the next id (attempt 1, 2 and so on, up to
+//   MAX_INBOX_IDS). The question comes before the upload, so a database that
+//   does not answer it stops the file before anything reaches the bucket.
 //
 // No file is retried in a loop and none is dropped without a word. A file that
 // cannot be moved to failed (or whose inbox copy cannot be deleted after a
@@ -167,7 +169,7 @@ import {
   type IngestErrorCode,
   IngestOutcomeUnknown,
 } from "../ingest/ingest.js";
-import type { ImportedQuery } from "../repos/files.js";
+import type { ImportedFile, ImportedQuery } from "../repos/files.js";
 import { createRepos } from "../repos/index.js";
 import type { BlobStore } from "../storage/s3.js";
 import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
@@ -225,6 +227,45 @@ export const BACKOFF_FIRST_MS = 5_000;
 
 /** The longest wait between checks during an outage. */
 export const BACKOFF_MAX_MS = 300_000;
+
+/**
+ * How many file ids one inbox copy can go through (inboxFileId's attempt,
+ * 0 up): one more each time the row under the last one belongs to a model
+ * in the trash or being purged.
+ */
+export const MAX_INBOX_IDS = 100;
+
+/**
+ * The file row id an inbox attempt asks ingest to use for this copy of the
+ * file: UUIDv7-shaped (version 7, RFC 9562 variant), its time field the
+ * copy's arrival (its ctime when first seen) and every other bit from the
+ * SHA-256 of the name, size, SHA-256 and arrival time, with attempt (0 up)
+ * moving on past a row whose model was trashed. The same copy gives the same
+ * id in this process and in the next, so an attempt whose answer was lost is
+ * found by its id (files.findImported), and no row another path wrote can
+ * stand in for it: an upload through the web UI or the API gets a random id.
+ */
+export function inboxFileId(file: {
+  name: string;
+  size: number;
+  sha256: Buffer;
+  arrived: Date;
+  attempt: number;
+}): string {
+  const ms = file.arrived.getTime();
+  const b = createHash("sha256")
+    .update(
+      `platehouse-inbox-v1\0${file.name}\0${file.size}\0${file.sha256.toString("hex")}\0${ms}\0${file.attempt}`,
+      "utf8",
+    )
+    .digest();
+  // The time field when it fits in 48 bits (it always does for a real ctime).
+  if (Number.isInteger(ms) && ms >= 0 && ms < 2 ** 48) b.writeUIntBE(ms, 0, 6);
+  b[6] = 0x70 | ((b[6] ?? 0) & 0x0f);
+  b[8] = 0x80 | ((b[8] ?? 0) & 0x3f);
+  const hex = b.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 /** The reason a file takes when it failed STRIKES times while storage and the database answered. */
 export function repeatedErrorReason(error: unknown): string {
@@ -360,7 +401,7 @@ export interface StoredFile {
   sha256: Buffer;
 }
 
-export type { ImportedQuery };
+export type { ImportedFile, ImportedQuery };
 
 export interface InboxWatcherDeps {
   /** The inbox folder (INBOX_DIR); created when missing. */
@@ -371,12 +412,11 @@ export interface InboxWatcherDeps {
   /** The recorded size and SHA-256 of a stored file (repos files.get). */
   storedFile: (fileId: string) => Promise<StoredFile | undefined>;
   /**
-   * The file row with this original name, size and SHA-256 created at or
-   * after since (files.created_at), whose model is neither in the trash nor
-   * being purged, if any (repos files.findImported). since is on the wall
-   * clock, never the injected settle clock.
+   * The file row with this id, if any, and whether its model is live, being
+   * neither in the trash nor purged (repos files.findImported). The ids
+   * asked about are inboxFileId's.
    */
-  findImported: (file: ImportedQuery) => Promise<{ modelId: string; fileId: string } | undefined>;
+  findImported: (file: ImportedQuery) => Promise<ImportedFile | undefined>;
   /** The environment checks run after an error that is not the file's own (inboxProbes). */
   probes: InboxProbes;
   /** How long each check may take; PROBE_TIMEOUT_MS when left out. */
@@ -714,29 +754,39 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   /**
    * The import this copy of the file already made, if any: an earlier
    * attempt, in this process or one before a restart, whose commit landed but
-   * whose answer was lost. The question fails while the database is down,
-   * which keeps the file from being uploaded.
+   * whose answer was lost, found by the id that attempt chose (inboxFileId).
+   * Otherwise the id the next attempt uses: the first one with no row, past
+   * any whose model is in the trash or being purged. The question fails
+   * while the database is down, which keeps the file from being uploaded.
    */
   async function earlierImport(
     name: string,
     path: string,
     entry: Seen,
     arrived: Date,
-  ): Promise<{ modelId: string; fileId: string } | undefined> {
+  ): Promise<{ found: { modelId: string; fileId: string } } | { fileId: string }> {
     entry.hash ??= await hashFile(path);
-    const found = await findImported({
-      originalName: name,
-      size: entry.hash.size,
-      sha256: entry.hash.sha256,
-      since: arrived,
-    });
-    if (found !== undefined) {
-      log(
-        `inbox: ${name} was already imported as model ${found.modelId} by an earlier attempt ` +
-          "whose answer was lost; it is not imported again",
-      );
+    for (let attempt = 0; attempt < MAX_INBOX_IDS; attempt += 1) {
+      const fileId = inboxFileId({
+        name,
+        size: entry.hash.size,
+        sha256: entry.hash.sha256,
+        arrived,
+        attempt,
+      });
+      const row = await findImported({ fileId });
+      if (row === undefined) return { fileId };
+      if (row.live) {
+        log(
+          `inbox: ${name} was already imported as model ${row.modelId} by an earlier attempt ` +
+            "whose answer was lost; it is not imported again",
+        );
+        return { found: { modelId: row.modelId, fileId: row.fileId } };
+      }
     }
-    return found;
+    throw new Error(
+      `every one of the ${MAX_INBOX_IDS} file ids for this copy belongs to a model in the trash`,
+    );
   }
 
   /**
@@ -795,9 +845,16 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     state.tried = true;
     let result: { modelId: string; fileId: string };
     try {
+      const earlier = await earlierImport(name, path, entry, arrived);
       result =
-        (await earlierImport(name, path, entry, arrived)) ??
-        (await ingest.ingestFile({ tmpPath: path, originalName: name, target: "new" }));
+        "found" in earlier
+          ? earlier.found
+          : await ingest.ingestFile({
+              tmpPath: path,
+              originalName: name,
+              target: "new",
+              fileId: earlier.fileId,
+            });
     } catch (error) {
       if (codeOf(faultOf(error)) === "ENOENT" && !(await exists(path))) {
         // Taken away while it was being read: nothing left to import or move.

@@ -236,6 +236,33 @@ describe("import", () => {
     const again = await tick(watcher, SETTLE_SECONDS);
     expect(again.imported).toEqual([]);
   });
+
+  test("an upload of the same name and bytes while the inbox copy settles does not stand in for it", async () => {
+    // The web UI or the API stores the same file as a model of its own after
+    // the inbox copy arrived; the inbox copy still makes its own model.
+    const watcher = watcherFor(env.ingest);
+    const bytes = build3mf({ plates: 1 });
+    const path = join(inbox, "Uploaded twice.3mf");
+    await writeFile(path, bytes);
+    const before = await footprint(env);
+    await watcher.pollOnce();
+
+    const elsewhere = join(env.dir, `upload-${randomBytes(4).toString("hex")}.tmp`);
+    await writeFile(elsewhere, bytes);
+    const upload = await env.ingest.ingestFile({
+      tmpPath: elsewhere,
+      originalName: "Uploaded twice.3mf",
+      target: "new",
+    });
+
+    const pass = await tick(watcher, SETTLE_SECONDS);
+    expect(pass.imported).toHaveLength(1);
+    expect(pass.imported[0]?.modelId).not.toBe(upload.modelId);
+    expect(pass.imported[0]?.fileId).not.toBe(upload.fileId);
+    expect((await footprint(env)).models).toBe(before.models + 2);
+    expect(lines.filter((l) => l.includes("already imported"))).toEqual([]);
+    expect(await exists(path)).toBe(false);
+  });
 });
 
 describe("failures", () => {
