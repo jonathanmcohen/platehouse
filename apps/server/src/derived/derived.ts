@@ -29,7 +29,15 @@
 // replacement keeps the previous version until it renders, and the new job
 // keeps the retries the old one had left, so a file that crashes the slicer
 // (a connection lost mid-render) still runs out of retries and cannot loop
-// through the restarts it causes.
+// through the restarts it causes. The wait has a limit, SLICER_DOWN_LIMIT_MS
+// (2 hours), counted from the job's first SlicerDown answer. The deadline
+// travels in the job's data (waitDeadline), so it holds across a restart.
+// The first SlicerDown answer after it ends the render as any other final
+// failure does: the file is marked failed with DERIVED_MESSAGES.slicerDown
+// (replaceSlicerDown for a replacement, whose staged source is discarded
+// and whose previous version is kept), no job is sent, and no retry is
+// used. Since a wait is at most 15 minutes, that is at most 15 minutes
+// past the limit.
 //
 // Replacing a file (replaceFile) stores the new source as a blob of its own,
 // next to the file's current one, and queues a job for it. The staged
@@ -134,11 +142,21 @@ export interface DerivedJob {
   sourceBlobId: string;
   /** How many times the job has been sent again to wait for a slicer that was down; 0 when left out. */
   waits?: number;
+  /**
+   * When the job stops waiting for a slicer that is down: an ISO time,
+   * SLICER_DOWN_LIMIT_MS after the job's first SlicerDown answer, carried by
+   * each job sent to wait. Left out until the first SlicerDown answer.
+   */
+  waitDeadline?: string;
 }
 
 /** What a job ends with, kept by pg-boss as its output. */
 export interface DerivedOutcome {
-  /** requeued: the slicer was down, and the same job was sent again to wait for it. */
+  /**
+   * requeued: the slicer was down, and the same job was sent again to wait
+   * for it. failed with slicer_down: the slicer stayed down past
+   * SLICER_DOWN_LIMIT_MS, and the job stopped waiting.
+   */
   status: "ok" | "failed" | "skipped" | "requeued";
   reason?: "render_failed" | "slicer_error" | "stale" | "slicer_down";
 }
@@ -192,6 +210,8 @@ export interface DerivedDeps {
   requestTimeoutMs?: number;
   /** The time a streamed body may take to send; RENDER_UPLOAD_TIMEOUT_MS when left out. */
   uploadTimeoutMs?: number;
+  /** The clock the slicer-down deadline is set and read by; the system clock when left out. */
+  now?: () => Date;
 }
 
 /**
@@ -221,6 +241,12 @@ export const CHECK_RENDERS_CRON = "*/15 * * * *";
  * again: 15 minutes. The waits start at the retry delay and double.
  */
 export const SLICER_DOWN_MAX_WAIT_SECONDS = 15 * 60;
+
+/**
+ * How long a render job waits for a slicer that is down, from its first
+ * SlicerDown answer, before the render ends failed: 2 hours.
+ */
+export const SLICER_DOWN_LIMIT_MS = 2 * 60 * 60 * 1000;
 
 /** What one run of the render check did. */
 export interface RenderCheckResult {
@@ -304,6 +330,7 @@ export function createDerived(deps: DerivedDeps) {
     ...SLICER_RETRY,
     ...(deps.retryDelaySeconds === undefined ? {} : { retryDelay: deps.retryDelaySeconds }),
   };
+  const clock = deps.now ?? (() => new Date());
 
   async function setStatus(
     fileId: string,
@@ -723,15 +750,17 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /**
-   * Records slicer_error, while the file still has the source the job started
-   * from; a replacement is dropped and the previous version kept.
+   * Records a final failure that is the slicer's, not the file's (slicer_error,
+   * or slicer_down past its limit), with message, while the file still has
+   * the source the job started from; a replacement is dropped and the
+   * previous version kept.
    */
   async function commitSlicerError(
     file: ModelFile,
     source: Blob,
     replacing: boolean,
+    message: string,
   ): Promise<void> {
-    const message = replacing ? DERIVED_MESSAGES.replaceFailed : DERIVED_MESSAGES.slicerError;
     await db.transaction().execute(async (trx) => {
       const row = await trx
         .selectFrom("files")
@@ -765,11 +794,23 @@ export function createDerived(deps: DerivedDeps) {
     return rows[0]?.newer ?? true;
   }
 
+  /** The job's slicer-down deadline in ms, or undefined when it has none (or none readable). */
+  function deadlineOf(job: DerivedJob): number | undefined {
+    const at = job.waitDeadline === undefined ? Number.NaN : Date.parse(job.waitDeadline);
+    return Number.isFinite(at) ? at : undefined;
+  }
+
+  /** Whether the job has waited for a slicer that is down past its deadline. */
+  function pastDeadline(job: DerivedJob): boolean {
+    const deadline = deadlineOf(job);
+    return deadline !== undefined && clock().getTime() > deadline;
+  }
+
   /**
    * Sends the job again, to start after a wait, for a slicer that was down
    * (SlicerDown), and returns the outcome that completes this one. The new
    * job has the retries this one had left, so a wait never hands a job a
-   * fresh set.
+   * fresh set, and the same deadline (set now, on the first wait).
    */
   async function waitForSlicer(
     job: DerivedJob,
@@ -778,7 +819,10 @@ export function createDerived(deps: DerivedDeps) {
   ): Promise<DerivedOutcome> {
     const waits = job.waits ?? 0;
     const startAfter = Math.min(retry.retryDelay * 2 ** waits, SLICER_DOWN_MAX_WAIT_SECONDS);
-    const next: DerivedJob = { ...job, waits: waits + 1 };
+    const waitDeadline = new Date(
+      deadlineOf(job) ?? clock().getTime() + SLICER_DOWN_LIMIT_MS,
+    ).toISOString();
+    const next: DerivedJob = { ...job, waits: waits + 1, waitDeadline };
     const id = await deps.queue.send(QUEUE.slicer, next, {
       ...retry,
       retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
@@ -836,8 +880,21 @@ export function createDerived(deps: DerivedDeps) {
         return stale;
       }
       // Not the file's doing and not a retry: nothing is recorded, and the
-      // previous version of a replacement stays until it renders.
-      if (error instanceof SlicerDown) return waitForSlicer(job, attempt, error);
+      // previous version of a replacement stays until it renders, unless the
+      // slicer has been down past the job's deadline, which ends the render.
+      if (error instanceof SlicerDown) {
+        if (!pastDeadline(job)) return waitForSlicer(job, attempt, error);
+        await commitSlicerError(
+          file,
+          source,
+          replacing,
+          replacing ? DERIVED_MESSAGES.replaceSlicerDown : DERIVED_MESSAGES.slicerDown,
+        );
+        console.error(
+          `derived: file ${file.id} stopped waiting for the slicer after its deadline ${job.waitDeadline}: ${describe(error)}`,
+        );
+        return { status: "failed", reason: "slicer_down" };
+      }
       if (error instanceof RenderFailed) {
         try {
           await commitRenderError(job.kind, file, source, replacing, error.message);
@@ -852,7 +909,12 @@ export function createDerived(deps: DerivedDeps) {
       if (!last && !(error instanceof SlicerFault)) throw error;
       // The last attempt, or an answer a retry will not change: record
       // slicer_error so the file is never left waiting.
-      await commitSlicerError(file, source, replacing);
+      await commitSlicerError(
+        file,
+        source,
+        replacing,
+        replacing ? DERIVED_MESSAGES.replaceFailed : DERIVED_MESSAGES.slicerError,
+      );
       if (known || error instanceof SlicerFault) {
         console.error(`derived: file ${file.id} ended with slicer_error: ${describe(error)}`);
         return { status: "failed", reason: "slicer_error" };

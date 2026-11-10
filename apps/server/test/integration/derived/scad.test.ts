@@ -394,7 +394,7 @@ const LIVE = new Set(["created", "retry", "active"]);
 
 /** DerivedDeps.now: a clock the test moves by hand. */
 function clocked(now: () => Date): Partial<DerivedDeps> {
-  return { now } as unknown as Partial<DerivedDeps>;
+  return { now };
 }
 
 /**

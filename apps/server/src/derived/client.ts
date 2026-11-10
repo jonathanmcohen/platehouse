@@ -6,7 +6,8 @@
 // (SLICER_RETRY); a 422 is the program's own answer and final. A slicer
 // that takes no connection, or answers that OpenSCAD renders are off
 // because its sandbox self-test failed, is SlicerDown: not the file's
-// doing, so the job waits for the slicer without using a retry.
+// doing, so the job waits for the slicer without using a retry, for up to
+// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts).
 import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
@@ -20,6 +21,11 @@ export const DERIVED_MESSAGES = {
   slicerError: "The slicer could not render this file.",
   /** slicer_error on a replacement: the file keeps its previous source and renders. */
   replaceFailed: "The slicer could not render the replacement, so the previous version is kept.",
+  /** The slicer stayed down (SlicerDown) for more than 2 hours, so the job stopped waiting. */
+  slicerDown: "The slicer is not answering. The render will need to be started again.",
+  /** The same, for a replacement: its staged source is discarded and the previous version kept. */
+  replaceSlicerDown:
+    "The slicer is not answering, so the previous version is kept. The replacement will need to be sent again.",
   /** The job could not be queued after the upload committed. */
   queueFailed: "The render could not be queued.",
   /** The render check found the job's last attempt ended without an outcome. */
@@ -108,7 +114,8 @@ function noConnectionCode(error: unknown): string | undefined {
  * The slicer cannot render right now, and the file is not why: it took no
  * connection (stopped, restarting or being re-pulled), or it answered that
  * OpenSCAD renders are off because its sandbox self-test failed. Not a
- * pg-boss retry: the job waits for the slicer without using one (runJob).
+ * pg-boss retry: the job waits for the slicer without using one, for up to
+ * 2 hours (runJob).
  */
 export class SlicerDown extends Error {
   constructor(route: string, detail: string) {
