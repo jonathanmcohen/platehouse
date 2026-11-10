@@ -414,6 +414,99 @@ describe("after ingest", () => {
     await tick(w, 15_000);
     expect(fake.calls).toEqual(["stuck.stl"]);
   });
+
+  test("onIngested runs with the stored file once ingest returns, before the stored copy is checked", async () => {
+    const fake = fakeIngest();
+    const order: string[] = [];
+    const handed: Array<{ modelId: string; fileId: string }> = [];
+    const w = watcher(fake, {
+      onIngested: async (result) => {
+        order.push("onIngested");
+        handed.push(result);
+      },
+      storedFile: async (id) => {
+        order.push("storedFile");
+        return fake.stored.get(id);
+      },
+    });
+    await writeFile(join(inbox, "plates.stl"), "solid p\nendsolid p\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.imported).toHaveLength(1);
+    const [imported] = pass.imported;
+    expect(handed).toEqual([{ modelId: imported?.modelId, fileId: imported?.fileId }]);
+    expect(order).toEqual(["onIngested", "storedFile"]);
+    expect(await exists(join(inbox, "plates.stl"))).toBe(false);
+  });
+
+  test("an onIngested that fails is logged, and the import and the delete still go ahead", async () => {
+    const fake = fakeIngest();
+    const w = watcher(fake, {
+      onIngested: async () => {
+        throw new Error("slicer queue is not there");
+      },
+    });
+    await writeFile(join(inbox, "queued.stl"), "solid q\nendsolid q\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.imported).toHaveLength(1);
+    expect(pass.failed).toEqual([]);
+    expect(await exists(join(inbox, "queued.stl"))).toBe(false);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    expect(
+      lines.some((l) => l.includes("queued.stl") && l.includes("slicer queue is not there")),
+    ).toBe(true);
+    await tick(w, 15_000);
+    expect(fake.calls).toEqual(["queued.stl"]);
+  });
+
+  test("onIngested does not run for a file ingest refuses", async () => {
+    const fake = fakeIngest(() => {
+      throw new IngestError("unsupported_type", "Refused");
+    });
+    const handed: unknown[] = [];
+    const w = watcher(fake, {
+      onIngested: async (result) => {
+        handed.push(result);
+      },
+    });
+    await writeFile(join(inbox, "notes.stl"), "not a model\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.failed).toHaveLength(1);
+    expect(handed).toEqual([]);
+  });
+
+  test("onIngested runs for an earlier import whose answer was lost, since that attempt never ran it", async () => {
+    const fake = fakeIngest();
+    let lost = true;
+    const ingest = {
+      async ingestFile(input: IngestInput) {
+        await fake.ingest.ingestFile(input);
+        if (lost) {
+          lost = false;
+          throw new Error("Connection terminated unexpectedly");
+        }
+        throw new Error("a retry must not reach ingest");
+      },
+    };
+    const handed: Array<{ modelId: string; fileId: string }> = [];
+    const w = watcher(fake, {
+      ingest,
+      findImported: async (file) => storedRow(fake, file),
+      onIngested: async (result) => {
+        handed.push(result);
+      },
+    });
+    await writeFile(join(inbox, "lost.stl"), "solid lost\nendsolid lost\n");
+    await w.pollOnce();
+    const id = await inboxIdOf("lost.stl");
+    await tick(w, 15_000);
+    expect(handed).toEqual([]);
+    const retry = await tick(w, 5_000);
+    expect(retry.imported).toEqual([{ name: "lost.stl", modelId: "model-1", fileId: id }]);
+    expect(handed).toEqual([{ modelId: "model-1", fileId: id }]);
+  });
 });
 
 describe("failures", () => {
