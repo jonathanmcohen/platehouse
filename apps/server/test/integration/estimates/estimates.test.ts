@@ -6,6 +6,7 @@
 // allows. pg-boss runs on the same database with the queue settings the app
 // uses, except that retries wait about a second instead of 10 s and more.
 // Every file is synthetic.
+import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
@@ -44,6 +45,24 @@ let estimates: Estimates;
 const logs: string[] = [];
 /** While true, every read of a stored file fails as a store outage does. */
 let storeDown = false;
+/**
+ * While true, every read of a stored file starts and then fails partway
+ * through, as a store that restarts or times out mid-read does.
+ */
+let storeBreaksMidRead = false;
+
+/** A stream that gives the first bytes of the real one, then fails. */
+function brokenRead(real: Readable): Readable {
+  real.destroy();
+  let reads = 0;
+  return new Readable({
+    read() {
+      reads += 1;
+      if (reads === 1) this.push(Buffer.from("PK\u0003\u0004"));
+      else this.destroy(new Error("synthetic: the store dropped the read"));
+    },
+  });
+}
 
 async function until<T>(read: () => Promise<T> | T, done: (v: T) => boolean, ms = 45_000) {
   const end = Date.now() + ms;
@@ -113,10 +132,11 @@ beforeAll(async () => {
     boss,
     slicer,
     store: {
-      getBlobStream: (key) =>
-        storeDown
-          ? Promise.reject(new StoreUnavailable("GetObject", "test outage"))
-          : env.store.getBlobStream(key),
+      getBlobStream: async (key) => {
+        if (storeDown) throw new StoreUnavailable("GetObject", "test outage");
+        const real = await env.store.getBlobStream(key);
+        return storeBreaksMidRead ? brokenRead(real) : real;
+      },
     },
     // The app's retry settings (SLICER_RETRY: 3 retries, backoff) with a
     // one-second delay, so the retry tests take seconds, not minutes.
@@ -149,6 +169,7 @@ afterAll(async () => {
 beforeEach(async () => {
   stub.onSlice(() => ({ kind: "ok" }));
   storeDown = false;
+  storeBreaksMidRead = false;
   await drain();
   if ((await env.repos.settings.get()).printerId !== P1S) {
     await estimates.setPrinter(P1S);
@@ -603,6 +624,40 @@ describe("estimates", () => {
     } finally {
       storeDown = false;
     }
+    await estimates.pollOrca();
+    await drain();
+    expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);
+    expect(stub.calls.length - before).toBe(1);
+  });
+
+  test("a store that keeps failing mid-read is a store outage: no retry is used, and the poll queues the plate again", async () => {
+    // The file starts going out to the slicer and the read then fails. That
+    // is the store's fault, not a connection the slicer accepted and lost,
+    // so it is waited out like any store outage and never counts as a lost
+    // connection (which would leave the plate failed for good).
+    logs.length = 0;
+    storeBreaksMidRead = true;
+    let id = "";
+    try {
+      const { plates } = await upload({ plates: 1 });
+      id = plateId(plates, 1);
+      const [row] = await until(
+        () => platehouseRows(id),
+        (rows) => rows[0]?.status === "failed",
+      );
+      expect(row).toMatchObject({
+        failureCode: null,
+        failureReason: "slicer_error",
+        failureDetail: STORE_DOWN_DETAIL,
+      });
+      expect(logs.filter((l) => l.includes("the store is down; back on the queue"))).toHaveLength(
+        3,
+      );
+      expect(logs.filter((l) => l.includes("the store is still down"))).toHaveLength(1);
+    } finally {
+      storeBreaksMidRead = false;
+    }
+    const before = stub.calls.length;
     await estimates.pollOrca();
     await drain();
     expect(await platehouseRows(id)).toEqual([expect.objectContaining({ status: "ok" })]);

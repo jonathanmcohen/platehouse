@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   createSlicerClient,
+  SliceBodyUnreadable,
   SlicerBusy,
   SlicerRefused,
   SlicerUnreachable,
@@ -128,6 +129,27 @@ describe("slicer client", () => {
     expect(error).toBeInstanceOf(SlicerUnreachable);
     // The slicer had the plate, so the plate may be what brought it down.
     expect((error as SlicerUnreachable).neverConnected).toBe(false);
+  });
+
+  test("a file that fails partway through being read is SliceBodyUnreadable, not a lost connection", async () => {
+    // The stored .3mf comes from the bucket as a stream; a store that drops
+    // the read mid-file is a store fault, and the slice job must not count it
+    // as a connection the slicer accepted and then lost.
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const file = build3mf({ plates: 1 });
+    let reads = 0;
+    const broken = new Readable({
+      read() {
+        reads += 1;
+        if (reads === 1) this.push(file.subarray(0, 16));
+        else this.destroy(new Error("synthetic: the store dropped the read"));
+      },
+    });
+    const error = await client
+      .slice({ printerId: P1S, plate: 1, body: broken, size: file.length })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SliceBodyUnreadable);
+    expect(error).not.toBeInstanceOf(SlicerUnreachable);
   });
 
   test("a slice that never answers is SlicerUnreachable after the timeout", async () => {

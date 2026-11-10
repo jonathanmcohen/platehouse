@@ -4,17 +4,20 @@
 //
 // Every answer is read with the contract's own zod schemas
 // (packages/slicer-contract), so an answer outside contract v1 is a refusal,
-// never a result. Errors come in three kinds, because the slice job treats
+// never a result. Errors come in four kinds, because the slice job treats
 // them differently:
 // - SlicerBusy: 409 busy, the slicer is running another heavy job;
 // - SlicerUnreachable: no connection, a connection lost before the answer
 //   (the slicer restarted mid-slice), or no answer in time; neverConnected
 //   tells the first, where the slicer never saw the request, from the rest;
 // - SlicerRefused: any other answer that is not a result (400, 404, 413, 422,
-//   a 500 from the slicer, or a body the contract does not allow).
+//   a 500 from the slicer, or a body the contract does not allow);
+// - SliceBodyUnreadable: the .3mf stream failed while it was being sent (the
+//   store dropped the read), which is not the slicer's doing.
 // The job retries the first two with the slicer queue's retry settings (and
-// waits for a slicer that took no connection without using a retry) and
-// records the third as a failed estimate (service.ts).
+// waits for a slicer that took no connection without using a retry), records
+// the third as a failed estimate, and waits out the fourth as a store outage,
+// using no retry (service.ts).
 //
 // The slicer kills a plate itself at SLICE_TIMEOUT_SECONDS, --mstpp + 60 by
 // default, and the app's HTTP timeout is that plus 30 s (Slicer HTTP contract
@@ -85,6 +88,17 @@ export class SlicerUnreachable extends Error {
     this.name = "SlicerUnreachable";
     this.reason = reason;
     this.neverConnected = NO_CONNECTION_CODES.has(reason);
+  }
+}
+
+/**
+ * The .3mf stream failed partway through being sent: the store restarted or
+ * timed out mid-read. Not a slicer fault and not a lost slicer connection.
+ */
+export class SliceBodyUnreadable extends Error {
+  constructor() {
+    super("The file could not be read while it was sent to the slicer");
+    this.name = "SliceBodyUnreadable";
   }
 }
 
@@ -222,9 +236,7 @@ function send(
       finish({ error: new SlicerUnreachable(networkReason(error)) });
     });
     if (upload) {
-      upload.body.on("error", () =>
-        finish({ error: new SlicerUnreachable("the file could not be read while it was sent") }),
-      );
+      upload.body.on("error", () => finish({ error: new SliceBodyUnreadable() }));
       upload.body.pipe(req);
     } else {
       req.end();

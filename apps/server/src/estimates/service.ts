@@ -22,7 +22,7 @@
 //   the slicer reports as slicer_error stay slicer_error).
 // - An outage uses no retry: a slicer that takes no connection at all (down
 //   or restarting, so it never saw the plate), or a store that cannot be
-//   reached. The job waits for it, holding the queue's one slot so the plates
+//   reached or that drops the read while the file is being sent. The job waits for it, holding the queue's one slot so the plates
 //   behind it do not spend their retries on the same outage, then slices
 //   again. When it is still down after the wait, the plate goes back on the
 //   queue as a new job, at most 3 times (SLICER_DOWN_WAIT.requeues), and each
@@ -65,6 +65,7 @@ import type { Estimate } from "../repos/estimates.js";
 import { createRepos, type Repos } from "../repos/index.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
 import {
+  SliceBodyUnreadable,
   SlicerBusy,
   type SlicerClient,
   SlicerRefused,
@@ -225,7 +226,9 @@ function errorDetail(error: unknown): string {
   if (error instanceof SlicerUnreachable)
     return `The slicer could not be reached: ${error.reason}.`;
   if (error instanceof SlicerRefused) return error.message;
-  if (error instanceof StoreUnavailable) return STORE_DOWN_DETAIL;
+  if (error instanceof StoreUnavailable || error instanceof SliceBodyUnreadable) {
+    return STORE_DOWN_DETAIL;
+  }
   return "The slice could not be run.";
 }
 
@@ -256,10 +259,14 @@ function retryDelaySeconds(
 
 type Outage = "slicer" | "store";
 
-/** A slicer that took no connection, or a store that cannot be reached: no retry is used. */
+/**
+ * A slicer that took no connection, or a store that cannot be reached or
+ * dropped the read mid-file: no retry is used, and a store fault is never
+ * counted as a lost slicer connection.
+ */
 function outageOf(error: unknown): Outage | null {
   if (error instanceof SlicerUnreachable && error.neverConnected) return "slicer";
-  if (error instanceof StoreUnavailable) return "store";
+  if (error instanceof StoreUnavailable || error instanceof SliceBodyUnreadable) return "store";
   return null;
 }
 
@@ -631,8 +638,8 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       } catch (error) {
         const outage = outageOf(error);
         if (outage !== null) {
-          // The slicer never saw this plate, or its file could not be read:
-          // no retry is used.
+          // The slicer never saw this plate, or its file could not be read
+          // (at the start or partway through): no retry is used.
           if (await outageOver(outage, waitUntil)) continue;
           await requeue(full, carried, outage);
           return;
