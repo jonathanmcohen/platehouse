@@ -5,7 +5,16 @@
 // names, and the paths that must never loop (a file that cannot be moved, an
 // inbox copy that cannot be deleted) or lose a file without a word.
 import { createHash } from "node:crypto";
-import { type BigIntStats, lstatSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  type BigIntStats,
+  closeSync,
+  lstatSync,
+  openSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import {
   access,
   appendFile,
@@ -23,7 +32,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Estimates } from "../../src/estimates/service.js";
@@ -34,6 +43,7 @@ import {
   createInboxWatcher,
   FAILED_DIR,
   HELD_REASON,
+  HOLD_COPY_PREFIX,
   HOLD_PREFIX,
   type ImportedFile,
   type ImportedQuery,
@@ -48,6 +58,7 @@ import {
   NON_UTF8_REASON,
   REASON_SUFFIX,
   repeatedErrorReason,
+  STILL_WRITING_REASON,
   STRIKES,
   SWAPPED_REASON,
   TOO_LARGE_REASON,
@@ -73,11 +84,14 @@ const fsHooks = vi.hoisted(() => ({
   /** What an open of path returns in place of the real handle. */
   wrap: undefined as ((path: string, handle: FileHandle) => FileHandle) | undefined,
   /**
-   * Runs before a hard link to newPath is made, as another writer would in
-   * that moment; when it throws, the link fails with that error, as on a
-   * filesystem that refuses hard links.
+   * Runs before a hard link from existingPath to newPath is made, as another
+   * writer would in that moment; when it throws, the link fails with that
+   * error, as under fs.protected_hardlinks or on a filesystem that refuses
+   * hard links.
    */
-  beforeLink: undefined as ((newPath: string) => Promise<void>) | undefined,
+  beforeLink: undefined as ((newPath: string, existingPath: string) => Promise<void>) | undefined,
+  /** Runs before a folder is made at path; when it throws, mkdir fails with that error. */
+  beforeMkdir: undefined as ((path: string) => Promise<void>) | undefined,
   /**
    * Runs just before anything is made under newPath by a rename onto it, a
    * symlink at it, a copy to it or an open that may create it: the last
@@ -97,8 +111,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     return fsHooks.wrap?.(String(args[0]), handle) ?? handle;
   };
   const link = async (...args: Parameters<typeof actual.link>): Promise<void> => {
-    await fsHooks.beforeLink?.(String(args[1]));
+    await fsHooks.beforeLink?.(String(args[1]), String(args[0]));
     return actual.link(...args);
+  };
+  const mkdir = async (...args: Parameters<typeof actual.mkdir>) => {
+    await fsHooks.beforeMkdir?.(String(args[0]));
+    return actual.mkdir(...args);
   };
   const rename = async (...args: Parameters<typeof actual.rename>): Promise<void> => {
     await fsHooks.beforeCreate?.(String(args[1]));
@@ -112,7 +130,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     await fsHooks.beforeCreate?.(String(args[1]));
     return actual.copyFile(...args);
   };
-  const hooked = { open, link, rename, symlink, copyFile };
+  const hooked = { open, link, rename, symlink, copyFile, mkdir };
   return { ...actual, default: { ...actual, ...hooked }, ...hooked };
 });
 
@@ -165,6 +183,7 @@ beforeEach(async () => {
 afterEach(async () => {
   fsHooks.wrap = undefined;
   fsHooks.beforeLink = undefined;
+  fsHooks.beforeMkdir = undefined;
   fsHooks.beforeCreate = undefined;
   await chmod(inbox, 0o755).catch(() => undefined);
   await chmod(join(root, "tmp", "inbox-copies"), 0o755).catch(() => undefined);
@@ -864,6 +883,36 @@ describe("a file put under an imported file's name while it is checked", () => {
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
     expect(fake.calls).toEqual([]);
   });
+
+  test("a file overwritten in place after its check and before it is deleted is kept in failed, never deleted", async () => {
+    // Windows Explorer, or cp onto an existing name, writes the same inode
+    // (O_TRUNC): the device and inode under the name still match the open
+    // file, but the bytes are new and were never imported.
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    let overwritten = false;
+    fsHooks.beforeCreate = async (newPath) => {
+      // The last moment before the delete: the move into the holding folder.
+      if (overwritten || !newPath.startsWith(join(inbox, HOLD_PREFIX))) return;
+      overwritten = true;
+      writeFileSync(path, SECOND);
+    };
+    const w = watcher(fake);
+    await writeFile(path, FIRST);
+    const before = await lstat(path, { bigint: true });
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(overwritten).toBe(true);
+    expect(pass.imported.map((i) => i.name)).toEqual(["part.stl"]);
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: CHANGED_REASON }]);
+    const kept = join(inbox, FAILED_DIR, "part.stl");
+    expect(await readFile(kept, "utf8")).toBe(SECOND);
+    expect((await lstat(kept, { bigint: true })).ino).toBe(before.ino);
+    expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(`${CHANGED_REASON}\n`);
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    expect(lines.some((l) => l.includes("deleted the inbox copy"))).toBe(false);
+  });
 });
 
 describe("a file put under an imported file's name during the import", () => {
@@ -1039,14 +1088,32 @@ describe("putting a file back under its name without hard links", () => {
   const SECOND = "solid second, a different file\nendsolid second\n";
   const THIRD = "solid third\nendsolid third\n";
 
-  /** Makes every hard link to path fail as fs.protected_hardlinks does. */
-  function noHardLinks(path: string, onRefuse: () => void = () => undefined): void {
-    fsHooks.beforeLink = async (newPath) => {
+  /**
+   * Makes a hard link to path fail with EPERM as fs.protected_hardlinks does:
+   * from the held file, which another user owns (the SMB writer), but not
+   * from a file the watcher made itself. With every, any link to path fails,
+   * as on a filesystem with no hard links at all.
+   */
+  function noHardLinks(
+    path: string,
+    onRefuse: () => void = () => undefined,
+    every = false,
+  ): void {
+    fsHooks.beforeLink = async (newPath, existingPath) => {
       if (newPath !== path) return;
+      if (!every && basename(existingPath) !== basename(path)) return;
       onRefuse();
       throw coded(`EPERM: operation not permitted, link '${newPath}'`, "EPERM");
     };
   }
+
+  /** Whether opened is the held file: the name, inside a holding folder. */
+  const isHeld = (opened: string, path: string) =>
+    opened.startsWith(join(inbox, HOLD_PREFIX)) && basename(opened) === basename(path);
+
+  /** Whether opened is a file the put-back may write: the name, or one in a holding folder. */
+  const isPutBackWrite = (opened: string, path: string) =>
+    opened === path || (opened.startsWith(join(inbox, HOLD_PREFIX)) && !isHeld(opened, path));
 
   test.each([
     ["a regular file, with link() refused", "file"],
@@ -1134,9 +1201,9 @@ describe("putting a file back under its name without hard links", () => {
 
   test.each([
     ["nothing else takes the name", false],
-    ["another file is renamed over the part-written copy", true],
+    ["another file is renamed over the name during the copy", true],
   ])(
-    "with link() refused, a put-back that fails part way leaves nothing part-written under the name and loses no file (%s)",
+    "with link() refused, a put-back on a full disk leaves nothing part-written under the name and loses no file (%s)",
     async (_l, newcomer) => {
       const fake = fakeIngest();
       const path = join(inbox, "part.stl");
@@ -1145,10 +1212,15 @@ describe("putting a file back under its name without hard links", () => {
       noHardLinks(path, () => {
         refused = true;
       });
-      // Once link() is refused, an open of the name for writing gets a handle
-      // whose writes fail after the first byte, as a full disk would.
+      // Once link() is refused the disk is full: a new holding folder cannot
+      // be made, and a copy's writes fail after the first byte.
+      fsHooks.beforeMkdir = async (made) => {
+        if (refused && made.startsWith(join(inbox, HOLD_PREFIX))) {
+          throw coded(`ENOSPC: no space left on device, mkdir '${made}'`, "ENOSPC");
+        }
+      };
       fsHooks.wrap = (opened, handle) => {
-        if (!refused || opened !== path) return handle;
+        if (!refused || !isPutBackWrite(opened, path)) return handle;
         let writes = 0;
         return patched(handle, {
           write: async (...args: unknown[]) => {
@@ -1177,21 +1249,143 @@ describe("putting a file back under its name without hard links", () => {
       const pass = await tick(w, 15_000);
 
       expect(refused).toBe(true);
-      const failed = await readdir(join(inbox, FAILED_DIR));
-      const kept = await Promise.all(
-        failed
-          .filter((f) => !f.endsWith(REASON_SUFFIX))
-          .map((f) => readFile(join(inbox, FAILED_DIR, f), "utf8")),
-      );
-      // The held file is kept in failed; a newcomer is never deleted.
-      expect(kept.sort()).toEqual((newcomer ? [SECOND, FOURTH] : [SECOND]).sort());
-      expect(pass.failed.map((f) => f.reason)).toEqual(
-        newcomer ? [SWAPPED_REASON, SWAPPED_REASON] : [SWAPPED_REASON],
-      );
+      // The held file is kept whole in failed.
+      expect(pass.failed).toEqual([{ name: "part.stl", reason: SWAPPED_REASON }]);
+      expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
+      if (newcomer) {
+        // A newcomer is left under the name, whole, never moved or deleted.
+        expect(await readFile(path, "utf8")).toBe(FOURTH);
+        expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, "part.stl"].sort());
+        return;
+      }
       // Nothing part-written is left under the name, or anywhere in the inbox.
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+
+      // A watcher started after a restart finds nothing to import.
+      fsHooks.wrap = undefined;
+      fsHooks.beforeMkdir = undefined;
+      const restarted = watcher(fake);
+      await restarted.pollOnce();
+      await tick(restarted, 15_000);
+      await tick(restarted, 15_000);
+      expect(fake.calls).toEqual(["part.stl"]);
     },
   );
+
+  test.each([
+    ["while it is copied back", "copy"],
+    ["just after the copy is linked under the name", "link"],
+  ])(
+    "with link() refused, a file still being written %s is kept whole in failed, and no cut-short copy is imported",
+    async (_l, when) => {
+      const fake = fakeIngest();
+      const path = join(inbox, "part.stl");
+      const MORE = "more bytes the writer sent\n";
+      const LATER = "and more after the put-back\n";
+      noHardLinks(path);
+      // The writer, under another uid over SMB, keeps the file open.
+      let writer: number | undefined;
+      let appended = false;
+      const append = () => {
+        if (appended || writer === undefined) return;
+        appended = true;
+        writeSync(writer, MORE);
+      };
+      if (when === "copy") {
+        // The writer sends more just as the copy is finished.
+        fsHooks.wrap = (opened, handle) => {
+          if (writer === undefined || !isPutBackWrite(opened, path)) return handle;
+          return patched(handle, {
+            close: async () => {
+              append();
+              return handle.close();
+            },
+          });
+        };
+      } else {
+        const refuse = fsHooks.beforeLink;
+        fsHooks.beforeLink = async (newPath, existingPath) => {
+          await refuse?.(newPath, existingPath);
+          // The copy's own link to the name: the writer sends more first.
+          if (newPath === path) append();
+        };
+      }
+      let swapped = false;
+      const w = watcher(fake, {
+        storedFile: async (id) => {
+          if (!swapped) {
+            swapped = true;
+            renameOverSync("part.stl", SECOND);
+            writer = openSync(path, "a");
+          }
+          return fake.stored.get(id);
+        },
+      });
+      try {
+        await writeFile(path, FIRST);
+        await w.pollOnce();
+        const pass = await tick(w, 15_000);
+        expect(appended).toBe(true);
+        if (writer !== undefined) writeSync(writer, LATER);
+
+        // The writer's file is kept, the same inode, with everything it wrote.
+        expect(pass.failed).toEqual([{ name: "part.stl", reason: STILL_WRITING_REASON }]);
+        const kept = join(inbox, FAILED_DIR, "part.stl");
+        expect(await readFile(kept, "utf8")).toBe(`${SECOND}${MORE}${LATER}`);
+        expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(
+          `${STILL_WRITING_REASON}\n`,
+        );
+        // No copy is left under the name to be imported cut short.
+        expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+        await tick(w, 15_000);
+        await tick(w, 15_000);
+        expect(fake.calls).toEqual(["part.stl"]);
+      } finally {
+        if (writer !== undefined) closeSync(writer);
+      }
+    },
+  );
+
+  test("a copy a stopped process left beside a held file is removed, and the held file moves to failed", async () => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    await writeFile(join(holding, "part.stl"), SECOND);
+    // Part of a copy back under the name, cut off by the stop.
+    await writeFile(join(holding, `${HOLD_COPY_PREFIX}0190a6f0-0000-7000-8000-000000000001`), "sol");
+    const w = watcher(fake);
+    const pass = await w.pollOnce();
+
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: HELD_REASON }]);
+    expect((await readdir(join(inbox, FAILED_DIR))).sort()).toEqual(
+      ["part.stl", `part.stl${REASON_SUFFIX}`].sort(),
+    );
+    expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+  });
+
+  test("on a filesystem with no hard links at all, the file is kept whole in failed and nothing part-written is put under the name", async () => {
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    noHardLinks(path, () => undefined, true);
+    let swapped = false;
+    const w = watcher(fake, {
+      storedFile: async (id) => {
+        if (!swapped) {
+          swapped = true;
+          renameOverSync("part.stl", SECOND);
+        }
+        return fake.stored.get(id);
+      },
+    });
+    await writeFile(path, FIRST);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: SWAPPED_REASON }]);
+    expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+  });
 });
 
 describe("a file put under a failing file's name before it is moved to failed", () => {
