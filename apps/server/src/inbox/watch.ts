@@ -48,6 +48,17 @@
 //   moved to failed with a reason that says a model was made, so it is
 //   neither lost nor imported a second time. A symlink or anything else that
 //   is not a regular file found under the name then is left alone.
+// - The delete itself never deletes by name, since that deletes whatever the
+//   name holds at that moment, and rsync renames a new file over a name. What
+//   holds the name is renamed into a new folder of its own in the inbox
+//   (HOLD_PREFIX, a dot-folder, so on the inbox's filesystem and never
+//   listed), and deleted there only when it is the open file (the same
+//   device and inode). A file put under the name after the check is put back
+//   under it, never over a file that took the name since, and looked at from
+//   the start as a new file; when another file took the name meanwhile, it
+//   moves to failed with SWAPPED_REASON instead. The holding folder is
+//   removed after. One a stopped process left behind (a crash in that
+//   moment) is emptied into failed with HELD_REASON at the first pass.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence. failed/ is made when missing, and refused
@@ -112,7 +123,11 @@
 //     same, it moves to failed with a reason quoting the error; a change to
 //     the file starts its count again. The pass goes on to the next file, so
 //     one file cannot hold up the inbox. The move of a file on its last
-//     strike waits for the end of the pass, for the rule below.
+//     strike waits for the end of the pass, for the rule below, and happens
+//     only when the name still holds the file that was struck (the same
+//     device, inode, size and mtime): a corrected copy or a symlink put there
+//     in the meantime is not moved, and is looked at again from the start.
+//     An ingest refusal (FILE_FAULTS) is moved under the same check.
 //   - All three checks pass, and another file has already failed in this pass
 //     with the checks passing and the same fault (the same error code, or,
 //     when neither has a code, the same error name): the fault is taken to be
@@ -218,12 +233,14 @@ import type { BigIntStats, PathLike } from "node:fs";
 import { constants } from "node:fs";
 import {
   type FileHandle,
+  link,
   lstat,
   mkdir,
   open,
   readdir,
   rename,
   rm,
+  rmdir,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -259,6 +276,22 @@ export const CHANGED_REASON =
 /** Reason when the stored copy's record could not be read back. */
 export const UNCONFIRMED_REASON =
   "Platehouse imported this file but could not confirm the stored copy, so it was kept here; check the library before adding it again.";
+
+/**
+ * What starts the name of the folder, inside the inbox, that an imported
+ * file is moved into to be checked and deleted. It starts with a dot, so the
+ * watcher never lists it as an inbox file, and it is in the inbox, so the
+ * move is a rename on one filesystem.
+ */
+export const HOLD_PREFIX = ".platehouse-deleting-";
+
+/** Reason when a file put under an imported file's name cannot be put back there. */
+export const SWAPPED_REASON =
+  "This file was put in the inbox under the name of a file Platehouse had just imported, and another file took that name before it could be put back, so it was kept here and not imported; add it again.";
+
+/** Reason for a file a stopped process left in a holding folder. */
+export const HELD_REASON =
+  "Platehouse stopped while it was deleting this file after an import, so it was kept here; check the library before adding it again.";
 
 /** Reason when the file's name is not valid UTF-8. */
 export const NON_UTF8_REASON =
@@ -597,6 +630,8 @@ export interface InboxPass {
 interface PassStrike {
   name: string;
   path: string;
+  /** The signature the strike was counted against: the file that failed. */
+  signature: string;
   error: unknown;
   /** The file's count before this strike, put back if the strike is taken back. */
   prior: { signature: string; count: number } | undefined;
@@ -793,6 +828,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Whether copies a process before this one left behind (a crash during an
   // import) have been swept; done once, before this watcher's first copy.
   let copiesSwept = false;
+  // Whether holding folders a process before this one left in the inbox (a
+  // crash while an imported file was being deleted) have been swept; done
+  // once, at this watcher's first pass.
+  let holdsSwept = false;
 
   // Files being watched for the settle window, by name.
   const seen = new Map<string, Seen>();
@@ -1013,6 +1052,180 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
+   * Puts a file that was moved out from under its name back there, never
+   * over a file that took the name since. A regular file is hard-linked
+   * back, which fails when the name is taken, and then unlinked from where it
+   * was held. On a filesystem without hard links, and for anything that is
+   * not a regular file (link could follow a symlink), it is renamed back
+   * only once the name is seen to be free. Returns false when the name is
+   * taken.
+   */
+  async function putBack(held: string, path: string, regular: boolean): Promise<boolean> {
+    if (regular) {
+      let linked = false;
+      try {
+        await link(held, path);
+        linked = true;
+      } catch (error) {
+        if (codeOf(error) === "EEXIST") return false;
+        // No hard links here: renamed back below, once the name is free.
+      }
+      if (linked) {
+        try {
+          await unlink(held);
+        } catch (error) {
+          log(
+            `inbox: put ${path} back, but could not remove its second name ${held} ` +
+              `(${errorText(error)}); it moves to ${FAILED_DIR} when the watcher next starts`,
+          );
+        }
+        return true;
+      }
+    }
+    if (await exists(path)) return false;
+    await rename(held, path);
+    return true;
+  }
+
+  /**
+   * Moves a file that cannot go back under its name from a holding folder to
+   * failed with reason, so it is not lost; when it cannot be moved, it stays
+   * in the holding folder, logged, until the watcher next starts.
+   */
+  async function failHeld(
+    name: string,
+    held: string,
+    reason: string,
+    pass: InboxPass,
+  ): Promise<void> {
+    try {
+      const moved = await moveToFailed(name, held, reason);
+      pass.failed.push({ name, reason });
+      log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
+    } catch (error) {
+      log(
+        `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays at ` +
+          `${held} and moves to ${FAILED_DIR} when the watcher next starts. Why: ${reason}`,
+      );
+    }
+  }
+
+  /**
+   * Deletes the inbox copy of an import that checked out, and never a file
+   * put under its name since the check: unlink by name would delete whatever
+   * the name holds at that moment, and rsync renames a new file over the
+   * name. So what holds the name is renamed into a new folder of its own in
+   * the inbox (HOLD_PREFIX; one rename moves what the name holds at one
+   * instant, and stays on the inbox's filesystem), and is deleted there only
+   * when it is the open file, the same device and inode. Anything else goes
+   * back under the name for the next pass to look at from the start
+   * (putBack), or, when another file took the name in the meantime, to
+   * failed with SWAPPED_REASON. The holding folder is removed after.
+   */
+  async function deleteImported(
+    name: string,
+    path: string,
+    handle: FileHandle,
+    modelId: string,
+    pass: InboxPass,
+  ): Promise<void> {
+    const couldNotDelete = async (error: unknown) => {
+      const sig = await currentSignature(path);
+      if (sig !== undefined) handled.set(name, sig);
+      log(
+        `inbox: imported ${name} as model ${modelId} but could not delete the inbox copy ` +
+          `(${errorText(error)}); it is not imported again until it changes`,
+      );
+    };
+    const holdDir = join(dir, `${HOLD_PREFIX}${uuidv7()}`);
+    const held = join(holdDir, name);
+    try {
+      await mkdir(holdDir);
+    } catch (error) {
+      await couldNotDelete(error);
+      return;
+    }
+    try {
+      try {
+        await rename(path, held);
+      } catch (error) {
+        if (codeOf(error) === "ENOENT" && !(await exists(path))) {
+          log(`inbox: imported ${name} as model ${modelId}; its inbox copy was already gone`);
+        } else {
+          await couldNotDelete(error);
+        }
+        return;
+      }
+      let named: BigIntStats | undefined;
+      try {
+        named = await lstat(held, { bigint: true });
+        const opened = await handle.stat({ bigint: true });
+        if (named.isFile() && named.dev === opened.dev && named.ino === opened.ino) {
+          await unlink(held);
+          log(`inbox: imported ${name} as model ${modelId} and deleted the inbox copy`);
+          return;
+        }
+      } catch (error) {
+        // What is held could not be checked or deleted: it goes back.
+        let back = false;
+        try {
+          back = await putBack(held, path, named?.isFile() ?? false);
+        } catch {
+          back = false;
+        }
+        if (!back) await failHeld(name, held, UNCONFIRMED_REASON, pass);
+        await couldNotDelete(error);
+        return;
+      }
+      // Another file was put under the name after the check: never deleted.
+      let back = false;
+      let why = "another file took the name first";
+      try {
+        back = await putBack(held, path, named.isFile());
+      } catch (error) {
+        why = errorText(error);
+      }
+      if (back) {
+        log(
+          `inbox: imported ${name} as model ${modelId}, but another file was put under its name ` +
+            "before the inbox copy was deleted; that file was not imported, so it is left under " +
+            "the name and looked at from the start as a new file",
+        );
+        return;
+      }
+      log(
+        `inbox: imported ${name} as model ${modelId}, but another file was put under its name ` +
+          `before the inbox copy was deleted, and it could not be put back (${why})`,
+      );
+      await failHeld(name, held, SWAPPED_REASON, pass);
+    } finally {
+      // Empty unless something could not be moved out; then it stays.
+      await rmdir(holdDir).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Moves what a process that stopped part way through deleteImported left
+   * in a holding folder to failed with HELD_REASON, and removes the folder.
+   * It may be an imported file or one put under its name, so it is kept, not
+   * deleted or imported. Run once per process, before its first import.
+   */
+  async function sweepHolds(folders: string[], pass: InboxPass): Promise<void> {
+    for (const folder of folders) {
+      const holdDir = join(dir, folder);
+      try {
+        for (const entry of await readdir(holdDir)) {
+          await failHeld(entry, join(holdDir, entry), HELD_REASON, pass);
+        }
+        await rmdir(holdDir);
+      } catch (error) {
+        if (codeOf(error) === "ENOENT") continue;
+        log(`inbox: could not clear the holding folder ${holdDir}: ${errorText(error)}`);
+      }
+    }
+  }
+
+  /**
    * The import this copy of the file already made, if any: an earlier
    * attempt, in this process or one before a restart, whose commit landed but
    * whose answer was lost, found by the id that attempt chose (inboxFileId).
@@ -1171,14 +1384,18 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         `and the temp folder answer, so it counts against the file): ${errorText(error)}`,
     );
     strikes.set(name, { signature: entry.signature, count });
-    state.struck.push({ name, path, error, prior, count });
+    state.struck.push({ name, path, signature: entry.signature, error, prior, count });
   }
 
   /**
    * At the end of a pass, for each strike it took: takes it back when a fault
    * the checks cannot see held the pass and the strike's error is that
    * fault; otherwise moves a file on its STRIKES-th strike in a row for the
-   * same signature to failed, with the error as its reason.
+   * same signature to failed, with the error as its reason. The rest of the
+   * pass can take minutes, so the name must still hold the file that was
+   * struck (its signature, so the same regular file, unchanged): a corrected
+   * copy or a symlink put there since is not moved, and the next pass looks
+   * at it from the start.
    */
   async function settleStrikes(state: PassState): Promise<void> {
     for (const struck of state.struck) {
@@ -1189,6 +1406,14 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       }
       if (struck.count < STRIKES) continue;
       strikes.delete(struck.name);
+      if ((await currentSignature(struck.path)) !== struck.signature) {
+        notSettled(
+          struck.name,
+          `failed ${STRIKES} times, but its name no longer holds that same file (a new copy, a ` +
+            `symlink or nothing is there now, or it changed), so it is not moved to ${FAILED_DIR}`,
+        );
+        continue;
+      }
       await fail(
         struck.name,
         struck.name,
@@ -1290,8 +1515,17 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         return "done";
       }
       if (error instanceof IngestError && FILE_FAULTS.has(error.code)) {
-        // Ingest's own refusal: the file's type or content.
+        // Ingest's own refusal: the file's type or content. Only the file
+        // ingest read is moved: not a new copy put under the name since.
         strikes.delete(name);
+        if ((await currentSignature(path)) !== entry.signature) {
+          return notSettled(
+            name,
+            `was refused (${errorText(error)}), but its name no longer holds that same file (a new ` +
+              `copy, a symlink or nothing is there now, or it changed), so it is not moved to ` +
+              `${FAILED_DIR}`,
+          );
+        }
         await fail(name, name, path, sentence(error.message), pass);
         return "done";
       }
@@ -1394,17 +1628,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     }
 
     if (verdict === "match") {
-      try {
-        await unlink(path);
-        log(`inbox: imported ${name} as model ${result.modelId} and deleted the inbox copy`);
-      } catch (error) {
-        const sig = await currentSignature(path);
-        if (sig !== undefined) handled.set(name, sig);
-        log(
-          `inbox: imported ${name} as model ${result.modelId} but could not delete the inbox ` +
-            `copy (${errorText(error)}); it is not imported again until it changes`,
-        );
-      }
+      await deleteImported(name, path, handle, result.modelId, pass);
       return "done";
     }
     await fail(name, name, path, verdict === "changed" ? CHANGED_REASON : UNCONFIRMED_REASON, pass);
@@ -1415,10 +1639,16 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     const pass: InboxPass = { imported: [], failed: [], waiting: false };
     const state: PassState = { pass, struck: [], tried: false, unseen: false, counting: false };
     let names: Array<InboxName & { raw: Buffer }>;
+    let holds: string[];
     try {
       // Raw bytes: a name that is not UTF-8 would otherwise come back with
       // U+FFFD in it, lstat would not find it, and it would sit unseen.
       const entries = await readdir(dir, { withFileTypes: true, encoding: "buffer" });
+      // Holding folders a stopped process left (deleteImported); a symlink
+      // with such a name is not a folder here, and is left alone.
+      holds = entries
+        .filter((e) => e.isDirectory() && e.name.toString("utf8").startsWith(HOLD_PREFIX))
+        .map((e) => e.name.toString("utf8"));
       names = entries
         .filter((e) => e.isFile())
         .map((e) => ({ ...inboxName(e.name), raw: e.name }))
@@ -1435,6 +1665,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         log(`inbox: could not read ${dir}: ${errorText(error)}`);
       }
       return pass;
+    }
+
+    if (!holdsSwept) {
+      holdsSwept = true;
+      await sweepHolds(holds, pass);
     }
 
     // Forget files no longer in the inbox.
