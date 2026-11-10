@@ -715,9 +715,28 @@ describe("a file that changes after it settles", () => {
     const path = join(inbox, "grow.stl");
     await writeFile(path, "solid a\n");
     changeAfterCheck(path, () => appendFile(path, "endsolid a\n"));
+    // Every byte written to a copy in the temp folder, to see that the copy
+    // holds no more than the size that settled.
+    let copied = 0;
+    const atCheck = fsHooks.wrap;
+    fsHooks.wrap = (opened, handle) => {
+      if (!opened.startsWith(join(root, "tmp", "inbox-copies"))) {
+        return atCheck?.(opened, handle) ?? handle;
+      }
+      return patched(handle, {
+        write: async (...args: unknown[]) => {
+          const done = (await Reflect.apply(handle.write, handle, args)) as {
+            bytesWritten: number;
+          };
+          copied += done.bytesWritten;
+          return done;
+        },
+      });
+    };
     await w.pollOnce();
     const pass = await tick(w, 15_000);
 
+    expect(copied).toBe("solid a\n".length);
     expect(fake.calls).toEqual([]);
     expect(pass.imported).toEqual([]);
     expect(pass.failed).toEqual([]);
@@ -761,6 +780,39 @@ describe("a file that changes after it settles", () => {
     expect(fake.calls).toEqual(["shrink.stl"]);
     const fileId = again.imported[0]?.fileId ?? "";
     expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from("solid a\n")));
+  });
+
+  test("a copy that comes up short of the settled size is never imported, even when fstat still matches", async () => {
+    // A read that ends early while the file's size and mtime still say it
+    // is whole (a network filesystem, say): only the copy's own size shows it.
+    const path = join(inbox, "short.stl");
+    let short = true;
+    fsHooks.wrap = (opened, handle) =>
+      opened !== path
+        ? handle
+        : patched(handle, {
+            read: async (...args: unknown[]) => {
+              if (short) {
+                short = false;
+                return { bytesRead: 0, buffer: args[0] };
+              }
+              return Reflect.apply(handle.read, handle, args);
+            },
+          });
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    await writeFile(path, "solid a\nendsolid a\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(fake.calls).toEqual([]);
+    expect(pass.failed).toEqual([]);
+    expect(lines.some((l) => l.includes("counts against the file"))).toBe(false);
+
+    await tick(w, 5_000);
+    const again = await tick(w, 15_000);
+    expect(fake.calls).toEqual(["short.stl"]);
+    const fileId = again.imported[0]?.fileId ?? "";
+    expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from("solid a\nendsolid a\n")));
   });
 
   test("a file that grows past the size limit after it settles is never imported as an oversized model", async () => {
