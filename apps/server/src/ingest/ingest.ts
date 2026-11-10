@@ -132,6 +132,13 @@ export interface IngestInput {
   /** The name the file was uploaded with; it picks the kind. */
   originalName: string;
   target: IngestTarget;
+  /**
+   * The new file row's id; a fresh UUIDv7 when left out. The inbox watcher
+   * (inbox/watch.ts) chooses it, so that after a lost answer it can look up
+   * the row its own attempt wrote and no other. An id already taken fails at
+   * the insert, as ingest_failed, and saves nothing.
+   */
+  fileId?: string;
 }
 
 export interface IngestResult {
@@ -333,6 +340,10 @@ export function createIngest(deps: IngestDeps) {
 
   async function ingestOnce(input: IngestInput): Promise<IngestResult> {
     const { tmpPath, originalName, target } = input;
+    if (input.fileId !== undefined && !isUuid(input.fileId)) {
+      throw new TypeError("ingestFile: fileId must be a UUID");
+    }
+    const fileId = input.fileId?.toLowerCase() ?? uuidv7();
     const { size } = await stat(tmpPath);
     const kind = detectKind(originalName, await readFirstBytes(tmpPath), size);
     if (kind === null) throw new IngestError("unsupported_type", UNSUPPORTED_MESSAGE);
@@ -353,7 +364,6 @@ export function createIngest(deps: IngestDeps) {
       return blob;
     };
 
-    const fileId = uuidv7();
     // The transaction's id, once it has one (commitState).
     let xid: string | null = null;
     // Set as the callback's last step, once every row is written. Until then

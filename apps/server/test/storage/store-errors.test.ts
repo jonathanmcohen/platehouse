@@ -1,8 +1,9 @@
 // The storage layer's failure contract, checked against a scripted fake
 // endpoint so it runs without Docker: which failures are StoreUnavailable
 // (connect, timeout, a gateway with the store behind it down), which are not
-// (404, access denied), what readVersioning makes of each, and that no error
-// carries the secret access key in any form a log would print.
+// (404, access denied), what readVersioning makes of each, how checkWrite
+// deletes on a versioned bucket, and that no error carries the secret access
+// key in any form a log would print.
 import { Readable } from "node:stream";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +14,7 @@ import {
   createBlobStore,
   StoreError,
   StoreUnavailable,
+  WRITE_CHECK_KEY,
 } from "../../src/storage/s3.js";
 import {
   closedPortEndpoint,
@@ -321,6 +323,81 @@ describe("readVersioning", () => {
     // Path-style, the bucket as the only path segment (the SDK adds a slash).
     expect(fake.requests[0]?.path).toBe("/platehouse-test/");
     expect(fake.requests[0]?.query.has("versioning")).toBe(true);
+  });
+});
+
+describe("checkWrite on a versioned bucket", () => {
+  // A version id in the form S3 hands out; synthetic.
+  const VERSION = "3HL4kqtJlcpXroDTDmJ.rmSpXd3dIbrHY";
+
+  async function storeWithRequests(handler: Handler) {
+    const fake = await startFakeS3(handler);
+    cleanups.push(() => fake.close());
+    const store = createBlobStore(settings(fake.endpoint), { maxAttempts: 1 });
+    cleanups.push(() => store.destroy());
+    return { store, requests: fake.requests };
+  }
+
+  const shape = (requests: Array<{ method: string; path: string; query: URLSearchParams }>) =>
+    requests.map((r) => [r.method, r.path, r.query.get("versionId")]);
+
+  it("deletes the exact version it wrote, so no old version or delete marker is left", async () => {
+    const { store, requests } = await storeWithRequests((req) =>
+      req.method === "PUT"
+        ? { status: 200, headers: { "x-amz-version-id": VERSION } }
+        : { status: 204 },
+    );
+    await expect(store.checkWrite()).resolves.toBeUndefined();
+    expect(shape(requests)).toEqual([
+      ["PUT", `/platehouse-test/${WRITE_CHECK_KEY}`, null],
+      ["DELETE", `/platehouse-test/${WRITE_CHECK_KEY}`, VERSION],
+    ]);
+  });
+
+  it("deletes by key alone on a bucket that returns no version id", async () => {
+    const { store, requests } = await storeWithRequests(() => ({ status: 204 }));
+    await expect(store.checkWrite()).resolves.toBeUndefined();
+    expect(shape(requests)).toEqual([
+      ["PUT", `/platehouse-test/${WRITE_CHECK_KEY}`, null],
+      ["DELETE", `/platehouse-test/${WRITE_CHECK_KEY}`, null],
+    ]);
+  });
+
+  it("falls back to a plain delete when the key may not delete a version", async () => {
+    const { store, requests } = await storeWithRequests((req) => {
+      if (req.method === "PUT") return { status: 200, headers: { "x-amz-version-id": VERSION } };
+      if (req.query.has("versionId")) return s3Error(403, "AccessDenied");
+      return { status: 204 };
+    });
+    await expect(store.checkWrite()).resolves.toBeUndefined();
+    expect(shape(requests)).toEqual([
+      ["PUT", `/platehouse-test/${WRITE_CHECK_KEY}`, null],
+      ["DELETE", `/platehouse-test/${WRITE_CHECK_KEY}`, VERSION],
+      ["DELETE", `/platehouse-test/${WRITE_CHECK_KEY}`, null],
+    ]);
+  });
+
+  it("fails with the plain delete's error when both deletes are refused", async () => {
+    const { store } = await storeWithRequests((req) =>
+      req.method === "PUT"
+        ? { status: 200, headers: { "x-amz-version-id": VERSION } }
+        : s3Error(403, "AccessDenied"),
+    );
+    const err = await errorOf(store.checkWrite());
+    expect(err).toBeInstanceOf(StoreError);
+    expect((err as StoreError).operation).toBe("DeleteObject");
+    expect((err as StoreError).code).toBe("AccessDenied");
+  });
+
+  it("an outage on the versioned delete is StoreUnavailable, with no second delete", async () => {
+    const { store, requests } = await storeWithRequests((req) =>
+      req.method === "PUT"
+        ? { status: 200, headers: { "x-amz-version-id": VERSION } }
+        : s3Error(503, "ServiceUnavailable"),
+    );
+    const err = await errorOf(store.checkWrite());
+    expect(err).toBeInstanceOf(StoreUnavailable);
+    expect(requests.filter((r) => r.method === "DELETE")).toHaveLength(1);
   });
 });
 

@@ -129,6 +129,89 @@ describe("files and plates", () => {
     expect(await repos.files.get("not-a-uuid")).toBeUndefined();
   });
 
+  test("files.findImported finds a file by its id, with its model, and nothing else", async () => {
+    const { file, modelId } = await seedFile(repos);
+    expect(await repos.files.findImported({ fileIds: [file.id] })).toEqual([
+      { modelId, fileId: file.id, live: true },
+    ]);
+    // Another row with the same original name, size and SHA-256, as an upload
+    // of the same file through the UI or the API would write: it is a row of
+    // its own and never answers for the first one's id, nor the first for it.
+    const other = await repos.models.create({ name: "Same file, uploaded" });
+    const blob = await repos.blobs.insertPending({
+      modelId: other.id,
+      kind: "source",
+      contentType: "model/3mf",
+    });
+    const twin = await repos.files.create({
+      modelId: other.id,
+      blobId: blob.id,
+      name: file.name,
+      originalName: file.originalName,
+      kind: "3mf",
+      size: file.size,
+      sha256: file.sha256,
+    });
+    expect(await repos.files.findImported({ fileIds: [file.id] })).toEqual([
+      { modelId, fileId: file.id, live: true },
+    ]);
+    expect(await repos.files.findImported({ fileIds: [twin.id] })).toEqual([
+      { modelId: other.id, fileId: twin.id, live: true },
+    ]);
+    // An id with no row, text that is not a UUID, and no ids at all find nothing.
+    expect(await repos.files.findImported({ fileIds: [uuidv7()] })).toEqual([]);
+    expect(await repos.files.findImported({ fileIds: ["not-a-uuid"] })).toEqual([]);
+    expect(await repos.files.findImported({ fileIds: [] })).toEqual([]);
+  });
+
+  test("files.findImported answers for many ids in one query, past ids with no row", async () => {
+    // As the inbox watcher asks: every id a copy's attempts can have, where a
+    // purge may have left no row under an earlier one than a live row.
+    const live = await seedFile(repos);
+    const trashed = await seedFile(repos);
+    await t.db
+      .updateTable("models")
+      .set({ trashedAt: new Date() })
+      .where("id", "=", trashed.modelId)
+      .execute();
+    const found = await repos.files.findImported({
+      fileIds: [uuidv7(), trashed.file.id, "not-a-uuid", uuidv7(), live.file.id],
+    });
+    expect([...found].sort((a, b) => a.fileId.localeCompare(b.fileId))).toEqual(
+      [
+        { modelId: trashed.modelId, fileId: trashed.file.id, live: false },
+        { modelId: live.modelId, fileId: live.file.id, live: true },
+      ].sort((a, b) => a.fileId.localeCompare(b.fileId)),
+    );
+  });
+
+  test("files.findImported says when a file's model is in the trash or being purged", async () => {
+    const { file, modelId } = await seedFile(repos);
+    expect(await repos.files.findImported({ fileIds: [file.id] })).toEqual([
+      { modelId, fileId: file.id, live: true },
+    ]);
+
+    // Trashed: an Empty trash or the 30-day purge deletes its stored bytes.
+    await t.db
+      .updateTable("models")
+      .set({ trashedAt: new Date() })
+      .where("id", "=", modelId)
+      .execute();
+    expect(await repos.files.findImported({ fileIds: [file.id] })).toEqual([
+      { modelId, fileId: file.id, live: false },
+    ]);
+
+    // A purge that began: restore refuses it, and its objects may be gone.
+    await t.db
+      .updateTable("models")
+      .set({ purgeStartedAt: new Date() })
+      .where("id", "=", modelId)
+      .execute();
+    expect(await repos.files.findImported({ fileIds: [file.id] })).toEqual([
+      { modelId, fileId: file.id, live: false },
+    ]);
+  });
+
   test("plates are listed in plate order", async () => {
     const { file } = await seedFile(repos);
     await repos.plates.create({ fileId: file.id, index: 2, objectCount: 1, name: "Lid" });
