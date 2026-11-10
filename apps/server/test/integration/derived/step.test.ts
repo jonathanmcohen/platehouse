@@ -7,7 +7,11 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { DERIVED_KINDS, type DerivedJob } from "../../../src/derived/derived.js";
+import {
+  DERIVED_KINDS,
+  type DerivedJob,
+  RENDER_CHECK_GRACE_MS,
+} from "../../../src/derived/derived.js";
 import { QUEUE } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
@@ -134,5 +138,31 @@ describe("STEP meshes (AC-050)", () => {
     expect(await env.boss.findJobs(QUEUE.slicer, { data: { fileId } })).toEqual([]);
     expect(env.stub.renders.calls).toHaveLength(0);
     expect((await env.repos.files.get(fileId))?.derivedStatus).toBeNull();
+  });
+});
+
+describe("the render check (issue #91)", () => {
+  test("a STEP file left with no status and no job is queued once the grace period has passed", async () => {
+    const text = uniqueStep("never queued");
+    const path = await writeUpload(env, text);
+    // Stored with no afterCommit, as a database failure right after ingest
+    // committed leaves it: derived_status null and no job.
+    const { fileId } = await env.ingest.ingestFile({
+      tmpPath: path,
+      originalName: "Unqueued.step",
+      target: "new",
+    });
+    expect(await env.repos.files.get(fileId)).toMatchObject({ derivedStatus: null });
+
+    const result = await env.derived.checkRenders(
+      new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
+    );
+    expect(result.queued).toContain(fileId);
+    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    expect(jobs.map((j) => j.data.kind)).toEqual([DERIVED_KINDS.convertStep]);
+
+    const file = await settledFile(env, fileId);
+    expect(file.derivedStatus).toBe("ok");
+    expect(file.meshBlobId).not.toBeNull();
   });
 });

@@ -19,6 +19,10 @@ export const DERIVED_MESSAGES = {
   replaceFailed: "The slicer could not render the replacement, so the previous version is kept.",
   /** The job could not be queued after the upload committed. */
   queueFailed: "The render could not be queued.",
+  /** The render check found the job's last attempt ended without an outcome. */
+  renderLost: "The render did not finish.",
+  /** The same, for a replacement: the file keeps its previous source and renders. */
+  replaceLost: "The render of the replacement did not finish, so the previous version is kept.",
   /** A .scad over the contract's 1 MiB limit is never sent. */
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */

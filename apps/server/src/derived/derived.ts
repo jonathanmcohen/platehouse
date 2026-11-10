@@ -147,6 +147,25 @@ export interface DerivedDeps {
   uploadTimeoutMs?: number;
 }
 
+/**
+ * How long the render check waits after a file or staged source was written
+ * before it acts on it. Longer than a render job's expiry.
+ */
+export const RENDER_CHECK_GRACE_MS = 30 * 60 * 1000;
+
+/** The render check's suggested cadence on the maintenance queue. */
+export const CHECK_RENDERS_CRON = "*/15 * * * *";
+
+/** What one run of the render check did. */
+export interface RenderCheckResult {
+  /** .scad and STEP files that had no status and no job, now queued (issue #91). */
+  queued: string[];
+  /** Pending files whose last job ended failed with no outcome, now failed (issue #90). */
+  failed: string[];
+  /** Staged replacement sources no file and no live job named, now deleted (issue #90). */
+  discarded: string[];
+}
+
 /** The kinds that have derived blobs. */
 export function hasDerived(kind: FileKind): kind is "scad" | "step" {
   return kind === "scad" || kind === "step";
@@ -734,7 +753,11 @@ export function createDerived(deps: DerivedDeps) {
     }
   }
 
-  return { renderScad, convertStep, replaceFile, afterUpload, runJob };
+  async function checkRenders(_now: Date): Promise<RenderCheckResult> {
+    throw new Error("not implemented");
+  }
+
+  return { renderScad, convertStep, replaceFile, afterUpload, runJob, checkRenders };
 }
 
 export type Derived = ReturnType<typeof createDerived>;

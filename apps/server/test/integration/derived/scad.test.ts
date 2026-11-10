@@ -18,7 +18,9 @@ import {
   type DerivedDeps,
   DerivedError,
   type DerivedJob,
+  type DerivedStore,
   derivedJobHandlers,
+  RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
 import { createIngest } from "../../../src/ingest/ingest.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
@@ -543,5 +545,201 @@ describe("replacing a .scad (AC-053)", () => {
       blobId: before.blobId,
       derivedStatus: "ok",
     });
+  });
+});
+
+/** A time past the render check's grace period, as a later run sees it. */
+const pastGrace = () => new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000);
+
+/**
+ * A createDerived whose jobs are held: each is sent to start in an hour and
+ * with no retries, so it stays queued until the test fails it with
+ * boss.fail, which is what pg-boss does when a job's last attempt dies.
+ */
+function heldDerived() {
+  const send: PgBoss["send"] = async (...args: unknown[]) => {
+    const [name, data, options] = args as [string, object, Record<string, unknown>];
+    return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+      ...options,
+      startAfter: 3600,
+      retryLimit: 0,
+    });
+  };
+  return derivedWith({ queue: { send, findJobs: env.boss.findJobs.bind(env.boss) } });
+}
+
+/** The one job queued for the file, failed as pg-boss fails a job whose last attempt died. */
+async function killJob(fileId: string): Promise<string> {
+  const queued = (await jobsFor(fileId)).filter((j) => j.state === "created");
+  expect(queued).toHaveLength(1);
+  const id = queued[0]?.id ?? "";
+  await env.boss.fail(QUEUE.slicer, id, { message: "the process died mid-render" });
+  expect((await env.boss.getJobById(QUEUE.slicer, id))?.state).toBe("failed");
+  return id;
+}
+
+/** A settled .scad, then a replacement whose job is held, as replaceFile leaves it. */
+async function heldReplacement(label: string) {
+  const { modelId, fileId } = await uploadScad(unique(label));
+  const before = await settledFile(env, fileId);
+  const staged = await heldDerived().replaceFile(fileId, await writeUpload(env, unique(label)));
+  const stagedBlob = (await blobsOf(env, modelId)).find((b) => b.id === staged.sourceBlobId);
+  if (!stagedBlob) throw new Error("no staged source row");
+  expect(stagedBlob).toMatchObject({ kind: "source", state: "stored" });
+  expect(await env.repos.files.get(fileId)).toMatchObject({ derivedStatus: "pending" });
+  return { modelId, fileId, before, stagedBlob };
+}
+
+describe("the render check (issues #90 and #91)", () => {
+  test("it waits longer than a render job's expiry before it acts", async () => {
+    const { fileId } = await uploadScad(unique("expiry"));
+    await settledFile(env, fileId);
+    const [job] = await jobsFor(fileId);
+    expect(job?.expireInSeconds).toBeGreaterThan(0);
+    expect(RENDER_CHECK_GRACE_MS).toBeGreaterThan(
+      (job?.expireInSeconds ?? Number.POSITIVE_INFINITY) * 1000,
+    );
+  });
+
+  test("a .scad left with no status and no job is queued once the grace period has passed (#91)", async () => {
+    // A database failure right after ingest committed: the row is there,
+    // derived_status is null and no job was queued.
+    const text = unique("never queued");
+    const { fileId } = await storeScad(text);
+    expect(await env.repos.files.get(fileId)).toMatchObject({ derivedStatus: null });
+    expect(await jobsFor(fileId)).toEqual([]);
+
+    // Inside the grace period the check leaves it alone.
+    const early = await env.derived.checkRenders(new Date());
+    expect(early.queued).not.toContain(fileId);
+    expect(await jobsFor(fileId)).toEqual([]);
+
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.queued).toContain(fileId);
+    const jobs = await jobsFor(fileId);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      data: { kind: DERIVED_KINDS.renderScad, fileId },
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+
+    const file = await settledFile(env, fileId);
+    expect(file.derivedStatus).toBe("ok");
+    expect(env.stub.renders.callsTo("/v1/scad/stl").map((c) => c.body.toString("utf8"))).toEqual([
+      text,
+    ]);
+  });
+
+  test("a pending file whose last job died is marked failed and not queued again (#90)", async () => {
+    const { fileId } = await storeScad(unique("died"));
+    await heldDerived().renderScad(fileId);
+    expect(await env.repos.files.get(fileId)).toMatchObject({ derivedStatus: "pending" });
+    await killJob(fileId);
+
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.failed).toContain(fileId);
+    expect(result.queued).not.toContain(fileId);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.renderLost,
+    });
+    // A file that kills the slicer must not loop: no new job.
+    expect(await jobsFor(fileId)).toHaveLength(1);
+  });
+
+  test("a replacement whose last job died keeps the previous version and loses its staged source (#90)", async () => {
+    const { modelId, fileId, before, stagedBlob } = await heldReplacement("replacement died");
+    await killJob(fileId);
+
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.failed).toContain(fileId);
+    expect(result.discarded).toContain(stagedBlob.id);
+
+    // The file is as it was before the replacement, and says why.
+    const after = await env.repos.files.get(fileId);
+    expect(after).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.replaceLost,
+    });
+    // The staged source's row and object are gone; nothing else is.
+    const blobs = await blobsOf(env, modelId);
+    expect(blobs.map((b) => b.id).sort()).toEqual(
+      [before.blobId, before.renderStlBlobId, before.renderPngBlobId].sort(),
+    );
+    await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
+    expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
+    expect(await jobsFor(fileId)).toHaveLength(2);
+  });
+
+  test("a staged source whose object cannot be deleted keeps its row, and the next run removes both", async () => {
+    const { modelId, fileId, stagedBlob } = await heldReplacement("store down");
+    await killJob(fileId);
+
+    // Object first, then row: a store that refuses the delete leaves the row,
+    // so the next run still finds the object.
+    const downStore: DerivedStore = {
+      putBlob: env.store.putBlob.bind(env.store),
+      getBlobStream: env.store.getBlobStream.bind(env.store),
+      deleteBlobs: async () => {
+        throw new Error("the store is down");
+      },
+    };
+    const first = await derivedWith({ store: downStore }).checkRenders(pastGrace());
+    expect(first.discarded).not.toContain(stagedBlob.id);
+    expect((await blobsOf(env, modelId)).some((b) => b.id === stagedBlob.id)).toBe(true);
+    expect(await readObject(env, stagedBlob.key)).toBeInstanceOf(Buffer);
+
+    // A retry after the object went but the row did not finishes the job.
+    await env.store.deleteBlobs([stagedBlob.key]);
+    const second = await env.derived.checkRenders(pastGrace());
+    expect(second.discarded).toContain(stagedBlob.id);
+    expect((await blobsOf(env, modelId)).some((b) => b.id === stagedBlob.id)).toBe(false);
+    expect(await keysOf(env, modelId)).toEqual(
+      (await blobsOf(env, modelId)).map((b) => b.key).sort(),
+    );
+  });
+
+  test("a file and a staged source that a live job still owns are left untouched", async () => {
+    const { modelId, fileId, before, stagedBlob } = await heldReplacement("live job");
+    const blobsBefore = await blobsOf(env, modelId);
+    const keysBefore = await keysOf(env, modelId);
+
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.failed).not.toContain(fileId);
+    expect(result.queued).not.toContain(fileId);
+    expect(result.discarded).not.toContain(stagedBlob.id);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
+    expect(await blobsOf(env, modelId)).toEqual(blobsBefore);
+    expect(await keysOf(env, modelId)).toEqual(keysBefore);
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => j.state === "created")).toHaveLength(1);
+
+    // The held job is failed so it never runs during a later test; the next
+    // run then settles the file and removes the staged source.
+    await killJob(fileId);
+  });
+
+  test("a second run does nothing", async () => {
+    const { fileId: lost } = await storeScad(unique("second run lost"));
+    await heldDerived().renderScad(lost);
+    await killJob(lost);
+    const { fileId: unqueued } = await storeScad(unique("second run unqueued"));
+
+    const first = await env.derived.checkRenders(pastGrace());
+    expect(first.failed).toContain(lost);
+    expect(first.queued).toContain(unqueued);
+    await settledFile(env, unqueued);
+
+    const second = await env.derived.checkRenders(pastGrace());
+    expect(second).toEqual({ queued: [], failed: [], discarded: [] });
+    expect(await jobsFor(lost)).toHaveLength(1);
+    expect(await jobsFor(unqueued)).toHaveLength(1);
   });
 });
