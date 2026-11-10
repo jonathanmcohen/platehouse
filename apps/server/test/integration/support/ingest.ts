@@ -125,6 +125,8 @@ export interface ThreeMfSpec {
   sliced?: number[];
   /** The filament ids on each sliced plate; [1] when left out. */
   sliceFilamentIds?: number[];
+  /** The BBL model_id the sliced plates were sliced for; C12 (P1S) when left out. */
+  printerModelId?: string;
   makerWorld?: MakerWorldSpec;
 }
 
@@ -192,7 +194,7 @@ export function build3mf(spec: ThreeMfSpec): Buffer {
             (n) =>
               "  <plate>\n" +
               `    <metadata key="index" value="${n}"/>\n` +
-              '    <metadata key="printer_model_id" value="C12"/>\n' +
+              `    <metadata key="printer_model_id" value="${spec.printerModelId ?? "C12"}"/>\n` +
               '    <metadata key="nozzle_diameters" value="0.4"/>\n' +
               `    <metadata key="prediction" value="${1000 * n}"/>\n` +
               `    <metadata key="weight" value="${10 * n}.5"/>\n` +

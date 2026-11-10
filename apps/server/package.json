@@ -10,6 +10,7 @@
     "@aws-sdk/client-s3": "3.1164.0",
     "@aws-sdk/lib-storage": "3.1164.0",
     "@platehouse/makerworld": "workspace:*",
+    "@platehouse/slicer-contract": "workspace:*",
     "@platehouse/threemf": "workspace:*",
     "@tus/file-store": "2.1.2",
     "@tus/server": "2.4.7",
