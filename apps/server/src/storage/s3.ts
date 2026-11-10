@@ -14,6 +14,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
@@ -72,6 +73,15 @@ export interface BlobStore {
   ): Promise<{ objects: ListedObject[]; next: string | undefined }>;
   /** The bucket's versioning state (AC-013). */
   readVersioning(): Promise<VersioningState>;
+  /**
+   * Checks that the store takes a write: puts a few bytes at WRITE_CHECK_KEY,
+   * then deletes them, by the version written when the store returns one
+   * (see WRITE_CHECK_KEY). The key is fixed and outside models/, so neither the
+   * reconciliation count nor the orphan sweep (both look only under models/)
+   * ever sees it, and no caller can name a key outside the blob layout. A
+   * failure is StoreUnavailable or StoreError, as for putBlob.
+   */
+  checkWrite(): Promise<void>;
   /** Closes the client's sockets. */
   destroy(): void;
 }
@@ -83,6 +93,22 @@ export interface ListedObject {
   /** When the object was last written; undefined if the store did not say. */
   lastModified: Date | undefined;
 }
+
+/**
+ * The one key outside the blob layout the store writes: checkWrite's, put
+ * and deleted again at once. On a bucket with versioning on (AC-013) the
+ * check deletes the exact version it wrote (the VersionId PutObject returns),
+ * which removes it for good and leaves no delete marker, so the checks do not
+ * pile up old versions for the retention period. On an unversioned bucket it
+ * deletes by key, and a copy left by a delete that failed is overwritten by
+ * the next check, so there is never more than one. A key that may not delete
+ * a version (s3:DeleteObjectVersion), or a provider that refuses a delete by
+ * version, gets a plain delete instead, which on a versioned bucket leaves
+ * the check's version and a delete marker until the retention period ends;
+ * the same goes for a delete that fails, whose version stays as a noncurrent
+ * one once the next check writes over it.
+ */
+export const WRITE_CHECK_KEY = "checks/write-check";
 
 // DeleteObjects takes at most 1000 keys per request.
 const DELETE_BATCH = 1000;
@@ -265,6 +291,42 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
 
     readVersioning() {
       return readVersioning(client, bucket);
+    },
+
+    async checkWrite() {
+      let versionId: string | undefined;
+      try {
+        const out = await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: WRITE_CHECK_KEY,
+            Body: "platehouse write check\n",
+            ContentType: "text/plain; charset=utf-8",
+          }),
+        );
+        versionId = out.VersionId;
+      } catch (err) {
+        throw toStoreError(err, "PutObject");
+      }
+      if (versionId !== undefined && versionId !== "") {
+        try {
+          await client.send(
+            new DeleteObjectCommand({ Bucket: bucket, Key: WRITE_CHECK_KEY, VersionId: versionId }),
+          );
+          return;
+        } catch (err) {
+          const mapped = toStoreError(err, "DeleteObject");
+          // An outage fails the check. A refusal (a key without permission
+          // to delete a version, a provider that does not implement it) falls
+          // through to the plain delete below.
+          if (mapped instanceof StoreUnavailable) throw mapped;
+        }
+      }
+      try {
+        await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: WRITE_CHECK_KEY }));
+      } catch (err) {
+        throw toStoreError(err, "DeleteObject");
+      }
     },
 
     destroy() {
