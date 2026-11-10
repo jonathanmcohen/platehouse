@@ -80,6 +80,7 @@ function watcherFor(
   return createInboxWatcher({
     dir: inbox,
     settleSeconds: SETTLE_SECONDS,
+    tmpDir: join(env.dir, "tmp"),
     ingest,
     // As the server wires it: the files repository answers both questions,
     // and the checks run against the same database and bucket.

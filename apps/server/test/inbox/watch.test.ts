@@ -5,6 +5,7 @@
 // names, and the paths that must never loop (a file that cannot be moved, an
 // inbox copy that cannot be deleted) or lose a file without a word.
 import { createHash } from "node:crypto";
+import { renameSync, symlinkSync } from "node:fs";
 import {
   access,
   appendFile,
@@ -160,6 +161,7 @@ function watcher(
   return createInboxWatcher({
     dir: inbox,
     settleSeconds: 15,
+    tmpDir: join(root, "tmp"),
     ingest: fake.ingest,
     storedFile: async (id) => fake.stored.get(id),
     findImported: async () => [],
@@ -356,7 +358,7 @@ describe("after ingest", () => {
     const ingest = {
       async ingestFile(input: IngestInput) {
         const result = await fake.ingest.ingestFile(input);
-        await appendFile(input.tmpPath, "more bytes\n");
+        await appendFile(join(inbox, "changing.stl"), "more bytes\n");
         return result;
       },
     };
@@ -517,6 +519,7 @@ describe("after ingest", () => {
     const without: Omit<InboxWatcherDeps, "onIngested"> = {
       dir: inbox,
       settleSeconds: 15,
+      tmpDir: join(root, "tmp"),
       ingest: fake.ingest,
       storedFile: async (id) => fake.stored.get(id),
       findImported: async () => [],
@@ -547,6 +550,90 @@ describe("after ingest", () => {
     const pass = await tick(w, 15_000);
     expect(pass.imported).toHaveLength(1);
     expect(queued).toEqual([pass.imported[0]?.fileId]);
+  });
+});
+
+describe("a symlink swapped in for a settled file", () => {
+  // The only check on what a name is happens at the listing's lstat. These
+  // pin that the watcher reads the file it checked and never follows a link
+  // put in its place afterwards (the header: symlinks are never imported).
+  const OUTSIDE_TEXT = "not a model, and not the inbox's to read\n";
+
+  /** Renames a symlink to target over the inbox name, as a hostile writer would. */
+  function swapInLink(target: string, name: string): void {
+    symlinkSync(target, join(inbox, "link.swap.part"));
+    renameSync(join(inbox, "link.swap.part"), join(inbox, name));
+  }
+
+  test("a link swapped in after the check and before the file is opened is not followed or imported", async () => {
+    const fake = fakeIngest();
+    let swap = false;
+    const outside = join(root, "outside.scad");
+    const w = watcher(fake, {
+      // now() is read just after the file's lstat, before it is opened.
+      now: () => {
+        if (swap) {
+          swap = false;
+          swapInLink(outside, "model.scad");
+        }
+        return clock;
+      },
+    });
+    await writeFile(outside, OUTSIDE_TEXT);
+    await writeFile(join(inbox, "model.scad"), "cube(1);\n");
+    await w.pollOnce();
+    swap = true;
+    const pass = await tick(w, 15_000);
+
+    expect(fake.calls).toEqual([]);
+    expect(pass.imported).toEqual([]);
+    expect(pass.failed).toEqual([]);
+    expect((await lstat(join(inbox, "model.scad"))).isSymbolicLink()).toBe(true);
+    expect(await readFile(outside, "utf8")).toBe(OUTSIDE_TEXT);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    // The link is ignored from then on, as any symlink is.
+    await tick(w, 15_000);
+    await tick(w, 15_000);
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("a link swapped in once the file is open imports the settled bytes, and the link is left alone", async () => {
+    const fake = fakeIngest();
+    const outside = join(root, "outside.scad");
+    const original = "cube(2);\n";
+    const tmpPaths: string[] = [];
+    const ingest = {
+      async ingestFile(input: IngestInput) {
+        tmpPaths.push(input.tmpPath);
+        return fake.ingest.ingestFile(input);
+      },
+    };
+    const w = watcher(fake, {
+      ingest,
+      // Asked before the upload, after the file is opened: the swap lands in
+      // the window the database round trip leaves.
+      findImported: async () => {
+        swapInLink(outside, "model.scad");
+        return [];
+      },
+    });
+    await writeFile(outside, OUTSIDE_TEXT);
+    await writeFile(join(inbox, "model.scad"), original);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(pass.imported).toHaveLength(1);
+    const fileId = pass.imported[0]?.fileId ?? "";
+    expect(fake.stored.get(fileId)?.sha256).toEqual(sha256(Buffer.from(original)));
+    // Ingest read the watcher's own copy, never a path in the inbox, and the
+    // copy is gone once ingest is done with it.
+    expect(tmpPaths).toHaveLength(1);
+    expect(tmpPaths[0]?.startsWith(join(root, "tmp"))).toBe(true);
+    expect(await exists(tmpPaths[0] ?? "")).toBe(false);
+    // The link is neither deleted nor moved, and what it points at is untouched.
+    expect((await lstat(join(inbox, "model.scad"))).isSymbolicLink()).toBe(true);
+    expect(await readFile(outside, "utf8")).toBe(OUTSIDE_TEXT);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
   });
 });
 
@@ -633,6 +720,30 @@ describe("failures", () => {
     expect(moved.endsWith(".3mf")).toBe(true);
     expect(failed).toContain(`${moved}${REASON_SUFFIX}`);
     expect(await readFile(join(inbox, FAILED_DIR, moved), "utf8")).toBe("x\n");
+  });
+
+  test("a failed folder that is a symlink is not used: nothing moves through it, and it is logged", async () => {
+    const fake = fakeIngest(() => {
+      throw new IngestError("unsupported_type", "Refused");
+    });
+    const w = watcher(fake);
+    const elsewhere = join(root, "elsewhere");
+    await mkdir(elsewhere);
+    await symlink(elsewhere, join(inbox, FAILED_DIR));
+    const path = join(inbox, "notes.txt");
+    await writeFile(path, "not a model\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(pass.failed).toEqual([]);
+    expect(await readdir(elsewhere)).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe("not a model\n");
+    expect(
+      lines.some(
+        (l) =>
+          l.includes("notes.txt") && l.includes("could not move") && l.includes("not a folder"),
+      ),
+    ).toBe(true);
   });
 
   test("a file that cannot be moved to failed stays put, is logged, and is not retried until it changes", async () => {
@@ -1492,8 +1603,10 @@ describe("ingest's error codes", () => {
 
   test("a file removed while ingest reads it (ENOENT inside ingest_failed) is forgotten, not counted or moved", async () => {
     const fake = fakeIngest(async (input) => {
-      await rm(input.tmpPath);
-      throw wrapped(coded(`ENOENT: no such file or directory, open '${input.tmpPath}'`, "ENOENT"));
+      // Ingest reads the watcher's own copy, so the inbox copy is what goes.
+      const path = join(inbox, input.originalName);
+      await rm(path);
+      throw wrapped(coded(`ENOENT: no such file or directory, open '${path}'`, "ENOENT"));
     });
     const { probes, at } = checks(() => false);
     const w = watcher(fake, { probes });
