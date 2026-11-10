@@ -21,6 +21,7 @@ import {
   type Handler,
   s3Error,
   startBlackHole,
+  startCutOffS3,
   startFakeS3,
   xml,
 } from "./support/fake-s3.js";
@@ -134,6 +135,48 @@ describe("a store that cannot be reached", () => {
     const store = await storeAt(() => s3Error(status, "ServiceUnavailable"));
     const err = await errorOf(store.listPrefix("models/"));
     expect(err).toBeInstanceOf(StoreUnavailable);
+  });
+});
+
+// PR #60 review: a store that goes away while an object's body is being read
+// (a bucket restart, a socket reset) is an outage like one that fails the
+// GetObject itself, so a render waits for it instead of blaming the slicer.
+describe("getBlobStream when the store goes away partway through the body", () => {
+  async function readBody(store: BlobStore): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of await store.getBlobStream(KEY)) chunks.push(chunk as Buffer);
+    return Buffer.concat(chunks);
+  }
+
+  it("a connection dropped partway is StoreUnavailable", async () => {
+    const fake = await startCutOffS3({ total: 64 * 1024, sent: 1024, after: "reset" });
+    cleanups.push(() => fake.close());
+    const store = createBlobStore(settings(fake.endpoint), { maxAttempts: 1 });
+    cleanups.push(() => store.destroy());
+    const err = await errorOf(readBody(store));
+    expect(err).toBeInstanceOf(StoreUnavailable);
+    expect(everyRendering(err)).not.toContain(SECRET);
+  });
+
+  it("a body that stops moving past the idle timeout is StoreUnavailable", async () => {
+    const fake = await startCutOffS3({ total: 64 * 1024, sent: 1024, after: "stall" });
+    cleanups.push(() => fake.close());
+    const store = createBlobStore(settings(fake.endpoint), {
+      maxAttempts: 1,
+      socketTimeoutMs: 300,
+    });
+    cleanups.push(() => store.destroy());
+    const err = await errorOf(readBody(store));
+    expect(err).toBeInstanceOf(StoreUnavailable);
+  });
+
+  it("a body read to its end is passed through unchanged", async () => {
+    const store = await storeAt(() => ({
+      status: 200,
+      headers: { "content-type": "application/octet-stream" },
+      body: "synthetic object bytes",
+    }));
+    expect((await readBody(store)).toString("utf8")).toBe("synthetic object bytes");
   });
 });
 

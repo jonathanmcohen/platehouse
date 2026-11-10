@@ -6,17 +6,20 @@
 // is all the browser ever loads for a STEP file.
 import { randomBytes } from "node:crypto";
 import { truncate } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { LIMITS } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
+  createDerived,
   DERIVED_KINDS,
   DerivedError,
   type DerivedJob,
+  type DerivedStore,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
-import { QUEUE } from "../../../src/jobs/queues.js";
-import { BlobNotFound } from "../../../src/storage/s3.js";
+import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
+import { BlobNotFound, StoreUnavailable } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
@@ -196,5 +199,73 @@ describe("the render check (issue #91)", () => {
     const file = await settledFile(env, fileId);
     expect(file.derivedStatus).toBe("ok");
     expect(file.meshBlobId).not.toBeNull();
+  });
+});
+
+// PR #60 review: a STEP source is streamed from the bucket as it is sent, so
+// the store can go away partway through the send (a bucket restart). That is
+// a store outage like one that fails the GetObject itself: the job waits for
+// the store without using a retry, and the file is never blamed on the
+// slicer, even on its last attempt.
+describe("a store that goes away while a STEP source is sent", () => {
+  /** The first bytes of text, then the outage getBlobStream reports for a dropped body. */
+  function cutOff(text: string): Readable {
+    let sent = false;
+    return new Readable({
+      read() {
+        if (sent) {
+          setTimeout(() => this.destroy(new StoreUnavailable("GetObject", "ECONNRESET")), 10);
+          return;
+        }
+        sent = true;
+        this.push(Buffer.from(text.slice(0, 64)));
+      },
+    });
+  }
+
+  test("a source read that fails partway on the last attempt waits for the store, and the mesh lands once it answers", async () => {
+    const text = uniqueStep("store goes away");
+    const path = await writeUpload(env, text);
+    // Stored with no afterCommit, so the only job is the one run below.
+    const { fileId } = await env.ingest.ingestFile({
+      tmpPath: path,
+      originalName: "Housing.step",
+      target: "new",
+    });
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: file.blobId };
+    const store: DerivedStore = {
+      putBlob: env.store.putBlob.bind(env.store),
+      getBlobStream: async () => cutOff(text),
+      deleteBlobs: env.store.deleteBlobs.bind(env.store),
+    };
+    const derived = createDerived({
+      db: env.db,
+      store,
+      slicerUrl: env.stub.url,
+      queue: env.boss,
+      retryDelaySeconds: 1,
+    });
+
+    const outcome = await derived.runJob(job, {
+      retryCount: SLICER_RETRY.retryLimit,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "requeued", reason: "store_down" });
+    const waiting = await env.repos.files.get(fileId);
+    expect(waiting?.derivedStatus).not.toBe("failed");
+    expect(waiting?.derivedMessage).toBeNull();
+    // The source is kept for the next attempt.
+    const source = await env.repos.blobs.get(file.blobId);
+    expect(await readObject(env, source?.key ?? "")).toEqual(Buffer.from(text));
+
+    // The env's worker runs the job it queued, against a store that answers.
+    const done = await settledFile(env, fileId);
+    expect(done.derivedStatus).toBe("ok");
+    expect(done.meshBlobId).not.toBeNull();
+    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.data).toMatchObject({ ...job, waits: 1 });
   });
 });

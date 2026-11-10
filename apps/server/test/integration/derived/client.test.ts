@@ -25,6 +25,7 @@ import {
   SlicerDown,
   SlicerUnreachable,
 } from "../../../src/derived/client.js";
+import { StoreUnavailable } from "../../../src/storage/s3.js";
 
 const GLB = "model/gltf-binary";
 
@@ -124,6 +125,57 @@ describe("render request timers", () => {
     expect(RENDER_TIMEOUT_MS).toBe(150_000);
     // Both together fit inside pg-boss's default 15-minute job expiry.
     expect(RENDER_UPLOAD_TIMEOUT_MS + RENDER_TIMEOUT_MS).toBeLessThan(15 * 60 * 1000);
+  });
+});
+
+/** A body that sends count chunks and then fails with error, as a store going away would. */
+function failingAfter(count: number, error: Error): Readable {
+  let sent = 0;
+  return new Readable({
+    read() {
+      if (sent === count) {
+        setTimeout(() => this.destroy(error), 10);
+        return;
+      }
+      sent += 1;
+      setTimeout(() => this.push(Buffer.from(`chunk${sent};`)), 10);
+    },
+  });
+}
+
+// PR #60 review: a STEP body is read from the bucket as it is sent. When the
+// body itself fails partway (the store went away), that is the body's error,
+// passed on as it is, never a lost slicer connection: a StoreUnavailable
+// must reach the job as one so the job waits for the store.
+describe("a body that fails partway through the send", () => {
+  test("rejects with the body's own error, not SlicerUnreachable", async () => {
+    const baseUrl = await slicer();
+    const outage = new StoreUnavailable("GetObject", "ECONNRESET");
+    const error = await postRender(
+      { baseUrl, timeoutMs: 5_000, uploadTimeoutMs: 5_000 },
+      stepRequest(failingAfter(3, outage)),
+    ).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBe(outage);
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  test("a slicer that drops the connection while the body is sent is still SlicerUnreachable", async () => {
+    server = createServer((req: IncomingMessage) => {
+      req.once("data", () => req.socket.destroy());
+    });
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    const error = await postRender(
+      { baseUrl: `http://127.0.0.1:${port}`, timeoutMs: 5_000, uploadTimeoutMs: 5_000 },
+      stepRequest(trickle(50, 10)),
+    ).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(SlicerUnreachable);
   });
 });
 
