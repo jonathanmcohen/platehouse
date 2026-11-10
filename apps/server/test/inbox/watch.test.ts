@@ -23,6 +23,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { Estimates } from "../../src/estimates/service.js";
 import {
   BACKOFF_FIRST_MS,
   BACKOFF_MAX_MS,
@@ -32,6 +33,7 @@ import {
   type ImportedFile,
   type ImportedQuery,
   type InboxProbes,
+  type InboxWatcherDeps,
   inboxFileId,
   inboxName,
   inboxProbes,
@@ -506,6 +508,43 @@ describe("after ingest", () => {
     const retry = await tick(w, 5_000);
     expect(retry.imported).toEqual([{ name: "lost.stl", modelId: "model-1", fileId: id }]);
     expect(handed).toEqual([{ modelId: "model-1", fileId: id }]);
+  });
+
+  test("onIngested is required, and the server's estimates wiring queues the stored file", async () => {
+    const fake = fakeIngest();
+    const without: Omit<InboxWatcherDeps, "onIngested"> = {
+      dir: inbox,
+      settleSeconds: 15,
+      ingest: fake.ingest,
+      storedFile: async (id) => fake.stored.get(id),
+      findImported: async () => [],
+      probes: { database: async () => undefined, store: async () => undefined },
+      now: () => clock,
+      log: (line) => lines.push(line),
+    };
+    // @ts-expect-error A watcher built without onIngested must not compile, or
+    // inbox plates would wait for the 10-minute Orca poll; pnpm tsc -b checks
+    // this line, since vitest does not type-check.
+    const missing: InboxWatcherDeps = without;
+    expect(missing.dir).toBe(inbox);
+
+    const queued: string[] = [];
+    const estimates: Pick<Estimates, "enqueueFile"> = {
+      enqueueFile: async (fileId) => {
+        queued.push(fileId);
+        return 1;
+      },
+    };
+    // The wiring the watch.ts header gives the server, as written there.
+    const w = createInboxWatcher({
+      ...without,
+      onIngested: (r) => estimates.enqueueFile(r.fileId),
+    });
+    await writeFile(join(inbox, "wired.stl"), "solid w\nendsolid w\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.imported).toHaveLength(1);
+    expect(queued).toEqual([pass.imported[0]?.fileId]);
   });
 });
 
