@@ -5,7 +5,7 @@
 // names, and the paths that must never loop (a file that cannot be moved, an
 // inbox copy that cannot be deleted) or lose a file without a word.
 import { createHash } from "node:crypto";
-import { renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { type BigIntStats, lstatSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   access,
   appendFile,
@@ -882,18 +882,25 @@ describe("a file put under an imported file's name during the import", () => {
   ])(
     "a new file renamed over the name %s stays in the inbox and is imported later as its own model",
     async (_l, when, record) => {
+      const path = join(inbox, "part.stl");
+      // The new file as it was put there, to see that it is left untouched.
+      let swappedIn: BigIntStats | undefined;
+      const swap = () => {
+        renameOverSync("part.stl", SECOND);
+        swappedIn = lstatSync(path, { bigint: true });
+      };
       let ingested = 0;
       const fake = fakeIngest(() => {
         ingested += 1;
         // Ingest has the watcher's copy; the swap lands while it uploads.
-        if (when === "ingest" && ingested === 1) renameOverSync("part.stl", SECOND);
+        if (when === "ingest" && ingested === 1) swap();
       });
       let pending = true;
       const w = watcher(fake, {
         onIngested: async () => {
           if (when === "onIngested" && pending) {
             pending = false;
-            renameOverSync("part.stl", SECOND);
+            swap();
           }
         },
         // The first import's record is missing in the "missing" case; the
@@ -901,7 +908,6 @@ describe("a file put under an imported file's name during the import", () => {
         storedFile: async (id) =>
           record === "missing" && fake.calls.length === 1 ? undefined : fake.stored.get(id),
       });
-      const path = join(inbox, "part.stl");
       await writeFile(path, FIRST);
       const firstId = await inboxIdOf("part.stl");
       await w.pollOnce();
@@ -916,6 +922,11 @@ describe("a file put under an imported file's name during the import", () => {
       expect(await readFile(path, "utf8")).toBe(SECOND);
       expect(await readdir(inbox)).toEqual(["part.stl"]);
       expect(lines.some((l) => l.includes(`moved part.stl to ${FAILED_DIR}`))).toBe(false);
+      // Untouched: never moved aside and linked or copied back, which would
+      // change its inode or its ctime.
+      const now = await lstat(path, { bigint: true });
+      expect(swappedIn).toBeDefined();
+      expect([now.ino, now.ctimeNs]).toEqual([swappedIn?.ino, swappedIn?.ctimeNs]);
 
       // It is a new file: it settles and is imported as a model of its own.
       await tick(w, 5_000);
