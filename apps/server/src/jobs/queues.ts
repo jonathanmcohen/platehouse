@@ -9,11 +9,13 @@
 //   answers 409 busy while any heavy job runs, and those jobs retry on 409
 //   through the queue's own retry settings (SLICER_RETRY). Each job names
 //   its kind, and the worker hands it to that kind's handler (slicerJobs);
-//   Task 13's render and mesh kinds come from derived/derived.ts
-//   (derivedJobHandlers);
+// - after an ingest job stores a file, onIngested queues its estimates
+//   (Task 12), outside the ingest transaction;
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
-//   runs daily at 03:30 local time (issue #38), and the orphan sweep
-//   (ingest/orphans.ts) daily at 04:00 local time.
+//   runs daily at 03:30 local time (issue #38), the orphan sweep
+//   (ingest/orphans.ts) daily at 04:00 local time, Task 9's sweep of
+//   partial uploads untouched for 24 hours (uploads/tus.ts) every hour, and
+//   Task 12's Orca-version poll every 10 minutes.
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
@@ -31,9 +33,12 @@ export const INGEST_CONCURRENCY = 2;
 /**
  * How a slicer job is retried when the slicer answers 409 busy or the
  * connection to it is lost (build plan Task 12; Task 13's render and mesh
- * jobs too): by pg-boss itself, three retries with exponential backoff from
- * 10 s, capped at 2 minutes, so a slicer that is restarting has time to come
- * back. The handler records the failure once the last retry is used.
+ * jobs too): three retries with exponential backoff from 10 s, capped at 2
+ * minutes, so a slicer that is restarting has time to come back. pg-boss
+ * runs them itself, except that a slice job retries a lost connection as a
+ * new job with the same backoff, so that its job data can count the lost
+ * connections (estimates/service.ts). The handler records the failure once
+ * the last retry is used.
  */
 export const SLICER_RETRY = Object.freeze({
   retryLimit: 3,
@@ -77,14 +82,19 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   };
 }
 
-/**
- * The maintenance queue's tasks, each a job { task } and its schedule key.
- * Task 9 adds the hourly sweep of stale partial uploads here.
- */
+/** The maintenance queue's tasks, each a job { task } and its schedule key. */
 export const MAINTENANCE_TASKS = {
   purgeExpired: "purge-expired",
   sweepOrphans: "sweep-orphans",
+  pollOrca: "poll-orca",
+  sweepUploads: "sweep-uploads",
 } as const;
+
+/**
+ * Every 10 minutes (Task 12 decision): the Orca-version poll, which also runs
+ * once at startup.
+ */
+export const POLL_ORCA_CRON = "*/10 * * * *";
 
 /** A job on the slicer queue names its kind; each kind has one handler. */
 export interface SlicerJob {
@@ -109,6 +119,9 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
  */
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
 
+/** Hourly, on the hour (Task 9): the sweep of partial uploads untouched for 24 hours. */
+export const SWEEP_UPLOADS_CRON = "0 * * * *";
+
 /**
  * The process's local time zone, the one "03:30 local time" means: the
  * container's TZ, or UTC when none is set.
@@ -129,6 +142,19 @@ export interface QueueDeps {
    * the slicer queue is created but not worked.
    */
   slicerJobs?: SlicerJobHandlers;
+  /**
+   * Task 12's Orca-version poll, when given: scheduled every 10 minutes and
+   * run once at startup by startQueues itself.
+   */
+  pollOrca?(): Promise<unknown>;
+  /**
+   * Runs after a file is ingested, outside the ingest transaction: Task 12
+   * queues the file's estimates here. A failure is logged, never thrown,
+   * since the file is already stored.
+   */
+  onIngested?(result: IngestResult): Promise<unknown>;
+  /** Task 9's sweep of stale partial uploads (uploads/tus.ts's sweepStaleUploads). */
+  sweepUploads(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -145,7 +171,8 @@ interface MaintenanceJob {
  * a queue that exists keeps its policy (the slicer queue's retry settings are
  * applied again), and a schedule is keyed, so it is replaced rather than
  * added again. The slicer queue is worked, one job at a time, only when
- * slicerJobs is given.
+ * slicerJobs is given; the Orca poll is scheduled, and run once before this
+ * returns, only when pollOrca is.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
@@ -171,6 +198,20 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     { task: MAINTENANCE_TASKS.sweepOrphans },
     { tz, key: MAINTENANCE_TASKS.sweepOrphans, missed: "once" },
   );
+  if (deps.pollOrca) {
+    await boss.schedule(
+      QUEUE.maintenance,
+      POLL_ORCA_CRON,
+      { task: MAINTENANCE_TASKS.pollOrca },
+      { tz, key: MAINTENANCE_TASKS.pollOrca },
+    );
+  }
+  await boss.schedule(
+    QUEUE.maintenance,
+    SWEEP_UPLOADS_CRON,
+    { task: MAINTENANCE_TASKS.sweepUploads },
+    { tz, key: MAINTENANCE_TASKS.sweepUploads, missed: "once" },
+  );
 
   const polling =
     deps.pollingIntervalSeconds === undefined
@@ -182,7 +223,17 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     { ...settings.ingest.work, ...polling },
     async ([job]) => {
       if (job === undefined) throw new Error("ingest worker was handed no job");
-      return deps.ingestFile(job.data);
+      const result = await deps.ingestFile(job.data);
+      if (deps.onIngested) {
+        try {
+          await deps.onIngested(result);
+        } catch (error) {
+          // The file is stored; the Orca poll queues what was missed here.
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`queues: after ingesting file ${result.fileId}: ${message.slice(0, 200)}`);
+        }
+      }
+      return result;
     },
   );
 
@@ -218,9 +269,30 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
         case MAINTENANCE_TASKS.sweepOrphans:
           await deps.sweepOrphans(new Date());
           return;
+        case MAINTENANCE_TASKS.pollOrca:
+          if (!deps.pollOrca) throw new Error("No Orca poll is registered");
+          await deps.pollOrca();
+          return;
+        case MAINTENANCE_TASKS.sweepUploads:
+          await deps.sweepUploads(new Date());
+          return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
       }
     },
   );
+
+  // The Orca poll's startup run (Task 12 decision: at startup and every 10
+  // minutes), here beside its schedule. It runs after the workers start, so
+  // the slices it queues are worked at once. A failure, such as a slicer that
+  // is not up yet, is logged and never stops the app: the next scheduled poll
+  // does the same work.
+  if (deps.pollOrca) {
+    try {
+      await deps.pollOrca();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: startup Orca poll: ${message.slice(0, 200)}`);
+    }
+  }
 }

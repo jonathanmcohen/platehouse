@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { DERIVED_KINDS, type DerivedJob } from "../../../src/derived/derived.js";
 import { QUEUE } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
+import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
@@ -20,7 +21,6 @@ import {
   until,
 } from "../support/derived.js";
 import { ASCII_STL, STEP_TEXT, writeUpload } from "../support/ingest.js";
-import { renderedBytes } from "../support/slicer-stub.js";
 
 let env: DerivedEnv;
 
@@ -33,7 +33,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  env.stub.reset();
+  env.stub.renders.reset();
 });
 
 /** A STEP file unique to the test: a comment line in its header section. */
@@ -72,7 +72,7 @@ describe("STEP meshes (AC-050)", () => {
     expect(blobs.map((b) => b.kind).sort()).toEqual(["mesh_glb", "source"]);
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
 
-    const calls = env.stub.callsTo("/v1/step/glb");
+    const calls = env.stub.renders.callsTo("/v1/step/glb");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.body.toString("utf8")).toBe(text);
     expect(calls[0]?.contentType).toBe("application/octet-stream");
@@ -90,7 +90,7 @@ describe("STEP meshes (AC-050)", () => {
 
   test("a conversion error keeps the source and shows the converter's message", async () => {
     const message = "STEP import failed: no shapes found <in> 'DATA' & section";
-    env.stub.queue("/v1/step/glb", { kind: "failed", message });
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message });
     const text = uniqueStep("convert-error");
     const { modelId, fileId } = await uploadStep(text);
     const file = await settledFile(env, fileId);
@@ -132,7 +132,7 @@ describe("STEP meshes (AC-050)", () => {
     });
     await sleep(2000);
     expect(await env.boss.findJobs(QUEUE.slicer, { data: { fileId } })).toEqual([]);
-    expect(env.stub.calls).toHaveLength(0);
+    expect(env.stub.renders.calls).toHaveLength(0);
     expect((await env.repos.files.get(fileId))?.derivedStatus).toBeNull();
   });
 });

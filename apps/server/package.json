@@ -12,6 +12,9 @@
     "@platehouse/makerworld": "workspace:*",
     "@platehouse/slicer-contract": "workspace:*",
     "@platehouse/threemf": "workspace:*",
+    "@tus/file-store": "2.1.2",
+    "@tus/server": "2.4.7",
+    "fastify": "5.12.8",
     "kysely": "0.29.8",
     "pg": "8.23.1",
     "pg-boss": "12.38.1",
@@ -20,6 +23,7 @@
   "devDependencies": {
     "@testcontainers/postgresql": "12.2.1",
     "@types/pg": "8.23.1",
-    "testcontainers": "12.2.1"
+    "testcontainers": "12.2.1",
+    "tus-js-client": "4.3.1"
   }
 }

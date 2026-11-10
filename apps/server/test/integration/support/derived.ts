@@ -10,8 +10,8 @@ import { createDerived, type Derived, derivedJobHandlers } from "../../../src/de
 import { createIngest, type Ingest } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
+import { type SlicerStub, startSlicerStub } from "../../support/slicer-stub.js";
 import { type IngestEnv, startIngestEnv } from "./ingest.js";
-import { type SlicerStub, startSlicerStub } from "./slicer-stub.js";
 
 export interface DerivedEnv extends IngestEnv {
   boss: PgBoss;
@@ -48,6 +48,7 @@ export async function startDerivedEnv(
       },
       purgeExpired: async () => ({}),
       sweepOrphans: async () => ({}),
+      sweepUploads: async () => ({}),
       slicerJobs: derivedJobHandlers(derived),
       pollingIntervalSeconds: 0.5,
     });
@@ -65,13 +66,13 @@ export async function startDerivedEnv(
       }),
       async stop() {
         await startedBoss.stop({ graceful: false });
-        await startedStub.close();
+        await startedStub.stop();
         await env.stop();
       },
     };
   } catch (error) {
     await boss?.stop({ graceful: false });
-    await stub?.close();
+    await stub?.stop();
     await env.stop();
     throw error;
   }

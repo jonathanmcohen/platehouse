@@ -20,6 +20,7 @@ import {
 import { createIngest } from "../../../src/ingest/ingest.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
+import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
   type DerivedEnv,
@@ -30,7 +31,6 @@ import {
   until,
 } from "../support/derived.js";
 import { SCAD_TEXT, writeUpload } from "../support/ingest.js";
-import { renderedBytes } from "../support/slicer-stub.js";
 
 let env: DerivedEnv;
 
@@ -43,7 +43,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  env.stub.reset();
+  env.stub.renders.reset();
 });
 
 /** A .scad uploaded through ingest, with afterCommit queueing its render. */
@@ -94,7 +94,7 @@ describe("OpenSCAD renders (AC-052)", () => {
     expect(blobs).toHaveLength(3);
 
     for (const route of ["/v1/scad/stl", "/v1/scad/png"] as const) {
-      const calls = env.stub.callsTo(route);
+      const calls = env.stub.renders.callsTo(route);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.body.toString("utf8")).toBe(text);
       expect(calls[0]?.contentType).toMatch(/^text\/plain/);
@@ -111,7 +111,7 @@ describe("OpenSCAD renders (AC-052)", () => {
       afterCommit: async (stored) => {
         // Read on another pool connection: only a committed row is visible.
         committedAtEnqueue = await env.repos.files.get(stored.fileId);
-        slicerCallsAtEnqueue = env.stub.calls.length;
+        slicerCallsAtEnqueue = env.stub.renders.calls.length;
         await env.derived.afterUpload(stored);
       },
     });
@@ -141,7 +141,7 @@ describe("OpenSCAD renders (AC-052)", () => {
     const message =
       'ERROR: Parser error in file "input.scad", line 3: syntax error\n' +
       "<script>alert(1)</script> & <b>not bold</b>";
-    env.stub.queue("/v1/scad/stl", { kind: "failed", message });
+    env.stub.renders.queue("/v1/scad/stl", { kind: "failed", message });
     const text = unique("render-error");
     const { modelId, fileId } = await uploadScad(text);
     const file = await settledFile(env, fileId);
@@ -157,7 +157,7 @@ describe("OpenSCAD renders (AC-052)", () => {
     expect(await readObject(env, blobs[0]?.key ?? "")).toEqual(Buffer.from(text));
 
     // A render error is OpenSCAD's answer, not a slicer fault: no retry.
-    expect(env.stub.callsTo("/v1/scad/stl")).toHaveLength(1);
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
     // The file is updated inside the job, just before pg-boss completes it.
     const [job] = await until(
       () => jobsFor(fileId),
@@ -174,20 +174,20 @@ describe("OpenSCAD renders (AC-052)", () => {
 
     expect(file.derivedStatus).toBe("failed");
     expect(file.derivedMessage).toBe(DERIVED_MESSAGES.scadTooLarge);
-    expect(env.stub.calls).toHaveLength(0);
+    expect(env.stub.renders.calls).toHaveLength(0);
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
   });
 });
 
 describe("retries through pg-boss", () => {
   test("a busy slicer is retried by pg-boss and the render lands", async () => {
-    env.stub.queue("/v1/scad/stl", { kind: "busy" }, { kind: "busy" });
+    env.stub.renders.queue("/v1/scad/stl", { kind: "busy" }, { kind: "busy" });
     const { fileId } = await storeScad(unique("busy"));
     const jobId = await env.derived.renderScad(fileId);
 
     const file = await settledFile(env, fileId);
     expect(file.derivedStatus).toBe("ok");
-    expect(env.stub.callsTo("/v1/scad/stl").map((c) => c.answer)).toEqual([
+    expect(env.stub.renders.callsTo("/v1/scad/stl").map((c) => c.answer)).toEqual([
       "busy",
       "busy",
       "render",
@@ -206,7 +206,7 @@ describe("retries through pg-boss", () => {
   });
 
   test("a slicer that drops every connection ends failed with slicer_error after 3 retries, never stuck", async () => {
-    env.stub.always("/v1/scad/stl", { kind: "drop" });
+    env.stub.renders.always("/v1/scad/stl", { kind: "drop" });
     const { modelId, fileId } = await storeScad(unique("drop"));
     const jobId = await env.derived.renderScad(fileId);
 
@@ -215,7 +215,7 @@ describe("retries through pg-boss", () => {
     expect(file.derivedMessage).toBe(DERIVED_MESSAGES.slicerError);
     expect(file.renderStlBlobId).toBeNull();
     // The first attempt and pg-boss's 3 retries; the job ran no loop of its own.
-    expect(env.stub.callsTo("/v1/scad/stl")).toHaveLength(4);
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(4);
 
     const job = await until(
       () => env.boss.getJobById(QUEUE.slicer, jobId),
@@ -236,7 +236,7 @@ describe("the slicer queue's worker", () => {
       (j) => j?.state === "failed",
     );
     expect(JSON.stringify(job?.output)).toMatch(/Unknown slicer job kind: no-such-kind/);
-    expect(env.stub.calls).toHaveLength(0);
+    expect(env.stub.renders.calls).toHaveLength(0);
   });
 
   test("the render and mesh kinds register into the slicer queue's one handler map", () => {
@@ -295,7 +295,7 @@ describe("replacing a .scad (AC-053)", () => {
     const oldKeys = await keysOf(env, modelId);
 
     // The STL renders, then the slicer goes away for the preview, every time.
-    env.stub.always("/v1/scad/png", { kind: "drop" });
+    env.stub.renders.always("/v1/scad/png", { kind: "drop" });
     const path = await writeUpload(env, unique("never lands"));
     await env.derived.replaceFile(fileId, path);
     const after = await until(

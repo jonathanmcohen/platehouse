@@ -1,7 +1,8 @@
 // Build plan Task 8: the pg-boss queues. ingest runs two at once, slicer is a
 // singleton queue whose jobs Task 12 adds, and maintenance carries the cron
-//   jobs: Task 14's purgeExpired daily at 03:30 local time (issue #38) and
-// the orphan sweep daily at 04:00 local time (PR #49 review).
+//   jobs: Task 14's purgeExpired daily at 03:30 local time (issue #38), the
+// orphan sweep daily at 04:00 local time (PR #49 review) and Task 9's sweep
+// of stale partial uploads every hour.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -14,6 +15,7 @@ import {
   PURGE_EXPIRED_CRON,
   QUEUE,
   SWEEP_ORPHANS_CRON,
+  SWEEP_UPLOADS_CRON,
   startQueues,
 } from "../../../src/jobs/queues.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
@@ -23,6 +25,7 @@ let boss: PgBoss;
 let dbUrl: string;
 const purgeCalls: Date[] = [];
 const sweepCalls: Date[] = [];
+const uploadSweepCalls: Date[] = [];
 const ingestCalls: IngestInput[] = [];
 let ingestImpl: (input: IngestInput) => Promise<IngestResult> = async () => ({
   modelId: "00000000-0000-7000-8000-000000000001",
@@ -41,6 +44,10 @@ const deps = () => ({
   sweepOrphans: async (now: Date) => {
     sweepCalls.push(now);
     return { listed: 0, deleted: 0, outsideLayout: 0 };
+  },
+  sweepUploads: async (now: Date) => {
+    uploadSweepCalls.push(now);
+    return { listed: 0, deleted: 0, kept: 0, skipped: 0 };
   },
   pollingIntervalSeconds: 0.5,
 });
@@ -94,7 +101,7 @@ describe("queues", () => {
     }
     expect((await boss.getQueue(QUEUE.slicer))?.policy).toBe("singleton");
     expect((await boss.getQueue(QUEUE.ingest))?.retryLimit).toBe(0);
-    expect(await boss.getSchedules(QUEUE.maintenance)).toHaveLength(2);
+    expect(await boss.getSchedules(QUEUE.maintenance)).toHaveLength(3);
   });
 });
 
@@ -116,7 +123,11 @@ describe("maintenance", () => {
   test("the orphan sweep is scheduled daily at 04:00 local time", async () => {
     const schedules = await boss.getSchedules(QUEUE.maintenance);
     expect(schedules.map((s) => s.key).sort()).toEqual(
-      [MAINTENANCE_TASKS.purgeExpired, MAINTENANCE_TASKS.sweepOrphans].sort(),
+      [
+        MAINTENANCE_TASKS.purgeExpired,
+        MAINTENANCE_TASKS.sweepOrphans,
+        MAINTENANCE_TASKS.sweepUploads,
+      ].sort(),
     );
     const sweep = schedules.find((s) => s.key === MAINTENANCE_TASKS.sweepOrphans);
     expect(sweep).toMatchObject({
@@ -127,6 +138,32 @@ describe("maintenance", () => {
       data: { task: MAINTENANCE_TASKS.sweepOrphans },
     });
     expect(SWEEP_ORPHANS_CRON).toBe("0 4 * * *");
+  });
+
+  test("the stale-upload sweep is scheduled every hour", async () => {
+    const schedules = await boss.getSchedules(QUEUE.maintenance);
+    const sweep = schedules.find((s) => s.key === MAINTENANCE_TASKS.sweepUploads);
+    expect(sweep).toMatchObject({
+      name: QUEUE.maintenance,
+      key: MAINTENANCE_TASKS.sweepUploads,
+      cron: "0 * * * *",
+      timezone: localTimeZone(),
+      data: { task: MAINTENANCE_TASKS.sweepUploads },
+    });
+    expect(SWEEP_UPLOADS_CRON).toBe("0 * * * *");
+  });
+
+  test("a sweep-uploads job calls sweepUploads with the time it ran", async () => {
+    const before = uploadSweepCalls.length;
+    const sentAt = Date.now();
+    await boss.send(QUEUE.maintenance, { task: MAINTENANCE_TASKS.sweepUploads });
+    await until(
+      () => uploadSweepCalls.length,
+      (n) => n > before,
+    );
+    const now = uploadSweepCalls[before];
+    expect(now).toBeInstanceOf(Date);
+    expect(now?.getTime()).toBeGreaterThanOrEqual(sentAt - 1000);
   });
 
   test("a sweep-orphans job calls sweepOrphans with the time it ran", async () => {
