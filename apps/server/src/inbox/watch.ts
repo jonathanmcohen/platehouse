@@ -9,8 +9,16 @@
 // - Dotfiles and names ending in .part, .crdownload or .tmp (any case) are
 //   ignored, as are folders (failed/ among them), symlinks and anything else
 //   that is not a regular file. They are never imported and never moved.
-// - A file is settled when its size and mtime (and inode, so a replaced file
-//   counts as new) are unchanged across consecutive polls for
+//   The listing's lstat is not the only check, since a writer can rename a
+//   symlink over a settled file after it: a settled file is opened once,
+//   with O_NOFOLLOW, and fstat on the open file must show the regular file
+//   that settled (the same device, inode, size and mtime). Otherwise nothing
+//   is read, the file is looked at again from the start, and a symlink there
+//   is ignored as any symlink is. Everything after reads that open file,
+//   never the inbox path again: its hash, and a copy in TMP_DIR/inbox-copies
+//   that ingest reads and that is deleted once ingest is done with it.
+// - A file is settled when its size and mtime (and device and inode, so a
+//   replaced file counts as new) are unchanged across consecutive polls for
 //   INBOX_SETTLE_SECONDS. The window starts when a poll first sees the
 //   current size and mtime, never at the mtime itself: a copy that keeps its
 //   source's mtime (rsync -t, cp -p) would otherwise look settled at once.
@@ -25,14 +33,19 @@
 //   never thrown: the file is stored, and the Orca poll queues what was
 //   missed. Then the watcher reads
 //   the size and SHA-256 that ingest recorded for the stored file and hashes
-//   the inbox copy again; the copy is deleted only when both match (AC-021:
-//   deleted once the upload is verified). If the copy changed in the
-//   meantime, or the record cannot be read, the copy is moved to failed with
-//   a reason that says a model was made, so it is neither lost nor imported a
-//   second time.
+//   the open inbox file again; the inbox copy is deleted only when both match
+//   and its name still holds that same file (AC-021: deleted once the upload
+//   is verified). If the copy changed in the meantime, another file was put
+//   under its name, or the record cannot be read, what holds the name is
+//   moved to failed with a reason that says a model was made, so it is
+//   neither lost nor imported a second time. A symlink or anything else that
+//   is not a regular file found under the name then is left alone.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
-//   holding one plain sentence.
+//   holding one plain sentence. failed/ is made when missing, and refused
+//   when it is anything but a real folder (a symlink copied in by rsync -a,
+//   say): nothing moves through it, and each file that would have is logged
+//   and left in the inbox, as a file that cannot be moved is (below).
 // - The folder is listed as raw bytes, so a name that is not valid UTF-8 (a
 //   Latin-1 name from an old archive, say) still reaches lstat and the move.
 //   Ingest takes the file by a string path, which cannot spell such a name,
@@ -160,9 +173,9 @@
 // such a file is tried once more.
 //
 // Nothing here starts on import: the server calls start() once at boot and
-// stop() on shutdown. Besides dir (INBOX_DIR) and settleSeconds
-// (INBOX_SETTLE_SECONDS), it must pass every one of these, and the type
-// requires each:
+// stop() on shutdown. Besides dir (INBOX_DIR), settleSeconds
+// (INBOX_SETTLE_SECONDS) and tmpDir (TMP_DIR, where ingest's copies go), it
+// must pass every one of these, and the type requires each:
 //   ingest:       the ingest service (createIngest), for its ingestFile
 //   storedFile:   (id) => files.get(id), from the files repository
 //   findImported: (q) => files.findImported(q), from the files repository
@@ -178,9 +191,20 @@
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { BigIntStats, PathLike } from "node:fs";
-import { createReadStream } from "node:fs";
-import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { constants, createWriteStream } from "node:fs";
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { type Kysely, sql } from "kysely";
 import { uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
@@ -442,6 +466,12 @@ export interface InboxWatcherDeps {
   dir: string;
   /** INBOX_SETTLE_SECONDS. */
   settleSeconds: number;
+  /**
+   * TMP_DIR. Ingest reads a copy the watcher makes in TMP_DIR/inbox-copies
+   * from the file it opened, never the inbox path, so nothing swapped in
+   * under the name after the check is read.
+   */
+  tmpDir: string;
   ingest: Pick<Ingest, "ingestFile">;
   /** The recorded size and SHA-256 of a stored file (repos files.get). */
   storedFile: (fileId: string) => Promise<StoredFile | undefined>;
@@ -511,6 +541,14 @@ interface PassState {
   counting: boolean;
 }
 
+/** What importOne holds for an import, released whatever happens. */
+interface Held {
+  /** The settled file, opened once. */
+  handle?: FileHandle;
+  /** The copy in TMP_DIR/inbox-copies that ingest reads, until it is deleted. */
+  copy?: string | undefined;
+}
+
 interface Seen {
   signature: string;
   /** When a poll first saw this signature, on the injected clock. */
@@ -526,7 +564,7 @@ interface Seen {
 }
 
 function signature(st: BigIntStats): string {
-  return `${st.size}:${st.mtimeNs}:${st.ino}`;
+  return `${st.dev}:${st.size}:${st.mtimeNs}:${st.ino}`;
 }
 
 function codeOf(error: unknown): string | undefined {
@@ -634,10 +672,26 @@ async function exists(path: PathLike): Promise<boolean> {
   }
 }
 
-async function hashFile(path: string): Promise<StoredFile> {
+/**
+ * How a settled file is opened: read-only, never through a symlink
+ * (O_NOFOLLOW fails with ELOOP on one), and without waiting on a FIFO put in
+ * its place (O_NONBLOCK; it has no effect on a regular file). The fstat after
+ * the open is the check that counts: a platform without O_NOFOLLOW would
+ * follow a link, and the inode it reached would not be the settled one.
+ */
+const OPEN_SETTLED = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+/** The folder in TMP_DIR that ingest reads the watcher's copies from. */
+export const COPY_DIR = "inbox-copies";
+
+/** What ends the name of each copy in COPY_DIR, so a sweep removes only those. */
+const COPY_SUFFIX = ".inbox-copy";
+
+/** The size and SHA-256 of an open file, read from its start. */
+async function hashHandle(handle: FileHandle): Promise<StoredFile> {
   const hash = createHash("sha256");
   let size = 0;
-  for await (const chunk of createReadStream(path)) {
+  for await (const chunk of handle.createReadStream({ start: 0, autoClose: false })) {
     hash.update(chunk as Buffer);
     size += (chunk as Buffer).length;
   }
@@ -661,6 +715,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
   const settleMs = deps.settleSeconds * 1000;
   const failedDir = join(dir, FAILED_DIR);
+  const copyDir = join(deps.tmpDir, COPY_DIR);
+  // Whether copies a process before this one left behind (a crash during an
+  // import) have been swept; done once, before this watcher's first copy.
+  let copiesSwept = false;
 
   // Files being watched for the settle window, by name.
   const seen = new Map<string, Seen>();
@@ -746,9 +804,36 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     return false;
   }
 
+  /**
+   * Makes the failed folder when it is missing, and refuses one that is not
+   * a real folder: a symlink (copied in by rsync -a, or made on purpose)
+   * would send inbox files, under names their writer chose, into whatever it
+   * points at.
+   */
+  async function failedFolder(): Promise<void> {
+    let st: BigIntStats;
+    try {
+      st = await lstat(failedDir, { bigint: true });
+    } catch (error) {
+      if (codeOf(error) !== "ENOENT") throw error;
+      try {
+        await mkdir(failedDir);
+      } catch (mkdirError) {
+        if (codeOf(mkdirError) !== "EEXIST") throw mkdirError;
+      }
+      st = await lstat(failedDir, { bigint: true });
+    }
+    if (!st.isDirectory()) {
+      const what = st.isSymbolicLink() ? "a symlink, not a folder" : "not a folder";
+      throw new Error(
+        `${failedDir} is ${what}, so nothing is moved into it; replace it with a real folder`,
+      );
+    }
+  }
+
   /** Moves the file to failed with its reason file; returns the name it took. */
   async function moveToFailed(name: string, path: PathLike, reason: string): Promise<string> {
-    await mkdir(failedDir, { recursive: true });
+    await failedFolder();
     for (let n = 1; n <= 1000; n += 1) {
       const candidate = failedName(name, n);
       const target = join(failedDir, candidate);
@@ -807,12 +892,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    */
   async function earlierImport(
     name: string,
-    path: string,
-    entry: Seen,
+    hash: StoredFile,
     arrived: Date,
   ): Promise<{ found: { modelId: string; fileId: string } } | { fileId: string }> {
-    entry.hash ??= await hashFile(path);
-    const hash = entry.hash;
     const ids = Array.from({ length: MAX_INBOX_IDS }, (_, attempt) =>
       inboxFileId({ name, size: hash.size, sha256: hash.sha256, arrived, attempt }),
     );
@@ -832,6 +914,83 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     throw new Error(
       `every one of the ${MAX_INBOX_IDS} file ids for this copy belongs to a model in the trash`,
     );
+  }
+
+  /**
+   * Opens the settled file without following a symlink and checks, on the
+   * open file, that it is still the regular file the settle window watched
+   * (the same device, inode, size and mtime). Returns undefined, with nothing
+   * left open, when it is not: a symlink, FIFO or other file renamed over the
+   * name after the listing's lstat, or the file changed since. Any other
+   * error is thrown, as a read of the file would throw it.
+   */
+  async function openSettled(path: string, entry: Seen): Promise<FileHandle | undefined> {
+    let handle: FileHandle;
+    try {
+      handle = await open(path, OPEN_SETTLED);
+    } catch (error) {
+      // O_NOFOLLOW on a symlink.
+      if (codeOf(error) === "ELOOP") return undefined;
+      throw error;
+    }
+    let st: BigIntStats;
+    try {
+      st = await handle.stat({ bigint: true });
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+    if (st.isFile() && signature(st) === entry.signature) return handle;
+    await handle.close();
+    return undefined;
+  }
+
+  /**
+   * Copies the open file into TMP_DIR/inbox-copies for ingest to read,
+   * hashing it on the way, and returns the copy's path with the size and
+   * SHA-256 of what was copied. The copy is removed if the copy fails.
+   */
+  async function copyOut(handle: FileHandle): Promise<{ path: string; hash: StoredFile }> {
+    await mkdir(copyDir, { recursive: true });
+    if (!copiesSwept) {
+      for (const entry of await readdir(copyDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith(COPY_SUFFIX)) {
+          await rm(join(copyDir, entry.name), { force: true });
+        }
+      }
+      copiesSwept = true;
+    }
+    const path = join(copyDir, `${uuidv7()}${COPY_SUFFIX}`);
+    const hash = createHash("sha256");
+    let size = 0;
+    try {
+      await pipeline(
+        handle.createReadStream({ start: 0, autoClose: false }),
+        async function* (source: AsyncIterable<Buffer>) {
+          for await (const chunk of source) {
+            hash.update(chunk);
+            size += chunk.length;
+            yield chunk;
+          }
+        },
+        createWriteStream(path, { flags: "wx", mode: 0o600 }),
+      );
+    } catch (error) {
+      await rm(path, { force: true });
+      throw error;
+    }
+    return { path, hash: { size, sha256: hash.digest() } };
+  }
+
+  /**
+   * Forgets a file that turned out not to be the one that settled, so the
+   * next poll looks at whatever has the name now from the start: a symlink
+   * is ignored there, as any symlink is, and a changed file settles again.
+   */
+  function notSettled(name: string, why: string): "done" {
+    seen.delete(name);
+    log(`inbox: ${name} ${why}; it is not imported, and is looked at again from the start`);
+    return "done";
   }
 
   /**
@@ -886,16 +1045,56 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     arrived: Date,
     state: PassState,
   ): Promise<"outage" | "done"> {
-    const { pass } = state;
     state.tried = true;
-    let result: { modelId: string; fileId: string };
+    const held: Held = {};
     try {
-      const earlier = await earlierImport(name, path, entry, arrived);
+      return await importOpen(name, path, entry, arrived, state, held);
+    } finally {
+      if (held.copy !== undefined) await rm(held.copy, { force: true }).catch(() => undefined);
+      await held.handle?.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * importOne's work. The file is opened once (openSettled) and everything
+   * after reads that open file: its hash, the copy ingest reads, and the
+   * check after the import. The inbox path itself is used again only to see
+   * what is under the name now, and to delete or move the file.
+   */
+  async function importOpen(
+    name: string,
+    path: string,
+    entry: Seen,
+    arrived: Date,
+    state: PassState,
+    held: Held,
+  ): Promise<"outage" | "done"> {
+    const { pass } = state;
+    let result: { modelId: string; fileId: string };
+    let handle: FileHandle | undefined;
+    try {
+      handle = await openSettled(path, entry);
+      if (handle === undefined) {
+        return notSettled(
+          name,
+          "was replaced (by a symlink, say) or changed after it settled and before it was read",
+        );
+      }
+      held.handle = handle;
+      // One read makes the copy and its hash; the copy is what ingest reads.
+      const copy = await copyOut(handle);
+      held.copy = copy.path;
+      entry.hash ??= copy.hash;
+      const hash = entry.hash;
+      if (hash.size !== copy.hash.size || !hash.sha256.equals(copy.hash.sha256)) {
+        return notSettled(name, "changed while its size, mtime and inode stayed the same");
+      }
+      const earlier = await earlierImport(name, hash, arrived);
       result =
         "found" in earlier
           ? earlier.found
           : await ingest.ingestFile({
-              tmpPath: path,
+              tmpPath: copy.path,
               originalName: name,
               target: "new",
               fileId: earlier.fileId,
@@ -967,6 +1166,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       strike(name, path, entry, error, state);
       return "done";
     }
+    // Ingest is done with the copy; it goes now rather than after the check.
+    if (held.copy !== undefined) {
+      await rm(held.copy, { force: true }).catch(() => undefined);
+      held.copy = undefined;
+    }
     strikes.delete(name);
     seen.delete(name);
     pass.imported.push({ name, ...result });
@@ -983,12 +1187,27 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
 
     let verdict: "match" | "changed" | "unconfirmed";
     try {
+      // What is under the name now. A symlink or anything else that is not a
+      // regular file, swapped in during the import, is never deleted or moved.
+      const named = await lstat(path, { bigint: true });
+      if (!named.isFile()) {
+        log(
+          `inbox: imported ${name} as model ${result.modelId}; its name in the inbox now holds ` +
+            "a symlink or something else that is not a regular file, which is left alone",
+        );
+        return "done";
+      }
+      const opened = await handle.stat({ bigint: true });
+      const sameFile = named.dev === opened.dev && named.ino === opened.ino;
       const stored = await storedFile(result.fileId);
       if (stored === undefined) {
         verdict = "unconfirmed";
         log(`inbox: imported ${name}, but no record of the stored file ${result.fileId} was found`);
+      } else if (!sameFile) {
+        // Another file was put under the name during the import.
+        verdict = "changed";
       } else {
-        const local = await hashFile(path);
+        const local = await hashHandle(handle);
         verdict =
           local.size === stored.size && local.sha256.equals(stored.sha256) ? "match" : "changed";
       }
