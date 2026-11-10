@@ -9,8 +9,8 @@
 // doing, so the job waits for the slicer without using a retry, for up to
 // 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A streamed body that fails
 // partway (the store went away while a STEP file was read from it) rejects
-// with the body's own error, a StoreUnavailable for an outage, never as a
-// lost slicer connection.
+// with the body's own error, a StoreUnavailable for an outage or a
+// StoreError for a store that refused, never as a lost slicer connection.
 import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
@@ -34,6 +34,14 @@ export const DERIVED_MESSAGES = {
   /** The same, for a replacement: its staged source is discarded and the previous version kept. */
   replaceStoreDown:
     "Storage is not answering, so the previous version is kept. The replacement will need to be sent again.",
+  /**
+   * The store answered and refused (StoreError: an HTTP 500, AccessDenied,
+   * NoSuchBucket, a body that failed with no network code), or the source
+   * object is gone (BlobNotFound), so the job stopped.
+   */
+  storeRefused: "Storage refused this file, so the render could not finish.",
+  /** The same, for a replacement: its staged source is discarded and the previous version kept. */
+  replaceStoreRefused: "Storage refused the replacement, so the previous version is kept.",
   /** The job could not be queued after the upload committed. */
   queueFailed: "The render could not be queued.",
   /** The render check found the job's last attempt ended without an outcome. */

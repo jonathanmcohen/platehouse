@@ -36,8 +36,10 @@
 // failure does: the file is marked failed with DERIVED_MESSAGES.slicerDown
 // (replaceSlicerDown for a replacement, whose staged source is discarded
 // and whose previous version is kept), no job is sent, and no retry is
-// used. Since a wait is at most 15 minutes, that is at most 15 minutes
-// past the limit.
+// used. The job reads the deadline only when it runs, so the render ends on
+// its first run after the deadline: one wait (at most 15 minutes) past it
+// when the slicer queue is otherwise empty, and later when other jobs are
+// queued ahead of it, since the queue runs one job at a time.
 //
 // A store that cannot be reached (StoreUnavailable, reading the source or
 // storing the renders) is handled the same way, as Task 12 handles it: it
@@ -46,6 +48,17 @@
 // deadline the file is marked failed with DERIVED_MESSAGES.storeDown
 // (replaceStoreDown for a replacement), never with a message that blames
 // the slicer.
+//
+// A store that answers and refuses (StoreError: an HTTP 500, AccessDenied,
+// NoSuchBucket, a body that failed with no network code) or a source object
+// that is gone (BlobNotFound) is not an outage and not the slicer's doing
+// either (issue #102), wherever it comes from: reading the source, a STEP
+// body sent to the slicer, or storing the renders. The file is marked failed
+// with DERIVED_MESSAGES.storeRefused (replaceStoreRefused for a replacement,
+// whose staged source is discarded and whose previous version is kept). A
+// 5xx, or a failure with no HTTP status, may pass, so it is left to pg-boss's
+// retries and recorded on the last attempt; a 4xx refusal or a missing object
+// will not pass on a retry, so it is recorded on the attempt that meets it.
 //
 // Replacing a file (replaceFile) stores the new source as a blob of its own,
 // next to the file's current one, and queues a job for it. The staged
@@ -107,7 +120,7 @@ import {
 import { QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
-import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
+import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import {
   DERIVED_MESSAGES,
   isRetryable,
@@ -164,10 +177,17 @@ export interface DerivedOutcome {
    * requeued: the slicer (slicer_down) or the store (store_down) was down,
    * and the same job was sent again to wait for it. failed with slicer_down
    * or store_down: it stayed down past SLICER_DOWN_LIMIT_MS, and the job
-   * stopped waiting.
+   * stopped waiting. failed with store_refused: the store answered and
+   * refused, or the source object is gone (issue #102).
    */
   status: "ok" | "failed" | "skipped" | "requeued";
-  reason?: "render_failed" | "slicer_error" | "stale" | "slicer_down" | "store_down";
+  reason?:
+    | "render_failed"
+    | "slicer_error"
+    | "stale"
+    | "slicer_down"
+    | "store_down"
+    | "store_refused";
 }
 
 export type DerivedErrorCode =
@@ -314,6 +334,22 @@ const OUTAGES: Readonly<
 function outageOf(error: unknown): Outage | null {
   if (error instanceof SlicerDown) return "slicer";
   if (error instanceof StoreUnavailable) return "store";
+  return null;
+}
+
+/**
+ * Whether an error is a store that answered and refused, or a source object
+ * that is gone (issue #102), and if so whether a pg-boss retry may cure it:
+ * "retry" for a 5xx or a failure with no HTTP status (a body that broke with
+ * no network code, a failed size check), "final" for a 4xx refusal
+ * (AccessDenied, NoSuchBucket) or a missing object. null for anything else.
+ * An unreachable store is StoreUnavailable, an outage, and never lands here.
+ */
+function storeRefusalOf(error: unknown): "retry" | "final" | null {
+  if (error instanceof BlobNotFound) return "final";
+  if (error instanceof StoreError) {
+    return error.status !== undefined && error.status < 500 ? "final" : "retry";
+  }
   return null;
 }
 
@@ -786,7 +822,8 @@ export function createDerived(deps: DerivedDeps) {
 
   /**
    * Records a final failure that is the slicer's or the store's, not the
-   * file's (slicer_error, or slicer_down or store_down past its limit), with
+   * file's (slicer_error, store_refused, or slicer_down or store_down past
+   * its limit), with
    * message, while the file still has the source the job started from; a
    * replacement is dropped and the previous version kept.
    */
@@ -874,9 +911,10 @@ export function createDerived(deps: DerivedDeps) {
 
   /**
    * Runs one render or mesh job (the slicer queue's worker calls this).
-   * Throws only to have pg-boss retry: on a 409 busy or a lost connection
-   * before the last attempt, or an unexpected error. A slicer or a store
-   * that is down sends the job again instead (waitOut).
+   * Throws only to have pg-boss retry: before the last attempt, on a 409
+   * busy, a lost connection or a store refusal that may pass (a 5xx); or on
+   * an unexpected error. A slicer or a store that is down sends the job
+   * again instead (waitOut).
    */
   async function runJob(
     job: DerivedJob,
@@ -939,8 +977,22 @@ export function createDerived(deps: DerivedDeps) {
         }
         return { status: "failed", reason: "render_failed" };
       }
-      const known = isRetryable(error);
       const last = attempt.retryCount >= attempt.retryLimit;
+      // A store that answered and refused, or a source object that is gone:
+      // the store's doing, never the slicer's, so it gets its own message.
+      const refusal = storeRefusalOf(error);
+      if (refusal !== null) {
+        if (refusal === "retry" && !last) throw error;
+        await commitSlicerError(
+          file,
+          source,
+          replacing,
+          replacing ? DERIVED_MESSAGES.replaceStoreRefused : DERIVED_MESSAGES.storeRefused,
+        );
+        console.error(`derived: file ${file.id} ended with store_refused: ${describe(error)}`);
+        return { status: "failed", reason: "store_refused" };
+      }
+      const known = isRetryable(error);
       if (!last && !(error instanceof SlicerFault)) throw error;
       // The last attempt, or an answer a retry will not change: record
       // slicer_error so the file is never left waiting.
