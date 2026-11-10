@@ -7,7 +7,10 @@
 // that takes no connection, or answers that OpenSCAD renders are off
 // because its sandbox self-test failed, is SlicerDown: not the file's
 // doing, so the job waits for the slicer without using a retry, for up to
-// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts).
+// 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A streamed body that fails
+// partway (the store went away while a STEP file was read from it) rejects
+// with the body's own error, a StoreUnavailable for an outage, never as a
+// lost slicer connection.
 import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
@@ -179,12 +182,51 @@ function mediaType(header: string | null): string {
   return (header ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
 }
 
-/** Posts one body to a render route and returns the bytes of a 200. */
+/**
+ * A web stream over a streamed body that tells onError when reading the body
+ * itself fails, and not when the request gives up on the body (a timer, or
+ * the slicer dropping the connection cancels it), so a store that went away
+ * partway is told apart from a lost slicer connection.
+ */
+function webBody(source: Readable, onError: (error: unknown) => void): ReadableStream<Uint8Array> {
+  const chunks = source[Symbol.asyncIterator]();
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let next: IteratorResult<unknown>;
+      try {
+        next = await chunks.next();
+      } catch (error) {
+        if (!cancelled) onError(error);
+        throw error;
+      }
+      if (next.done) controller.close();
+      else
+        controller.enqueue(
+          Buffer.isBuffer(next.value) ? next.value : Buffer.from(String(next.value)),
+        );
+    },
+    cancel() {
+      cancelled = true;
+      source.destroy();
+    },
+  });
+}
+
+/**
+ * Posts one body to a render route and returns the bytes of a 200. A
+ * streamed body that fails while it is read rejects with that failure as it
+ * is (see webBody); every other failure to get an answer is SlicerDown or
+ * SlicerUnreachable.
+ */
 export async function postRender(target: SlicerTarget, req: RenderRequest): Promise<Buffer> {
   const url = new URL(req.route, target.baseUrl);
+  let bodyError: { error: unknown } | undefined;
   const body =
     req.body instanceof Readable
-      ? (Readable.toWeb(req.body) as ReadableStream<Uint8Array>)
+      ? webBody(req.body, (error) => {
+          bodyError ??= { error };
+        })
       : new Uint8Array(req.body.buffer, req.body.byteOffset, req.body.byteLength);
   // Two timers, one after the other: the upload allowance while a streamed
   // body is read, then the program's time once it has ended.
@@ -219,6 +261,9 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
     type = mediaType(res.headers.get("content-type"));
     bytes = Buffer.from(await res.arrayBuffer());
   } catch (error) {
+    // The body failed, not the slicer: its own error, so a store outage
+    // reaches the job as StoreUnavailable and the job waits for the store.
+    if (bodyError !== undefined) throw bodyError.error;
     const code = noConnectionCode(error);
     if (code !== undefined) throw new SlicerDown(req.route, `no connection (${code})`);
     throw new SlicerUnreachable(req.route, error);

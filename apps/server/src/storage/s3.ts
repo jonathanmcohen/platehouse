@@ -7,7 +7,7 @@
 // or timed out), BlobNotFound (404) or StoreError (the store refused, or a
 // stored object failed its size check); see errors.ts. None carries a secret.
 import { createHash } from "node:crypto";
-import { pipeline, Readable, Transform } from "node:stream";
+import { PassThrough, pipeline, Readable, Transform } from "node:stream";
 import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
@@ -56,6 +56,9 @@ export interface BlobStore {
   /**
    * The object's bytes. BlobNotFound when the key does not exist (S3 404
    * NoSuchKey); any other 404, a missing bucket for one, is a StoreError.
+   * A failure while the bytes are read (the connection dropped, or no data
+   * moved for socketTimeoutMs) is the stream's error, mapped the same way:
+   * StoreUnavailable for an outage, never the SDK's own error.
    */
   getBlobStream(key: string): Promise<Readable>;
   /** Deletes the keys; a key already gone is not an error, so a purge can be retried. */
@@ -112,6 +115,25 @@ export const WRITE_CHECK_KEY = "checks/write-check";
 
 // DeleteObjects takes at most 1000 keys per request.
 const DELETE_BATCH = 1000;
+
+/**
+ * The body of a GetObject, with a failure partway through it (a socket reset
+ * or the idle timeout while a bucket restarts) mapped by toStoreError, as a
+ * failure of the call itself is. Without this the SDK's raw stream error
+ * reaches the reader, which cannot tell a store outage from anything else.
+ * A body that closes before its end with no error is an outage too.
+ * Destroying the returned stream destroys the body, closing its socket.
+ */
+function withStoreErrors(body: Readable, operation: string): Readable {
+  const out = new PassThrough();
+  body.on("error", (err) => out.destroy(toStoreError(err, operation)));
+  body.on("close", () => {
+    if (!body.readableEnded) out.destroy(new StoreUnavailable(operation, "PrematureClose"));
+  });
+  out.on("close", () => body.destroy());
+  body.pipe(out);
+  return out;
+}
 
 function assertBlobKey(key: string, fn: string): void {
   if (!isBlobKey(key)) {
@@ -225,7 +247,7 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
         throw toStoreError(err, "GetObject", { notFound: true });
       }
       if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
-      return body;
+      return withStoreErrors(body, "GetObject");
     },
 
     async deleteBlobs(keys) {
