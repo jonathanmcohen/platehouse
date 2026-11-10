@@ -91,7 +91,7 @@ function watcherFor(
     onIngested: async (r) => {
       ingested.push(r.fileId);
     },
-    probes: inboxProbes({ db: env.db, store: env.store }),
+    probes: inboxProbes({ db: env.db, store: env.store, tmpDir: join(env.dir, "tmp") }),
     now,
     log: (line) => lines.push(line),
     ...extra,
@@ -341,13 +341,14 @@ describe("failures", () => {
       },
     };
     // The store check meets the same outage.
-    const real = inboxProbes({ db: env.db, store: env.store });
+    const real = inboxProbes({ db: env.db, store: env.store, tmpDir: join(env.dir, "tmp") });
     const probes: InboxProbes = {
       database: () => real.database(),
       store: async () => {
         if (down) throw new StoreUnavailable("ListObjectsV2", "ECONNREFUSED");
         return real.store();
       },
+      tmpDir: () => real.tmpDir(),
     };
     const watcher = watcherFor(createIngest({ db: env.db, store: flaky }), { probes });
     const bytes = build3mf({ plates: 1 });
@@ -529,14 +530,16 @@ describe("telling a bad file from an outage", () => {
     });
     try {
       let broken = true;
-      const healthy = inboxProbes({ db: env.db, store: env.store });
-      const denied = inboxProbes({ db: noGrant, store: env.store });
+      const tmpDir = join(env.dir, "tmp");
+      const healthy = inboxProbes({ db: env.db, store: env.store, tmpDir });
+      const denied = inboxProbes({ db: noGrant, store: env.store, tmpDir });
       const deniedRepos = createRepos(noGrant);
       const watcher = watcherFor(env.ingest, {
         findImported: (q) => (broken ? deniedRepos : env.repos).files.findImported(q),
         probes: {
           database: () => (broken ? denied : healthy).database(),
           store: () => (broken ? denied : healthy).store(),
+          tmpDir: () => healthy.tmpDir(),
         },
       });
       await writeFile(join(inbox, "A grant missing.3mf"), build3mf({ plates: 1 }));
@@ -592,7 +595,7 @@ describe("telling a bad file from an outage", () => {
       const roRepos = createRepos(readOnly);
       const watcher = watcherFor(createIngest({ db: readOnly, store: counting }), {
         findImported: (q) => roRepos.files.findImported(q),
-        probes: inboxProbes({ db: readOnly, store: env.store }),
+        probes: inboxProbes({ db: readOnly, store: env.store, tmpDir: join(env.dir, "tmp") }),
       });
       await writeFile(join(inbox, "A read only.3mf"), build3mf({ plates: 1 }));
       await writeFile(join(inbox, "B read only.3mf"), build3mf({ plates: 1 }));
@@ -631,7 +634,7 @@ describe("telling a bad file from an outage", () => {
       },
       deleteBlobs: (keys) => env.store.deleteBlobs(keys),
     };
-    const real = inboxProbes({ db: env.db, store: env.store });
+    const real = inboxProbes({ db: env.db, store: env.store, tmpDir: join(env.dir, "tmp") });
     const watcher = watcherFor(createIngest({ db: env.db, store: writeOnly }), {
       probes: {
         database: () => real.database(),
@@ -639,6 +642,7 @@ describe("telling a bad file from an outage", () => {
           if (broken) throw new StoreError("ListObjectsV2", "AccessDenied", 403);
           return real.store();
         },
+        tmpDir: () => real.tmpDir(),
       },
     });
     const path = join(inbox, "Write only.3mf");
@@ -694,10 +698,48 @@ describe("telling a bad file from an outage", () => {
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
   });
 
-  test("the server's checks pass against a database and a bucket that answer", async () => {
-    const probes = inboxProbes({ db: env.db, store: env.store });
+  test("the server's checks pass against a database, a bucket and a temp folder that answer", async () => {
+    const probes = inboxProbes({ db: env.db, store: env.store, tmpDir: join(env.dir, "tmp") });
     await expect(probes.database()).resolves.toBeUndefined();
     await expect(probes.store()).resolves.toBeUndefined();
+    await expect(probes.tmpDir()).resolves.toBeUndefined();
+  });
+
+  test("a temp folder that will not take the inbox copy moves no file to failed, and the inbox waits until it does", async () => {
+    // A file where TMP_DIR should be: the copy ingest reads cannot be written,
+    // and the server's temp folder check sees the same fault.
+    const tmpDir = join(env.dir, `tmp-not-a-folder-${Date.now()}`);
+    await writeFile(tmpDir, "a file where the temp folder should be\n");
+    const watcher = watcherFor(env.ingest, {
+      tmpDir,
+      probes: inboxProbes({ db: env.db, store: env.store, tmpDir }),
+    });
+    const path = join(inbox, "No temp folder.3mf");
+    await writeFile(path, build3mf({ plates: 1 }));
+    const before = await footprint(env);
+
+    await watcher.pollOnce();
+    const pass = await tick(watcher, SETTLE_SECONDS);
+    expect(pass.waiting).toBe(true);
+    expect(pass.failed).toEqual([]);
+    for (let i = 0; i < 10; i += 1) {
+      const later = await tick(watcher, 5);
+      expect(later.failed).toEqual([]);
+    }
+    expect(await exists(path)).toBe(true);
+    expect(await exists(join(inbox, FAILED_DIR))).toBe(false);
+    expect(await footprint(env)).toEqual(before);
+    const started = lines.filter((l) => l.includes("not answering"));
+    expect(started).toHaveLength(1);
+    expect(started[0]).toContain("temp folder");
+
+    // The temp folder is a folder again: once the backoff has passed, it imports.
+    await rm(tmpDir);
+    await mkdir(tmpDir);
+    const back = await tick(watcher, BACKOFF_MAX_MS / 1000);
+    expect(back.imported.map((i) => i.name)).toEqual(["No temp folder.3mf"]);
+    expect(await exists(path)).toBe(false);
+    expect((await footprint(env)).models).toBe(before.models + 1);
   });
 });
 
@@ -727,7 +769,7 @@ describe("the checks write", () => {
     async (table) => {
       const restore = await failWrites(table);
       try {
-        const probes = inboxProbes({ db: env.db, store: env.store });
+        const probes = inboxProbes({ db: env.db, store: env.store, tmpDir: join(env.dir, "tmp") });
         await expect(probes.database()).rejects.toThrow(/No space left on device/);
       } finally {
         await restore();
@@ -737,7 +779,7 @@ describe("the checks write", () => {
 
   test("the database check leaves no row behind", async () => {
     const before = await footprint(env);
-    const probes = inboxProbes({ db: env.db, store: env.store });
+    const probes = inboxProbes({ db: env.db, store: env.store, tmpDir: join(env.dir, "tmp") });
     for (let i = 0; i < 3; i += 1) await probes.database();
     expect(await footprint(env)).toEqual(before);
   });
