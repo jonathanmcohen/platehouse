@@ -56,21 +56,32 @@
 //   over a name. What holds the name is renamed into a new folder of its own
 //   in the inbox (HOLD_PREFIX, a dot-folder, so on the inbox's filesystem and
 //   never listed), and deleted there, or moved from there to failed, only
-//   when it is the open file (the same device and inode). A file put under
+//   when it is the open file (the same device and inode). It is deleted only
+//   while its size and mtime are still those that settled: one written in
+//   place since the check (O_TRUNC, as Windows Explorer or cp onto an
+//   existing name do) holds bytes never imported, so it moves to failed
+//   with CHANGED_REASON instead. A file put under
 //   the name after the check is put back under it, never over anything that
 //   took the name since, and looked at from the start as a new file; when
 //   another file took the name meanwhile, it moves to failed with
 //   SWAPPED_REASON instead. Putting back never checks the name and then
 //   writes it, which a writer could slip in between: a regular file is
 //   hard-linked back, or, where hard links are refused (EPERM under
-//   fs.protected_hardlinks for a file the watcher does not own, or a
-//   filesystem with none), copied into a file created with O_EXCL, and a
-//   copy that fails part way is taken back out through a holding folder,
-//   never deleted by name; a symlink is made again with its target; a folder
+//   fs.protected_hardlinks for a file the watcher does not own), copied
+//   whole into a file of the watcher's own in the holding folder and that
+//   hard-linked under the name, so nothing part-written ever appears there
+//   (a full disk fails the copy in the holding folder). When the held
+//   file's size or mtime moved during the copy, a writer still has it open
+//   (an SMB client, say): the copy is not linked, or is taken back out
+//   through a holding folder, never deleted by name, and the held file, the
+//   inode the writer goes on writing, moves to failed with
+//   STILL_WRITING_REASON. On a filesystem with no hard links at all it is
+//   not put back and moves to failed; a symlink is made again with its target; a folder
 //   is renamed back, which can replace only an empty folder; anything else
 //   (a FIFO, a socket) is not put back and moves to failed. The holding
 //   folder is removed after. One a stopped process left behind (a crash in
-//   that moment) is emptied into failed with HELD_REASON at the first pass.
+//   that moment) is emptied into failed with HELD_REASON at the first pass,
+//   a copy being put back (HOLD_COPY_PREFIX) deleted rather than kept.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence. failed/ is made when missing, and refused
@@ -258,7 +269,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { type Kysely, sql } from "kysely";
 import { uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
@@ -302,6 +313,22 @@ export const HOLD_PREFIX = ".platehouse-deleting-";
 /** Reason when a file put under an imported file's name cannot be put back there. */
 export const SWAPPED_REASON =
   "This file was put in the inbox under the name of a file Platehouse had just imported, and another file took that name before it could be put back, so it was kept here and not imported; add it again.";
+
+/**
+ * Reason when a file put under an imported file's name was still being
+ * written while it was copied back there (its size or mtime moved), so the
+ * copy would have been cut short: the file itself is kept instead.
+ */
+export const STILL_WRITING_REASON =
+  "This file was put in the inbox under the name of a file Platehouse had just imported, and it was still being written while Platehouse put it back, so it was kept here and not imported; add it again once it is complete.";
+
+/**
+ * What starts the name of the copy that copyBack writes inside a holding
+ * folder before it links it under the inbox name. It is never an inbox name
+ * (those that start with a dot are ignored, so never held), so the restart
+ * sweep knows it as a copy and removes it.
+ */
+export const HOLD_COPY_PREFIX = ".platehouse-copy-";
 
 /** Reason for a file a stopped process left in a holding folder. */
 export const HELD_REASON =
@@ -425,6 +452,18 @@ class CopyWriteError extends Error {
   constructor(folder: string, cause: unknown) {
     super(`could not write the copy ingest reads in the temp folder ${folder}`, { cause });
     this.name = "CopyWriteError";
+  }
+}
+
+/**
+ * Thrown by copyBack when the held file's size or mtime moved while it was
+ * copied back under its name: a writer still has it open, so the copy is cut
+ * short and the held file is kept (STILL_WRITING_REASON) instead.
+ */
+class StillWriting extends Error {
+  constructor(name: string) {
+    super(`${name} was still being written while it was copied back under its name`);
+    this.name = "StillWriting";
   }
 }
 
@@ -1094,7 +1133,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    *   name is taken), then unlinked from the holding folder. When link is
    *   refused for any other reason (EPERM under fs.protected_hardlinks for a
    *   file the watcher does not own, or a filesystem with no hard links), it
-   *   is copied back instead (copyBack).
+   *   is copied back instead (copyBack): copied whole to a file the watcher
+   *   owns in the holding folder, then hard-linked under the name. On a
+   *   filesystem with no hard links at all that link fails too, so it is not
+   *   put back (it throws), rather than be written under the name piece by
+   *   piece.
    * - A symlink is made again with the same target (symlink fails with
    *   EEXIST when the name is taken), then unlinked from the holding folder.
    * - A folder is renamed back, which can only ever replace an empty folder,
@@ -1145,15 +1188,23 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
-   * Puts a held regular file back where hard links are refused: the name is
-   * made with O_EXCL (OPEN_EXCLUSIVE), which fails with EEXIST when it is
-   * taken, so it is never made over a file that took it; the held file is
-   * copied into it, and deleted only once the copy is whole. The copy is a
-   * new inode, which the next pass looks at from the start as it would the
-   * file itself. A copy that fails part way (a full disk) is taken out from
-   * under the name by takeBackCopy, never deleted by name, and the error is
-   * thrown with the held file still held. Returns false when the name is
-   * taken.
+   * Puts a held regular file back where a hard link to it is refused (EPERM
+   * under fs.protected_hardlinks for a file another user owns). It is copied
+   * whole into a new file in its holding folder, which the watcher owns and
+   * the inbox listing never sees, and only then is that copy hard-linked
+   * under the name, which fails with EEXIST when the name is taken: nothing
+   * that took the name is replaced, and nothing part-written ever appears
+   * under it (a full disk fails the copy in the holding folder, where it is
+   * removed). The held file's size and mtime are read before the copy and
+   * again before and after the link; when either moved, a writer still has
+   * it open (an SMB client, say), so the copy is cut short: it is not linked,
+   * or taken back out from under the name by takeBackCopy, and StillWriting
+   * is thrown with the held file still held, the same inode the writer goes
+   * on writing. The held file is deleted only once the copy holds the name.
+   * The copy is a new inode, which the next pass looks at from the start as
+   * it would the file itself. Returns false when the name is taken; throws,
+   * with the held file still held, on any other failure, a filesystem with
+   * no hard links at all among them.
    */
   async function copyBack(
     name: string,
@@ -1161,19 +1212,17 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     path: string,
     pass: InboxPass,
   ): Promise<boolean> {
+    const temp = join(dirname(held), `${HOLD_COPY_PREFIX}${uuidv7()}`);
     const source = await open(held, OPEN_SETTLED);
     try {
-      const st = await source.stat();
-      let out: FileHandle;
+      const before = await source.stat({ bigint: true });
+      const unchanged = async () => {
+        const now = await source.stat({ bigint: true });
+        return now.size === before.size && now.mtimeNs === before.mtimeNs;
+      };
+      const out = await open(temp, OPEN_EXCLUSIVE, Number(before.mode) & 0o777);
+      let ours: BigIntStats;
       try {
-        out = await open(path, OPEN_EXCLUSIVE, st.mode & 0o777);
-      } catch (error) {
-        if (codeOf(error) === "EEXIST") return false;
-        throw error;
-      }
-      let ours: BigIntStats | undefined;
-      try {
-        ours = await out.stat({ bigint: true });
         const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
         let at = 0;
         for (;;) {
@@ -1186,11 +1235,30 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           }
           at += bytesRead;
         }
+        // The copy as it is linked: takeBackCopy knows it by this.
+        ours = await out.stat({ bigint: true });
         await out.close();
       } catch (error) {
         await out.close().catch(() => undefined);
-        await takeBackCopy(name, path, ours, pass);
+        await unlink(temp).catch(() => undefined);
         throw error;
+      }
+      if (!(await unchanged())) {
+        await unlink(temp).catch(() => undefined);
+        throw new StillWriting(name);
+      }
+      try {
+        await link(temp, path);
+      } catch (error) {
+        await unlink(temp).catch(() => undefined);
+        if (codeOf(error) === "EEXIST") return false;
+        throw error;
+      }
+      // The copy's second name; the name in the inbox now holds it.
+      await unlink(temp).catch(() => undefined);
+      if (!(await unchanged())) {
+        await takeBackCopy(name, path, ours, pass);
+        throw new StillWriting(name);
       }
     } finally {
       await source.close().catch(() => undefined);
@@ -1200,14 +1268,15 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
-   * Takes a part-written copy (copyBack) out from under the name without
+   * Takes a cut-short copy (copyBack linked it under the name while the held
+   * file was still being written) out from under the name without
    * deleting by name, since a writer may have renamed a file over it: what
    * holds the name is renamed into a new holding folder, deleted there only
    * when it is the copy (ours: the same device and inode), and otherwise,
    * being a file nobody imported, moved to failed with SWAPPED_REASON. When
    * the name cannot be moved at all, the copy stays and is not imported
-   * while it stays as it is, so a part-written file is never imported in
-   * this process.
+   * while it stays as it is, so a cut-short file is never imported in this
+   * process.
    */
   async function takeBackCopy(
     name: string,
@@ -1283,7 +1352,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * (HOLD_PREFIX; one rename moves what the name holds at one instant, and
    * stays on the inbox's filesystem), and is deleted there, or moved from
    * there to failed, only when it is the open file, the same device and
-   * inode. A file that cannot be moved to failed goes back under the name
+   * inode. It is deleted only when its size and mtime are still those that
+   * settled (settled, the signature the copy and the check after the import
+   * were read under): a writer that wrote the same inode in place since the
+   * check (O_TRUNC, as Windows Explorer or cp onto an existing name do) put
+   * bytes there that were never imported, so it moves to failed with
+   * CHANGED_REASON instead. A file that cannot be moved to failed goes back under the name
    * and is not tried again while it stays the same, as fail() leaves one.
    * Anything else goes back under the name for the next pass to look at from
    * the start (putBack), or, when another file took the name in the
@@ -1295,9 +1369,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     path: string,
     handle: FileHandle,
     modelId: string,
-    reason: string | undefined,
+    verdict: string | undefined,
+    settled: string,
     pass: InboxPass,
   ): Promise<void> {
+    let reason = verdict;
     const couldNotSettle = async (error: unknown) => {
       const sig = await currentSignature(path);
       if (sig !== undefined) handled.set(name, sig);
@@ -1333,6 +1409,15 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         const named = await lstat(held, { bigint: true });
         const opened = await handle.stat({ bigint: true });
         same = named.isFile() && named.dev === opened.dev && named.ino === opened.ino;
+        if (same && reason === undefined && signature(named) !== settled) {
+          // The same inode, written in place after it was checked: its bytes
+          // now are not the ones imported.
+          reason = CHANGED_REASON;
+          log(
+            `inbox: imported ${name} as model ${modelId}, but its inbox copy was written to in ` +
+              "place after it was checked, so it is kept, not deleted",
+          );
+        }
         if (same && reason === undefined) {
           await unlink(held);
           log(`inbox: imported ${name} as model ${modelId} and deleted the inbox copy`);
@@ -1380,11 +1465,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       // or moved to failed under the imported file's reason.
       let back = false;
       let why = "another file took the name first";
+      let failReason = SWAPPED_REASON;
       const done = reason === undefined ? "deleted" : `moved to ${FAILED_DIR}`;
       try {
         back = await putBack(name, held, path, pass);
       } catch (error) {
         why = errorText(error);
+        if (error instanceof StillWriting) failReason = STILL_WRITING_REASON;
       }
       if (back) {
         log(
@@ -1398,7 +1485,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         `inbox: imported ${name} as model ${modelId}, but another file was put under its name ` +
           `before the inbox copy was ${done}, and it could not be put back (${why})`,
       );
-      await failHeld(name, held, SWAPPED_REASON, pass);
+      await failHeld(name, held, failReason, pass);
     } finally {
       // Empty unless something could not be moved out; then it stays.
       await rmdir(holdDir).catch(() => undefined);
@@ -1409,7 +1496,8 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * Moves what a process that stopped part way through settleImported or
    * takeBackCopy left in a holding folder to failed with HELD_REASON, and
    * removes the folder. It may be an imported file or one put under its
-   * name, so it is kept, not deleted or imported. Run once per process,
+   * name, so it is kept, not deleted or imported. A copy copyBack was
+   * writing (HOLD_COPY_PREFIX) is deleted instead. Run once per process,
    * before its first import.
    */
   async function sweepHolds(folders: string[], pass: InboxPass): Promise<void> {
@@ -1417,6 +1505,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       const holdDir = join(dir, folder);
       try {
         for (const entry of await readdir(holdDir)) {
+          if (entry.startsWith(HOLD_COPY_PREFIX)) {
+            // copyBack's copy, never an inbox file: the held file it was made
+            // from is still beside it, or the copy already holds its name.
+            await unlink(join(holdDir, entry));
+            continue;
+          }
           await failHeld(entry, join(holdDir, entry), HELD_REASON, pass);
         }
         await rmdir(holdDir);
@@ -1840,7 +1934,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       log(`inbox: imported ${name}, but could not confirm the stored copy: ${errorText(error)}`);
     }
     // Deleted or moved only when what holds the name then is the open file.
-    await settleImported(name, path, handle, result.modelId, reason, pass);
+    await settleImported(name, path, handle, result.modelId, reason, entry.signature, pass);
     return "done";
   }
 

@@ -94,8 +94,9 @@ const fsHooks = vi.hoisted(() => ({
   beforeMkdir: undefined as ((path: string) => Promise<void>) | undefined,
   /**
    * Runs just before anything is made under newPath by a rename onto it, a
-   * symlink at it, a copy to it or an open that may create it: the last
-   * moment another writer can take the name first.
+   * hard link or symlink at it, a copy to it or an open that may create it:
+   * the last moment another writer can take the name first. For a hard
+   * link it runs after beforeLink, so not for a link that hook refuses.
    */
   beforeCreate: undefined as ((newPath: string) => Promise<void>) | undefined,
 }));
@@ -112,6 +113,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   const link = async (...args: Parameters<typeof actual.link>): Promise<void> => {
     await fsHooks.beforeLink?.(String(args[1]), String(args[0]));
+    await fsHooks.beforeCreate?.(String(args[1]));
     return actual.link(...args);
   };
   const mkdir = async (...args: Parameters<typeof actual.mkdir>) => {
@@ -1094,11 +1096,7 @@ describe("putting a file back under its name without hard links", () => {
    * from a file the watcher made itself. With every, any link to path fails,
    * as on a filesystem with no hard links at all.
    */
-  function noHardLinks(
-    path: string,
-    onRefuse: () => void = () => undefined,
-    every = false,
-  ): void {
+  function noHardLinks(path: string, onRefuse: () => void = () => undefined, every = false): void {
     fsHooks.beforeLink = async (newPath, existingPath) => {
       if (newPath !== path) return;
       if (!every && basename(existingPath) !== basename(path)) return;
@@ -1332,9 +1330,7 @@ describe("putting a file back under its name without hard links", () => {
         expect(pass.failed).toEqual([{ name: "part.stl", reason: STILL_WRITING_REASON }]);
         const kept = join(inbox, FAILED_DIR, "part.stl");
         expect(await readFile(kept, "utf8")).toBe(`${SECOND}${MORE}${LATER}`);
-        expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(
-          `${STILL_WRITING_REASON}\n`,
-        );
+        expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(`${STILL_WRITING_REASON}\n`);
         // No copy is left under the name to be imported cut short.
         expect(await readdir(inbox)).toEqual([FAILED_DIR]);
         await tick(w, 15_000);
@@ -1352,7 +1348,10 @@ describe("putting a file back under its name without hard links", () => {
     await mkdir(holding);
     await writeFile(join(holding, "part.stl"), SECOND);
     // Part of a copy back under the name, cut off by the stop.
-    await writeFile(join(holding, `${HOLD_COPY_PREFIX}0190a6f0-0000-7000-8000-000000000001`), "sol");
+    await writeFile(
+      join(holding, `${HOLD_COPY_PREFIX}0190a6f0-0000-7000-8000-000000000001`),
+      "sol",
+    );
     const w = watcher(fake);
     const pass = await w.pollOnce();
 
