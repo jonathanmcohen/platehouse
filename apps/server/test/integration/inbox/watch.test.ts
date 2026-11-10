@@ -52,6 +52,8 @@ let inbox: string;
 let clock: number;
 const now = () => clock;
 const lines: string[] = [];
+/** The file ids the watcher handed to onIngested, in order. */
+const ingested: string[] = [];
 
 const SETTLE_SECONDS = 15;
 
@@ -68,6 +70,7 @@ beforeEach(async () => {
   await mkdir(inbox, { recursive: true });
   clock = 1_000_000;
   lines.length = 0;
+  ingested.length = 0;
 });
 
 function watcherFor(
@@ -82,6 +85,11 @@ function watcherFor(
     // and the checks run against the same database and bucket.
     storedFile: (id) => env.repos.files.get(id),
     findImported: (q) => env.repos.files.findImported(q),
+    // The server passes (r) => estimates.enqueueFile(r.fileId); estimates
+    // have their own integration tests, so this records the id it would get.
+    onIngested: async (r) => {
+      ingested.push(r.fileId);
+    },
     probes: inboxProbes({ db: env.db, store: env.store }),
     now,
     log: (line) => lines.push(line),
@@ -225,6 +233,8 @@ describe("import", () => {
     expect(file?.modelId).toBe(modelId);
     expect(file?.size).toBe(bytes.length);
     expect(file?.sha256.equals(sha256(bytes))).toBe(true);
+    // The stored file goes on to estimates at once.
+    expect(ingested).toEqual([fileId]);
     const plates = await env.db
       .selectFrom("plates")
       .select("index")
@@ -389,11 +399,15 @@ describe("failures", () => {
     expect(first.failed).toEqual([]);
     expect(await exists(path)).toBe(true);
     expect((await footprint(env)).files).toBe(before.files + 1);
+    expect(ingested).toEqual([]);
 
     const retry = await tick(watcher, 5);
     expect(calls).toBe(1);
     expect(retry.imported).toHaveLength(1);
     expect(retry.failed).toEqual([]);
+    // The import found on the retry goes on to estimates, since the attempt
+    // whose answer was lost never got that far.
+    expect(ingested).toEqual([retry.imported[0]?.fileId]);
     const after = await footprint(env);
     expect(after.models).toBe(before.models + 1);
     expect(after.files).toBe(before.files + 1);

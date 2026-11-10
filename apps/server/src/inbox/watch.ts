@@ -160,8 +160,18 @@
 // such a file is tried once more.
 //
 // Nothing here starts on import: the server calls start() once at boot and
-// stop() on shutdown, passing the files repository's get as storedFile, its
-// findImported as findImported, and inboxProbes({ db, store }) as probes.
+// stop() on shutdown. Besides dir (INBOX_DIR) and settleSeconds
+// (INBOX_SETTLE_SECONDS), it must pass every one of these, and the type
+// requires each:
+//   ingest:       the ingest service (createIngest), for its ingestFile
+//   storedFile:   (id) => files.get(id), from the files repository
+//   findImported: (q) => files.findImported(q), from the files repository
+//   onIngested:   (r) => estimates.enqueueFile(r.fileId), the estimates
+//                 service (createEstimates), so an inbox file's plates are
+//                 queued at once; enqueueFile takes the file id, not the
+//                 IngestResult, so it cannot be passed bare
+//   probes:       inboxProbes({ db, store })
+// The rest (probeTimeoutMs, pollMs, now, log) have defaults.
 // pollOnce() runs one pass and is what the tests drive, with an injected
 // clock instead of real waits; during an outage a pass before the next check
 // is due tries no file.
@@ -445,10 +455,12 @@ export interface InboxWatcherDeps {
   /**
    * Runs after a file is stored, before its inbox copy is checked, as
    * QueueDeps.onIngested does for the ingest queue: Task 12 queues the file's
-   * estimates here (estimates.enqueueFile). A failure is logged, never
-   * thrown, since the file is already stored.
+   * estimates here, (r) => estimates.enqueueFile(r.fileId). Required, so a
+   * server that leaves it out fails to compile instead of leaving inbox
+   * plates to wait for the Orca poll. A failure is logged, never thrown,
+   * since the file is already stored.
    */
-  onIngested?: (result: IngestResult) => Promise<unknown>;
+  onIngested: (result: IngestResult) => Promise<unknown>;
   /** The environment checks run after an error that is not the file's own (inboxProbes). */
   probes: InboxProbes;
   /** How long each check may take; PROBE_TIMEOUT_MS when left out. */
@@ -959,16 +971,14 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     seen.delete(name);
     pass.imported.push({ name, ...result });
 
-    if (deps.onIngested) {
-      try {
-        await deps.onIngested(result);
-      } catch (error) {
-        // The file is stored; the Orca poll queues what was missed here.
-        log(
-          `inbox: imported ${name} as model ${result.modelId}, but the work queued after an ` +
-            `import (its estimates) failed: ${errorText(error)}`,
-        );
-      }
+    try {
+      await deps.onIngested(result);
+    } catch (error) {
+      // The file is stored; the Orca poll queues what was missed here.
+      log(
+        `inbox: imported ${name} as model ${result.modelId}, but the work queued after an ` +
+          `import (its estimates) failed: ${errorText(error)}`,
+      );
     }
 
     let verdict: "match" | "changed" | "unconfirmed";

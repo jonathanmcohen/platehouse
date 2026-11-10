@@ -163,6 +163,8 @@ function watcher(
     ingest: fake.ingest,
     storedFile: async (id) => fake.stored.get(id),
     findImported: async () => [],
+    // Required; the tests under "after ingest" pass their own to watch it.
+    onIngested: async () => undefined,
     // Storage and the database answer unless a test says otherwise.
     probes: { database: async () => undefined, store: async () => undefined },
     now: () => clock,
