@@ -12,9 +12,9 @@ import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
 /**
- * What files.derived_message holds when the slicer, not OpenSCAD or the STEP
- * converter, is why a file has no render. A render or conversion error
- * stores the program's own message instead.
+ * What files.derived_message holds when the slicer or the store, not
+ * OpenSCAD or the STEP converter, is why a file has no render. A render or
+ * conversion error stores the program's own message instead.
  */
 export const DERIVED_MESSAGES = {
   /** slicer_error: the slicer stayed busy or unreachable through every retry, or answered oddly. */
@@ -26,6 +26,11 @@ export const DERIVED_MESSAGES = {
   /** The same, for a replacement: its staged source is discarded and the previous version kept. */
   replaceSlicerDown:
     "The slicer is not answering, so the previous version is kept. The replacement will need to be sent again.",
+  /** The store stayed unreachable (StoreUnavailable) for more than 2 hours, so the job stopped waiting. */
+  storeDown: "Storage is not answering. The render will need to be started again.",
+  /** The same, for a replacement: its staged source is discarded and the previous version kept. */
+  replaceStoreDown:
+    "Storage is not answering, so the previous version is kept. The replacement will need to be sent again.",
   /** The job could not be queued after the upload committed. */
   queueFailed: "The render could not be queued.",
   /** The render check found the job's last attempt ended without an outcome. */
