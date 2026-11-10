@@ -126,6 +126,17 @@ function storedRow(
 }
 
 /**
+ * A findImported that answers from a fixed set of rows, keyed by file id,
+ * recording each query it is asked.
+ */
+function rowsIn(rows: Map<string, ImportedFile>, queries: ImportedQuery[] = []) {
+  return async (q: ImportedQuery): Promise<ImportedFile | undefined> => {
+    queries.push(q);
+    return rows.get(q.fileId);
+  };
+}
+
+/**
  * The id the watcher chooses for an inbox file as it is now on disk, its
  * ctime read as the watcher reads it (a bigint lstat, truncated to the
  * millisecond).
@@ -846,6 +857,62 @@ describe("outages", () => {
     expect(fake.ids).toEqual([second]);
     expect(pass.imported).toEqual([{ name: "trashed.stl", modelId: "model-1", fileId: second }]);
     expect(lines.filter((l) => l.includes("already imported"))).toEqual([]);
+  });
+
+  test("a live row under a later id is found when an earlier id has no row, so the copy is not imported twice", async () => {
+    // Attempt 0's model was in the trash, so the copy went to ingest under
+    // attempt 1, whose commit landed with its answer lost. Before the retry,
+    // Empty trash (or the purge) deleted attempt 0's model and so its file
+    // row: no row under attempt 0, a live one under attempt 1.
+    const fake = fakeIngest();
+    const bytes = Buffer.from("solid gap\nendsolid gap\n");
+    const path = join(inbox, "gap.stl");
+    await writeFile(path, bytes);
+    const second = await inboxIdOf("gap.stl", 1);
+    fake.stored.set(second, { size: bytes.length, sha256: sha256(bytes) });
+    const rows = new Map<string, ImportedFile>([
+      [second, { modelId: "model-live", fileId: second, live: true }],
+    ]);
+    const w = watcher(fake, { findImported: rowsIn(rows) });
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(fake.calls).toEqual([]);
+    expect(pass.imported).toEqual([{ name: "gap.stl", modelId: "model-live", fileId: second }]);
+    expect(pass.failed).toEqual([]);
+    expect(await exists(path)).toBe(false);
+  });
+
+  test("past a trashed id and a missing one, the copy takes the lowest id with no row", async () => {
+    // Attempt 0 trashed, attempt 1 gone (its model purged), attempt 2
+    // trashed: no live row, so the copy is imported under attempt 1.
+    const fake = fakeIngest();
+    await writeFile(join(inbox, "holes.stl"), "solid holes\nendsolid holes\n");
+    const ids = await Promise.all([0, 1, 2].map((attempt) => inboxIdOf("holes.stl", attempt)));
+    const trashed = (fileId: string): ImportedFile => ({ modelId: "model-t", fileId, live: false });
+    const rows = new Map<string, ImportedFile>([
+      [ids[0] as string, trashed(ids[0] as string)],
+      [ids[2] as string, trashed(ids[2] as string)],
+    ]);
+    const w = watcher(fake, { findImported: rowsIn(rows) });
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(fake.ids).toEqual([ids[1]]);
+    expect(pass.imported).toEqual([{ name: "holes.stl", modelId: "model-1", fileId: ids[1] }]);
+  });
+
+  test("the database is asked about every id of the copy in one query per try", async () => {
+    const fake = fakeIngest();
+    await writeFile(join(inbox, "once.stl"), "solid once\nendsolid once\n");
+    const first = await inboxIdOf("once.stl", 0);
+    const queries: ImportedQuery[] = [];
+    const rows = new Map<string, ImportedFile>([
+      [first, { modelId: "model-trashed", fileId: first, live: false }],
+    ]);
+    const w = watcher(fake, { findImported: rowsIn(rows, queries) });
+    await w.pollOnce();
+    await tick(w, 15_000);
+    expect(fake.calls).toEqual(["once.stl"]);
+    expect(queries).toHaveLength(1);
   });
 
   test(`after ${MAX_INBOX_IDS} ids all taken by trashed models, nothing is uploaded and the try counts against the file`, async () => {

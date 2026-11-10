@@ -9,7 +9,16 @@
 // 5-second polls and the 15-second settle window take no real time. Every
 // file is built by the test suite; no designer file is read or committed.
 import { createHash, randomBytes } from "node:crypto";
-import { access, appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { type Kysely, sql, type Transaction } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -20,6 +29,7 @@ import {
   createInboxWatcher,
   FAILED_DIR,
   type InboxProbes,
+  inboxFileId,
   inboxProbes,
   POLL_MS,
   REASON_SUFFIX,
@@ -29,7 +39,13 @@ import {
 import { createIngest, type IngestStore } from "../../../src/ingest/ingest.js";
 import { createRepos } from "../../../src/repos/index.js";
 import { createBlobStore, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
-import { build3mf, footprint, type IngestEnv, startIngestEnv } from "../support/ingest.js";
+import {
+  build3mf,
+  footprint,
+  type IngestEnv,
+  startIngestEnv,
+  writeUpload,
+} from "../support/ingest.js";
 
 let env: IngestEnv;
 let inbox: string;
@@ -423,6 +439,55 @@ describe("failures", () => {
     expect(after.files).toBe(before.files + 1);
     const file = await env.repos.files.get(pass.imported[0]?.fileId ?? "");
     expect(file?.originalName).toBe("Before a restart.3mf");
+    expect(await exists(path)).toBe(false);
+  });
+
+  test("a live row under a later id is found when the earlier id's model was purged, not made twice", async () => {
+    // Attempt 0's model was in the trash, so the copy was ingested under
+    // attempt 1, and that commit's answer was lost. Before the retry the
+    // purge deleted attempt 0's model, and its file row with it. Both commits
+    // are made here with the ids the watcher chooses for this copy.
+    const bytes = build3mf({ plates: 1 });
+    const name = "Gap below.3mf";
+    const path = join(inbox, name);
+    await writeFile(path, bytes);
+    // Read as the watcher reads it: a bigint lstat, truncated to the ms.
+    const arrived = (await lstat(path, { bigint: true })).ctime;
+    const idOf = (attempt: number) =>
+      inboxFileId({ name, size: bytes.length, sha256: sha256(bytes), arrived, attempt });
+    const zeroth = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: name,
+      target: "new",
+      fileId: idOf(0),
+    });
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: name,
+      target: "new",
+      fileId: idOf(1),
+    });
+    // The row delete the purge makes (library/trash.ts); the file row goes
+    // with its model.
+    await env.db.deleteFrom("models").where("id", "=", zeroth.modelId).execute();
+    expect(await env.repos.files.get(idOf(0))).toBeUndefined();
+    const before = await footprint(env);
+
+    let calls = 0;
+    const watcher = watcherFor({
+      ingestFile: (input) => {
+        calls += 1;
+        return env.ingest.ingestFile(input);
+      },
+    });
+    await watcher.pollOnce();
+    const pass = await tick(watcher, SETTLE_SECONDS);
+    expect(calls).toBe(0);
+    expect(pass.imported).toEqual([{ name, modelId: first.modelId, fileId: idOf(1) }]);
+    expect(pass.failed).toEqual([]);
+    const after = await footprint(env);
+    expect(after.models).toBe(before.models);
+    expect(after.files).toBe(before.files);
     expect(await exists(path)).toBe(false);
   });
 
