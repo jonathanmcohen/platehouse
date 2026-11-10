@@ -133,6 +133,8 @@ describe("STEP meshes (AC-050)", () => {
   test("replaceFile refuses a STEP file over the converter's 256 MiB limit and stores nothing", async () => {
     const { modelId, fileId } = await uploadStep(uniqueStep("too large"));
     const before = await settledFile(env, fileId);
+    // Count only the calls replaceFile makes, not the upload's own conversion.
+    env.stub.renders.reset();
     const keys = await keysOf(env, modelId);
     const jobCount = (await env.boss.findJobs(QUEUE.slicer, { data: { fileId } })).length;
     // A real STEP header, then extended past the limit without writing the

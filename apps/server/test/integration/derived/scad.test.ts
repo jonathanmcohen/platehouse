@@ -341,6 +341,8 @@ describe("a slicer that cannot render right now (uses no retry)", () => {
     const { modelId, fileId } = await uploadScad(unique("sandbox before"));
     const before = await settledFile(env, fileId);
     const oldBlobs = await blobsOf(env, modelId);
+    // Count only the replacement's calls below, not the upload's own render.
+    env.stub.renders.reset();
 
     env.stub.renders.always("/v1/scad/stl", { kind: "failed", message: SANDBOX_OFF_MESSAGE });
     const second = unique("sandbox after");
@@ -636,6 +638,8 @@ describe("replacing a .scad (AC-053)", () => {
   test("replaceFile refuses a .scad over the renderer's 1 MiB limit and stores nothing", async () => {
     const { modelId, fileId } = await uploadScad(unique("too large"));
     const before = await settledFile(env, fileId);
+    // Count only the calls replaceFile makes, not the upload's own render.
+    env.stub.renders.reset();
     const keys = await keysOf(env, modelId);
     const blobs = (await blobsOf(env, modelId)).map((b) => b.id);
     const jobCount = (await jobsFor(fileId)).length;
