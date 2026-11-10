@@ -265,6 +265,35 @@ describe("renders of a trashed model", () => {
   });
 });
 
+describe("queueing a render", () => {
+  test("the pending status and the job commit together: a send that fails leaves no job", async () => {
+    const { fileId } = await storeScad(unique("queue-atomic"));
+    expect((await env.repos.files.get(fileId))?.derivedStatus).toBeNull();
+
+    // The job is written, then the process "dies" before renderScad returns.
+    // Read on another pool connection while the send runs: nothing of the
+    // transaction is visible yet.
+    let statusAtSend: unknown = "unread";
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      statusAtSend = (await env.repos.files.get(fileId))?.derivedStatus;
+      await (env.boss.send as (...a: unknown[]) => Promise<string | null>)(...args);
+      throw new Error("the process died after sending the job");
+    };
+    const dying = derivedWith({
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+    });
+    await expect(dying.renderScad(fileId)).rejects.toThrow("the process died");
+
+    expect(statusAtSend).toBeNull();
+    // The job rolled back with the status, so no file reads pending with no job.
+    expect(await jobsFor(fileId)).toEqual([]);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.queueFailed,
+    });
+  });
+});
+
 describe("the slicer queue's worker", () => {
   test("an unknown slicer job kind fails its job instead of passing silently", async () => {
     const id = await env.boss.send(QUEUE.slicer, { kind: "no-such-kind" }, { retryLimit: 0 });
