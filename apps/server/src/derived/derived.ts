@@ -13,24 +13,35 @@
 // slicer answers 409 busy or the connection is lost, runJob throws and
 // pg-boss runs the job again with backoff; there is no retry loop here. On
 // the last attempt runJob records slicer_error instead (DERIVED_MESSAGES)
-// and the job completes, so no file waits on a render forever. A render or
-// conversion error is the program's own answer: it is never retried, the
-// source is kept, and the program's message goes into files.derived_message
-// exactly as written. It is text, for the page to show as text, never HTML.
+// and the job completes, so the file does not wait on a render forever
+// (except in the gap described below). A render or conversion error is the
+// program's own answer: it is never retried, the source is kept, and the
+// program's message goes into files.derived_message exactly as written. It
+// is text, for the page to show as text, never HTML.
 //
 // Replacing a file (replaceFile) stores the new source as a blob of its own,
 // next to the file's current one, and queues a job for it. The staged
-// source's row and its job are written in one transaction, so a staged
-// source always has a job that will either swap it in or discard it, and a
-// crash cannot leave a staged row, or a file pending, with no job. Only when
-// that job has stored the new renders does one transaction point the file at
-// the new source and renders and delete the old rows; the old objects are
-// deleted after that commit. So a failure at any point before it (a store
-// outage, a slicer that stays away) leaves the previous version whole: its
-// source, its renders and its rows. A replacement whose render fails with
-// OpenSCAD's own error is swapped in all the same, with the message, since
-// the new source is the file Jon uploaded. An object left with no row by a
+// source's row, the file marked pending, and its job are written in one
+// transaction, so a crash while staging cannot leave a staged row, or a file
+// pending, with no job. Only when that job has stored the new renders does
+// one transaction point the file at the new source and renders and delete
+// the old rows; the old objects are deleted after that commit. So a failure
+// at any point before it (a store outage, a slicer that stays away) leaves
+// the previous version whole: its source, its renders and its rows. A
+// replacement whose render fails with OpenSCAD's own error is swapped in all
+// the same, with the message, since the new source is the file Jon uploaded. An object left with no row by a
 // crash between steps is removed by the orphan sweep (ingest/orphans.ts).
+//
+// A known gap, left as a follow-up: if a job's last attempt ends before it
+// records its outcome - the process dies, pg-boss expires the job, or
+// commitSlicerError's own transaction fails (a Postgres restart, say) -
+// pg-boss marks the job failed and nothing settles the file. The file stays
+// 'pending'. For a replacement, the staged source's row (kind 'source',
+// state 'stored') and its object also stay, with no file pointing at them,
+// because discardStaged never ran. The orphan sweep does not remove that
+// object, since it still has a row; only purging the model clears it. A
+// periodic check that discards such staged sources and resets the file would
+// close this.
 //
 // derived_status is 'pending' while a job is queued or running, then 'ok' or
 // 'failed'; it stays null for kinds with nothing derived (.3mf, .stl). A job
@@ -209,12 +220,6 @@ export function createDerived(deps: DerivedDeps) {
     ...(deps.retryDelaySeconds === undefined ? {} : { retryDelay: deps.retryDelaySeconds }),
   };
 
-  async function send(job: DerivedJob): Promise<string> {
-    const id = await deps.queue.send(QUEUE.slicer, job, retry);
-    if (id === null) throw new Error("pg-boss created no job");
-    return id;
-  }
-
   async function setStatus(
     fileId: string,
     status: DerivedStatus,
@@ -257,16 +262,29 @@ export function createDerived(deps: DerivedDeps) {
     await deleteQuietly(rows.map((r) => r.key));
   }
 
-  /** Queues a render or mesh of the file's current source and marks it pending. */
+  /**
+   * Queues a render or mesh of the file's current source and marks it
+   * pending. The status and the job are written in one transaction, so a
+   * crash cannot leave the file pending with no job.
+   */
   async function queueFor(fileId: string, kind: "scad" | "step"): Promise<string> {
     const file = isUuid(fileId) ? await repos.files.get(fileId) : undefined;
     if (file === undefined || (await repos.models.get(file.modelId)) === undefined) {
       throw new DerivedError("not_found", NOT_FOUND_MESSAGE);
     }
     if (file.kind !== kind) throw new DerivedError("not_derivable", NOT_DERIVABLE_MESSAGE);
-    await setStatus(file.id, "pending", null);
+    const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId };
     try {
-      return await send({ kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId });
+      return await db.transaction().execute(async (trx) => {
+        await trx
+          .updateTable("files")
+          .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
+          .where("id", "=", file.id)
+          .execute();
+        const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
+        if (id === null) throw new Error("pg-boss created no job");
+        return id;
+      });
     } catch (error) {
       await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch(() => {});
       throw error;
