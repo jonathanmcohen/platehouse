@@ -26,7 +26,7 @@ import {
 } from "../../../src/derived/derived.js";
 import { createIngest } from "../../../src/ingest/ingest.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { BlobNotFound } from "../../../src/storage/s3.js";
+import { BlobNotFound, StoreUnavailable } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
@@ -532,6 +532,130 @@ describe("a slicer that stays down (issue #100)", () => {
       renderedBytes("/v1/scad/stl", second),
     );
 
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
+    expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
+  });
+});
+
+const STORE_DOWN_MESSAGE = "Storage is not answering. The render will need to be started again.";
+const REPLACE_STORE_DOWN_MESSAGE =
+  "Storage is not answering, so the previous version is kept. The replacement will need to be sent again.";
+
+/** The env's store with reads, writes or both failing as StoreUnavailable; deletes still work. */
+function storeDown(opts: { reads?: boolean; writes?: boolean }): DerivedStore {
+  return {
+    putBlob: opts.writes
+      ? async () => {
+          throw new StoreUnavailable("PutObject", "ECONNREFUSED");
+        }
+      : env.store.putBlob.bind(env.store),
+    getBlobStream: opts.reads
+      ? async () => {
+          throw new StoreUnavailable("GetObject", "ECONNREFUSED");
+        }
+      : env.store.getBlobStream.bind(env.store),
+    deleteBlobs: env.store.deleteBlobs.bind(env.store),
+  };
+}
+
+describe("a store that cannot be reached (uses no retry)", () => {
+  test("a store outage on the last attempt waits for the store instead of failing the file, and the render lands once it answers", async () => {
+    const { fileId } = await storeScad(unique("store down, last attempt"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    const down = derivedWith({ store: storeDown({ reads: true }) });
+    const outcome = await down.runJob(job, {
+      retryCount: SLICER_RETRY.retryLimit,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "requeued", reason: "store_down" });
+    const waiting = await env.repos.files.get(fileId);
+    expect(waiting?.derivedStatus).not.toBe("failed");
+    expect(waiting?.derivedMessage).toBeNull();
+    expect(env.stub.renders.calls).toHaveLength(0);
+
+    // The env's worker runs the job it queued, against a store that answers.
+    const done = await settledFile(env, fileId);
+    expect(done.derivedStatus).toBe("ok");
+    const jobs = await jobsFor(fileId);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.data).toMatchObject({ ...job, waits: 1 });
+    // The job had no retries left, and the outage handed it none.
+    expect(jobs[0]?.retryLimit).toBe(0);
+  });
+
+  test("a replacement whose store cannot take the renders for more than 2 hours ends failed with a storage message, keeps the previous version and drops its staged source", async () => {
+    const { modelId, fileId } = await uploadScad(unique("store down for good"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    const oldKeys = await keysOf(env, modelId);
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const down = () =>
+      derivedWith({
+        store: storeDown({ writes: true }),
+        queue: holdingQueue(),
+        ...clocked(clock),
+      });
+    const staged = await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("never stored")),
+    );
+    const stagedBlob = (await blobsOf(env, modelId)).find((b) => b.id === staged.sourceBlobId);
+    if (!stagedBlob) throw new Error("no staged source row");
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "store_down" });
+    // Just inside 2 hours of the first failure, the job still waits.
+    now += TWO_HOURS_MS - 60_000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "store_down" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
+
+    // Past 2 hours, the render ends.
+    now += 2 * 60_000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "store_down" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: REPLACE_STORE_DOWN_MESSAGE,
+    });
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
+    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
+
+    // It stopped waiting, and the wait used none of the job's retries.
+    const jobs = await jobsFor(fileId);
+    expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
+    const replacementJobs = jobs.filter((j) => j.data.sourceBlobId === staged.sourceBlobId);
+    expect(replacementJobs).toHaveLength(3);
+    expect(replacementJobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
+  });
+
+  test("a render whose source cannot be read for more than 2 hours ends failed with a storage message, not a slicer one", async () => {
+    const { fileId } = await storeScad(unique("first render, store down for good"));
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const down = () =>
+      derivedWith({ store: storeDown({ reads: true }), queue: holdingQueue(), ...clocked(clock) });
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "store_down" });
+    now += TWO_HOURS_MS + 1000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "store_down" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: STORE_DOWN_MESSAGE,
+      renderStlBlobId: null,
+      renderPngBlobId: null,
+    });
+    expect(env.stub.renders.calls).toHaveLength(0);
     const jobs = await jobsFor(fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
