@@ -19,7 +19,7 @@ import {
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { BlobNotFound, StoreUnavailable } from "../../../src/storage/s3.js";
+import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
@@ -208,13 +208,19 @@ describe("the render check (issue #91)", () => {
 // the store without using a retry, and the file is never blamed on the
 // slicer, even on its last attempt.
 describe("a store that goes away while a STEP source is sent", () => {
-  /** The first bytes of text, then the outage getBlobStream reports for a dropped body. */
-  function cutOff(text: string): Readable {
+  /**
+   * The first bytes of text, then error: by default the outage getBlobStream
+   * reports for a dropped body.
+   */
+  function cutOff(
+    text: string,
+    error: Error = new StoreUnavailable("GetObject", "ECONNRESET"),
+  ): Readable {
     let sent = false;
     return new Readable({
       read() {
         if (sent) {
-          setTimeout(() => this.destroy(new StoreUnavailable("GetObject", "ECONNRESET")), 10);
+          setTimeout(() => this.destroy(error), 10);
           return;
         }
         sent = true;
@@ -267,5 +273,46 @@ describe("a store that goes away while a STEP source is sent", () => {
     const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.data).toMatchObject({ ...job, waits: 1 });
+  });
+
+  // Issue #102: a body that fails with no network code is a store that
+  // answered and refused (StoreError), not an outage and not the slicer.
+  test("a source read that the store refuses partway on the last attempt records the storage message, not the slicer one", async () => {
+    const text = uniqueStep("store refuses partway");
+    const path = await writeUpload(env, text);
+    const { fileId } = await env.ingest.ingestFile({
+      tmpPath: path,
+      originalName: "Housing.step",
+      target: "new",
+    });
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: file.blobId };
+    const store: DerivedStore = {
+      putBlob: env.store.putBlob.bind(env.store),
+      getBlobStream: async () => cutOff(text, new StoreError("GetObject", "Unknown")),
+      deleteBlobs: env.store.deleteBlobs.bind(env.store),
+    };
+    const derived = createDerived({
+      db: env.db,
+      store,
+      slicerUrl: env.stub.url,
+      queue: env.boss,
+      retryDelaySeconds: 1,
+    });
+
+    const outcome = await derived.runJob(job, {
+      retryCount: SLICER_RETRY.retryLimit,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "failed", reason: "store_refused" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: "Storage refused this file, so the render could not finish.",
+      meshBlobId: null,
+    });
+    // The source is kept.
+    const source = await env.repos.blobs.get(file.blobId);
+    expect(await readObject(env, source?.key ?? "")).toEqual(Buffer.from(text));
   });
 });

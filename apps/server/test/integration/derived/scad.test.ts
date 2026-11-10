@@ -12,7 +12,8 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { LIMITS } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { Config } from "../../../src/config.js";
 import {
   createDerived,
   DERIVED_KINDS,
@@ -26,7 +27,13 @@ import {
 } from "../../../src/derived/derived.js";
 import { createIngest } from "../../../src/ingest/ingest.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { BlobNotFound, StoreUnavailable } from "../../../src/storage/s3.js";
+import {
+  BlobNotFound,
+  createBlobStore,
+  StoreError,
+  StoreUnavailable,
+} from "../../../src/storage/s3.js";
+import { type Reply, s3Error, startFakeS3 } from "../../storage/support/fake-s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
@@ -414,15 +421,22 @@ function holdingQueue(): DerivedDeps["queue"] {
 
 /**
  * Takes the file's one held job off the queue and runs it with derived, as
- * the worker would on its first attempt.
+ * the worker would on its first attempt, or on its last when last is set.
  */
-async function runHeld(fileId: string, derived: ReturnType<typeof createDerived>) {
+async function runHeld(
+  fileId: string,
+  derived: ReturnType<typeof createDerived>,
+  opts: { last?: boolean } = {},
+) {
   const held = (await jobsFor(fileId)).filter((j) => j.state === "created");
   expect(held).toHaveLength(1);
   const job = held[0];
   if (!job) throw new Error("no held job");
   await env.boss.cancel(QUEUE.slicer, job.id);
-  return derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+  return derived.runJob(job.data, {
+    retryCount: opts.last ? job.retryLimit : 0,
+    retryLimit: job.retryLimit,
+  });
 }
 
 describe("a slicer that stays down (issue #100)", () => {
@@ -659,6 +673,196 @@ describe("a store that cannot be reached (uses no retry)", () => {
     const jobs = await jobsFor(fileId);
     expect(jobs.filter((j) => LIVE.has(j.state))).toEqual([]);
     expect(jobs.every((j) => j.retryLimit === SLICER_RETRY.retryLimit)).toBe(true);
+  });
+});
+
+const STORE_REFUSED_MESSAGE = "Storage refused this file, so the render could not finish.";
+const REPLACE_STORE_REFUSED_MESSAGE =
+  "Storage refused the replacement, so the previous version is kept.";
+
+/** Synthetic store settings for a scripted fake S3 endpoint. */
+function fakeSettings(endpoint: string): Config["s3"] {
+  return {
+    endpoint,
+    region: "us-east-1",
+    bucket: "platehouse-test",
+    accessKeyId: ["SYNTH", "ACCESS", "ID"].join(""),
+    secretAccessKey: ["synthetic", "fake", "s3", "secret"].join("-"),
+    forcePathStyle: true,
+  };
+}
+
+/** The bucket key of a blob row. */
+async function sourceKeyOf(blobId: string): Promise<string> {
+  const blob = await env.repos.blobs.get(blobId);
+  if (!blob) throw new Error("no blob row");
+  return blob.key;
+}
+
+const fakeStores: Array<() => Promise<void> | void> = [];
+
+/**
+ * The env's store with reads or writes sent to a real BlobStore on a fake S3
+ * endpoint that gives reply to every request, so the error the job sees is
+ * the one the storage layer makes of a store that answers and refuses. One
+ * attempt per call, so the SDK does not retry the refusal itself. Deletes
+ * still go to the env's store.
+ */
+async function refusingStore(opts: { reads?: Reply; writes?: Reply }): Promise<DerivedStore> {
+  const at = async (reply: Reply) => {
+    const fake = await startFakeS3(() => reply);
+    fakeStores.push(() => fake.close());
+    const store = createBlobStore(fakeSettings(fake.endpoint), { maxAttempts: 1 });
+    fakeStores.push(() => store.destroy());
+    return store;
+  };
+  const reads = opts.reads === undefined ? env.store : await at(opts.reads);
+  const writes = opts.writes === undefined ? env.store : await at(opts.writes);
+  return {
+    putBlob: writes.putBlob.bind(writes),
+    getBlobStream: reads.getBlobStream.bind(reads),
+    deleteBlobs: env.store.deleteBlobs.bind(env.store),
+  };
+}
+
+// Issue #102: a store that answers and refuses (an HTTP 500, AccessDenied,
+// NoSuchBucket) or a source object that is gone is neither an outage nor
+// the slicer's doing. The file gets a storage message of its own, never the
+// slicer's. A 500 may pass, so it uses pg-boss's retries; a 4xx refusal and
+// a missing object will not, so they end the render at once.
+describe("a store that answers and refuses (issue #102)", () => {
+  afterEach(async () => {
+    while (fakeStores.length > 0) await fakeStores.pop()?.();
+  });
+
+  test("the last attempt against a store whose GetObject answers 500 records the storage message, not the slicer one", async () => {
+    const text = unique("store answers 500");
+    const { modelId, fileId } = await storeScad(text);
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    const refusing = derivedWith({
+      store: await refusingStore({ reads: s3Error(500, "InternalError") }),
+    });
+
+    const outcome = await refusing.runJob(job, {
+      retryCount: SLICER_RETRY.retryLimit,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "failed", reason: "store_refused" });
+    const after = await env.repos.files.get(fileId);
+    expect(after).toMatchObject({
+      blobId: file.blobId,
+      derivedStatus: "failed",
+      derivedMessage: STORE_REFUSED_MESSAGE,
+      renderStlBlobId: null,
+      renderPngBlobId: null,
+    });
+    expect(after?.derivedMessage).not.toBe(DERIVED_MESSAGES.slicerError);
+    expect(env.stub.renders.calls).toHaveLength(0);
+    // The source is kept.
+    expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
+    expect(await readObject(env, await sourceKeyOf(file.blobId))).toEqual(Buffer.from(text));
+  });
+
+  test("a GetObject that answers 500 before the last attempt is left to pg-boss to retry", async () => {
+    const { fileId } = await storeScad(unique("store answers 500, early attempt"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    const refusing = derivedWith({
+      store: await refusingStore({ reads: s3Error(500, "InternalError") }),
+    });
+
+    await expect(
+      refusing.runJob(job, { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit }),
+    ).rejects.toBeInstanceOf(StoreError);
+    const after = await env.repos.files.get(fileId);
+    expect(after?.derivedStatus).not.toBe("failed");
+    expect(after?.derivedMessage).toBeNull();
+  });
+
+  test("a replacement whose GetObject answers 500 on the last attempt keeps the previous version and discards the staged source", async () => {
+    const { modelId, fileId } = await uploadScad(unique("replacement, store answers 500"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    const oldKeys = await keysOf(env, modelId);
+    env.stub.renders.reset();
+    const staged = await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("replacement never read")),
+    );
+    const stagedBlob = (await blobsOf(env, modelId)).find((b) => b.id === staged.sourceBlobId);
+    if (!stagedBlob) throw new Error("no staged source row");
+    const refusing = derivedWith({
+      store: await refusingStore({ reads: s3Error(500, "InternalError") }),
+      queue: holdingQueue(),
+    });
+
+    expect(await runHeld(fileId, refusing, { last: true })).toEqual({
+      status: "failed",
+      reason: "store_refused",
+    });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: REPLACE_STORE_REFUSED_MESSAGE,
+    });
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
+    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    await expect(env.store.getBlobStream(stagedBlob.key)).rejects.toBeInstanceOf(BlobNotFound);
+    expect(env.stub.renders.calls).toHaveLength(0);
+    expect((await jobsFor(fileId)).filter((j) => LIVE.has(j.state))).toEqual([]);
+  });
+
+  test("a source object that is gone gets the storage message on the first attempt, with no retry", async () => {
+    const { fileId } = await storeScad(unique("source object gone"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    await env.store.deleteBlobs([await sourceKeyOf(file.blobId)]);
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+
+    const outcome = await env.derived.runJob(job, {
+      retryCount: 0,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "failed", reason: "store_refused" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: STORE_REFUSED_MESSAGE,
+      renderStlBlobId: null,
+      renderPngBlobId: null,
+    });
+    expect(env.stub.renders.calls).toHaveLength(0);
+  });
+
+  test("a store that answers AccessDenied when the renders are stored ends the render on the first attempt with the storage message", async () => {
+    const { modelId, fileId } = await storeScad(unique("renders refused"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    const refusing = derivedWith({
+      store: await refusingStore({ writes: s3Error(403, "AccessDenied") }),
+    });
+
+    const outcome = await refusing.runJob(job, {
+      retryCount: 0,
+      retryLimit: SLICER_RETRY.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "failed", reason: "store_refused" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: STORE_REFUSED_MESSAGE,
+      renderStlBlobId: null,
+      renderPngBlobId: null,
+    });
+    // The slicer rendered; only storing the renders was refused, and nothing
+    // of them is kept.
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+    expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
+    expect(await keysOf(env, modelId)).toEqual([await sourceKeyOf(file.blobId)]);
   });
 });
 
