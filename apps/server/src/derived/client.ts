@@ -18,7 +18,8 @@ import { slicerContract } from "@platehouse/slicer-contract";
  * What files.derived_message holds when the slicer or the store, not
  * OpenSCAD or the STEP converter, is why a file has no render. A render or
  * conversion error stores the program's own message instead, after
- * replaceRejectedScad or replaceRejectedStep when it is a replacement's.
+ * previousRendersScad or previousRendersStep when the renders the file
+ * still shows are from an earlier source.
  */
 export const DERIVED_MESSAGES = {
   /** slicer_error: the slicer stayed busy or unreachable through every retry, or answered oddly. */
@@ -50,14 +51,16 @@ export const DERIVED_MESSAGES = {
   /** The same, for a replacement: the file keeps its previous source and renders. */
   replaceLost: "The render of the replacement did not finish, so the previous version is kept.",
   /**
-   * Put before OpenSCAD's own message when it rejects a replacement, so the
-   * error is not read as being about the source the file still has (its
-   * previous source, whose renders are kept).
+   * Put before OpenSCAD's own message when it rejects the file's source
+   * while the file still shows an STL and preview rendered from an earlier
+   * source (a replacement OpenSCAD rejected becomes the source, and the
+   * previous version's renders stay until a render succeeds; issue #103).
    */
-  replaceRejectedScad: "OpenSCAD rejected the replacement, so the previous version is kept:",
-  /** The same, before the STEP converter's own message. */
-  replaceRejectedStep:
-    "The STEP converter rejected the replacement, so the previous version is kept:",
+  previousRendersScad:
+    "OpenSCAD rejected this file, so the STL and preview shown are from the previous version. OpenSCAD said:",
+  /** The same, before the STEP converter's own message, for a mesh from an earlier source. */
+  previousRendersStep:
+    "The STEP converter rejected this file, so the mesh shown is from the previous version. The converter said:",
   /** A .scad over the contract's 1 MiB limit is never sent. */
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */

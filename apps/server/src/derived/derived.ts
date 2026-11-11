@@ -20,9 +20,9 @@
 // recorded, and the render check settles the file. A render or conversion
 // error is the program's own answer: it is never retried, the source is
 // kept, and the program's message goes into files.derived_message exactly as
-// written (a replacement's after a sentence saying the replacement was
-// rejected and the previous version kept). It is text, for the page to show
-// as text, never HTML.
+// written (after a sentence saying the renders shown are the previous
+// version's, when they are; see replaceFile below). It is text, for the page
+// to show as text, never HTML.
 //
 // A slicer that cannot render right now uses no retry (SlicerDown): one
 // that takes no connection at all (stopped, restarting or being re-pulled,
@@ -75,12 +75,24 @@
 // one transaction point the file at the new source and renders and delete
 // the old rows; the old objects are deleted after that commit. So a failure
 // at any point before it (a store outage, a slicer that stays away) leaves
-// the previous version whole: its source, its renders and its rows. That
-// holds for a replacement that OpenSCAD or the STEP converter rejects too:
-// no new render is stored, so nothing is swapped in. The file keeps its
-// previous source and renders, shows the program's message after
-// DERIVED_MESSAGES.replaceRejectedScad or replaceRejectedStep, and the staged
-// source is discarded. An object left with no row by a crash between steps
+// the previous version whole: its source, its renders and its rows.
+//
+// A replacement that OpenSCAD or the STEP converter rejects itself is the
+// exception (Jon, issue #103): it is the file Jon uploaded, so it becomes
+// the file's source as uploaded and the file shows the program's message.
+// The previous version's STL and PNG, or GLB, stay attached until a later
+// render succeeds, which replaces and deletes them as any render does; only
+// the old source is deleted, its row in the transaction that makes the
+// replacement the source and its object after that commit. The kept renders
+// are marked as the previous version's with the existing columns, so no
+// migration: the message starts with DERIVED_MESSAGES.previousRendersScad
+// or previousRendersStep, and a derived blob whose row is older than the
+// file's source blob row (blobs.created_at) was rendered from an earlier
+// source, since a render's rows are always written after its source's. A
+// slicer that stays down, a store that stays down or refuses, or a slicer
+// error is not the file's doing, so for those the replacement is still
+// discarded and the previous version kept, as above. An object left with
+// no row by a crash between steps
 // is removed by the orphan sweep (ingest/orphans.ts). A replacement over the
 // renderer's limit (a .scad over 1 MiB, a STEP file over 256 MiB) is
 // refused by replaceFile before anything is stored, since it could never
@@ -319,6 +331,12 @@ const COLUMN_OF: Readonly<Record<RenderOutput["kind"], DerivedColumn>> = {
 const COLUMNS_OF_KIND: Readonly<Record<DerivedKind, readonly DerivedColumn[]>> = {
   [DERIVED_KINDS.renderScad]: ["renderStlBlobId", "renderPngBlobId"],
   [DERIVED_KINDS.convertStep]: ["meshBlobId"],
+};
+
+/** What goes before a render error when the renders the file shows are from an earlier source. */
+const PREVIOUS_RENDERS: Readonly<Record<DerivedKind, string>> = {
+  [DERIVED_KINDS.renderScad]: DERIVED_MESSAGES.previousRendersScad,
+  [DERIVED_KINDS.convertStep]: DERIVED_MESSAGES.previousRendersStep,
 };
 
 /** What a job waits out without using a retry: a slicer or a store that is down. */
@@ -819,36 +837,84 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /**
+   * Whether any of the job kind's derived blobs that row points at were
+   * stored before the source blob sourceId: renders of an earlier source.
+   * A render's rows are always written after its source's row (the source
+   * row commits before its job runs), so an older row cannot be this
+   * source's render.
+   */
+  async function rendersPredate(
+    trx: Transaction<DB>,
+    row: ModelFile,
+    jobKind: DerivedKind,
+    sourceId: string,
+  ): Promise<boolean> {
+    const ids = COLUMNS_OF_KIND[jobKind]
+      .map((c) => row[c])
+      .filter((id): id is string => id !== null);
+    if (ids.length === 0) return false;
+    const { rows } = await sql<{ older: boolean }>`
+      select exists (
+        select 1 from blobs d, blobs s
+         where s.id = ${sourceId}
+           and d.id in (${sql.join(ids)})
+           and d.created_at < s.created_at
+      ) as older
+    `.execute(trx);
+    return rows[0]?.older ?? false;
+  }
+
+  /**
    * Records a render or conversion error with the program's message. A
-   * replacement is never swapped in: no new render was stored, so the file
-   * keeps its previous source and renders (build plan Task 13), and the
-   * staged source is discarded after the commit. Its message starts with a
-   * sentence saying so (replaceRejectedScad or replaceRejectedStep), since
-   * the program's words are about a source the file no longer has.
+   * replacement the program rejects still becomes the file's source as
+   * uploaded (Jon, issue #103): the file is pointed at it and the old
+   * source's row deleted in one transaction, and the old source's object
+   * after the commit. The derived blobs are left as they are, so the file
+   * keeps showing the previous version's renders until a render succeeds.
+   * When the renders it shows are from an earlier source, the message
+   * starts with a sentence saying so (previousRendersScad or
+   * previousRendersStep), then gives the program's own words.
    */
   async function commitRenderError(
+    jobKind: DerivedKind,
     file: ModelFile,
     source: Blob,
     replacing: boolean,
     programMessage: string,
   ): Promise<void> {
-    const message = replacing
-      ? `${file.kind === "scad" ? DERIVED_MESSAGES.replaceRejectedScad : DERIVED_MESSAGES.replaceRejectedStep} ${programMessage}`
-      : programMessage;
+    let oldKeys: string[] = [];
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
+      const message = (await rendersPredate(trx, row, jobKind, source.id))
+        ? `${PREVIOUS_RENDERS[jobKind]} ${programMessage}`
+        : programMessage;
       const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
       await trx
         .updateTable("files")
         .set({
+          ...(replacing
+            ? {
+                blobId: source.id,
+                size: source.size ?? 0,
+                sha256: source.sha256 ?? Buffer.alloc(0),
+              }
+            : {}),
           derivedStatus: outcome.status,
           derivedMessage: outcome.message,
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)
         .execute();
+      if (replacing) {
+        const deleted = await trx
+          .deleteFrom("blobs")
+          .where("id", "=", row.blobId)
+          .returning("key")
+          .execute();
+        oldKeys = deleted.map((d) => d.key);
+      }
     });
-    if (replacing) await discardStaged(source.id);
+    await deleteQuietly(oldKeys);
   }
 
   /**
@@ -1006,9 +1072,14 @@ export function createDerived(deps: DerivedDeps) {
       }
       if (error instanceof RenderFailed) {
         try {
-          await commitRenderError(file, source, replacing, error.message);
+          await commitRenderError(job.kind, file, source, replacing, error.message);
         } catch (recordError) {
-          if (recordError instanceof Superseded) return stale;
+          // Decided before any write, so nothing committed: the staged
+          // source goes, as when renders are overtaken (above).
+          if (recordError instanceof Superseded) {
+            if (replacing) await discardStaged(source.id);
+            return stale;
+          }
           throw recordError;
         }
         return { status: "failed", reason: "render_failed" };
