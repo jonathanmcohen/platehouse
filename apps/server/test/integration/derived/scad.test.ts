@@ -1279,7 +1279,8 @@ describe("replacing a .scad (AC-053)", () => {
     if (!stagedBlob) throw new Error("no staged source row");
 
     env.stub.renders.queue("/v1/scad/stl", { kind: "failed", message: "ERROR: syntax error" });
-    // The purge begins while the job reads the source for its render.
+    // The model is trashed and its purge begins while the job reads the
+    // source for its render (a purge starts only on a trashed model).
     const purging = derivedWith({
       queue: holdingQueue(),
       store: {
@@ -1287,7 +1288,7 @@ describe("replacing a .scad (AC-053)", () => {
         getBlobStream: async (key) => {
           await env.db
             .updateTable("models")
-            .set({ purgeStartedAt: new Date() })
+            .set({ trashedAt: new Date(), purgeStartedAt: new Date() })
             .where("id", "=", modelId)
             .execute();
           return env.store.getBlobStream(key);
