@@ -523,10 +523,16 @@ export interface RouteEntry {
  * route. The app must be ready.
  */
 export function registeredRoutes(app: FastifyInstance): RouteEntry[] {
+  // The tree's connectors, spelled by code point to keep this file ASCII:
+  // U+251C or U+2514, then two U+2500 and a space.
+  const dashes = `${String.fromCharCode(0x2500, 0x2500)} `;
+  const connectors = [String.fromCharCode(0x251c), String.fromCharCode(0x2514)].map(
+    (corner) => `${corner}${dashes}`,
+  );
   const routes: RouteEntry[] = [];
   const stack: string[] = [];
   for (const line of app.printRoutes().split("\n")) {
-    const at = line.search(/[├└]── /);
+    const at = Math.max(...connectors.map((c) => line.indexOf(c)));
     if (at === -1) continue;
     const depth = at / 4;
     const node = line.slice(at + 4);

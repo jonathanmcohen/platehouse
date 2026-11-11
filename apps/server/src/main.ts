@@ -19,7 +19,12 @@
 //      (onIngested), and the Orca poll also runs once at startup;
 //   5. the inbox watcher (Task 10), wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
-//   6. the Fastify app (app.ts), listening on PORT on every interface.
+//   6. the Fastify app (app.ts), listening on PORT on every interface, with
+//      login (Task 15): sessions in the sessions table, the OIDC client for
+//      OIDC_ISSUER with redirect_uri absoluteUrl('/auth/callback'), and the
+//      login cookie's key derived from LINK_SECRET (loginCookieKey). Pocket
+//      ID is not contacted at startup, only at the first login, so the
+//      server starts while it is down.
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
