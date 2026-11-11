@@ -14,10 +14,13 @@
 // pg-boss runs the job again with backoff; there is no retry loop here. On
 // the last attempt runJob records slicer_error instead (DERIVED_MESSAGES)
 // and the job completes, so the file does not wait on a render forever (a
-// last attempt that dies first is settled by the render check below). A render or conversion error is the
-// program's own answer: it is never retried, the source is kept, and the
-// program's message goes into files.derived_message exactly as written. It
-// is text, for the page to show as text, never HTML.
+// last attempt that dies first is settled by the render check below). The
+// slicer message is kept for the slicer's own failures: any other error on
+// the last attempt (a database error, a bug) is rethrown with nothing
+// recorded, and the render check settles the file. A render or conversion
+// error is the program's own answer: it is never retried, the source is
+// kept, and the program's message goes into files.derived_message exactly as
+// written. It is text, for the page to show as text, never HTML.
 //
 // A slicer that cannot render right now uses no retry (SlicerDown): one
 // that takes no connection at all (stopped, restarting or being re-pulled,
@@ -845,7 +848,9 @@ export function createDerived(deps: DerivedDeps) {
    * file's (slicer_error, store_refused, or slicer_down or store_down past
    * its limit), with
    * message, while the file still has the source the job started from; a
-   * replacement is dropped and the previous version kept.
+   * replacement is dropped and the previous version kept. A file that
+   * already shows 'ok' for the job's own source (renders for it committed,
+   * though the job did not see the commit's answer) is left as it is.
    */
   async function commitSlicerError(
     file: ModelFile,
@@ -856,12 +861,13 @@ export function createDerived(deps: DerivedDeps) {
     await db.transaction().execute(async (trx) => {
       const row = await trx
         .selectFrom("files")
-        .select("id")
+        .select(["id", "blobId", "derivedStatus"])
         .where("id", "=", file.id)
         .where("blobId", "=", file.blobId)
         .forUpdate()
         .executeTakeFirst();
       if (row === undefined) return;
+      if (row.blobId === source.id && row.derivedStatus === "ok") return;
       const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
       await trx
         .updateTable("files")
@@ -933,9 +939,10 @@ export function createDerived(deps: DerivedDeps) {
    * Runs one render or mesh job (the slicer queue's worker calls this).
    * Throws only to have pg-boss retry: before the last attempt, on a 409
    * busy, a lost connection or a store refusal that may pass (a 5xx, or a
-   * throttled or timed-out request); or on
-   * an unexpected error. A slicer or a store that is down sends the job
-   * again instead (waitOut).
+   * throttled or timed-out request); or on an unexpected error, on any
+   * attempt, with nothing recorded (the render check settles the file if
+   * the last attempt fails that way). A slicer or a store that is down
+   * sends the job again instead (waitOut).
    */
   async function runJob(
     job: DerivedJob,
@@ -1013,7 +1020,13 @@ export function createDerived(deps: DerivedDeps) {
         console.error(`derived: file ${file.id} ended with store_refused: ${describe(error)}`);
         return { status: "failed", reason: "store_refused" };
       }
-      const known = isRetryable(error);
+      // Only the slicer's own failures get the slicer message. Any other
+      // error (a database error, a bug) says nothing about the slicer and
+      // may even follow a commit that went through, so it is rethrown with
+      // nothing recorded: pg-boss retries it, and once the last attempt has
+      // failed the render check settles a file still pending as a render
+      // that did not finish.
+      if (!isRetryable(error) && !(error instanceof SlicerFault)) throw error;
       if (!last && !(error instanceof SlicerFault)) throw error;
       // The last attempt, or an answer a retry will not change: record
       // slicer_error so the file is never left waiting.
@@ -1023,11 +1036,8 @@ export function createDerived(deps: DerivedDeps) {
         replacing,
         replacing ? DERIVED_MESSAGES.replaceFailed : DERIVED_MESSAGES.slicerError,
       );
-      if (known || error instanceof SlicerFault) {
-        console.error(`derived: file ${file.id} ended with slicer_error: ${describe(error)}`);
-        return { status: "failed", reason: "slicer_error" };
-      }
-      throw error;
+      console.error(`derived: file ${file.id} ended with slicer_error: ${describe(error)}`);
+      return { status: "failed", reason: "slicer_error" };
     }
   }
 
