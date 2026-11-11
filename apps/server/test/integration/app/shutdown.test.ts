@@ -80,6 +80,13 @@ describe("the server process", () => {
     expect(result, output.slice(-4000)).toEqual({ code: 0, signal: null });
     expect(took).toBeLessThan(SHUTDOWN_DEADLINE_MS);
     expect(await healthStatus(env)).toBeNull();
-    expect(await otherConnections()).toBe(0);
+    // Postgres may list a backend for a moment after its client has gone.
+    expect(
+      await until(
+        () => otherConnections(),
+        (n) => n === 0,
+        5_000,
+      ),
+    ).toBe(0);
   }, 180_000);
 });

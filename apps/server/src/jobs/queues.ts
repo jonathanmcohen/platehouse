@@ -14,9 +14,14 @@
 // - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38), the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time, Task 9's sweep of
-//   partial uploads untouched for 24 hours (uploads/tus.ts) every hour, and
-//   Task 12's Orca-version poll every 10 minutes.
+//   partial uploads untouched for 24 hours (uploads/tus.ts) every hour,
+//   Task 12's Orca-version poll every 10 minutes, and Task 13's render check
+//   (derived/derived.ts's checkRenders) every 15 minutes (CHECK_RENDERS_CRON).
+// The server (main.ts, Task 30) passes a ServerQueueDeps, which requires
+// every dependency that is optional here, so it cannot leave a queue without
+// its worker or a schedule without its handler.
 import type { JobWithMetadata, PgBoss } from "pg-boss";
+import { CHECK_RENDERS_CRON } from "../derived/derived.js";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
 
 export const QUEUE = {
@@ -187,7 +192,8 @@ interface MaintenanceJob {
  * applied again), and a schedule is keyed, so it is replaced rather than
  * added again. The slicer queue is worked, one job at a time, only when
  * slicerJobs is given; the Orca poll is scheduled, and run once before this
- * returns, only when pollOrca is.
+ * returns, only when pollOrca is; the render check is scheduled only when
+ * checkRenders is.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
@@ -227,6 +233,14 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     { task: MAINTENANCE_TASKS.sweepUploads },
     { tz, key: MAINTENANCE_TASKS.sweepUploads, missed: "once" },
   );
+  if (deps.checkRenders) {
+    await boss.schedule(
+      QUEUE.maintenance,
+      CHECK_RENDERS_CRON,
+      { task: MAINTENANCE_TASKS.checkRenders },
+      { tz, key: MAINTENANCE_TASKS.checkRenders },
+    );
+  }
 
   const polling =
     deps.pollingIntervalSeconds === undefined
@@ -290,6 +304,10 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           return;
         case MAINTENANCE_TASKS.sweepUploads:
           await deps.sweepUploads(new Date());
+          return;
+        case MAINTENANCE_TASKS.checkRenders:
+          if (!deps.checkRenders) throw new Error("No render check is registered");
+          await deps.checkRenders(new Date());
           return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
