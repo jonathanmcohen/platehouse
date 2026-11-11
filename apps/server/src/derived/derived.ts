@@ -56,9 +56,11 @@
 // body sent to the slicer, or storing the renders. The file is marked failed
 // with DERIVED_MESSAGES.storeRefused (replaceStoreRefused for a replacement,
 // whose staged source is discarded and whose previous version is kept). A
-// 5xx, or a failure with no HTTP status, may pass, so it is left to pg-boss's
-// retries and recorded on the last attempt; a 4xx refusal or a missing object
-// will not pass on a retry, so it is recorded on the attempt that meets it.
+// 5xx, a failure with no HTTP status, or a throttled or timed-out request
+// (408, 429, SlowDown, RequestTimeout) may pass, so it is left to pg-boss's
+// retries and recorded on the last attempt; any other 4xx refusal or a
+// missing object will not pass on a retry, so it is recorded on the attempt
+// that meets it.
 //
 // Replacing a file (replaceFile) stores the new source as a blob of its own,
 // next to the file's current one, and queues a job for it. The staged
@@ -340,17 +342,35 @@ function outageOf(error: unknown): Outage | null {
 }
 
 /**
+ * 4xx answers that a store gives for a request it may take on a retry:
+ * 408 Request Timeout and 429 Too Many Requests, which several S3-compatible
+ * stores send in place of a 503 when they throttle.
+ */
+const TRANSIENT_STORE_STATUS: ReadonlySet<number> = new Set([408, 429]);
+
+/**
+ * S3 error codes for the same, whatever status carries them: SlowDown
+ * (throttling) and RequestTimeout (S3's 400 for an upload that was too slow).
+ */
+const TRANSIENT_STORE_CODES: ReadonlySet<string> = new Set(["SlowDown", "RequestTimeout"]);
+
+/**
  * Whether an error is a store that answered and refused, or a source object
  * that is gone (issue #102), and if so whether a pg-boss retry may cure it:
- * "retry" for a 5xx or a failure with no HTTP status (a body that broke with
- * no network code, a failed size check), "final" for a 4xx refusal
+ * "retry" for a 5xx, a failure with no HTTP status (a body that broke with
+ * no network code, a failed size check), or a throttled or timed-out request
+ * (408, 429, SlowDown, RequestTimeout); "final" for any other 4xx refusal
  * (AccessDenied, NoSuchBucket) or a missing object. null for anything else.
  * An unreachable store is StoreUnavailable, an outage, and never lands here.
  */
 export function storeRefusalOf(error: unknown): "retry" | "final" | null {
   if (error instanceof BlobNotFound) return "final";
   if (error instanceof StoreError) {
-    return error.status !== undefined && error.status < 500 ? "final" : "retry";
+    if (error.status === undefined || error.status >= 500) return "retry";
+    if (TRANSIENT_STORE_STATUS.has(error.status) || TRANSIENT_STORE_CODES.has(error.code)) {
+      return "retry";
+    }
+    return "final";
   }
   return null;
 }
@@ -912,7 +932,8 @@ export function createDerived(deps: DerivedDeps) {
   /**
    * Runs one render or mesh job (the slicer queue's worker calls this).
    * Throws only to have pg-boss retry: before the last attempt, on a 409
-   * busy, a lost connection or a store refusal that may pass (a 5xx); or on
+   * busy, a lost connection or a store refusal that may pass (a 5xx, or a
+   * throttled or timed-out request); or on
    * an unexpected error. A slicer or a store that is down sends the job
    * again instead (waitOut).
    */
