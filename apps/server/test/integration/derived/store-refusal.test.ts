@@ -3,10 +3,12 @@
 // ("final"). Throttling and request timeouts are answered with a 4xx by
 // S3 and several S3-compatible stores, and pass once the store catches up,
 // so they are "retry" like a 5xx; a refusal that names the request or the
-// setup as wrong is "final".
+// setup as wrong is "final". These cases start no container; they sit with
+// the render tests under test/integration/derived/, where build plan Task 13
+// puts its tests.
 import { describe, expect, it } from "vitest";
-import { storeRefusalOf } from "../../src/derived/derived.js";
-import { BlobNotFound, StoreError, StoreUnavailable } from "../../src/storage/errors.js";
+import { storeRefusalOf } from "../../../src/derived/derived.js";
+import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/errors.js";
 
 describe("storeRefusalOf", () => {
   it.each([
