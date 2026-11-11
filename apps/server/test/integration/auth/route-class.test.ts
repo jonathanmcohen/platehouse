@@ -130,7 +130,10 @@ describe("every registered route", () => {
         const res = await t.app.inject({
           method: method as "GET",
           url: concretePath(route.path),
-          headers: { accept: "application/json" },
+          // Same-origin, as the browser sends it: the Origin checks (the
+          // gate's under /app/api, POST /auth/logout's own) pass, so what is
+          // left is the class's answer to no credentials.
+          headers: { accept: "application/json", origin: TEST_ORIGIN },
         });
         const toLogin = res.headers.location === `${TEST_ORIGIN}/auth/login`;
         switch (cls) {

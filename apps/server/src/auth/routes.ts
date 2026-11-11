@@ -3,24 +3,34 @@
 // classes table): no session is needed to reach them.
 //
 // - GET /auth/login asks the issuer for a new login (oidc.ts) and sends the
-//   browser there with 302. The PKCE verifier, state and nonce go in the
-//   __Host-ph_login cookie: signed (HMAC-SHA256, @fastify/cookie), HttpOnly,
-//   SameSite=Lax so it comes back on Pocket ID's top-level redirect, 10
-//   minutes long, with its expiry inside the signed value as well, since a
-//   browser's Max-Age is only advice. When the issuer cannot be reached the
-//   answer is 503 "Login is unavailable right now".
-// - GET /auth/callback spends the login cookie whatever happens, exchanges
-//   the code against the callback URL rebuilt on PUBLIC_ORIGIN with only the
-//   request's query (so redirect_uri never comes from the Host header), and
-//   on success starts a session, sets __Host-ph_session and sends the
-//   browser to PUBLIC_ORIGIN/. A missing, forged or expired login cookie, or
-//   a response that does not check out, is 400; a user not let in is 403
-//   with the reason; the issuer unreachable is 503.
-// - POST /auth/logout ends the session, if any, clears its cookie and
-//   answers 204. Signing out of Pocket ID itself is not part of it.
+//   browser there with 302. The PKCE verifier, state and nonce go in a
+//   cookie named for the login's state, __Host-ph_login_<state>, so two
+//   logins that overlap (two tabs restored at once) each keep their own:
+//   signed (HMAC-SHA256, @fastify/cookie), HttpOnly, SameSite=Lax so it
+//   comes back on Pocket ID's top-level redirect, 10 minutes long, with its
+//   expiry inside the signed value as well, since a browser's Max-Age is
+//   only advice. When the issuer cannot be reached the answer is 503 "Login
+//   is unavailable right now".
+// - GET /auth/callback finds the login cookie by the state in its query and
+//   spends that one cookie whatever happens, leaving any other login's
+//   alone. A state that is not a plain token is 400 and names no cookie. It
+//   then exchanges the code against the callback URL rebuilt on
+//   PUBLIC_ORIGIN with only the request's query (so redirect_uri never comes
+//   from the Host header), and on success starts a session, sets
+//   __Host-ph_session and sends the browser to PUBLIC_ORIGIN/. A missing,
+//   forged or expired login cookie, or a response that does not check out,
+//   is 400; a user not let in is 403 with the reason; the issuer unreachable
+//   is 503.
+// - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as a state-
+//   changing /app/api request does, or it is 403 and the session and its
+//   cookie are left alone, so another site cannot sign Jon out. Otherwise it
+//   ends the session, if any, clears its cookie and answers 204. Signing out
+//   of Pocket ID itself is not part of it.
 //
 // Every answer is Cache-Control: no-store, and the pages are plain HTML with
-// a link to try again. Nothing here logs a code, a token or a cookie.
+// a link to try again. Nothing here logs a code, a token or a cookie, and
+// the request log records the path without the query (app.ts), so the
+// callback's code and state stay out of it too.
 import { hkdfSync } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { type LoginChecks, LoginError, type OidcClient } from "./oidc.js";
@@ -31,8 +41,19 @@ import {
   type Sessions,
 } from "./sessions.js";
 
-/** The cookie that carries a login's PKCE verifier, state and nonce. */
-export const LOGIN_COOKIE = "__Host-ph_login";
+/** The login cookie's name up to the state: __Host-ph_login_<state>. */
+export const LOGIN_COOKIE_PREFIX = "__Host-ph_login_";
+
+/**
+ * A state that can name a login cookie: base64url, as openid-client makes it
+ * (43 characters), with room either side. Anything else names no cookie.
+ */
+const STATE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+
+/** The cookie that carries the PKCE verifier, state and nonce of the login with this state. */
+export function loginCookieName(state: string): string {
+  return `${LOGIN_COOKIE_PREFIX}${state}`;
+}
 
 /** How long a login may take, from /auth/login to /auth/callback. */
 export const LOGIN_COOKIE_MS = 10 * 60 * 1000;
@@ -64,6 +85,8 @@ export function loginCookieKey(linkSecret: string): Buffer {
 export interface AuthRouteDeps {
   oidc: OidcClient;
   sessions: Sessions;
+  /** PUBLIC_ORIGIN, scheme and host only: the Origin POST /auth/logout must carry. */
+  publicOrigin: string;
   absoluteUrl(path: string): string;
   group: string;
   now?: () => Date;
@@ -119,8 +142,12 @@ function unavailable(reply: FastifyReply) {
 }
 
 /** The login cookie's checks, or undefined when it is missing, forged, malformed or expired. */
-function readLoginCookie(request: FastifyRequest, now: Date): LoginChecks | undefined {
-  const raw = request.cookies[LOGIN_COOKIE];
+function readLoginCookie(
+  request: FastifyRequest,
+  name: string,
+  now: Date,
+): LoginChecks | undefined {
+  const raw = request.cookies[name];
   if (raw === undefined || raw === "") return undefined;
   const unsigned = request.unsignCookie(raw);
   if (!unsigned.valid || unsigned.value === null) return undefined;
@@ -167,19 +194,29 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       n: begun.checks.nonce,
       e: now().getTime() + LOGIN_COOKIE_MS,
     };
-    reply.setCookie(LOGIN_COOKIE, Buffer.from(JSON.stringify(state)).toString("base64url"), {
-      ...LOGIN_COOKIE_OPTIONS,
-      maxAge: LOGIN_COOKIE_MS / 1000,
-      signed: true,
-    });
+    reply.setCookie(
+      loginCookieName(state.s),
+      Buffer.from(JSON.stringify(state)).toString("base64url"),
+      {
+        ...LOGIN_COOKIE_OPTIONS,
+        maxAge: LOGIN_COOKIE_MS / 1000,
+        signed: true,
+      },
+    );
     reply.header("cache-control", "no-store");
     return reply.redirect(begun.url.href, 302);
   });
 
   app.get("/auth/callback", async (request, reply) => {
-    // The login cookie is spent whatever happens next.
-    reply.clearCookie(LOGIN_COOKIE, LOGIN_COOKIE_OPTIONS);
-    const checks = readLoginCookie(request, now());
+    const state = new URLSearchParams(queryOf(request.url)).get("state") ?? "";
+    let checks: LoginChecks | undefined;
+    if (STATE_PATTERN.test(state)) {
+      // This login's cookie is spent whatever happens next; another login's
+      // cookie is left for its own callback.
+      const name = loginCookieName(state);
+      reply.clearCookie(name, LOGIN_COOKIE_OPTIONS);
+      checks = readLoginCookie(request, name, now());
+    }
     if (checks === undefined) {
       return sendPage(
         reply,
@@ -244,8 +281,11 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
   });
 
   app.post("/auth/logout", async (request, reply) => {
-    reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
     reply.header("cache-control", "no-store");
+    if (request.headers.origin !== deps.publicOrigin) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
     try {
       await deps.sessions.end(request.cookies[SESSION_COOKIE]);
     } catch (error) {

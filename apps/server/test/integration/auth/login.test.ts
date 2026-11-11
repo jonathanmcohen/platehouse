@@ -9,24 +9,34 @@
 //
 // No container: sessions are in memory with a test clock (sessions-db.test.ts
 // runs the same flow against Postgres).
+
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { buildApp } from "../../../src/app.js";
 import { admit, emailVerified, LoginError, OIDC_SCOPE } from "../../../src/auth/oidc.js";
-import { LOGIN_COOKIE, LOGIN_COOKIE_MS } from "../../../src/auth/routes.js";
+import { LOGIN_COOKIE_MS, LOGIN_COOKIE_PREFIX, loginCookieName } from "../../../src/auth/routes.js";
 import {
   SESSION_ABSOLUTE_MS,
   SESSION_COOKIE,
   SESSION_IDLE_MS,
 } from "../../../src/auth/sessions.js";
+import { createUploads } from "../../../src/uploads/tus.js";
 import {
   type AuthTestApp,
   authTestApp,
+  loginCookieOf,
   runLogin,
   type SetCookie,
   setCookie,
+  setCookies,
   startMockIssuer,
   TEST_GROUP,
   TEST_ORIGIN,
   type TestUser,
+  testAuth,
 } from "../support/oidc-issuer.js";
 
 const RESULT_PATH = "/app/uploads/0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e9f/result";
@@ -90,10 +100,13 @@ describe("GET /auth/login", () => {
     expect(res.headers["cache-control"]).toBe("no-store");
   });
 
-  test("keeps the login in a 10-minute signed, HttpOnly __Host- cookie", async () => {
+  test("keeps the login in a 10-minute signed, HttpOnly __Host- cookie named for its state", async () => {
     const res = await t.app.inject({ method: "GET", url: "/auth/login" });
-    const cookie = setCookie(res, LOGIN_COOKIE);
-    expectHostCookie(cookie, LOGIN_COOKIE);
+    const state = new URL(String(res.headers.location)).searchParams.get("state") ?? "";
+    expect(loginCookieName(state)).toBe(`${LOGIN_COOKIE_PREFIX}${state}`);
+    expect(LOGIN_COOKIE_PREFIX).toBe("__Host-ph_login_");
+    const cookie = setCookie(res, loginCookieName(state));
+    expectHostCookie(cookie, loginCookieName(state));
     expect(cookie?.attributes.get("max-age")).toBe(String(LOGIN_COOKIE_MS / 1000));
     expect(LOGIN_COOKIE_MS).toBe(10 * MINUTE);
     // Signed: a value, a dot, then the HMAC.
@@ -107,6 +120,43 @@ describe("GET /auth/login", () => {
     const qb = new URL(String(b.headers.location)).searchParams;
     for (const name of ["state", "nonce", "code_challenge"]) {
       expect(qa.get(name), name).not.toBe(qb.get(name));
+    }
+  });
+
+  test("two logins that overlap both finish, in either order", async () => {
+    for (const order of [
+      [0, 1],
+      [1, 0],
+    ]) {
+      t.store.rows.clear();
+      // The browser's cookie jar: a Set-Cookie replaces a cookie of the same
+      // name, and Max-Age=0 removes it.
+      const jar = new Map<string, string>();
+      const keep = (res: { headers: Record<string, unknown> }) => {
+        for (const c of setCookies(res)) {
+          if (c.attributes.get("max-age") === "0") jar.delete(c.name);
+          else jar.set(c.name, c.value);
+        }
+      };
+      const backs: URL[] = [];
+      for (let i = 0; i < 2; i++) {
+        const start = await t.app.inject({ method: "GET", url: "/auth/login" });
+        keep(start);
+        backs.push(await t.issuer.authorize(String(start.headers.location)));
+      }
+      for (const i of order) {
+        const back = backs[i] as URL;
+        const res = await t.app.inject({
+          method: "GET",
+          url: `${back.pathname}${back.search}`,
+          cookies: Object.fromEntries(jar),
+        });
+        keep(res);
+        expect(res.statusCode, `login ${i} of order ${order}`).toBe(302);
+        expect(setCookie(res, SESSION_COOKIE), `login ${i}`).toBeDefined();
+      }
+      expect(t.store.rows.size).toBe(1);
+      expect([...jar.keys()].filter((name) => name.startsWith(LOGIN_COOKIE_PREFIX))).toEqual([]);
     }
   });
 
@@ -144,7 +194,7 @@ describe("GET /auth/callback", () => {
     expect(row?.expiresAt.getTime()).toBe(t.clock.now.getTime() + SESSION_ABSOLUTE_MS);
     expect(row?.idleExpiresAt.getTime()).toBe(t.clock.now.getTime() + SESSION_IDLE_MS);
     // The login cookie is spent.
-    expect(setCookie(run.callback, LOGIN_COOKIE)?.attributes.get("max-age")).toBe("0");
+    expect(loginCookieOf(run.callback)?.attributes.get("max-age")).toBe("0");
     expect(await withSession(run.sessionCookie)).toBe(404);
     expect(await withSession(undefined)).toBe(401);
   });
@@ -213,7 +263,9 @@ describe("GET /auth/callback", () => {
 
   test("a login cookie with an altered signature or value is 400", async () => {
     const start = await t.app.inject({ method: "GET", url: "/auth/login" });
-    const cookie = setCookie(start, LOGIN_COOKIE)?.value ?? "";
+    const login = loginCookieOf(start);
+    const name = login?.name ?? "";
+    const cookie = login?.value ?? "";
     const back = await t.issuer.authorize(String(start.headers.location));
     const dot = cookie.lastIndexOf(".");
     const flip = (s: string, i: number) =>
@@ -222,7 +274,7 @@ describe("GET /auth/callback", () => {
       const res = await t.app.inject({
         method: "GET",
         url: `${back.pathname}${back.search}`,
-        cookies: { [LOGIN_COOKIE]: forged },
+        cookies: { [name]: forged },
       });
       expect(res.statusCode, forged).toBe(400);
     }
@@ -248,26 +300,45 @@ describe("GET /auth/callback", () => {
 
   test("a state that does not match the login cookie is 400", async () => {
     const start = await t.app.inject({ method: "GET", url: "/auth/login" });
-    const cookie = setCookie(start, LOGIN_COOKIE)?.value ?? "";
+    const login = loginCookieOf(start);
     const back = await t.issuer.authorize(String(start.headers.location));
+    const state = back.searchParams.get("state") ?? "";
     back.searchParams.set("state", "not-the-state-this-login-sent");
-    const res = await t.app.inject({
-      method: "GET",
-      url: `${back.pathname}${back.search}`,
-      cookies: { [LOGIN_COOKIE]: cookie },
-    });
-    expect(res.statusCode).toBe(400);
+    for (const name of [login?.name ?? "", loginCookieName("not-the-state-this-login-sent")]) {
+      const res = await t.app.inject({
+        method: "GET",
+        url: `${back.pathname}${back.search}`,
+        cookies: { [name]: login?.value ?? "" },
+      });
+      expect(res.statusCode, name).toBe(400);
+    }
+    expect(state).not.toBe("");
+    expect(t.issuer.tokenRequests).toHaveLength(0);
     expect(t.store.rows.size).toBe(0);
+  });
+
+  test("a state that is not a plain token is 400 and sets no cookie by that name", async () => {
+    for (const state of ["", "a b", "a;b", "a=b", "x".repeat(200)]) {
+      const res = await t.app.inject({
+        method: "GET",
+        url: `/auth/callback?code=c&state=${encodeURIComponent(state)}`,
+      });
+      expect(res.statusCode, state).toBe(400);
+      expect(
+        setCookies(res).filter((c) => c.name.startsWith(LOGIN_COOKIE_PREFIX)),
+        state,
+      ).toEqual([]);
+    }
   });
 
   test("an error sent back by Pocket ID is 400 with no session", async () => {
     const start = await t.app.inject({ method: "GET", url: "/auth/login" });
-    const cookie = setCookie(start, LOGIN_COOKIE)?.value ?? "";
+    const login = loginCookieOf(start);
     const state = new URL(String(start.headers.location)).searchParams.get("state") ?? "";
     const res = await t.app.inject({
       method: "GET",
       url: `/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`,
-      cookies: { [LOGIN_COOKIE]: cookie },
+      cookies: { [login?.name ?? ""]: login?.value ?? "" },
     });
     expect(res.statusCode).toBe(400);
     expect(t.store.rows.size).toBe(0);
@@ -279,7 +350,7 @@ describe("GET /auth/callback", () => {
     const again = await t.app.inject({
       method: "GET",
       url: `${run.callbackUrl.pathname}${run.callbackUrl.search}`,
-      cookies: { [LOGIN_COOKIE]: run.loginCookie ?? "" },
+      cookies: { [run.loginCookieName ?? ""]: run.loginCookie ?? "" },
     });
     expect(again.statusCode).toBe(400);
     expect(t.store.rows.size).toBe(1);
@@ -292,6 +363,7 @@ describe("POST /auth/logout", () => {
     const res = await t.app.inject({
       method: "POST",
       url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
       cookies: { [SESSION_COOKIE]: run.sessionCookie ?? "" },
     });
     expect(res.statusCode).toBe(204);
@@ -303,8 +375,72 @@ describe("POST /auth/logout", () => {
   });
 
   test("with no session it is 204 too", async () => {
-    const res = await t.app.inject({ method: "POST", url: "/auth/logout" });
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
+    });
     expect(res.statusCode).toBe(204);
+  });
+
+  for (const origin of ["https://evil.example", "https://sub.platehouse.test", "null", undefined]) {
+    test(`from Origin ${origin ?? "left out"} it is 403 and the session lives on`, async () => {
+      const run = await runLogin(t);
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/auth/logout",
+        headers: origin === undefined ? {} : { origin },
+        cookies: { [SESSION_COOKIE]: run.sessionCookie ?? "" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(setCookie(res, SESSION_COOKIE)).toBeUndefined();
+      expect(t.store.rows.size).toBe(1);
+      expect(await withSession(run.sessionCookie)).toBe(404);
+    });
+  }
+});
+
+describe("the request log", () => {
+  test("never holds the callback's code or state", async () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, done) {
+        lines.push(String(chunk));
+        done();
+      },
+    });
+    const a = await testAuth();
+    const dir = await mkdtemp(join(tmpdir(), "platehouse-log-"));
+    const app = await buildApp({
+      health: { database: async () => 1, queuesRunning: () => true },
+      uploads: createUploads({
+        tmpDir: dir,
+        queue: { enqueue: async () => {}, result: async () => undefined },
+        log: () => {},
+      }),
+      auth: a.auth,
+      logger: stream,
+    });
+    try {
+      await app.ready();
+      const run = await runLogin({ app, issuer: a.issuer });
+      expect(run.callback.statusCode).toBe(302);
+      const code = run.callbackUrl.searchParams.get("code") ?? "";
+      const state = run.callbackUrl.searchParams.get("state") ?? "";
+      expect(code).not.toBe("");
+      const log = lines.join("");
+      // The callback's request is logged, by its path alone.
+      expect(log).toContain('"url":"/auth/callback"');
+      expect(log).not.toContain(code);
+      expect(log).not.toContain(state);
+      expect(log).not.toContain(run.loginCookie ?? "no login cookie");
+      expect(log).not.toContain(run.sessionCookie ?? "no session cookie");
+    } finally {
+      await app.close();
+      await a.issuer.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

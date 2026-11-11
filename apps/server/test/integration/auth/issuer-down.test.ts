@@ -16,13 +16,13 @@ import net, { type AddressInfo } from "node:net";
 import { afterEach, describe, expect, test } from "vitest";
 import { UPLOAD_PREFIXES } from "../../../src/app.js";
 import { ISSUER_TIMEOUT_SECONDS } from "../../../src/auth/oidc.js";
-import { LOGIN_COOKIE, LOGIN_UNAVAILABLE } from "../../../src/auth/routes.js";
+import { LOGIN_UNAVAILABLE } from "../../../src/auth/routes.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import {
   type AuthTestApp,
   authTestApp,
+  loginCookieOf,
   runLogin,
-  setCookie,
   startMockIssuer,
   TEST_ORIGIN,
 } from "../support/oidc-issuer.js";
@@ -71,7 +71,7 @@ describe("with the issuer down", () => {
     const res = await app.inject({ method: "GET", url: "/auth/login" });
     expectUnavailablePage(res);
     expect(LOGIN_UNAVAILABLE).toBe("Login is unavailable right now");
-    expect(setCookie(res, LOGIN_COOKIE)).toBeUndefined();
+    expect(loginCookieOf(res)).toBeUndefined();
   });
 
   test("a bearer-class route still gives its own 401, never the login page or a 503", async () => {

@@ -23,7 +23,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { allowInsecureRequests } from "openid-client";
 import { type AppAuth, buildApp } from "../../../src/app.js";
 import { createOidc, type OidcClient } from "../../../src/auth/oidc.js";
-import { LOGIN_COOKIE, loginCookieKey } from "../../../src/auth/routes.js";
+import { LOGIN_COOKIE_PREFIX, loginCookieKey } from "../../../src/auth/routes.js";
 import {
   createSessions,
   SESSION_COOKIE,
@@ -433,6 +433,8 @@ export interface LoginRun {
   start: Injected;
   /** The login cookie it set (signed value), if any. */
   loginCookie: string | undefined;
+  /** That cookie's name, which carries the login's state. */
+  loginCookieName: string | undefined;
   /** Where the issuer sent the browser back. */
   callbackUrl: URL;
   /** GET /auth/callback's answer. */
@@ -460,18 +462,24 @@ export async function runLogin(
   if (start.statusCode !== 302 || typeof location !== "string") {
     throw new Error(`GET /auth/login answered ${start.statusCode}, not a redirect`);
   }
-  const loginCookie = setCookie(start, LOGIN_COOKIE)?.value;
+  const login = loginCookieOf(start);
+  const loginCookie = login?.value;
+  const loginCookieName = login?.name;
   const callbackUrl = await t.issuer.authorize(location);
   await opts.beforeCallback?.(callbackUrl);
   const callback = await t.app.inject({
     method: "GET",
     url: `${callbackUrl.pathname}${callbackUrl.search}`,
     headers,
-    cookies: loginCookie === undefined ? {} : { [LOGIN_COOKIE]: loginCookie },
+    cookies:
+      loginCookie === undefined || loginCookieName === undefined
+        ? {}
+        : { [loginCookieName]: loginCookie },
   });
   return {
     start,
     loginCookie,
+    loginCookieName,
     callbackUrl,
     callback,
     sessionCookie: setCookie(callback, SESSION_COOKIE)?.value,
@@ -509,6 +517,11 @@ export function setCookie(
   name: string,
 ): SetCookie | undefined {
   return setCookies(res).find((c) => c.name === name);
+}
+
+/** The login cookie a response set or cleared (its name carries the state), if any. */
+export function loginCookieOf(res: { headers: Record<string, unknown> }): SetCookie | undefined {
+  return setCookies(res).find((c) => c.name.startsWith(LOGIN_COOKIE_PREFIX));
 }
 
 /** A route of the app as app.printRoutes() lists it: its full path and its methods. */

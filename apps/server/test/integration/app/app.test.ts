@@ -9,8 +9,10 @@
 // Every request answered before its body is read releases that body: the
 // answer carries Connection: close and the connection closes within DRAIN_MS
 // (issues #107 and #108): a refused request of any class, a 404 whatever its
-// content type, /healthz with a trickled body, a cross-origin refusal and
-// POST /auth/logout.
+// content type, /healthz with a trickled body, a cross-origin refusal,
+// POST /auth/logout, and the two answers Fastify gives before any hook runs:
+// its 400 for a path it cannot decode and its 414 for a route parameter over
+// maxParamLength.
 //
 // These tests need no container: the health checks are stubs, the upload
 // store is a real one in a temp folder, the issuer is the local mock and
@@ -285,7 +287,9 @@ describe("a request answered before its body is read", () => {
   // DRAIN_MS. Issue #107: a 404 with a JSON or text/plain body, which the
   // root app's content-type parsers used to read first. Issue #108: GET or
   // HEAD /healthz with a trickled chunked body. And every kind of refusal:
-  // the session check, the API mount's 401, the Origin check.
+  // the session check, the API mount's 401, the Origin check, and Fastify's
+  // own 400 for a bad URL and 414 for an over-long parameter, which no hook
+  // sees (frameworkErrors in app.ts).
   const someId = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e9f";
   const closeWithinMs = DRAIN_MS + 2_000;
   const json = { "content-type": "application/json" };
@@ -391,8 +395,37 @@ describe("a request answered before its body is read", () => {
       label: "POST /auth/logout with a trickled body",
       method: "POST",
       path: "/auth/logout",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: TEST_ORIGIN },
       status: 204,
+    },
+    {
+      label: "a cross-origin POST /auth/logout with a trickled body",
+      method: "POST",
+      path: "/auth/logout",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: "https://evil.example",
+      },
+      status: 403,
+    },
+    {
+      label: "a POST to a path Fastify cannot decode (its 400 for a bad URL)",
+      method: "POST",
+      path: "/%zz",
+      headers: json,
+      status: 400,
+    },
+    {
+      label: "a PATCH on /app/uploads with an id over the router's maxParamLength (its 414)",
+      method: "PATCH",
+      path: `${UPLOAD_PREFIXES.app}/${"a".repeat(101)}`,
+      headers: {
+        "tus-resumable": "1.0.0",
+        "upload-offset": "0",
+        "content-type": "application/offset+octet-stream",
+        "content-length": "100000",
+      },
+      status: 414,
     },
     {
       label: "GET /auth/callback with a trickled body",
