@@ -88,6 +88,7 @@ export const MAINTENANCE_TASKS = {
   sweepOrphans: "sweep-orphans",
   pollOrca: "poll-orca",
   sweepUploads: "sweep-uploads",
+  checkRenders: "check-renders",
 } as const;
 
 /**
@@ -155,11 +156,25 @@ export interface QueueDeps {
   onIngested?(result: IngestResult): Promise<unknown>;
   /** Task 9's sweep of stale partial uploads (uploads/tus.ts's sweepStaleUploads). */
   sweepUploads(now: Date): Promise<unknown>;
+  /**
+   * Task 13's render check (derived/derived.ts's checkRenders), when given:
+   * scheduled every 15 minutes (CHECK_RENDERS_CRON).
+   */
+  checkRenders?(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
   pollingIntervalSeconds?: number;
 }
+
+/**
+ * QueueDeps with every optional dependency required: what the server passes
+ * (build plan Task 30). With it, a server that leaves the slicer queue
+ * without its worker, the Orca poll or the render check without its
+ * schedule, or an ingested file without its estimates fails to compile.
+ */
+export type ServerQueueDeps = QueueDeps &
+  Required<Pick<QueueDeps, "slicerJobs" | "pollOrca" | "onIngested" | "checkRenders">>;
 
 interface MaintenanceJob {
   task: string;
