@@ -329,13 +329,15 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     if (request.headers.origin !== deps.publicOrigin) {
       return reply.code(403).send({ error: "forbidden" });
     }
-    reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
     try {
       await deps.sessions.end(request.cookies[SESSION_COOKIE]);
     } catch (error) {
+      // The cookie stays: the row it names is still live, and clearing it
+      // here would leave the user looking signed out with no way to retry.
       request.log.warn({ err: error }, "auth: could not end the session");
       return reply.code(503).send({ error: "unavailable" });
     }
+    reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
     return reply.code(204).send();
   });
 }

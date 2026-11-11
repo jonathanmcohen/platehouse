@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { UPLOAD_PREFIXES } from "../../../src/app.js";
-import { routeClass } from "../../../src/auth/gate.js";
+import { patternClass } from "../../../src/auth/gate.js";
 import { LOGIN_UNAVAILABLE } from "../../../src/auth/routes.js";
 import { SESSION_COOKIE, sessionRowId } from "../../../src/auth/sessions.js";
 import { loadConfig } from "../../../src/config.js";
@@ -84,7 +84,7 @@ describe("the running server", () => {
     const routes = registeredRoutes(app);
     expect(routes.some((r) => r.path === "/auth/callback")).toBe(true);
     for (const route of routes) {
-      const cls = routeClass(route.path);
+      const cls = patternClass(route.path);
       for (const method of route.methods) {
         const res = await app.inject({
           method: method as "GET",

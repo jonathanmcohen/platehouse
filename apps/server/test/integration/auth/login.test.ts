@@ -510,6 +510,34 @@ describe("POST /auth/logout", () => {
     expect(res.statusCode).toBe(204);
   });
 
+  test("when the session cannot be ended it is 503 and keeps the cookie, so a retry can end it", async () => {
+    const run = await runLogin(t);
+    t.store.failWith = new Error("the database is down");
+    const failed = await t.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
+      cookies: { [SESSION_COOKIE]: run.sessionCookie ?? "" },
+    });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toEqual({ error: "unavailable" });
+    expect(failed.headers["cache-control"]).toBe("no-store");
+    expect(setCookie(failed, SESSION_COOKIE)).toBeUndefined();
+    expect(t.store.rows.size).toBe(1);
+
+    delete t.store.failWith;
+    const retried = await t.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
+      cookies: { [SESSION_COOKIE]: run.sessionCookie ?? "" },
+    });
+    expect(retried.statusCode).toBe(204);
+    expect(setCookie(retried, SESSION_COOKIE)?.attributes.get("max-age")).toBe("0");
+    expect(t.store.rows.size).toBe(0);
+    expect(await withSession(run.sessionCookie)).toBe(401);
+  });
+
   for (const origin of ["https://evil.example", "https://sub.platehouse.test", "null", undefined]) {
     test(`from Origin ${origin ?? "left out"} it is 403 and the session lives on`, async () => {
       const run = await runLogin(t);

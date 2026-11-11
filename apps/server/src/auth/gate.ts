@@ -1,23 +1,26 @@
 // The route-class gate (build plan Task 15; the Route classes contract).
 //
-// routeClass(path) is the contract's table:
+// patternClass(pattern) and routeClass(path) are the contract's table:
 //
 //   /api/v1/                          bearer: a token, cookies ignored (Task 16)
 //   /s/                               link: the link token (Task 17)
 //   /auth/, /healthz, /assets/        public: nothing
 //   everything else                   session
 //
-// Anything unlisted is session, and so is any path that is not a plain
-// route path (a dot segment, a percent escape, a doubled slash or a
-// backslash), whatever it starts with.
+// Anything unlisted is session. patternClass classes a matched route's
+// registered pattern by its prefix alone, so a regex-constrained param
+// (written with backslashes) keeps its route's class. routeClass classes the
+// raw path of a request that matched no route, and also makes any path that
+// is not a plain route path (a dot segment, a percent escape, a doubled
+// slash or a backslash) session, whatever it starts with.
 //
 // installGate puts three things on the root app, so they cover every route
 // registered after it, a 404 included:
 //
 // 1. An onRequest hook that classes each request by the route it matched
-//    (request.routeOptions.url, the registered pattern, so the gate and the
-//    router never read a path differently), or by its raw path when it
-//    matched none. Session requests get, in order:
+//    (patternClass of request.routeOptions.url, the registered pattern, so
+//    the gate and the router never read a path differently), or by its raw
+//    path (routeClass) when it matched none. Session requests get, in order:
 //    - the Origin check, which fails closed: every state-changing request
 //      (any method but GET, HEAD and OPTIONS) must carry Origin equal to
 //      PUBLIC_ORIGIN, or it is 403 before any session is looked up. It is
@@ -76,14 +79,29 @@ function isPlainPath(path: string): boolean {
   return !path.split("/").some((segment) => segment === "." || segment === "..");
 }
 
-/** The class of a route path (the Route classes table); anything unlisted is session. */
+/**
+ * The class of a matched route's registered pattern, by its prefix alone (the
+ * Route classes table); anything unlisted is session. A pattern is code, not
+ * a request, and Fastify writes a regex-constrained param with backslashes
+ * (/api/v1/models/:id(\\d+)), so the plain-path test is not applied to it.
+ */
+export function patternClass(pattern: string): RouteClass {
+  if (pattern.startsWith("/api/v1/")) return "bearer";
+  if (pattern.startsWith("/s/")) return "link";
+  if (pattern.startsWith("/auth/") || pattern === "/healthz" || pattern.startsWith("/assets/")) {
+    return "public";
+  }
+  return "session";
+}
+
+/**
+ * The class of a raw request path that matched no route (the Route classes
+ * table); anything unlisted, or not a plain route path, is session.
+ */
 export function routeClass(path: string): RouteClass {
   const p = pathPart(path);
   if (!isPlainPath(p)) return "session";
-  if (p.startsWith("/api/v1/")) return "bearer";
-  if (p.startsWith("/s/")) return "link";
-  if (p.startsWith("/auth/") || p === "/healthz" || p.startsWith("/assets/")) return "public";
-  return "session";
+  return patternClass(p);
 }
 
 const sessions = new WeakMap<FastifyRequest, Session>();
@@ -139,8 +157,9 @@ export function installGate(app: FastifyInstance, deps: GateDeps): { requireSess
   };
 
   app.addHook("onRequest", async (request, reply) => {
-    const path = request.routeOptions.url ?? request.url;
-    if (routeClass(path) !== "session") return;
+    const pattern = request.routeOptions.url;
+    const cls = pattern === undefined ? routeClass(request.url) : patternClass(pattern);
+    if (cls !== "session") return;
     if (needsSameOrigin(request.method) && request.headers.origin !== deps.publicOrigin) {
       return reply.code(403).header("cache-control", "no-store").send({ error: "forbidden" });
     }

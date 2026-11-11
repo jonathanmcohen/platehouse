@@ -1,6 +1,7 @@
-// Build plan Task 15: routeClass(path) is the Route classes table of the
-// contract, and anything unlisted is session. Every route the app registers
-// has a class (walks app.printRoutes()), and answers a request with no
+// Build plan Task 15: patternClass(pattern) for a matched route and
+// routeClass(path) for an unmatched request are the Route classes table of
+// the contract, and anything unlisted is session. Every route the app
+// registers has a class (walks app.printRoutes()), and answers a request with no
 // credentials the way its class says: session routes 401 (or a redirect to
 // login for a page), bearer routes their own 401 with cookies ignored,
 // public routes are not refused, link routes 403. No route is open.
@@ -8,7 +9,7 @@
 // No container: the issuer is the local mock and sessions are in memory.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { UPLOAD_PREFIXES } from "../../../src/app.js";
-import { type RouteClass, routeClass } from "../../../src/auth/gate.js";
+import { patternClass, type RouteClass, routeClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import {
   type AuthTestApp,
@@ -82,6 +83,99 @@ describe("routeClass", () => {
   });
 });
 
+describe("patternClass", () => {
+  // A matched route's registered pattern is code, not a request, so it is
+  // classed by its prefix alone. Fastify writes a regex-constrained param
+  // with backslashes (and may use ?, % or // inside the regex), which the
+  // plain-path test on raw request paths would wrongly class as session.
+  const cases: Array<[string, RouteClass]> = [
+    ["/api/v1/models", "bearer"],
+    ["/api/v1/models/:id(\\d+)", "bearer"],
+    ["/api/v1/models/:id(^\\d+)/files/:name", "bearer"],
+    ["/api/v1/uploads/:id(^[\\w-]{36}$)?", "bearer"],
+    ["/s/:token/:name", "link"],
+    ["/s/:token(^[\\w-]+)/:name", "link"],
+    ["/s/:token(^[A-Za-z0-9_%-]+)/:name", "link"],
+    ["/auth/login", "public"],
+    ["/assets/:file(^[\\w.-]+\\.js$)", "public"],
+    ["/healthz", "public"],
+    ["/app/uploads/:id(\\d+)", "session"],
+    ["/files/:id(\\d+)/download", "session"],
+    ["/", "session"],
+    ["/api/v1", "session"],
+    ["/s", "session"],
+    ["/healthz/", "session"],
+    ["*", "session"],
+    ["", "session"],
+  ];
+
+  test.each(cases)("%s is %s", (pattern, expected) => {
+    expect(patternClass(pattern)).toBe(expected);
+  });
+
+  test("agrees with routeClass on every plain path routeClass accepts", () => {
+    for (const path of ["/api/v1/models", "/s/abc/cube.3mf", "/auth/login", "/settings"]) {
+      expect(patternClass(path), path).toBe(routeClass(path));
+    }
+  });
+});
+
+describe("a route registered with a regex-constrained param", () => {
+  // Registered here, in the test only (never shipped code), the way Task 16's
+  // bearer routes and Task 17's link routes may be: the gate classes them by
+  // their prefix, so a bearer or link route is never made to need a session
+  // cookie or a same-origin Origin header, and a session route still does.
+  const BEARER = "/api/v1/regex-test/:id(^\\d+)";
+  const LINK = "/s/:token(^[\\w-]+)/:name";
+  const SESSION = "/regex-test/:id(^\\d+)";
+  let t: AuthTestApp;
+  const ran: string[] = [];
+
+  beforeAll(async () => {
+    t = await authTestApp({
+      beforeReady: (app) => {
+        for (const url of [BEARER, LINK, SESSION]) {
+          app.route({
+            method: ["GET", "POST"],
+            url,
+            handler: async () => {
+              ran.push(url);
+              return { ok: true };
+            },
+          });
+        }
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  test("bearer and link routes reach their handler with no cookie and no Origin", async () => {
+    for (const [url, route] of [
+      ["/api/v1/regex-test/42", BEARER],
+      ["/s/abc-123/cube.3mf", LINK],
+    ] as const) {
+      for (const method of ["GET", "POST"] as const) {
+        ran.length = 0;
+        const res = await t.app.inject({ method, url, headers: { accept: "text/html" } });
+        expect(res.statusCode, `${method} ${url}`).toBe(200);
+        expect(ran, `${method} ${url}`).toEqual([route]);
+      }
+    }
+  });
+
+  test("a session route with a regex param still needs Origin and a session", async () => {
+    ran.length = 0;
+    const post = await t.app.inject({ method: "POST", url: "/regex-test/42" });
+    const get = await t.app.inject({ method: "GET", url: "/regex-test/42" });
+    expect(post.statusCode).toBe(403);
+    expect(get.statusCode).toBe(401);
+    expect(ran).toEqual([]);
+  });
+});
+
 describe("every registered route", () => {
   let t: AuthTestApp;
   let sessionCookie: string;
@@ -122,7 +216,7 @@ describe("every registered route", () => {
     expect(routes.length).toBeGreaterThan(10);
     const seen = new Set<RouteClass>();
     for (const route of routes) {
-      const cls = routeClass(route.path);
+      const cls = patternClass(route.path);
       expect(["bearer", "link", "public", "session"], route.path).toContain(cls);
       seen.add(cls);
       for (const method of route.methods) {
@@ -159,7 +253,7 @@ describe("every registered route", () => {
 
   test("a session lets a request past every session route, and no bearer route", async () => {
     for (const route of registeredRoutes(t.app)) {
-      const cls = routeClass(route.path);
+      const cls = patternClass(route.path);
       if (cls !== "session" && cls !== "bearer") continue;
       for (const method of route.methods) {
         const res = await t.app.inject({
