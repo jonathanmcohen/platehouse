@@ -5,11 +5,16 @@
 // Host or X-Forwarded-Host says; the scopes are openid email profile groups;
 // a user must be in OIDC_GROUP with email_verified true or "true". Sessions
 // last 7 days idle and 30 days at most, behind a __Host- cookie that is
-// Secure, HttpOnly and SameSite=Lax.
+// Secure, HttpOnly and SameSite=Lax. The cookie carries 32 random bytes in
+// base64url; the session is stored under the base64url SHA-256 of that value,
+// so a stored id is not a working cookie. An ID token or userinfo answer that
+// does not check out (another nonce, audience or issuer, expired, or userinfo
+// about another subject) is 400 and makes no session.
 //
 // No container: sessions are in memory with a test clock (sessions-db.test.ts
 // runs the same flow against Postgres).
 
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,11 +32,13 @@ import {
   SESSION_ABSOLUTE_MS,
   SESSION_COOKIE,
   SESSION_IDLE_MS,
+  sessionRowId,
 } from "../../../src/auth/sessions.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import {
   type AuthTestApp,
   authTestApp,
+  type Forgery,
   loginCookieOf,
   runLogin,
   type SetCookie,
@@ -267,7 +274,7 @@ describe("GET /auth/callback", () => {
     expect(run.callback.statusCode).toBe(302);
     expect(run.callback.headers.location).toBe(`${TEST_ORIGIN}/`);
     expect(run.sessionCookie).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    const row = t.store.rows.get(run.sessionCookie ?? "");
+    const row = t.store.rows.get(sessionRowId(run.sessionCookie ?? ""));
     expect(row?.subject).toBe(t.issuer.user.sub);
     expect(row?.expiresAt.getTime()).toBe(t.clock.now.getTime() + SESSION_ABSOLUTE_MS);
     expect(row?.idleExpiresAt.getTime()).toBe(t.clock.now.getTime() + SESSION_IDLE_MS);
@@ -422,6 +429,28 @@ describe("GET /auth/callback", () => {
     expect(t.store.rows.size).toBe(0);
   });
 
+  const forgeries: [string, Partial<TestUser> & { forge: Forgery }][] = [
+    ["an ID token with another nonce", { forge: { nonce: "not-the-login-nonce" } }],
+    ["an ID token for another audience", { forge: { aud: "some-other-client" } }],
+    ["an ID token from another issuer", { forge: { iss: "https://id.evil.example" } }],
+    ["an ID token that has expired", { forge: { expiredSecondsAgo: 600 } }],
+    [
+      "a userinfo answer about another subject than the ID token",
+      { claimsInIdToken: false, forge: { userinfoSub: "someone-else" } },
+    ],
+  ];
+  for (const [label, user] of forgeries) {
+    test(`${label} is refused with 400 and makes no session`, async () => {
+      const app = await appFor(user);
+      const run = await runLogin(app);
+      expect(run.callback.statusCode).toBe(400);
+      expect(run.sessionCookie).toBeUndefined();
+      expect(app.store.rows.size).toBe(0);
+      // The token was exchanged, so the refusal is the app's check, not the issuer's.
+      expect(app.issuer.tokenRequests).toHaveLength(1);
+    });
+  }
+
   test("a code cannot be used twice", async () => {
     const run = await runLogin(t);
     expect(run.callback.statusCode).toBe(302);
@@ -432,6 +461,26 @@ describe("GET /auth/callback", () => {
     });
     expect(again.statusCode).toBe(400);
     expect(t.store.rows.size).toBe(1);
+  });
+});
+
+describe("the stored session id", () => {
+  test("is the base64url SHA-256 of the cookie value, never the cookie value", async () => {
+    const run = await runLogin(t);
+    const cookie = run.sessionCookie ?? "";
+    expect(cookie).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const ids = [...t.store.rows.keys()];
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).not.toBe(cookie);
+    expect(ids[0]).toBe(createHash("sha256").update(cookie).digest("base64url"));
+    expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  test("a request carrying a stored id as its cookie is refused", async () => {
+    const run = await runLogin(t);
+    expect(await withSession(run.sessionCookie)).toBe(404);
+    const [stored] = [...t.store.rows.keys()];
+    expect(await withSession(stored)).toBe(401);
   });
 });
 

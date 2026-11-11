@@ -94,6 +94,7 @@ export const MAINTENANCE_TASKS = {
   pollOrca: "poll-orca",
   sweepUploads: "sweep-uploads",
   checkRenders: "check-renders",
+  purgeSessions: "purge-sessions",
 } as const;
 
 /**
@@ -124,6 +125,9 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
  * deletes objects older than 24 hours.
  */
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
+
+/** Daily at 04:35 local time: the delete of expired sessions. Not scheduled yet (stub). */
+export const PURGE_SESSIONS_CRON = "35 4 * * *";
 
 /** Hourly, on the hour (Task 9): the sweep of partial uploads untouched for 24 hours. */
 export const SWEEP_UPLOADS_CRON = "0 * * * *";

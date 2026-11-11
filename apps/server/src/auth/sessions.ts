@@ -85,6 +85,11 @@ export interface Sessions {
   end(id: string | undefined): Promise<void>;
 }
 
+/** The sessions table id for a session cookie value. Not hashed yet (stub). */
+export function sessionRowId(cookie: string): string {
+  return cookie;
+}
+
 /** True when id has the shape of a session id; anything else is never looked up. */
 export function isSessionId(id: string | undefined): id is string {
   return id !== undefined && SESSION_ID.test(id);

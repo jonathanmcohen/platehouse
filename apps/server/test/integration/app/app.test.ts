@@ -3,8 +3,10 @@
 // no detail in the body. The tus upload handler is mounted at /app/uploads
 // behind the session check (Task 15) and at /api/v1/uploads behind an auth
 // hook that refuses every request with 401 until Task 16 replaces it, so no
-// upload route is open. The HTTP request timeout lets a 512 MiB single PATCH
-// through on a slow link.
+// upload route is open. A state-changing request to /app/uploads also needs
+// Origin to equal PUBLIC_ORIGIN (the gate's Origin check), so the tests that
+// are about credentials send it. The HTTP request timeout lets a 512 MiB
+// single PATCH through on a slow link.
 //
 // Every request answered before its body is read releases that body: the
 // answer carries Connection: close and the connection closes within DRAIN_MS
@@ -126,10 +128,13 @@ describe("GET /healthz", () => {
 });
 
 describe("the upload routes, with no credentials", () => {
+  // Origin is PUBLIC_ORIGIN throughout, so these meet the credential check;
+  // gate.test.ts covers a request from another origin or none.
   const creation = {
     "tus-resumable": "1.0.0",
     "upload-length": "11",
     "upload-metadata": `filename ${Buffer.from("cube.stl").toString("base64")}`,
+    origin: TEST_ORIGIN,
   };
   const someId = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e9f";
 
@@ -159,6 +164,7 @@ describe("the upload routes, with no credentials", () => {
           "tus-resumable": "1.0.0",
           "upload-offset": "0",
           "content-type": "application/offset+octet-stream",
+          origin: TEST_ORIGIN,
         },
         payload: Buffer.from("hello world"),
       });
@@ -309,8 +315,16 @@ describe("a request answered before its body is read", () => {
       label: "a chunked creation on /app/uploads with no session",
       method: "POST",
       path: UPLOAD_PREFIXES.app,
-      headers: { "tus-resumable": "1.0.0", "upload-length": "100000" },
+      headers: { "tus-resumable": "1.0.0", "upload-length": "100000", origin: TEST_ORIGIN },
       status: 401,
+    },
+    {
+      label: "a chunked creation on /app/uploads with a session and no Origin",
+      method: "POST",
+      path: UPLOAD_PREFIXES.app,
+      headers: { "tus-resumable": "1.0.0", "upload-length": "100000" },
+      session: true,
+      status: 403,
     },
     {
       label: "a PATCH on /api/v1/uploads whose Content-Length never arrives",
@@ -373,7 +387,7 @@ describe("a request answered before its body is read", () => {
       label: "a signed-in 404 with a JSON body (#107)",
       method: "POST",
       path: "/no-such-route",
-      headers: json,
+      headers: { ...json, origin: TEST_ORIGIN },
       session: true,
       status: 404,
     },

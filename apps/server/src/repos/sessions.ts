@@ -28,6 +28,11 @@ export function sessionsRepo(db: Kysely<DB>) {
         .executeTakeFirst();
     },
 
+    /** Deletes every session past either expiry at now. Not implemented yet (stub). */
+    async deleteExpired(_now: Date = new Date()): Promise<number> {
+      throw new Error("deleteExpired is not implemented yet");
+    },
+
     /** Ends a session; false when there was none. */
     async delete(id: string): Promise<boolean> {
       const result = await db.deleteFrom("sessions").where("id", "=", id).executeTakeFirst();

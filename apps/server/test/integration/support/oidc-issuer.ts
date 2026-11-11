@@ -47,6 +47,24 @@ export interface TestUser {
   groups?: unknown;
   /** false: groups and email_verified go only to userinfo, not into the ID token. */
   claimsInIdToken?: boolean;
+  /** What the issuer gets wrong on purpose, to test that the app refuses it. */
+  forge?: Forgery;
+}
+
+/**
+ * A bad answer the issuer sends on purpose: an ID token with another nonce,
+ * audience or issuer, one that has already expired, or a userinfo answer
+ * about another subject than the ID token names. The token is still signed
+ * with the issuer's own key, so only the claim is wrong.
+ */
+export interface Forgery {
+  nonce?: string;
+  aud?: string;
+  iss?: string;
+  /** The ID token expired this many seconds ago. */
+  expiredSecondsAgo?: number;
+  /** The sub userinfo answers with. */
+  userinfoSub?: string;
 }
 
 export interface TokenRequest {
@@ -189,19 +207,22 @@ export async function startMockIssuer(opts: MockIssuerOptions = {}): Promise<Moc
 
   async function idToken(code: IssuedCode): Promise<string> {
     const { user } = code;
-    const claims: Record<string, unknown> = { nonce: code.nonce };
+    const forge = user.forge ?? {};
+    const claims: Record<string, unknown> = { nonce: forge.nonce ?? code.nonce };
     if (user.email !== undefined) claims.email = user.email;
     if (user.claimsInIdToken !== false) {
       if (user.email_verified !== undefined) claims.email_verified = user.email_verified;
       if (user.groups !== undefined) claims.groups = user.groups;
     }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const expired = forge.expiredSecondsAgo;
     return new SignJWT(claims)
       .setProtectedHeader({ alg: "RS256", kid })
-      .setIssuer(url)
+      .setIssuer(forge.iss ?? url)
       .setSubject(user.sub)
-      .setAudience(clientId)
-      .setIssuedAt()
-      .setExpirationTime("5m")
+      .setAudience(forge.aud ?? clientId)
+      .setIssuedAt(expired === undefined ? nowSeconds : nowSeconds - expired - 300)
+      .setExpirationTime(expired === undefined ? nowSeconds + 300 : nowSeconds - expired)
       .sign(privateKey);
   }
 
@@ -270,7 +291,7 @@ export async function startMockIssuer(opts: MockIssuerOptions = {}): Promise<Moc
         const header = req.headers.authorization ?? "";
         const u = accessTokens.get(header.replace(/^Bearer /, ""));
         if (u === undefined) return json(res, 401, { error: "invalid_token" });
-        const body: Record<string, unknown> = { sub: u.sub };
+        const body: Record<string, unknown> = { sub: u.forge?.userinfoSub ?? u.sub };
         if (u.email !== undefined) body.email = u.email;
         if (u.email_verified !== undefined) body.email_verified = u.email_verified;
         if (u.groups !== undefined) body.groups = u.groups;
@@ -398,9 +419,14 @@ export interface AuthTestApp extends TestAuth {
 /**
  * buildApp with these auth dependencies, a healthy database and queues, and
  * a real upload store in a temp folder whose queue records nothing. Ready,
- * not listening.
+ * not listening. beforeReady runs on the app before it is made ready, so a
+ * test can register a route of its own (never shipped code).
  */
-export async function authTestApp(opts: Parameters<typeof testAuth>[0] = {}): Promise<AuthTestApp> {
+export async function authTestApp(
+  opts: Parameters<typeof testAuth>[0] & {
+    beforeReady?: (app: FastifyInstance) => void | Promise<void>;
+  } = {},
+): Promise<AuthTestApp> {
   const t = await testAuth(opts);
   const dir = await mkdtemp(join(tmpdir(), "platehouse-auth-"));
   const app = await buildApp({
@@ -412,6 +438,7 @@ export async function authTestApp(opts: Parameters<typeof testAuth>[0] = {}): Pr
     }),
     auth: t.auth,
   });
+  await opts.beforeReady?.(app);
   await app.ready();
   return {
     ...t,

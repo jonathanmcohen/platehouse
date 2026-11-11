@@ -3,13 +3,15 @@
 // listens on, so this is also AC-081 end to end: /auth/login is 503 and a
 // bearer-class route still gives its own 401, while a session in the
 // database lets a request through. Every route the running app registers
-// answers a request with no credentials the way its class says.
+// answers a request with no credentials the way its class says; the walk
+// sends Origin: PUBLIC_ORIGIN, as a browser on the app's own pages would, so
+// a state-changing request meets the credential check and not the Origin one.
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { UPLOAD_PREFIXES } from "../../../src/app.js";
 import { routeClass } from "../../../src/auth/gate.js";
 import { LOGIN_UNAVAILABLE } from "../../../src/auth/routes.js";
-import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { SESSION_COOKIE, sessionRowId } from "../../../src/auth/sessions.js";
 import { loadConfig } from "../../../src/config.js";
 import { type Server, start } from "../../../src/main.js";
 import { concretePath, registeredRoutes } from "../support/oidc-issuer.js";
@@ -27,8 +29,9 @@ beforeAll(async () => {
   server = await start(loadConfig({ ...env.env, OIDC_ISSUER: deadIssuer }));
   session = randomBytes(32).toString("base64url");
   const now = Date.now();
+  // The row is stored under the cookie value's hash, as sessions.start does.
   await env.repos.sessions.create({
-    id: session,
+    id: sessionRowId(session),
     subject: "someone",
     expiresAt: new Date(now + 24 * 60 * 60 * 1000),
     idleExpiresAt: new Date(now + 60 * 60 * 1000),
@@ -83,7 +86,11 @@ describe("the running server", () => {
     for (const route of routes) {
       const cls = routeClass(route.path);
       for (const method of route.methods) {
-        const res = await app.inject({ method: method as "GET", url: concretePath(route.path) });
+        const res = await app.inject({
+          method: method as "GET",
+          url: concretePath(route.path),
+          headers: { origin: env.config.publicOrigin },
+        });
         const label = `${method} ${route.path} (${cls})`;
         if (cls === "session" || cls === "bearer") expect(res.statusCode, label).toBe(401);
         else if (cls === "link") expect(res.statusCode, label).toBe(403);

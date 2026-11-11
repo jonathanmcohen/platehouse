@@ -1,7 +1,10 @@
 // Build plan Task 15: sessions in the sessions table (Postgres 17). The store
 // honours both expiries, a request moves the idle expiry on at most once per
 // SESSION_TOUCH_MS, never past the absolute expiry, and a whole login through
-// the app and the mock issuer leaves one row that logout deletes.
+// the app and the mock issuer leaves one row that logout deletes. A row's id
+// is the base64url SHA-256 of the cookie value, never the cookie value, and
+// the maintenance delete removes rows past either expiry and keeps live ones.
+import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
@@ -11,11 +14,19 @@ import {
   SESSION_COOKIE,
   SESSION_IDLE_MS,
   SESSION_TOUCH_MS,
+  sessionRowId,
 } from "../../../src/auth/sessions.js";
 import { migrate } from "../../../src/db/migrate.js";
 import type { DB } from "../../../src/db/types.js";
+import { sessionsRepo } from "../../../src/repos/sessions.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
-import { type AuthTestApp, authTestApp, runLogin, testClock } from "../support/oidc-issuer.js";
+import {
+  type AuthTestApp,
+  authTestApp,
+  runLogin,
+  TEST_ORIGIN,
+  testClock,
+} from "../support/oidc-issuer.js";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -39,6 +50,16 @@ beforeEach(async () => {
 
 async function row(id: string) {
   return db.selectFrom("sessions").selectAll().where("id", "=", id).executeTakeFirst();
+}
+
+/** The row of the session behind this cookie value. */
+async function rowOf(cookie: string) {
+  return row(sessionRowId(cookie));
+}
+
+/** base64url(SHA-256(cookie value)), worked out here rather than by the code under test. */
+function sha256(cookie: string): string {
+  return createHash("sha256").update(cookie).digest("base64url");
 }
 
 describe("dbSessionStore", () => {
@@ -68,7 +89,7 @@ describe("createSessions over the sessions table", () => {
     const sessions = createSessions({ store: dbSessionStore(db), now: () => clock.now });
     const started = await sessions.start("subject-1");
     expect(started.id).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    const stored = await row(started.id);
+    const stored = await rowOf(started.id);
     expect(stored?.subject).toBe("subject-1");
     expect(stored?.expiresAt.getTime()).toBe(clock.now.getTime() + SESSION_ABSOLUTE_MS);
     expect(stored?.idleExpiresAt.getTime()).toBe(clock.now.getTime() + SESSION_IDLE_MS);
@@ -79,15 +100,16 @@ describe("createSessions over the sessions table", () => {
     const clock = testClock();
     const sessions = createSessions({ store: dbSessionStore(db), now: () => clock.now });
     const { id } = await sessions.start("subject-2");
-    const first = (await row(id))?.idleExpiresAt.getTime();
+    const first = (await rowOf(id))?.idleExpiresAt.getTime();
+    expect(first).toBeDefined();
 
     clock.advance(MINUTE);
     expect(await sessions.find(id)).toBeDefined();
-    expect((await row(id))?.idleExpiresAt.getTime()).toBe(first);
+    expect((await rowOf(id))?.idleExpiresAt.getTime()).toBe(first);
 
     clock.advance(SESSION_TOUCH_MS);
     expect(await sessions.find(id)).toBeDefined();
-    expect((await row(id))?.idleExpiresAt.getTime()).toBe(clock.now.getTime() + SESSION_IDLE_MS);
+    expect((await rowOf(id))?.idleExpiresAt.getTime()).toBe(clock.now.getTime() + SESSION_IDLE_MS);
   });
 
   test("the idle expiry never moves past the absolute expiry", async () => {
@@ -101,17 +123,61 @@ describe("createSessions over the sessions table", () => {
     }
     clock.advance(3 * DAY);
     expect(await sessions.find(id)).toBeDefined();
-    expect((await row(id))?.idleExpiresAt.getTime()).toBe(expiresAt.getTime());
+    expect((await rowOf(id))?.idleExpiresAt.getTime()).toBe(expiresAt.getTime());
   });
 
   test("end deletes the row; an ended or unknown id finds nothing", async () => {
     const sessions = createSessions({ store: dbSessionStore(db) });
     const { id } = await sessions.start("subject-4");
+    expect(await rowOf(id)).toBeDefined();
     await sessions.end(id);
-    expect(await row(id)).toBeUndefined();
+    expect(await rowOf(id)).toBeUndefined();
     expect(await sessions.find(id)).toBeUndefined();
     expect(await sessions.find(undefined)).toBeUndefined();
     await sessions.end(undefined);
+  });
+});
+
+describe("the stored session id", () => {
+  test("is not the cookie value and equals its base64url SHA-256", async () => {
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const { id: cookie } = await sessions.start("subject-5");
+    const ids = (await db.selectFrom("sessions").select("id").execute()).map((r) => r.id);
+    expect(ids).toEqual([sha256(cookie)]);
+    expect(ids[0]).not.toBe(cookie);
+    expect(await row(cookie)).toBeUndefined();
+  });
+
+  test("a stored id used as a cookie finds nothing, and ending it deletes nothing", async () => {
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const { id: cookie } = await sessions.start("subject-6");
+    const stored = sha256(cookie);
+    expect(await sessions.find(cookie)).toBeDefined();
+    expect(await sessions.find(stored)).toBeUndefined();
+    await sessions.end(stored);
+    expect(await row(stored)).toBeDefined();
+  });
+});
+
+describe("the expired-session delete", () => {
+  test("deletes a row past its idle expiry and one past its absolute expiry, and keeps a live one", async () => {
+    const now = new Date();
+    const at = (ms: number) => new Date(now.getTime() + ms);
+    const rows = {
+      idleExpired: { id: "I".repeat(43), expiresAt: at(20 * DAY), idleExpiresAt: at(-MINUTE) },
+      absoluteExpired: { id: "X".repeat(43), expiresAt: at(-MINUTE), idleExpiresAt: at(DAY) },
+      idleAtNow: { id: "N".repeat(43), expiresAt: at(20 * DAY), idleExpiresAt: now },
+      live: { id: "L".repeat(43), expiresAt: at(20 * DAY), idleExpiresAt: at(DAY) },
+    };
+    for (const r of Object.values(rows)) {
+      await db
+        .insertInto("sessions")
+        .values({ ...r, subject: "someone" })
+        .execute();
+    }
+    expect(await sessionsRepo(db).deleteExpired(now)).toBe(3);
+    const left = (await db.selectFrom("sessions").select("id").execute()).map((r) => r.id);
+    expect(left).toEqual([rows.live.id]);
   });
 });
 
@@ -130,7 +196,7 @@ describe("a login through the app with sessions in Postgres", () => {
     const run = await runLogin(t);
     expect(run.callback.statusCode).toBe(302);
     const id = run.sessionCookie ?? "";
-    expect((await row(id))?.subject).toBe(t.issuer.user.sub);
+    expect((await rowOf(id))?.subject).toBe(t.issuer.user.sub);
 
     const signedIn = await t.app.inject({
       method: "GET",
@@ -142,9 +208,11 @@ describe("a login through the app with sessions in Postgres", () => {
     const out = await t.app.inject({
       method: "POST",
       url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
       cookies: { [SESSION_COOKIE]: id },
     });
     expect(out.statusCode).toBe(204);
-    expect(await row(id)).toBeUndefined();
+    expect(await rowOf(id)).toBeUndefined();
+    expect(await db.selectFrom("sessions").select("id").execute()).toEqual([]);
   });
 });
