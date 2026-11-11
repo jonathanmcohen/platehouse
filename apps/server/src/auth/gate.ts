@@ -18,9 +18,18 @@
 //    (request.routeOptions.url, the registered pattern, so the gate and the
 //    router never read a path differently), or by its raw path when it
 //    matched none. Session requests get, in order:
-//    - the Origin check: a POST, PUT, PATCH or DELETE under /app/api must
-//      carry Origin equal to PUBLIC_ORIGIN, or it is 403 before any session
-//      is looked up;
+//    - the Origin check, which fails closed: every state-changing request
+//      (any method but GET, HEAD and OPTIONS) must carry Origin equal to
+//      PUBLIC_ORIGIN, or it is 403 before any session is looked up. It is
+//      decided by the class of the route the request matched, never by a
+//      path prefix, so it covers /app/api, the tus routes at /app/uploads
+//      and every session route added later without anyone listing it. A
+//      browser sends Origin on every POST, PUT, PATCH and DELETE, same-origin
+//      ones included (tus-js-client's uploads among them), so only a request
+//      from another site, or a non-browser client, is refused. SameSite=Lax
+//      is not relied on here: a sibling subdomain is same-site and would get
+//      the cookie. POST /auth/logout is a public route, so routes.ts makes the
+//      same check itself;
 //    - requireSession: a live session (sessions.ts), or the refusal: a page
 //      (a GET or HEAD that accepts HTML) is sent to /auth/login on
 //      PUBLIC_ORIGIN with 302, anything else is 401 JSON. A session store
@@ -45,8 +54,13 @@ import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, type Sessions } from "./session
 
 export type RouteClass = "bearer" | "link" | "public" | "session";
 
-/** The methods that change state, which the Origin check covers under /app/api. */
-const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+/** The methods that do not change state; every other method needs the Origin check. */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/** True when a request with this method needs Origin to equal PUBLIC_ORIGIN on a session route. */
+function needsSameOrigin(method: string): boolean {
+  return !SAFE_METHODS.has(method.toUpperCase());
+}
 
 /** The path part of a request target or route pattern. */
 function pathPart(path: string): string {
@@ -90,11 +104,6 @@ function acceptsHtml(request: FastifyRequest): boolean {
   return typeof accept === "string" && /\btext\/html\b/i.test(accept);
 }
 
-function isAppApi(path: string): boolean {
-  const p = pathPart(path);
-  return p === "/app/api" || p.startsWith("/app/api/");
-}
-
 /** Installs the gate on the root app and returns requireSession. */
 export function installGate(app: FastifyInstance, deps: GateDeps): { requireSession: AuthHook } {
   app.removeAllContentTypeParsers();
@@ -132,11 +141,7 @@ export function installGate(app: FastifyInstance, deps: GateDeps): { requireSess
   app.addHook("onRequest", async (request, reply) => {
     const path = request.routeOptions.url ?? request.url;
     if (routeClass(path) !== "session") return;
-    if (
-      STATE_CHANGING.has(request.method) &&
-      isAppApi(path) &&
-      request.headers.origin !== deps.publicOrigin
-    ) {
+    if (needsSameOrigin(request.method) && request.headers.origin !== deps.publicOrigin) {
       return reply.code(403).header("cache-control", "no-store").send({ error: "forbidden" });
     }
     return requireSession(request, reply);

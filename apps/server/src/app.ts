@@ -4,9 +4,10 @@
 //
 // - The route-class gate (auth/gate.ts) is installed first, so it covers
 //   every route and every 404: session routes need a live session (a page
-//   without one is sent to /auth/login, anything else gets 401), state-
-//   changing /app/api requests need Origin to be PUBLIC_ORIGIN, and public,
-//   bearer and link routes pass to their own checks.
+//   without one is sent to /auth/login, anything else gets 401), every
+//   state-changing request on a session route (/app/uploads included) needs
+//   Origin to be PUBLIC_ORIGIN, and public, bearer and link routes pass to
+//   their own checks.
 // - GET /auth/login, GET /auth/callback and POST /auth/logout (auth/routes.ts)
 //   log Jon in with Pocket ID and out again.
 // - GET /healthz answers 200 only when the database answers a query within

@@ -15,11 +15,20 @@
 //   runs daily at 03:30 local time (issue #38), the orphan sweep
 //   (ingest/orphans.ts) daily at 04:00 local time, Task 9's sweep of
 //   partial uploads untouched for 24 hours (uploads/tus.ts) every hour,
-//   Task 12's Orca-version poll every 10 minutes, and Task 13's render check
-//   (derived/derived.ts's checkRenders) every 15 minutes (CHECK_RENDERS_CRON).
+//   Task 12's Orca-version poll every 10 minutes, Task 13's render check
+//   (derived/derived.ts's checkRenders) every 15 minutes (CHECK_RENDERS_CRON),
+//   and Task 15's delete of sessions past either expiry daily at 04:35 local
+//   time (PURGE_SESSIONS_CRON).
+//   The three daily tasks run at 03:30, 04:00 and 04:35, so none shares a
+//   minute with another, and minute 35 is on no hourly, 10-minute or
+//   15-minute schedule either. The worker runs one maintenance job at a
+//   time in any case.
 // The server (main.ts, Task 30) passes a ServerQueueDeps, which requires
-// every dependency that is optional here, so it cannot leave a queue without
-// its worker or a schedule without its handler.
+// slicerJobs, pollOrca, onIngested and checkRenders, so it cannot leave a
+// queue without its worker or those schedules without their handlers. The
+// session delete (purgeSessions) is optional in both; the Task 30 server
+// test checks that the running server schedules and runs every maintenance
+// task, that one included.
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import { CHECK_RENDERS_CRON } from "../derived/derived.js";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
@@ -126,7 +135,12 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
  */
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
 
-/** Daily at 04:35 local time: the delete of expired sessions. Not scheduled yet (stub). */
+/**
+ * Daily at 04:35 local time (Task 15, Jon 2026-11-11): the delete of sessions
+ * past their idle or absolute expiry. Expired rows already let nobody in, so
+ * the hour only bounds how long they are kept; 04:35 is after the 03:30
+ * purge and the 04:00 orphan sweep, and clear of every other schedule.
+ */
 export const PURGE_SESSIONS_CRON = "35 4 * * *";
 
 /** Hourly, on the hour (Task 9): the sweep of partial uploads untouched for 24 hours. */
@@ -170,6 +184,14 @@ export interface QueueDeps {
    * scheduled every 15 minutes (CHECK_RENDERS_CRON).
    */
   checkRenders?(now: Date): Promise<unknown>;
+  /**
+   * Task 15's delete of sessions past either expiry (the sessions
+   * repository's deleteExpired), when given: scheduled daily at 04:35
+   * (PURGE_SESSIONS_CRON). Optional here so the tests that start the queues
+   * for other work need not pass it; the server passes it, and the Task 30
+   * server test fails if any maintenance task is left unscheduled.
+   */
+  purgeSessions?(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -177,10 +199,11 @@ export interface QueueDeps {
 }
 
 /**
- * QueueDeps with every optional dependency required: what the server passes
- * (build plan Task 30). With it, a server that leaves the slicer queue
- * without its worker, the Orca poll or the render check without its
- * schedule, or an ingested file without its estimates fails to compile.
+ * QueueDeps with the slicer, poll, ingest and render dependencies required:
+ * what the server passes (build plan Task 30). With it, a server that leaves
+ * the slicer queue without its worker, the Orca poll or the render check
+ * without its schedule, or an ingested file without its estimates fails to
+ * compile.
  */
 export type ServerQueueDeps = QueueDeps &
   Required<Pick<QueueDeps, "slicerJobs" | "pollOrca" | "onIngested" | "checkRenders">>;
@@ -197,7 +220,7 @@ interface MaintenanceJob {
  * added again. The slicer queue is worked, one job at a time, only when
  * slicerJobs is given; the Orca poll is scheduled, and run once before this
  * returns, only when pollOrca is; the render check is scheduled only when
- * checkRenders is.
+ * checkRenders is, and the session delete only when purgeSessions is.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
@@ -243,6 +266,14 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       CHECK_RENDERS_CRON,
       { task: MAINTENANCE_TASKS.checkRenders },
       { tz, key: MAINTENANCE_TASKS.checkRenders },
+    );
+  }
+  if (deps.purgeSessions) {
+    await boss.schedule(
+      QUEUE.maintenance,
+      PURGE_SESSIONS_CRON,
+      { task: MAINTENANCE_TASKS.purgeSessions },
+      { tz, key: MAINTENANCE_TASKS.purgeSessions, missed: "once" },
     );
   }
 
@@ -312,6 +343,10 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
         case MAINTENANCE_TASKS.checkRenders:
           if (!deps.checkRenders) throw new Error("No render check is registered");
           await deps.checkRenders(new Date());
+          return;
+        case MAINTENANCE_TASKS.purgeSessions:
+          if (!deps.purgeSessions) throw new Error("No session delete is registered");
+          await deps.purgeSessions(new Date());
           return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);

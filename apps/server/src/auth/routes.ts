@@ -24,9 +24,10 @@
 //   forged or expired login cookie, or a response that does not check out,
 //   is 400; a user not let in is 403 with the reason; the issuer unreachable
 //   is 503.
-// - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as a state-
-//   changing /app/api request does, or it is 403 and the session and its
-//   cookie are left alone, so another site cannot sign Jon out. Otherwise it
+// - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as every state-
+//   changing request on a session route does (gate.ts), or it is 403 and the
+//   session and its cookie are left alone, so another site cannot sign Jon
+//   out. It is a public route, so the gate does not check it. Otherwise it
 //   ends the session, if any, clears its cookie and answers 204. Signing out
 //   of Pocket ID itself is not part of it.
 //

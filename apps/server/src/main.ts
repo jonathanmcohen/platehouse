@@ -190,6 +190,7 @@ export async function start(config: Config): Promise<Server> {
       pollOrca: () => estimates.pollOrca(),
       onIngested,
       checkRenders: (now) => derived.checkRenders(now),
+      purgeSessions: (now) => repos.sessions.deleteExpired(now),
     };
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;
