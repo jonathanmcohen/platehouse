@@ -17,7 +17,8 @@ import { slicerContract } from "@platehouse/slicer-contract";
 /**
  * What files.derived_message holds when the slicer or the store, not
  * OpenSCAD or the STEP converter, is why a file has no render. A render or
- * conversion error stores the program's own message instead.
+ * conversion error stores the program's own message instead, after
+ * replaceRejectedScad or replaceRejectedStep when it is a replacement's.
  */
 export const DERIVED_MESSAGES = {
   /** slicer_error: the slicer stayed busy or unreachable through every retry, or answered oddly. */
@@ -48,6 +49,15 @@ export const DERIVED_MESSAGES = {
   renderLost: "The render did not finish.",
   /** The same, for a replacement: the file keeps its previous source and renders. */
   replaceLost: "The render of the replacement did not finish, so the previous version is kept.",
+  /**
+   * Put before OpenSCAD's own message when it rejects a replacement, so the
+   * error is not read as being about the source the file still has (its
+   * previous source, whose renders are kept).
+   */
+  replaceRejectedScad: "OpenSCAD rejected the replacement, so the previous version is kept:",
+  /** The same, before the STEP converter's own message. */
+  replaceRejectedStep:
+    "The STEP converter rejected the replacement, so the previous version is kept:",
   /** A .scad over the contract's 1 MiB limit is never sent. */
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */

@@ -20,7 +20,9 @@
 // recorded, and the render check settles the file. A render or conversion
 // error is the program's own answer: it is never retried, the source is
 // kept, and the program's message goes into files.derived_message exactly as
-// written. It is text, for the page to show as text, never HTML.
+// written (a replacement's after a sentence saying the replacement was
+// rejected and the previous version kept). It is text, for the page to show
+// as text, never HTML.
 //
 // A slicer that cannot render right now uses no retry (SlicerDown): one
 // that takes no connection at all (stopped, restarting or being re-pulled,
@@ -76,7 +78,8 @@
 // the previous version whole: its source, its renders and its rows. That
 // holds for a replacement that OpenSCAD or the STEP converter rejects too:
 // no new render is stored, so nothing is swapped in. The file keeps its
-// previous source and renders, shows the program's message, and the staged
+// previous source and renders, shows the program's message after
+// DERIVED_MESSAGES.replaceRejectedScad or replaceRejectedStep, and the staged
 // source is discarded. An object left with no row by a crash between steps
 // is removed by the orphan sweep (ingest/orphans.ts). A replacement over the
 // renderer's limit (a .scad over 1 MiB, a STEP file over 256 MiB) is
@@ -819,14 +822,19 @@ export function createDerived(deps: DerivedDeps) {
    * Records a render or conversion error with the program's message. A
    * replacement is never swapped in: no new render was stored, so the file
    * keeps its previous source and renders (build plan Task 13), and the
-   * staged source is discarded after the commit.
+   * staged source is discarded after the commit. Its message starts with a
+   * sentence saying so (replaceRejectedScad or replaceRejectedStep), since
+   * the program's words are about a source the file no longer has.
    */
   async function commitRenderError(
     file: ModelFile,
     source: Blob,
     replacing: boolean,
-    message: string,
+    programMessage: string,
   ): Promise<void> {
+    const message = replacing
+      ? `${file.kind === "scad" ? DERIVED_MESSAGES.replaceRejectedScad : DERIVED_MESSAGES.replaceRejectedStep} ${programMessage}`
+      : programMessage;
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
       const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });

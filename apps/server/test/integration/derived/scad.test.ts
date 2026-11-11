@@ -1084,10 +1084,12 @@ describe("replacing a .scad (AC-053)", () => {
     expect(await keysOf(env, modelId)).toEqual(oldKeys);
   });
 
-  test("a replacement that OpenSCAD rejects keeps the previous version, shows OpenSCAD's message and drops its staged source", async () => {
+  test("a replacement that OpenSCAD rejects keeps the previous version, shows OpenSCAD's message after a replacement sentence and drops its staged source", async () => {
     // Build plan Task 13: the old source and renders are deleted only after
     // the new ones are stored. A render error stores none, so nothing is
-    // swapped in and nothing of the previous version is deleted.
+    // swapped in and nothing of the previous version is deleted. The message
+    // says the error belongs to the replacement, not to the source the file
+    // still has, then gives OpenSCAD's own words.
     const { modelId, fileId } = await uploadScad(unique("render error, before"));
     const before = await settledFile(env, fileId);
     const oldBlobs = await blobsOf(env, modelId);
@@ -1108,7 +1110,7 @@ describe("replacing a .scad (AC-053)", () => {
       renderStlBlobId: before.renderStlBlobId,
       renderPngBlobId: before.renderPngBlobId,
       derivedStatus: "failed",
-      derivedMessage: message,
+      derivedMessage: `OpenSCAD rejected the replacement, so the previous version is kept: ${message}`,
     });
     expect(after.sha256).toEqual(before.sha256);
     // The previous source, STL and PNG are whole, in rows and objects, and

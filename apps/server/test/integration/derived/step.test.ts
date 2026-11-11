@@ -133,7 +133,7 @@ describe("STEP meshes (AC-050)", () => {
     }
   });
 
-  test("a replacement the converter rejects keeps the previous source and mesh and drops its staged source", async () => {
+  test("a replacement the converter rejects keeps the previous source and mesh, says the error is the replacement's and drops its staged source", async () => {
     const { modelId, fileId } = await uploadStep(uniqueStep("convert error, before"));
     const before = await settledFile(env, fileId);
     const oldBlobs = await blobsOf(env, modelId);
@@ -152,7 +152,7 @@ describe("STEP meshes (AC-050)", () => {
       blobId: before.blobId,
       meshBlobId: before.meshBlobId,
       derivedStatus: "failed",
-      derivedMessage: message,
+      derivedMessage: `The STEP converter rejected the replacement, so the previous version is kept: ${message}`,
     });
     expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
     expect(await keysOf(env, modelId)).toEqual(oldKeys);
