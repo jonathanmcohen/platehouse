@@ -11,8 +11,13 @@
 // /v1/profiles lists for the printer and the slot's type, or null where none
 // is listed and the file's own filament is kept.
 //
+// It also answers the three render routes Task 13 calls, POST /v1/scad/stl,
+// /v1/scad/png and /v1/step/glb (the renders group below): by default with
+// bytes made from the body it was sent, so a test can tell which source a
+// stored render came from, or as a test scripts it.
+//
 // It listens on 127.0.0.1 only and holds nothing but synthetic data.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -76,8 +81,71 @@ export type StubOutcome =
   /** Nothing is answered until the stub stops. */
   | { kind: "hang" };
 
+/** A render route of contract v1 (Task 13). */
+export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb";
+
+const RENDER_ROUTES: readonly RenderRoute[] = ["/v1/scad/stl", "/v1/scad/png", "/v1/step/glb"];
+
+/** What a render route answers to one request. */
+export type RenderAnswer =
+  /** 200 with renderedBytes for the body, in the route's content type. */
+  | { kind: "render" }
+  /** 422 render_failed (scad routes) or convert_failed (step) with this message. */
+  | { kind: "failed"; message: string }
+  /** 409 busy, before the body is read, connection closed. */
+  | { kind: "busy" }
+  /** The connection is cut once the body is in, as when the slicer restarts mid-render. */
+  | { kind: "drop" };
+
+/** One render request the stub received. */
+export interface RenderCall {
+  route: RenderRoute;
+  contentType: string | undefined;
+  /** The body that arrived (empty for a busy answer, which reads none). */
+  body: Buffer;
+  answer: RenderAnswer["kind"];
+}
+
+/** The render routes' calls and script. */
+export interface RenderStub {
+  calls: RenderCall[];
+  /** Answers for a route's next requests, used in order before `always`. */
+  queue(route: RenderRoute, ...answers: RenderAnswer[]): void;
+  /** What a route answers once its queue is empty; render when never set. */
+  always(route: RenderRoute, answer: RenderAnswer): void;
+  /** Clears every script and the recorded calls. */
+  reset(): void;
+  callsTo(route: RenderRoute): RenderCall[];
+}
+
+const RENDER_CONTENT_TYPE: Readonly<Record<RenderRoute, string>> = {
+  "/v1/scad/stl": "model/stl",
+  "/v1/scad/png": "image/png",
+  "/v1/step/glb": "model/gltf-binary",
+};
+
+const RENDER_LIMIT: Readonly<Record<RenderRoute, number>> = {
+  "/v1/scad/stl": LIMITS.scadBodyBytes,
+  "/v1/scad/png": LIMITS.scadBodyBytes,
+  "/v1/step/glb": LIMITS.stepBodyBytes,
+};
+
+const RENDER_MAGIC: Readonly<Record<RenderRoute, Buffer>> = {
+  "/v1/scad/stl": Buffer.from("solid stub\n", "latin1"),
+  "/v1/scad/png": Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
+  "/v1/step/glb": Buffer.from("glTF", "latin1"),
+};
+
+/** The bytes the stub renders for a body on a route: the route's magic and the body's SHA-256. */
+export function renderedBytes(route: RenderRoute, body: Buffer | string): Buffer {
+  const digest = createHash("sha256").update(body).digest("hex");
+  return Buffer.concat([RENDER_MAGIC[route], Buffer.from(`${route} ${digest}\n`, "latin1")]);
+}
+
 export interface SlicerStub {
   url: string;
+  /** The render routes (Task 13). */
+  renders: RenderStub;
   /** Every slice request in arrival order, busy ones included. */
   calls: StubCall[];
   /** How many times GET /v1/profiles was asked. */
@@ -263,10 +331,80 @@ export async function startSlicerStub(
     );
   }
 
+  const renderCalls: RenderCall[] = [];
+  const renderQueue = new Map<RenderRoute, RenderAnswer[]>();
+  const renderAlways = new Map<RenderRoute, RenderAnswer>();
+
+  async function render(req: IncomingMessage, res: ServerResponse, route: RenderRoute) {
+    const answer = renderQueue.get(route)?.shift() ?? renderAlways.get(route) ?? { kind: "render" };
+    const contentType = req.headers["content-type"];
+    if (answer.kind === "busy") {
+      renderCalls.push({ route, contentType, body: Buffer.alloc(0), answer: answer.kind });
+      return refuseEarly(res, 409, slicerContract.error.parse({ error: "busy" }));
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of req) {
+      total += (chunk as Buffer).length;
+      if (total > RENDER_LIMIT[route]) {
+        return refuseEarly(res, 413, slicerContract.error.parse({ error: "too_large" }));
+      }
+      chunks.push(chunk as Buffer);
+    }
+    const body = Buffer.concat(chunks);
+    renderCalls.push({ route, contentType, body, answer: answer.kind });
+    switch (answer.kind) {
+      case "render": {
+        const bytes = renderedBytes(route, body);
+        res.writeHead(200, {
+          "content-type": RENDER_CONTENT_TYPE[route],
+          "content-length": bytes.length,
+        });
+        res.end(bytes);
+        return;
+      }
+      case "failed":
+        return sendJson(
+          res,
+          422,
+          route === "/v1/step/glb"
+            ? slicerContract.convertError.parse({
+                error: "convert_failed",
+                message: answer.message,
+              })
+            : slicerContract.renderError.parse({ error: "render_failed", message: answer.message }),
+        );
+      case "drop":
+        req.socket.destroy();
+        return;
+    }
+  }
+
+  const renders: RenderStub = {
+    calls: renderCalls,
+    queue(route, ...answers) {
+      renderQueue.set(route, [...(renderQueue.get(route) ?? []), ...answers]);
+    },
+    always(route, answer) {
+      renderAlways.set(route, answer);
+    },
+    reset() {
+      renderQueue.clear();
+      renderAlways.clear();
+      renderCalls.length = 0;
+    },
+    callsTo(route) {
+      return renderCalls.filter((c) => c.route === route);
+    },
+  };
+
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://stub");
     const route = `${req.method} ${url.pathname}`;
     const handle = async () => {
+      if (req.method === "POST" && (RENDER_ROUTES as readonly string[]).includes(url.pathname)) {
+        return render(req, res, url.pathname as RenderRoute);
+      }
       switch (route) {
         case "GET /v1/health":
           return sendJson(
@@ -318,6 +456,7 @@ export async function startSlicerStub(
 
   return {
     url: `http://127.0.0.1:${port}`,
+    renders,
     calls,
     get profileRequests() {
       return profileRequests;

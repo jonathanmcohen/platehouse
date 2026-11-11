@@ -90,6 +90,37 @@ export async function startBlackHole(): Promise<{ endpoint: string; close(): Pro
   };
 }
 
+// Answers every GET with a 200 for an object of `total` bytes, sends the first
+// `sent` of them, and then either drops the connection ("reset") or sends
+// nothing more ("stall"): a store that goes away while a body is being read.
+export async function startCutOffS3(opts: {
+  total: number;
+  sent: number;
+  after: "reset" | "stall";
+}): Promise<{ endpoint: string; close(): Promise<void> }> {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(opts.total),
+      });
+      res.write(Buffer.alloc(opts.sent, 0x61), () => {
+        if (opts.after === "reset") res.socket?.destroy();
+      });
+    });
+  });
+  const port = await listen(server);
+  return {
+    endpoint: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
 // A port with nothing listening on it: bound once to learn a free port, then
 // released.
 export async function closedPortEndpoint(): Promise<string> {
