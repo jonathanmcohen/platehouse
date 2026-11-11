@@ -17,6 +17,8 @@
 //   the answer carries Connection: close and the connection closes within
 //   DRAIN_MS, instead of Node reading the body for up to REQUEST_TIMEOUT_MS.
 import Fastify, { type FastifyInstance } from "fastify";
+import type { OidcClient } from "./auth/oidc.js";
+import type { Sessions } from "./auth/sessions.js";
 import {
   type AuthHook,
   MAX_UPLOAD_BYTES,
@@ -51,10 +53,27 @@ export interface AppHealth {
   queuesRunning(): boolean;
 }
 
+/** What login, sessions and the route-class gate need (Task 15). */
+export interface AppAuth {
+  oidc: OidcClient;
+  sessions: Sessions;
+  /** PUBLIC_ORIGIN, scheme and host only. */
+  publicOrigin: string;
+  /** Config.absoluteUrl: an absolute URL on PUBLIC_ORIGIN, never from a request. */
+  absoluteUrl(path: string): string;
+  /** OIDC_GROUP, named on the refusal page. */
+  group: string;
+  /** The login cookie's signing key (loginCookieKey). */
+  cookieSecret: Buffer;
+  /** The clock for the login cookie's 10 minutes; the real one when left out. */
+  now?: () => Date;
+}
+
 export interface AppDeps {
   health: AppHealth;
   /** The one upload store both mounts share (createUploads). */
   uploads: Uploads;
+  auth: AppAuth;
   /** Fastify's request log; off when left out. */
   logger?: boolean;
 }

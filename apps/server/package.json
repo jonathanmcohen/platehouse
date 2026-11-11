@@ -9,6 +9,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "3.1164.0",
     "@aws-sdk/lib-storage": "3.1164.0",
+    "@fastify/cookie": "11.1.5",
     "@platehouse/makerworld": "workspace:*",
     "@platehouse/slicer-contract": "workspace:*",
     "@platehouse/threemf": "workspace:*",
@@ -16,6 +17,7 @@
     "@tus/server": "2.4.7",
     "fastify": "5.12.8",
     "kysely": "0.29.8",
+    "openid-client": "6.8.9",
     "pg": "8.23.1",
     "pg-boss": "12.38.1",
     "zod": "4.6.7"
@@ -23,6 +25,7 @@
   "devDependencies": {
     "@testcontainers/postgresql": "12.2.1",
     "@types/pg": "8.23.1",
+    "jose": "6.2.17",
     "testcontainers": "12.2.1",
     "tus-js-client": "4.3.1"
   }
