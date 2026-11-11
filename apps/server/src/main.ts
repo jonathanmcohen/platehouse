@@ -19,7 +19,12 @@
 //      (onIngested), and the Orca poll also runs once at startup;
 //   5. the inbox watcher (Task 10), wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
-//   6. the Fastify app (app.ts), listening on PORT on every interface.
+//   6. the Fastify app (app.ts), listening on PORT on every interface, with
+//      login (Task 15): sessions in the sessions table, the OIDC client for
+//      OIDC_ISSUER with redirect_uri absoluteUrl('/auth/callback'), and the
+//      login cookie's key derived from LINK_SECRET (loginCookieKey). Pocket
+//      ID is not contacted at startup, only at the first login, so the
+//      server starts while it is down.
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
@@ -34,6 +39,9 @@ import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { buildApp } from "./app.js";
+import { createOidc } from "./auth/oidc.js";
+import { loginCookieKey } from "./auth/routes.js";
+import { createSessions, dbSessionStore } from "./auth/sessions.js";
 import { type Config, ConfigError, loadConfig } from "./config.js";
 import { createDb } from "./db/kysely.js";
 import { migrate } from "./db/migrate.js";
@@ -182,6 +190,7 @@ export async function start(config: Config): Promise<Server> {
       pollOrca: () => estimates.pollOrca(),
       onIngested,
       checkRenders: (now) => derived.checkRenders(now),
+      purgeSessions: (now) => repos.sessions.deleteExpired(now),
     };
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;
@@ -205,6 +214,20 @@ export async function start(config: Config): Promise<Server> {
         queuesRunning: () => queuesRunning,
       },
       uploads,
+      auth: {
+        oidc: createOidc({
+          issuer: config.oidc.issuer,
+          clientId: config.oidc.clientId,
+          clientSecret: config.oidc.clientSecret,
+          redirectUri: config.absoluteUrl("/auth/callback"),
+          group: config.oidc.group,
+        }),
+        sessions: createSessions({ store: dbSessionStore(db) }),
+        publicOrigin: config.publicOrigin,
+        absoluteUrl: (path) => config.absoluteUrl(path),
+        group: config.oidc.group,
+        cookieSecret: loginCookieKey(config.linkSecret),
+      },
       logger: true,
     });
     app = startedApp;

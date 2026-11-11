@@ -4,8 +4,9 @@
 // - every queue the app creates has a worker, and every slicer job kind and
 //   maintenance task reaches its handler;
 // - every cron is registered: purgeExpired 03:30, the orphan sweep 04:00, the
-//   stale-upload sweep hourly, the Orca poll every 10 minutes (and once at
-//   startup) and the render check every 15 minutes;
+//   expired-session delete 04:35 (Task 15), the stale-upload sweep hourly,
+//   the Orca poll every 10 minutes (and once at startup) and the render
+//   check every 15 minutes;
 // - a .3mf dropped in the inbox becomes a model and its plates are queued for
 //   estimates at once (the watcher's onIngested), a .scad dropped there gets
 //   its render (ingest's afterCommit is derived.afterUpload);
@@ -29,6 +30,7 @@ import {
   MAINTENANCE_TASKS,
   POLL_ORCA_CRON,
   PURGE_EXPIRED_CRON,
+  PURGE_SESSIONS_CRON,
   QUEUE,
   SWEEP_ORPHANS_CRON,
   SWEEP_UPLOADS_CRON,
@@ -159,6 +161,34 @@ describe("queues and workers", () => {
     }
   });
 
+  test("the expired-session task deletes expired sessions and keeps live ones", async () => {
+    const now = Date.now();
+    const at = (ms: number) => new Date(now + ms);
+    const day = 24 * 60 * 60 * 1000;
+    const expired = "E".repeat(43);
+    const live = "K".repeat(43);
+    await env.repos.sessions.create({
+      id: expired,
+      subject: "someone",
+      expiresAt: at(day),
+      idleExpiresAt: at(-60_000),
+    });
+    await env.repos.sessions.create({
+      id: live,
+      subject: "someone",
+      expiresAt: at(day),
+      idleExpiresAt: at(day),
+    });
+    const job = await settled(QUEUE.maintenance, { task: MAINTENANCE_TASKS.purgeSessions });
+    expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
+    const ids = await env.db
+      .selectFrom("sessions")
+      .select("id")
+      .where("id", "in", [expired, live])
+      .execute();
+    expect(ids.map((r) => r.id)).toEqual([live]);
+  });
+
   test("every maintenance task runs to completion", async () => {
     for (const task of Object.values(MAINTENANCE_TASKS)) {
       const job = await settled(QUEUE.maintenance, { task });
@@ -178,7 +208,9 @@ describe("schedules", () => {
       [MAINTENANCE_TASKS.sweepUploads]: "0 * * * *",
       [MAINTENANCE_TASKS.pollOrca]: "*/10 * * * *",
       [MAINTENANCE_TASKS.checkRenders]: "*/15 * * * *",
+      [MAINTENANCE_TASKS.purgeSessions]: "35 4 * * *",
     };
+    expect(Object.keys(expected).sort()).toEqual(Object.values(MAINTENANCE_TASKS).sort());
     for (const [key, cron] of Object.entries(expected)) {
       expect(byKey.get(key)).toMatchObject({
         name: QUEUE.maintenance,
@@ -194,7 +226,15 @@ describe("schedules", () => {
       SWEEP_UPLOADS_CRON,
       POLL_ORCA_CRON,
       CHECK_RENDERS_CRON,
-    ]).toEqual(["30 3 * * *", "0 4 * * *", "0 * * * *", "*/10 * * * *", "*/15 * * * *"]);
+      PURGE_SESSIONS_CRON,
+    ]).toEqual([
+      "30 3 * * *",
+      "0 4 * * *",
+      "0 * * * *",
+      "*/10 * * * *",
+      "*/15 * * * *",
+      "35 4 * * *",
+    ]);
   });
 });
 
@@ -291,9 +331,12 @@ describe("the upload routes", () => {
   test("an upload with no credentials gets 401 and stores nothing", async () => {
     const before = await footprint();
     for (const prefix of [UPLOAD_PREFIXES.api, UPLOAD_PREFIXES.app]) {
+      // Same-origin, as a browser sends it, so /app/uploads meets the session
+      // check rather than the gate's Origin check (Task 15).
       const res = await fetch(`${env.baseUrl}${prefix}`, {
         method: "POST",
         headers: {
+          origin: env.config.publicOrigin,
           "tus-resumable": "1.0.0",
           "upload-length": "11",
           "upload-metadata": `filename ${Buffer.from("cube.stl").toString("base64")}`,
