@@ -176,6 +176,76 @@ describe("STEP meshes (AC-050)", () => {
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
   });
 
+  test("a replacement the converter rejects, staged before the original's first mesh finished, still says the mesh is the previous version's", async () => {
+    // The original's mesh commits after the replacement is staged, so its
+    // row is written later than the replacement's source row; it is still
+    // the original's mesh.
+    const first = uniqueStep("late mesh, original");
+    const { modelId, fileId } = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, first),
+      originalName: "Housing.step",
+      target: "new",
+    });
+    const original = await env.repos.files.get(fileId);
+    if (!original) throw new Error("file not stored");
+    const originalSource = await env.repos.blobs.get(original.blobId);
+    if (!originalSource) throw new Error("no source row");
+
+    // The replacement's job is held an hour, so only this test runs it.
+    const holding = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: {
+        send: ((name: string, data: object, options: Record<string, unknown>) =>
+          env.boss.send(name, data, { ...options, startAfter: 3600 })) as typeof env.boss.send,
+        findJobs: env.boss.findJobs.bind(env.boss),
+      },
+      retryDelaySeconds: 1,
+    });
+    const staged = await holding.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("late mesh, replacement")),
+    );
+    const stagedSource = await env.repos.blobs.get(staged.sourceBlobId);
+    if (!stagedSource) throw new Error("no staged source row");
+
+    expect(
+      await env.derived.runJob(
+        { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: original.blobId },
+        { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+      ),
+    ).toEqual({ status: "ok" });
+    const between = await env.repos.files.get(fileId);
+    expect(between).toMatchObject({ blobId: original.blobId, derivedStatus: "pending" });
+    const meshId = between?.meshBlobId;
+    if (!meshId) throw new Error("no mesh");
+
+    const message = "STEP import failed: no shapes found";
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message });
+    const held = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
+      (j) => j.state === "created",
+    );
+    expect(held).toHaveLength(1);
+    const job = held[0];
+    if (!job) throw new Error("no held job");
+    await env.boss.cancel(QUEUE.slicer, job.id);
+    expect(
+      await env.derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit }),
+    ).toEqual({ status: "failed", reason: "render_failed" });
+
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: staged.sourceBlobId,
+      meshBlobId: meshId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_MESH} ${message}`,
+    });
+    const mesh = (await blobsOf(env, modelId)).find((b) => b.id === meshId);
+    expect(mesh?.createdAt.getTime()).toBe(originalSource.createdAt.getTime());
+    expect(mesh?.createdAt.getTime()).toBeLessThan(stagedSource.createdAt.getTime());
+    expect(await readObject(env, mesh?.key ?? "")).toEqual(renderedBytes("/v1/step/glb", first));
+  });
+
   test("after a rejected STEP replacement, a later replacement that converts deletes the previous mesh and the rejected source", async () => {
     const { modelId, fileId } = await uploadStep(uniqueStep("later mesh, before"));
     const before = await settledFile(env, fileId);

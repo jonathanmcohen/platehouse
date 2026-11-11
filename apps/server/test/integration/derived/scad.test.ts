@@ -1264,6 +1264,95 @@ describe("replacing a .scad (AC-053)", () => {
     await expect(env.store.getBlobStream(oldSource.key)).rejects.toBeInstanceOf(BlobNotFound);
   });
 
+  test("a replacement OpenSCAD rejects, staged before the original's first render finished, still says the STL and preview are the previous version's", async () => {
+    // The original's first render commits after the replacement is staged,
+    // so its rows are written later than the replacement's source row. They
+    // are still the original's renders, and the message and the rows must
+    // say so when OpenSCAD then rejects the replacement.
+    const first = unique("late render, original");
+    const { modelId, fileId } = await storeScad(first);
+    const original = await env.repos.files.get(fileId);
+    if (!original) throw new Error("file not stored");
+    const originalSource = await env.repos.blobs.get(original.blobId);
+    if (!originalSource) throw new Error("no source row");
+
+    const staged = await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("late render, replacement")),
+    );
+    const stagedSource = await env.repos.blobs.get(staged.sourceBlobId);
+    if (!stagedSource) throw new Error("no staged source row");
+
+    // The first render, of the source being replaced, finishes now.
+    expect(
+      await env.derived.runJob(
+        { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: original.blobId },
+        { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+      ),
+    ).toEqual({ status: "ok" });
+    const between = await env.repos.files.get(fileId);
+    expect(between).toMatchObject({ blobId: original.blobId, derivedStatus: "pending" });
+    const stlId = between?.renderStlBlobId;
+    const pngId = between?.renderPngBlobId;
+    if (!stlId || !pngId) throw new Error("no renders");
+
+    // Then OpenSCAD rejects the replacement.
+    const message = 'ERROR: Parser error in file "input.scad", line 1: syntax error';
+    env.stub.renders.queue("/v1/scad/stl", { kind: "failed", message });
+    expect(await runHeld(fileId, env.derived)).toEqual({
+      status: "failed",
+      reason: "render_failed",
+    });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: staged.sourceBlobId,
+      renderStlBlobId: stlId,
+      renderPngBlobId: pngId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_RENDERS_SCAD} ${message}`,
+    });
+
+    // The kept renders' rows carry the original source's created_at, not
+    // the time they were written, so they read as older than the source
+    // the file now has.
+    const byId = new Map((await blobsOf(env, modelId)).map((b) => [b.id, b]));
+    for (const id of [stlId, pngId]) {
+      const kept = byId.get(id);
+      expect(kept?.createdAt.getTime()).toBe(originalSource.createdAt.getTime());
+      expect(kept?.createdAt.getTime()).toBeLessThan(stagedSource.createdAt.getTime());
+    }
+    expect(await readObject(env, byId.get(stlId)?.key ?? "")).toEqual(
+      renderedBytes("/v1/scad/stl", first),
+    );
+  });
+
+  test("a render's rows carry its source's created_at, so a re-render of that source that OpenSCAD rejects gives OpenSCAD's message alone", async () => {
+    const { modelId, fileId } = await uploadScad(unique("stamped"));
+    const file = await settledFile(env, fileId);
+    const byId = new Map((await blobsOf(env, modelId)).map((b) => [b.id, b]));
+    const source = byId.get(file.blobId);
+    if (!source) throw new Error("no source row");
+    for (const id of [file.renderStlBlobId, file.renderPngBlobId]) {
+      expect(byId.get(id ?? "")?.createdAt.getTime()).toBe(source.createdAt.getTime());
+    }
+    await until(
+      () => jobsFor(fileId),
+      (js) => js.every((j) => j.state === "completed"),
+    );
+
+    // The renders shown are this source's, so there is no previous version
+    // to speak of.
+    const message = "ERROR: rejected on a second look";
+    env.stub.renders.queue("/v1/scad/stl", { kind: "failed", message });
+    await env.derived.renderScad(fileId);
+    expect(await settledFile(env, fileId)).toMatchObject({
+      blobId: file.blobId,
+      renderStlBlobId: file.renderStlBlobId,
+      renderPngBlobId: file.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: message,
+    });
+  });
+
   test("a replacement whose render error comes after its model's purge began stores nothing and drops its staged source", async () => {
     // The job's view of the file changed under it, so the error is not
     // recorded; the staged source is discarded as when its renders would
