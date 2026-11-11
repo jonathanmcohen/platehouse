@@ -12,8 +12,18 @@
 //   since the hook runs before tus sees the request.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
+// - Because that timeout is so long, a request answered before its body is
+//   read (the 401 refusal, a 404) has its body released (releaseUnreadBody):
+//   the answer carries Connection: close and the connection closes within
+//   DRAIN_MS, instead of Node reading the body for up to REQUEST_TIMEOUT_MS.
 import Fastify, { type FastifyInstance } from "fastify";
-import { type AuthHook, MAX_UPLOAD_BYTES, registerTus, type Uploads } from "./uploads/tus.js";
+import {
+  type AuthHook,
+  MAX_UPLOAD_BYTES,
+  registerTus,
+  releaseUnreadBody,
+  type Uploads,
+} from "./uploads/tus.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
 export const UPLOAD_PREFIXES = Object.freeze({
@@ -51,10 +61,13 @@ export interface AppDeps {
 
 /**
  * The auth hook both upload mounts get until Tasks 15 and 16: every request
- * is refused with 401, whatever credentials it carries.
+ * is refused with 401, whatever credentials it carries. The hook runs before
+ * any body is read, so the body is released (releaseUnreadBody).
  */
-export const refuseUntilAuth: AuthHook = async (_request, reply) =>
-  reply.code(401).send({ error: "unauthorized" });
+export const refuseUntilAuth: AuthHook = async (request, reply) => {
+  releaseUnreadBody(request, reply);
+  return reply.code(401).send({ error: "unauthorized" });
+};
 
 /** True when check() resolves within ms; a rejection or no answer is false. */
 async function answers(check: () => Promise<unknown>, ms: number): Promise<boolean> {
@@ -82,6 +95,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       deps.health.queuesRunning() && (await answers(deps.health.database, HEALTH_TIMEOUT_MS));
     reply.header("cache-control", "no-store");
     return reply.code(up ? 200 : 503).send({ status: up ? "ok" : "unavailable" });
+  });
+
+  // Fastify's own 404 answer, but with any body it left unread released: it
+  // reads no body whose content type it has no parser for.
+  app.setNotFoundHandler(async (request, reply) => {
+    releaseUnreadBody(request, reply);
+    return reply.code(404).send({
+      message: `Route ${request.method}:${request.url} not found`,
+      error: "Not Found",
+      statusCode: 404,
+    });
   });
 
   for (const prefix of [UPLOAD_PREFIXES.app, UPLOAD_PREFIXES.api]) {
