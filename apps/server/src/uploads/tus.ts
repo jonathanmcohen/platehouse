@@ -507,28 +507,42 @@ function tusRequest(request: FastifyRequest, path: string): Request {
   return new Request(new URL(path, "http://platehouse.invalid"), init);
 }
 
-/** How long a body tus answered early is read off before its connection is closed. */
-const DRAIN_MS = 5000;
+/** How long a body answered early is read off before its connection is closed. */
+export const DRAIN_MS = 5000;
 
 /**
- * When tus answered before reading the whole body (409 wrong offset, 413),
- * the answer goes out at once with Connection: close, and the rest of the
- * body is read off and dropped, for at most DRAIN_MS, before the connection
- * closes. Closing it any earlier resets a client that is still sending, and
- * the reset can cost it the answer (a lingering close, RFC 9112 section
- * 9.6). Node does neither itself here. Once Readable.toWeb has started
- * reading a request, Node no longer dumps its unread body when the response
- * ends, so the connection would stay busy for good. And for a Connection:
- * close answer, Node destroys the socket (socket.destroySoon, from the
- * response's finish) as soon as the answer is written, with the body still
- * arriving. So for this request that call only ends the writing side, and
- * the socket is closed once the body has been read or DRAIN_MS has passed.
- * The slicer closes its early answers the same way (closeLingering in
+ * True when the request carries a body (HTTP/1.1, RFC 9112 section 6.3): a
+ * Transfer-Encoding, or a Content-Length above zero.
+ */
+function declaresBody(request: FastifyRequest): boolean {
+  if (request.headers["transfer-encoding"] !== undefined) return true;
+  return Number(request.headers["content-length"] ?? 0) > 0;
+}
+
+/**
+ * When a request is answered before its whole body is read - tus's early
+ * answers (409 wrong offset, 413), the auth hook's 401, a 404 - the answer
+ * goes out at once with Connection: close, and the rest of the body is read
+ * off and dropped, for at most DRAIN_MS, before the connection closes.
+ * Closing it any earlier resets a client that is still sending, and the
+ * reset can cost it the answer (a lingering close, RFC 9112 section 9.6).
+ * Node does neither itself here. Once Readable.toWeb has started reading a
+ * request, Node no longer dumps its unread body when the response ends, so
+ * the connection would stay busy for good; a body nothing has touched Node
+ * does dump, but for as long as the server's request timeout allows, about
+ * 72 minutes (REQUEST_TIMEOUT_MS in app.ts). And for a Connection: close
+ * answer, Node destroys the socket (socket.destroySoon, from the response's
+ * finish) as soon as the answer is written, with the body still arriving.
+ * So for this request that call only ends the writing side, and the socket
+ * is closed once the body has been read or DRAIN_MS has passed. A request
+ * that declares no body is left alone, so its connection stays open; it may
+ * not be marked complete yet when an onRequest hook answers it. The slicer
+ * closes its early answers the same way (closeLingering in
  * apps/slicer/src/guard.ts).
  */
-function releaseUnreadBody(request: FastifyRequest, reply: FastifyReply): void {
+export function releaseUnreadBody(request: FastifyRequest, reply: FastifyReply): void {
   const raw = request.raw;
-  if (raw.complete || raw.destroyed) return;
+  if (raw.complete || raw.destroyed || !declaresBody(request)) return;
   reply.header("connection", "close");
   const socket = raw.socket;
   const destroySoon = socket.destroySoon;
