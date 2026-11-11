@@ -331,9 +331,12 @@ describe("the upload routes", () => {
   test("an upload with no credentials gets 401 and stores nothing", async () => {
     const before = await footprint();
     for (const prefix of [UPLOAD_PREFIXES.api, UPLOAD_PREFIXES.app]) {
+      // Same-origin, as a browser sends it, so /app/uploads meets the session
+      // check rather than the gate's Origin check (Task 15).
       const res = await fetch(`${env.baseUrl}${prefix}`, {
         method: "POST",
         headers: {
+          origin: env.config.publicOrigin,
           "tus-resumable": "1.0.0",
           "upload-length": "11",
           "upload-metadata": `filename ${Buffer.from("cube.stl").toString("base64")}`,
