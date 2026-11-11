@@ -10,6 +10,7 @@
     "@aws-sdk/client-s3": "3.1164.0",
     "@aws-sdk/lib-storage": "3.1164.0",
     "@fastify/cookie": "11.1.5",
+    "@fastify/swagger": "9.9.3",
     "@platehouse/makerworld": "workspace:*",
     "@platehouse/slicer-contract": "workspace:*",
     "@platehouse/threemf": "workspace:*",

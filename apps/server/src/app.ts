@@ -42,6 +42,7 @@ import Fastify, {
   type FastifyRequest,
   type FastifyServerOptions,
 } from "fastify";
+import type { ApiDeps } from "./api/v1.js";
 import { installGate } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -101,6 +102,8 @@ export interface AppDeps {
   /** The one upload store both mounts share (createUploads). */
   uploads: Uploads;
   auth: AppAuth;
+  /** The Public API v1's tokens and library (Task 16). */
+  api?: ApiDeps;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged

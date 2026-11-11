@@ -21,7 +21,9 @@ import { join } from "node:path";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { allowInsecureRequests } from "openid-client";
-import { type AppAuth, buildApp } from "../../../src/app.js";
+import type { TokenStore } from "../../../src/api/tokens.js";
+import type { ApiDeps } from "../../../src/api/v1.js";
+import { type AppAuth, type AppDeps, buildApp } from "../../../src/app.js";
 import { createOidc, type OidcClient } from "../../../src/auth/oidc.js";
 import { LOGIN_COOKIE_PREFIX, loginCookieKey } from "../../../src/auth/routes.js";
 import {
@@ -30,8 +32,9 @@ import {
   type SessionStore,
   type Sessions,
 } from "../../../src/auth/sessions.js";
-import type { Session } from "../../../src/db/types.js";
-import { createUploads } from "../../../src/uploads/tus.js";
+import { uuidv7 } from "../../../src/db/ids.js";
+import type { ApiToken, Session } from "../../../src/db/types.js";
+import { createUploads, type Uploads } from "../../../src/uploads/tus.js";
 
 /** The public origin the auth tests use. */
 export const TEST_ORIGIN = "https://platehouse.test";
@@ -363,6 +366,52 @@ export function memorySessionStore(): MemoryStore {
   return store;
 }
 
+/** API tokens kept in a Map, with the api_tokens table's rules (Task 16). */
+export interface MemoryTokenStore extends TokenStore {
+  readonly rows: Map<string, ApiToken>;
+  /** How many times findByHash was called. */
+  lookups: number;
+}
+
+export function memoryTokenStore(): MemoryTokenStore {
+  const rows = new Map<string, ApiToken>();
+  const store: MemoryTokenStore = {
+    rows,
+    lookups: 0,
+    async create(input) {
+      const row: ApiToken = {
+        id: uuidv7(),
+        name: input.name,
+        prefix: input.prefix,
+        tokenHash: Buffer.from(input.tokenHash),
+        createdAt: new Date(),
+        lastUsedAt: null,
+        revokedAt: null,
+      };
+      rows.set(row.id, row);
+      return row;
+    },
+    async findByHash(hash) {
+      store.lookups += 1;
+      for (const row of rows.values()) {
+        if (row.revokedAt === null && row.tokenHash.equals(hash)) return { ...row };
+      }
+      return undefined;
+    },
+    async revoke(id) {
+      const row = rows.get(id);
+      if (row === undefined || row.revokedAt !== null) return false;
+      rows.set(id, { ...row, revokedAt: new Date() });
+      return true;
+    },
+    async touchLastUsed(id, at) {
+      const row = rows.get(id);
+      if (row !== undefined) rows.set(id, { ...row, lastUsedAt: at });
+    },
+  };
+  return store;
+}
+
 export interface TestAuth {
   auth: AppAuth;
   issuer: MockIssuer;
@@ -425,18 +474,28 @@ export interface AuthTestApp extends TestAuth {
 export async function authTestApp(
   opts: Parameters<typeof testAuth>[0] & {
     beforeReady?: (app: FastifyInstance) => void | Promise<void>;
+    /** The API's tokens and library (Task 16); buildApp's own default when left out. */
+    api?: ApiDeps;
+    /** The upload store; one in the temp folder whose queue records nothing when left out. */
+    uploads?: Uploads;
+    /** buildApp's logger: a stream here lets a test read every log line. */
+    logger?: AppDeps["logger"];
   } = {},
 ): Promise<AuthTestApp> {
   const t = await testAuth(opts);
   const dir = await mkdtemp(join(tmpdir(), "platehouse-auth-"));
   const app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
-    uploads: createUploads({
-      tmpDir: dir,
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads:
+      opts.uploads ??
+      createUploads({
+        tmpDir: dir,
+        queue: { enqueue: async () => {}, result: async () => undefined },
+        log: () => {},
+      }),
     auth: t.auth,
+    ...(opts.api === undefined ? {} : { api: opts.api }),
+    ...(opts.logger === undefined ? {} : { logger: opts.logger }),
   });
   await opts.beforeReady?.(app);
   await app.ready();
