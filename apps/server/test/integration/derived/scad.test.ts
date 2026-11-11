@@ -879,6 +879,36 @@ describe("a store that answers and refuses (issue #102)", () => {
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
     expect(await keysOf(env, modelId)).toEqual([await sourceKeyOf(file.blobId)]);
   });
+
+  test("a store that throttles (429 SlowDown) when the renders are stored is left to pg-boss to retry, and only the last attempt records the storage message", async () => {
+    // Throttling passes once the store catches up, so it is not a refusal
+    // that ends the render on the attempt that meets it.
+    const { fileId } = await storeScad(unique("renders throttled"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    const throttling = derivedWith({
+      store: await refusingStore({ writes: s3Error(429, "SlowDown") }),
+    });
+
+    await expect(
+      throttling.runJob(job, { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit }),
+    ).rejects.toBeInstanceOf(StoreError);
+    const waiting = await env.repos.files.get(fileId);
+    expect(waiting?.derivedStatus).not.toBe("failed");
+    expect(waiting?.derivedMessage).toBeNull();
+
+    expect(
+      await throttling.runJob(job, {
+        retryCount: SLICER_RETRY.retryLimit,
+        retryLimit: SLICER_RETRY.retryLimit,
+      }),
+    ).toEqual({ status: "failed", reason: "store_refused" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: STORE_REFUSED_MESSAGE,
+    });
+  });
 });
 
 describe("the slicer queue's worker", () => {

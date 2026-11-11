@@ -347,7 +347,7 @@ function outageOf(error: unknown): Outage | null {
  * (AccessDenied, NoSuchBucket) or a missing object. null for anything else.
  * An unreachable store is StoreUnavailable, an outage, and never lands here.
  */
-function storeRefusalOf(error: unknown): "retry" | "final" | null {
+export function storeRefusalOf(error: unknown): "retry" | "final" | null {
   if (error instanceof BlobNotFound) return "final";
   if (error instanceof StoreError) {
     return error.status !== undefined && error.status < 500 ? "final" : "retry";
