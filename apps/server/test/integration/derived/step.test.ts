@@ -59,6 +59,10 @@ async function uploadStep(text: string, name = "Housing.step") {
   return env.ingestDerived.ingestFile({ tmpPath: path, originalName: name, target: "new" });
 }
 
+/** Put before the converter's message when the mesh is from an earlier source than the file's. */
+const PREVIOUS_MESH =
+  "The STEP converter rejected this file, so the mesh shown is from the previous version. The converter said:";
+
 describe("STEP meshes (AC-050)", () => {
   test("a .step upload produces a GLB mesh blob", async () => {
     const text = uniqueStep("mesh");
@@ -133,30 +137,87 @@ describe("STEP meshes (AC-050)", () => {
     }
   });
 
-  test("a replacement the converter rejects keeps the previous source and mesh, says the error is the replacement's and drops its staged source", async () => {
-    const { modelId, fileId } = await uploadStep(uniqueStep("convert error, before"));
+  test("a replacement the converter rejects becomes the file's source with the converter's message, and the previous mesh stays, marked as the previous version's", async () => {
+    // Jon's decision on issue #103, as for a .scad: the replacement becomes
+    // the source as uploaded, the previous GLB stays attached and is said to
+    // be the previous version's, and only the old source is deleted.
+    const first = uniqueStep("convert error, before");
+    const { modelId, fileId } = await uploadStep(first);
     const before = await settledFile(env, fileId);
-    const oldBlobs = await blobsOf(env, modelId);
-    const oldKeys = await keysOf(env, modelId);
+    const oldSource = await env.repos.blobs.get(before.blobId);
+    if (!oldSource) throw new Error("no source row");
     env.stub.renders.reset();
 
     const message = "STEP import failed: no shapes found";
     env.stub.renders.queue("/v1/step/glb", { kind: "failed", message });
-    const { sourceBlobId } = await env.derived.replaceFile(
-      fileId,
-      await writeUpload(env, uniqueStep("convert error, replacement")),
-    );
+    const next = uniqueStep("convert error, replacement");
+    const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, next));
     const after = await settledFile(env, fileId);
 
     expect(after).toMatchObject({
-      blobId: before.blobId,
+      blobId: sourceBlobId,
+      size: Buffer.byteLength(next),
       meshBlobId: before.meshBlobId,
       derivedStatus: "failed",
-      derivedMessage: `The STEP converter rejected the replacement, so the previous version is kept: ${message}`,
+      derivedMessage: `${PREVIOUS_MESH} ${message}`,
     });
-    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
-    expect(await keysOf(env, modelId)).toEqual(oldKeys);
-    expect(await env.repos.blobs.get(sourceBlobId)).toBeUndefined();
+    const blobs = await blobsOf(env, modelId);
+    const byId = new Map(blobs.map((b) => [b.id, b]));
+    const source = byId.get(sourceBlobId);
+    expect(await readObject(env, source?.key ?? "")).toEqual(Buffer.from(next));
+    // The previous GLB is still served, and its row is older than the source.
+    const mesh = byId.get(before.meshBlobId ?? "");
+    expect(await readObject(env, mesh?.key ?? "")).toEqual(renderedBytes("/v1/step/glb", first));
+    expect(mesh?.createdAt.getTime()).toBeLessThan(source?.createdAt.getTime() ?? 0);
+    // Only the old source is gone, row and object.
+    expect(blobs.map((b) => b.id).sort()).toEqual([sourceBlobId, before.meshBlobId].sort());
+    expect(await env.repos.blobs.get(before.blobId)).toBeUndefined();
+    await expect(env.store.getBlobStream(oldSource.key)).rejects.toBeInstanceOf(BlobNotFound);
+    expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
+  });
+
+  test("after a rejected STEP replacement, a later replacement that converts deletes the previous mesh and the rejected source", async () => {
+    const { modelId, fileId } = await uploadStep(uniqueStep("later mesh, before"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    env.stub.renders.reset();
+
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "STEP import failed" });
+    const rejected = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("later mesh, rejected")),
+    );
+    expect(await settledFile(env, fileId)).toMatchObject({
+      blobId: rejected.sourceBlobId,
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+    });
+    const rejectedKey = (await env.repos.blobs.get(rejected.sourceBlobId))?.key ?? "";
+    await until(
+      () => env.boss.findJobs(QUEUE.slicer, { data: { fileId } }),
+      (js) => js.every((j) => j.state === "completed"),
+    );
+
+    const good = uniqueStep("later mesh, converts");
+    const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, good));
+    const after = await until(
+      () => env.repos.files.get(fileId),
+      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok",
+    );
+    expect(after?.derivedMessage).toBeNull();
+    const blobs = await blobsOf(env, modelId);
+    const byId = new Map(blobs.map((b) => [b.id, b]));
+    expect(await readObject(env, byId.get(after?.meshBlobId ?? "")?.key ?? "")).toEqual(
+      renderedBytes("/v1/step/glb", good),
+    );
+    for (const old of oldBlobs) {
+      expect(byId.has(old.id)).toBe(false);
+      await expect(env.store.getBlobStream(old.key)).rejects.toBeInstanceOf(BlobNotFound);
+    }
+    expect(byId.has(rejected.sourceBlobId)).toBe(false);
+    await expect(env.store.getBlobStream(rejectedKey)).rejects.toBeInstanceOf(BlobNotFound);
+    expect(blobs).toHaveLength(2);
+    expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
   });
 
   test("replaceFile refuses a STEP file over the converter's 256 MiB limit and stores nothing", async () => {
