@@ -254,6 +254,68 @@ describe("retries through pg-boss", () => {
     expect(job?.output).toMatchObject({ status: "failed", reason: "slicer_error" });
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
   });
+
+  test("an error that is not the slicer's on the last attempt records nothing and is left for the render check", async () => {
+    // Not a slicer answer, an outage or a store refusal: the slicer message
+    // would blame the slicer for it, so the job records nothing and fails,
+    // and the render check settles the file as a render that did not finish.
+    const { fileId } = await storeScad(unique("unexpected error"));
+    const file = await env.repos.files.get(fileId);
+    if (!file) throw new Error("no file");
+    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    const unexpected = new TypeError("synthetic failure that is nobody's answer");
+    const broken = derivedWith({
+      store: {
+        putBlob: async () => {
+          throw unexpected;
+        },
+        getBlobStream: env.store.getBlobStream.bind(env.store),
+        deleteBlobs: env.store.deleteBlobs.bind(env.store),
+      },
+    });
+
+    await expect(
+      broken.runJob(job, {
+        retryCount: SLICER_RETRY.retryLimit,
+        retryLimit: SLICER_RETRY.retryLimit,
+      }),
+    ).rejects.toBe(unexpected);
+    const after = await env.repos.files.get(fileId);
+    expect(after?.derivedStatus).not.toBe("failed");
+    expect(after?.derivedMessage).toBeNull();
+    // The slicer rendered; the error came after it.
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+  });
+
+  test("a slicer_error on the last attempt leaves a file that already shows its render for that source alone", async () => {
+    // As when a commit's answer is lost after it committed: the renders for
+    // this source are stored and the file shows them, so the slicer message
+    // must not turn the file to failed over valid renders.
+    const { fileId } = await uploadScad(unique("already rendered"));
+    const before = await settledFile(env, fileId);
+    expect(before.derivedStatus).toBe("ok");
+    env.stub.renders.reset();
+    env.stub.renders.always("/v1/scad/stl", { kind: "drop" });
+    const job: DerivedJob = {
+      kind: DERIVED_KINDS.renderScad,
+      fileId,
+      sourceBlobId: before.blobId,
+    };
+
+    expect(
+      await derivedWith({}).runJob(job, {
+        retryCount: SLICER_RETRY.retryLimit,
+        retryLimit: SLICER_RETRY.retryLimit,
+      }),
+    ).toEqual({ status: "failed", reason: "slicer_error" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "ok",
+      derivedMessage: null,
+    });
+  });
 });
 
 describe("renders of a trashed model", () => {
