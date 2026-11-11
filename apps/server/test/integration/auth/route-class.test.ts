@@ -131,8 +131,8 @@ describe("every registered route", () => {
           method: method as "GET",
           url: concretePath(route.path),
           // Same-origin, as the browser sends it: the Origin checks (the
-          // gate's under /app/api, POST /auth/logout's own) pass, so what is
-          // left is the class's answer to no credentials.
+          // gate's on every session route, POST /auth/logout's own) pass, so
+          // what is left is the class's answer to no credentials.
           headers: { accept: "application/json", origin: TEST_ORIGIN },
         });
         const toLogin = res.headers.location === `${TEST_ORIGIN}/auth/login`;
@@ -180,7 +180,11 @@ describe("every registered route", () => {
       url: "/no-such-page",
       headers: { accept: "text/html,application/xhtml+xml" },
     });
-    const api = await t.app.inject({ method: "POST", url: "/no-such-route" });
+    const api = await t.app.inject({
+      method: "POST",
+      url: "/no-such-route",
+      headers: { origin: TEST_ORIGIN },
+    });
     const signedIn = await t.app.inject({
       method: "GET",
       url: "/no-such-page",
@@ -190,6 +194,14 @@ describe("every registered route", () => {
     expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login`);
     expect(api.statusCode).toBe(401);
     expect(signedIn.statusCode).toBe(404);
+  });
+
+  test("an unknown path gets the session Origin check too: a POST without Origin is 403", async () => {
+    for (const cookies of [{}, { [SESSION_COOKIE]: sessionCookie }]) {
+      const res = await t.app.inject({ method: "POST", url: "/no-such-route", cookies });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "forbidden" });
+    }
   });
 
   test("an unknown path under a public prefix is a plain 404", async () => {
