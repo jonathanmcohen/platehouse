@@ -86,9 +86,15 @@
 // replacement the source and its object after that commit. The kept renders
 // are marked as the previous version's with the existing columns, so no
 // migration: the message starts with DERIVED_MESSAGES.previousRendersScad
-// or previousRendersStep, and a derived blob whose row is older than the
-// file's source blob row (blobs.created_at) was rendered from an earlier
-// source, since a render's rows are always written after its source's. A
+// or previousRendersStep, and each derived blob row's created_at is set to
+// its source blob row's created_at when it is stored, not the time it was
+// written, so a derived row with a created_at older than the file's source
+// row was rendered from an earlier source. The write time could not say
+// that: a render of the old source can commit after a replacement was
+// staged, and its rows would then look newer than the replacement's. When
+// the replacement itself is rejected, every render still attached is the
+// previous version's, since a render of the replacement can only be
+// attached by the swap that makes it the source. A
 // slicer that stays down, a store that stays down or refuses, or a slicer
 // error is not the file's doing, so for those the replacement is still
 // discarded and the previous version kept, as above. An object left with
@@ -743,7 +749,10 @@ export function createDerived(deps: DerivedDeps) {
   /**
    * Points the file at a replacement source (when replacing) and at new
    * derived blobs for the job kind, deletes the rows of the blobs that
-   * replaces, and returns their keys for deleting after the commit.
+   * replaces, and returns their keys for deleting after the commit. Each new
+   * derived row's created_at is set to its source's (copied in Postgres, so
+   * to the microsecond), not the time it was written, so the row says which
+   * source it was rendered from (see rendersPredate).
    */
   async function swapIn(
     trx: Transaction<DB>,
@@ -764,6 +773,13 @@ export function createDerived(deps: DerivedDeps) {
         size: out.size,
       });
       await r.blobs.markStored(out.id, { size: out.size, sha256: out.sha256 });
+    }
+    if (outputs.length > 0) {
+      await sql`
+        update blobs
+           set created_at = (select s.created_at from blobs s where s.id = ${source.id})
+         where id in (${sql.join(outputs.map((o) => o.id))})
+      `.execute(trx);
     }
     const columns = COLUMNS_OF_KIND[jobKind];
     const old = columns.map((c) => row[c]).filter((id): id is string => id !== null);
@@ -837,22 +853,27 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /**
-   * Whether any of the job kind's derived blobs that row points at were
-   * stored before the source blob sourceId: renders of an earlier source.
-   * A render's rows are always written after its source's row (the source
-   * row commits before its job runs), so an older row cannot be this
-   * source's render.
+   * Whether any of the job kind's derived blobs that row points at are
+   * renders of a source earlier than sourceId. When replacing, every render
+   * still attached is: a render of the staged source can only be attached
+   * by the swap that makes it the file's source, so none can exist yet.
+   * Otherwise each render row carries its own source's created_at (swapIn
+   * stamps it), and one older than sourceId's row is from an earlier source.
+   * The time a render row was written says nothing here: a render of an old
+   * source can commit after a replacement was staged.
    */
   async function rendersPredate(
     trx: Transaction<DB>,
     row: ModelFile,
     jobKind: DerivedKind,
     sourceId: string,
+    replacing: boolean,
   ): Promise<boolean> {
     const ids = COLUMNS_OF_KIND[jobKind]
       .map((c) => row[c])
       .filter((id): id is string => id !== null);
     if (ids.length === 0) return false;
+    if (replacing) return true;
     const { rows } = await sql<{ older: boolean }>`
       select exists (
         select 1 from blobs d, blobs s
@@ -885,7 +906,7 @@ export function createDerived(deps: DerivedDeps) {
     let oldKeys: string[] = [];
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
-      const message = (await rendersPredate(trx, row, jobKind, source.id))
+      const message = (await rendersPredate(trx, row, jobKind, source.id, replacing))
         ? `${PREVIOUS_RENDERS[jobKind]} ${programMessage}`
         : programMessage;
       const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
