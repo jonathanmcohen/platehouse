@@ -9,8 +9,11 @@
 //   signed (HMAC-SHA256, @fastify/cookie), HttpOnly, SameSite=Lax so it
 //   comes back on Pocket ID's top-level redirect, 10 minutes long, with its
 //   expiry inside the signed value as well, since a browser's Max-Age is
-//   only advice. When the issuer cannot be reached the answer is 503 "Login
-//   is unavailable right now".
+//   only advice. So that logins abandoned at Pocket ID cannot pile up past
+//   the header size limit, it first clears every login cookie the request
+//   carries that is forged or expired, and of the rest all but the newest
+//   MAX_PENDING_LOGINS - 1. When the issuer cannot be reached the answer is
+//   503 "Login is unavailable right now".
 // - GET /auth/callback finds the login cookie by the state in its query and
 //   spends that one cookie whatever happens, leaving any other login's
 //   alone. A state that is not a plain token is 400 and names no cookie. It
@@ -57,6 +60,15 @@ export function loginCookieName(state: string): string {
 
 /** How long a login may take, from /auth/login to /auth/callback. */
 export const LOGIN_COOKIE_MS = 10 * 60 * 1000;
+
+/**
+ * The most login cookies a browser keeps at once. Every signed-out page load
+ * starts a login (gate.ts), so logins abandoned at Pocket ID would otherwise
+ * pile up, about 330 bytes each on the Cookie header, until it passes Node's
+ * 16 KiB limit and every request is 431. GET /auth/login keeps the newest
+ * few and clears the rest.
+ */
+export const MAX_PENDING_LOGINS = 5;
 
 /** What /auth/login shows, with status 503, when the issuer cannot be reached. */
 export const LOGIN_UNAVAILABLE = "Login is unavailable right now";
@@ -147,6 +159,14 @@ function readLoginCookie(
   name: string,
   now: Date,
 ): LoginChecks | undefined {
+  const state = readLoginState(request, name, now);
+  return state === undefined
+    ? undefined
+    : { codeVerifier: state.v, state: state.s, nonce: state.n };
+}
+
+/** The login cookie's signed value, or undefined when it is missing, forged, malformed or expired. */
+function readLoginState(request: FastifyRequest, name: string, now: Date): LoginState | undefined {
   const raw = request.cookies[name];
   if (raw === undefined || raw === "") return undefined;
   const unsigned = request.unsignCookie(raw);
@@ -168,7 +188,29 @@ function readLoginCookie(
   ) {
     return undefined;
   }
-  return { codeVerifier: state.v, state: state.s, nonce: state.n };
+  return state as LoginState;
+}
+
+/**
+ * Clears the login cookies this request carries that a new login should not
+ * keep beside its own: every one that is forged, malformed or expired, and
+ * of the rest all but the newest MAX_PENDING_LOGINS - 1, so with the new
+ * login's cookie there are never more than MAX_PENDING_LOGINS. Only names
+ * this app could have set (the prefix and a plain state) are touched.
+ */
+function clearOldLogins(request: FastifyRequest, reply: FastifyReply, now: Date): void {
+  const live: { name: string; e: number }[] = [];
+  for (const name of Object.keys(request.cookies)) {
+    if (!name.startsWith(LOGIN_COOKIE_PREFIX)) continue;
+    if (!STATE_PATTERN.test(name.slice(LOGIN_COOKIE_PREFIX.length))) continue;
+    const state = readLoginState(request, name, now);
+    if (state === undefined) reply.clearCookie(name, LOGIN_COOKIE_OPTIONS);
+    else live.push({ name, e: state.e });
+  }
+  live.sort((a, b) => b.e - a.e);
+  for (const { name } of live.slice(MAX_PENDING_LOGINS - 1)) {
+    reply.clearCookie(name, LOGIN_COOKIE_OPTIONS);
+  }
 }
 
 /** The request's query string, "?" included, or "" when it has none. */
@@ -194,6 +236,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       n: begun.checks.nonce,
       e: now().getTime() + LOGIN_COOKIE_MS,
     };
+    clearOldLogins(request, reply, now());
     reply.setCookie(
       loginCookieName(state.s),
       Buffer.from(JSON.stringify(state)).toString("base64url"),

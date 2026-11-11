@@ -17,7 +17,12 @@ import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { buildApp } from "../../../src/app.js";
 import { admit, emailVerified, LoginError, OIDC_SCOPE } from "../../../src/auth/oidc.js";
-import { LOGIN_COOKIE_MS, LOGIN_COOKIE_PREFIX, loginCookieName } from "../../../src/auth/routes.js";
+import {
+  LOGIN_COOKIE_MS,
+  LOGIN_COOKIE_PREFIX,
+  loginCookieName,
+  MAX_PENDING_LOGINS,
+} from "../../../src/auth/routes.js";
 import {
   SESSION_ABSOLUTE_MS,
   SESSION_COOKIE,
@@ -157,6 +162,79 @@ describe("GET /auth/login", () => {
       }
       expect(t.store.rows.size).toBe(1);
       expect([...jar.keys()].filter((name) => name.startsWith(LOGIN_COOKIE_PREFIX))).toEqual([]);
+    }
+  });
+
+  test("50 logins that never finish leave at most 5 login cookies, the newest, and they still finish", async () => {
+    // Each signed-out page load the gate sends to /auth/login starts a login;
+    // ones abandoned at Pocket ID must not pile up until the Cookie header
+    // passes Node's 16 KiB limit and every request is 431.
+    const jar = new Map<string, string>();
+    const keep = (res: { headers: Record<string, unknown> }) => {
+      for (const c of setCookies(res)) {
+        if (c.attributes.get("max-age") === "0") jar.delete(c.name);
+        else jar.set(c.name, c.value);
+      }
+    };
+    const pending = () => [...jar.keys()].filter((name) => name.startsWith(LOGIN_COOKIE_PREFIX));
+    const starts: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const start = await t.app.inject({
+        method: "GET",
+        url: "/auth/login",
+        cookies: Object.fromEntries(jar),
+      });
+      expect(start.statusCode, `login ${i}`).toBe(302);
+      keep(start);
+      expect(pending().length, `login ${i}`).toBeLessThanOrEqual(MAX_PENDING_LOGINS);
+      starts.push(String(start.headers.location));
+      t.clock.advance(1_000);
+    }
+    expect(MAX_PENDING_LOGINS).toBe(5);
+    // The newest five are the ones kept.
+    const newest = starts.slice(-MAX_PENDING_LOGINS);
+    expect(pending().sort()).toEqual(
+      newest.map((url) => loginCookieName(new URL(url).searchParams.get("state") ?? "")).sort(),
+    );
+    // The first login's cookie is gone, so its callback is refused.
+    const first = await t.issuer.authorize(starts[0] as string);
+    const old = await t.app.inject({
+      method: "GET",
+      url: `${first.pathname}${first.search}`,
+      cookies: Object.fromEntries(jar),
+    });
+    expect(old.statusCode).toBe(400);
+    // Each of the newest five still finishes.
+    for (const url of newest.reverse()) {
+      const back = await t.issuer.authorize(url);
+      const res = await t.app.inject({
+        method: "GET",
+        url: `${back.pathname}${back.search}`,
+        cookies: Object.fromEntries(jar),
+      });
+      keep(res);
+      expect(res.statusCode, url).toBe(302);
+      expect(setCookie(res, SESSION_COOKIE)).toBeDefined();
+    }
+    expect(pending()).toEqual([]);
+  });
+
+  test("a new login clears login cookies that are expired or forged", async () => {
+    const stale = await t.app.inject({ method: "GET", url: "/auth/login" });
+    const staleCookie = loginCookieOf(stale);
+    t.clock.advance(LOGIN_COOKIE_MS + 1_000);
+    const forgedName = loginCookieName("f".repeat(43));
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/auth/login",
+      cookies: {
+        [staleCookie?.name ?? ""]: staleCookie?.value ?? "",
+        [forgedName]: "not-signed",
+      },
+    });
+    expect(res.statusCode).toBe(302);
+    for (const name of [staleCookie?.name ?? "", forgedName]) {
+      expect(setCookie(res, name)?.attributes.get("max-age"), name).toBe("0");
     }
   });
 
