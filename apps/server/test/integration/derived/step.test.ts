@@ -133,6 +133,32 @@ describe("STEP meshes (AC-050)", () => {
     }
   });
 
+  test("a replacement the converter rejects keeps the previous source and mesh and drops its staged source", async () => {
+    const { modelId, fileId } = await uploadStep(uniqueStep("convert error, before"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    const oldKeys = await keysOf(env, modelId);
+    env.stub.renders.reset();
+
+    const message = "STEP import failed: no shapes found";
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message });
+    const { sourceBlobId } = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("convert error, replacement")),
+    );
+    const after = await settledFile(env, fileId);
+
+    expect(after).toMatchObject({
+      blobId: before.blobId,
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+      derivedMessage: message,
+    });
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
+    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    expect(await env.repos.blobs.get(sourceBlobId)).toBeUndefined();
+  });
+
   test("replaceFile refuses a STEP file over the converter's 256 MiB limit and stores nothing", async () => {
     const { modelId, fileId } = await uploadStep(uniqueStep("too large"));
     const before = await settledFile(env, fileId);

@@ -971,6 +971,47 @@ describe("replacing a .scad (AC-053)", () => {
     expect(await keysOf(env, modelId)).toEqual(oldKeys);
   });
 
+  test("a replacement that OpenSCAD rejects keeps the previous version, shows OpenSCAD's message and drops its staged source", async () => {
+    // Build plan Task 13: the old source and renders are deleted only after
+    // the new ones are stored. A render error stores none, so nothing is
+    // swapped in and nothing of the previous version is deleted.
+    const { modelId, fileId } = await uploadScad(unique("render error, before"));
+    const before = await settledFile(env, fileId);
+    const oldBlobs = await blobsOf(env, modelId);
+    const oldKeys = await keysOf(env, modelId);
+    env.stub.renders.reset();
+
+    const message = 'ERROR: Parser error in file "input.scad", line 2: syntax error';
+    env.stub.renders.queue("/v1/scad/stl", { kind: "failed", message });
+    const { sourceBlobId } = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, unique("render error, replacement")),
+    );
+    const after = await settledFile(env, fileId);
+
+    expect(after).toMatchObject({
+      blobId: before.blobId,
+      size: before.size,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: message,
+    });
+    expect(after.sha256).toEqual(before.sha256);
+    // The previous source, STL and PNG are whole, in rows and objects, and
+    // the staged source is gone from both.
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
+    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    expect(await env.repos.blobs.get(sourceBlobId)).toBeUndefined();
+    // A render error is OpenSCAD's answer: no retry.
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+    const jobs = await until(
+      () => jobsFor(fileId),
+      (js) => js.every((j) => j.state === "completed"),
+    );
+    expect(jobs.at(-1)?.output).toMatchObject({ status: "failed", reason: "render_failed" });
+  });
+
   test("two replacements in a row end on the newer file", async () => {
     const { modelId, fileId } = await uploadScad(unique("first"));
     await settledFile(env, fileId);
