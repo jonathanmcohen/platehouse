@@ -259,10 +259,14 @@ describe("retries through pg-boss", () => {
     // Not a slicer answer, an outage or a store refusal: the slicer message
     // would blame the slicer for it, so the job records nothing and fails,
     // and the render check settles the file as a render that did not finish.
+    // The state is built as production leaves it: the file pending with its
+    // job queued, the job's last attempt throwing, then pg-boss failing it.
     const { fileId } = await storeScad(unique("unexpected error"));
-    const file = await env.repos.files.get(fileId);
-    if (!file) throw new Error("no file");
-    const job: DerivedJob = { kind: DERIVED_KINDS.renderScad, fileId, sourceBlobId: file.blobId };
+    await heldDerived().renderScad(fileId);
+    const held = (await jobsFor(fileId)).filter((j) => j.state === "created");
+    expect(held).toHaveLength(1);
+    const job = held[0]?.data;
+    if (!job) throw new Error("no held job");
     const unexpected = new TypeError("synthetic failure that is nobody's answer");
     const broken = derivedWith({
       store: {
@@ -274,16 +278,33 @@ describe("retries through pg-boss", () => {
       },
     });
 
+    // The held job's row has no retries so that killJob can fail it; it is
+    // run here as the last attempt of a job with the slicer queue's retries.
     await expect(
       broken.runJob(job, {
         retryCount: SLICER_RETRY.retryLimit,
         retryLimit: SLICER_RETRY.retryLimit,
       }),
     ).rejects.toBe(unexpected);
-    const after = await env.repos.files.get(fileId);
-    expect(after?.derivedStatus).not.toBe("failed");
-    expect(after?.derivedMessage).toBeNull();
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
     // The slicer rendered; the error came after it.
+    expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
+
+    // pg-boss fails the job its last attempt threw from, and the render
+    // check marks the file as a render that did not finish. Nothing is left
+    // with no status for a later render check to queue.
+    await killJob(fileId);
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.failed).toContain(fileId);
+    expect(result.queued).not.toContain(fileId);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.renderLost,
+    });
+    expect(await jobsFor(fileId)).toHaveLength(1);
     expect(env.stub.renders.callsTo("/v1/scad/stl")).toHaveLength(1);
   });
 
