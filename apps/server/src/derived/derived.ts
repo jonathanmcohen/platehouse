@@ -68,13 +68,15 @@
 // one transaction point the file at the new source and renders and delete
 // the old rows; the old objects are deleted after that commit. So a failure
 // at any point before it (a store outage, a slicer that stays away) leaves
-// the previous version whole: its source, its renders and its rows. A
-// replacement whose render fails with OpenSCAD's own error is swapped in all
-// the same, with the message, since the new source is the file Jon uploaded. An object left with no row by a
-// crash between steps is removed by the orphan sweep (ingest/orphans.ts).
-// A replacement over the renderer's limit (a .scad over 1 MiB, a STEP file
-// over 256 MiB) is refused by replaceFile before anything is stored, since
-// it could never render and would otherwise be swapped in that way.
+// the previous version whole: its source, its renders and its rows. That
+// holds for a replacement that OpenSCAD or the STEP converter rejects too:
+// no new render is stored, so nothing is swapped in. The file keeps its
+// previous source and renders, shows the program's message, and the staged
+// source is discarded. An object left with no row by a crash between steps
+// is removed by the orphan sweep (ingest/orphans.ts). A replacement over the
+// renderer's limit (a .scad over 1 MiB, a STEP file over 256 MiB) is
+// refused by replaceFile before anything is stored, since it could never
+// render.
 //
 // The render check (checkRenders, issues #90 and #91) repairs what a job or
 // an upload that died part way leaves behind. It is a maintenance-queue job
@@ -528,8 +530,8 @@ export function createDerived(deps: DerivedDeps) {
     if (detectKind(file.originalName, await readFirstBytes(tmpPath), size) !== kind) {
       throw new DerivedError("wrong_type", WRONG_TYPE_MESSAGE[kind]);
     }
-    // One the renderer would refuse could never render, and a render error
-    // swaps a replacement in, so it is refused here, before anything is stored.
+    // One the renderer would refuse could never render, so it is refused
+    // here, before anything is stored.
     if (size > BODY_LIMIT[kind]) throw new DerivedError("too_large", TOO_LARGE_MESSAGE[kind]);
 
     const blobId = uuidv7();
@@ -696,9 +698,8 @@ export function createDerived(deps: DerivedDeps) {
 
   /**
    * Points the file at a replacement source (when replacing) and at new
-   * derived blobs for the job kind (none on a render error), deletes the rows of
-   * the blobs that replaces, and returns their keys for deleting after the
-   * commit.
+   * derived blobs for the job kind, deletes the rows of the blobs that
+   * replaces, and returns their keys for deleting after the commit.
    */
   async function swapIn(
     trx: Transaction<DB>,
@@ -791,33 +792,32 @@ export function createDerived(deps: DerivedDeps) {
     await deleteQuietly(oldKeys);
   }
 
-  /** Records a render or conversion error, swapping a replacement in. */
+  /**
+   * Records a render or conversion error with the program's message. A
+   * replacement is never swapped in: no new render was stored, so the file
+   * keeps its previous source and renders (build plan Task 13), and the
+   * staged source is discarded after the commit.
+   */
   async function commitRenderError(
-    jobKind: DerivedKind,
     file: ModelFile,
     source: Blob,
     replacing: boolean,
     message: string,
   ): Promise<void> {
-    let oldKeys: string[] = [];
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
       const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
-      if (replacing) {
-        oldKeys = await swapIn(trx, row, jobKind, source, true, [], outcome);
-      } else {
-        await trx
-          .updateTable("files")
-          .set({
-            derivedStatus: outcome.status,
-            derivedMessage: outcome.message,
-            updatedAt: sql<Date>`now()`,
-          })
-          .where("id", "=", row.id)
-          .execute();
-      }
+      await trx
+        .updateTable("files")
+        .set({
+          derivedStatus: outcome.status,
+          derivedMessage: outcome.message,
+          updatedAt: sql<Date>`now()`,
+        })
+        .where("id", "=", row.id)
+        .execute();
     });
-    await deleteQuietly(oldKeys);
+    if (replacing) await discardStaged(source.id);
   }
 
   /**
@@ -970,7 +970,7 @@ export function createDerived(deps: DerivedDeps) {
       }
       if (error instanceof RenderFailed) {
         try {
-          await commitRenderError(job.kind, file, source, replacing, error.message);
+          await commitRenderError(file, source, replacing, error.message);
         } catch (recordError) {
           if (recordError instanceof Superseded) return stale;
           throw recordError;
