@@ -43,6 +43,7 @@ import {
   createInboxWatcher,
   FAILED_DIR,
   HELD_REASON,
+  HOLD_ASIDE_PREFIX,
   HOLD_COPY_PREFIX,
   HOLD_PREFIX,
   type ImportedFile,
@@ -56,6 +57,7 @@ import {
   MAX_INBOX_BYTES,
   MAX_INBOX_IDS,
   NON_UTF8_REASON,
+  PUT_BACK_FAILED_REASON,
   REASON_SUFFIX,
   repeatedErrorReason,
   STILL_WRITING_REASON,
@@ -1051,33 +1053,81 @@ describe("a file put under an imported file's name during the import", () => {
     },
   );
 
-  test("a file that changed during its import, with no usable failed folder, stays in the inbox and is not tried again until it changes", async () => {
-    const fake = fakeIngest();
-    const ingest = {
-      async ingestFile(input: IngestInput) {
-        const result = await fake.ingest.ingestFile(input);
-        await appendFile(join(inbox, "changing.stl"), "more bytes\n");
-        return result;
-      },
-    };
-    const w = watcher(fake, { ingest });
-    // A plain file where the failed folder should be: nothing can move into it.
-    await writeFile(join(inbox, FAILED_DIR), "in the way\n");
-    const path = join(inbox, "changing.stl");
-    await writeFile(path, "solid a\nendsolid a\n");
-    await w.pollOnce();
-    const pass = await tick(w, 15_000);
+  test.each([
+    ["changed during its import", "changed"],
+    ["has a stored copy that cannot be confirmed", "unconfirmed"],
+  ])(
+    "an imported file that %s, with no usable failed folder, stays in its holding folder: never put back, never imported twice after a restart, and moved to failed once the folder is usable",
+    async (_l, why) => {
+      // Putting the imported file back (a link, or a copy under EPERM) moves
+      // its ctime, so a restart would take it for a new arrival, give it new
+      // ids and import it a second time. It stays held instead, out of the
+      // listing, and the restart sweep moves it to failed.
+      const fake = fakeIngest();
+      const name = "changing.stl";
+      const path = join(inbox, name);
+      const ingest = {
+        async ingestFile(input: IngestInput) {
+          const result = await fake.ingest.ingestFile(input);
+          if (why === "changed") await appendFile(path, "more bytes\n");
+          return result;
+        },
+      };
+      const deps = {
+        ingest,
+        storedFile: async (id: string) => (why === "changed" ? fake.stored.get(id) : undefined),
+        findImported: async (q: ImportedQuery) => storedRow(fake, q),
+      };
+      const w = watcher(fake, deps);
+      // A plain file where the failed folder should be: nothing can move into it.
+      await writeFile(join(inbox, FAILED_DIR), "in the way\n");
+      await writeFile(path, "solid a\nendsolid a\n");
+      const reason = why === "changed" ? CHANGED_REASON : UNCONFIRMED_REASON;
+      const expected =
+        why === "changed" ? "solid a\nendsolid a\nmore bytes\n" : "solid a\nendsolid a\n";
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
 
-    expect(pass.failed).toEqual([]);
-    expect(await readFile(path, "utf8")).toBe("solid a\nendsolid a\nmore bytes\n");
-    expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, "changing.stl"].sort());
-    expect(lines.some((l) => l.includes("changing.stl") && l.includes("could not move"))).toBe(
-      true,
-    );
-    await tick(w, 15_000);
-    await tick(w, 15_000);
-    expect(fake.calls).toEqual(["changing.stl"]);
-  });
+      expect(pass.imported.map((i) => i.name)).toEqual([name]);
+      expect(pass.failed).toEqual([]);
+      // Not under its name: still in the holding folder, whole, logged.
+      const holds = (await readdir(inbox)).filter((e) => e.startsWith(HOLD_PREFIX));
+      expect(holds).toHaveLength(1);
+      expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, ...holds].sort());
+      const held = join(inbox, holds[0] ?? "", name);
+      expect(await readFile(held, "utf8")).toBe(expected);
+      expect(
+        lines.some((l) => l.includes(name) && l.includes("could not move") && l.includes(held)),
+      ).toBe(true);
+      expect(lines.some((l) => l.includes(name) && l.includes(reason))).toBe(true);
+      await tick(w, 15_000);
+      await tick(w, 15_000);
+      expect(fake.calls).toEqual([name]);
+
+      // A restart with the failed folder still unusable: nothing is imported,
+      // and the file stays held, logged.
+      lines = [];
+      const restarted = watcher(fake, deps);
+      const swept = await restarted.pollOnce();
+      await tick(restarted, 15_000);
+      await tick(restarted, 15_000);
+      expect(swept.failed).toEqual([]);
+      expect(fake.calls).toEqual([name]);
+      expect(await readFile(held, "utf8")).toBe(expected);
+      expect(lines.some((l) => l.includes(name) && l.includes("could not move"))).toBe(true);
+
+      // Once the folder is usable, the next restart moves it to failed, kept.
+      await rm(join(inbox, FAILED_DIR));
+      const fixed = watcher(fake, deps);
+      const moved = await fixed.pollOnce();
+      expect(moved.failed).toEqual([{ name, reason: HELD_REASON }]);
+      expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+      await tick(fixed, 15_000);
+      await tick(fixed, 15_000);
+      expect(fake.calls).toEqual([name]);
+    },
+  );
 });
 
 describe("putting a file back under its name without hard links", () => {
@@ -1247,9 +1297,15 @@ describe("putting a file back under its name without hard links", () => {
       const pass = await tick(w, 15_000);
 
       expect(refused).toBe(true);
-      // The held file is kept whole in failed.
-      expect(pass.failed).toEqual([{ name: "part.stl", reason: SWAPPED_REASON }]);
+      // The held file is kept whole in failed, with a reason that says it
+      // could not be put back, never that another file took the name: the
+      // put-back failed on the full disk, whether or not a newcomer came.
+      expect(pass.failed.map((f) => f.reason)).not.toContain(SWAPPED_REASON);
+      expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
+      expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
+        `${PUT_BACK_FAILED_REASON}\n`,
+      );
       if (newcomer) {
         // A newcomer is left under the name, whole, never moved or deleted.
         expect(await readFile(path, "utf8")).toBe(FOURTH);
@@ -1381,9 +1437,148 @@ describe("putting a file back under its name without hard links", () => {
     await w.pollOnce();
     const pass = await tick(w, 15_000);
 
-    expect(pass.failed).toEqual([{ name: "part.stl", reason: SWAPPED_REASON }]);
+    // Nothing took the name, so the reason never says another file did.
+    expect(pass.failed.map((f) => f.reason)).not.toContain(SWAPPED_REASON);
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
     expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
+    expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
+      `${PUT_BACK_FAILED_REASON}\n`,
+    );
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+  });
+
+  test("with link() refused and the held file unreadable (EACCES), it is kept in failed with the put-back reason, not the swapped one", async () => {
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    noHardLinks(path);
+    // The held file cannot be opened for the copy back, as for a file
+    // another user owns with no read permission for the watcher.
+    let denied = false;
+    fsHooks.wrap = (opened, handle) => {
+      if (!isHeld(opened, path)) return handle;
+      denied = true;
+      void handle.close();
+      throw coded(`EACCES: permission denied, open '${opened}'`, "EACCES");
+    };
+    let swapped = false;
+    const w = watcher(fake, {
+      storedFile: async (id) => {
+        if (!swapped) {
+          swapped = true;
+          renameOverSync("part.stl", SECOND);
+        }
+        return fake.stored.get(id);
+      },
+    });
+    await writeFile(path, FIRST);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(denied).toBe(true);
+    expect(pass.failed.map((f) => f.reason)).not.toContain(SWAPPED_REASON);
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
+    expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
+    expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
+      `${PUT_BACK_FAILED_REASON}\n`,
+    );
+    // The real error is in the log, and nothing is left under the name.
+    expect(lines.some((l) => l.includes("part.stl") && l.includes("EACCES"))).toBe(true);
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+  });
+
+  test("with link() refused, a copy that must be taken back out from under the name with no new folder to be had is still taken out, not left to be imported after a restart", async () => {
+    // The writer sends more just before the copy is linked under the name, so
+    // the copy is cut short and must come back out; by then no new holding
+    // folder can be made (the writer has just filled the disk).
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    const MORE = "more bytes the writer sent\n";
+    noHardLinks(path);
+    let writer: number | undefined;
+    let appended = false;
+    const refuse = fsHooks.beforeLink;
+    fsHooks.beforeLink = async (newPath, existingPath) => {
+      await refuse?.(newPath, existingPath);
+      if (newPath === path && !appended && writer !== undefined) {
+        appended = true;
+        writeSync(writer, MORE);
+      }
+    };
+    fsHooks.beforeMkdir = async (made) => {
+      if (appended && made.startsWith(join(inbox, HOLD_PREFIX))) {
+        throw coded(`ENOSPC: no space left on device, mkdir '${made}'`, "ENOSPC");
+      }
+    };
+    let swapped = false;
+    const w = watcher(fake, {
+      storedFile: async (id) => {
+        if (!swapped) {
+          swapped = true;
+          renameOverSync("part.stl", SECOND);
+          writer = openSync(path, "a");
+        }
+        return fake.stored.get(id);
+      },
+    });
+    try {
+      await writeFile(path, FIRST);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+      expect(appended).toBe(true);
+
+      // The writer's file is kept whole in failed, the cut-short copy is gone.
+      expect(pass.failed).toEqual([{ name: "part.stl", reason: STILL_WRITING_REASON }]);
+      expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(`${SECOND}${MORE}`);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+
+      // A watcher started after a restart finds nothing to import.
+      fsHooks.beforeLink = undefined;
+      fsHooks.beforeMkdir = undefined;
+      const restarted = watcher(fake);
+      await restarted.pollOnce();
+      await tick(restarted, 15_000);
+      await tick(restarted, 15_000);
+      expect(fake.calls).toEqual(["part.stl"]);
+    } finally {
+      if (writer !== undefined) closeSync(writer);
+    }
+  });
+
+  test("a copy a stopped process had set aside from under the name moves to failed under the inbox name, kept, not deleted", async () => {
+    // takeBackCopy sets aside what holds the name inside the holding folder.
+    // It may be a writer's file renamed over the name, not the watcher's own
+    // copy, so the restart sweep keeps it, under the name it had.
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    await writeFile(join(holding, "part.stl"), SECOND);
+    await writeFile(
+      join(holding, `${HOLD_ASIDE_PREFIX}0190a6f0-0000-7000-8000-000000000002-part.stl`),
+      THIRD,
+    );
+    const w = watcher(fake);
+    const pass = await w.pollOnce();
+
+    expect(pass.failed).toEqual([
+      { name: "part.stl", reason: HELD_REASON },
+      { name: "part.stl", reason: HELD_REASON },
+    ]);
+    const failed = join(inbox, FAILED_DIR);
+    expect((await readdir(failed)).sort()).toEqual(
+      [
+        "part (2).stl",
+        `part (2).stl${REASON_SUFFIX}`,
+        "part.stl",
+        `part.stl${REASON_SUFFIX}`,
+      ].sort(),
+    );
+    const kept = [
+      await readFile(join(failed, "part.stl"), "utf8"),
+      await readFile(join(failed, "part (2).stl"), "utf8"),
+    ].sort();
+    expect(kept).toEqual([SECOND, THIRD].sort());
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    expect(fake.calls).toEqual([]);
   });
 });
 
@@ -2832,9 +3027,12 @@ describe("the checks", () => {
 });
 
 describe("a fault the checks cannot see", () => {
-  // The database check only reads, so a fault that breaks writes and not
-  // reads passes it: the data disk full (53100) or a write-side I/O error
-  // (58030). Every file fails then, with both checks passing.
+  // The checks write (the database check inserts a model, a pending blob and
+  // a file row and rolls them back), but those writes are small and never
+  // flushed, so a write fault can still miss them: the data disk full
+  // (53100) when the table file need not grow, or a write-side I/O error
+  // (58030). These tests stand in for such a fault: every file fails, with
+  // the checks passing.
   const diskFull = coded("could not extend file: No space left on device", "53100");
 
   test("a second file failing in the same pass, with the checks passing, holds the inbox: no file takes a strike or moves to failed", async () => {
