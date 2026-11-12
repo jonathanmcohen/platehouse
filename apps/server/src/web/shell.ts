@@ -22,7 +22,11 @@
 // index.html is read when the app is built, and again on a page request
 // while it is missing, so a server started before the web app was built
 // picks the build up. Until then a shell page answers 503 with one fixed
-// sentence and no path, and the server starts and answers /healthz as usual.
+// sentence and no path, and the server logs one warning at startup naming
+// the index.html it looked for. The server still starts, and /healthz
+// answers as Task 30 defines it unless WebDeps.required is set: then
+// app.ts also needs built(), so /healthz is 503 while the build is missing
+// and a health check sees what every page shows.
 // A built index.html without the two dark defaults the server rewrites is
 // refused (ShellTemplateError) rather than served with the wrong theme.
 //
@@ -45,7 +49,8 @@ export const THEME_COOKIE = "ph_theme";
 
 /**
  * The paths that answer with the shell: the sidebar's sections. Tasks 19 to
- * 21 add their own pages here (the model page, trash, settings).
+ * 21 add their own pages here (the model page, trash, settings). A test
+ * checks every SECTIONS path in the web app's Sidebar.tsx is listed here.
  */
 export const SHELL_PAGES: readonly string[] = Object.freeze([
   "/",
@@ -149,10 +154,21 @@ export function defaultWebDir(moduleUrl: string = import.meta.url): string {
 export interface WebDeps {
   /** The web app's build folder: index.html and assets/. */
   dir: string;
+  /**
+   * The server is not healthy without the build: /healthz answers 503 while
+   * index.html is missing. Left out, a missing build fails only the shell
+   * pages, so a server or test without a web build still reports healthy.
+   */
+  required?: boolean;
+}
+
+export interface WebShell {
+  /** Whether a usable index.html is there now; it is read again while missing. */
+  built(): Promise<boolean>;
 }
 
 /** Registers the shell pages and /assets/ on the root app (after the gate). */
-export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<void> {
+export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<WebShell> {
   const indexPath = join(deps.dir, "index.html");
   let template: ShellTemplate | undefined;
 
@@ -170,7 +186,11 @@ export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<
   }
 
   // A build that is there but malformed fails buildApp, not a page request.
-  await load();
+  if ((await load()) === undefined) {
+    app.log.warn(
+      `The web app is not built: there is no ${indexPath}, so every shell page answers 503 until it is there.`,
+    );
+  }
 
   async function shell(request: FastifyRequest, reply: FastifyReply) {
     reply.header("cache-control", "no-store");
@@ -197,4 +217,16 @@ export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<
       reply.header("cache-control", ASSET_CACHE_CONTROL);
     },
   });
+
+  return {
+    async built() {
+      try {
+        return (await load()) !== undefined;
+      } catch {
+        // A build replaced by a malformed one, or an unreadable file: the
+        // health check says unavailable rather than failing with the error.
+        return false;
+      }
+    },
+  };
 }

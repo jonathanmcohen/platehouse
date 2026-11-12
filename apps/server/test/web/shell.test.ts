@@ -5,16 +5,18 @@
 // dark, light or system is dark. Only those two places change.
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 import { patternClass } from "../../src/auth/gate.js";
 import {
   defaultWebDir,
   parseShellTemplate,
+  registerWeb,
   resolveTheme,
   SHELL_PAGES,
   ShellTemplateError,
@@ -189,5 +191,78 @@ describe("constants", () => {
   test("the shell pages are the sidebar's sections, each a session-class page", () => {
     expect([...SHELL_PAGES]).toEqual(["/", "/creators", "/collections", "/tags"]);
     for (const page of SHELL_PAGES) expect(patternClass(page), page).toBe("session");
+  });
+
+  // The web app's own list of sections is SECTIONS in Sidebar.tsx. A section
+  // the server does not list works by in-app navigation but is a 404 on a
+  // reload or a direct link, so every one of them must be a shell page.
+  test("every section in the web app's sidebar is a shell page", () => {
+    const sidebar = readFileSync(
+      new URL("../../../web/src/shell/Sidebar.tsx", import.meta.url),
+      "utf8",
+    );
+    const list = /export const SECTIONS\b[^=]*=\s*\[([\s\S]*?)\];/.exec(sidebar)?.[1];
+    expect(list, "no SECTIONS list in Sidebar.tsx").toBeDefined();
+    const paths = [...(list as string).matchAll(/\bto:\s*"([^"]*)"/g)].map((m) => m[1]);
+    expect(paths.length, "no paths read from SECTIONS").toBeGreaterThan(0);
+    for (const path of paths) expect(SHELL_PAGES, path).toContain(path);
+  });
+});
+
+describe("registerWeb without a web build", () => {
+  const INDEX = '<html lang="en" data-theme="dark"><meta name="color-scheme" content="dark" />';
+
+  async function withApp(
+    run: (args: { dir: string; lines: string[]; app: ReturnType<typeof Fastify> }) => Promise<void>,
+  ) {
+    const root = await mkdtemp(join(tmpdir(), "platehouse-web-missing-"));
+    const lines: string[] = [];
+    const app = Fastify({ logger: { level: "info", stream: { write: (l) => lines.push(l) } } });
+    try {
+      await run({ dir: join(root, "dist"), lines, app });
+    } finally {
+      await app.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  test("logs one warning at startup naming the index.html it looked for", async () => {
+    await withApp(async ({ dir, lines, app }) => {
+      await registerWeb(app, { dir });
+      // @fastify/static adds its own warning that assets/ is missing.
+      const warnings = lines
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.level === 40 && String(l.msg).includes("not built"));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].msg).toContain(join(dir, "index.html"));
+    });
+  });
+
+  test("logs no warning when the build is there", async () => {
+    await withApp(async ({ dir, lines, app }) => {
+      await mkdir(join(dir, "assets"), { recursive: true });
+      await writeFile(join(dir, "index.html"), INDEX);
+      await registerWeb(app, { dir });
+      expect(lines.map((l) => JSON.parse(l)).filter((l) => l.level >= 40)).toEqual([]);
+    });
+  });
+
+  test("built() is false while index.html is missing and true once it is there", async () => {
+    await withApp(async ({ dir, app }) => {
+      const web = await registerWeb(app, { dir });
+      expect(await web.built()).toBe(false);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "index.html"), INDEX);
+      expect(await web.built()).toBe(true);
+    });
+  });
+
+  test("built() is false, not an error, for a build that appears malformed", async () => {
+    await withApp(async ({ dir, app }) => {
+      const web = await registerWeb(app, { dir });
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "index.html"), "<html><body></body></html>");
+      expect(await web.built()).toBe(false);
+    });
   });
 });

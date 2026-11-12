@@ -3,8 +3,10 @@
 // session a page is sent to /auth/login, and with one it is index.html with
 // data-theme and the color-scheme meta written in from the ph_theme cookie,
 // never cached. The hashed build output under /assets/ is public and cached
-// for a year. A server whose web app is not built still starts, and says so
-// on its pages.
+// for a year. A server whose web app is not built still starts, says so on
+// its pages and warns in its log, naming the index.html it looked for.
+// /healthz stays the database and the queues unless the web build is
+// required (WebDeps.required): then it is 503 until the build is there.
 //
 // No container: sessions are in memory, and the build is a temp folder laid
 // out the way vite build lays out apps/web/dist.
@@ -42,7 +44,10 @@ interface WebApp {
   close(): Promise<void>;
 }
 
-async function webApp(web: { dir: string }): Promise<WebApp> {
+async function webApp(
+  web: { dir: string; required?: boolean },
+  logger?: { write(line: string): unknown },
+): Promise<WebApp> {
   const auth = await testAuth();
   const tmp = await mkdtemp(join(tmpdir(), "platehouse-web-uploads-"));
   const app = await buildApp({
@@ -54,6 +59,7 @@ async function webApp(web: { dir: string }): Promise<WebApp> {
     }),
     auth: auth.auth,
     web,
+    ...(logger === undefined ? {} : { logger }),
   });
   await app.ready();
   const session = (await auth.sessions.start("someone")).id;
@@ -184,10 +190,20 @@ describe("a built web app", () => {
 describe("a web app that is not built", () => {
   let dist: string;
   let t: WebApp;
+  const lines: string[] = [];
 
   beforeAll(async () => {
     dist = await mkdtemp(join(tmpdir(), "platehouse-web-empty-"));
-    t = await webApp({ dir: join(dist, "dist") });
+    t = await webApp({ dir: join(dist, "dist") }, { write: (line) => lines.push(line) });
+  });
+
+  test("the server warns at startup, naming the index.html it looked for", () => {
+    // @fastify/static adds its own warning that assets/ is missing.
+    const warnings = lines
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.level === 40 && String(l.msg).includes("not built"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].msg).toContain(join(dist, "dist", "index.html"));
   });
 
   afterAll(async () => {
@@ -216,5 +232,63 @@ describe("a web app that is not built", () => {
   test("an asset is a plain 404", async () => {
     const res = await t.app.inject({ method: "GET", url: "/assets/index-AbC123.js" });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("a web app that is required and not built", () => {
+  let dist: string;
+  let t: WebApp;
+
+  beforeAll(async () => {
+    dist = await mkdtemp(join(tmpdir(), "platehouse-web-required-"));
+    t = await webApp({ dir: join(dist, "dist"), required: true });
+  });
+
+  afterAll(async () => {
+    await t?.close();
+    await rm(dist, { recursive: true, force: true });
+  });
+
+  test("/healthz is 503 with the usual fixed body until the build is there, then 200", async () => {
+    const before = await t.app.inject({ method: "GET", url: "/healthz" });
+    expect(before.statusCode).toBe(503);
+    expect(before.json()).toEqual({ status: "unavailable" });
+    expect(before.body).not.toContain(dist);
+
+    await mkdir(join(dist, "dist", "assets"), { recursive: true });
+    await writeFile(join(dist, "dist", "index.html"), INDEX);
+    const after = await t.app.inject({ method: "GET", url: "/healthz" });
+    expect(after.statusCode).toBe(200);
+    expect(after.json()).toEqual({ status: "ok" });
+
+    const page = await t.app.inject({
+      method: "GET",
+      url: "/",
+      headers: { accept: HTML },
+      cookies: { [SESSION_COOKIE]: t.session },
+    });
+    expect(page.statusCode).toBe(200);
+  });
+});
+
+describe("a web app that is required and built", () => {
+  let dist: string;
+  let t: WebApp;
+
+  beforeAll(async () => {
+    dist = await mkdtemp(join(tmpdir(), "platehouse-web-required-built-"));
+    await mkdir(join(dist, "assets"));
+    await writeFile(join(dist, "index.html"), INDEX);
+    t = await webApp({ dir: dist, required: true });
+  });
+
+  afterAll(async () => {
+    await t?.close();
+    await rm(dist, { recursive: true, force: true });
+  });
+
+  test("/healthz is 200", async () => {
+    const res = await t.app.inject({ method: "GET", url: "/healthz" });
+    expect(res.statusCode).toBe(200);
   });
 });
