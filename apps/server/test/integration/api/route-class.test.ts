@@ -44,6 +44,7 @@ const emptyLibrary: ApiLibrary = {
   createModel: async () => ({ model: MODEL }),
   getModel: async () => undefined,
   getFile: async () => undefined,
+  fileHead: async () => undefined,
   openFile: async () => undefined,
   modelIsLive: async () => false,
   addTag: async () => false,

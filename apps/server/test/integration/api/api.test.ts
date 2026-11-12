@@ -59,6 +59,8 @@ const lines: string[] = [];
 /** Every token value this file sent, so the log check can look for each. */
 const sentTokens: string[] = [];
 let token: string;
+/** How many streams the library opened from the bucket, each one a GetObject. */
+let getObjects = 0;
 
 interface Answer {
   status: number;
@@ -178,7 +180,12 @@ beforeAll(async () => {
   tokens = createTokens({ store: dbTokenStore(env.db) });
   const library = createApiLibrary({
     db: env.db,
-    store: env.store,
+    store: {
+      getBlobStream(key) {
+        getObjects += 1;
+        return env.store.getBlobStream(key);
+      },
+    },
     plateNumbers: (id) => plateNumbers(env.db, CONTEXT, id),
   });
   t = await authTestApp({
@@ -421,6 +428,18 @@ describe("the operations", () => {
     expect(meta1.status).toBe(200);
     expect(meta1.json()).toMatchObject({ id: file?.id, modelId: outcome.modelId, kind: "3mf" });
 
+    // A HEAD answers the GET's headers from the database: no GetObject.
+    const before = getObjects;
+    const head = await fetch(`${base}/api/v1/files/${file?.id}/content`, {
+      method: "HEAD",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe(String(bytes.length));
+    expect(head.headers.get("content-type")).toBe("model/3mf");
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+    expect(getObjects).toBe(before);
+
     const content = await fetch(`${base}/api/v1/files/${file?.id}/content`, {
       headers: { authorization: `Bearer ${token}` },
     });
@@ -429,6 +448,7 @@ describe("the operations", () => {
     expect(content.headers.get("content-type")).toBe("model/3mf");
     const got = Buffer.from(await content.arrayBuffer());
     expect(got.equals(bytes)).toBe(true);
+    expect(getObjects).toBe(before + 1);
 
     expect(await env.repos.models.trash(outcome.modelId ?? "")).toBe(true);
     for (const path of [

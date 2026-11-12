@@ -54,7 +54,7 @@ import Fastify, {
 import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
-import { installGate, routeClass } from "./auth/gate.js";
+import { installGate, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
@@ -272,6 +272,20 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     sessions: auth.sessions,
     publicOrigin: auth.publicOrigin,
     absoluteUrl: auth.absoluteUrl,
+  });
+
+  // Every bearer-class answer is no-store unless its route set its own
+  // Cache-Control: the v1 routes, the tus mount at /api/v1/uploads (its own
+  // scope, which registerV1's hook does not reach) and the 404 a token gets
+  // on an unknown /api/v1 path. Added before the not-found handler, so that
+  // handler's answers run it too.
+  app.addHook("onSend", async (request, reply, payload) => {
+    const pattern = request.routeOptions.url;
+    const cls = pattern === undefined ? routeClass(request.url) : patternClass(pattern);
+    if (cls === "bearer" && !reply.hasHeader("cache-control")) {
+      reply.header("cache-control", "no-store");
+    }
+    return payload;
   });
 
   app.get("/healthz", async (_request, reply) => {

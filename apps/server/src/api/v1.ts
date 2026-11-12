@@ -36,7 +36,7 @@
 //   the store.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
-import type { Readable } from "node:stream";
+import { Readable } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
@@ -124,10 +124,14 @@ export interface NewApiModel {
 
 export type CreateOutcome = { model: ApiModel } | { exists: true; trashed: boolean };
 
-export interface FileContent {
+/** What a file's content route answers in its headers. */
+export interface FileHead {
   name: string;
   contentType: string;
   size: number;
+}
+
+export interface FileContent extends FileHead {
   stream: Readable;
 }
 
@@ -137,6 +141,11 @@ export interface ApiLibrary {
   createModel(input: NewApiModel): Promise<CreateOutcome>;
   getModel(id: string): Promise<ApiModelDetail | undefined>;
   getFile(id: string): Promise<ApiFile | undefined>;
+  /**
+   * What a HEAD on the file's content answers, read without opening the
+   * store: BlobNotFound when its blob is not stored.
+   */
+  fileHead(id: string): Promise<FileHead | undefined>;
   /** The file's bytes; StoreUnavailable, BlobNotFound or StoreError when the store cannot give them. */
   openFile(id: string): Promise<FileContent | undefined>;
   modelIsLive(id: string): Promise<boolean>;
@@ -163,6 +172,7 @@ export const refusingApi: ApiDeps = Object.freeze({
     createModel: async () => ({ exists: true as const, trashed: false }),
     getModel: async () => undefined,
     getFile: async () => undefined,
+    fileHead: async () => undefined,
     openFile: async () => undefined,
     modelIsLive: async () => false,
     addTag: async () => false,
@@ -272,6 +282,18 @@ export function createApiLibrary(deps: {
     return (await repos.models.get(file.modelId)) === undefined ? undefined : file;
   }
 
+  /** A live file, its blob's key and its content headers; BlobNotFound when the blob is not stored. */
+  async function storedFile(id: string): Promise<{ head: FileHead; key: string } | undefined> {
+    const file = await liveFile(id);
+    if (file === undefined) return undefined;
+    const blob = await repos.blobs.get(file.blobId);
+    if (blob === undefined || blob.state !== "stored") throw new BlobNotFound("GetObject");
+    return {
+      head: { name: file.name, contentType: blob.contentType, size: Number(file.size) },
+      key: blob.key,
+    };
+  }
+
   /** The model with this externalRef, live or trashed. */
   async function byExternalRef(ref: string) {
     return db
@@ -345,18 +367,16 @@ export function createApiLibrary(deps: {
       return file === undefined ? undefined : toApiFile(file);
     },
 
+    async fileHead(id) {
+      const found = await storedFile(id);
+      return found === undefined ? undefined : found.head;
+    },
+
     async openFile(id) {
-      const file = await liveFile(id);
-      if (file === undefined) return undefined;
-      const blob = await repos.blobs.get(file.blobId);
-      if (blob === undefined || blob.state !== "stored") throw new BlobNotFound("GetObject");
-      const stream = await store.getBlobStream(blob.key);
-      return {
-        name: file.name,
-        contentType: blob.contentType,
-        size: Number(file.size),
-        stream,
-      };
+      const found = await storedFile(id);
+      if (found === undefined) return undefined;
+      const stream = await store.getBlobStream(found.key);
+      return { ...found.head, stream };
     },
 
     async modelIsLive(id) {
@@ -773,9 +793,17 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
           },
         },
         async (request, reply) => {
-          let content: FileContent | undefined;
+          // Fastify answers HEAD with this handler, and drains to its end any
+          // stream a HEAD sends, so a HEAD never opens the store: it reads the
+          // file and its blob from the database and sends an empty stream,
+          // which keeps the file's Content-Length (an empty body would make
+          // Fastify answer 0).
+          const head = request.method === "HEAD";
+          let content: FileHead | FileContent | undefined;
           try {
-            content = await library.openFile(request.params.id);
+            content = head
+              ? await library.fileHead(request.params.id)
+              : await library.openFile(request.params.id);
           } catch (error) {
             if (
               error instanceof StoreUnavailable ||
@@ -796,7 +824,7 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
             .header("content-disposition", contentDisposition(content.name))
             .header("x-content-type-options", "nosniff")
             .header("cache-control", "private, no-store")
-            .send(content.stream);
+            .send("stream" in content ? content.stream : Readable.from([]));
         },
       );
 
