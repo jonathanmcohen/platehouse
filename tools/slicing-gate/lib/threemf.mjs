@@ -135,7 +135,10 @@ function sliceData(zip) {
     if ("nozzle_diameters" in meta) keys.nozzle_diameters = true;
     const index = storedIndex(meta.index);
     const prediction = int(meta.prediction);
-    if (index === null || prediction === null || result.has(index)) continue;
+    // A plate numbered below 1 is skipped before its filament ids are read,
+    // as packages/threemf skips it, so an over-range id there is not damage
+    // in either reader (PR #154 review).
+    if (index === null || index < 1 || prediction === null || result.has(index)) continue;
     if (prediction < 1 || prediction > LIMITS.predictionSeconds) continue;
     result.set(index, {
       predictionSeconds: prediction,

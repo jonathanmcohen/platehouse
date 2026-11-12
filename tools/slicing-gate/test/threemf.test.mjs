@@ -139,8 +139,10 @@ for (const [label, n] of PAST_32_BIT) {
     assert.equal(readProjectMeta(file), null);
   });
 
-  // The check runs on every slice_info plate, matched to a listed plate or
-  // not, as packages/threemf runs it before it looks for the plate.
+  // The index check runs on every slice_info plate, matched to a listed
+  // plate or not, as packages/threemf runs it before it looks for the plate.
+  // The filament id check runs only on a plate numbered from 1 with a usable
+  // prediction, the plates both readers keep (see the index 0 test below).
   test(`a slice_info plate index with ${label} makes the file damaged`, () => {
     assert.equal(readProjectMeta(writeTmp("si.3mf", sliceInfoOnly(n, 1))), null);
   });
@@ -175,6 +177,21 @@ test("a slice_info plate index and filament id at 2147483647 are still read", ()
     [[1, false]],
   );
 });
+
+// packages/threemf skips a slice_info plate numbered below 1 before it reads
+// its filaments, so an over-range filament id there costs nothing: the file
+// is stored with its plates. The gate skips that plate first too (PR #154
+// review), so the two agree.
+for (const index of ["0", "-1"]) {
+  test(`a slice_info plate with index ${index} is skipped before its filament ids are checked`, () => {
+    const meta = readProjectMeta(writeTmp("low.3mf", sliceInfoOnly(index, "2147483648")));
+    assert.notEqual(meta, null);
+    assert.deepEqual(
+      meta.plates.map((p) => [p.index, p.sliced]),
+      [[1, false]],
+    );
+  });
+}
 
 test("a filament id that is not a whole number gives no slot", () => {
   const filaments = [{ id: "x1", type: "PLA", usedG: 3 }];
