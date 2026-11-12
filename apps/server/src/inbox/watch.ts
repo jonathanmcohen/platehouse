@@ -63,9 +63,10 @@
 //   with CHANGED_REASON instead. When what is held cannot be checked or
 //   deleted (an lstat, fstat or unlink that throws), it may be the imported
 //   file, so it moves to failed with the reason it already had, else
-//   UNCONFIRMED_REASON, never back under the name. When the imported file (changed, its stored copy unconfirmed,
-//   or not checkable) cannot be moved to failed, it is not put back
-//   under the name, since a link or a copy back moves its ctime and a
+//   UNREMOVED_REASON (stored, but not removed from the inbox), never back
+//   under the name. When the imported file (changed, its stored copy
+//   unconfirmed, or not checkable or deletable) cannot be moved to failed,
+//   it is not put back under the name, since a link or a copy back moves its ctime and a
 //   restart would import it again under new ids: it stays in the holding
 //   folder, logged, the folder renamed to say why (KEPT_HOLD_SUFFIXES), for
 //   the restart sweep below, which gives that reason. A file put under
@@ -322,6 +323,15 @@ export const UNCONFIRMED_REASON =
   "Platehouse imported this file but could not confirm the stored copy, so it was kept here; check the library before adding it again.";
 
 /**
+ * Reason when an import whose stored copy was confirmed could not be
+ * removed from the inbox: the check or the delete in its holding folder
+ * threw (an EIO, say). The stored copy is fine, so UNCONFIRMED_REASON would
+ * name the wrong cause.
+ */
+export const UNREMOVED_REASON =
+  "Platehouse imported and stored this file but could not remove it from the inbox, so it was kept here; check whether the model is already in the library before adding it again.";
+
+/**
  * What starts the name of the folder, inside the inbox, that an imported
  * file is moved into to be checked and deleted. It starts with a dot, so the
  * watcher never lists it as an inbox file, and it is in the inbox, so the
@@ -377,15 +387,17 @@ export const HELD_REASON =
 
 /**
  * What settleImported adds to the end of a holding folder's name when the
- * imported file in it, changed or unconfirmed, could not be moved to failed,
- * and the reason each one stands for: Platehouse did not stop, so the
- * restart sweep moves the file to failed with this reason, not HELD_REASON.
+ * imported file in it, changed, unconfirmed or not removed, could not be
+ * moved to failed, and the reason each one stands for: Platehouse did not
+ * stop, so the restart sweep moves the file to failed with this reason, not
+ * HELD_REASON.
  * A rename of the folder in place needs no new folder or file, so a full
  * disk does not stop it.
  */
 const KEPT_HOLD_SUFFIXES: ReadonlyArray<readonly [suffix: string, reason: string]> = [
   ["-changed", CHANGED_REASON],
   ["-unconfirmed", UNCONFIRMED_REASON],
+  ["-unremoved", UNREMOVED_REASON],
 ];
 
 /** The suffix that marks a holding folder as kept for reason, if any. */
@@ -1524,8 +1536,8 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * bytes there that were never imported, so it moves to failed with
    * CHANGED_REASON instead. When what is held cannot be checked or deleted
    * (the lstat, fstat or unlink throws), it may be the imported file, so it
-   * moves to failed too, with UNCONFIRMED_REASON unless it already had a
-   * reason. When the imported file cannot be moved to failed (the failed
+   * moves to failed too, with UNREMOVED_REASON (its stored copy was
+   * confirmed) unless it already had a reason. When the imported file cannot be moved to failed (the failed
    * folder is a symlink, not a folder, or unwritable), it is not put back
    * under the name: a link or a copy back moves its ctime, which a restart
    * would take as a new arrival and import it again under new ids. It stays
@@ -1602,8 +1614,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       } catch (error) {
         // What is held could not be checked or deleted (an EIO, say), so it
         // may be the imported file: never put back (failImported says why).
-        // It moves to failed, as unconfirmed unless it already had a reason.
-        const why = reason ?? UNCONFIRMED_REASON;
+        // It moves to failed with the reason it already had, else as stored
+        // but not removed: its stored copy was confirmed.
+        const why = reason ?? UNREMOVED_REASON;
         log(
           `inbox: imported ${name} as model ${modelId}, but what holds its name could not be ` +
             `checked or deleted in ${holdDir} (${errorText(error)}), so it is kept, not put back`,
