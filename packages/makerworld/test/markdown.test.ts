@@ -547,6 +547,69 @@ describe("htmlToMarkdown: ported cases", () => {
     expect(htmlToMarkdown(html)).toBe("t");
   });
 
+  // A browser's tag name runs to HTML whitespace, / or >, so <a-x>, <a:x> and
+  // <a"q"> are other elements, not anchors, and <ul-x> or <h2:x> is no list
+  // or heading. The converter once ended the name at the first character that
+  // was not a letter or digit, so each of these acted as the element its name
+  // began with (issue #131). Each is now an unknown element: its tags are
+  // dropped and its text stays, exactly as for a <span>.
+  it.each([
+    ["a hyphen after a", '<p><a-x href="https://e.test/">t</a-x></p>', "<p><span>t</span></p>"],
+    ["a colon after a", '<p><a:x href="https://e.test/">t</a:x></p>', "<p><span>t</span></p>"],
+    ["a quote after a", '<p><a"q" href="https://e.test/">t</a></p>', "<p><span>t</span></p>"],
+    ["upper case", '<p><A-X HREF="https://e.test/">t</A-X></p>', "<p><span>t</span></p>"],
+  ])("a tag whose name only begins with a makes no link: %s", (_name, html, asSpan) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan));
+    expect(out).toBe("t");
+    expect(render(out)).not.toMatch(/<a /);
+  });
+
+  const asSpan = (html: string, name: string): string =>
+    html.replaceAll(`<${name}>`, "<span>").replaceAll(`</${name}>`, "</span>");
+
+  // Each would open a list nested in the item; as an unknown element it opens
+  // none, so its item is the outer list's next item.
+  it.each([
+    ["ul-x", "ul", "<ul><li>a<ul-x><li>b</li></ul-x>c</li></ul>"],
+    ["ul:x", "ul", "<ul><li>a<ul:x><li>b</li></ul:x>c</li></ul>"],
+    ["ol:x", "ol", "<ol><li>a<ol:x><li>b</li></ol:x>c</li><li>d</li></ol>"],
+    ['ol"q"', "ol", '<ol><li>a<ol"q"><li>b</li></ol"q">c</li><li>d</li></ol>'],
+  ])("a tag whose name only begins with a list name opens no list: %s", (name, list, html) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(render(out).match(new RegExp(`<${list}>`, "g"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["h2:x", "<p>x</p><h2:x>Title</h2:x><p>y</p>"],
+    ["h1-x", "<p>x</p><h1-x>Title</h1-x><p>y</p>"],
+    ['h3"q"', '<p>x</p><h3"q">Title</h3"q"><p>y</p>'],
+  ])("a tag whose name only begins with a heading name is no heading: %s", (name, html) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(render(out)).not.toMatch(/<h[1-6]>/);
+  });
+
+  it("a tag whose name only begins with script keeps its text, as a browser shows it", () => {
+    expect(htmlToMarkdown("<p>a<script-x>b</script-x>c</p>")).toBe("abc");
+  });
+
+  it.each([
+    ["a tab", '<a\thref="https://b.test/">t</a>'],
+    ["a line feed", '<a\nhref="https://b.test/">t</a>'],
+    ["a form feed", '<a\fhref="https://b.test/">t</a>'],
+    ["a carriage return", '<a\rhref="https://b.test/">t</a>'],
+    ["a slash", '<a/href="https://b.test/">t</a>'],
+  ])("a tag name ended by %s is still the element", (_name, html) => {
+    expect(htmlToMarkdown(html)).toBe("[t](https://b.test/)");
+  });
+
+  it("a heading or list whose name is ended by > is still structure", () => {
+    const out = htmlToMarkdown("<h2>T</h2><ul><li>a</li></ul>");
+    expect(render(out)).toBe("<h2>T</h2>\n<ul>\n<li>a</li>\n</ul>\n");
+  });
+
   it("a > inside a quoted value does not end the attribute scan", () => {
     const out = htmlToMarkdown("<a title='a>b' href=\"https://b.test/\">t</a>");
     expect(out).toBe("[t](https://b.test/)");

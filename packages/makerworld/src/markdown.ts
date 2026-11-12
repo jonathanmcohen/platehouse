@@ -82,7 +82,14 @@ const MAX_INLINE_DEPTH = 16;
 // A tag. Outside quotes the attributes may hold no < or >, so a tag-like run
 // with no closing > fails at the next <; a quoted value may hold either and
 // ends at its closing quote.
-const TAG = /<(\/?)([A-Za-z][A-Za-z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
+// The name runs, as a browser reads it, from a letter to HTML whitespace, /
+// or >, so "a-x", "a:x" and 'a"q"' are whole names and must be followed by
+// one of those (the lookahead). The name once ended at the first character
+// that was not a letter or digit, so <a-x href=...> was read as a link and
+// <ul-x> or <h2:x> as a list or heading (issue #131). Such a name matches no
+// tag onTag knows, so it is dropped and its text kept, like any unknown tag.
+// The name holds no <, for the same reason the attributes hold none.
+const TAG = /<(\/?)([A-Za-z][^\t\n\f\r /<>]*)(?=[\t\n\f\r />])((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
 // One attribute of a tag, from the first character of its name, read as a
 // browser's tokenizer reads it: the name runs to whitespace, /, = or >, but
 // may begin with an = (so "=href" is not href); then an optional value,
