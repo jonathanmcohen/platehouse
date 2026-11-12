@@ -28,6 +28,7 @@ import {
   ASCII_STL,
   binaryStl,
   build3mf,
+  buildZip,
   footprint,
   type IngestEnv,
   plainZip,
@@ -947,5 +948,139 @@ describe("a failed commit never deletes what may have been committed", () => {
     // every object.
     expect(after.files - before.files).toBe(1);
     expect(after.objects - before.objects).toBe(2);
+  });
+});
+
+// Issue #78: a .3mf whose values the database cannot store must still be
+// stored (AC-023), never fail the save. Postgres text cannot hold a NUL, so
+// the parser and the MakerWorld reader drop it from every text value; and
+// plates.index and the slot columns are 32-bit, so a plate index or filament
+// slot past 2147483647 makes the file one with no plate data.
+describe("values the database cannot store (#78)", () => {
+  const NUL = "\u0000";
+  const xmlHead = '<?xml version="1.0" encoding="UTF-8"?>\n';
+
+  /** A one-plate, sliced Bambu-style .3mf built from the given values, written raw. */
+  function hostile3mf(v: {
+    platerId?: string;
+    plateName?: string;
+    sliceIndex?: string;
+    filamentId?: string;
+    filamentType?: string;
+    printerModelId?: string;
+    projectType?: string;
+    processName?: string;
+    designer?: string;
+    title?: string;
+    license?: string;
+  }): Buffer {
+    const model =
+      `${xmlHead}<model unit="millimeter" xml:lang="en-US" ` +
+      'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n' +
+      ` <metadata name="Designer">${v.designer ?? "Synthetic Designer"}</metadata>\n` +
+      ` <metadata name="Title">${v.title ?? "Synthetic Title"}</metadata>\n` +
+      ` <metadata name="License">${v.license ?? "BY"}</metadata>\n` +
+      ' <resources>\n  <object id="1" type="model"/>\n </resources>\n</model>\n';
+    const settings =
+      `${xmlHead}<config>\n  <plate>\n` +
+      `    <metadata key="plater_id" value="${v.platerId ?? "1"}"/>\n` +
+      `    <metadata key="plater_name" value="${v.plateName ?? "Plate one"}"/>\n` +
+      '    <model_instance>\n      <metadata key="object_id" value="2"/>\n    </model_instance>\n' +
+      "  </plate>\n</config>\n";
+    const slice =
+      `${xmlHead}<config>\n  <plate>\n` +
+      `    <metadata key="index" value="${v.sliceIndex ?? "1"}"/>\n` +
+      `    <metadata key="printer_model_id" value="${v.printerModelId ?? "C12"}"/>\n` +
+      '    <metadata key="nozzle_diameters" value="0.4"/>\n' +
+      '    <metadata key="prediction" value="1000"/>\n' +
+      '    <metadata key="weight" value="10.5"/>\n' +
+      `    <filament id="${v.filamentId ?? "1"}" type="${v.filamentType ?? "PLA"}" ` +
+      'color="#00AE42" used_m="1.00" used_g="10.5" />\n' +
+      "  </plate>\n</config>\n";
+    const project = JSON.stringify({
+      print_settings_id: v.processName ?? "0.20mm Standard @BBL X1C",
+      filament_type: [v.projectType ?? "PLA"],
+      filament_colour: ["#00AE42"],
+    });
+    return buildZip([
+      { name: "3D/3dmodel.model", data: model },
+      { name: "Metadata/model_settings.config", data: settings },
+      { name: "Metadata/slice_info.config", data: slice },
+      { name: "Metadata/project_settings.config", data: project },
+      { name: "Metadata/plate_1.png", data: png("p1") },
+    ]);
+  }
+
+  test("a NUL in the plate, filament, process and MakerWorld text is dropped and the file stored", async () => {
+    const bytes = hostile3mf({
+      plateName: `Ba${NUL}se`,
+      filamentType: `P${NUL}LA`,
+      printerModelId: `C1${NUL}2`,
+      projectType: `PE${NUL}TG`,
+      processName: `0.20mm${NUL} Standard`,
+      designer: `Synthetic${NUL} Designer`,
+      title: `Desk${NUL} Tidy`,
+      license: `BY${NUL}-NC`,
+    });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Nul text.3mf",
+      target: "new",
+    });
+
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "ok", size: bytes.length });
+    const plates = await env.repos.plates.listForFile(r.fileId);
+    expect(plates.map((p) => [p.index, p.name])).toEqual([[1, "Base"]]);
+    const filaments = await env.db
+      .selectFrom("fileFilaments")
+      .select(["slot", "type"])
+      .where("fileId", "=", r.fileId)
+      .execute();
+    expect(filaments).toEqual([{ slot: 1, type: "PETG" }]);
+    const estimates = await env.db
+      .selectFrom("estimates")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select(["estimates.id", "estimates.printerModelId", "estimates.processProfile"])
+      .where("plates.fileId", "=", r.fileId)
+      .execute();
+    expect(
+      estimates.map(({ printerModelId, processProfile }) => ({ printerModelId, processProfile })),
+    ).toEqual([{ printerModelId: "C12", processProfile: "0.20mm Standard" }]);
+    const grams = await env.db
+      .selectFrom("estimateFilaments")
+      .select(["slot", "type"])
+      .where("estimateId", "=", estimates[0]?.id ?? "")
+      .execute();
+    expect(grams).toEqual([{ slot: 1, type: "PLA" }]);
+    expect(await modelRow(r.modelId)).toMatchObject({
+      caption: "Desk Tidy",
+      creator: "Synthetic Designer",
+      licenseSpdx: "CC-BY-NC-4.0",
+    });
+  });
+
+  test.each([
+    ["a plater_id of 3000000000", { platerId: "3000000000", sliceIndex: "3000000000" }],
+    ["a plater_id of 2147483648", { platerId: "2147483648", sliceIndex: "2147483648" }],
+    ["a filament slot of 3000000000", { filamentId: "3000000000" }],
+    ["a filament slot of 2147483648", { filamentId: "2147483648" }],
+  ])("%s is stored as a file with no plate data, not a failed save", async (_label, values) => {
+    const bytes = hostile3mf(values);
+    const before = await footprint(env);
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Out of range.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "no_plate_data", size: bytes.length });
+    expect(await env.repos.plates.listForFile(r.fileId)).toEqual([]);
+    const source = await env.repos.blobs.get(file?.blobId ?? "");
+    expect(source?.state).toBe("stored");
+    expect((await readObject(source?.key ?? "")).equals(bytes)).toBe(true);
+    // The source only: a damaged file's thumbnails are never put.
+    const after = await footprint(env);
+    expect(after.objects - before.objects).toBe(1);
   });
 });
