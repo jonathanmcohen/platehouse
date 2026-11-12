@@ -3,9 +3,13 @@
 // these drive it, and installSignalHandlers on top of it, with stand-in steps
 // and a fake clock. stopBoss is the pg-boss step: pg-boss's graceful stop
 // resolves even when it cuts active jobs off at its timeout, so the step
-// counts the job handlers still running to see that.
+// counts the job handlers still running to see that, judged at its timeout.
+// trackJobs is how start() counts every handler it gives startQueues, and
+// stopAfterFailedStart is how a failed start() cleans up without losing the
+// startup error.
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ServerQueueDeps } from "../../../src/jobs/queues.js";
 import {
   BOSS_STOP_TIMEOUT_MS,
   installSignalHandlers,
@@ -14,7 +18,9 @@ import {
   SHUTDOWN_DEADLINE_MS,
   type ShutdownStep,
   type SignalTarget,
+  stopAfterFailedStart,
   stopBoss,
+  trackJobs,
 } from "../../../src/main.js";
 
 function fakeProcess() {
@@ -182,5 +188,150 @@ describe("stopBoss", () => {
     });
     await expect(handler()).rejects.toThrow("slicer down");
     expect(jobs.running()).toBe(0);
+  });
+});
+
+describe("stopBoss at pg-boss's timeout", () => {
+  test("a job still running at the timeout that ends before pg-boss returns was cut off", async () => {
+    const jobs = jobCounter();
+    // pg-boss marks the job failed at its timeout, then the handler ends,
+    // then pg-boss finishes its own shutdown and returns.
+    const handler = jobs.track(
+      () => new Promise<void>((resolve) => setTimeout(resolve, BOSS_STOP_TIMEOUT_MS + 20)),
+    );
+    void handler();
+    const stop = () =>
+      new Promise<void>((resolve) => setTimeout(resolve, BOSS_STOP_TIMEOUT_MS + 50));
+    const outcome = stopBoss({ stop }, jobs.running).then(
+      () => "resolved",
+      (error: unknown) => String(error),
+    );
+    await vi.advanceTimersByTimeAsync(BOSS_STOP_TIMEOUT_MS + 50);
+    expect(jobs.running()).toBe(0);
+    expect(await outcome).toMatch(/1 job was still running/);
+  });
+
+  test("a job that ended before the timeout is not counted, however long pg-boss takes", async () => {
+    const jobs = jobCounter();
+    const handler = jobs.track(
+      () => new Promise<void>((resolve) => setTimeout(resolve, BOSS_STOP_TIMEOUT_MS - 1)),
+    );
+    void handler();
+    const stop = () =>
+      new Promise<void>((resolve) => setTimeout(resolve, BOSS_STOP_TIMEOUT_MS + 50));
+    const outcome = stopBoss({ stop }, jobs.running);
+    await vi.advanceTimersByTimeAsync(BOSS_STOP_TIMEOUT_MS + 50);
+    await expect(outcome).resolves.toBeUndefined();
+  });
+
+  test("a pg-boss stop that throws still fails the step and leaves no timer behind", async () => {
+    const outcome = stopBoss({ stop: () => Promise.reject(new Error("pool gone")) }, () => 0);
+    await expect(outcome).rejects.toThrow("pool gone");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("trackJobs", () => {
+  /** A ServerQueueDeps whose every handler waits until released, recording its name. */
+  function pendingDeps() {
+    const release: Array<() => void> = [];
+    const pending = () =>
+      new Promise<never>((resolve) => {
+        release.push(() => resolve(undefined as never));
+      });
+    const deps: ServerQueueDeps = {
+      ingestFile: pending,
+      purgeExpired: pending,
+      sweepOrphans: pending,
+      sweepUploads: pending,
+      slicerJobs: { slice: pending, "render-scad": pending },
+      pollOrca: pending,
+      onIngested: pending,
+      checkRenders: pending,
+      purgeSessions: pending,
+      timeZone: "UTC",
+      pollingIntervalSeconds: 1,
+    };
+    return { deps, release };
+  }
+
+  test("every handler startQueues is given is counted while it runs", async () => {
+    const jobs = jobCounter();
+    const { deps, release } = pendingDeps();
+    const tracked = trackJobs(jobs, deps);
+    type Handler = () => Promise<unknown>;
+    const handlers: Array<[string, Handler]> = [];
+    for (const [key, value] of Object.entries(tracked)) {
+      if (typeof value === "function") handlers.push([key, value as Handler]);
+    }
+    for (const [kind, value] of Object.entries(tracked.slicerJobs)) {
+      handlers.push([`slicerJobs.${kind}`, value as unknown as Handler]);
+    }
+    expect(handlers.map(([key]) => key).sort()).toEqual(
+      [
+        "checkRenders",
+        "ingestFile",
+        "onIngested",
+        "pollOrca",
+        "purgeExpired",
+        "purgeSessions",
+        "slicerJobs.render-scad",
+        "slicerJobs.slice",
+        "sweepOrphans",
+        "sweepUploads",
+      ].sort(),
+    );
+    const runs: Promise<unknown>[] = [];
+    for (const [key, handler] of handlers) {
+      const before = jobs.running();
+      runs.push(handler());
+      expect(jobs.running(), key).toBe(before + 1);
+    }
+    for (const r of release) r();
+    await Promise.all(runs);
+    expect(jobs.running()).toBe(0);
+  });
+
+  test("a handler added to the deps later is counted without naming it", async () => {
+    const jobs = jobCounter();
+    const { deps } = pendingDeps();
+    const extra = { ...deps, futureTask: () => new Promise<void>(() => {}) };
+    const tracked = trackJobs(jobs, extra) as typeof extra;
+    void tracked.futureTask();
+    expect(jobs.running()).toBe(1);
+  });
+
+  test("settings that are not handlers are passed through unchanged", () => {
+    const { deps } = pendingDeps();
+    const tracked = trackJobs(jobCounter(), deps);
+    expect(tracked.timeZone).toBe("UTC");
+    expect(tracked.pollingIntervalSeconds).toBe(1);
+  });
+});
+
+describe("stopAfterFailedStart", () => {
+  test("the startup error surfaces when the cleanup also fails, and the cleanup is logged", async () => {
+    const startup = Object.assign(
+      new Error("listen EADDRINUSE: address already in use 0.0.0.0:8080"),
+      {
+        code: "EADDRINUSE",
+      },
+    );
+    const stop = () =>
+      Promise.reject(
+        new Error(
+          "the shutdown was not clean: stopping pg-boss failed: 1 job was still running at the 10 s limit",
+        ),
+      );
+    await expect(stopAfterFailedStart(startup, stop)).rejects.toBe(startup);
+    const logged = errors.mock.calls.map((call: unknown[]) => call.join(" ")).join("\n");
+    expect(logged).toContain("the shutdown was not clean");
+  });
+
+  test("the startup error surfaces after a clean cleanup", async () => {
+    const startup = new Error("migration failed");
+    const stop = vi.fn(async () => {});
+    await expect(stopAfterFailedStart(startup, stop)).rejects.toBe(startup);
+    expect(stop).toHaveBeenCalledOnce();
   });
 });

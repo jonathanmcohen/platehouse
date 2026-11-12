@@ -38,8 +38,10 @@
 // next one runs, so the whole stop fits well inside SHUTDOWN_DEADLINE_MS.
 // Once the last step has run, stop() rejects if any step failed or overran,
 // or if pg-boss cut a job off at its timeout, so the process exits 1 and only
-// a clean stop exits 0 (#106). The signal handler adds that deadline as a
-// last resort: past 30 s the process exits 1 whatever is still running.
+// a clean stop exits 0 (#106). When start() itself fails, the same stop runs,
+// but a failed cleanup is only logged and the startup error is what start()
+// throws. The signal handler adds that deadline as a last resort: past 30 s
+// the process exits 1 whatever is still running.
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
@@ -159,21 +161,81 @@ export function jobCounter() {
   };
 }
 
+export type JobCounter = ReturnType<typeof jobCounter>;
+
+/**
+ * The queue dependencies with every handler counted (jobs): each top-level
+ * function and each slicer job kind. It wraps whatever handlers it is given
+ * rather than a list of names, so a handler added to ServerQueueDeps later is
+ * counted without anyone remembering to; settings that are not functions
+ * pass through unchanged.
+ */
+export function trackJobs<D extends ServerQueueDeps>(jobs: JobCounter, deps: D): D {
+  const tracked: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(deps)) {
+    if (key === "slicerJobs" && typeof value === "object" && value !== null) {
+      tracked[key] = Object.fromEntries(
+        Object.entries(value as Record<string, (...args: unknown[]) => Promise<unknown>>).map(
+          ([kind, handler]) => [kind, jobs.track(handler)],
+        ),
+      );
+    } else if (typeof value === "function") {
+      tracked[key] = jobs.track(value as (...args: unknown[]) => Promise<unknown>);
+    } else {
+      tracked[key] = value;
+    }
+  }
+  return tracked as D;
+}
+
 /**
  * The pg-boss step: a graceful stop, which gives active jobs
- * BOSS_STOP_TIMEOUT_MS. It fails when a job handler is still running once
- * pg-boss has stopped, since pg-boss then cut that job off and marked it
- * failed.
+ * BOSS_STOP_TIMEOUT_MS. It fails when a job handler is still running at that
+ * limit, since pg-boss then cuts that job off and marks it failed. The count
+ * is taken when the limit passes, not when pg-boss returns: after its
+ * timeout pg-boss still fails the active jobs, drains, stops its registrar
+ * and closes its pool, and a handler that ends in that window has already
+ * been marked failed, though the count would read 0 by then. pg-boss starts
+ * its own timer only after stopping its notifier and other parts, so this
+ * one fires at or a little before pg-boss's; a handler that ends in that gap
+ * is counted as cut off too, which errs towards exit 1, never towards a
+ * false clean stop.
  */
 export async function stopBoss(boss: Pick<PgBoss, "stop">, running: () => number): Promise<void> {
-  await boss.stop({ graceful: true, timeout: BOSS_STOP_TIMEOUT_MS });
-  const cut = running();
+  let atLimit = 0;
+  const limit = setTimeout(() => {
+    atLimit = running();
+  }, BOSS_STOP_TIMEOUT_MS);
+  try {
+    await boss.stop({ graceful: true, timeout: BOSS_STOP_TIMEOUT_MS });
+  } finally {
+    clearTimeout(limit);
+  }
+  const cut = Math.max(atLimit, running());
   if (cut > 0) {
     throw new Error(
       `${cut} ${cut === 1 ? "job was" : "jobs were"} still running at the ` +
         `${BOSS_STOP_TIMEOUT_MS / 1000} s limit and pg-boss marked ${cut === 1 ? "it" : "them"} failed`,
     );
   }
+}
+
+/**
+ * The cleanup after start() failed part way: stops what had started, then
+ * rethrows the startup error. A cleanup that fails as well (a step that
+ * overran, a job cut off) is logged and never replaces the startup error,
+ * which is the cause the operator needs to see.
+ */
+export async function stopAfterFailedStart(
+  error: unknown,
+  stop: () => Promise<void>,
+): Promise<never> {
+  try {
+    await stop();
+  } catch (cleanup) {
+    console.error(`platehouse: cleaning up after the failed start: ${describe(cleanup)}`);
+  }
+  throw error;
 }
 
 /** Stops taking requests, gives those in flight graceMs, then closes their connections. */
@@ -272,22 +334,17 @@ export async function start(config: Config): Promise<Server> {
     // Every handler a pg-boss worker runs is counted (jobs), so stopping
     // pg-boss can tell a job cut off at its timeout from a clean stop. The
     // inbox watcher's onIngested is not a job and stays uncounted.
-    const slicerJobs = Object.fromEntries(
-      Object.entries({ ...derivedJobHandlers(derived), ...estimates.slicerJobs }).map(
-        ([kind, handler]) => [kind, jobs.track(handler)],
-      ),
-    );
-    const queueDeps: ServerQueueDeps = {
-      ingestFile: jobs.track(uploads.ingestUpload((input) => ingest.ingestFile(input))),
-      purgeExpired: jobs.track((now: Date) => trash.purgeExpired(now)),
-      sweepOrphans: jobs.track((now: Date) => orphans.sweepOrphans(now)),
-      sweepUploads: jobs.track((now: Date) => uploads.sweepStaleUploads(now)),
-      slicerJobs,
-      pollOrca: jobs.track(() => estimates.pollOrca()),
-      onIngested: jobs.track(onIngested),
-      checkRenders: jobs.track((now: Date) => derived.checkRenders(now)),
-      purgeSessions: jobs.track((now: Date) => repos.sessions.deleteExpired(now)),
-    };
+    const queueDeps = trackJobs(jobs, {
+      ingestFile: uploads.ingestUpload((input) => ingest.ingestFile(input)),
+      purgeExpired: (now: Date) => trash.purgeExpired(now),
+      sweepOrphans: (now: Date) => orphans.sweepOrphans(now),
+      sweepUploads: (now: Date) => uploads.sweepStaleUploads(now),
+      slicerJobs: { ...derivedJobHandlers(derived), ...estimates.slicerJobs },
+      pollOrca: () => estimates.pollOrca(),
+      onIngested,
+      checkRenders: (now: Date) => derived.checkRenders(now),
+      purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
+    } satisfies ServerQueueDeps);
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;
 
@@ -338,8 +395,7 @@ export async function start(config: Config): Promise<Server> {
     await startedApp.listen({ port: config.port, host: "0.0.0.0" });
     return { app: startedApp, stop };
   } catch (error) {
-    await stop();
-    throw error;
+    return stopAfterFailedStart(error, stop);
   }
 }
 
