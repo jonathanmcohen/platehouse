@@ -83,7 +83,14 @@ const MAX_INLINE_DEPTH = 16;
 // with no closing > fails at the next <; a quoted value may hold either and
 // ends at its closing quote.
 const TAG = /<(\/?)([A-Za-z][A-Za-z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
-const HREF = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+// One attribute of a tag, from the first character of its name, read as a
+// browser's tokenizer reads it: the name runs to whitespace, /, = or >, but
+// may begin with an = (so "=href" is not href); then an optional value,
+// double-quoted, single-quoted or bare. hrefOf reads them in order.
+const ATTR = /(=?[^\s/=>]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?/y;
+// What separates attributes: whitespace and /, and a > that the scan can
+// only meet inside a value it read differently from TAG. None starts a name.
+const ATTR_SKIP = /[\s/>]/;
 const isSpace = (c: string): boolean => /\s/.test(c);
 
 interface Inline {
@@ -579,21 +586,33 @@ export function htmlToMarkdown(html: string | null | undefined): string {
       return;
     }
     if (dropDepth > 0) return;
-    // A close tag with nothing of its kind open is ignored, as a browser
-    // ignores it: a heading close with no heading open (outside a table,
-    // where a heading is just its text), or a </ul> or </ol> that does not
-    // match the innermost list the branches below would close. A paragraph
-    // break or a list pop for it ended the list it sat in (PR #24 review).
+    // Some close tags are ignored on purpose, because acting on them wrote a
+    // paragraph break or popped a list, which ended the list they sat in
+    // (PR #24 review):
+    //   - a heading close with no heading open (outside a table, where a
+    //     heading is just its text), as a browser ignores it;
+    //   - a </table> with no table open, as a browser ignores it (issue #48);
+    //   - a </ul> or </ol> in a table, outside its cells, that closes no list
+    //     opened between the table's rows. The table is a scope boundary, so
+    //     a browser ignores it too; closing the list the table sits in split
+    //     the table and ended that list (issue #43);
+    //   - anywhere else, a </ul> or </ol> that does not match the innermost
+    //     open list. This one differs from a browser when an outer list of
+    //     that type is open: a browser closes every list up to that outer one,
+    //     while the converter keeps them all open, so the text after the
+    //     close stays in the innermost list (the test "a </ul> inside an
+    //     ordered list nested in an unordered one keeps the numbering" pins
+    //     it). With no list of that type open, the browser ignores it as well.
     if (closing) {
       const table = rowTable();
       const strayHeading =
         /^h[1-6]$/.test(tag) && !inCell && tables.length === 0 && headingStart < 0 && !headingEnded;
+      const strayTable = tag === "table" && tables.length === 0;
       const strayList =
         (tag === "ul" || tag === "ol") &&
         !inCell &&
-        !(table && table.lists > 0) &&
-        outerList()?.ordered !== (tag === "ol");
-      if (strayHeading || strayList) return;
+        (table ? table.lists === 0 : outerList()?.ordered !== (tag === "ol"));
+      if (strayHeading || strayTable || strayList) return;
     }
     // A heading, list, item or table after a nested list, heading or table
     // writes its own block, so text after it does not go back to the item;
@@ -631,9 +650,15 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         // The heading already ended where a table or list opened in it (a
         // table still open is handled above). In a list that opened in the
         // heading the close is a space, as a paragraph's is in a list.
+        // Otherwise it ends the heading's block, but only while the heading's
+        // own list item is still the innermost open one and its list is
+        // still open. Once that item or list has closed, the close is stray
+        // and writes nothing: its paragraph break went into a later item,
+        // which pushed the rest of that item to column 0 and ended the list
+        // (issue #46).
         headingEnded = false;
         if (lists.length > headingLists) space();
-        else {
+        else if (headingItem === items.at(-1) && lists.length === headingLists) {
           breakBlock();
           resumeAt(headingItem, headingCol);
         }
@@ -663,15 +688,12 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         else space();
         if (list?.ordered) out.append(`${n}. `);
       }
-    } else if (
-      (tag === "ul" || tag === "ol") &&
-      rowTable() &&
-      !(closing && (rowTable() as Table).lists === 0)
-    ) {
+    } else if ((tag === "ul" || tag === "ol") && rowTable()) {
       // A list between a table's rows is its items, each on a line of its
       // own (the <li> below): a list's blank line or "- " marker there ended
       // the table, so the rows after it showed as text with pipes (PR #24
-      // review). A close with no such list open is left to the branch below.
+      // review). A close with no such list open was ignored above (issue
+      // #43), so the count never goes below 0.
       (rowTable() as Table).lists += closing ? -1 : 1;
       tableLine();
     } else if (tag === "li" && rowTable()) {
@@ -1018,9 +1040,28 @@ function escapeTextLineStart(line: string): string {
   );
 }
 
+// The value of the attribute named exactly href (any case), read the way a
+// browser reads a tag: one attribute at a time from the start, the first of
+// two href attributes winning. Matching href= anywhere in the text once took
+// an attribute whose name only ends in href (data-mce-href) or an href= inside
+// another attribute's quoted value (issue #28). An href with no value is "",
+// which safeHref refuses. null when there is no href attribute.
 function hrefOf(attrs: string): string | null {
-  const m = HREF.exec(attrs);
-  return m ? (m[1] ?? m[2] ?? m[3] ?? null) : null;
+  let at = 0;
+  while (at < attrs.length) {
+    // Separators are skipped here one character at a time, so ATTR is only
+    // tried where a name starts. It then always matches at least one
+    // character, and the scan stays linear however many separators there are.
+    if (ATTR_SKIP.test(attrs.charAt(at))) {
+      at++;
+      continue;
+    }
+    ATTR.lastIndex = at;
+    const m = ATTR.exec(attrs) as RegExpExecArray;
+    at = ATTR.lastIndex;
+    if ((m[1] as string).toLowerCase() === "href") return m[2] ?? m[3] ?? m[4] ?? "";
+  }
+  return null;
 }
 
 // A link's address as it may go into Markdown, or null to drop the link to its
