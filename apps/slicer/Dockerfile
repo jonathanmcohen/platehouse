@@ -34,7 +34,10 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # Ubuntu snapshot every apt package is installed from, as in the gate: each
 # stage first installs ca-certificates and openssl pinned to their noble
 # release versions (the snapshot service is https only and the base image
-# has no CA bundle), then turns the snapshot on.
+# has no CA bundle), then turns the snapshot on. Before any of that, each
+# stage writes /etc/apt/apt.conf.d/80retries so apt retries a failed download
+# 10 times, not its default 3: snapshot.ubuntu.com often answers 502 or 503
+# for longer than 3 retries last, and that failed CI builds.
 ARG APT_SNAPSHOT=20261107T000000Z
 
 # The versions the server reports in /v1/health (AC-036). The Orca and
@@ -46,7 +49,8 @@ FROM --platform=linux/amd64 ${BASE} AS fetch
 ARG APT_SNAPSHOT
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
+RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+ && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
@@ -203,7 +207,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # time (Orca's peak RSS for the contract), libatomic1 for Node, and tini as
 # PID 1 (see ENTRYPOINT). No X server and no Xvfb: gate item (f) rendered
 # OpenSCAD headless with EGL.
-RUN apt-get update \
+RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+ && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
