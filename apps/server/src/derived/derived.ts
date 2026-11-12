@@ -104,6 +104,14 @@
 // refused by replaceFile before anything is stored, since it could never
 // render.
 //
+// Until a render succeeds, every later message for that file keeps saying
+// the renders shown are the previous version's (issue #104): a final
+// failure that is the slicer's or the store's, for a render of the rejected
+// source or for a further replacement, and a render the render check finds
+// dead, all put the sentence (previousRendersScad or previousRendersStep
+// without its "said:" lead-in, PREVIOUS_RENDERS_SENTENCE) before their own
+// message whenever an attached render is older than the file's source.
+//
 // The render check (checkRenders, issues #90 and #91) repairs what a job or
 // an upload that died part way leaves behind. It is a maintenance-queue job
 // (CHECK_RENDERS_CRON, every 15 minutes; Task 30 registers the schedule),
@@ -343,6 +351,23 @@ const COLUMNS_OF_KIND: Readonly<Record<DerivedKind, readonly DerivedColumn[]>> =
 const PREVIOUS_RENDERS: Readonly<Record<DerivedKind, string>> = {
   [DERIVED_KINDS.renderScad]: DERIVED_MESSAGES.previousRendersScad,
   [DERIVED_KINDS.convertStep]: DERIVED_MESSAGES.previousRendersStep,
+};
+
+/**
+ * The same sentence without its lead-in to the program's words ("OpenSCAD
+ * said:", "The converter said:"): what goes before a later final failure
+ * that is the slicer's or the store's, or a render the render check found
+ * dead, while the renders the file shows are still from an earlier source
+ * (issue #104). The lead-in would put the slicer's or the store's message
+ * in the program's mouth. Renders older than the file's source only stay
+ * attached after the program rejected that source (commitRenderError), so
+ * the sentence is still true when it is used.
+ */
+const PREVIOUS_RENDERS_SENTENCE: Readonly<Record<DerivedKind, string>> = {
+  [DERIVED_KINDS.renderScad]:
+    "OpenSCAD rejected this file, so the STL and preview shown are from the previous version.",
+  [DERIVED_KINDS.convertStep]:
+    "The STEP converter rejected this file, so the mesh shown is from the previous version.",
 };
 
 /** What a job waits out without using a retry: a slicer or a store that is down. */
@@ -864,7 +889,7 @@ export function createDerived(deps: DerivedDeps) {
    */
   async function rendersPredate(
     trx: Transaction<DB>,
-    row: ModelFile,
+    row: Pick<ModelFile, DerivedColumn>,
     jobKind: DerivedKind,
     sourceId: string,
     replacing: boolean,
@@ -883,6 +908,23 @@ export function createDerived(deps: DerivedDeps) {
       ) as older
     `.execute(trx);
     return rows[0]?.older ?? false;
+  }
+
+  /**
+   * message, after PREVIOUS_RENDERS_SENTENCE when any of the job kind's
+   * renders the row points at are from a source earlier than the file's own
+   * (row.blobId), so a later failure does not drop what the file shows
+   * (issue #104). Read in trx with the file row locked.
+   */
+  async function keepingPrevious(
+    trx: Transaction<DB>,
+    row: Pick<ModelFile, "blobId" | DerivedColumn>,
+    jobKind: DerivedKind,
+    message: string,
+  ): Promise<string> {
+    return (await rendersPredate(trx, row, jobKind, row.blobId, false))
+      ? `${PREVIOUS_RENDERS_SENTENCE[jobKind]} ${message}`
+      : message;
   }
 
   /**
@@ -945,9 +987,13 @@ export function createDerived(deps: DerivedDeps) {
    * message, while the file still has the source the job started from; a
    * replacement is dropped and the previous version kept. A file that
    * already shows 'ok' for the job's own source (renders for it committed,
-   * though the job did not see the commit's answer) is left as it is.
+   * though the job did not see the commit's answer) is left as it is. When
+   * the renders the file keeps are from an earlier source than its own (a
+   * replacement the program rejected), the message starts with the sentence
+   * saying so (keepingPrevious; issue #104).
    */
   async function commitSlicerError(
+    jobKind: DerivedKind,
     file: ModelFile,
     source: Blob,
     replacing: boolean,
@@ -956,14 +1002,24 @@ export function createDerived(deps: DerivedDeps) {
     await db.transaction().execute(async (trx) => {
       const row = await trx
         .selectFrom("files")
-        .select(["id", "blobId", "derivedStatus"])
+        .select([
+          "id",
+          "blobId",
+          "derivedStatus",
+          "renderStlBlobId",
+          "renderPngBlobId",
+          "meshBlobId",
+        ])
         .where("id", "=", file.id)
         .where("blobId", "=", file.blobId)
         .forUpdate()
         .executeTakeFirst();
       if (row === undefined) return;
       if (row.blobId === source.id && row.derivedStatus === "ok") return;
-      const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
+      const outcome = await settledOutcome(trx, file.id, source.id, {
+        status: "failed",
+        message: await keepingPrevious(trx, row, jobKind, message),
+      });
       await trx
         .updateTable("files")
         .set({
@@ -1085,7 +1141,13 @@ export function createDerived(deps: DerivedDeps) {
       if (outage !== null) {
         if (!pastDeadline(job)) return waitOut(job, attempt, outage, error);
         const { reason, message, replaceMessage } = OUTAGES[outage];
-        await commitSlicerError(file, source, replacing, replacing ? replaceMessage : message);
+        await commitSlicerError(
+          job.kind,
+          file,
+          source,
+          replacing,
+          replacing ? replaceMessage : message,
+        );
         console.error(
           `derived: file ${file.id} stopped waiting for the ${outage} after its deadline ${job.waitDeadline}: ${describe(error)}`,
         );
@@ -1112,6 +1174,7 @@ export function createDerived(deps: DerivedDeps) {
       if (refusal !== null) {
         if (refusal === "retry" && !last) throw error;
         await commitSlicerError(
+          job.kind,
           file,
           source,
           replacing,
@@ -1131,6 +1194,7 @@ export function createDerived(deps: DerivedDeps) {
       // The last attempt, or an answer a retry will not change: record
       // slicer_error so the file is never left waiting.
       await commitSlicerError(
+        job.kind,
         file,
         source,
         replacing,
@@ -1197,14 +1261,16 @@ export function createDerived(deps: DerivedDeps) {
    * Issue #90: a file still 'pending' with no queued or active job, whose
    * newest job ended failed: its last attempt died before it recorded an
    * outcome. The file is marked failed and not queued again, so a file that
-   * kills the slicer cannot loop. Returns whether it marked one.
+   * kills the slicer cannot loop. When the renders it keeps are from an
+   * earlier source than its own, the message starts with the sentence
+   * saying so (keepingPrevious; issue #104). Returns whether it marked one.
    */
   async function settleLost(fileId: string, modelId: string): Promise<boolean> {
     return db.transaction().execute(async (trx) => {
       if (!(await lockModel(trx, modelId, false))) return false;
       const row = await trx
         .selectFrom("files")
-        .select(["id", "blobId"])
+        .select(["id", "blobId", "kind", "renderStlBlobId", "renderPngBlobId", "meshBlobId"])
         .where("id", "=", fileId)
         .where("derivedStatus", "=", "pending")
         .forUpdate()
@@ -1215,11 +1281,14 @@ export function createDerived(deps: DerivedDeps) {
       const last = jobs.at(-1);
       if (last === undefined || last.state !== "failed") return false;
       const replacing = last.data?.sourceBlobId !== row.blobId;
+      const lost = replacing ? DERIVED_MESSAGES.replaceLost : DERIVED_MESSAGES.renderLost;
       await trx
         .updateTable("files")
         .set({
           derivedStatus: "failed",
-          derivedMessage: replacing ? DERIVED_MESSAGES.replaceLost : DERIVED_MESSAGES.renderLost,
+          derivedMessage: hasDerived(row.kind)
+            ? await keepingPrevious(trx, row, JOB_KIND_OF[row.kind], lost)
+            : lost,
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)
