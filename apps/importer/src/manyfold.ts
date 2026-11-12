@@ -4,7 +4,9 @@
 //
 // - One token per run: POST /oauth/token with grant_type=client_credentials
 //   and scope=read, never repeated, not even after a failure (Manyfold allows
-//   10 token requests per 3 minutes). The token never leaves this module; it
+//   10 token requests per 3 minutes). The scope Manyfold grants must be read
+//   and nothing else: a token answer with another scope, or none, stops the
+//   run before anything is read, in case the OAuth app's settings changed. The token never leaves this module; it
 //   is handed to the sensitive callback so the CLI's redactor knows it.
 // - Every URL Manyfold hands back is rewritten from http: to https: (behind
 //   Traefik it sends http:// links) and must stay on the base origin, so the
@@ -293,7 +295,22 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     if (value === null || value === "") {
       throw new ManyfoldError("the token answer had no access_token");
     }
+    // Known to the redactor even when it is refused below, though no message
+    // here ever names it.
     sensitive(value);
+    const scope = isObject(body) ? body.scope : undefined;
+    if (typeof scope !== "string") {
+      throw new ManyfoldError(
+        "the token answer names no scope, so it cannot be shown to be read only",
+      );
+    }
+    const granted = new Set(scope.split(/\s+/).filter((x) => x !== ""));
+    if (granted.size !== 1 || !granted.has("read")) {
+      // Quoted only when it is plain scope words, so nothing else Manyfold
+      // put in the field is printed.
+      const what = /^[a-z_: ]{0,60}$/.test(scope) ? `scope "${scope}",` : "a scope that is";
+      throw new ManyfoldError(`Manyfold granted ${what} not read only; nothing was read`);
+    }
     token = value;
   }
 

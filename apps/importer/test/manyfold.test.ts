@@ -48,6 +48,82 @@ describe("the Manyfold token", () => {
     ]);
   });
 
+  it.each([
+    ["read write", '"read write"'],
+    ["write", '"write"'],
+    ["public", '"public"'],
+    ["", '""'],
+  ])(
+    "stops the run with exit 2 when Manyfold grants scope %j, not read only",
+    async (scope, shown) => {
+      const s = setup(library());
+      server.use(
+        http.post(`${MANYFOLD}/oauth/token`, () =>
+          HttpResponse.json({
+            access_token: s.manyfold.accessToken,
+            token_type: "Bearer",
+            expires_in: 7200,
+            scope,
+            created_at: 1_794_000_000,
+          }),
+        ),
+      );
+      const r = await s.run(["--apply"]);
+      expect(r.code).toBe(2);
+      expect(r.stderr.join("\n")).toContain(
+        `could not start: Manyfold granted scope ${shown}, not read only; nothing was read`,
+      );
+      expect(manyfoldCalls()).toEqual(["POST /oauth/token"]);
+      expect(s.platehouse.models.size).toBe(0);
+      expect(r.output).not.toContain(s.manyfold.accessToken);
+    },
+  );
+
+  it("stops the run with exit 2 when the token answer names no scope", async () => {
+    const s = setup(library());
+    server.use(
+      http.post(`${MANYFOLD}/oauth/token`, () =>
+        HttpResponse.json({ access_token: s.manyfold.accessToken, token_type: "Bearer" }),
+      ),
+    );
+    const r = await s.run([]);
+    expect(r.code).toBe(2);
+    expect(r.stderr.join("\n")).toContain(
+      "could not start: the token answer names no scope, so it cannot be shown to be read only",
+    );
+    expect(manyfoldCalls()).toEqual(["POST /oauth/token"]);
+    expect(r.output).not.toContain(s.manyfold.accessToken);
+  });
+
+  it("does not quote a granted scope that is not plain words", async () => {
+    const s = setup(library());
+    server.use(
+      http.post(`${MANYFOLD}/oauth/token`, () =>
+        HttpResponse.json({
+          access_token: s.manyfold.accessToken,
+          scope: `read ${s.manyfold.accessToken}`,
+        }),
+      ),
+    );
+    const r = await s.run([]);
+    expect(r.code).toBe(2);
+    expect(r.stderr.join("\n")).toContain(
+      "could not start: Manyfold granted a scope that is not read only; nothing was read",
+    );
+    expect(r.output).not.toContain(s.manyfold.accessToken);
+  });
+
+  it("accepts the read scope however it is spaced or repeated", async () => {
+    const s = setup(library());
+    server.use(
+      http.post(`${MANYFOLD}/oauth/token`, () =>
+        HttpResponse.json({ access_token: s.manyfold.accessToken, scope: " read  read " }),
+      ),
+    );
+    const r = await s.run([]);
+    expect(r.code).toBe(0);
+  });
+
   it("is not asked for again when a later request is refused", async () => {
     const s = setup(library());
     server.use(http.get(`${MANYFOLD}/models/m2`, () => new HttpResponse(null, { status: 401 })));
