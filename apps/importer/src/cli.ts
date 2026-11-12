@@ -32,7 +32,8 @@
 //
 // Exit codes: 0 every model handled, 1 at least one model failed, 2 the run
 // could not start (arguments, credentials, either side refusing the token or
-// unreachable, Manyfold's lists unreadable). The credentials come only from
+// unreachable, Manyfold granting more than read, Manyfold's lists
+// unreadable), or an error was raised outside run() (onFatal). The credentials come only from
 // the environment and are never printed: every line goes through one
 // redactor that knows them, the Manyfold token and each signed query (AC-003).
 import { createHash } from "node:crypto";
@@ -40,7 +41,7 @@ import { parseArgs } from "node:util";
 import { createManyfold, type Manyfold, type ManyfoldModel } from "./manyfold.js";
 import { externalRefFor, type ModelPlan, planModel, type SourceModel } from "./plan.js";
 import { createPlatehouse, type Platehouse, type PlatehouseModel } from "./platehouse.js";
-import { cleanText, createRedactor } from "./redact.js";
+import { cleanText, createRedactor, type Redactor } from "./redact.js";
 import {
   exitCode,
   type FileRow,
@@ -77,6 +78,11 @@ export interface RunOptions {
   sleep?: (ms: number) => Promise<void>;
   manyfoldBase?: string;
   platehouseBase?: string;
+  /**
+   * The redactor every line goes through; the command passes the one its
+   * process-level handlers use (onFatal), so they know the credentials too.
+   */
+  redactor?: Redactor;
 }
 
 export interface RunResult {
@@ -330,7 +336,7 @@ async function importModel(
 }
 
 export async function run(options: RunOptions): Promise<RunResult> {
-  const redactor = createRedactor();
+  const redactor = options.redactor ?? createRedactor();
   // Control characters come out before redaction: taken out after it, they
   // could join up a credential that was echoed with one inside it.
   const out = (line: string) => options.stdout(redactor.redact(cleanText(line)));
@@ -445,19 +451,51 @@ export async function run(options: RunOptions): Promise<RunResult> {
   }
 }
 
+/** Where uncaught exceptions and unhandled rejections arrive: the process. */
+export interface FatalSource {
+  on(
+    event: "uncaughtException" | "unhandledRejection",
+    listener: (error: unknown) => void,
+  ): unknown;
+}
+
+/**
+ * Handles an error raised outside run(): an uncaught exception, an unhandled
+ * rejection, or run() itself rejecting. Node's own printer would write the
+ * raw message and stack; this writes one line, the message only, without
+ * control characters and through the redactor run() fills, then exits 2.
+ * Returns the handler, for run()'s rejection.
+ */
+export function onFatal(
+  source: FatalSource,
+  redactor: Redactor,
+  write: (line: string) => void,
+  exit: (code: 2) => void,
+): (error: unknown) => void {
+  const fail = (error: unknown) => {
+    write(`platehouse-import: unexpected error: ${redactor.redact(cleanText(message(error)))}`);
+    exit(2);
+  };
+  source.on("uncaughtException", fail);
+  source.on("unhandledRejection", fail);
+  return fail;
+}
+
 if (import.meta.main) {
+  const redactor = createRedactor();
+  const fail = onFatal(
+    process,
+    redactor,
+    (line) => process.stderr.write(`${line}\n`),
+    (code) => process.exit(code),
+  );
   run({
     argv: process.argv.slice(2),
     env: process.env,
     stdout: (line) => process.stdout.write(`${line}\n`),
     stderr: (line) => process.stderr.write(`${line}\n`),
-  }).then(
-    (result) => {
-      process.exitCode = result.code;
-    },
-    () => {
-      process.stderr.write("platehouse-import: unexpected error\n");
-      process.exitCode = 2;
-    },
-  );
+    redactor,
+  }).then((result) => {
+    process.exitCode = result.code;
+  }, fail);
 }
