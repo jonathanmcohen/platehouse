@@ -25,6 +25,9 @@ const HTML_SHAPES: Array<[string, string]> = [
   ["one quote left open before many tags", `<a href="${fill("<b ")}`],
   ["quoted values holding <", fill('<a b="<c" ')],
   ["mixed quotes holding <", fill('<a b="<c d=\'" e=\'<f" ')],
+  // A quote in a name is an ordinary character (PR #121 review).
+  ["stray quotes in tag and attribute names", fill('<span"x y">')],
+  ["stray quotes in names before quoted values holding <", fill('<a x"y z=\'<b" w="<c\' ')],
   [
     "many empty paragraphs then list items",
     `${fill("<p></p>").slice(0, SIZE / 2)}<ul>${fill("<li><h3></h3></li>").slice(0, SIZE / 2)}`,
