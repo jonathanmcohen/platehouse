@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { request } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
@@ -844,6 +844,31 @@ describe("OpenSCAD and STEP", () => {
       ok: false,
       notRegular: true,
     });
+  });
+
+  // A Unix socket cannot be opened (ENXIO on Linux, EOPNOTSUPP on macOS).
+  // That refusal must read as a render that left no usable output, a 422,
+  // not throw: a throw answers 500, which the app records as a slicer fault
+  // (PR #154 review). Only a name that is gone (ENOENT) still throws.
+  test("a render output that is a Unix socket is refused, not thrown", async () => {
+    const dir = stubDir();
+    const sock = join(dir, "output.stl");
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(sock, resolve);
+    });
+    try {
+      expect(readRenderOutput(sock, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+        ok: false,
+        notRegular: true,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(() => readRenderOutput(join(dir, "gone.stl"), MAX_RENDER_OUTPUT_BYTES)).toThrow(
+      expect.objectContaining({ code: "ENOENT" }),
+    );
   });
 
   test("scad/stl refuses an output OpenSCAD left as a symlink, and sends none of its target", async () => {

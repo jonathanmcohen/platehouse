@@ -71,7 +71,11 @@ export { MAX_RENDER_OUTPUT_BYTES };
  * hang the server), and anything fstat does not call a regular file is
  * refused unread: code running inside OpenSCAD could swap its output for a
  * link to any file the server can read, and the server, which is not
- * sandboxed, would send that file back as the render (issue #153).
+ * sandboxed, would send that file back as the render (issue #153). A name
+ * that cannot be opened at all, such as a symlink (ELOOP) or a Unix socket
+ * (ENXIO on Linux), is refused the same way rather than thrown, since a throw
+ * answers 500 and the app records that as a slicer fault, not a failed render
+ * (PR #154 review). Only a name that is gone (ENOENT) still throws.
  */
 export function readRenderOutput(
   file: string,
@@ -81,10 +85,10 @@ export function readRenderOutput(
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (err) {
-    // ELOOP: the name is a symlink. EISDIR is not raised for O_RDONLY, so a
-    // folder is caught by fstat below.
-    if ((err as NodeJS.ErrnoException).code === "ELOOP") return { ok: false, notRegular: true };
-    throw err;
+    // ELOOP: the name is a symlink; ENXIO: a Unix socket. EISDIR is not
+    // raised for O_RDONLY, so a folder is caught by fstat below.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") throw err;
+    return { ok: false, notRegular: true };
   }
   try {
     const st = fstatSync(fd);
