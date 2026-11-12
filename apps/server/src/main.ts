@@ -32,8 +32,9 @@
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
 // inbox watcher, pg-boss (gracefully: active jobs get BOSS_STOP_TIMEOUT_MS,
-// then pg-boss marks them failed; a slicer job then runs again on its
-// retries, an ingest job, never retried, fails visibly), then the database. Each step
+// then pg-boss fails them by their queue's retry rules; a slicer job then
+// runs again on its retries, an ingest job, never retried, fails visibly),
+// then the database and the storage client. Each step
 // has its own time limit and a step that fails or overruns is logged and the
 // next one runs, so the whole stop fits well inside SHUTDOWN_DEADLINE_MS.
 // Once the last step has run, stop() rejects if any step failed or overran,
@@ -76,7 +77,11 @@ export const HTTP_CLOSE_GRACE_MS = 5_000;
 /** How long the inbox watcher's pass in flight gets to finish. */
 export const WATCHER_STOP_MS = 5_000;
 
-/** How long active jobs get to finish before pg-boss marks them failed. */
+/**
+ * How long active jobs get to finish before pg-boss cuts them off: it fails
+ * each one by its queue's retry rules, so a job with retries left is queued
+ * again.
+ */
 export const BOSS_STOP_TIMEOUT_MS = 10_000;
 
 /** How long closing the database pool may take. */
@@ -84,7 +89,13 @@ export const DB_CLOSE_MS = 3_000;
 
 export interface Server {
   app: FastifyInstance;
-  /** Stops the HTTP server, the inbox watcher, pg-boss and the database, in that order. */
+  /**
+   * Stops the HTTP server, the inbox watcher, pg-boss, the database and the
+   * storage client, in that order, each within its own time limit. Every step
+   * runs even when one before it failed; then it rejects, naming each step
+   * that failed or overran and any job pg-boss cut off at its timeout, so
+   * only a clean stop resolves (#106, #151).
+   */
   stop(): Promise<void>;
 }
 
@@ -213,9 +224,14 @@ export async function stopBoss(boss: Pick<PgBoss, "stop">, running: () => number
   }
   const cut = Math.max(atLimit, running());
   if (cut > 0) {
+    // pg-boss fails a cut-off job by the queue's retry rules, so a slicer job
+    // with retries left is queued again, not failed (#151).
+    const one = cut === 1;
     throw new Error(
-      `${cut} ${cut === 1 ? "job was" : "jobs were"} still running at the ` +
-        `${BOSS_STOP_TIMEOUT_MS / 1000} s limit and pg-boss marked ${cut === 1 ? "it" : "them"} failed`,
+      `${cut} ${one ? "job was" : "jobs were"} still running at the ` +
+        `${BOSS_STOP_TIMEOUT_MS / 1000} s limit and ${one ? "was" : "were"} cut off: ` +
+        `pg-boss failed ${one ? "it" : "them"}, or queued ${one ? "it" : "them"} again where ` +
+        `${one ? "it has" : "they have"} retries left`,
     );
   }
 }

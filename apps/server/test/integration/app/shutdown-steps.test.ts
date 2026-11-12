@@ -174,6 +174,24 @@ describe("stopBoss", () => {
     );
   });
 
+  // pg-boss's failWip calls fail(), which follows the queue's retry rules, so
+  // a slicer job with retries left goes back to retry, not failed. The
+  // message once said every cut-off job was marked failed (#151).
+  test.each([
+    [
+      1,
+      "1 job was still running at the 10 s limit and was cut off: pg-boss failed it, or queued it again where it has retries left",
+    ],
+    [
+      2,
+      "2 jobs were still running at the 10 s limit and were cut off: pg-boss failed them, or queued them again where they have retries left",
+    ],
+  ])("the message for %i cut-off job(s) does not claim each one failed", async (n, message) => {
+    const stop = stopBoss({ stop: async () => {} }, () => n);
+    await expect(stop).rejects.toThrow(message);
+    await expect(stop).rejects.not.toThrow(/marked (it|them) failed/);
+  });
+
   test("a job that finished within the grace period is not counted", async () => {
     const jobs = jobCounter();
     const handler = jobs.track(async (n: number) => n * 2);

@@ -1111,7 +1111,8 @@ describe("a file put under an imported file's name during the import", () => {
       // Putting the imported file back (a link, or a copy under EPERM) moves
       // its ctime, so a restart would take it for a new arrival, give it new
       // ids and import it a second time. It stays held instead, out of the
-      // listing, and the restart sweep moves it to failed.
+      // listing, and the sweep moves it to failed at the first pass after the
+      // failed folder can be used, in this process or after a restart.
       const fake = fakeIngest();
       const name = "changing.stl";
       const path = join(inbox, name);

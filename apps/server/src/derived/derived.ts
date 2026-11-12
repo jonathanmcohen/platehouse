@@ -111,7 +111,10 @@
 // (queueFailed), and a render the render check finds dead, all put the
 // sentence (previousRendersScad or previousRendersStep
 // without its "said:" lead-in, PREVIOUS_RENDERS_SENTENCE) before their own
-// message whenever an attached render is older than the file's source.
+// message whenever an attached render is older than the file's source. A
+// file that is pending meanwhile (a render queued again, a further
+// replacement, or a job that settled while a newer replacement is queued)
+// carries the sentence alone as its message, rather than none (issue #146).
 //
 // The render check (checkRenders, issues #90 and #91) repairs what a job or
 // an upload that died part way leaves behind. It is a maintenance-queue job
@@ -553,9 +556,13 @@ export function createDerived(deps: DerivedDeps) {
     const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId };
     try {
       return await db.transaction().execute(async (trx) => {
+        // A file that still shows renders of an earlier source keeps saying
+        // so while it is pending (issue #146).
+        const row = await lockedRenders(trx, file.id);
+        const message = row === undefined ? null : await previousSentence(trx, row, job.kind);
         await trx
           .updateTable("files")
-          .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
+          .set({ derivedStatus: "pending", derivedMessage: message, updatedAt: sql<Date>`now()` })
           .where("id", "=", file.id)
           .execute();
         const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
@@ -660,12 +667,16 @@ export function createDerived(deps: DerivedDeps) {
         size,
       });
       await r.blobs.markStored(blobId, stored);
+      const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: blobId };
+      // The file keeps its source and renders until the replacement renders,
+      // so renders of an earlier source keep their sentence (issue #146).
+      const row = await lockedRenders(trx, file.id);
+      const message = row === undefined ? null : await previousSentence(trx, row, job.kind);
       await trx
         .updateTable("files")
-        .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
+        .set({ derivedStatus: "pending", derivedMessage: message, updatedAt: sql<Date>`now()` })
         .where("id", "=", file.id)
         .execute();
-      const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: blobId };
       const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
       if (id === null) throw new Error("pg-boss created no job");
     };
@@ -776,15 +787,21 @@ export function createDerived(deps: DerivedDeps) {
     return rows[0]?.newer ?? false;
   }
 
-  /** outcome, or 'pending' with no message while a newer replacement is queued. */
+  /**
+   * outcome, or 'pending' while a newer replacement is queued, with
+   * pendingMessage: PREVIOUS_RENDERS_SENTENCE when the renders the file
+   * shows after this write are from an earlier source than its own, else
+   * null (issue #146).
+   */
   async function settledOutcome(
     trx: Transaction<DB>,
     fileId: string,
     sourceId: string,
     outcome: { status: DerivedStatus; message: string | null },
+    pendingMessage: string | null,
   ): Promise<{ status: DerivedStatus; message: string | null }> {
     return (await newerQueued(trx, fileId, sourceId))
-      ? { status: "pending", message: null }
+      ? { status: "pending", message: pendingMessage }
       : outcome;
   }
 
@@ -878,10 +895,15 @@ export function createDerived(deps: DerivedDeps) {
     try {
       await db.transaction().execute(async (trx) => {
         const row = await lockFor(trx, file, source, replacing);
-        const outcome = await settledOutcome(trx, file.id, source.id, {
-          status: "ok",
-          message: null,
-        });
+        // The new renders are of the source the file has after the swap, so
+        // a pending file has nothing earlier to explain.
+        const outcome = await settledOutcome(
+          trx,
+          file.id,
+          source.id,
+          { status: "ok", message: null },
+          null,
+        );
         oldKeys = await swapIn(trx, row, jobKind, source, replacing, put, outcome);
       });
     } catch (error) {
@@ -939,9 +961,39 @@ export function createDerived(deps: DerivedDeps) {
     jobKind: DerivedKind,
     message: string,
   ): Promise<string> {
+    const sentence = await previousSentence(trx, row, jobKind);
+    return sentence === null ? message : `${sentence} ${message}`;
+  }
+
+  /**
+   * PREVIOUS_RENDERS_SENTENCE when any of the job kind's renders the row
+   * points at are from a source earlier than the file's own (row.blobId),
+   * else null. It is the message a pending file carries (issue #146): while
+   * a job is queued or running the file still shows those renders, so the
+   * sentence stays until the job settles, instead of the message being
+   * cleared. Read in trx with the file row locked.
+   */
+  async function previousSentence(
+    trx: Transaction<DB>,
+    row: Pick<ModelFile, "blobId" | DerivedColumn>,
+    jobKind: DerivedKind,
+  ): Promise<string | null> {
     return (await rendersPredate(trx, row, jobKind, row.blobId, false))
-      ? `${PREVIOUS_RENDERS_SENTENCE_OF[jobKind]} ${message}`
-      : message;
+      ? PREVIOUS_RENDERS_SENTENCE_OF[jobKind]
+      : null;
+  }
+
+  /** The file row's source and render columns, locked for the pending write that follows. */
+  async function lockedRenders(
+    trx: Transaction<DB>,
+    fileId: string,
+  ): Promise<Pick<ModelFile, "blobId" | DerivedColumn> | undefined> {
+    return trx
+      .selectFrom("files")
+      .select(["blobId", "renderStlBlobId", "renderPngBlobId", "meshBlobId"])
+      .where("id", "=", fileId)
+      .forUpdate()
+      .executeTakeFirst();
   }
 
   /**
@@ -965,10 +1017,17 @@ export function createDerived(deps: DerivedDeps) {
     let oldKeys: string[] = [];
     await db.transaction().execute(async (trx) => {
       const row = await lockFor(trx, file, source, replacing);
-      const message = (await rendersPredate(trx, row, jobKind, source.id, replacing))
-        ? `${PREVIOUS_RENDERS[jobKind]} ${programMessage}`
-        : programMessage;
-      const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
+      // After this write the file's source is source (the rejected one), and
+      // its renders stay as they are.
+      const predate = await rendersPredate(trx, row, jobKind, source.id, replacing);
+      const message = predate ? `${PREVIOUS_RENDERS[jobKind]} ${programMessage}` : programMessage;
+      const outcome = await settledOutcome(
+        trx,
+        file.id,
+        source.id,
+        { status: "failed", message },
+        predate ? PREVIOUS_RENDERS_SENTENCE_OF[jobKind] : null,
+      );
       await trx
         .updateTable("files")
         .set({
@@ -1033,10 +1092,16 @@ export function createDerived(deps: DerivedDeps) {
         .executeTakeFirst();
       if (row === undefined) return;
       if (row.blobId === source.id && row.derivedStatus === "ok") return;
-      const outcome = await settledOutcome(trx, file.id, source.id, {
-        status: "failed",
-        message: await keepingPrevious(trx, row, jobKind, message),
-      });
+      // The file keeps its source and renders, so the sentence, when it
+      // applies, goes before the failure or stands alone while pending.
+      const sentence = await previousSentence(trx, row, jobKind);
+      const outcome = await settledOutcome(
+        trx,
+        file.id,
+        source.id,
+        { status: "failed", message: sentence === null ? message : `${sentence} ${message}` },
+        sentence,
+      );
       await trx
         .updateTable("files")
         .set({

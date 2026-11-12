@@ -10,9 +10,11 @@
 // Anything unlisted is session. patternClass classes a matched route's
 // registered pattern by its prefix alone, so a regex-constrained param
 // (written with backslashes) keeps its route's class. routeClass classes the
-// raw path of a request that matched no route, and also makes any path that
-// is not a plain route path (a dot segment, a percent escape, a doubled
-// slash or a backslash) session, whatever it starts with.
+// raw path of a request that matched no route: any path under /api/v1/ is
+// bearer, since an unmatched one serves only the 404 (issue #140), and any
+// other path that is not a plain route path (a dot segment, a percent
+// escape, a doubled slash or a backslash) is session, whatever it starts
+// with.
 //
 // installGate puts three things on the root app, so they cover every route
 // registered after it, a 404 included:
@@ -38,7 +40,9 @@
 //      PUBLIC_ORIGIN with 302, anything else is 401 JSON. A session store
 //      that fails answers 503 with no detail.
 //    Bearer and link requests pass to their routes' own checks; no such
-//    route is open: /api/v1/uploads refuses everything until Task 16.
+//    route is open: every /api/v1 route, the tus uploads at /api/v1/uploads
+//    included (app.ts apiUploadHook), and the 404 for an unknown /api/v1
+//    path need a valid bearer token (Task 16).
 // 2. No body parser at the root: every content type is accepted unread, so
 //    nothing reads a body before the gate or a 404 answers. A scope that
 //    needs JSON (Tasks 16 and 19) adds its own parser; tus streams its own.
@@ -46,8 +50,8 @@
 //    out (releaseUnreadBody: Connection: close, the rest read off and
 //    dropped for at most DRAIN_MS, then the connection closes). That is the
 //    one place every refusal, 404 and early answer gets it: requireSession,
-//    the Origin check, the API mount's 401 (and the bearer hook that will
-//    replace it), /healthz with a trickled body (issues #107 and #108). An
+//    the Origin check, the API's bearer 401, /healthz with a trickled body
+//    (issues #107 and #108). An
 //    answer that already says Connection: close was released by tus or
 //    is closed by Node at once, so it is left alone.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -96,10 +100,16 @@ export function patternClass(pattern: string): RouteClass {
 
 /**
  * The class of a raw request path that matched no route (the Route classes
- * table); anything unlisted, or not a plain route path, is session.
+ * table): any /api/v1/ path is bearer; anything else unlisted, or not a
+ * plain route path, is session.
  */
 export function routeClass(path: string): RouteClass {
   const p = pathPart(path);
+  // An unmatched /api/v1/ path serves nothing but the 404, so it is bearer
+  // even when it is not a plain path: as session, a typo such as
+  // /api/v1/model/Big%20thing was sent to the login or refused for Origin,
+  // and a valid token never got its 404 (issue #140).
+  if (p.startsWith("/api/v1/")) return "bearer";
   if (!isPlainPath(p)) return "session";
   return patternClass(p);
 }

@@ -63,9 +63,10 @@
 //   with CHANGED_REASON instead. When what is held cannot be checked or
 //   deleted (an lstat, fstat or unlink that throws), it may be the imported
 //   file, so it moves to failed, never back under the name. When only the
-//   unlink threw, after it was shown to be the imported file, it keeps the
-//   reason it already had, else UNREMOVED_REASON (stored, but not removed
-//   from the inbox); when the lstat or fstat threw, it may instead be a
+//   unlink threw, after it was shown to be the imported file, it gets
+//   UNREMOVED_REASON (stored, but not removed from the inbox; the unlink runs
+//   only after an import with nothing wrong); when the lstat or fstat threw,
+//   it may instead be a
 //   newer file renamed over the name just before it was held, so it gets
 //   UNCHECKED_REASON, which does not say it was imported, whatever the
 //   import's verdict (CHANGED_REASON or UNCONFIRMED_REASON). When the imported
@@ -338,9 +339,10 @@ export const UNCONFIRMED_REASON =
 
 /**
  * Reason when an import whose stored copy was confirmed could not be
- * removed from the inbox: the check or the delete in its holding folder
- * threw (an EIO, say). The stored copy is fine, so UNCONFIRMED_REASON would
- * name the wrong cause.
+ * removed from the inbox: the delete in its holding folder threw (an EIO,
+ * say) after the lstat and fstat showed the held file is the imported one.
+ * The stored copy is fine, so UNCONFIRMED_REASON would name the wrong cause.
+ * A check that throws gets UNCHECKED_REASON instead.
  */
 export const UNREMOVED_REASON =
   "Platehouse imported and stored this file but could not remove it from the inbox, so it was kept here; check whether the model is already in the library before adding it again.";
@@ -1490,7 +1492,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   /**
    * Moves a file that cannot go back under its name from a holding folder to
    * failed with reason, so it is not lost; when it cannot be moved, it stays
-   * in the holding folder, logged, until the watcher next starts.
+   * in the holding folder, logged. A marked folder (opts.kept, see
+   * KEPT_HOLD_SUFFIXES) is tried again at the next pass; any other is tried
+   * when the watcher next starts.
    */
   async function failHeld(
     name: string,
@@ -1588,8 +1592,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * CHANGED_REASON instead. When what is held cannot be checked or deleted
    * (the lstat, fstat or unlink throws), it may be the imported file, so it
    * moves to failed too: when only the unlink threw after it was shown to
-   * be the imported file, with the reason it already had, else
-   * UNREMOVED_REASON (its stored copy was confirmed); when the lstat or
+   * be the imported file, with UNREMOVED_REASON (the unlink runs only when
+   * the import found nothing wrong, so its stored copy was confirmed); when
+   * the lstat or
    * fstat threw, with UNCHECKED_REASON whatever the import's verdict, since
    * it may be a newer file renamed over the name just before it was held. When the imported file cannot be moved to failed (the failed
    * folder is a symlink, not a folder, or unwritable), it is not put back
@@ -1672,15 +1677,16 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         // What is held could not be checked or deleted (an EIO, say), so it
         // may be the imported file: never put back (failImported says why).
         // When it was shown to be the imported file (only the unlink threw),
-        // it moves to failed with the reason it already had, else as stored
-        // but not removed: its stored copy was confirmed. When the check
+        // it moves to failed as stored but not removed: the unlink runs only
+        // when the import found nothing wrong, so its stored copy was
+        // confirmed and no other reason can be set here. When the check
         // itself threw, it may be a newer file renamed over the name between
         // importOpen's checks (made on the open handle) and the hold, so it
         // moves to failed with a reason that does not say it was imported,
         // whatever the import's verdict (CHANGED_REASON and
         // UNCONFIRMED_REASON both say it was); that verdict goes to the log
         // (#135).
-        const why = same ? (reason ?? UNREMOVED_REASON) : UNCHECKED_REASON;
+        const why = same ? UNREMOVED_REASON : UNCHECKED_REASON;
         const verdictNote =
           !same && reason !== undefined ? `. What the import found: ${reason}` : "";
         log(

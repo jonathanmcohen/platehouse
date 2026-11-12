@@ -1971,4 +1971,66 @@ describe("after a rejected replacement, a later failure keeps the previous-versi
     expect((await jobsFor(fileId)).every((j) => j.state === "completed")).toBe(true);
     await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.queueFailed);
   });
+
+  // Issue #146: while the file is pending it still shows the previous
+  // version's renders, so the sentence stays, alone, until the job settles.
+  // Before, every pending write cleared the message to null.
+  async function expectPending(
+    fileId: string,
+    before: { renderStlBlobId: string | null; renderPngBlobId: string | null },
+    rejectedBlobId: string,
+  ) {
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: rejectedBlobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "pending",
+      derivedMessage: PREVIOUS_VERSION_SCAD,
+    });
+  }
+
+  test("a queued render of the rejected source keeps the sentence while it is pending", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, pending");
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+    await expectPending(fileId, before, rejectedBlobId);
+  });
+
+  test("a further replacement keeps the sentence while it is pending", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("replacement, pending");
+    await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("replacement, pending, held")),
+    );
+    await expectPending(fileId, before, rejectedBlobId);
+  });
+
+  test("a render of the rejected source that fails while a newer replacement is queued leaves the file pending with the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, newer queued");
+    const held = derivedWith({ queue: holdingQueue() });
+    await held.renderScad(fileId);
+    await held.replaceFile(fileId, await writeUpload(env, unique("re-render, newer queued, held")));
+    const reRender = (await jobsFor(fileId)).find(
+      (j) => j.state === "created" && j.data.sourceBlobId === rejectedBlobId,
+    );
+    if (!reRender) throw new Error("no held re-render");
+    await env.boss.cancel(QUEUE.slicer, reRender.id);
+    env.stub.renders.always("/v1/scad/stl", { kind: "drop" });
+
+    const outcome = await held.runJob(reRender.data, {
+      retryCount: reRender.retryLimit,
+      retryLimit: reRender.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "failed", reason: "slicer_error" });
+    await expectPending(fileId, before, rejectedBlobId);
+  });
+
+  test("a file whose renders are its own source's still clears the message while pending", async () => {
+    const { fileId } = await uploadScad(unique("own renders, pending"));
+    await settledFile(env, fileId);
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "pending",
+      derivedMessage: null,
+    });
+  });
 });

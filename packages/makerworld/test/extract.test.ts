@@ -129,6 +129,21 @@ describe("extractMakerWorld", () => {
     expect(mw?.designer).toBe("Example Designer");
   });
 
+  // The designer is stored as creators.name, a btree unique key, and a btree
+  // entry over 2704 bytes fails the insert and with it the upload. A
+  // Designer over 300 characters, the API's own creator limit, reads as no
+  // Designer, so the file is stored with no MakerWorld details (#143).
+  it("a designer over 300 characters, counted after whitespace is collapsed, reads as absent", () => {
+    const at = (designer: string) =>
+      extractMakerWorld(
+        `<metadata name="Designer">${designer}</metadata><metadata name="Title">T</metadata>`,
+      );
+    expect(at("D".repeat(300))?.designer).toBe("D".repeat(300));
+    expect(at(`  ${"D".repeat(150)}     ${"D".repeat(149)}  `)?.designer).toHaveLength(300);
+    expect(at("D".repeat(301))).toBeNull();
+    expect(at("x".repeat(4096))).toBeNull();
+  });
+
   it("a twice-escaped tag-like word in a real description reaches the Markdown escaped", () => {
     const mw = extractMakerWorld(
       '<metadata name="Description">&amp;lt;p&amp;gt;Fit &amp;amp;lt;Q7&amp;amp;gt; pins&amp;lt;/p&amp;gt;</metadata><metadata name="Designer">D</metadata>',
