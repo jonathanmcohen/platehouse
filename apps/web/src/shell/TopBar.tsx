@@ -16,9 +16,11 @@ export interface TopBarProps {
   theme: Theme;
   onThemeChange(theme: Theme): void;
   onAdd?: () => void;
+  /** Runs after a link in the narrow-screen menu is followed (MenuButton). */
+  onMenuNavigate?: () => void;
 }
 
-export function TopBar({ theme, onThemeChange, onAdd }: TopBarProps) {
+export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarProps) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
 
@@ -30,7 +32,7 @@ export function TopBar({ theme, onThemeChange, onAdd }: TopBarProps) {
 
   return (
     <div className="studio-topbar">
-      <MenuButton />
+      <MenuButton {...(onMenuNavigate === undefined ? {} : { onNavigate: onMenuNavigate })} />
       <search className="studio-search">
         <form action="/" method="get" onSubmit={search}>
           <label htmlFor="ph-q" className="studio-visually-hidden">

@@ -2,13 +2,22 @@
 // sidebar is hidden (studio.css) and this button opens the same navigation
 // in a panel. The panel is always in the page, hidden while closed, so
 // aria-controls always names it. Escape closes it and puts focus back on the
-// button; so does a press outside it, and following one of its links.
+// button. Following one of its links closes it and calls onNavigate, which
+// the shell uses to put focus on the main landmark, so focus never drops to
+// the document body from the hidden panel; without onNavigate, focus goes
+// back to the button. A press outside closes it and leaves focus where that
+// press put it.
 import { useEffect, useRef, useState } from "react";
 import { Sidebar } from "./Sidebar";
 
 const PANEL_ID = "ph-menu";
 
-export function MenuButton() {
+export interface MenuButtonProps {
+  /** Runs after a link in the menu is followed; it should move focus. */
+  onNavigate?: () => void;
+}
+
+export function MenuButton({ onNavigate }: MenuButtonProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -45,7 +54,14 @@ export function MenuButton() {
         Menu
       </button>
       <div id={PANEL_ID} className="studio-menu-panel" hidden={!open}>
-        <Sidebar menu onNavigate={() => setOpen(false)} />
+        <Sidebar
+          menu
+          onNavigate={() => {
+            setOpen(false);
+            if (onNavigate === undefined) button.current?.focus();
+            else onNavigate();
+          }}
+        />
       </div>
     </div>
   );
