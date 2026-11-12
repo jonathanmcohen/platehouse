@@ -19,6 +19,8 @@ const GUARD = new URL("../src/guard.ts", import.meta.url).href;
 
 // The child's routes each fail one way. "/hang" never answers, so the test
 // can check what an error from outside any request does to work in flight.
+// "/data-listener-throws" and "/hang-beside-data" log once their handler is
+// set up, so the test can wait on the server instead of on a fixed delay.
 const CHILD = `
 import { createServer } from "node:http";
 const { guardRequests, installCrashGuard, whenRequestFails } = await import(process.argv[2]);
@@ -57,6 +59,7 @@ const server = createServer(
         req.on("data", () => {
           throw new Error("a data listener threw");
         });
+        log("handler listening for data on /data-listener-throws");
         return never();
       case "/cleanup":
         whenRequestFails(() => log("cleanup ran for /cleanup"));
@@ -69,6 +72,7 @@ const server = createServer(
         return never();
       case "/hang-beside-data":
         whenRequestFails(() => log("cleanup ran for /hang-beside-data"));
+        log("handler running for /hang-beside-data");
         return never();
       default:
         res.writeHead(404);
@@ -141,10 +145,11 @@ function get(path: string): Promise<Sent> {
 }
 
 /**
- * A POST that sends its headers at once and its first body chunk `ms` later,
- * so the chunk reaches the server only after the handler has run.
+ * A POST that sends its headers at once and its first body chunk only once
+ * `ready` resolves, so the test decides when the chunk can reach the server.
+ * If `ready` rejects, the request is dropped and the rejection is returned.
  */
-function postBodyLater(url: string, ms: number): Promise<Sent> {
+function postBodyWhen(url: string, ready: Promise<void>): Promise<Sent> {
   return new Promise((resolve) => {
     let done = false;
     const finish = (r: Sent) => {
@@ -168,9 +173,15 @@ function postBodyLater(url: string, ms: number): Promise<Sent> {
     );
     req.on("error", (e: NodeJS.ErrnoException) => finish({ error: e.code ?? e.message }));
     req.flushHeaders();
-    setTimeout(() => {
-      if (!req.destroyed) req.write(Buffer.alloc(1024, 1));
-    }, ms);
+    ready.then(
+      () => {
+        if (!req.destroyed) req.write(Buffer.alloc(1024, 1));
+      },
+      (e: Error) => {
+        finish({ error: e.message });
+        req.destroy();
+      },
+    );
   });
 }
 
@@ -215,19 +226,23 @@ describe("crash guard", () => {
   // attached its "data" listener is delivered in the connection's context,
   // not the handler's, so an error the listener throws cannot be traced to
   // its request, and guard.ts fails every request in flight. The body is sent
-  // only once the handler is listening, so the chunk takes that path every
-  // time. (A chunk already buffered when the listener is attached is
-  // delivered from the handler's own context instead, and its error fails
-  // only its own request; which path a chunk sent with the headers takes
-  // depends on timing, so this test does not rely on it.)
+  // only after the child logs that the handler is listening, so the chunk
+  // cannot be buffered before the listener is attached and takes that path
+  // every time, however slow the runner. (A chunk already buffered when the
+  // listener is attached is delivered from the handler's own context instead,
+  // and its error fails only its own request; which path a chunk sent with
+  // the headers takes depends on timing, so this test does not rely on it.)
   // /hang-beside-data stands for another request in flight at the time; it
   // never answers on its own, so its 500 and its cleanup come only from the
-  // guard failing it.
+  // guard failing it. The test waits for its handler to log that it is
+  // running, so its cleanup is registered before the error.
   test("a data listener that throws on a chunk from the connection cannot be traced: every request in flight fails, and the server keeps serving", async () => {
     const hanging = get("/hang-beside-data");
-    // let the other request reach its handler before the error
-    await new Promise((r) => setTimeout(r, 100));
-    const res = await postBodyLater(`${base}/data-listener-throws`, 200);
+    await waitForOutput("handler running for /hang-beside-data");
+    const res = await postBodyWhen(
+      `${base}/data-listener-throws`,
+      waitForOutput("handler listening for data on /data-listener-throws"),
+    );
     expect(res).toEqual(INTERNAL);
     expect(await hanging).toEqual(INTERNAL);
     await waitForOutput("a data listener threw");
