@@ -449,6 +449,26 @@ describe("GET /s/<token>/<name>", () => {
     expect(own.rawPayload.equals(files.get(FILE_B)?.bytes ?? Buffer.alloc(0))).toBe(true);
   });
 
+  test("a name with slashes, dot-dot or escapes in it still opens its link", async () => {
+    // The segment is encodeURIComponent(name), so a "/" in the name is %2F:
+    // one segment, which the router decodes back into the name. Only a raw
+    // "/" after the name segment is refused.
+    for (const name of ["../../etc/passwd.3mf", "a/b/c.3mf", "..\\x.3mf", "%2F%00.3mf"]) {
+      const id = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8efe";
+      files.set(id, { ...(files.get(FILE_A) as StubItem), name, originalName: name });
+      try {
+        const link = await linkFor(id);
+        const path = pathOf(link.url);
+        expect(path.split("/"), name).toHaveLength(4);
+        const res = await app.inject({ method: "GET", url: path });
+        expect(res.statusCode, name).toBe(200);
+        expect(res.rawPayload.equals(files.get(FILE_A)?.bytes ?? Buffer.alloc(0)), name).toBe(true);
+      } finally {
+        files.delete(id);
+      }
+    }
+  });
+
   test("a HEAD answers the headers and opens no stream", async () => {
     const link = await linkFor(FILE_A);
     const before = opened;

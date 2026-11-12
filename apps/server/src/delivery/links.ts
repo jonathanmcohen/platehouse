@@ -24,8 +24,9 @@
 // - The route is registered as /s/:token/* rather than /s/:token/:name:
 //   the router refuses a :param over its maxParamLength (100 characters)
 //   with 414, which would break the link of any file whose name is longer.
-//   The URLs it answers are the same, and a name segment holding a further
-//   "/" is refused like a bad token.
+//   The URLs it answers are the same: a path with a further raw "/" after
+//   the name segment is refused like a bad token, while a name's own "/",
+//   sent as %2F, stays inside its one segment.
 // - POST /app/api/files/:id/slicer-link mints one. It is a session route
 //   that changes state, so the gate (auth/gate.ts) has already checked the
 //   session and that Origin is PUBLIC_ORIGIN before it runs.
@@ -151,6 +152,18 @@ export function slicerLink(opts: {
   };
 }
 
+/**
+ * True when the raw request path is /s/<token>/<one segment>: nothing after
+ * the name but the query. It reads the path as sent, before the router
+ * decodes it, because a name's own "/" arrives as %2F inside the one
+ * segment, and the decoded wildcard would show it as a separator.
+ */
+function isOneNameSegment(url: string): boolean {
+  const at = url.search(/[?#]/);
+  const path = at === -1 ? url : url.slice(0, at);
+  return path.split("/").length === 4;
+}
+
 /** A link refused: 403, nothing in the body. */
 function refuseLink(reply: FastifyReply) {
   return reply.code(403).header("cache-control", "no-store").send();
@@ -177,9 +190,8 @@ export async function registerLinks(
       },
     );
 
-    scope.get<{ Params: { token: string; "*": string } }>("/s/:token/*", async (request, reply) => {
-      const name = request.params["*"];
-      if (name.includes("/")) return refuseLink(reply);
+    scope.get<{ Params: { token: string } }>("/s/:token/*", async (request, reply) => {
+      if (!isOneNameSegment(request.url)) return refuseLink(reply);
       const fileId = readLinkToken(key, request.params.token, now());
       if (fileId === undefined) return refuseLink(reply);
       const head = request.method === "HEAD";
