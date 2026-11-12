@@ -8,7 +8,7 @@
 // run would delete more than its limit (PR #49 review, round 1).
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import {
   createOrphanSweep,
@@ -29,6 +29,23 @@ beforeAll(async () => {
 afterAll(async () => {
   await env?.stop();
 });
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/**
+ * Catches console.warn, where a refused run's line goes when no warn hook is
+ * passed, as main.ts passes none (issue #54: a refusal must stand out from
+ * the daily line, which goes to log).
+ */
+function catchWarnings(): string[] {
+  const warnings: string[] = [];
+  vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+    warnings.push(String(line));
+  });
+  return warnings;
+}
 
 /** A time just past the 24 hours, as seen from an object written now. */
 const dayLater = () => new Date(Date.now() + ORPHAN_MIN_AGE_MS + 60_000);
@@ -62,19 +79,21 @@ async function exists(key: string): Promise<boolean> {
 // an empty Postgres volume, a wrong DATABASE_URL or a second instance on the
 // same bucket would leave.
 describe("the orphan sweep against an empty migrated database", () => {
-  test("deletes nothing from a populated bucket, and logs why", async () => {
+  test("deletes nothing from a populated bucket, and warns why", async () => {
     const rows = await env.db.selectFrom("blobs").select("id").execute();
     expect(rows).toHaveLength(0);
     const library = await Promise.all([1, 2, 3, 4, 5].map(() => putOrphan()));
     lines.length = 0;
+    const warnings = catchWarnings();
     const result = await sweeper().sweepOrphans(dayLater());
     for (const key of library) expect(await exists(key)).toBe(true);
     expect(result.deleted).toBe(0);
     expect(result.orphans).toBe(library.length);
     expect(result.refused).toContain("no stored rows");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("deleted nothing");
-    expect(lines[0]).toContain("no stored rows");
+    expect(lines).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("deleted nothing");
+    expect(warnings[0]).toContain("no stored rows");
     await env.store.deleteBlobs(library);
   });
 });
@@ -157,8 +176,10 @@ describe("the orphan sweep", () => {
 
   test("logs what each run listed, deleted and left alone", async () => {
     lines.length = 0;
+    const warnings = catchWarnings();
     await putOrphan();
     const result = await sweeper().sweepOrphans(dayLater());
+    expect(warnings).toEqual([]);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`listed ${result.listed}`);
     expect(lines[0]).toContain(`deleted ${result.deleted}`);
@@ -166,18 +187,20 @@ describe("the orphan sweep", () => {
     expect(result.deleted).toBe(1);
   });
 
-  test("deletes nothing when a run would delete more than its limit, and logs why", async () => {
+  test("deletes nothing when a run would delete more than its limit, and warns why", async () => {
     const many = await Promise.all(
       Array.from({ length: ORPHAN_DELETE_FLOOR + 1 }, () => putOrphan()),
     );
     lines.length = 0;
+    const warnings = catchWarnings();
     const result = await sweeper().sweepOrphans(dayLater());
     for (const key of many) expect(await exists(key)).toBe(true);
     expect(result.deleted).toBe(0);
     expect(result.orphans).toBe(many.length);
     expect(result.refused).toContain(`limit of ${ORPHAN_DELETE_FLOOR}`);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("deleted nothing");
+    expect(lines).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("deleted nothing");
     await env.store.deleteBlobs(many);
   });
 
