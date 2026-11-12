@@ -132,6 +132,23 @@ describe("the output never shows a credential or a signed query", () => {
     expectClean(s, r.output);
   });
 
+  it("when Platehouse's first check fails with an error body that echoes the token", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${PLATEHOUSE}/api/v1/models`,
+        ({ request }) =>
+          new HttpResponse(`upstream said ${request.headers.get("authorization")}`, {
+            status: 500,
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr.join("\n")).toMatch(/could not start/);
+    expectClean(s, r.output);
+  });
+
   it("when Platehouse echoes its token back while an upload fails", async () => {
     const s = setup(library());
     server.use(

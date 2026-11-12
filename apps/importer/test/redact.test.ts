@@ -45,10 +45,14 @@ describe("cleanText", () => {
   });
 
   it("removes bidi overrides and isolates", () => {
-    expect(cleanText("abc‮def⁦g⁩")).toBe("abcdefg");
+    const rlo = String.fromCodePoint(0x202e);
+    const lri = String.fromCodePoint(0x2066);
+    const pdi = String.fromCodePoint(0x2069);
+    expect(cleanText(`abc${rlo}def${lri}g${pdi}`)).toBe("abcdefg");
   });
 
   it("keeps ordinary text, accents and emoji", () => {
-    expect(cleanText("Café über \u{1F600} 3D-Druck")).toBe("Café über \u{1F600} 3D-Druck");
+    const text = `Caf${String.fromCodePoint(0xe9)} ${String.fromCodePoint(0xfc)}ber ${String.fromCodePoint(0x1f600)} 3D-Druck`;
+    expect(cleanText(text)).toBe(text);
   });
 });

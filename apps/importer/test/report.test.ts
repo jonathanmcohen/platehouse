@@ -37,6 +37,16 @@ describe("totals", () => {
           outcome: "skipped",
           reason: "already in Platehouse",
           newModel: false,
+          files: [
+            {
+              name: "old.3mf",
+              manyfoldSize: 7,
+              storedSize: 7,
+              sha256: "ff".repeat(32),
+              status: "already in Platehouse",
+              reason: null,
+            },
+          ],
         }),
         model({
           manyfoldId: "m3",
@@ -91,6 +101,34 @@ describe("exitCode", () => {
 });
 
 describe("modelLines", () => {
+  it("prints names and reasons from Manyfold without control characters", () => {
+    const lines = modelLines(
+      model({
+        name: "A\u001b[2Jb",
+        outcome: "failed",
+        reason: "bad\u0007 answer",
+        files: [
+          {
+            name: `f${String.fromCodePoint(0x202e)}.3mf`,
+            manyfoldSize: 1,
+            storedSize: null,
+            sha256: null,
+            status: "failed",
+            reason: "x\ny",
+          },
+        ],
+      }),
+      0,
+      1,
+    );
+    expect(lines[0]).toContain("A[2Jb");
+    expect(lines[0]).toContain("bad answer");
+    expect(lines[1]).toContain("f.3mf");
+    expect(lines[1]).toContain("xy");
+    const unsafe = ["\u001b", "\u0007", String.fromCodePoint(0x202e), "\n"];
+    expect([...lines.join("")].filter((c) => unsafe.includes(c))).toEqual([]);
+  });
+
   it("gives the model line, then one size row per file with the SHA-256 prefix", () => {
     const lines = modelLines(model(), 0, 3);
     expect(lines).toHaveLength(2);

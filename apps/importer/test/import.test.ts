@@ -286,11 +286,30 @@ describe("sizes", () => {
     expect(r.code).toBe(1);
     const m2 = r.report?.models.find((m) => m.manyfoldId === "m2");
     expect(m2?.outcome).toBe("failed");
-    expect(m2?.files.find((f) => f.name === "clip.3mf")).toMatchObject({
-      status: "failed",
-      manyfoldSize: 800,
-      storedSize: 799,
+    const clip = m2?.files.find((f) => f.name === "clip.3mf");
+    expect(clip).toMatchObject({ status: "failed", manyfoldSize: 800, storedSize: 799 });
+    expect(clip?.reason).toMatch(/^size mismatch: Platehouse stored 799 bytes/);
+    expect(r.stdout.join("\n")).toMatch(/size mismatches 1/);
+  });
+
+  it("stored bytes of the right size whose SHA-256 differs are reported and not counted imported", async () => {
+    const s = setup(library(), {
+      platehouse: {
+        mangle: (name, bytes) => {
+          if (name !== "clip.3mf") return bytes;
+          const changed = Buffer.from(bytes);
+          changed[0] = (changed[0] ?? 0) ^ 0xff;
+          return changed;
+        },
+      },
     });
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    const clip = r.report?.models
+      .find((m) => m.manyfoldId === "m2")
+      ?.files.find((f) => f.name === "clip.3mf");
+    expect(clip).toMatchObject({ status: "failed", manyfoldSize: 800, storedSize: 800 });
+    expect(clip?.reason).toMatch(/SHA-256/);
   });
 });
 
@@ -380,7 +399,8 @@ describe("exit code 2: the run could not start", () => {
     expect(r.code).toBe(2);
     expect(r.stderr.join("\n")).toMatch(/Platehouse/);
     expect(s.platehouse.models.size).toBe(0);
-    expect(manyfoldCalls().filter((c) => c.startsWith("GET "))).toHaveLength(0);
+    // Not even the token request: Manyfold allows only 10 per 3 minutes.
+    expect(manyfoldCalls()).toEqual([]);
   });
 
   it("when Manyfold's model list cannot be read", async () => {
@@ -397,11 +417,40 @@ describe("text from Manyfold", () => {
     const lib = library();
     const m1 = lib.models[0];
     if (m1 === undefined) throw new Error("unreachable");
-    m1.name = "Evil\u001b[2J\u0007 Name‮";
+    m1.name = `Evil\u001b[2J\u0007 Name${String.fromCodePoint(0x202e)}`;
     const s = setup(lib);
     const r = await s.run([]);
     expect(r.code).toBe(0);
     expect(r.output).toContain("Evil[2J Name");
+    expect(controlCharacters(r.output)).toEqual([]);
+  });
+
+  it("or from a server's error body is printed without control characters too", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${PLATEHOUSE}/api/v1/models`,
+        () => new HttpResponse("broken\u001b[2J\u0007 proxy", { status: 502 }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr.join("\n")).toContain("broken[2J proxy");
+    expect(controlCharacters(r.output)).toEqual([]);
+  });
+
+  it("or from an error body quoted in a retry line is printed without control characters", async () => {
+    const s = setup(library());
+    server.use(
+      http.patch(
+        `${PLATEHOUSE}/api/v1/uploads/:id`,
+        () => new HttpResponse("busy\u001b[2J\u0007 now", { status: 503 }),
+        { once: true },
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout.join("\n")).toContain("busy[2J now");
     expect(controlCharacters(r.output)).toEqual([]);
   });
 });

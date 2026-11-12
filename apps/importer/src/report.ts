@@ -1,4 +1,11 @@
-// The import report: one line per model, one size row per file, the totals.
+// The import report (AC-001, AC-004): one line per model with its outcome,
+// one size row per file under it (Manyfold's contentSize, the size
+// Platehouse stored and the first 12 hex digits of the SHA-256 it recorded),
+// and the totals: models found, imported, skipped with a reason, and failed.
+//
+// Every value that came from Manyfold or a server goes through cleanText, and
+// the CLI sends every line through its redactor as well.
+import { cleanText } from "./redact.js";
 
 export type Mode = "dry run" | "apply";
 
@@ -50,19 +57,70 @@ export interface Totals {
   sizeMismatches: number;
 }
 
-export function totals(_report: Report): Totals {
-  throw new Error("not implemented");
+/** How a file row's reason starts when its size is not Manyfold's contentSize. */
+export const SIZE_MISMATCH = "size mismatch";
+
+/** How many hex digits of a SHA-256 the report shows. */
+const SHA_SHOWN = 12;
+
+export function totals(report: Report): Totals {
+  const files = report.models.flatMap((m) => m.files);
+  const count = (outcome: Outcome) => report.models.filter((m) => m.outcome === outcome).length;
+  return {
+    found: report.found,
+    imported: count("imported"),
+    skipped: count("skipped"),
+    failed: count("failed"),
+    newModels: report.models.filter((m) => m.newModel).length,
+    filesImported: files.filter((f) => f.status === "imported" || f.status === "would import")
+      .length,
+    filesSkipped: files.filter((f) => f.status === "skipped").length,
+    sizeMismatches: files.filter((f) => f.reason?.startsWith(SIZE_MISMATCH) === true).length,
+  };
 }
 
-export function modelLines(_result: ModelResult, _index: number, _total: number): string[] {
-  throw new Error("not implemented");
+const size = (n: number | null) => (n === null ? "-" : String(n));
+
+function fileLine(row: FileRow): string {
+  const sha = row.sha256 === null ? "-" : row.sha256.slice(0, SHA_SHOWN);
+  const reason = row.reason === null ? "" : ` - ${cleanText(row.reason)}`;
+  return (
+    `      ${cleanText(row.name)}: manyfold ${size(row.manyfoldSize)}, ` +
+    `stored ${size(row.storedSize)}, sha256 ${sha}, ${row.status}${reason}`
+  );
 }
 
-export function summaryLines(_report: Report): string[] {
-  throw new Error("not implemented");
+export function modelLines(result: ModelResult, index: number, total: number): string[] {
+  const width = String(total).length;
+  const tag = `[${String(index + 1).padStart(width)}/${total}]`;
+  let outcome: string = result.outcome;
+  if (result.outcome === "imported" && result.newModel) outcome = "imported, new model";
+  const reason = result.reason === null ? "" : ` - ${cleanText(result.reason)}`;
+  const head = `${tag} ${cleanText(result.name)} (manyfold:${cleanText(result.manyfoldId)}): ${outcome}${reason}`;
+  return [head, ...result.files.map(fileLine)];
+}
+
+export function summaryLines(report: Report): string[] {
+  const t = totals(report);
+  const lines = [
+    `${report.mode} done: found ${t.found}, imported ${t.imported}, skipped ${t.skipped}, failed ${t.failed}`,
+    `  new models ${t.newModels}, files imported ${t.filesImported}, ` +
+      `files skipped ${t.filesSkipped}, size mismatches ${t.sizeMismatches}`,
+  ];
+  if (report.mode === "dry run") {
+    lines.push(
+      "  A dry run writes nothing: imported means would be imported. A model in " +
+        "Platehouse's trash shows as a new model here, since the API never lists the " +
+        "trash; --apply skips it.",
+    );
+  }
+  const handled = t.imported + t.skipped + t.failed;
+  if (handled !== t.found) lines.push(`  counts add up to ${handled}, not ${t.found}`);
+  return lines;
 }
 
 /** 0 when every model was handled, 1 when one failed or the counts do not add up. */
-export function exitCode(_report: Report): 0 | 1 {
-  throw new Error("not implemented");
+export function exitCode(report: Report): 0 | 1 {
+  const t = totals(report);
+  return t.failed > 0 || t.imported + t.skipped + t.failed !== t.found ? 1 : 0;
 }
