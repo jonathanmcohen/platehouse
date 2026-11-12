@@ -70,29 +70,30 @@
 //   another file took the name meanwhile, it moves to failed with
 //   SWAPPED_REASON instead, and when putting it back fails with an error (a
 //   full disk, a held file that cannot be read), with PUT_BACK_FAILED_REASON,
-//   since nothing is known to have taken the name. Putting back never checks the name and then
-//   writes it, which a writer could slip in between: a regular file is
-//   hard-linked back, or, where hard links are refused (EPERM under
-//   fs.protected_hardlinks for a file the watcher does not own), copied
-//   whole into a file of the watcher's own in the holding folder and that
-//   hard-linked under the name, so nothing part-written ever appears there
-//   (a full disk fails the copy in the holding folder). When the held
-//   file's size or mtime moved during the copy, a writer still has it open
-//   (an SMB client, say): the copy is not linked, or is taken back out by a
-//   rename aside inside the holding folder it was made in (HOLD_ASIDE_PREFIX;
-//   no new folder, so a full disk cannot leave it under the name), never
-//   deleted by name, and the held file, the inode the writer goes on
-//   writing, moves to failed with STILL_WRITING_REASON. On a filesystem with
-//   no hard links at all it is not put back and moves to failed with
-//   PUT_BACK_FAILED_REASON; a symlink is made again with its target; a folder
-//   is renamed back, which can replace only an empty folder; anything else
-//   (a FIFO, a socket) is not put back and moves to failed. The holding
-//   folder is removed after. One a stopped process left behind (a crash in
-//   that moment, or an imported file that could not be moved to failed) is
-//   emptied into failed with HELD_REASON at the first pass, a copy being put
-//   back (HOLD_COPY_PREFIX) deleted rather than kept, and anything set aside
-//   from under the name (HOLD_ASIDE_PREFIX) kept under its inbox name; while
-//   failed is still unusable it stays there, logged.
+//   since nothing is known to have taken the name. Putting back never checks
+//   the name and then writes it, which a writer could slip in between: a
+//   regular file is hard-linked back, or, where hard links are refused
+//   (EPERM under fs.protected_hardlinks for a file the watcher does not
+//   own), copied whole into a file of the watcher's own in the holding
+//   folder and that hard-linked under the name, so nothing part-written ever
+//   appears there (a full disk fails the copy in the holding folder). When
+//   the held file's size or mtime moved during the copy, a writer still has
+//   it open (an SMB client, say): the copy is not linked, or is taken back
+//   out by a rename aside inside the holding folder it was made in
+//   (HOLD_ASIDE_PREFIX; no new folder, so a full disk cannot leave it under
+//   the name), never deleted by name, and the held file, the inode the
+//   writer goes on writing, moves to failed with STILL_WRITING_REASON. On a
+//   filesystem with no hard links at all it is not put back and moves to
+//   failed with PUT_BACK_FAILED_REASON; a symlink is made again with its
+//   target; a folder is renamed back, which can replace only an empty
+//   folder; anything else (a FIFO, a socket) is not put back and moves to
+//   failed. The holding folder is removed after. One a stopped process left
+//   behind (a crash in that moment), or one holding an imported file that
+//   could not be moved to failed, is emptied into failed with HELD_REASON at
+//   the first pass, a copy being put back (HOLD_COPY_PREFIX) deleted rather
+//   than kept, and anything set aside from under the name (HOLD_ASIDE_PREFIX)
+//   kept under its inbox name; while failed is still unusable it stays
+//   there, logged.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence. failed/ is made when missing, and refused
