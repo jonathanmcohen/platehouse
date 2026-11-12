@@ -1,6 +1,7 @@
 // Builds the slicer image and runs it the way Hades will (AC-035): read-only
-// root, a 1 GB tmpfs at /work, 4 CPUs (fewer if the host has fewer), 4 GB of
-// memory, no capabilities and
+// root, a 1 GB tmpfs at /work mounted noexec, nosuid and nodev (nothing in a
+// job folder is ever run; Task 26 copies these options into compose), 4 CPUs
+// (fewer if the host has fewer), 4 GB of memory, no capabilities and
 // no-new-privileges. Uses the docker CLI rather than testcontainers, which has
 // no read-only-root option. The port is published on 127.0.0.1 only so the
 // tests can reach the HTTP contract.
@@ -50,6 +51,8 @@ export interface RunningSlicer {
   base: string;
   exec(args: string[]): Run;
   health(): string;
+  /** The server's output so far (docker logs), stdout and stderr together. */
+  logs(): string;
   stop(): void;
 }
 
@@ -76,7 +79,7 @@ export async function startSlicer(): Promise<RunningSlicer> {
     "linux/amd64",
     "--read-only",
     "--tmpfs",
-    "/work:rw,size=1g,mode=1777",
+    "/work:rw,noexec,nosuid,nodev,size=1g,mode=1777",
     "--cpus",
     cpuLimit(hostCpus),
     "--memory",
@@ -114,6 +117,10 @@ export async function startSlicer(): Promise<RunningSlicer> {
       base: `http://127.0.0.1:${port}`,
       exec: (args) => docker(["exec", id, ...args]),
       health,
+      logs: () => {
+        const r = docker(["logs", id]);
+        return `${r.stdout}${r.stderr}`;
+      },
       stop,
     };
   } catch (err) {

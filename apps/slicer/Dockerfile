@@ -21,11 +21,12 @@
 # Build context: the repository root.
 #   docker build --platform linux/amd64 -f apps/slicer/Dockerfile -t platehouse-slicer .
 #
-# Run it as Hades does (AC-035): read-only root, a tmpfs at /work, internal
+# Run it as Hades does (AC-035): read-only root, a tmpfs at /work mounted
+# noexec, nosuid and nodev (nothing in a job folder is ever run), internal
 # network only, 4 CPUs and 4 GB (the gate's measured worst plate: 2568 MiB
 # RSS, 55.31 s, 171 MiB scratch):
-#   docker run --read-only --tmpfs /work:rw,size=1g,mode=1777 --cpus 4 \
-#     --memory 4g --cap-drop ALL --security-opt no-new-privileges:true ...
+#   docker run --read-only --tmpfs /work:rw,noexec,nosuid,nodev,size=1g,mode=1777 \
+#     --cpus 4 --memory 4g --cap-drop ALL --security-opt no-new-privileges:true ...
 
 # ubuntu:24.04, multi-arch index digest read from Docker Hub on 2026-11-07
 # (amd64 manifest sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d).
@@ -291,6 +292,10 @@ RUN source /usr/local/lib/need.sh \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad \
  && need -x /usr/local/bin/landrun \
+ && need -x /usr/bin/prlimit \
+ && need -d /usr/lib/x86_64-linux-gnu \
+ && need -f /lib64/ld-linux-x86-64.so.2 \
+ && need -d /usr/lib/locale/C.utf8 \
  && need -x /opt/node/bin/node \
  && need -x /usr/bin/tini \
  && need -r /opt/platehouse/profiles/manifest.json \

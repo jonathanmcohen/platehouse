@@ -12,10 +12,18 @@
 // server keeps serving.
 //
 // An error with no scope cannot be traced: a listener that runs from the
-// connection's own I/O (a request "data" listener, say) runs in the
-// connection's context, not the handler's. Such an error fails every request
-// still in flight, which runs all their cleanups, so no job is left holding
-// the heavy-job lock, and the server keeps serving.
+// connection's own I/O runs in the connection's context, not the handler's.
+// Such an error fails every request still in flight, which runs all their
+// cleanups, so no job is left holding the heavy-job lock, and the server
+// keeps serving.
+//
+// A request "data" listener can end up on either path. A body chunk that
+// arrives from the connection after the listener is attached is delivered
+// from the connection's I/O, so an error the listener throws on it fails
+// every request in flight. A chunk already buffered when the listener is
+// attached is delivered from the handler's own scope instead (attaching the
+// listener resumes the stream from there), so its error fails only that
+// request. Which path a chunk sent with the headers takes depends on timing.
 //
 // This file imports only node: modules, so Node can load it as TypeScript
 // source (guard.test.ts runs it in a child process).

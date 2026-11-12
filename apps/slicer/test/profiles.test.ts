@@ -153,6 +153,48 @@ describe("process_full", () => {
     expect(existsSync(out)).toBe(false);
   });
 
+  // Issue #126: the unsafe-name check used to throw at once, so the one error
+  // named only the first problem it met (the slicing gate's copy had the same
+  // defect, #12, PR #117). Both orders are pinned: the unsafe machine sorted
+  // first (the broken machine after it was never reached) and sorted second
+  // (the problem already collected before it was thrown away).
+  for (const [label, unsafe, broken] of [
+    ["sorted before", "Bambu Lab A1 0.4 nozzle", "Bambu Lab P1S 0.4 nozzle"],
+    ["sorted after", "Bambu Lab P1S 0.4 nozzle", "Bambu Lab A1 0.4 nozzle"],
+  ] as const) {
+    test(`an unsafe default process name ${label} another broken machine: both are named in the one failure, and nothing is written`, () => {
+      const root = profileTree();
+      put(root, `BBL/machine/${unsafe}.json`, {
+        type: "machine",
+        name: unsafe,
+        inherits: "fdm_bbl_3dp_001_common",
+        instantiation: "true",
+        default_print_profile: "../escape",
+      });
+      put(root, `BBL/machine/${broken}.json`, {
+        type: "machine",
+        name: broken,
+        inherits: "Gone Parent",
+        instantiation: "true",
+      });
+      const scratchDir = scratch();
+      const out = join(scratchDir, "process_full");
+      let message = "";
+      try {
+        writeProcessFull(loadIndex(root), out);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/^2 problem\(s\)/);
+      expect(message).toContain(
+        `machine "${unsafe}" names default process "../escape", which is not a plain file name`,
+      );
+      expect(message).toContain(`machine "${broken}" inherits "Gone Parent"`);
+      expect(existsSync(join(scratchDir, "escape.json"))).toBe(false);
+      expect(existsSync(out)).toBe(false);
+    });
+  }
+
   test("a default process the bundle does not have fails, naming the machine, and nothing is written", () => {
     const root = profileTree();
     put(root, "BBL/machine/Bambu Lab A1 0.4 nozzle.json", {
