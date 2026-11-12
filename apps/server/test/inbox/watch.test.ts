@@ -1398,27 +1398,89 @@ describe("an imported file whose check or delete in its holding folder fails", (
     );
   });
 
-  test("when its lstat throws after an import that could not be confirmed, it moves to failed with UNCONFIRMED_REASON", async () => {
-    // No record of the stored file: the stored copy really was not confirmed,
-    // so that reason stands, not UNREMOVED_REASON.
-    const fake = fakeIngest();
-    const deps = {
-      storedFile: async () => undefined,
+  /**
+   * Deps whose import ends with the given verdict: "unconfirmed" (no record
+   * of the stored file) or "changed" (the inbox copy is appended to during
+   * the import, so its bytes no longer match the stored copy).
+   */
+  function verdictDeps(fake: ReturnType<typeof fakeIngest>, verdict: "unconfirmed" | "changed") {
+    return {
+      ingest: {
+        async ingestFile(input: IngestInput) {
+          const result = await fake.ingest.ingestFile(input);
+          if (verdict === "changed") await appendFile(join(inbox, name), "more bytes\n");
+          return result;
+        },
+      },
+      storedFile: async (id: string) => (verdict === "changed" ? fake.stored.get(id) : undefined),
       findImported: async (q: ImportedQuery) => storedRow(fake, q),
     };
-    const w = watcher(fake, deps);
-    const fired = failInHold("lstat");
-    await writeFile(join(inbox, name), TEXT);
-    await w.pollOnce();
-    const pass = await tick(w, 15_000);
+  }
 
-    expect(fired()).toBe(true);
-    expect(pass.failed).toEqual([{ name, reason: UNCONFIRMED_REASON }]);
-    expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-      `${UNCONFIRMED_REASON}\n`,
-    );
-    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
-  });
+  test.each([
+    ["lstat", "unconfirmed", TEXT],
+    ["fstat", "unconfirmed", TEXT],
+    ["lstat", "changed", `${TEXT}more bytes\n`],
+    ["fstat", "changed", `${TEXT}more bytes\n`],
+  ] as const)(
+    "when its %s throws after an import whose verdict was %s, it moves to failed with UNCHECKED_REASON, since nothing showed it is the imported file",
+    async (fault, verdict, expected) => {
+      // The check that would show what is held is the imported file threw,
+      // so a reason saying Platehouse imported it (CHANGED_REASON or
+      // UNCONFIRMED_REASON) could be false: it may be a newer file.
+      const fake = fakeIngest();
+      const w = watcher(fake, verdictDeps(fake, verdict));
+      const fired = failInHold(fault);
+      await writeFile(join(inbox, name), TEXT);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      expect(fired()).toBe(true);
+      expect(pass.imported.map((i) => i.name)).toEqual([name]);
+      expect(pass.failed).toEqual([{ name, reason: UNCHECKED_REASON }]);
+      expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
+      expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
+        `${UNCHECKED_REASON}\n`,
+      );
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+      // The verdict the import reached is still logged.
+      const had = verdict === "changed" ? CHANGED_REASON : UNCONFIRMED_REASON;
+      expect(lines.some((l) => l.includes(name) && l.includes(had))).toBe(true);
+    },
+  );
+
+  test.each([
+    ["lstat", "unconfirmed"],
+    ["fstat", "unconfirmed"],
+    ["lstat", "changed"],
+    ["fstat", "changed"],
+  ] as const)(
+    "a newer file renamed over the name just before it is held, whose %s there throws after an import whose verdict was %s, moves to failed with a reason that never says it was imported",
+    async (fault, verdict) => {
+      // importOpen's checks ran on the open handle before the hold, so a
+      // newer file renamed over the name in between is what is held. Its
+      // check throws: CHANGED_REASON or UNCONFIRMED_REASON would say
+      // Platehouse imported it, which it never did.
+      const fake = fakeIngest();
+      const w = watcher(fake, verdictDeps(fake, verdict));
+      const swapped = newerAtHold();
+      const fired = failInHold(fault);
+      await writeFile(join(inbox, name), TEXT);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      expect(swapped()).toBe(true);
+      expect(fired()).toBe(true);
+      expect(pass.imported.map((i) => i.name)).toEqual([name]);
+      expect(pass.failed).toEqual([{ name, reason: UNCHECKED_REASON }]);
+      expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(NEWER);
+      const why = await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8");
+      expect(why).toBe(`${UNCHECKED_REASON}\n`);
+      expect(why).not.toBe(`${CHANGED_REASON}\n`);
+      expect(why).not.toBe(`${UNCONFIRMED_REASON}\n`);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    },
+  );
 });
 
 describe("putting a file back under its name without hard links", () => {

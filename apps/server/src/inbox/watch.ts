@@ -62,12 +62,13 @@
 //   existing name do) holds bytes never imported, so it moves to failed
 //   with CHANGED_REASON instead. When what is held cannot be checked or
 //   deleted (an lstat, fstat or unlink that throws), it may be the imported
-//   file, so it moves to failed with the reason it already had, never back
-//   under the name. Else, when only the unlink threw, after it was shown to
-//   be the imported file, with UNREMOVED_REASON (stored, but not removed
+//   file, so it moves to failed, never back under the name. When only the
+//   unlink threw, after it was shown to be the imported file, it keeps the
+//   reason it already had, else UNREMOVED_REASON (stored, but not removed
 //   from the inbox); when the lstat or fstat threw, it may instead be a
-//   newer file renamed over the name just before it was held, so with
-//   UNCHECKED_REASON, which does not say it was imported. When the imported
+//   newer file renamed over the name just before it was held, so it gets
+//   UNCHECKED_REASON, which does not say it was imported, whatever the
+//   import's verdict (CHANGED_REASON or UNCONFIRMED_REASON). When the imported
 //   file (changed, its stored copy
 //   unconfirmed, or not checkable or deletable) cannot be moved to failed,
 //   it is not put back under the name, since a link or a copy back moves its ctime and a
@@ -1561,11 +1562,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * bytes there that were never imported, so it moves to failed with
    * CHANGED_REASON instead. When what is held cannot be checked or deleted
    * (the lstat, fstat or unlink throws), it may be the imported file, so it
-   * moves to failed too, with the reason it already had, else with
-   * UNREMOVED_REASON when only the unlink threw after it was shown to be the
-   * imported file (its stored copy was confirmed), or UNCHECKED_REASON when
-   * the lstat or fstat threw, since it may be a newer file renamed over the
-   * name just before it was held. When the imported file cannot be moved to failed (the failed
+   * moves to failed too: when only the unlink threw after it was shown to
+   * be the imported file, with the reason it already had, else
+   * UNREMOVED_REASON (its stored copy was confirmed); when the lstat or
+   * fstat threw, with UNCHECKED_REASON whatever the import's verdict, since
+   * it may be a newer file renamed over the name just before it was held. When the imported file cannot be moved to failed (the failed
    * folder is a symlink, not a folder, or unwritable), it is not put back
    * under the name: a link or a copy back moves its ctime, which a restart
    * would take as a new arrival and import it again under new ids. It stays
@@ -1644,16 +1645,22 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       } catch (error) {
         // What is held could not be checked or deleted (an EIO, say), so it
         // may be the imported file: never put back (failImported says why).
-        // It moves to failed with the reason it already had. Else, when it
-        // was shown to be the imported file (only the unlink threw), as
-        // stored but not removed: its stored copy was confirmed. When the
-        // check itself threw, it may be a newer file renamed over the name
-        // just before it was held, so with a reason that does not say it was
-        // imported (#135).
-        const why = reason ?? (same ? UNREMOVED_REASON : UNCHECKED_REASON);
+        // When it was shown to be the imported file (only the unlink threw),
+        // it moves to failed with the reason it already had, else as stored
+        // but not removed: its stored copy was confirmed. When the check
+        // itself threw, it may be a newer file renamed over the name between
+        // importOpen's checks (made on the open handle) and the hold, so it
+        // moves to failed with a reason that does not say it was imported,
+        // whatever the import's verdict (CHANGED_REASON and
+        // UNCONFIRMED_REASON both say it was); that verdict goes to the log
+        // (#135).
+        const why = same ? (reason ?? UNREMOVED_REASON) : UNCHECKED_REASON;
+        const verdictNote =
+          !same && reason !== undefined ? `. What the import found: ${reason}` : "";
         log(
           `inbox: imported ${name} as model ${modelId}, but what holds its name could not be ` +
-            `checked or deleted in ${holdDir} (${errorText(error)}), so it is kept, not put back`,
+            `checked or deleted in ${holdDir} (${errorText(error)}), so it is kept, not put back` +
+            verdictNote,
         );
         await failImported(name, holdDir, modelId, why, pass);
         return;
