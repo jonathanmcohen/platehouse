@@ -534,23 +534,54 @@ describe("htmlToMarkdown: ported cases", () => {
     ["no href at all", '<a data-mce-href="https://a.test/">t</a>'],
     ["href only inside a value", '<a title="href=https://a.test/">t</a>'],
     ["href with no value", '<a href title="https://a.test/">t</a>'],
-    // A browser ends the tag at a > outside every value, so an href after it
-    // is not an attribute of the link (PR #121 review).
-    ["an href after a > that ends the tag", '<a x"y>z" href="https://a.test/">t</a>'],
-    ["an href after a > after a bare value", "<a x=y'>z' href=https://a.test/>t</a>"],
     // A browser splits attributes only on tab, LF, FF, CR and space, so a
     // no-break space or a BOM is part of the name (PR #121 review).
     ["a no-break space inside a name", '<a data-x\u00a0href="https://a.test/">t</a>'],
     ["a BOM inside a name", '<a data-x\ufeffhref="https://a.test/">t</a>'],
     ["a no-break space before the =", '<a href\u00a0="https://a.test/">t</a>'],
-    // A quote that opens a value and never closes inside the tag starts a
-    // quoted value that, in a browser, runs past the tag's > into the text
-    // after it, so no later href is an attribute of the link.
-    ["an unterminated double-quoted value before href", "<a b'c=\" d' href=https://a.test/>t</a>"],
-    ["an unterminated single-quoted value before href", '<a b"c=\' d" href=https://a.test/>t</a>'],
-    ["an unterminated quoted href value", "<a x'y href=\"https://a.test/ z'>t</a>"],
   ])("a link with no href attribute drops to its text: %s", (_name, html) => {
     expect(htmlToMarkdown(html)).toBe("t");
+  });
+
+  // A stray quote in a name or a bare value is an ordinary character to a
+  // browser, which ends the tag at the first > outside a quoted value, so an
+  // href after it is not an attribute of the link and the text after that >
+  // shows. A quote that opens a value straight after an = and never closes
+  // runs, in a browser, past the tag's > to the end, so no later href is an
+  // attribute either; the converter does not hide the rest of the
+  // description, it keeps the tag's markup as text. Either way there is no
+  // link (PR #121 review). The converter once paired every quote after a tag
+  // name, so each of these read as one tag and wrote only "t".
+  it.each([
+    [
+      "an href after a > that ends the tag",
+      '<a x"y>z" href="https://a.test/">t</a>',
+      'z" href="https://a.test/"\\>t',
+    ],
+    [
+      "an href after a > after a bare value",
+      "<a x=y'>z' href=https://a.test/>t</a>",
+      "z' href=https://a.test/\\>t",
+    ],
+    [
+      "an unterminated double-quoted value before href",
+      "<a b'c=\" d' href=https://a.test/>t</a>",
+      "\\<a b'c=\" d' href=https://a.test/\\>t",
+    ],
+    [
+      "an unterminated single-quoted value before href",
+      '<a b"c=\' d" href=https://a.test/>t</a>',
+      '\\<a b"c=\' d" href=https://a.test/\\>t',
+    ],
+    [
+      "an unterminated quoted href value",
+      "<a x'y href=\"https://a.test/ z'>t</a>",
+      "\\<a x'y href=\"https://a.test/ z'\\>t",
+    ],
+  ])("a stray quote before href makes no link: %s", (_name, html, text) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(text);
+    expect(render(out)).not.toMatch(/<a /);
   });
 
   // A browser's tag name runs to HTML whitespace, / or >, so <a-x>, <a:x> and
@@ -595,6 +626,24 @@ describe("htmlToMarkdown: ported cases", () => {
     const out = htmlToMarkdown(html);
     expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
     expect(render(out)).not.toMatch(/<h[1-6]>/);
+  });
+
+  // A quote in a tag name is part of the name, and a browser opens a quoted
+  // value only straight after an =, so the quote after y below belongs to the
+  // attribute name y" and the tag ends at its first >. The converter once
+  // paired every quote it met after the name, so an odd number of quotes in a
+  // name made the tag fail and its markup show as text, or run past its real
+  // > to a later one and hide the text between (PR #121 review).
+  it.each([
+    ["an odd number of quotes in the name", '<p>a<span"x y">b</span>c</p>', "abc"],
+    ["an odd number of quotes in an end tag", '<p>a<span>b</span"x y">c</p>', "abc"],
+    ["inch marks after the tag", '<p>a<span"x y">5" tall > 3" wide</span>c</p>', null],
+  ])("a quote in a tag name ends the tag where a browser does: %s", (_name, html, text) => {
+    const out = htmlToMarkdown(html);
+    const plain = html.replaceAll('<span"x y">', "<span>").replaceAll('</span"x y">', "</span>");
+    expect(out).toBe(htmlToMarkdown(plain));
+    if (text !== null) expect(out).toBe(text);
+    expect(out).not.toContain("span");
   });
 
   // A browser lowercases only A-Z in a tag name. JavaScript's toLowerCase

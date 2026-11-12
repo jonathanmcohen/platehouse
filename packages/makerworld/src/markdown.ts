@@ -79,17 +79,16 @@ const stripSentinels = (s: string): string => s.replaceAll(TEXT_LINE, "").replac
 const MAX_LIST_DEPTH = 8;
 const MAX_INLINE_DEPTH = 16;
 
-// A tag. Outside quotes the attributes may hold no < or >, so a tag-like run
-// with no closing > fails at the next <; a quoted value may hold either and
-// ends at its closing quote.
+// The start of a tag: < or </ and the name. tagEnd finds where it ends.
 // The name runs, as a browser reads it, from a letter to HTML whitespace, /
 // or >, so "a-x", "a:x" and 'a"q"' are whole names and must be followed by
 // one of those (the lookahead). The name once ended at the first character
 // that was not a letter or digit, so <a-x href=...> was read as a link and
 // <ul-x> or <h2:x> as a list or heading (issue #131). Such a name matches no
 // tag onTag knows, so it is dropped and its text kept, like any unknown tag.
-// The name holds no <, for the same reason the attributes hold none.
-const TAG = /<(\/?)([A-Za-z][^\t\n\f\r /<>]*)(?=[\t\n\f\r />])((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
+// The name holds no <, for the same reason the attributes hold none (see
+// tagEnd).
+const TAG = /<(\/?)([A-Za-z][^\t\n\f\r /<>]*)(?=[\t\n\f\r />])/y;
 // One attribute of a tag, from the first character of its name, read as a
 // browser's tokenizer reads it: the name runs to whitespace, /, = or >, but
 // may begin with an = (so "=href" is not href); then an optional value,
@@ -965,6 +964,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
 
   // The tokenizer: comments, tags and text, each found by a scan that stops
   // at the next < or at the end of the comment, so the whole pass is linear.
+  const tagScan = newTagScan(html);
   let i = 0;
   while (i < html.length) {
     const lt = html.indexOf("<", i);
@@ -984,9 +984,10 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     }
     TAG.lastIndex = i;
     const m = TAG.exec(html);
-    if (m) {
-      onTag(m[1] === "/", m[2] as string, m[3] as string);
-      i = TAG.lastIndex;
+    const end = m ? tagEnd(html, TAG.lastIndex, tagScan) : -1;
+    if (m && end !== -1) {
+      onTag(m[1] === "/", m[2] as string, html.slice(TAG.lastIndex, end));
+      i = end + 1;
     } else {
       onText("<"); // a < that starts no tag is text
       i += 1;
@@ -1000,6 +1001,95 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// What tagEnd keeps between the tags of one input, so the pass stays linear.
+// lastQuote is the last position of each quote character, so a quote that
+// opens a value with no closing quote after it fails at once rather than
+// scanning to the end again. known holds, for each position where an
+// attribute scan began, where that scan ended: 0 not scanned, 1 the tag does
+// not close, k + 2 the tag closes at k. A tag that fails is read again from
+// the next <, and a later tag can reach the same position: values quoted
+// with both quote characters can chain through every following tag to the
+// end, once for every tag start (hostile shape "mixed quotes holding <").
+// From a given position the rest of the scan is the same whichever tag
+// reached it, so the answer found once is reused.
+interface TagScan {
+  readonly lastQuote: Record<'"' | "'", number>;
+  readonly known: Int32Array;
+}
+
+const newTagScan = (html: string): TagScan => ({
+  lastQuote: { '"': html.lastIndexOf('"'), "'": html.lastIndexOf("'") },
+  known: new Int32Array(html.length + 1),
+});
+
+const isHtmlSpace = (c: string): boolean =>
+  c === " " || c === "\t" || c === "\n" || c === "\f" || c === "\r";
+
+// Where a tag's attributes end: the position of the > that closes the tag,
+// read from `at` (just after the name), or -1 when the tag does not close.
+// The attributes are read as a browser's tokenizer reads them, and as ATTR
+// does: a name runs to HTML whitespace, /, = or > and may begin with an =; a
+// quote is an ordinary character in a name or a bare value, and opens a
+// quoted value only straight after an = (and optional whitespace). Such a
+// value may hold < or > and ends at its closing quote; with no closing quote
+// the tag fails. Outside a quoted value a < fails the tag, so a tag-like run
+// with no closing > fails at the next < and the whole pass stays linear.
+// TAG once paired every quote it met after the name, so a stray quote in a
+// name (<span"x y">) shifted the pairing: the tag failed and its markup
+// showed as text, or it ran past its real > and hid the text after it (PR
+// #121 review).
+function tagEnd(html: string, from: number, scan: TagScan): number {
+  const seen: number[] = [];
+  const end = scanAttributes(html, from, scan, seen);
+  for (const p of seen) scan.known[p] = end + 2;
+  return end;
+}
+
+function scanAttributes(html: string, at: number, scan: TagScan, seen: number[]): number {
+  const n = html.length;
+  while (at < n) {
+    const known = scan.known[at] as number;
+    if (known !== 0) return known - 2;
+    seen.push(at);
+    const c = html.charAt(at);
+    if (c === ">") return at;
+    if (c === "<") return -1;
+    if (isHtmlSpace(c) || c === "/") {
+      at++;
+      continue;
+    }
+    // An attribute name; its first character may be an =.
+    at++;
+    while (at < n) {
+      const d = html.charAt(at);
+      if (isHtmlSpace(d) || d === "/" || d === "=" || d === ">" || d === "<") break;
+      at++;
+    }
+    let p = at;
+    while (p < n && isHtmlSpace(html.charAt(p))) p++;
+    if (html.charAt(p) !== "=") {
+      at = p;
+      continue;
+    }
+    p++;
+    while (p < n && isHtmlSpace(html.charAt(p))) p++;
+    const q = html.charAt(p);
+    if (q === '"' || q === "'") {
+      const close = scan.lastQuote[q] > p ? html.indexOf(q, p + 1) : -1;
+      if (close === -1) return -1;
+      at = close + 1;
+    } else {
+      while (p < n) {
+        const d = html.charAt(p);
+        if (isHtmlSpace(d) || d === ">" || d === "<") break;
+        p++;
+      }
+      at = p;
+    }
+  }
+  return -1;
 }
 
 function newTable(): Table {
@@ -1061,18 +1151,14 @@ function escapeTextLineStart(line: string): string {
 // another attribute's quoted value (issue #28). An href with no value is "",
 // which safeHref refuses. null when there is no href attribute.
 //
-// TAG and ATTR can read a stray quote differently: TAG takes a quote inside a
-// name or bare value (x"y) as opening a quoted run, a browser does not. So
-// the scan can meet a > outside every value as ATTR reads them. A browser
-// ends the tag there, so nothing after it is an attribute, and the scan stops
-// (PR #121 review).
-//
-// The same mismatch for a quote that opens a value and never closes inside
-// the tag: ATTR's quoted forms fail, and its bare form takes the quote as an
-// ordinary character. A browser starts a quoted value there that runs past
-// the tag's > into the text after it, so nothing later is an attribute and
-// the link has no href. The bare form only starts with a quote when the
-// quoted forms failed, so that is the signal to stop (PR #121 review).
+// tagEnd reads quotes as ATTR does, so the attributes it hands over hold no >
+// outside a quoted value and no quote that opens a value without closing it.
+// The two checks below keep hrefOf right on its own if that ever changes,
+// since TAG once paired every quote and handed over both (PR #121 review): a
+// > outside every value ends the tag in a browser, so nothing after it is an
+// attribute; a bare value that starts with a quote means the quoted forms
+// failed, and a browser's quoted value would run past the tag's >, so
+// nothing later is an attribute and the link has no href.
 function hrefOf(attrs: string): string | null {
   let at = 0;
   while (at < attrs.length) {
