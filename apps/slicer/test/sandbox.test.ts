@@ -8,6 +8,7 @@ import { describe, expect, test } from "vitest";
 import {
   LANDRUN_STRICT_ABI,
   landrunArgs,
+  MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
   prlimitArgs,
   readLandlockAbi,
@@ -169,8 +170,20 @@ describe("prlimit arguments", () => {
     expect(prlimitArgs(30)).toContain("--cpu=180");
   });
 
-  test("address space is the container's 4 GiB and processes are capped at 512", () => {
-    expect(prlimitArgs(120)).toEqual(["--cpu=540", "--as=4294967296", "--nproc=512"]);
+  test("address space is the container's 4 GiB, processes are capped at 512 and files at 256 MiB", () => {
+    expect(prlimitArgs(120)).toEqual([
+      "--cpu=540",
+      "--as=4294967296",
+      "--nproc=512",
+      "--fsize=268435456",
+    ]);
+  });
+
+  // The file-size limit stops OpenSCAD while it writes past the render output
+  // cap (the kernel sends SIGXFSZ), instead of only refusing the file after.
+  test("the file-size limit is the render output cap, so a file the cap lets through is never stopped", () => {
+    expect(MAX_RENDER_OUTPUT_BYTES).toBe(256 * 1024 * 1024);
+    expect(prlimitArgs(120)).toContain(`--fsize=${MAX_RENDER_OUTPUT_BYTES}`);
   });
 });
 

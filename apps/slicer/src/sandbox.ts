@@ -160,16 +160,29 @@ export const OPENSCAD_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024;
 export const OPENSCAD_PROCESS_LIMIT = 512;
 
 /**
+ * The largest STL or PNG a render may answer with, and OpenSCAD's file-size
+ * limit (RLIMIT_FSIZE). The server holds the output in memory to send it, so
+ * an output over this is refused, never read. 256 MiB is about 5 million
+ * triangles of binary STL, far more than a printable model needs (security
+ * review of PR #36, issue #47). Under the file-size limit the kernel stops
+ * OpenSCAD with SIGXFSZ when it writes past this, so the output never grows
+ * past it in /work; a file of exactly this size passes both.
+ */
+export const MAX_RENDER_OUTPUT_BYTES = 256 * 1024 * 1024;
+
+/**
  * prlimit's arguments, before its "--". The CPU-time limit is the wall-clock
  * cap on SLICER_CPUS CPUs plus CPU_MARGIN_SECONDS (540 s at the default 120 s
- * cap), so it stops only a render the wall-clock kill somehow missed. Each
- * value sets the soft and the hard limit.
+ * cap), so it stops only a render the wall-clock kill somehow missed. The
+ * file-size limit is MAX_RENDER_OUTPUT_BYTES. Each value sets the soft and
+ * the hard limit.
  */
 export function prlimitArgs(timeoutSeconds: number): string[] {
   return [
     `--cpu=${timeoutSeconds * SLICER_CPUS + CPU_MARGIN_SECONDS}`,
     `--as=${OPENSCAD_ADDRESS_SPACE_BYTES}`,
     `--nproc=${OPENSCAD_PROCESS_LIMIT}`,
+    `--fsize=${MAX_RENDER_OUTPUT_BYTES}`,
   ];
 }
 

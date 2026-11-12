@@ -750,7 +750,7 @@ describe("OpenSCAD and STEP", () => {
   // prlimit sets the limits on itself and then runs landrun, which runs
   // OpenSCAD: limits are inherited across exec, so OpenSCAD runs under them.
   // landrun is outside the sandbox's own rules, so prlimit must come first.
-  test("OpenSCAD runs under prlimit with CPU-time, address-space and process-count limits", async () => {
+  test("OpenSCAD runs under prlimit with CPU-time, address-space, process-count and file-size limits", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
@@ -758,7 +758,12 @@ describe("OpenSCAD and STEP", () => {
     const args = readFileSync(s.prlimit.argsLog, "utf8").trimEnd().split("\n");
     const at = args.indexOf("--");
     // CPU time: the 30 s wall cap of this setup on 4 CPUs, plus 60 s
-    expect(args.slice(0, at)).toEqual(["--cpu=180", "--as=4294967296", "--nproc=512"]);
+    expect(args.slice(0, at)).toEqual([
+      "--cpu=180",
+      "--as=4294967296",
+      "--nproc=512",
+      "--fsize=268435456",
+    ]);
     expect(args[at + 1]).toBe(lr.bin);
     expect(args.slice(at + 2)).toContain("--best-effort");
   });
@@ -778,6 +783,25 @@ describe("OpenSCAD and STEP", () => {
       const message = slicerContract.renderError.parse(await res.json()).message;
       expect(message).toContain("over the 256 MiB limit");
       expect(message).toContain(kind.toUpperCase());
+    }
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  // prlimit's --fsize: when OpenSCAD writes past the cap the kernel sends it
+  // SIGXFSZ, which kills it (the fake landrun sends itself the signal). The
+  // answer is a render error with a plain reason, not a 500.
+  test("a render the file-size limit stops is 422 render_failed with a plain reason", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "fsize" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (const kind of ["stl", "png"]) {
+      const res = await render(base, kind);
+      expect(res.status).toBe(422);
+      const body = slicerContract.renderError.parse(await res.json());
+      expect(body.error).toBe("render_failed");
+      expect(body.message).toBe(
+        `OpenSCAD's ${kind.toUpperCase()} went over the 256 MiB limit for a render, so it was stopped while writing it.`,
+      );
     }
     expect(readdirSync(s.workDir)).toEqual([]);
   });

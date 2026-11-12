@@ -130,14 +130,17 @@ export type AbiMode = number | "garbled";
  * without --best-effort is the ABI check: it is counted in landrun-abi.log,
  * not in landrun.log or landrun-runs.log. "big" writes a sparse output file of
  * `bytes` bytes, so a test can pass the render output cap without filling the
- * disk.
+ * disk. "fsize" acts out prlimit's file-size limit: it writes part of the
+ * output, then dies of SIGXFSZ, as the kernel kills a program that writes
+ * past RLIMIT_FSIZE.
  */
 export function fakeLandrun(
   dir: string,
   mode:
     | { kind: "ok"; content: string }
     | { kind: "fail"; stderr: string }
-    | { kind: "big"; bytes: number },
+    | { kind: "big"; bytes: number }
+    | { kind: "fsize" },
   opts: { probe?: ProbeMode; abi?: AbiMode } = {},
 ): {
   bin: string;
@@ -171,6 +174,12 @@ exit 1
     case "big":
       tail = `dd if=/dev/zero of="$out" bs=1 count=1 seek=${mode.bytes - 1} 2>/dev/null
 exit 0
+`;
+      break;
+    case "fsize":
+      tail = `printf 'solid partial' > "$out"
+kill -XFSZ $$
+exit 1
 `;
       break;
   }

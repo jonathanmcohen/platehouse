@@ -3,7 +3,9 @@
 // OpenSCAD 2026.11-RC0 renders it under prlimit and landrun (see
 // sandbox.ts), with no network in the container, a time cap and
 // OPENSCADPATH unset. A render that fails answers with the tail of
-// OpenSCAD's own stderr; an output over MAX_RENDER_OUTPUT_BYTES is refused.
+// OpenSCAD's own stderr. OpenSCAD's file-size limit is
+// MAX_RENDER_OUTPUT_BYTES, so writing past it stops OpenSCAD, and an output
+// over it that gets through anyway is refused.
 import {
   accessSync,
   closeSync,
@@ -20,6 +22,7 @@ import { join } from "node:path";
 import {
   type GroupResult,
   landrunArgs,
+  MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
   prlimitArgs,
   readLandlockAbi,
@@ -53,13 +56,9 @@ export const SCAD_INPUT = "input.scad";
 
 const MIB = 1024 * 1024;
 
-/**
- * The largest STL or PNG a render may answer with. The server holds the
- * output in memory to send it, so an output over this is refused, never
- * read. 256 MiB is about 5 million triangles of binary STL, far more than a
- * printable model needs (security review of PR #36, issue #47).
- */
-export const MAX_RENDER_OUTPUT_BYTES = 256 * MIB;
+// The render output cap lives in sandbox.ts beside the prlimit limits it
+// also sets; it is exported here too, where the server's tests read it.
+export { MAX_RENDER_OUTPUT_BYTES };
 
 /**
  * Reads a finished render's output, or reports its size when it is over
@@ -141,6 +140,16 @@ export async function renderScad(
     return {
       ok: false,
       message: `OpenSCAD took longer than ${config.scadTimeoutSeconds} s and was stopped.`,
+      output,
+    };
+  }
+  // prlimit's file-size limit: the kernel kills OpenSCAD with SIGXFSZ when
+  // it writes past MAX_RENDER_OUTPUT_BYTES (landrun runs it in its own place,
+  // and OpenSCAD's AppRun is the binary itself, so the signal reaches here).
+  if (run.signal === "SIGXFSZ") {
+    return {
+      ok: false,
+      message: `OpenSCAD's ${kind.toUpperCase()} went over the ${MAX_RENDER_OUTPUT_BYTES / MIB} MiB limit for a render, so it was stopped while writing it.`,
       output,
     };
   }
