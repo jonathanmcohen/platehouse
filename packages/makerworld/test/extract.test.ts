@@ -236,4 +236,50 @@ describe("extractMakerWorld", () => {
     expect(designer('<metadata name="Desi<gner">D</metadata>')).toBeUndefined();
     expect(designer('<metadata name="Title" <metadata name="Designer">D</metadata>')).toBe("D");
   });
+
+  // Postgres text cannot hold a NUL, and every field here is stored (#78):
+  // the title as the caption, the designer as the creator's name, the
+  // description as Markdown and the licence as an id or a note. A NUL is
+  // dropped from each; a field that was only NUL reads as absent.
+  describe("a NUL in a field is dropped", () => {
+    const NUL = "\u0000";
+
+    it("from every field it returns", () => {
+      const mw = extractMakerWorld(
+        `<metadata name="Designer">Jane${NUL} Doe</metadata>` +
+          `<metadata name="Title">Desk${NUL} Tidy</metadata>` +
+          `<metadata name="Description">&amp;lt;p&amp;gt;Fits${NUL} a desk&amp;lt;/p&amp;gt;</metadata>` +
+          `<metadata name="License">BY${NUL}-NC</metadata>`,
+      );
+      expect(mw).toEqual({
+        title: "Desk Tidy",
+        designer: "Jane Doe",
+        descriptionHtml: "<p>Fits a desk</p>",
+        license: "BY-NC",
+      });
+    });
+
+    it("so a designer that was only NUL is no designer, and the file is not MakerWorld's", () => {
+      expect(
+        extractMakerWorld(
+          `<metadata name="Designer">${NUL}</metadata><metadata name="Title">T</metadata>`,
+        ),
+      ).toBeNull();
+    });
+
+    it("so the generator's name split by a NUL is still the generator", () => {
+      expect(
+        extractMakerWorld(`<metadata name="Designer">Gridfinity${NUL} Layout Tool</metadata>`),
+      ).toBeNull();
+    });
+
+    it("so other fields that were only NUL read as absent", () => {
+      expect(
+        extractMakerWorld(
+          `<metadata name="Designer">Jane</metadata><metadata name="Title">${NUL}</metadata>` +
+            `<metadata name="Description">${NUL}</metadata><metadata name="License">${NUL}</metadata>`,
+        ),
+      ).toEqual({ title: null, designer: "Jane", descriptionHtml: null, license: null });
+    });
+  });
 });

@@ -317,32 +317,36 @@ describe("the plate list", () => {
     expect(handed).toEqual([1]);
   });
 
-  it("skips a plate png name whose number is not a safe integer (17 to 21 digits)", async () => {
+  // plates.index is a 32-bit Postgres integer, so a plate number past
+  // 2147483647 cannot be stored: the file is damaged however many digits the
+  // number has, past Number.MAX_SAFE_INTEGER included (#78). Before #78 a
+  // name past MAX_SAFE_INTEGER was skipped and one below it was a plate.
+  it.each([
+    "2147483648",
+    "3000000000",
+    "9007199254740991",
+    "9007199254740992",
+    "12345678901234567",
+    "123456789012345678901",
+    "9".repeat(400),
+  ])("is null when a plate png name's number is past the 32-bit range (%s)", async (n) => {
     const handed: number[] = [];
     const project = await readProject(
       writeTmp(
         build3mf({
           extra: [
             { name: "Metadata/plate_1.png", data: png("p1") },
-            { name: "Metadata/plate_9007199254740992.png", data: png("unsafe16") },
-            { name: "Metadata/plate_12345678901234567.png", data: png("d17") },
-            { name: "Metadata/plate_12345678901234567_small.png", data: png("d17s") },
-            { name: "Metadata/plate_123456789012345678.png", data: png("d18") },
-            { name: "Metadata/plate_1234567890123456789.png", data: png("d19") },
-            { name: "Metadata/plate_12345678901234567890.png", data: png("d20") },
-            { name: "Metadata/plate_123456789012345678901.png", data: png("d21") },
+            { name: `Metadata/plate_${n}.png`, data: png("big") },
           ],
         }),
       ),
       { onThumbnail: async (i) => void handed.push(i) },
     );
-    expect(project?.plates).toEqual([
-      { index: 1, name: null, objectCount: 0, sliced: false, filaments: [] },
-    ]);
-    expect(handed).toEqual([1]);
+    expect(project).toBeNull();
+    expect(handed).toEqual([]);
   });
 
-  it("is null when the only plate png names are not safe integers", async () => {
+  it("is null when the only plate png names are past the 32-bit range", async () => {
     const names = ["12345678901234567", "123456789012345678901", "9".repeat(400)];
     const file = build3mf({
       extra: names.map((n) => ({ name: `Metadata/plate_${n}.png`, data: png(n.slice(0, 8)) })),
@@ -350,18 +354,18 @@ describe("the plate list", () => {
     expect(await read(file)).toBeNull();
   });
 
-  it("reads the largest safe integer as a plate png index, with its thumbnail", async () => {
+  it("reads 2147483647, the largest storable plate number, as a png index with its thumbnail", async () => {
     const pngs: Array<[number, Buffer]> = [];
     const project = await readProject(
       writeTmp(
         build3mf({
-          extra: [{ name: "Metadata/plate_9007199254740991.png", data: png("max") }],
+          extra: [{ name: "Metadata/plate_2147483647.png", data: png("max") }],
         }),
       ),
       { onThumbnail: async (i, b) => void pngs.push([i, b]) },
     );
-    expect(project?.plates.map((p) => p.index)).toEqual([Number.MAX_SAFE_INTEGER]);
-    expect(pngs).toEqual([[Number.MAX_SAFE_INTEGER, png("max")]]);
+    expect(project?.plates.map((p) => p.index)).toEqual([2147483647]);
+    expect(pngs).toEqual([[2147483647, png("max")]]);
   });
 });
 
@@ -1007,6 +1011,94 @@ describe("a bug in the parser's own code reaches the caller", () => {
   });
 });
 
+// Postgres text cannot hold a NUL, so every text value the parser returns
+// drops it (#78). The value is otherwise kept as written, and one that was
+// only NUL reads as absent, as a blank one does.
+describe("a NUL in a text value is dropped", () => {
+  const NUL = "\u0000";
+
+  it("from plate names, raw or as a character reference", async () => {
+    const project = await mustRead(
+      build3mf({
+        modelSettings: modelSettingsXml([
+          { index: 1, name: `Ba${NUL}se` },
+          { index: 2, name: NUL },
+          { index: 3, name: "Li(DEC)d" },
+          { index: 4, name: "(HEX)" },
+        ])
+          .replace("(DEC)", "&#0;")
+          .replace("(HEX)", "&#x0;"),
+      }),
+    );
+    expect(project.plates.map((p) => [p.index, p.name])).toEqual([
+      [1, "Base"],
+      [2, null],
+      [3, "Lid"],
+      [4, null],
+    ]);
+  });
+
+  it("from a sliced plate's filament types and the printer model id", async () => {
+    const project = await mustRead(
+      build3mf({
+        plates: [{ index: 1 }],
+        slices: [
+          slicedP1S(1, {
+            printerModelId: `C1${NUL}2`,
+            filaments: [
+              { id: 1, type: `P${NUL}LA`, usedG: 1 },
+              { id: 2, type: NUL, usedG: 1 },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(project.plates[0]?.filaments.map((f) => f.type)).toEqual(["PLA", ""]);
+    expect(project.slicedFor).toEqual({ printerModelId: "C12", nozzle: 0.4 });
+  });
+
+  it("from a printer model id that was only NUL, which leaves no slicedFor", async () => {
+    const project = await mustRead(
+      build3mf({ plates: [{ index: 1 }], slices: [slicedP1S(1, { printerModelId: NUL })] }),
+    );
+    expect(project.plates[0]?.sliced).toBe(true);
+    expect(project.slicedFor).toBeUndefined();
+  });
+
+  it("from the project's filament types and process name", async () => {
+    const project = await mustRead(
+      build3mf({
+        plates: [{ index: 1 }],
+        project: {
+          filament_type: [`PL${NUL}A`, NUL],
+          filament_colour: ["#00AE42", "#FFFFFF"],
+          print_settings_id: [`0.20mm${NUL} Standard`],
+        },
+      }),
+    );
+    expect(project.projectFilaments.map((f) => f.type)).toEqual(["PLA", ""]);
+    expect(project.processName).toBe("0.20mm Standard");
+  });
+
+  it("from a process name that was only NUL, which leaves no process name", async () => {
+    const project = await mustRead(
+      build3mf({ plates: [{ index: 1 }], project: { print_settings_id: NUL } }),
+    );
+    expect(project.processName).toBeUndefined();
+  });
+
+  it("from the MakerWorld text of 3D/3dmodel.model", async () => {
+    const project = await mustRead(
+      build3mf({
+        plates: [{ index: 1 }],
+        model: MODEL_XML.replace("Synthetic Designer", `Synthetic${NUL} Designer`),
+      }),
+    );
+    expect(project.makerWorldXml).toContain('<metadata name="Designer">Synthetic Designer<');
+    expect(project.makerWorldXml).not.toContain(NUL);
+  });
+});
+
 describe("ceilings are inclusive", () => {
   it("reads 128 plates from model_settings, pngs and slice_info", async () => {
     const plates = range(128).map((index) => ({ index }));
@@ -1034,6 +1126,20 @@ describe("ceilings are inclusive", () => {
       }),
     );
     expect(project.projectFilaments).toHaveLength(256);
+  });
+
+  // The 32-bit columns (#78): 2147483647 is the last plate index and
+  // filament slot that reads; one more is damage (hostile.test.ts).
+  it("reads plate index 2147483647 from model_settings and slice_info, with slot 2147483647", async () => {
+    const max = 2147483647;
+    const project = await mustRead(
+      build3mf({
+        plates: [{ index: max, name: "Last" }],
+        slices: [slicedP1S(max, { filaments: [{ id: max, type: "PLA", usedG: 2 }] })],
+      }),
+    );
+    expect(project.plates.map((p) => [p.index, p.name, p.sliced])).toEqual([[max, "Last", true]]);
+    expect(project.plates[0]?.filaments.map((f) => f.slot)).toEqual([max]);
   });
 
   it("reads a config entry of exactly 5 MiB", async () => {

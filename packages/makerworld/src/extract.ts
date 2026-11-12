@@ -155,6 +155,11 @@ function* metadataElements(xml: string): Generator<[string, string]> {
 // decode here, so a title MakerWorld stored with an entity in it still reads
 // as text.
 //
+// Every field has NUL removed before anything else reads it, because each
+// one is stored and Postgres text cannot hold a NUL (#78). A field that was
+// only NUL is then blank, so it reads as absent. No entity decodes to NUL
+// (decodeRef refuses code point 0), so a raw NUL is the only way one arrives.
+//
 // Null when there is no Designer: MakerWorld always writes one, Jon's own
 // designs leave it empty, and other tools' exports carry only a placeholder
 // title. Also null when the Designer is a generator's name. The first
@@ -168,7 +173,9 @@ function* metadataElements(xml: string): Generator<[string, string]> {
 export function extractMakerWorld(modelXmlPrefix: string): MakerWorldDetails | null {
   const found = new Map<string, string>();
   for (const [name, value] of metadataElements(modelXmlPrefix ?? "")) {
-    if (!found.has(name)) found.set(name, decodeEntities(decodeEntities(value)));
+    if (!found.has(name)) {
+      found.set(name, decodeEntities(decodeEntities(value)).replaceAll("\u0000", ""));
+    }
   }
   const text = (name: string): string | null =>
     blankToNull(collapse(decodeEntities(found.get(name) ?? "")));
