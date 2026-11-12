@@ -4,7 +4,9 @@
 // - A HEAD on a file's content answers the GET's headers and opens no store
 //   stream. Fastify answers HEAD with the GET handler, and a stream given to
 //   reply.send on a HEAD is drained to its end, so before this a HEAD read the
-//   whole object from the bucket.
+//   whole object from the bucket. When the store cannot give the file (an
+//   outage, or the object gone from the bucket), the HEAD is 503 as the GET
+//   is (PR #116 review).
 // - Every bearer-class answer carries Cache-Control: no-store: the v1 routes,
 //   the tus mount at /api/v1/uploads (create, PATCH, HEAD, the result route
 //   and the upload hook's 404) and the 404 a valid token gets on an unknown
@@ -15,11 +17,16 @@
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createTokens } from "../../../src/api/tokens.js";
-import type { ApiLibrary, ApiModel } from "../../../src/api/v1.js";
+import { type ApiLibrary, type ApiModel, FILE_UNAVAILABLE_MESSAGE } from "../../../src/api/v1.js";
+import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { meta, OCTET, TUS } from "../../uploads/support/http.js";
 import { type AuthTestApp, authTestApp, memoryTokenStore } from "../support/oidc-issuer.js";
 
 const FILE_ID = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e9f";
+/** A file whose store is down: every read of it is StoreUnavailable. */
+const DOWN_ID = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e91";
+/** A file whose object is gone from the bucket, as HeadObject and GetObject report it. */
+const GONE_ID = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e92";
 const BYTES = Buffer.from("solid synthetic\nendsolid synthetic\n");
 
 const MODEL: ApiModel = {
@@ -48,8 +55,14 @@ const library: ApiLibrary = {
   createModel: async () => ({ model: MODEL }),
   getModel: async () => undefined,
   getFile: async () => undefined,
-  fileHead: async (id) => (id === FILE_ID ? HEAD : undefined),
+  fileHead: async (id) => {
+    if (id === DOWN_ID) throw new StoreUnavailable("HeadObject", "ECONNREFUSED");
+    if (id === GONE_ID) throw new StoreError("HeadObject", "NotFound", 404);
+    return id === FILE_ID ? HEAD : undefined;
+  },
   openFile: async (id) => {
+    if (id === DOWN_ID) throw new StoreUnavailable("GetObject", "ECONNREFUSED");
+    if (id === GONE_ID) throw new BlobNotFound("GetObject");
     if (id !== FILE_ID) return undefined;
     streamsOpened += 1;
     return { ...HEAD, stream: Readable.from([BYTES]) };
@@ -104,6 +117,19 @@ describe("HEAD on a file's content", () => {
     });
     expect(res.statusCode).toBe(404);
     expect(streamsOpened).toBe(before);
+  });
+
+  test.each([
+    ["the store is down", DOWN_ID],
+    ["the object is gone from the bucket", GONE_ID],
+  ])("is 503 with no body when %s, as the GET is", async (_why, id) => {
+    const url = `/api/v1/files/${id}/content`;
+    const head = await t.app.inject({ method: "HEAD", url, headers: bearer() });
+    const get = await t.app.inject({ method: "GET", url, headers: bearer() });
+    expect(head.statusCode).toBe(503);
+    expect(head.rawPayload.length).toBe(0);
+    expect(get.statusCode).toBe(503);
+    expect(get.json()).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
   });
 
   test("the GET still sends the bytes", async () => {

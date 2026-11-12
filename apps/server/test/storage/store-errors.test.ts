@@ -87,6 +87,7 @@ const operations: Array<[name: string, call: (s: BlobStore) => Promise<unknown>]
       }),
   ],
   ["getBlobStream", (s) => s.getBlobStream(KEY)],
+  ["headBlob", (s) => s.headBlob(KEY)],
   ["deleteBlobs", (s) => s.deleteBlobs([KEY])],
   ["listPrefix", (s) => s.listPrefix("models/")],
   ["listPage", (s) => s.listPage("models/")],
@@ -241,6 +242,44 @@ describe("failures that are not an outage", () => {
     const err = await errorOf(store.deleteBlobs([KEY]));
     expect(err).toBeInstanceOf(StoreError);
     expect((err as StoreError).code).toBe("AccessDenied");
+  });
+});
+
+// PR #116 review: a HEAD on a file's content asks the store whether the
+// object is there (HeadObject, no body), so it answers what the GET would.
+describe("headBlob", () => {
+  it("resolves when the object is there, with one HeadObject and no GetObject", async () => {
+    const fake = await startFakeS3(() => ({
+      status: 200,
+      headers: { "content-type": "application/octet-stream", "content-length": "22" },
+    }));
+    cleanups.push(() => fake.close());
+    const store = createBlobStore(settings(fake.endpoint), { maxAttempts: 1 });
+    cleanups.push(() => store.destroy());
+    await expect(store.headBlob(KEY)).resolves.toBeUndefined();
+    expect(fake.requests.map((r) => r.method)).toEqual(["HEAD"]);
+    expect(fake.requests[0]?.path).toBe(`/platehouse-test/${KEY}`);
+  });
+
+  it("a 404 is a StoreError, never StoreUnavailable", async () => {
+    // A HEAD reply has no body, so S3 cannot say NoSuchKey from NoSuchBucket:
+    // both are a bare 404, and neither is reported as an outage.
+    const store = await storeAt(() =>
+      s3Error(404, "NoSuchKey", "The specified key does not exist."),
+    );
+    const err = await errorOf(store.headBlob(KEY));
+    expect(err).toBeInstanceOf(StoreError);
+    expect(err).not.toBeInstanceOf(StoreUnavailable);
+    expect((err as StoreError).operation).toBe("HeadObject");
+    expect((err as StoreError).code).toBe("NotFound");
+    expect((err as StoreError).status).toBe(404);
+  });
+
+  it("access denied is a StoreError and carries no secret", async () => {
+    const store = await storeAt(() => s3Error(403, "AccessDenied", `denied for ${SECRET}`));
+    const err = await errorOf(store.headBlob(KEY));
+    expect(err).toBeInstanceOf(StoreError);
+    expect(everyRendering(err)).not.toContain(SECRET);
   });
 });
 

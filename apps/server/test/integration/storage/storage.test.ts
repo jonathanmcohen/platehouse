@@ -172,6 +172,24 @@ describe("getBlobStream", () => {
   });
 });
 
+describe("headBlob", () => {
+  it("resolves for a stored object, and a missing key is a 404 StoreError, not an outage", async () => {
+    const store = storeFor(await newBucket());
+    const key = blobKey(randomUUIDv7(), randomUUIDv7());
+    await store.putBlob(streamOf(Buffer.from("synthetic")), {
+      key,
+      size: 9,
+      contentType: "model/stl",
+    });
+    await expect(store.headBlob(key)).resolves.toBeUndefined();
+    await store.deleteBlobs([key]);
+    const err = await errorOf(store.headBlob(key));
+    expect(err).toBeInstanceOf(StoreError);
+    expect(err).not.toBeInstanceOf(StoreUnavailable);
+    expect((err as StoreError).status).toBe(404);
+  });
+});
+
 describe("listPrefix and deleteBlobs", () => {
   it("lists only the objects under a model and nothing after the purge", async () => {
     const store = storeFor(await newBucket());

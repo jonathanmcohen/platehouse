@@ -25,11 +25,12 @@ import {
   TOKEN_PREFIX,
   type Tokens,
 } from "../../../src/api/tokens.js";
-import { createApiLibrary } from "../../../src/api/v1.js";
+import { createApiLibrary, FILE_UNAVAILABLE_MESSAGE } from "../../../src/api/v1.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
+import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { bossUploadQueue, createUploads, type Uploads } from "../../../src/uploads/tus.js";
 import { meta, OCTET, TUS } from "../../uploads/support/http.js";
 import { ASCII_STL, build3mf, type IngestEnv, startIngestEnv } from "../support/ingest.js";
@@ -61,6 +62,10 @@ const sentTokens: string[] = [];
 let token: string;
 /** How many streams the library opened from the bucket, each one a GetObject. */
 let getObjects = 0;
+/** How many times the library asked the bucket whether an object is there (HeadObject). */
+let headObjects = 0;
+/** While true, the library's store answers every read as an outage. */
+let storeDown = false;
 
 interface Answer {
   status: number;
@@ -183,7 +188,13 @@ beforeAll(async () => {
     store: {
       getBlobStream(key) {
         getObjects += 1;
+        if (storeDown) return Promise.reject(new StoreUnavailable("GetObject", "ECONNREFUSED"));
         return env.store.getBlobStream(key);
+      },
+      headBlob(key) {
+        headObjects += 1;
+        if (storeDown) return Promise.reject(new StoreUnavailable("HeadObject", "ECONNREFUSED"));
+        return env.store.headBlob(key);
       },
     },
     plateNumbers: (id) => plateNumbers(env.db, CONTEXT, id),
@@ -428,8 +439,10 @@ describe("the operations", () => {
     expect(meta1.status).toBe(200);
     expect(meta1.json()).toMatchObject({ id: file?.id, modelId: outcome.modelId, kind: "3mf" });
 
-    // A HEAD answers the GET's headers from the database: no GetObject.
+    // A HEAD answers the GET's headers from the database after one HeadObject
+    // confirms the object: no GetObject, so no body leaves the bucket.
     const before = getObjects;
+    const headsBefore = headObjects;
     const head = await fetch(`${base}/api/v1/files/${file?.id}/content`, {
       method: "HEAD",
       headers: { authorization: `Bearer ${token}` },
@@ -439,6 +452,7 @@ describe("the operations", () => {
     expect(head.headers.get("content-type")).toBe("model/3mf");
     expect((await head.arrayBuffer()).byteLength).toBe(0);
     expect(getObjects).toBe(before);
+    expect(headObjects).toBe(headsBefore + 1);
 
     const content = await fetch(`${base}/api/v1/files/${file?.id}/content`, {
       headers: { authorization: `Bearer ${token}` },
@@ -460,6 +474,43 @@ describe("the operations", () => {
       expect(gone.status, path).toBe(404);
       expect(gone.json(), path).toEqual({ error: "not_found" });
     }
+  });
+
+  // PR #116 review: a HEAD answers what the GET for the same file would, so a
+  // client that checks a file with a HEAD is never told it is fine when it
+  // cannot be downloaded.
+  test("HEAD on a file's content is 503 when the GET is: object gone, or store down", async () => {
+    const headAndGet = async (fileId: string) => {
+      const url = `${base}/api/v1/files/${fileId}/content`;
+      const headers = { authorization: `Bearer ${token}` };
+      const head = await fetch(url, { method: "HEAD", headers });
+      await head.arrayBuffer();
+      const get = await call("GET", `/api/v1/files/${fileId}/content`);
+      return { head: head.status, get: get.status, body: get.json() };
+    };
+    const unavailable = { error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE };
+
+    const gone = await upload(`Gone ${marker()}.stl`, ASCII_STL);
+    expect(gone.status, gone.error).toBe("done");
+    const goneFile = await env.repos.files.get(gone.fileId ?? "");
+    const goneBlob = await env.repos.blobs.get(goneFile?.blobId ?? "");
+    expect(goneBlob?.state).toBe("stored");
+    await env.store.deleteBlobs([goneBlob?.key ?? ""]);
+    expect(await headAndGet(gone.fileId ?? "")).toEqual({ head: 503, get: 503, body: unavailable });
+
+    const down = await upload(`Down ${marker()}.stl`, ASCII_STL);
+    expect(down.status, down.error).toBe("done");
+    storeDown = true;
+    try {
+      expect(await headAndGet(down.fileId ?? "")).toEqual({
+        head: 503,
+        get: 503,
+        body: unavailable,
+      });
+    } finally {
+      storeDown = false;
+    }
+    expect(await headAndGet(down.fileId ?? "")).toMatchObject({ head: 200, get: 200 });
   });
 
   test("add and remove tag", async () => {

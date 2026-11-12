@@ -9,7 +9,8 @@
 //   POST   /api/v1/models                          201 {model} | 409 exists
 //   GET    /api/v1/models/:id                      files, plates, estimates
 //   GET    /api/v1/files/:id                       one file's details
-//   GET    /api/v1/files/:id/content               the file's bytes
+//   GET    /api/v1/files/:id/content               the file's bytes (HEAD: its
+//                                                  headers, after a HeadObject)
 //   PUT    /api/v1/models/:id/tags/:tag            204 (DELETE: 204)
 //   PUT    /api/v1/collections/:name/models/:id    204 (DELETE: 204)
 //   POST   /api/v1/uploads (tus), HEAD and PATCH /api/v1/uploads/:id,
@@ -142,8 +143,10 @@ export interface ApiLibrary {
   getModel(id: string): Promise<ApiModelDetail | undefined>;
   getFile(id: string): Promise<ApiFile | undefined>;
   /**
-   * What a HEAD on the file's content answers, read without opening the
-   * store: BlobNotFound when its blob is not stored.
+   * What a HEAD on the file's content answers: the headers from the database,
+   * once a HeadObject (no body) confirms the object is in the bucket, so a
+   * HEAD fails where the GET would. BlobNotFound when its blob is not stored;
+   * StoreUnavailable or StoreError when the store cannot confirm the object.
    */
   fileHead(id: string): Promise<FileHead | undefined>;
   /** The file's bytes; StoreUnavailable, BlobNotFound or StoreError when the store cannot give them. */
@@ -192,7 +195,7 @@ function sqlState(error: unknown): string | undefined {
 
 export function createApiLibrary(deps: {
   db: Kysely<DB>;
-  store: Pick<BlobStore, "getBlobStream">;
+  store: Pick<BlobStore, "getBlobStream" | "headBlob">;
   /** Task 12's plateNumbers for the selected printer (estimates.plateNumbers). */
   plateNumbers(plateId: string): Promise<PlateNumbers>;
 }): ApiLibrary {
@@ -369,7 +372,9 @@ export function createApiLibrary(deps: {
 
     async fileHead(id) {
       const found = await storedFile(id);
-      return found === undefined ? undefined : found.head;
+      if (found === undefined) return undefined;
+      await store.headBlob(found.key);
+      return found.head;
     },
 
     async openFile(id) {
@@ -794,10 +799,12 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         },
         async (request, reply) => {
           // Fastify answers HEAD with this handler, and drains to its end any
-          // stream a HEAD sends, so a HEAD never opens the store: it reads the
-          // file and its blob from the database and sends an empty stream,
-          // which keeps the file's Content-Length (an empty body would make
-          // Fastify answer 0).
+          // stream a HEAD sends, so a HEAD never opens a GetObject: it reads
+          // the file and its blob from the database, confirms the object with
+          // a HeadObject (no body, so no bytes leave the bucket, and a store
+          // outage or a missing object is the same 503 the GET answers), and
+          // sends an empty stream, which keeps the file's Content-Length (an
+          // empty body would make Fastify answer 0).
           const head = request.method === "HEAD";
           let content: FileHead | FileContent | undefined;
           try {
