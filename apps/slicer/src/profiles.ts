@@ -408,8 +408,9 @@ export function machineModels(index: ProfileIndex): Record<string, string> {
  * and why, and writes nothing, when any instantiable machine cannot be
  * covered: a machine that will not flatten or has a dangling parent, one
  * with no default_print_profile, or a default process that is missing, has a
- * dangling parent or is not a process. Never overwrites a file, and refuses
- * a name that is not a plain file name.
+ * dangling parent or is not a process, or a default_print_profile that is
+ * not a plain file name (a slash, a backslash or a NUL, or a leading dot),
+ * which could write outside the folder. Never overwrites a file.
  */
 export function writeProcessFull(
   index: ProfileIndex,
@@ -441,9 +442,10 @@ export function writeProcessFull(
       continue;
     }
     if (proc.includes("/") || proc.includes("\\") || proc.includes("\0") || proc.startsWith(".")) {
-      throw new Error(
+      problems.push(
         `machine "${name}" names default process "${proc}", which is not a plain file name`,
       );
+      continue;
     }
     const users = wanted.get(proc) ?? [];
     users.push(name);
