@@ -1,9 +1,10 @@
 // Build plan Task 30: the Fastify app buildApp(deps) returns. GET /healthz is
 // 200 only when the database answers and pg-boss is started, else 503 with
 // no detail in the body. The tus upload handler is mounted at /app/uploads
-// behind the session check (Task 15) and at /api/v1/uploads behind an auth
-// hook that refuses every request with 401 until Task 16 replaces it, so no
-// upload route is open. A state-changing request to /app/uploads also needs
+// behind the session check (Task 15) and at /api/v1/uploads behind the
+// bearer check (Task 16, app.ts apiUploadHook), so no upload route is open
+// without a session or a valid token. A state-changing request to
+// /app/uploads also needs
 // Origin to equal PUBLIC_ORIGIN (the gate's Origin check), so the tests that
 // are about credentials send it. The HTTP request timeout lets a 512 MiB
 // single PATCH through on a slow link.

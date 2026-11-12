@@ -21,6 +21,7 @@ import {
   IngestOutcomeUnknown,
   type IngestStore,
   STORAGE_UNAVAILABLE_MESSAGE,
+  UNKNOWN_FILE_PRINTER,
 } from "../../../src/ingest/ingest.js";
 import { createBlobStore, StoreUnavailable } from "../../../src/storage/s3.js";
 import { startS3 } from "../support/containers.js";
@@ -1058,6 +1059,63 @@ describe("values the database cannot store (#78)", () => {
       creator: "Synthetic Designer",
       licenseSpdx: "CC-BY-NC-4.0",
     });
+  });
+
+  /**
+   * n characters of text that does not compress, with no XML markup
+   * characters, from a fixed linear congruential sequence.
+   */
+  function noise(n: number): string {
+    const chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.,;:!?()[]{}+*/=%$#@^~|";
+    let seed = 12345;
+    let out = "";
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      out += chars[seed % chars.length];
+    }
+    return out;
+  }
+
+  // A few KB of such text in either field used to fail its btree insert
+  // (creators.name, estimates.printer_id) with "index row size exceeds btree
+  // version 4 maximum 2704", which failed the whole upload (#142, #143).
+  test("an over-long MakerWorld Designer reads as no MakerWorld details and the file is stored", async () => {
+    const bytes = hostile3mf({ designer: noise(4096), title: "Long Designer" });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Long designer.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "ok", size: bytes.length });
+    expect((await env.repos.plates.listForFile(r.fileId)).map((p) => p.index)).toEqual([1]);
+    expect(await modelRow(r.modelId)).toMatchObject({
+      creator: null,
+      caption: null,
+      licenseSpdx: null,
+    });
+  });
+
+  test("an over-long printer model id leaves the file's numbers unlabelled and the file stored", async () => {
+    const bytes = hostile3mf({ printerModelId: noise(4096) });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Long printer id.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "ok", size: bytes.length });
+    const estimates = await env.db
+      .selectFrom("estimates")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select(["estimates.printerId", "estimates.printerModelId", "estimates.status"])
+      .where("plates.fileId", "=", r.fileId)
+      .where("estimates.source", "=", "file")
+      .execute();
+    expect(estimates).toEqual([
+      { printerId: UNKNOWN_FILE_PRINTER, printerModelId: null, status: "ok" },
+    ]);
   });
 
   test.each([

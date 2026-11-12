@@ -82,6 +82,11 @@ export interface MakerWorldDetails {
 // "Untitled Bin". Compared after case and spacing are folded.
 const GENERATORS: ReadonlySet<string> = new Set(["gridfinity layout tool"]);
 
+// The longest Designer kept, in UTF-16 code units after whitespace is
+// collapsed (at most 900 UTF-8 bytes): the API's creator limit, 300, and far
+// under the 2704-byte btree entry limit of creators.name (#143).
+const MAX_DESIGNER_LENGTH = 300;
+
 // The start tag of a <metadata name="..."> element, matched where it begins
 // (sticky). Like the converter's TAG, nothing in it may run past a <, so an
 // attempt that fails stops at the next tag; group 3 is the "/" of "/>".
@@ -162,8 +167,13 @@ function* metadataElements(xml: string): Generator<[string, string]> {
 //
 // Null when there is no Designer: MakerWorld always writes one, Jon's own
 // designs leave it empty, and other tools' exports carry only a placeholder
-// title. Also null when the Designer is a generator's name. The first
-// occurrence of each field wins.
+// title. Also null when the Designer is a generator's name, or longer than
+// MAX_DESIGNER_LENGTH, which no MakerWorld name is: the designer is stored as
+// creators.name, a btree unique key, and a btree entry over 2704 bytes fails
+// the insert and with it the whole upload (#143). Such a Designer reads as no
+// Designer rather than a clipped one, so two crafted names cannot become one
+// creator and the file is still stored. The first occurrence of each field
+// wins.
 //
 // A prefix cut by the 256 KiB read cap can hide any field after the cut,
 // Designer included (Bambu Studio writes Description before Designer, so a
@@ -180,7 +190,8 @@ export function extractMakerWorld(modelXmlPrefix: string): MakerWorldDetails | n
   const text = (name: string): string | null =>
     blankToNull(collapse(decodeEntities(found.get(name) ?? "")));
   const designer = text("Designer");
-  if (designer === null || GENERATORS.has(designer.toLowerCase())) return null;
+  if (designer === null || designer.length > MAX_DESIGNER_LENGTH) return null;
+  if (GENERATORS.has(designer.toLowerCase())) return null;
   const description = blankToNull(found.get("Description") ?? "");
   return {
     title: text("Title"),

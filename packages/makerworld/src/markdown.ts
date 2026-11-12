@@ -39,6 +39,26 @@ const DROP_CONTENT: ReadonlySet<string> = new Set([
   "template",
   "svg",
 ]);
+// The dropped elements a browser reads as raw text: everything up to the
+// matching close tag (</ then the name, any case, then HTML whitespace, / or
+// >) is text, so nothing inside them is a tag. The tokenizer skips straight
+// to that close tag and ends the element there, whatever follows the name;
+// with none, the element runs to the end. The close tag itself is read as a
+// browser reads an end tag (endTagEnd), so a < in it cannot fail it and
+// leave the drop open (PR #154 review). Tokenizing tags
+// in there let a quoted attribute value opened in the script text run past
+// </script>, so the drop never ended and the rest of the description was
+// hidden (issue #141). The other dropped elements hold markup a browser
+// parses, so their tags still count. One simplification: a script whose text
+// holds "<!--<script>" hides more in a browser (its next </script> does not
+// end it), and the converter ends it at that close tag and shows what
+// follows; nothing is hidden that a browser shows.
+const RAW_TEXT_CLOSE: ReadonlyMap<string, RegExp> = new Map(
+  ["script", "style", "iframe", "noscript"].map((name) => [
+    name,
+    new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi"),
+  ]),
+);
 // Emphasis is written with *, never _: CommonMark refuses _ emphasis inside a
 // word ("screw_s_" shows the underscores), and has no such rule for *. Text
 // asterisks are escaped, so they cannot clash.
@@ -595,7 +615,13 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // review).
     const tag = rawTag.replace(/[A-Z]/g, (c) => c.toLowerCase());
     if (DROP_CONTENT.has(tag)) {
-      if (!attrs.trim().endsWith("/")) dropDepth = Math.max(0, dropDepth + (closing ? -1 : 1));
+      // A close always ends one drop, and a raw-text element always opens
+      // one: a browser ignores a self-closing slash on both, and the
+      // tokenizer skips a raw-text element's content to its close tag and
+      // closes the drop there either way. Only an svg, say, can close itself
+      // with a slash.
+      if (closing) dropDepth = Math.max(0, dropDepth - 1);
+      else if (RAW_TEXT_CLOSE.has(tag) || !attrs.trim().endsWith("/")) dropDepth++;
       return;
     }
     if (dropDepth > 0) return;
@@ -986,8 +1012,27 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     const m = TAG.exec(html);
     const end = m ? tagEnd(html, TAG.lastIndex, tagScan) : -1;
     if (m && end !== -1) {
-      onTag(m[1] === "/", m[2] as string, html.slice(TAG.lastIndex, end));
+      const closing = m[1] === "/";
+      const name = m[2] as string;
+      onTag(closing, name, html.slice(TAG.lastIndex, end));
       i = end + 1;
+      // A raw-text element's content is skipped whole (RAW_TEXT_CLOSE), and
+      // its close tag ends it: the drop is closed here and the tokenizer
+      // moves on after that tag's >, found by endTagEnd. The search starts
+      // where the content does and the tokenizer moves on from where it
+      // stops, so the pass stays linear.
+      const lower = closing ? "" : name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+      const close = closing ? undefined : RAW_TEXT_CLOSE.get(lower);
+      if (close !== undefined) {
+        close.lastIndex = i;
+        const found = close.exec(html);
+        if (found === null) i = html.length;
+        else {
+          onTag(true, lower, "");
+          const gt = endTagEnd(html, found.index + 2 + lower.length);
+          i = gt === -1 ? html.length : gt + 1;
+        }
+      }
     } else {
       onText("<"); // a < that starts no tag is text
       i += 1;
@@ -1084,6 +1129,56 @@ function scanAttributes(html: string, at: number, scan: TagScan, seen: number[])
       while (p < n) {
         const d = html.charAt(p);
         if (isHtmlSpace(d) || d === ">" || d === "<") break;
+        p++;
+      }
+      at = p;
+    }
+  }
+  return -1;
+}
+
+// Where the close tag of a raw-text element ends: the position of its >,
+// read from `at` (just after the name), or -1 when it has none. A browser
+// reads it as an end tag in the script-data state: it always ends the
+// element, and its attributes are read as a start tag's are, except that a
+// < is an ordinary character in a name or a bare value rather than a
+// failure. A > inside a quoted value does not end it; with a quote that never
+// closes, a browser drops the rest of the input, and so does the caller.
+// Unlike tagEnd this never fails at a <, so "</script <b>" ends the script at
+// its > and the text after it shows, as in a browser (PR #154 review).
+function endTagEnd(html: string, at: number): number {
+  const n = html.length;
+  while (at < n) {
+    const c = html.charAt(at);
+    if (c === ">") return at;
+    if (isHtmlSpace(c) || c === "/") {
+      at++;
+      continue;
+    }
+    // An attribute name; its first character may be an =.
+    at++;
+    while (at < n) {
+      const d = html.charAt(at);
+      if (isHtmlSpace(d) || d === "/" || d === "=" || d === ">") break;
+      at++;
+    }
+    let p = at;
+    while (p < n && isHtmlSpace(html.charAt(p))) p++;
+    if (html.charAt(p) !== "=") {
+      at = p;
+      continue;
+    }
+    p++;
+    while (p < n && isHtmlSpace(html.charAt(p))) p++;
+    const q = html.charAt(p);
+    if (q === '"' || q === "'") {
+      const close = html.indexOf(q, p + 1);
+      if (close === -1) return -1;
+      at = close + 1;
+    } else {
+      while (p < n) {
+        const d = html.charAt(p);
+        if (isHtmlSpace(d) || d === ">") break;
         p++;
       }
       at = p;

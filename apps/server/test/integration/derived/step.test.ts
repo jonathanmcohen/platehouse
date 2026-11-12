@@ -660,4 +660,56 @@ describe("after a rejected STEP replacement, a later failure keeps the previous-
     await expect(failing.convertStep(fileId)).rejects.toThrow("the queue refused the job");
     await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.queueFailed);
   });
+
+  // Issue #146: while the file is pending it still shows the previous
+  // version's mesh, so the sentence stays, alone, until the job settles.
+  // Before, every pending write cleared the message to null.
+  async function expectPending(
+    fileId: string,
+    before: { meshBlobId: string | null },
+    rejectedBlobId: string,
+  ) {
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: rejectedBlobId,
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "pending",
+      derivedMessage: PREVIOUS_VERSION_STEP,
+    });
+  }
+
+  test("a queued conversion of the rejected source keeps the sentence while it is pending", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("pending");
+    await derivedWith({}).convertStep(fileId);
+    await expectPending(fileId, before, rejectedBlobId);
+  });
+
+  test("a further replacement keeps the sentence while it is pending", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("replacement pending");
+    await derivedWith({}).replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("held replacement")),
+    );
+    await expectPending(fileId, before, rejectedBlobId);
+  });
+
+  test("a conversion of the rejected source that fails while a newer replacement is queued leaves the file pending with the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("newer queued");
+    const held = derivedWith({});
+    await held.convertStep(fileId);
+    await held.replaceFile(fileId, await writeUpload(env, uniqueStep("newer queued, held")));
+    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    const reConvert = jobs.find(
+      (j) => j.state === "created" && j.data.sourceBlobId === rejectedBlobId,
+    );
+    if (!reConvert) throw new Error("no held conversion");
+    await env.boss.cancel(QUEUE.slicer, reConvert.id);
+    env.stub.renders.always("/v1/step/glb", { kind: "drop" });
+
+    const outcome = await held.runJob(reConvert.data, {
+      retryCount: reConvert.retryLimit,
+      retryLimit: reConvert.retryLimit,
+    });
+    expect(outcome).toEqual({ status: "failed", reason: "slicer_error" });
+    await expectPending(fileId, before, rejectedBlobId);
+  });
 });

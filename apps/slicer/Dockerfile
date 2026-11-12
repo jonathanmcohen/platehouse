@@ -38,7 +38,10 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # has no CA bundle), then turns the snapshot on. Before any of that, each
 # stage writes /etc/apt/apt.conf.d/80retries so apt retries a failed download
 # 10 times, not its default 3: snapshot.ubuntu.com often answers 502 or 503
-# for longer than 3 retries last, and that failed CI builds.
+# for longer than 3 retries last, and that failed CI builds. The update
+# against the snapshot runs with --error-on=any, so an index it could not
+# fetch fails the build there, with the server's error, instead of a command
+# later as "Unable to locate package" (issue #150).
 ARG APT_SNAPSHOT=20261107T000000Z
 
 # The versions the server reports in /v1/health (AC-036). The Orca and
@@ -54,7 +57,7 @@ RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acqui
  && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
- && apt-get update \
+ && apt-get update --error-on=any \
  && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils git libatomic1 \
  && rm -rf /var/lib/apt/lists/*
 
@@ -212,7 +215,7 @@ RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acqui
  && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
- && apt-get update \
+ && apt-get update --error-on=any \
  && apt-get install -y --no-install-recommends \
       ca-certificates openssl \
       time \
@@ -278,6 +281,18 @@ RUN printf '%s\n' 'solid probe' \
  && chmod 0644 /opt/platehouse/sandbox-probe.stl
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin slicer
+
+# No setuid or setgid file is left in the image (security review of PR #123,
+# issue #153). Inside OpenSCAD's sandbox Landlock sets no-new-privileges, but
+# Orca runs outside it, and an Ubuntu install script can leave a helper
+# setuid when setcap is missing (gst-ptp-helper's falls back to that). The
+# slicer never needs one: it runs as 10001 with every capability dropped.
+# This runs after the last step that adds files as root, and fails the build
+# if any bit is left.
+RUN source /usr/local/lib/need.sh \
+ && find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
+ && need -z "$(find / -xdev -perm /6000 -type f)" -- "a setuid or setgid file is still in the image"
+
 USER 10001
 
 # The same checks as the slicer user: root passes test -x and -r on

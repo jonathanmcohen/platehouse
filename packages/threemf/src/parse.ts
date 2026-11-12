@@ -7,17 +7,22 @@
 //   backslash is not a slash, and the name of an entry the parser does not
 //   read (one with '..' or an absolute path, say) never makes a damaged file;
 // - the plate list comes from model_settings.config, else the plate_N.png
-//   names; a plate index from either is kept only as a safe integer from 1;
+//   names; a plate index from either is kept only as a whole number from 1,
+//   and one past 2147483647 is damage (next rule), not a skipped value;
 // - a plate index or filament slot past 2147483647 is damage, whatever its
 //   source, because plates.index and the slot columns are 32-bit Postgres
 //   integers (#78);
 // - every text value returned has NUL removed, because Postgres text cannot
 //   hold it (#78); a value that was only NUL reads as absent;
+// - a printer model id over 64 characters reads as absent, because it is
+//   stored in a btree key that cannot hold a long one (#142);
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - only the parser's own reads of the file (opening the zip, listing it,
-//   inflating an entry) and the ceilings make a damaged file (null); broken
-//   config XML or JSON costs that entry only;
+//   inflating an entry), the ceilings and the 32-bit rule above make a
+//   damaged file (null); otherwise broken config XML or JSON costs that
+//   entry only, while a plate index or filament slot past 2147483647 in
+//   valid config costs the whole file;
 // - a filesystem error is ReadUnavailable and never damage;
 // - anything else reaches the caller unchanged: whatever onThumbnail throws,
 //   and a bug in this file's own code. Neither is a file with no plate data.
@@ -39,6 +44,13 @@ const COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 const INTEGER = /^\s*-?[0-9]+\s*$/;
 /** The largest plate index or filament slot the database holds (Postgres integer). */
 const MAX_STORED_INDEX = 2147483647;
+/**
+ * The longest printer model id kept for slicedFor, in UTF-16 code units (at
+ * most 192 UTF-8 bytes). Bambu's ids are a few characters (C12, N2S). The id
+ * is stored as estimates.printer_id, part of a btree unique key, and a btree
+ * entry over 2704 bytes fails the insert and with it the upload (#142).
+ */
+const MAX_PRINTER_MODEL_ID_LENGTH = 64;
 const RESOURCES = Buffer.from("<resources", "latin1");
 const READ_CHUNK = 64 * 1024;
 
@@ -82,8 +94,10 @@ export async function readProjectFromReader(
     return await readArchive(reader, size, opts);
   } catch (err) {
     if (err instanceof CallerError) throw err.error;
-    // Damaged comes only from ownRead (the zip reader and inflate) and the
-    // ceilings, so a hostile file never throws.
+    // Damaged comes only from ownRead (the zip reader and inflate), the
+    // ceilings and storedIndex (a plate index or filament slot past the
+    // 32-bit range, thrown from the config mapping), so a hostile file never
+    // throws.
     if (err instanceof Damaged) return null;
     // ReadUnavailable from ownRead, or a bug in this file: either way the
     // caller sees it, never "No Bambu plate data in this file".
@@ -578,7 +592,10 @@ function sliceData(text: string | null): Map<number, Slice> {
         ?.trim()
         .split(/[\s,;]+/)[0],
     );
-    if (printerModelId !== "" && nozzle !== null && nozzle > 0) {
+    // An over-long id reads as absent, like an empty one, so the file is
+    // still stored with its plates (MAX_PRINTER_MODEL_ID_LENGTH).
+    const keptId = printerModelId !== "" && printerModelId.length <= MAX_PRINTER_MODEL_ID_LENGTH;
+    if (keptId && nozzle !== null && nozzle > 0) {
       slice.slicedFor = { printerModelId, nozzle };
     }
     out.set(index, slice);

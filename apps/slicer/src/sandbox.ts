@@ -30,16 +30,24 @@
 // prlimit and landrun with OpenSCAD, the STEP worker): in its own process
 // group, killed whole at its time cap.
 import { spawn } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /**
  * Paths OpenSCAD may run code from, besides its own AppImage tree: the
  * multiarch library folder, which holds every system library it links and
  * Mesa's EGL and DRI drivers for PNG renders, and the ELF loader (on Ubuntu
  * 24.04 a link into that folder, named so the rule says what it is for).
- * Nothing else: no /usr/bin or /bin, so OpenSCAD cannot start a shell or any
- * other program, and no /lib, which on Ubuntu 24.04 is a link to all of
- * /usr/lib (security review of PR #36, issue #47). The container tests prove
- * STL and PNG renders still work with only these.
+ * Nothing else: no /usr/bin or /bin, so OpenSCAD cannot start a shell or
+ * any of the system's commands, and no /lib, which on Ubuntu 24.04 is a link
+ * to all of /usr/lib (security review of PR #36, issue #47). The multiarch
+ * folder still holds a few runnable helpers (WebKit's WebKitNetworkProcess
+ * and MiniBrowser, GStreamer's gst-plugin-scanner and gst-ptp-helper, among
+ * others), so code running inside OpenSCAD could start one of those; none
+ * is setuid or setgid (the image strips every such bit and its build fails
+ * if one is left), and Landlock sets no-new-privileges besides (security
+ * review of PR #123, issue #153). A .scad file alone cannot run anything.
+ * The container tests prove STL and PNG renders still work with only these.
  */
 const SYSTEM_EXEC = ["/usr/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"];
 /**
@@ -97,8 +105,16 @@ export function landrunArgs(opts: {
  * The lowest Landlock ABI the self-test accepts (Jon, 2026-11-11; Hades runs
  * kernel 6.17). ABI 6 is the first that also scopes signals and abstract
  * Unix sockets, on top of the TCP rules of ABI 4 and the filesystem rules
- * this sandbox is built on, so from 6 on best effort leaves out nothing it
- * counts on.
+ * this sandbox is built on.
+ *
+ * Known limits, which only the container setup covers (security review of
+ * PR #123, issue #153): below ABI 9, best effort drops the right that stops
+ * a connect() to a pathname Unix socket (landrun sandbox.go, go-landlock
+ * config.go), and Hades' kernel 6.17 is below ABI 9 (inferred from the
+ * kernel's history; the first self-test line on Hades records the ABI). And
+ * Landlock restricts no UDP at any ABI. So OpenSCAD's sandbox relies on the
+ * container having no Unix socket mounted and only its internal network
+ * (Task 26 checks both on Hades).
  */
 export const MIN_LANDLOCK_ABI = 6;
 
@@ -146,17 +162,27 @@ const CPU_MARGIN_SECONDS = 60;
 /**
  * The address-space limit: the container's 4 GiB of memory (AC-035). Virtual
  * reservations (thread stacks, malloc arenas, Mesa's buffers) count against
- * it as well as memory in use, so it is not set lower; at this value a
- * runaway render fails its own allocation instead of leaving the kernel's
- * OOM killer to choose a process in the container.
+ * it as well as memory in use, so it is not set lower. It bounds what
+ * OpenSCAD alone can reserve; it does not keep the kernel's OOM killer out.
+ * The container's memory cgroup also counts the Node server and the /work
+ * tmpfs, so a render that stays under this limit can still push the
+ * container over its 4 GiB, and the OOM killer can act first (security
+ * review of PR #123, issue #153). Setting it lower would need a measured
+ * headroom for the server and /work, which has not been taken.
  */
 export const OPENSCAD_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024;
 /**
- * The process-count limit (RLIMIT_NPROC, which counts every process and
- * thread of the slicer user, the server's own included): far above what a
- * render needs (OpenSCAD's TBB and Mesa llvmpipe start about one thread per
- * host CPU; Hades has 8), far below what a runaway fork could reach. The
- * container's pids_limit (Task 26) is the hard cap.
+ * The process-count limit (RLIMIT_NPROC): far above what a render needs
+ * (OpenSCAD's TBB and Mesa llvmpipe start about one thread per host CPU;
+ * Hades has 8), far below what a runaway fork could reach. RLIMIT_NPROC
+ * counts every process and thread of the user, and with Docker's default of
+ * no user-namespace remap that is per UID across the whole host, not per
+ * container: the server's own threads count, and so would any other
+ * container running as UID 10001, such as the slicing gate image, which
+ * uses the same UID. Past the limit OpenSCAD fails to start threads
+ * (security review of PR #123, issues #138 and #153; Task 26 checks that no
+ * other container on Hades runs as 10001). The container's pids_limit
+ * (Task 26) is the hard cap.
  */
 export const OPENSCAD_PROCESS_LIMIT = 512;
 
@@ -282,6 +308,88 @@ export function runGroup(
       });
     });
   });
+}
+
+/**
+ * The processes whose parent is PID 1, other than selfPid, read from each
+ * procDir/<pid>/stat. A program that calls setsid() leaves its job's process
+ * group, so the kill at the time cap misses it, and once its parent is gone
+ * it is re-parented to PID 1, tini in the image (issue #153). The server is
+ * tini's own child, so it is left out; a process docker exec starts (the
+ * health check among them) has parent 0, so it is not listed. The parent is
+ * read after the last ")" of the stat line, since the name in the
+ * parentheses may hold anything, ")" and digits included. A stat that is
+ * gone or does not parse is skipped.
+ */
+export function orphansOfInit(procDir: string, selfPid: number): number[] {
+  let names: string[];
+  try {
+    names = readdirSync(procDir);
+  } catch {
+    return [];
+  }
+  const out: number[] = [];
+  for (const name of names) {
+    if (!/^[1-9][0-9]*$/.test(name)) continue;
+    const pid = Number(name);
+    if (pid === selfPid || pid === 1) continue;
+    let stat: string;
+    try {
+      stat = readFileSync(join(procDir, name, "stat"), "utf8");
+    } catch {
+      continue;
+    }
+    const close = stat.lastIndexOf(")");
+    if (close === -1) continue;
+    const ppid = stat.slice(close + 2).split(" ")[1];
+    if (ppid === "1") out.push(pid);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+/**
+ * Kills every process orphansOfInit lists with SIGKILL and returns the ids
+ * it signalled. Run after each job, when nothing of that job may still be
+ * running, so a setsid() child cannot outlive it holding /work files open
+ * (issue #153 item 3). A kill that fails (already gone, or not this user's)
+ * is skipped.
+ */
+export function reapOrphans(
+  opts: {
+    procDir?: string;
+    selfPid?: number;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+  } = {},
+): number[] {
+  const kill = opts.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
+  const killed: number[] = [];
+  for (const pid of orphansOfInit(opts.procDir ?? "/proc", opts.selfPid ?? process.pid)) {
+    try {
+      kill(pid, "SIGKILL");
+      killed.push(pid);
+    } catch {
+      // already gone, or not ours to signal
+    }
+  }
+  return killed;
+}
+
+/**
+ * True only where reapOrphans is safe: on Linux, with the server's parent
+ * PID 1 and PID 1 named tini, as in the image (its ENTRYPOINT). Anywhere
+ * else (a developer machine, a CI runner, a test) PID 1 has other children
+ * that are not the slicer's to kill.
+ */
+export function runsUnderTini(
+  opts: { procDir?: string; ppid?: number; platform?: NodeJS.Platform } = {},
+): boolean {
+  if ((opts.platform ?? process.platform) !== "linux") return false;
+  if ((opts.ppid ?? process.ppid) !== 1) return false;
+  try {
+    return readFileSync(join(opts.procDir ?? "/proc", "1", "comm"), "utf8").trim() === "tini";
+  } catch {
+    return false;
+  }
 }
 
 /** The last lines of a program's output, at most `chars` characters. */
