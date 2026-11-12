@@ -182,8 +182,10 @@ describe("prlimit arguments", () => {
 
   // SIGXFSZ, which the file-size limit sends, dumps core by default. With
   // the core-file size at 0 a render a request makes too big on purpose
-  // leaves no core file in /work and sends none to the host's handler.
-  test("the core-file size limit is 0, so a render the file-size limit stops dumps no core", () => {
+  // leaves no core file when the host's core_pattern names a file. A piped
+  // core_pattern ("|...") ignores the limit and still gets the dump; only a
+  // handler that honours the limit drops it. No test here runs the kernel.
+  test("the core-file size limit is 0, so a render the file-size limit stops writes no core file", () => {
     expect(prlimitArgs(120)).toContain("--core=0");
     expect(prlimitArgs(30)).toContain("--core=0");
   });

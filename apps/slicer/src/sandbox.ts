@@ -178,9 +178,12 @@ export const MAX_RENDER_OUTPUT_BYTES = 256 * 1024 * 1024;
  * file-size limit is MAX_RENDER_OUTPUT_BYTES. The core-file size is 0:
  * SIGXFSZ, which the file-size limit sends, dumps core by default, and a
  * request can make a render too big on purpose, so without it each such
- * render could leave a core of up to the address-space limit in /work or
- * hand one to the host's core handler. Each value sets the soft and the
- * hard limit.
+ * render could leave a core of up to the address-space limit in /work. The
+ * limit stops a core file only when the host's core_pattern names a file.
+ * When core_pattern starts with "|" the kernel ignores RLIMIT_CORE (core(5))
+ * and still pipes the dump to the host's handler; whether that handler
+ * stores it depends on the handler honouring the limit it is passed (%c),
+ * which this code cannot check. Each value sets the soft and the hard limit.
  */
 export function prlimitArgs(timeoutSeconds: number): string[] {
   return [
