@@ -1184,6 +1184,71 @@ describe("a file put under an imported file's name during the import", () => {
       expect(fake.calls).toEqual([name]);
     },
   );
+
+  test.each([
+    ["changed during its import", "changed"],
+    ["has a stored copy that cannot be confirmed", "unconfirmed"],
+  ])(
+    "an imported file that %s, kept in its holding folder, moves to failed on a later pass of the same watcher once the folder is usable, and is logged as not moved once, not on every pass",
+    async (_l, why) => {
+      // A kept file waits only for failed to be usable: fixing failed while
+      // the server runs releases it at the next pass, not the next restart.
+      const fake = fakeIngest();
+      const name = "changing.stl";
+      const path = join(inbox, name);
+      const ingest = {
+        async ingestFile(input: IngestInput) {
+          const result = await fake.ingest.ingestFile(input);
+          if (why === "changed") await appendFile(path, "more bytes\n");
+          return result;
+        },
+      };
+      const deps = {
+        ingest,
+        storedFile: async (id: string) => (why === "changed" ? fake.stored.get(id) : undefined),
+        findImported: async (q: ImportedQuery) => storedRow(fake, q),
+      };
+      const w = watcher(fake, deps);
+      await writeFile(join(inbox, FAILED_DIR), "in the way\n");
+      await writeFile(path, "solid a\nendsolid a\n");
+      const reason = why === "changed" ? CHANGED_REASON : UNCONFIRMED_REASON;
+      const expected =
+        why === "changed" ? "solid a\nendsolid a\nmore bytes\n" : "solid a\nendsolid a\n";
+      await w.pollOnce();
+      await tick(w, 15_000);
+      const holds = (await readdir(inbox)).filter((e) => e.startsWith(HOLD_PREFIX));
+      expect(holds).toHaveLength(1);
+      const held = join(inbox, holds[0] ?? "", name);
+      expect(await readFile(held, "utf8")).toBe(expected);
+
+      // Later passes with failed still unusable: it stays held, and the line
+      // saying it could not be moved is not written again on each pass.
+      const notMoved = () => lines.filter((l) => l.includes("could not move")).length;
+      const before = notMoved();
+      expect(before).toBe(1);
+      for (let i = 0; i < 4; i += 1) {
+        const later = await tick(w, 15_000);
+        expect(later.failed).toEqual([]);
+      }
+      expect(notMoved()).toBe(before);
+      expect(lines.filter((l) => l.includes("could not clear"))).toEqual([]);
+      expect(await readFile(held, "utf8")).toBe(expected);
+
+      // failed fixed while the same watcher runs: the next pass moves it.
+      await rm(join(inbox, FAILED_DIR));
+      const moved = await tick(w, 5_000);
+      expect(moved.failed).toEqual([{ name, reason }]);
+      expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
+        `${reason}\n`,
+      );
+      expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+      expect(lines.some((l) => l.includes(HELD_REASON))).toBe(false);
+      await tick(w, 15_000);
+      await tick(w, 15_000);
+      expect(fake.calls).toEqual([name]);
+    },
+  );
 });
 
 describe("an imported file whose check or delete in its holding folder fails", () => {
@@ -1345,6 +1410,42 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
       await tick(fixed, 15_000);
       await tick(fixed, 15_000);
+      expect(fake.calls).toEqual([name]);
+    },
+  );
+
+  test.each([
+    ["lstat", UNCHECKED_REASON],
+    ["fstat", UNCHECKED_REASON],
+    ["unlink", UNREMOVED_REASON],
+  ] as const)(
+    "when its %s throws and the failed folder is unusable, it moves to failed with that reason on a later pass of the same watcher once the folder is usable",
+    async (fault, reason) => {
+      const fake = fakeIngest();
+      const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
+      const w = watcher(fake, deps);
+      await writeFile(join(inbox, FAILED_DIR), "in the way\n");
+      const fired = failInHold(fault);
+      const path = join(inbox, name);
+      await writeFile(path, TEXT);
+      await w.pollOnce();
+      await tick(w, 15_000);
+      expect(fired()).toBe(true);
+      const holds = (await readdir(inbox)).filter((e) => e.startsWith(HOLD_PREFIX));
+      expect(holds).toHaveLength(1);
+      const before = lines.filter((l) => l.includes("could not move")).length;
+      expect(before).toBe(1);
+      await tick(w, 15_000);
+      await tick(w, 15_000);
+      expect(lines.filter((l) => l.includes("could not move")).length).toBe(before);
+
+      await rm(join(inbox, FAILED_DIR));
+      const moved = await tick(w, 5_000);
+      expect(moved.failed).toEqual([{ name, reason }]);
+      expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+      await tick(w, 15_000);
+      await tick(w, 15_000);
       expect(fake.calls).toEqual([name]);
     },
   );
