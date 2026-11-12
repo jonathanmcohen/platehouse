@@ -4,6 +4,7 @@
 // cheaply: the exact settle boundary, every ignored name, the failed-folder
 // names, and the paths that must never loop (a file that cannot be moved, an
 // inbox copy that cannot be deleted) or lose a file without a word.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   type BigIntStats,
@@ -885,6 +886,37 @@ describe("a file put under an imported file's name while it is checked", () => {
     );
     expect(await readFile(path, "utf8")).toBe(THIRD);
     expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, "part.stl"].sort());
+  });
+
+  test("a FIFO put under the name, which cannot be put back, moves to failed with the put-back reason, not the swapped one", async () => {
+    const fake = fakeIngest();
+    const path = join(inbox, "part.stl");
+    let swapped = false;
+    const w = watcher(fake, {
+      storedFile: async (id) => {
+        if (!swapped) {
+          swapped = true;
+          const temp = join(inbox, ".part.stl.fifo");
+          execFileSync("mkfifo", [temp]);
+          renameSync(temp, path);
+        }
+        return fake.stored.get(id);
+      },
+    });
+    await writeFile(path, FIRST);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(swapped).toBe(true);
+    expect(pass.imported.map((i) => i.name)).toEqual(["part.stl"]);
+    // Nothing took the name, so the reason never says another file did.
+    expect(pass.failed.map((f) => f.reason)).not.toContain(SWAPPED_REASON);
+    expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
+    expect((await lstat(join(inbox, FAILED_DIR, "part.stl"))).isFIFO()).toBe(true);
+    expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
+      `${PUT_BACK_FAILED_REASON}\n`,
+    );
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
   });
 
   test("a file left in a holding folder by a process that stopped part way moves to failed with a reason", async () => {
