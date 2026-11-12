@@ -1,2 +1,802 @@
-/* The studio stylesheet (build plan Task 18). Empty in the failing-tests
-   commit; the port of manyfold-studio's studio.css follows. */
+/*
+ * Platehouse's stylesheet, ported from manyfold-studio's
+ * app/assets/studio/studio.css at 4076a67 (build plan Task 18). The palettes,
+ * radii and breakpoints are that file's, exactly. Left out: the rules that
+ * restyled Manyfold's own markup (its PreviewFrame pictures and the link back
+ * to Manyfold's pages); the narrow-screen menu is a button and a panel
+ * instead of a details element.
+ *
+ * Themes: the html element carries data-theme="dark|light|system", written
+ * by the server from the ph_theme cookie (apps/server/src/web/shell.ts), so
+ * the right palette applies on first paint with no script. System follows
+ * prefers-color-scheme. The theme switch changes the attribute and the
+ * cookie together, with no reload.
+ *
+ * Every text/background pair below is checked for WCAG AA (4.5:1) by
+ * test/stylesheet.test.ts. Keep the palette blocks as plain #rrggbb
+ * declarations so that test can read them.
+ */
+
+/* Dark is the default palette, and what System uses unless the OS asks
+   for light. */
+:root,
+[data-theme="dark"] {
+  --bg: #121418;
+  --surface: #1a1d23;
+  --raised: #262a32;
+  --border: #262a32;
+  --text: #e6e7ea;
+  --muted: #8f949d;
+  --accent: #00ae42;
+  --accent-text: #33d17a;
+  --accent-soft: #173027;
+  --on-accent: #0b0d10;
+  --chip-text: #c7cad1;
+  --chip-active-bg: #00ae42;
+  --chip-active-text: #0b0d10;
+  --focus: #33d17a;
+  --danger: #ff7b72;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --raised: #eceef2;
+  --border: #eceef2;
+  --text: #111111;
+  --muted: #5f6570;
+  --accent: #00ae42;
+  --accent-text: #007a2f;
+  --accent-soft: #e7f7ed;
+  --on-accent: #0b0d10;
+  --chip-text: #3a3f47;
+  --chip-active-bg: #111111;
+  --chip-active-text: #ffffff;
+  --focus: #007a2f;
+  --danger: #c62828;
+  color-scheme: light;
+}
+
+/* A copy of the light palette, for System when the OS asks for light. */
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --raised: #eceef2;
+    --border: #eceef2;
+    --text: #111111;
+    --muted: #5f6570;
+    --accent: #00ae42;
+    --accent-text: #007a2f;
+    --accent-soft: #e7f7ed;
+    --on-accent: #0b0d10;
+    --chip-text: #3a3f47;
+    --chip-active-bg: #111111;
+    --chip-active-text: #ffffff;
+    --focus: #007a2f;
+    --danger: #c62828;
+    color-scheme: light;
+  }
+}
+
+/* ---- Base ---- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Links inside running text (descriptions, captions, bylines, the About
+   tab, muted notes, notices) are underlined, so they never differ from
+   the text around them by colour alone (WCAG 1.4.1). Navigation, cards,
+   chips, tabs and buttons are set apart by shape and place, and stay
+   plain. */
+.studio-prose a,
+.studio-caption a,
+.studio-byline a,
+.studio-dl dd a:not(.studio-chip),
+.studio-muted a,
+.studio-alert a {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 650;
+}
+
+h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+img {
+  max-width: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.studio-visually-hidden {
+  /* biome-ignore lint/complexity/noImportantStyles: a hidden label must stay out of the layout whatever positions the element it sits in (a legend, a fieldset); as in manyfold-studio. */
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.studio-skip {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 10;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.studio-skip:focus {
+  top: 12px;
+}
+
+.studio-muted {
+  color: var(--muted);
+}
+
+/* ---- Shell: sidebar, top bar, content ---- */
+
+.studio-app {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 20px;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.studio-sidebar {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 10px;
+}
+
+.studio-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px 12px;
+  color: var(--text);
+  font-weight: 650;
+  font-size: 1.05rem;
+}
+
+.studio-brand-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.studio-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.studio-nav-list a {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.studio-nav-list a:hover {
+  background: var(--raised);
+  text-decoration: none;
+}
+
+.studio-nav-list a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.studio-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.studio-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.studio-search {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  margin: 0;
+}
+
+/* The search landmark holds the form, which fills it. */
+.studio-search > form {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  margin: 0;
+}
+
+.studio-search input[type="search"] {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.studio-search input[type="search"]::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.studio-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 550;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.studio-button:hover {
+  background: var(--raised);
+  text-decoration: none;
+}
+
+.studio-button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.studio-button-primary:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+/* A button that cannot be used yet (Add, until the upload dialog of Task
+   19 is wired in). */
+.studio-button:disabled {
+  cursor: not-allowed;
+  filter: none;
+  opacity: 0.6;
+}
+
+/* A fieldset, named Theme by its hidden legend. */
+.studio-theme-switch {
+  display: inline-flex;
+  min-width: 0;
+  margin: 0;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.studio-theme-switch button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.studio-theme-switch button[aria-pressed="true"] {
+  background: var(--chip-active-bg);
+  color: var(--chip-active-text);
+  font-weight: 600;
+}
+
+/* The narrow-screen menu: a button and the panel it opens. Hidden on wide
+   screens, where the sidebar shows instead. */
+.studio-menu {
+  display: none;
+  position: relative;
+}
+
+.studio-menu-panel {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 5;
+  width: min(260px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.studio-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.studio-alerts {
+  display: grid;
+  gap: 8px;
+}
+
+.studio-alert {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+/* A notice and an alert are told apart by their edge as well as by their
+   role and hidden label. */
+.studio-alert-notice {
+  border-left: 4px solid var(--accent-text);
+}
+
+.studio-alert-alert {
+  border-left: 4px solid var(--danger);
+}
+
+/* ---- Library: heading, chips, sort, grid, pager ---- */
+
+.studio-page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+}
+
+.studio-chips,
+.studio-sort {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--chip-text);
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-chip:hover {
+  background: var(--raised);
+  text-decoration: none;
+}
+
+.studio-chip[aria-current="true"] {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-bg);
+  color: var(--chip-active-text);
+  font-weight: 600;
+}
+
+.studio-sort {
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.studio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 170px), 1fr));
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-card {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  color: var(--text);
+}
+
+a.studio-card:hover {
+  text-decoration: none;
+  border-color: var(--accent);
+}
+
+.studio-card-media {
+  position: relative;
+  isolation: isolate;
+  aspect-ratio: 1;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.studio-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.studio-card-body {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px 12px;
+  min-width: 0;
+}
+
+.studio-card-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.studio-card-meta {
+  color: var(--muted);
+  font-size: 0.875rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-card-plates {
+  color: var(--accent-text);
+  font-size: 0.875rem;
+}
+
+.studio-empty {
+  margin: 0;
+  padding: 40px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.studio-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+/* ---- Model page: viewer left, details and tabs right ---- */
+
+.studio-breadcrumb {
+  color: var(--muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.studio-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.studio-viewer {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.studio-viewer-frame {
+  position: relative;
+  isolation: isolate;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--raised);
+}
+
+.studio-viewer-frame > img.studio-plate-large {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.studio-plate-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin: 0;
+  padding: 2px 2px 6px;
+  list-style: none;
+}
+
+.studio-plate-strip a {
+  display: block;
+  width: 72px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  background: var(--raised);
+}
+
+.studio-plate-strip a[aria-current="true"] {
+  border-color: var(--accent);
+}
+
+.studio-plate-strip img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+.studio-model-info {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.studio-byline {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.studio-caption {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.studio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.studio-tabs {
+  display: flex;
+  gap: 4px 16px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0 0 2px;
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.studio-tabs a {
+  display: inline-block;
+  padding: 6px 2px;
+  color: var(--text);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -3px;
+}
+
+.studio-tabs a[aria-current="page"] {
+  color: var(--accent-text);
+  border-bottom-color: var(--accent-text);
+  font-weight: 600;
+}
+
+.studio-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.studio-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-list-item {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.studio-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.studio-swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  vertical-align: -0.05em;
+}
+
+/* "Project filaments" above an unsliced plate's filament list. */
+.studio-filaments-label {
+  margin: 6px 0 2px;
+  font-size: 0.85rem;
+}
+
+.studio-prose {
+  overflow-wrap: anywhere;
+}
+
+.studio-prose img {
+  height: auto;
+}
+
+.studio-dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.studio-dl dt {
+  color: var(--muted);
+}
+
+.studio-dl dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Narrow screens: below 900 px the sidebar folds behind the menu
+   button and the model page stacks. ---- */
+
+@media (max-width: 899.98px) {
+  .studio-app {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .studio-sidebar {
+    display: none;
+  }
+
+  .studio-menu {
+    display: block;
+  }
+
+  .studio-model {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .studio-search {
+    order: 10;
+    flex-basis: 100%;
+  }
+
+  .studio-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .studio-dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* A reader who asked for less motion gets none, whatever a later or more
+     specific rule sets; !important is what lets this one rule win. */
+  * {
+    /* biome-ignore lint/complexity/noImportantStyles: see above. */
+    scroll-behavior: auto !important;
+    /* biome-ignore lint/complexity/noImportantStyles: see above. */
+    transition: none !important;
+    /* biome-ignore lint/complexity/noImportantStyles: see above. */
+    animation: none !important;
+  }
+}

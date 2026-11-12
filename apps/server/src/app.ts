@@ -25,6 +25,10 @@
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
+// - The web app (web/shell.ts, Task 18): the shell pages (session-class)
+//   answer with the built index.html, data-theme and the color-scheme meta
+//   written in from the ph_theme cookie, and the hashed build output is
+//   served under /assets/ (public-class).
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -59,7 +63,7 @@ import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
 import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
-import type { WebDeps } from "./web/shell.js";
+import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
 export const UPLOAD_PREFIXES = Object.freeze({
@@ -120,7 +124,7 @@ export interface AppDeps {
    * by requestLogValue, so its query is never in the log.
    */
   logger?: boolean | { write(line: string): unknown };
-  /** The built web app (Task 18). */
+  /** The built web app (Task 18); apps/web/dist beside the server when left out. */
   web?: WebDeps;
 }
 
@@ -333,6 +337,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     authHook: apiUploadHook(api),
     uploads: deps.uploads,
   });
+  await registerWeb(app, deps.web ?? { dir: defaultWebDir() });
 
   return app;
 }

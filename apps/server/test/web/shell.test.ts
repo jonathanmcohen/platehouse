@@ -4,9 +4,11 @@
 // from the ph_theme cookie; Dark is the default and anything that is not
 // dark, light or system is dark. Only those two places change.
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { patternClass } from "../../src/auth/gate.js";
 import {
+  defaultWebDir,
   parseShellTemplate,
   resolveTheme,
   SHELL_PAGES,
@@ -108,6 +110,21 @@ describe("parseShellTemplate", () => {
     const shell = parseShellTemplate(source);
     expect(themeOf(shell.render("system"))).toBe("system");
     expect(schemeOf(shell.render("system"))).toBe("light dark");
+  });
+});
+
+describe("defaultWebDir", () => {
+  test("is apps/web/dist beside the server, run from source or from its build", () => {
+    expect(defaultWebDir("file:///srv/ph/apps/server/src/web/shell.ts")).toBe(
+      "/srv/ph/apps/web/dist",
+    );
+    expect(defaultWebDir("file:///srv/ph/apps/server/dist/src/web/shell.js")).toBe(
+      "/srv/ph/apps/web/dist",
+    );
+  });
+
+  test("from this module, is this checkout's apps/web/dist", () => {
+    expect(defaultWebDir()).toBe(fileURLToPath(new URL("../../../web/dist", import.meta.url)));
   });
 });
 

@@ -59,7 +59,11 @@ describe("the sidebar", () => {
     const nav = tags(html, "nav").find((t) => attr(t, "class")?.includes("studio-sidebar"));
     expect(nav, "no sidebar nav").toBeDefined();
     expect(attr(nav as string, "aria-label")).toBe("Main");
-    const sidebar = html.slice(html.indexOf(nav as string));
+    // The section links are the nav list; the brand above it also links home.
+    const start = html.indexOf('<ul class="studio-nav-list">', html.indexOf(nav as string));
+    expect(start, "no nav list in the sidebar").toBeGreaterThan(-1);
+    const sidebar = html.slice(start, html.indexOf("</ul>", start));
+    expect(tags(sidebar, "a")).toHaveLength(SECTIONS.length);
     for (const [label, href] of SECTIONS) {
       const link = tags(sidebar, "a").find((t) => attr(t, "href") === href);
       expect(link, `no ${label} link`).toBeDefined();
@@ -78,11 +82,13 @@ describe("the sidebar", () => {
 });
 
 describe("the top bar", () => {
-  test("has a labelled search box", () => {
+  test("has a labelled search box in a search landmark", () => {
     const html = render("/");
-    const form = tags(html, "form").find((t) => attr(t, "role") === "search");
-    expect(form, "no search form").toBeDefined();
-    const input = tags(html, "input").find((t) => attr(t, "type") === "search");
+    const landmark = tags(html, "search")[0];
+    expect(landmark, "no search landmark").toBeDefined();
+    const inside = html.slice(html.indexOf(landmark as string), html.indexOf("</search>"));
+    expect(tags(inside, "form"), "no form in the search landmark").toHaveLength(1);
+    const input = tags(inside, "input").find((t) => attr(t, "type") === "search");
     expect(input, "no search input").toBeDefined();
     expect(attr(input as string, "name")).toBe("q");
     const id = attr(input as string, "id");
@@ -121,15 +127,28 @@ describe("the top bar", () => {
 });
 
 describe("the theme switch", () => {
-  function switchButtons(html: string): Map<string, string> {
-    const group = tags(html, "div").find((t) => attr(t, "class")?.includes("studio-theme-switch"));
+  /** The switch's markup: a fieldset (role group) named Theme by its legend. */
+  function switchHtml(html: string): string {
+    const group = tags(html, "fieldset").find((t) =>
+      attr(t, "class")?.includes("studio-theme-switch"),
+    );
     expect(group, "no theme switch").toBeDefined();
-    expect(attr(group as string, "role")).toBe("group");
-    expect(attr(group as string, "aria-label")).toBe("Theme");
-    const inside = html.slice(html.indexOf(group as string));
+    const start = html.indexOf(group as string);
+    const inside = html.slice(start, html.indexOf("</fieldset>", start));
+    const legend = tags(inside, "legend")[0];
+    expect(legend, "the theme switch has no legend").toBeDefined();
+    expect(textOf(inside, legend as string)).toBe("Theme");
+    return inside;
+  }
+
+  function switchButtons(html: string): Map<string, string> {
+    // Read each button in place: two unpressed buttons have the same tag.
     const buttons = new Map<string, string>();
-    for (const tag of tags(inside, "button").slice(0, 3)) {
-      buttons.set(textOf(inside, tag), attr(tag, "aria-pressed") ?? "");
+    for (const m of switchHtml(html).matchAll(/(<button\b[^>]*>)(.*?)<\/button>/g)) {
+      buttons.set(
+        (m[2] as string).replace(/<[^>]+>/g, ""),
+        attr(m[1] as string, "aria-pressed") ?? "",
+      );
     }
     return buttons;
   }
@@ -152,12 +171,7 @@ describe("the theme switch", () => {
 
   test("its buttons are buttons, not a form that posts and reloads", () => {
     const html = render("/");
-    const group = tags(html, "div").find((t) => attr(t, "class")?.includes("studio-theme-switch"));
-    expect(group, "no theme switch").toBeDefined();
-    const inside = html.slice(
-      html.indexOf(group as string),
-      html.indexOf("</div>", html.indexOf(group as string)),
-    );
+    const inside = switchHtml(html);
     expect(inside).not.toContain("<form");
     const buttons = tags(inside, "button");
     expect(buttons).toHaveLength(3);
