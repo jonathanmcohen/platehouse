@@ -63,6 +63,14 @@ export interface BlobStore {
    * StoreUnavailable for an outage, never the SDK's own error.
    */
   getBlobStream(key: string): Promise<Readable>;
+  /**
+   * Resolves when the object is in the bucket, asking with a HeadObject, which
+   * sends no body. A HEAD reply carries no error code, so S3 answers a missing
+   * key and a missing bucket with the same bare 404: that is a StoreError
+   * (HeadObject, NotFound, 404), never BlobNotFound, so a broken storage setup
+   * is never reported as a missing file. An outage is StoreUnavailable.
+   */
+  headBlob(key: string): Promise<void>;
   /** Deletes the keys; a key already gone is not an error, so a purge can be retried. */
   deleteBlobs(keys: readonly string[]): Promise<void>;
   /** Every object under prefix, following continuation tokens to the end. */
@@ -250,6 +258,14 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       }
       if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
       return withStoreErrors(body, "GetObject");
+    },
+
+    async headBlob(key) {
+      try {
+        await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      } catch (err) {
+        throw toStoreError(err, "HeadObject");
+      }
     },
 
     async deleteBlobs(keys) {

@@ -104,6 +104,15 @@
 // refused by replaceFile before anything is stored, since it could never
 // render.
 //
+// Until a render succeeds, every later message for that file keeps saying
+// the renders shown are the previous version's (issue #104): a final
+// failure that is the slicer's or the store's, for a render of the rejected
+// source or for a further replacement, a render that could not be queued
+// (queueFailed), and a render the render check finds dead, all put the
+// sentence (previousRendersScad or previousRendersStep
+// without its "said:" lead-in, PREVIOUS_RENDERS_SENTENCE) before their own
+// message whenever an attached render is older than the file's source.
+//
 // The render check (checkRenders, issues #90 and #91) repairs what a job or
 // an upload that died part way leaves behind. It is a maintenance-queue job
 // (CHECK_RENDERS_CRON, every 15 minutes; Task 30 registers the schedule),
@@ -152,6 +161,7 @@ import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../s
 import {
   DERIVED_MESSAGES,
   isRetryable,
+  PREVIOUS_RENDERS_SENTENCE,
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
@@ -345,6 +355,22 @@ const PREVIOUS_RENDERS: Readonly<Record<DerivedKind, string>> = {
   [DERIVED_KINDS.convertStep]: DERIVED_MESSAGES.previousRendersStep,
 };
 
+/**
+ * The same sentence without its lead-in to the program's words ("OpenSCAD
+ * said:", "The converter said:"), PREVIOUS_RENDERS_SENTENCE from client.ts:
+ * what goes before a later final failure that is the slicer's or the
+ * store's, a render that could not be queued, or a render the render check
+ * found dead, while the renders the file shows are still from an earlier
+ * source (issue #104). The lead-in would put the slicer's or the store's
+ * message in the program's mouth. Renders older than the file's source only
+ * stay attached after the program rejected that source (commitRenderError),
+ * so the sentence is still true when it is used.
+ */
+const PREVIOUS_RENDERS_SENTENCE_OF: Readonly<Record<DerivedKind, string>> = {
+  [DERIVED_KINDS.renderScad]: PREVIOUS_RENDERS_SENTENCE.scad,
+  [DERIVED_KINDS.convertStep]: PREVIOUS_RENDERS_SENTENCE.step,
+};
+
 /** What a job waits out without using a retry: a slicer or a store that is down. */
 type Outage = "slicer" | "store";
 
@@ -455,16 +481,32 @@ export function createDerived(deps: DerivedDeps) {
   };
   const clock = deps.now ?? (() => new Date());
 
-  async function setStatus(
-    fileId: string,
-    status: DerivedStatus,
-    message: string | null,
-  ): Promise<void> {
-    await db
-      .updateTable("files")
-      .set({ derivedStatus: status, derivedMessage: message, updatedAt: sql<Date>`now()` })
-      .where("id", "=", fileId)
-      .execute();
+  /**
+   * Marks the file failed with DERIVED_MESSAGES.queueFailed. When the
+   * renders it keeps are from an earlier source than its own (a replacement
+   * the program rejected), the message starts with the sentence saying so
+   * (keepingPrevious; issue #104). The row is read and written in one
+   * transaction, holding its lock.
+   */
+  async function commitQueueFailed(fileId: string, jobKind: DerivedKind): Promise<void> {
+    await db.transaction().execute(async (trx) => {
+      const row = await trx
+        .selectFrom("files")
+        .select(["id", "blobId", "renderStlBlobId", "renderPngBlobId", "meshBlobId"])
+        .where("id", "=", fileId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return;
+      await trx
+        .updateTable("files")
+        .set({
+          derivedStatus: "failed",
+          derivedMessage: await keepingPrevious(trx, row, jobKind, DERIVED_MESSAGES.queueFailed),
+          updatedAt: sql<Date>`now()`,
+        })
+        .where("id", "=", row.id)
+        .execute();
+    });
   }
 
   /** Deletes objects, best effort: one left behind has no row, and the orphan sweep removes it. */
@@ -524,7 +566,7 @@ export function createDerived(deps: DerivedDeps) {
       // The queueing error is the one rethrown. If the database is what
       // failed, this write fails too and the file keeps derived_status null
       // with no job; the render check (checkRenders) queues it later.
-      await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch((statusError) => {
+      await commitQueueFailed(file.id, job.kind).catch((statusError) => {
         console.error(
           `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
         );
@@ -864,7 +906,7 @@ export function createDerived(deps: DerivedDeps) {
    */
   async function rendersPredate(
     trx: Transaction<DB>,
-    row: ModelFile,
+    row: Pick<ModelFile, DerivedColumn>,
     jobKind: DerivedKind,
     sourceId: string,
     replacing: boolean,
@@ -883,6 +925,23 @@ export function createDerived(deps: DerivedDeps) {
       ) as older
     `.execute(trx);
     return rows[0]?.older ?? false;
+  }
+
+  /**
+   * message, after PREVIOUS_RENDERS_SENTENCE when any of the job kind's
+   * renders the row points at are from a source earlier than the file's own
+   * (row.blobId), so a later failure does not drop what the file shows
+   * (issue #104). Read in trx with the file row locked.
+   */
+  async function keepingPrevious(
+    trx: Transaction<DB>,
+    row: Pick<ModelFile, "blobId" | DerivedColumn>,
+    jobKind: DerivedKind,
+    message: string,
+  ): Promise<string> {
+    return (await rendersPredate(trx, row, jobKind, row.blobId, false))
+      ? `${PREVIOUS_RENDERS_SENTENCE_OF[jobKind]} ${message}`
+      : message;
   }
 
   /**
@@ -945,9 +1004,13 @@ export function createDerived(deps: DerivedDeps) {
    * message, while the file still has the source the job started from; a
    * replacement is dropped and the previous version kept. A file that
    * already shows 'ok' for the job's own source (renders for it committed,
-   * though the job did not see the commit's answer) is left as it is.
+   * though the job did not see the commit's answer) is left as it is. When
+   * the renders the file keeps are from an earlier source than its own (a
+   * replacement the program rejected), the message starts with the sentence
+   * saying so (keepingPrevious; issue #104).
    */
   async function commitSlicerError(
+    jobKind: DerivedKind,
     file: ModelFile,
     source: Blob,
     replacing: boolean,
@@ -956,14 +1019,24 @@ export function createDerived(deps: DerivedDeps) {
     await db.transaction().execute(async (trx) => {
       const row = await trx
         .selectFrom("files")
-        .select(["id", "blobId", "derivedStatus"])
+        .select([
+          "id",
+          "blobId",
+          "derivedStatus",
+          "renderStlBlobId",
+          "renderPngBlobId",
+          "meshBlobId",
+        ])
         .where("id", "=", file.id)
         .where("blobId", "=", file.blobId)
         .forUpdate()
         .executeTakeFirst();
       if (row === undefined) return;
       if (row.blobId === source.id && row.derivedStatus === "ok") return;
-      const outcome = await settledOutcome(trx, file.id, source.id, { status: "failed", message });
+      const outcome = await settledOutcome(trx, file.id, source.id, {
+        status: "failed",
+        message: await keepingPrevious(trx, row, jobKind, message),
+      });
       await trx
         .updateTable("files")
         .set({
@@ -1085,7 +1158,13 @@ export function createDerived(deps: DerivedDeps) {
       if (outage !== null) {
         if (!pastDeadline(job)) return waitOut(job, attempt, outage, error);
         const { reason, message, replaceMessage } = OUTAGES[outage];
-        await commitSlicerError(file, source, replacing, replacing ? replaceMessage : message);
+        await commitSlicerError(
+          job.kind,
+          file,
+          source,
+          replacing,
+          replacing ? replaceMessage : message,
+        );
         console.error(
           `derived: file ${file.id} stopped waiting for the ${outage} after its deadline ${job.waitDeadline}: ${describe(error)}`,
         );
@@ -1112,6 +1191,7 @@ export function createDerived(deps: DerivedDeps) {
       if (refusal !== null) {
         if (refusal === "retry" && !last) throw error;
         await commitSlicerError(
+          job.kind,
           file,
           source,
           replacing,
@@ -1131,6 +1211,7 @@ export function createDerived(deps: DerivedDeps) {
       // The last attempt, or an answer a retry will not change: record
       // slicer_error so the file is never left waiting.
       await commitSlicerError(
+        job.kind,
         file,
         source,
         replacing,
@@ -1197,14 +1278,16 @@ export function createDerived(deps: DerivedDeps) {
    * Issue #90: a file still 'pending' with no queued or active job, whose
    * newest job ended failed: its last attempt died before it recorded an
    * outcome. The file is marked failed and not queued again, so a file that
-   * kills the slicer cannot loop. Returns whether it marked one.
+   * kills the slicer cannot loop. When the renders it keeps are from an
+   * earlier source than its own, the message starts with the sentence
+   * saying so (keepingPrevious; issue #104). Returns whether it marked one.
    */
   async function settleLost(fileId: string, modelId: string): Promise<boolean> {
     return db.transaction().execute(async (trx) => {
       if (!(await lockModel(trx, modelId, false))) return false;
       const row = await trx
         .selectFrom("files")
-        .select(["id", "blobId"])
+        .select(["id", "blobId", "kind", "renderStlBlobId", "renderPngBlobId", "meshBlobId"])
         .where("id", "=", fileId)
         .where("derivedStatus", "=", "pending")
         .forUpdate()
@@ -1215,11 +1298,14 @@ export function createDerived(deps: DerivedDeps) {
       const last = jobs.at(-1);
       if (last === undefined || last.state !== "failed") return false;
       const replacing = last.data?.sourceBlobId !== row.blobId;
+      const lost = replacing ? DERIVED_MESSAGES.replaceLost : DERIVED_MESSAGES.renderLost;
       await trx
         .updateTable("files")
         .set({
           derivedStatus: "failed",
-          derivedMessage: replacing ? DERIVED_MESSAGES.replaceLost : DERIVED_MESSAGES.renderLost,
+          derivedMessage: hasDerived(row.kind)
+            ? await keepingPrevious(trx, row, JOB_KIND_OF[row.kind], lost)
+            : lost,
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)

@@ -26,6 +26,10 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # debconf and libssl3t64 (3.0.13-0ubuntu3.16), are already in the pinned base
 # image (its var/lib/dpkg/status, read the same day). Once the snapshot is on,
 # both are installed again, so the image keeps the snapshot's versions.
+# Before any of that, each stage writes /etc/apt/apt.conf.d/80retries so apt
+# retries a failed download 10 times, not its default 3: snapshot.ubuntu.com
+# often answers 502 or 503 for longer than 3 retries last, and that failed CI
+# builds.
 #
 # Both stages run Node, and the Node 26 linux-x64 binary links libatomic.so.1,
 # which the base image does not carry, so both install libatomic1 from the
@@ -39,7 +43,8 @@ FROM --platform=linux/amd64 ${BASE} AS fetch
 ARG APT_SNAPSHOT
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
+RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+ && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
@@ -214,7 +219,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # GStreamer, fontconfig and the C++ runtime), Mesa for EGL and software GL,
 # GNU time, and libatomic1 for Node (see APT_SNAPSHOT). No X server and no
 # Xvfb.
-RUN apt-get update \
+RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+ && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
