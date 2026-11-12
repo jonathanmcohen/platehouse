@@ -53,6 +53,9 @@ export const LINK_LIFETIME_SECONDS = 600;
 /** A link token's length: 36 bytes in base64url. */
 export const LINK_TOKEN_LENGTH = 48;
 
+/** The link route's pattern: the token, then the file name as the rest. */
+export const LINK_ROUTE = "/s/:token/*";
+
 /** The HKDF label of the link key; the login cookie's is "platehouse login cookie v1". */
 const LINK_KEY_LABEL = "platehouse slicer link v1";
 
@@ -172,7 +175,7 @@ export async function registerLinks(
       },
     );
 
-    scope.get<{ Params: { token: string } }>("/s/:token/*", async (request, reply) => {
+    scope.get<{ Params: { token: string } }>(LINK_ROUTE, async (request, reply) => {
       if (!isOneNameSegment(request.url)) return refuseLink(reply);
       const fileId = readLinkToken(key, request.params.token, now());
       if (fileId === undefined) return refuseLink(reply);

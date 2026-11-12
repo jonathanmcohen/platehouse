@@ -157,6 +157,8 @@ let dir: string;
 let sessionCookie: string;
 let base: string;
 const RUN_SECRET = randomBytes(32).toString("hex");
+/** Every line the app's request log wrote, as the server's stdout gets it. */
+const logLines: string[] = [];
 
 beforeAll(async () => {
   t = await testAuth();
@@ -174,6 +176,11 @@ beforeAll(async () => {
       library: deliveryLibrary,
       linkSecret: RUN_SECRET,
       now: () => t.clock.now,
+    },
+    logger: {
+      write(line: string) {
+        logLines.push(line);
+      },
     },
   });
   await app.ready();
@@ -506,6 +513,39 @@ describe("GET /s/<token>/<name>", () => {
     expect(res.statusCode).toBeGreaterThanOrEqual(500);
     expect(res.body).not.toContain("10.9.8.7");
     expect(res.body).not.toContain("db.internal");
+  });
+});
+
+describe("the request log and slicer links", () => {
+  test("never holds a link's token or file name, live, refused or unrouted", async () => {
+    const link = await linkFor(FILE_A);
+    const path = pathOf(link.url);
+    const [, , token = "", name = ""] = path.split("/");
+    expect(token).not.toBe("");
+    expect(name).toBe("Cube%20A.3mf");
+    const altered = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
+    const from = logLines.length;
+    const requests: Array<[string, number]> = [
+      [path, 200],
+      [`/s/${altered}/${name}`, 403],
+      [`/s/${token}/a/b`, 403],
+      [`/s/${token}`, 404],
+      // Fastify decodes %73 to "s" and routes this to the link route.
+      [`/%73/${token}/${name}`, 200],
+    ];
+    for (const [url, status] of requests) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode, url).toBe(status);
+    }
+    const log = logLines.slice(from).join("");
+    // Each request is logged, with the link's segments replaced.
+    expect(log).toContain('"url":"/s/[link]/[name]"');
+    expect(log).toContain('"url":"/s/[link]"');
+    expect(log).not.toContain(token);
+    expect(log).not.toContain(altered);
+    expect(log).not.toContain(token.slice(0, 16));
+    expect(log).not.toContain(name);
+    expect(log).not.toContain("Cube A");
   });
 });
 

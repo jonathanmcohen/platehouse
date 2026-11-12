@@ -43,7 +43,9 @@
 //   hook, so frameworkErrors releases the body for those.
 // - The request log records each request's path without its query
 //   (requestLogValue), so the OAuth code and state on /auth/callback never
-//   reach it, and a fixed list of its headers (LOGGED_HEADERS), with
+//   reach it, with a slicer link's token and name replaced
+//   (LOGGED_LINK_PATH), so no live link reaches it either, and a fixed list
+//   of its headers (LOGGED_HEADERS), with
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
 //   (LOG_REDACT_PATHS), so no API token or session cookie reaches the log.
@@ -65,7 +67,7 @@ import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
 import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
-import { registerLinks } from "./delivery/links.js";
+import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
 import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
@@ -200,17 +202,36 @@ export function uploadMetadataKeys(header: string | string[] | undefined): strin
     .join(",");
 }
 
+/** A slicer link's path as the request log shows it: token and name replaced. */
+export const LOGGED_LINK_PATH = "/s/[link]/[name]";
+
 /**
- * The request log's view of a request: Fastify's default fields, with the
- * url cut at the "?". A query can carry a secret: GET /auth/callback has the
- * OAuth code and state in it.
+ * The path the request log shows: the url cut at the "?", and a slicer
+ * link's token and name segments replaced (LOGGED_LINK_PATH), since the token
+ * alone fetches the file for 10 minutes. That covers any path under /s/,
+ * live, refused or unrouted, and any path Fastify routed to the link route.
  */
-export function requestLogValue(request: FastifyRequest): RequestLogValue {
+function loggedPath(request: FastifyRequest): string {
   const url = request.url;
   const at = url.indexOf("?");
+  const path = at === -1 ? url : url.slice(0, at);
+  if (path.startsWith("/s/")) {
+    return path.indexOf("/", 3) === -1 ? "/s/[link]" : LOGGED_LINK_PATH;
+  }
+  if (request.routeOptions?.url === LINK_ROUTE) return LOGGED_LINK_PATH;
+  return path;
+}
+
+/**
+ * The request log's view of a request: Fastify's default fields, with the
+ * url cut at the "?" and a slicer link's segments replaced (loggedPath). A
+ * query can carry a secret: GET /auth/callback has the OAuth code and state
+ * in it.
+ */
+export function requestLogValue(request: FastifyRequest): RequestLogValue {
   const value: RequestLogValue = {
     method: request.method,
-    url: at === -1 ? url : url.slice(0, at),
+    url: loggedPath(request),
   };
   if (request.host !== undefined) value.host = request.host;
   if (request.ip !== undefined) value.remoteAddress = request.ip;
