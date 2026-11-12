@@ -10,11 +10,11 @@ import type { DB } from "./types.js";
 //
 // A migration is a file NNNN_name.sql in migrations/, numbered from 0001 with
 // no gaps. Names that start with "." or do not end in .sql are skipped; a .sql
-// file named any other way stops migrate(). migrate() applies the ones not yet recorded in schema_migrations,
-// in number order, and records each with the SHA-256 of its bytes. It refuses
-// to run, and applies nothing, when an applied file's checksum has changed or
-// an applied file is missing: an applied migration is never edited, a change
-// goes in a new file.
+// file named any other way stops migrate(). migrate() applies the ones not
+// yet recorded in schema_migrations, in number order, and records each with
+// the SHA-256 of its bytes. It refuses to run, and applies nothing, when an
+// applied file's checksum has changed or an applied file is missing: an
+// applied migration is never edited, a change goes in a new file.
 
 // The migrations folder is found next to this module. Run from source that is
 // src/db/migrations. tsc -b compiles this file to dist/src/db/migrate.js and
