@@ -19,8 +19,9 @@ const GUARD = new URL("../src/guard.ts", import.meta.url).href;
 
 // The child's routes each fail one way. "/hang" never answers, so the test
 // can check what an error from outside any request does to work in flight.
-// "/data-listener-throws" and "/hang-beside-data" log once their handler is
-// set up, so the test can wait on the server instead of on a fixed delay.
+// "/data-listener-throws", "/hang" and "/hang-beside-data" log once their
+// handler is set up, so the test can wait on the server instead of on a
+// fixed delay.
 const CHILD = `
 import { createServer } from "node:http";
 const { guardRequests, installCrashGuard, whenRequestFails } = await import(process.argv[2]);
@@ -69,6 +70,7 @@ const server = createServer(
         return never();
       case "/hang":
         whenRequestFails(() => log("cleanup ran for /hang"));
+        log("handler running for /hang");
         return never();
       case "/hang-beside-data":
         whenRequestFails(() => log("cleanup ran for /hang-beside-data"));
@@ -259,8 +261,9 @@ describe("crash guard", () => {
 
   test("an error from outside any request fails the requests in flight, runs their cleanups and keeps serving", async () => {
     const hanging = get("/hang");
-    // let /hang reach its handler before the error
-    await new Promise((r) => setTimeout(r, 100));
+    // /hang must be in flight, its cleanup registered, before the error; a
+    // fixed 100 ms wait could fire first on a loaded runner (issue #152).
+    await waitForOutput("handler running for /hang\n");
     child.send("throw-outside");
     expect(await hanging).toEqual(INTERNAL);
     await waitForOutput("an error from outside any request");
