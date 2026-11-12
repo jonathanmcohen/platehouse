@@ -643,4 +643,17 @@ describe("after a rejected STEP replacement, a later failure keeps the previous-
     expect(result.failed).toContain(fileId);
     await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceLost);
   });
+
+  test("a conversion of the rejected source that cannot be queued keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("not queued");
+    const send: PgBoss["send"] = async () => {
+      throw new Error("the queue refused the job");
+    };
+    const failing = derivedWith({
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+    });
+
+    await expect(failing.convertStep(fileId)).rejects.toThrow("the queue refused the job");
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.queueFailed);
+  });
 });

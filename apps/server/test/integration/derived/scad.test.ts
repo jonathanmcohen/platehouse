@@ -1954,4 +1954,18 @@ describe("after a rejected replacement, a later failure keeps the previous-versi
     expect(result.failed).toContain(fileId);
     await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceLost);
   });
+
+  test("a render of the rejected source that cannot be queued keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, not queued");
+    const send: PgBoss["send"] = async () => {
+      throw new Error("the queue refused the job");
+    };
+    const failing = derivedWith({
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+    });
+
+    await expect(failing.renderScad(fileId)).rejects.toThrow("the queue refused the job");
+    expect((await jobsFor(fileId)).every((j) => j.state === "completed")).toBe(true);
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.queueFailed);
+  });
 });

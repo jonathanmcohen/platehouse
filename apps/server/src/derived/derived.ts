@@ -107,8 +107,9 @@
 // Until a render succeeds, every later message for that file keeps saying
 // the renders shown are the previous version's (issue #104): a final
 // failure that is the slicer's or the store's, for a render of the rejected
-// source or for a further replacement, and a render the render check finds
-// dead, all put the sentence (previousRendersScad or previousRendersStep
+// source or for a further replacement, a render that could not be queued
+// (queueFailed), and a render the render check finds dead, all put the
+// sentence (previousRendersScad or previousRendersStep
 // without its "said:" lead-in, PREVIOUS_RENDERS_SENTENCE) before their own
 // message whenever an attached render is older than the file's source.
 //
@@ -356,8 +357,8 @@ const PREVIOUS_RENDERS: Readonly<Record<DerivedKind, string>> = {
 /**
  * The same sentence without its lead-in to the program's words ("OpenSCAD
  * said:", "The converter said:"): what goes before a later final failure
- * that is the slicer's or the store's, or a render the render check found
- * dead, while the renders the file shows are still from an earlier source
+ * that is the slicer's or the store's, a render that could not be queued,
+ * or a render the render check found dead, while the renders the file shows are still from an earlier source
  * (issue #104). The lead-in would put the slicer's or the store's message
  * in the program's mouth. Renders older than the file's source only stay
  * attached after the program rejected that source (commitRenderError), so
@@ -480,16 +481,32 @@ export function createDerived(deps: DerivedDeps) {
   };
   const clock = deps.now ?? (() => new Date());
 
-  async function setStatus(
-    fileId: string,
-    status: DerivedStatus,
-    message: string | null,
-  ): Promise<void> {
-    await db
-      .updateTable("files")
-      .set({ derivedStatus: status, derivedMessage: message, updatedAt: sql<Date>`now()` })
-      .where("id", "=", fileId)
-      .execute();
+  /**
+   * Marks the file failed with DERIVED_MESSAGES.queueFailed. When the
+   * renders it keeps are from an earlier source than its own (a replacement
+   * the program rejected), the message starts with the sentence saying so
+   * (keepingPrevious; issue #104). The row is read and written in one
+   * transaction, holding its lock.
+   */
+  async function commitQueueFailed(fileId: string, jobKind: DerivedKind): Promise<void> {
+    await db.transaction().execute(async (trx) => {
+      const row = await trx
+        .selectFrom("files")
+        .select(["id", "blobId", "renderStlBlobId", "renderPngBlobId", "meshBlobId"])
+        .where("id", "=", fileId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return;
+      await trx
+        .updateTable("files")
+        .set({
+          derivedStatus: "failed",
+          derivedMessage: await keepingPrevious(trx, row, jobKind, DERIVED_MESSAGES.queueFailed),
+          updatedAt: sql<Date>`now()`,
+        })
+        .where("id", "=", row.id)
+        .execute();
+    });
   }
 
   /** Deletes objects, best effort: one left behind has no row, and the orphan sweep removes it. */
@@ -549,7 +566,7 @@ export function createDerived(deps: DerivedDeps) {
       // The queueing error is the one rethrown. If the database is what
       // failed, this write fails too and the file keeps derived_status null
       // with no job; the render check (checkRenders) queues it later.
-      await setStatus(file.id, "failed", DERIVED_MESSAGES.queueFailed).catch((statusError) => {
+      await commitQueueFailed(file.id, job.kind).catch((statusError) => {
         console.error(
           `derived: file ${file.id} left for the render check: ${describe(statusError)}`,
         );
