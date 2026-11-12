@@ -19,8 +19,12 @@ const MODEL_SETTINGS = "Metadata/model_settings.config";
 const SLICE_INFO = "Metadata/slice_info.config";
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
 // The packages/threemf rule (parse.ts): N has no leading zero, and a name
-// whose N is not a safe integer is not a plate (see platesFromPngs).
+// whose N is past MAX_STORED_INDEX makes the file damaged (see storedIndex).
 const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(?:_small)?\.png$/;
+const INTEGER = /^\s*-?[0-9]+\s*$/;
+// The largest plate index or filament slot the app's database holds (a
+// 32-bit Postgres integer), as MAX_STORED_INDEX in packages/threemf.
+const MAX_STORED_INDEX = 2147483647;
 
 class Damaged extends Error {}
 
@@ -62,9 +66,20 @@ function metadata(block) {
 // integer, or null. From 9007199254740992 up a number is rounded, so a
 // 17-digit plater_id would be read as a different plate (issue #129).
 function int(v) {
-  if (typeof v !== "string" || !/^\s*-?[0-9]+\s*$/.test(v)) return null;
+  if (typeof v !== "string" || !INTEGER.test(v)) return null;
   const n = Number(v);
   return Number.isSafeInteger(n) ? n : null;
+}
+
+// The packages/threemf rule (parse.ts storedIndex) for a plate index or a
+// filament slot: int(v), except that a whole number past MAX_STORED_INDEX is
+// damage, never a skipped value (issue #137). The app stores such a file with
+// no plate data, so the gate must not read plates from it either. That covers
+// numbers past Number.MAX_SAFE_INTEGER too, which Number() rounds or turns
+// into Infinity.
+function storedIndex(v) {
+  if (typeof v === "string" && INTEGER.test(v) && Number(v) > MAX_STORED_INDEX) throw new Damaged();
+  return int(v);
 }
 
 function num(v) {
@@ -85,7 +100,7 @@ function platesFromModelSettings(zip) {
   if (blocks.length > LIMITS.plates) throw new Damaged();
   const seen = new Map();
   for (const block of blocks) {
-    const index = int(metadata(block).plater_id);
+    const index = storedIndex(metadata(block).plater_id);
     if (index === null || index < 1 || seen.has(index)) continue;
     seen.set(index, (block.match(/<model_instance\b/g) ?? []).length);
   }
@@ -96,11 +111,10 @@ function platesFromModelSettings(zip) {
 function platesFromPngs(zip) {
   const indexes = new Set();
   for (const name of zip.names()) {
-    // From 9007199254740992 up, Number() rounds (or gives Infinity), so such
-    // a name would be read as some other plate number; skip it instead.
-    const m = PLATE_PNG.exec(name);
-    const index = m ? Number(m[1]) : null;
-    if (Number.isSafeInteger(index)) indexes.add(index);
+    // The same check as plater_id: a name whose N is past 2147483647, of any
+    // length, is damage, so no rounded or Infinity number becomes a plate.
+    const index = storedIndex(PLATE_PNG.exec(name)?.[1]);
+    if (index !== null) indexes.add(index);
   }
   if (indexes.size > LIMITS.plates) throw new Damaged();
   return [...indexes].sort((a, b) => a - b).map((index) => ({ index, objectCount: null }));
@@ -119,7 +133,7 @@ function sliceData(zip) {
     const meta = metadata(block);
     if ("printer_model_id" in meta) keys.printer_model_id = true;
     if ("nozzle_diameters" in meta) keys.nozzle_diameters = true;
-    const index = int(meta.index);
+    const index = storedIndex(meta.index);
     const prediction = int(meta.prediction);
     if (index === null || prediction === null || result.has(index)) continue;
     if (prediction < 1 || prediction > LIMITS.predictionSeconds) continue;
@@ -130,7 +144,7 @@ function sliceData(zip) {
       nozzle: meta.nozzle_diameters ?? null,
       filaments: filamentTags.map((m) => {
         const a = attrs(m[0]);
-        return { slot: int(a.id), type: a.type ?? null, grams: num(a.used_g) };
+        return { slot: storedIndex(a.id), type: a.type ?? null, grams: num(a.used_g) };
       }),
     });
   }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { LIMITS, readProjectMeta } from "../lib/threemf.mjs";
 import { build3mf, P1S_PROJECT, writeTmp } from "./support/fixtures.mjs";
+import { buildZip } from "./support/zipwriter.mjs";
 
 const slicedPlate = (index, extra = {}) => ({
   index,
@@ -82,88 +83,101 @@ test("the plate list falls back to the plate_N.png names", () => {
 
 // Issue #25: the plate number in a plate_N.png name used to go through a bare
 // Number(), so a name past Number.MAX_SAFE_INTEGER came back as a different,
-// rounded plate number (or Infinity). The gate now follows packages/threemf:
-// N must match [1-9][0-9]* and be a safe integer, or the name is not a plate.
-for (const [label, n] of [
-  ["17 digits", "12345678901234567"],
-  ["the first unsafe integer, 9007199254740992", "9007199254740992"],
-  ["the next one, which a bare Number() rounds down to the one before", "9007199254740993"],
-  ["so many digits that Number() gives Infinity", "9".repeat(400)],
-  ["a leading zero", "01"],
-]) {
-  test(`a plate_N.png name with ${label} is not a plate`, () => {
-    const file = writeTmp("big.3mf", build3mf({ plates: [{ index: 2 }, { index: n }], pngOnly: true }));
-    assert.deepEqual(
-      readProjectMeta(file).plates.map((p) => p.index),
-      [2],
-    );
-  });
-}
-
-test("a plate_N.png name at Number.MAX_SAFE_INTEGER is still a plate", () => {
-  const file = writeTmp("max.3mf", build3mf({ plates: [{ index: 2 }, { index: "9007199254740991" }], pngOnly: true }));
-  assert.deepEqual(
-    readProjectMeta(file).plates.map((p) => p.index),
-    [2, Number.MAX_SAFE_INTEGER],
-  );
-});
-
-// Issue #129: the gate's int(), which reads plater_id from model_settings and
-// the plate index and filament ids from slice_info, used a bare parseInt, so
-// a 17-digit value came back as a different, rounded number. It now follows
-// packages/threemf (parse.ts int()): plain digits that make a safe integer,
-// or null. 12345678901234567 and 12345678901234568 both round to ...568.
-test("a plater_id with 17 digits is not a plate", () => {
-  const file = writeTmp("id.3mf", build3mf({ plates: [{ index: 2 }, { index: "12345678901234567" }] }));
+// rounded plate number (or Infinity). Issue #137: the gate now follows the
+// packages/threemf rule (parse.ts storedIndex) in full. N must match
+// [1-9][0-9]*, or the name is not a plate, and a whole number past
+// 2147483647, the largest plate index Postgres stores, of any length, makes
+// the file damaged (null), as the app then stores it with no plate data.
+test("a plate_N.png name with a leading zero is not a plate", () => {
+  const file = writeTmp("zero.3mf", build3mf({ plates: [{ index: 2 }, { index: "01" }], pngOnly: true }));
   assert.deepEqual(
     readProjectMeta(file).plates.map((p) => p.index),
     [2],
   );
 });
 
-test("two 17-digit plater_ids that round to the same number do not become one plate", () => {
-  const file = writeTmp(
-    "two.3mf",
-    build3mf({
-      plates: [
-        { index: "12345678901234567", objects: 3 },
-        { index: "12345678901234568", objects: 5 },
-        { index: 2 },
-      ],
-    }),
-  );
-  assert.deepEqual(
-    readProjectMeta(file).plates.map((p) => [p.index, p.objectCount]),
-    [[2, 1]],
-  );
-});
+const PAST_32_BIT = [
+  ["2147483648, one past the 32-bit range", "2147483648"],
+  ["17 digits", "12345678901234567"],
+  ["the first unsafe integer, 9007199254740992", "9007199254740992"],
+  ["the next one, which a bare Number() rounds down to the one before", "9007199254740993"],
+  ["so many digits that Number() gives Infinity", "9".repeat(400)],
+];
 
-test("a plater_id at Number.MAX_SAFE_INTEGER is still a plate", () => {
-  const file = writeTmp("maxid.3mf", build3mf({ plates: [{ index: 2 }, { index: "9007199254740991" }] }));
+// A model_settings plate list holding plate 1 only, and a slice_info plate
+// whose index and filament id are the given strings, so a slice_info number
+// is checked on its own, never through a plater_id of the same value.
+function sliceInfoOnly(index, filamentId) {
+  return buildZip([
+    { name: "3D/3dmodel.model", data: "<model/>" },
+    {
+      name: "Metadata/model_settings.config",
+      data: '<config>\n  <plate>\n    <metadata key="plater_id" value="1"/>\n  </plate>\n</config>\n',
+    },
+    {
+      name: "Metadata/slice_info.config",
+      data:
+        "<config>\n  <plate>\n" +
+        `    <metadata key="index" value="${index}"/>\n` +
+        '    <metadata key="prediction" value="60"/>\n' +
+        `    <filament id="${filamentId}" type="PLA" used_g="1"/>\n` +
+        "  </plate>\n</config>\n",
+    },
+  ]);
+}
+
+for (const [label, n] of PAST_32_BIT) {
+  test(`a plate_N.png name with ${label} makes the file damaged`, () => {
+    const file = writeTmp("big.3mf", build3mf({ plates: [{ index: 2 }, { index: n }], pngOnly: true }));
+    assert.equal(readProjectMeta(file), null);
+  });
+
+  // Issue #129 found the bare parseInt that rounded these; #137 makes each
+  // one damage past the 32-bit range instead of a skipped value.
+  test(`a plater_id with ${label} makes the file damaged`, () => {
+    const file = writeTmp("id.3mf", build3mf({ plates: [{ index: 2 }, { index: n }] }));
+    assert.equal(readProjectMeta(file), null);
+  });
+
+  // The check runs on every slice_info plate, matched to a listed plate or
+  // not, as packages/threemf runs it before it looks for the plate.
+  test(`a slice_info plate index with ${label} makes the file damaged`, () => {
+    assert.equal(readProjectMeta(writeTmp("si.3mf", sliceInfoOnly(n, 1))), null);
+  });
+
+  test(`a slice_info filament id with ${label} makes the file damaged`, () => {
+    assert.equal(readProjectMeta(writeTmp("fid.3mf", sliceInfoOnly(1, n))), null);
+  });
+}
+
+test("a plate_N.png name at 2147483647 is still a plate", () => {
+  const file = writeTmp("max.3mf", build3mf({ plates: [{ index: 2 }, { index: "2147483647" }], pngOnly: true }));
   assert.deepEqual(
     readProjectMeta(file).plates.map((p) => p.index),
-    [2, Number.MAX_SAFE_INTEGER],
+    [2, 2147483647],
   );
 });
 
-// A slice_info index can only reach the output through a plate with the same
-// number, and a plate's own number is now always safe, so this pins the two
-// together: before the fix the 17-digit slice_info index was rounded onto the
-// rounded plater_id and gave that plate Bambu numbers.
-test("a 17-digit slice_info index gives no plate Bambu numbers", () => {
-  const file = writeTmp(
-    "si.3mf",
-    build3mf({ plates: [slicedPlate(1), { index: "12345678901234568" }, slicedPlate("12345678901234567")] }),
-  );
-  const meta = readProjectMeta(file);
+test("a plater_id at 2147483647 is still a plate", () => {
+  const file = writeTmp("maxid.3mf", build3mf({ plates: [{ index: 2 }, { index: "2147483647" }] }));
   assert.deepEqual(
-    meta.plates.map((p) => [p.index, p.sliced]),
-    [[1, true]],
+    readProjectMeta(file).plates.map((p) => p.index),
+    [2, 2147483647],
   );
 });
 
-test("a 17-digit filament id in slice_info gives no slot", () => {
-  const filaments = [{ id: "12345678901234567", type: "PLA", usedG: 3 }];
+test("a slice_info plate index and filament id at 2147483647 are still read", () => {
+  const sliced = readProjectMeta(writeTmp("maxsi.3mf", sliceInfoOnly(1, "2147483647")));
+  assert.deepEqual(sliced.plates[0].filaments, [{ slot: 2147483647, type: "PLA", grams: 1 }]);
+  const unmatched = readProjectMeta(writeTmp("maxsi2.3mf", sliceInfoOnly("2147483647", 1)));
+  assert.deepEqual(
+    unmatched.plates.map((p) => [p.index, p.sliced]),
+    [[1, false]],
+  );
+});
+
+test("a filament id that is not a whole number gives no slot", () => {
+  const filaments = [{ id: "x1", type: "PLA", usedG: 3 }];
   const file = writeTmp("fid.3mf", build3mf({ plates: [slicedPlate(1, { filaments })] }));
   assert.deepEqual(readProjectMeta(file).plates[0].filaments, [{ slot: null, type: "PLA", grams: 3 }]);
 });
