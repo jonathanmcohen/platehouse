@@ -27,6 +27,44 @@ import {
   slicerLink,
 } from "../../../src/delivery/links.js";
 
+// Non-ASCII names are built from code points, so this file stays ASCII.
+const E_ACUTE = String.fromCodePoint(0xe9);
+/** "Cafe creme brulee" with its accents. */
+const CREME = String.fromCodePoint(
+  0x43,
+  0x61,
+  0x66,
+  0xe9,
+  0x20,
+  0x63,
+  0x72,
+  0xe8,
+  0x6d,
+  0x65,
+  0x20,
+  0x62,
+  0x72,
+  0xfb,
+  0x6c,
+  0xe9,
+  0x65,
+);
+/** "Cafe uber" with its accents, then two CJK characters. */
+const ACCENTED = String.fromCodePoint(
+  0x43,
+  0x61,
+  0x66,
+  0xe9,
+  0x20,
+  0xfc,
+  0x62,
+  0x65,
+  0x72,
+  0x20,
+  0x65e5,
+  0x672c,
+);
+
 const RUN_SECRET = randomBytes(32).toString("hex");
 /** The link key for RUN_SECRET. */
 function key(): Buffer {
@@ -233,7 +271,7 @@ describe("the link's name segment (Review Focus 1)", () => {
     ["Bracket", "bracket.step", "step", "Bracket.step"],
     ["Bin", "bin.scad", "scad", "Bin.scad"],
     ["Bin", "bin.stl", "stl", "Bin.stl"],
-    ["Café crème brûlée", "x.3mf", "3mf", "Café crème brûlée.3mf"],
+    [CREME, "x.3mf", "3mf", `${CREME}.3mf`],
     ["a/b\\c", "x.3mf", "3mf", "a/b\\c.3mf"],
     ["..", "x.3mf", "3mf", "...3mf"],
     [".", "x.stl", "stl", "..stl"],
@@ -246,7 +284,7 @@ describe("the link's name segment (Review Focus 1)", () => {
 
   const hostile = [
     "a b  c.3mf",
-    "Café über 日本.3mf",
+    `${ACCENTED}.3mf`,
     "../../etc/passwd.3mf",
     "..\\..\\boot.ini.3mf",
     "a/b/c.3mf",
@@ -256,7 +294,7 @@ describe("the link's name segment (Review Focus 1)", () => {
     "hash # question ?.3mf",
     "new\nline\r\ttab.3mf",
     `${"x".repeat(230)}.3mf`,
-    `${"é".repeat(210)}.3mf`,
+    `${E_ACUTE.repeat(210)}.3mf`,
   ];
 
   test.each(hostile.map((n) => [n]))(

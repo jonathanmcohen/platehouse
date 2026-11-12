@@ -35,6 +35,24 @@ import { startTestPostgres, type TestPostgres } from "../support/db.js";
 import { type LibraryEnv, seedStoredModel, storeBlob } from "../support/library.js";
 import { TEST_ORIGIN, type TestAuth, testAuth } from "../support/oidc-issuer.js";
 
+// Non-ASCII names are built from code points, so this file stays ASCII.
+const E_ACUTE = String.fromCodePoint(0xe9);
+/** "Cafe uber" with its accents, then two CJK characters. */
+const ACCENTED = String.fromCodePoint(
+  0x43,
+  0x61,
+  0x66,
+  0xe9,
+  0x20,
+  0xfc,
+  0x62,
+  0x65,
+  0x72,
+  0x20,
+  0x65e5,
+  0x672c,
+);
+
 const CONTEXT: DisplayContext = {
   printerId: "Bambu Lab P1S 0.4 nozzle",
   orcaVersion: null,
@@ -369,7 +387,7 @@ describe("the store down (AC-012)", () => {
 describe("hostile file names (Review Focus 1)", () => {
   const hostile = [
     "a b  c.3mf",
-    "Café über 日本.3mf",
+    `${ACCENTED}.3mf`,
     "../../etc/passwd.3mf",
     "..\\..\\boot.ini.3mf",
     "a/b/c.3mf",
@@ -379,7 +397,7 @@ describe("hostile file names (Review Focus 1)", () => {
     "hash # question ?.3mf",
     "new\nline\r\ttab.3mf",
     `${"x".repeat(230)}.3mf`,
-    `${"é".repeat(210)}.3mf`,
+    `${E_ACUTE.repeat(210)}.3mf`,
     "..",
   ];
 
