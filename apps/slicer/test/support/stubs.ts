@@ -140,7 +140,9 @@ export function fakeLandrun(
     | { kind: "ok"; content: string }
     | { kind: "fail"; stderr: string }
     | { kind: "big"; bytes: number }
-    | { kind: "fsize" },
+    | { kind: "fsize" }
+    /** Leaves the output as a symlink to target, as code inside OpenSCAD could. */
+    | { kind: "symlink"; target: string },
   opts: { probe?: ProbeMode; abi?: AbiMode } = {},
 ): {
   bin: string;
@@ -180,6 +182,11 @@ exit 0
       tail = `printf 'solid partial' > "$out"
 kill -XFSZ $$
 exit 1
+`;
+      break;
+    case "symlink":
+      tail = `ln -s '${mode.target}' "$out"
+exit 0
 `;
       break;
   }

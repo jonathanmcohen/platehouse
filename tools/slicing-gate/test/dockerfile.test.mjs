@@ -350,3 +350,52 @@ test("the fetch stage copies check-libs.sh after its last download", () => {
   assert.ok(downloads.length >= 7, `the downloads: ${downloads.length}`);
   for (const { l, i } of downloads) assert.ok(i < copyAt, `download after the check-libs.sh COPY: ${l.slice(0, 100)}`);
 });
+
+// The gate's Dockerfile. The slicer's apt stages follow it, but its checks
+// live in apps/slicer/test/dockerfile.test.ts, in the unit project, so they
+// run on every pull request; here they ran only when tools/slicing-gate
+// changed, and a change to apps/slicer/Dockerfile alone skipped them (PR
+// #154 review). The gate's CI job runs these when tools/slicing-gate changes.
+const DOCKERFILES = [["tools/slicing-gate/Dockerfile", join(HERE, "Dockerfile")]];
+/** Every RUN of a Dockerfile, its line continuations joined. */
+const runsOf = (file) =>
+  readFileSync(file, "utf8")
+    .replace(/\\\n/g, " ")
+    .split("\n")
+    .filter((l) => /^RUN\b/.test(l));
+
+// Issue #148: snapshot.ubuntu.com answered GitHub's runners with 502 and 503
+// errors for hours (PR #147), so every RUN that runs apt-get update first
+// writes /etc/apt/apt.conf.d/80retries with Acquire::Retries "10". The
+// check that every update came after it was run by hand for PR #147; this
+// pins it, so a new or reworked apt stage cannot drop it.
+for (const [name, file] of DOCKERFILES) {
+  test(`${name}: every RUN that runs apt-get update writes 80retries first`, () => {
+    const aptRuns = runsOf(file).filter((r) => /\bapt-get update\b/.test(r));
+    assert.ok(aptRuns.length >= 2, `${name} has an apt stage before and after the build: ${aptRuns.length}`);
+    for (const run of aptRuns) {
+      const retries = run.search(/'Acquire::Retries "10";'[^&]*> \/etc\/apt\/apt\.conf\.d\/80retries\b/);
+      const update = run.search(/\bapt-get update\b/);
+      assert.ok(retries !== -1, `no 80retries with Acquire::Retries "10" in: ${run.slice(0, 100)}`);
+      assert.ok(retries < update, `80retries is written after the first apt-get update in: ${run.slice(0, 100)}`);
+    }
+  });
+
+  // Issue #150: apt-get update only warns on an index it could not fetch
+  // and exits 0, so an outage that outlasts the retries failed the build a
+  // command later with a misleading "Unable to locate package". The update
+  // against the snapshot runs with --error-on=any, so it fails there, with
+  // the server's error.
+  test(`${name}: every apt-get update after the snapshot is switched on runs with --error-on=any`, () => {
+    let checked = 0;
+    for (const run of runsOf(file)) {
+      const at = run.indexOf("APT::Snapshot");
+      if (at === -1) continue;
+      for (const m of run.slice(at).matchAll(/\bapt-get update\b[^&]*/g)) {
+        assert.match(m[0], /\s--error-on=any\b/, `in ${name}: ${m[0].trim()}`);
+        checked++;
+      }
+    }
+    assert.ok(checked >= 2, `${name}: snapshot updates checked: ${checked}`);
+  });
+}

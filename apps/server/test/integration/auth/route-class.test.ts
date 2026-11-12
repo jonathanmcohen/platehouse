@@ -60,12 +60,23 @@ describe("routeClass", () => {
     ["/Healthz", "session"],
     ["/assets", "session"],
     ["/assetsx/a.js", "session"],
-    // a path that is not a plain route path is session, whatever it starts with
+    // a path that is not a plain route path is session, whatever it starts
+    // with, except under /api/v1/ (below)
     ["/auth/../app/api/models", "session"],
     ["/auth/./login", "session"],
     ["/assets/%2e%2e/app", "session"],
-    ["/api/v1/%2e%2e/files/x", "session"],
     ["//api/v1/models", "session"],
+    ["/app/api/%2e%2e/x", "session"],
+    // an unmatched path that starts /api/v1/ is bearer even when it is not a
+    // plain route path: it can serve nothing but the 404, and as session a
+    // typo such as Big%20thing was sent to the login or refused for Origin,
+    // and a valid token never got its 404 (issue #140)
+    ["/api/v1/%2e%2e/files/x", "bearer"],
+    ["/api/v1/model/Big%20thing", "bearer"],
+    ["/api/v1//models", "bearer"],
+    ["/api/v1/./models", "bearer"],
+    ["/api/v1/../app/api/models", "bearer"],
+    ["/api/v1/models\\x", "bearer"],
     ["/auth\\..\\files", "session"],
     ["auth/login", "session"],
     ["", "session"],
@@ -297,6 +308,35 @@ describe("every registered route", () => {
       expect(res.json()).toEqual({ error: "forbidden" });
     }
   });
+
+  // Issue #140: before, these were session, so the page was sent to the login
+  // and the PUT without Origin was 403, whatever bearer token came with it.
+  // inject parses the URL as a browser does and resolves a dot segment, %2e%2e
+  // included, before the app sees it, so a dot segment cannot be sent this
+  // way; the routeClass cases above cover it.
+  test.each([
+    ["a percent escape", "/api/v1/model/Big%20thing"],
+    ["an escaped slash", "/api/v1/models%2Fx"],
+    ["a doubled slash", "/api/v1//models"],
+  ])(
+    "an unknown /api/v1 path with %s is bearer: 401 JSON, never the login or 403",
+    async (_label, url) => {
+      for (const method of ["GET", "PUT", "DELETE"] as const) {
+        for (const cookies of [{}, { [SESSION_COOKIE]: sessionCookie }]) {
+          const res = await t.app.inject({
+            method,
+            url,
+            cookies,
+            headers: { accept: "text/html" },
+          });
+          const label = `${method} ${url} ${Object.keys(cookies).length ? "with" : "without"} a session`;
+          expect(res.statusCode, label).toBe(401);
+          expect(res.json(), label).toEqual({ error: "unauthorized" });
+          expect(res.headers["cache-control"], label).toBe("no-store");
+        }
+      }
+    },
+  );
 
   test("an unknown path under a public prefix is a plain 404", async () => {
     for (const url of ["/auth/no-such-route", "/assets/no-such-file.js"]) {

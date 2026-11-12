@@ -1,8 +1,10 @@
 // OpenSCAD renders (AC-052, build plan Task 11): POST /v1/scad/stl and
 // /v1/scad/png. The .scad text is written alone into a fresh job folder and
 // OpenSCAD 2026.11-RC0 renders it under prlimit and landrun (see
-// sandbox.ts), with no network in the container, a time cap and
-// OPENSCADPATH unset. A render that fails answers with the tail of
+// sandbox.ts), with a time cap and OPENSCADPATH unset. What Landlock cannot
+// restrict on Hades' kernel (UDP, and a connect to a pathname Unix socket
+// below ABI 9) is left to the container: only its internal network and no
+// socket mounted (MIN_LANDLOCK_ABI in sandbox.ts). A render that fails answers with the tail of
 // OpenSCAD's own stderr. OpenSCAD's file-size limit is
 // MAX_RENDER_OUTPUT_BYTES, so writing past it stops OpenSCAD, and an output
 // over it that gets through anyway is refused.
@@ -12,6 +14,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   openSync,
   readSync,
   realpathSync,
@@ -63,15 +66,34 @@ export { MAX_RENDER_OUTPUT_BYTES };
 /**
  * Reads a finished render's output, or reports its size when it is over
  * `limit` without reading it. The size is taken from the open file, so the
- * file read is the file measured.
+ * file read is the file measured. The file is opened without following a
+ * symlink (O_NOFOLLOW) and without blocking (O_NONBLOCK, so a FIFO cannot
+ * hang the server), and anything fstat does not call a regular file is
+ * refused unread: code running inside OpenSCAD could swap its output for a
+ * link to any file the server can read, and the server, which is not
+ * sandboxed, would send that file back as the render (issue #153). A name
+ * that cannot be opened at all, such as a symlink (ELOOP) or a Unix socket
+ * (ENXIO on Linux), is refused the same way rather than thrown, since a throw
+ * answers 500 and the app records that as a slicer fault, not a failed render
+ * (PR #154 review). Only a name that is gone (ENOENT) still throws.
  */
 export function readRenderOutput(
   file: string,
   limit: number,
-): { ok: true; bytes: Buffer } | { ok: false; size: number } {
-  const fd = openSync(file, "r");
+): { ok: true; bytes: Buffer } | { ok: false; size: number } | { ok: false; notRegular: true } {
+  let fd: number;
   try {
-    const { size } = fstatSync(fd);
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (err) {
+    // ELOOP: the name is a symlink; ENXIO: a Unix socket. EISDIR is not
+    // raised for O_RDONLY, so a folder is caught by fstat below.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") throw err;
+    return { ok: false, notRegular: true };
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return { ok: false, notRegular: true };
+    const { size } = st;
     if (size > limit) return { ok: false, size };
     const bytes = Buffer.alloc(size);
     let at = 0;
@@ -83,6 +105,16 @@ export function readRenderOutput(
     return { ok: true, bytes: bytes.subarray(0, at) };
   } finally {
     closeSync(fd);
+  }
+}
+
+/** True when something, a symlink included, has this name. */
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -154,14 +186,25 @@ export async function renderScad(
     };
   }
   const out = join(dir, outputName);
-  if (run.code === 0 && existsSync(out) && statSync(out).size > 0) {
+  // lstat, not stat: the output is looked at as it is, never through a link
+  // (readRenderOutput says why).
+  if (run.code === 0 && lexists(out)) {
     const read = readRenderOutput(out, MAX_RENDER_OUTPUT_BYTES);
-    if (read.ok) return { ok: true, bytes: read.bytes };
-    return {
-      ok: false,
-      message: `OpenSCAD wrote a ${Math.ceil(read.size / MIB)} MiB ${kind.toUpperCase()}, over the ${MAX_RENDER_OUTPUT_BYTES / MIB} MiB limit for a render.`,
-      output,
-    };
+    if (read.ok && read.bytes.length > 0) return { ok: true, bytes: read.bytes };
+    if (!read.ok && "notRegular" in read) {
+      return {
+        ok: false,
+        message: `OpenSCAD's ${kind.toUpperCase()} output was not a regular file, so it was not read.`,
+        output,
+      };
+    }
+    if (!read.ok) {
+      return {
+        ok: false,
+        message: `OpenSCAD wrote a ${Math.ceil(read.size / MIB)} MiB ${kind.toUpperCase()}, over the ${MAX_RENDER_OUTPUT_BYTES / MIB} MiB limit for a render.`,
+        output,
+      };
+    }
   }
   const message = tailLines(output);
   return {
