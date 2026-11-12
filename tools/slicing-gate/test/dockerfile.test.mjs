@@ -351,14 +351,12 @@ test("the fetch stage copies check-libs.sh after its last download", () => {
   for (const { l, i } of downloads) assert.ok(i < copyAt, `download after the check-libs.sh COPY: ${l.slice(0, 100)}`);
 });
 
-// The two images' Dockerfiles: this gate's, and the slicer's, whose apt
-// stages follow it (apps/slicer/Dockerfile). These checks read both. The
-// gate's CI job runs them when tools/slicing-gate changes.
-const REPO = join(HERE, "..", "..");
-const DOCKERFILES = [
-  ["tools/slicing-gate/Dockerfile", join(HERE, "Dockerfile")],
-  ["apps/slicer/Dockerfile", join(REPO, "apps", "slicer", "Dockerfile")],
-];
+// The gate's Dockerfile. The slicer's apt stages follow it, but its checks
+// live in apps/slicer/test/dockerfile.test.ts, in the unit project, so they
+// run on every pull request; here they ran only when tools/slicing-gate
+// changed, and a change to apps/slicer/Dockerfile alone skipped them (PR
+// #154 review). The gate's CI job runs these when tools/slicing-gate changes.
+const DOCKERFILES = [["tools/slicing-gate/Dockerfile", join(HERE, "Dockerfile")]];
 /** Every RUN of a Dockerfile, its line continuations joined. */
 const runsOf = (file) =>
   readFileSync(file, "utf8")
@@ -401,26 +399,3 @@ for (const [name, file] of DOCKERFILES) {
     assert.ok(checked >= 2, `${name}: snapshot updates checked: ${checked}`);
   });
 }
-
-// Issue #153 item 5: Landlock's no-new-privileges covers a setuid helper
-// inside OpenSCAD's sandbox, but Orca runs outside it, and an Ubuntu install
-// script can leave a helper setuid when setcap is missing. The slicer's
-// runtime stage strips every setuid and setgid bit, as root, after its last
-// package and file is in place, and fails the build if any is left.
-test("apps/slicer/Dockerfile: the runtime stage strips setuid and setgid bits and checks none is left", () => {
-  const text = readFileSync(join(REPO, "apps", "slicer", "Dockerfile"), "utf8").replace(/\\\n/g, " ");
-  const lines = text.split("\n");
-  const runtime = lines.findLastIndex((l) => /^FROM\b/.test(l));
-  const user = lines.findIndex((l, i) => i > runtime && /^USER 10001$/.test(l));
-  assert.ok(runtime !== -1 && user > runtime, "the runtime stage switches to the slicer user");
-  const strip = lines.findIndex(
-    (l, i) => i > runtime && /^RUN\b/.test(l) && l.includes("-perm /6000") && l.includes("chmod a-s"),
-  );
-  assert.ok(strip !== -1 && strip < user, "a RUN before USER strips the bits");
-  assert.match(lines[strip], /find \/ -xdev -perm \/6000 -type f -exec chmod a-s/, "it strips them across the image filesystem");
-  assert.match(lines[strip], /need -z "\$\(find \/ -xdev -perm \/6000 -type f\)"/, "it fails the build if any is left");
-  const lastRootChange = lines.findLastIndex(
-    (l, i) => i > runtime && i < user && i !== strip && /^(RUN|COPY|ADD)\b/.test(l),
-  );
-  assert.ok(lastRootChange < strip, `a step after the strip could add one back: ${lines[lastRootChange]}`);
-});
