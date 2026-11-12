@@ -59,6 +59,7 @@ import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
 import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
+import type { WebDeps } from "./web/shell.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
 export const UPLOAD_PREFIXES = Object.freeze({
@@ -119,6 +120,8 @@ export interface AppDeps {
    * by requestLogValue, so its query is never in the log.
    */
   logger?: boolean | { write(line: string): unknown };
+  /** The built web app (Task 18). */
+  web?: WebDeps;
 }
 
 /**

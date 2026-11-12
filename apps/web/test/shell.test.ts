@@ -1,0 +1,214 @@
+// Build plan Task 18, AC-070, AC-071, AC-074 and AC-075: the shell around
+// every page. Rendered to static markup (react-dom/server) inside a memory
+// router: a left sidebar with Library, Creators, Collections and Tags, a top
+// bar with the narrow-screen menu button, search and Add, the Dark / Light /
+// System switch, a skip link and the main landmark. Also: index.html carries
+// the defaults the server rewrites (data-theme and the color-scheme meta),
+// and no source file opens a native browser dialog.
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router";
+import { describe, expect, test } from "vitest";
+import { Shell } from "../src/shell/Shell";
+import type { Theme } from "../src/shell/theme";
+
+function render(path: string, initialTheme?: Theme): string {
+  return renderToStaticMarkup(
+    createElement(
+      MemoryRouter,
+      { initialEntries: [path] },
+      createElement(
+        Shell,
+        initialTheme === undefined ? {} : { initialTheme },
+        createElement("p", { id: "page" }, "page body"),
+      ),
+    ),
+  );
+}
+
+/** Every opening tag of that element, in document order. */
+function tags(html: string, name: string): string[] {
+  return [...html.matchAll(new RegExp(`<${name}\\b[^>]*>`, "g"))].map((m) => m[0]);
+}
+
+function attr(tag: string, name: string): string | undefined {
+  return new RegExp(`\\s${name}="([^"]*)"`).exec(tag)?.[1];
+}
+
+/** The text of the first element of that name whose opening tag matches. */
+function textOf(html: string, tag: string): string {
+  const start = html.indexOf(tag);
+  const name = /^<([a-z]+)/.exec(tag)?.[1] ?? "";
+  const end = html.indexOf(`</${name}>`, start);
+  return html.slice(start + tag.length, end).replace(/<[^>]+>/g, "");
+}
+
+describe("the sidebar", () => {
+  const SECTIONS: Array<[string, string]> = [
+    ["Library", "/"],
+    ["Creators", "/creators"],
+    ["Collections", "/collections"],
+    ["Tags", "/tags"],
+  ];
+
+  test("links Library, Creators, Collections and Tags in a labelled navigation", () => {
+    const html = render("/");
+    const nav = tags(html, "nav").find((t) => attr(t, "class")?.includes("studio-sidebar"));
+    expect(nav, "no sidebar nav").toBeDefined();
+    expect(attr(nav as string, "aria-label")).toBe("Main");
+    const sidebar = html.slice(html.indexOf(nav as string));
+    for (const [label, href] of SECTIONS) {
+      const link = tags(sidebar, "a").find((t) => attr(t, "href") === href);
+      expect(link, `no ${label} link`).toBeDefined();
+      expect(textOf(sidebar, link as string)).toBe(label);
+    }
+  });
+
+  test.each(SECTIONS)("marks %s as the current page at %s, and only it", (label, path) => {
+    const html = render(path);
+    const nav = tags(html, "nav").find((t) => attr(t, "class")?.includes("studio-sidebar"));
+    const sidebar = html.slice(html.indexOf(nav as string), html.indexOf("</nav>"));
+    const current = tags(sidebar, "a").filter((t) => attr(t, "aria-current") === "page");
+    expect(current).toHaveLength(1);
+    expect(textOf(sidebar, current[0] as string)).toBe(label);
+  });
+});
+
+describe("the top bar", () => {
+  test("has a labelled search box", () => {
+    const html = render("/");
+    const form = tags(html, "form").find((t) => attr(t, "role") === "search");
+    expect(form, "no search form").toBeDefined();
+    const input = tags(html, "input").find((t) => attr(t, "type") === "search");
+    expect(input, "no search input").toBeDefined();
+    expect(attr(input as string, "name")).toBe("q");
+    const id = attr(input as string, "id");
+    const label = tags(html, "label").find((t) => attr(t, "for") === id);
+    expect(label, "the search input has no label").toBeDefined();
+    expect(textOf(html, label as string)).toBe("Search the library");
+  });
+
+  test("has an Add button", () => {
+    const html = render("/");
+    const add = tags(html, "button").find((t) =>
+      attr(t, "class")?.includes("studio-button-primary"),
+    );
+    expect(add, "no Add button").toBeDefined();
+    expect(textOf(html, add as string)).toContain("Add");
+  });
+
+  test("has a menu button for narrow screens that controls the menu panel", () => {
+    const html = render("/");
+    const button = tags(html, "button").find((t) => attr(t, "aria-controls") !== undefined);
+    expect(button, "no menu button").toBeDefined();
+    expect(textOf(html, button as string)).toBe("Menu");
+    expect(attr(button as string, "aria-expanded")).toBe("false");
+    const panelId = attr(button as string, "aria-controls");
+    const panel = tags(html, "div").find((t) => attr(t, "id") === panelId);
+    expect(panel, "the menu button controls no element").toBeDefined();
+    expect(panel).toMatch(/\shidden=""/);
+    const menu = html.slice(html.indexOf(panel as string));
+    for (const href of ["/", "/creators", "/collections", "/tags"]) {
+      expect(
+        tags(menu, "a").some((t) => attr(t, "href") === href),
+        href,
+      ).toBe(true);
+    }
+  });
+});
+
+describe("the theme switch", () => {
+  function switchButtons(html: string): Map<string, string> {
+    const group = tags(html, "div").find((t) => attr(t, "class")?.includes("studio-theme-switch"));
+    expect(group, "no theme switch").toBeDefined();
+    expect(attr(group as string, "role")).toBe("group");
+    expect(attr(group as string, "aria-label")).toBe("Theme");
+    const inside = html.slice(html.indexOf(group as string));
+    const buttons = new Map<string, string>();
+    for (const tag of tags(inside, "button").slice(0, 3)) {
+      buttons.set(textOf(inside, tag), attr(tag, "aria-pressed") ?? "");
+    }
+    return buttons;
+  }
+
+  test("offers Dark, Light and System, with Dark pressed by default", () => {
+    expect([...switchButtons(render("/")).entries()]).toEqual([
+      ["Dark", "true"],
+      ["Light", "false"],
+      ["System", "false"],
+    ]);
+  });
+
+  test.each([
+    ["light", "Light"],
+    ["system", "System"],
+  ] as const)("presses %s when that is the theme", (theme, label) => {
+    const buttons = switchButtons(render("/", theme));
+    for (const [name, pressed] of buttons) expect(pressed, name).toBe(String(name === label));
+  });
+
+  test("its buttons are buttons, not a form that posts and reloads", () => {
+    const html = render("/");
+    const group = tags(html, "div").find((t) => attr(t, "class")?.includes("studio-theme-switch"));
+    expect(group, "no theme switch").toBeDefined();
+    const inside = html.slice(
+      html.indexOf(group as string),
+      html.indexOf("</div>", html.indexOf(group as string)),
+    );
+    expect(inside).not.toContain("<form");
+    const buttons = tags(inside, "button");
+    expect(buttons).toHaveLength(3);
+    for (const tag of buttons) expect(attr(tag, "type")).toBe("button");
+  });
+});
+
+describe("the page frame", () => {
+  test("has a skip link to the main landmark, which holds the page", () => {
+    const html = render("/");
+    const skip = tags(html, "a").find((t) => attr(t, "class") === "studio-skip");
+    expect(skip, "no skip link").toBeDefined();
+    expect(attr(skip as string, "href")).toBe("#ph-content");
+    const main = tags(html, "main")[0];
+    expect(attr(main as string, "id")).toBe("ph-content");
+    expect(attr(main as string, "tabindex")).toBe("-1");
+    expect(html.indexOf('<p id="page">page body</p>')).toBeGreaterThan(
+      html.indexOf(main as string),
+    );
+  });
+});
+
+describe("index.html", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+
+  test("defaults to dark: one data-theme on the html element and one color-scheme meta", () => {
+    expect(html.match(/<html\b[^>]*>/g)).toEqual(['<html lang="en" data-theme="dark">']);
+    expect(html.match(/data-theme=/g)).toHaveLength(1);
+    expect(html.match(/<meta name="color-scheme" content="dark" \/>/g)).toHaveLength(1);
+    expect(html.match(/color-scheme/g)).toHaveLength(1);
+  });
+
+  test("loads nothing from another host", () => {
+    expect(html).not.toMatch(/(?:src|href)="(?:https?:)?\/\//);
+  });
+});
+
+test("no source file opens a native browser dialog", () => {
+  const root = fileURLToPath(new URL("../src", import.meta.url));
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else if (/\.(ts|tsx)$/.test(name)) files.push(path);
+    }
+  };
+  walk(root);
+  expect(files.length).toBeGreaterThan(0);
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    expect(source, file).not.toMatch(/\b(?:alert|confirm|prompt)\s*\(/);
+  }
+});
