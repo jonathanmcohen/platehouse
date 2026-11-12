@@ -53,6 +53,11 @@ const ACCENTED = String.fromCodePoint(
   0x672c,
 );
 
+/** What a link's name segment never carries (the Slicer link contract). */
+const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}]/gu;
+/** The same, for one test (no global flag, so no state between calls). */
+const UNSAFE_CHAR = /[/\\%?#;\p{Cc}]/u;
+
 const CONTEXT: DisplayContext = {
   printerId: "Bambu Lab P1S 0.4 nozzle",
   orcaVersion: null,
@@ -391,6 +396,45 @@ describe("the store down (AC-012)", () => {
   });
 });
 
+describe("an object whose size differs from the record (PR #156 security review)", () => {
+  // A restored older object version, or a write to the bucket behind the
+  // app's back, leaves an object under the key whose size is not the
+  // recorded one. Sending it would put bytes past Content-Length on the
+  // keep-alive socket, or leave the client waiting for the rest, so the
+  // route answers 503 before any header instead.
+  test.each([
+    ["longer", 7],
+    ["shorter", -5],
+  ])("an object %s than its record is 503 before any header", async (_label, delta) => {
+    const seeded = await seedStoredModel(env);
+    const link = await mint(seeded.file.id);
+    const thumbnail = await env.repos.blobs.get(seeded.thumbnail.id);
+    const thumbnailSize = Number(thumbnail?.size ?? 0);
+    expect(thumbnailSize).toBeGreaterThan(5);
+    await env.putRaw(seeded.source.key, randomBytes(seeded.bytes.length + delta));
+    await env.putRaw(seeded.thumbnail.key, randomBytes(thumbnailSize + delta));
+    for (const [path, session] of [
+      [`/files/${seeded.file.id}/download`, true],
+      [`/blobs/${seeded.thumbnail.id}`, true],
+      [pathOf(link.url), false],
+    ] as const) {
+      const res = await call("GET", path, { session });
+      expect(res.status, path).toBe(503);
+      expect(JSON.parse(res.text), path).toEqual({
+        error: "unavailable",
+        message: FILE_UNAVAILABLE_MESSAGE,
+      });
+      expect(res.headers.get("content-disposition"), path).toBeNull();
+      expect(res.headers.get("cache-control"), path).toBe("no-store");
+    }
+    // The object put back at its recorded size is served whole again.
+    await env.putRaw(seeded.source.key, seeded.bytes);
+    const back = await call("GET", pathOf(link.url));
+    expect(back.status).toBe(200);
+    expect(back.bytes.equals(seeded.bytes)).toBe(true);
+  });
+});
+
 describe("hostile file names (Review Focus 1)", () => {
   const hostile = [
     "a b  c.3mf",
@@ -442,7 +486,10 @@ describe("hostile file names (Review Focus 1)", () => {
       const segments = pathOf(link.url).split("/");
       expect(segments, name).toHaveLength(4);
       const last = segments[3] ?? "";
-      expect(last, name).toBe(encodeURIComponent(expected));
+      // The segment has / \ % ? # ; and control characters replaced by _
+      // (Jon, 2026-11-12); Content-Disposition keeps the stored name.
+      expect(last, name).toBe(encodeURIComponent(expected.replace(UNSAFE_IN_SEGMENT, "_")));
+      expect(decodeURIComponent(last), name).not.toMatch(UNSAFE_CHAR);
       expect(last.endsWith(".3mf"), name).toBe(true);
       const fetched = await call("GET", pathOf(link.url));
       expect(fetched.status, name).toBe(200);

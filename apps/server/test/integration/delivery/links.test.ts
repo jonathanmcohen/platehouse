@@ -22,6 +22,7 @@ import {
   LINK_TOKEN_LENGTH,
   linkFileName,
   linkKey,
+  linkSegment,
   mintLinkToken,
   readLinkToken,
   slicerLink,
@@ -282,24 +283,34 @@ describe("the link's name segment (Review Focus 1)", () => {
     expect(linkFileName({ name, originalName, kind })).toBe(expected);
   });
 
-  const hostile = [
-    "a b  c.3mf",
-    `${ACCENTED}.3mf`,
-    "../../etc/passwd.3mf",
-    "..\\..\\boot.ini.3mf",
-    "a/b/c.3mf",
-    "\"quoted\" 'single'.3mf",
-    "semi;colon,comma=eq.3mf",
-    "percent %2F %00.3mf",
-    "hash # question ?.3mf",
-    "new\nline\r\ttab.3mf",
-    `${"x".repeat(230)}.3mf`,
-    `${E_ACUTE.repeat(210)}.3mf`,
+  // Jon, 2026-11-12 (PR #156): the segment is the delivered name with
+  // / \ % ? # ; NUL and control characters replaced by _, then
+  // percent-encoded, so a link never depends on how a proxy treats an
+  // encoded slash, backslash or percent sign. [stored name, segment]
+  const hostile: Array<[string, string]> = [
+    ["a b  c.3mf", "a%20b%20%20c.3mf"],
+    [`${ACCENTED}.3mf`, encodeURIComponent(`${ACCENTED}.3mf`)],
+    ["../../etc/passwd.3mf", ".._.._etc_passwd.3mf"],
+    ["..\\..\\boot.ini.3mf", ".._.._boot.ini.3mf"],
+    ["a/b/c.3mf", "a_b_c.3mf"],
+    ["\"quoted\" 'single'.3mf", "%22quoted%22%20'single'.3mf"],
+    ["semi;colon,comma=eq.3mf", "semi_colon%2Ccomma%3Deq.3mf"],
+    ["percent %2F %00.3mf", "percent%20_2F%20_00.3mf"],
+    ["hash # question ?.3mf", "hash%20_%20question%20_.3mf"],
+    ["new\nline\r\ttab.3mf", "new_line__tab.3mf"],
+    [
+      `nul${String.fromCodePoint(0)}del${String.fromCodePoint(0x7f)}c1${String.fromCodePoint(0x85)}.3mf`,
+      "nul_del_c1_.3mf",
+    ],
+    ["a/b", "a_b.3mf"],
+    ["..", "...3mf"],
+    [`${"x".repeat(230)}.3mf`, `${"x".repeat(230)}.3mf`],
+    [`${E_ACUTE.repeat(210)}.3mf`, encodeURIComponent(`${E_ACUTE.repeat(210)}.3mf`)],
   ];
 
-  test.each(hostile.map((n) => [n]))(
-    "hostile name %j: one segment, decodes to the name, ends in .3mf",
-    (name) => {
+  test.each(hostile)(
+    "hostile name %j: one segment %j, no unsafe character, ends in .3mf",
+    (name, segment) => {
       const l = link(file({ name }));
       const url = new URL(l.url);
       expect(url.origin).toBe(ORIGIN);
@@ -308,10 +319,16 @@ describe("the link's name segment (Review Focus 1)", () => {
       const parts = url.pathname.split("/");
       expect(parts).toHaveLength(4);
       const last = parts[3] ?? "";
-      expect(last).toBe(encodeURIComponent(name));
-      expect(decodeURIComponent(last)).toBe(name);
+      expect(last).toBe(segment);
+      expect(linkSegment(file({ name }))).toBe(segment);
+      expect(decodeURIComponent(last)).not.toMatch(/[/\\%?#;\p{Cc}]/u);
       expect(last.endsWith(".3mf")).toBe(true);
       expect(l.url).toMatch(/^[\x21-\x7e]+$/);
     },
   );
+
+  test("the segment keeps the name's own extension when it already has one", () => {
+    expect(linkSegment(file({ name: "Bracket.STP", kind: "step" }))).toBe("Bracket.STP");
+    expect(linkSegment(file({ name: "a;b", originalName: "x.stp", kind: "step" }))).toBe("a_b.stp");
+  });
 });

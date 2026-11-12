@@ -2,7 +2,7 @@
 // slicer opens a file from a URL and sends no cookie, so the link carries
 // its own short-lived capability:
 //
-//   GET /s/<token>/<encodeURIComponent(name)>
+//   GET /s/<token>/<linkSegment(file)>
 //   token = base64url( fileId(16 bytes) || exp(uint32 BE, unix s)
 //                      || HMAC-SHA256(key, "ph-link-v1"||fileId||exp)[0..16] )
 //
@@ -13,21 +13,28 @@
 //   nothing.
 // - A link works for LINK_LIFETIME_SECONDS (10 minutes, Q14) and opens only
 //   the file whose id it carries. Expired, altered, malformed or naming a
-//   file that is gone or in the trash: 403 with an empty body and no bytes,
-//   and the store is never asked.
+//   file that is gone or in the trash: 403 with an empty body and no bytes.
+//   The token's MAC and expiry are checked before anything is looked up, so
+//   a forged link never reaches the database or the store.
+// - The token is read from the path as sent (linkPath), not from the
+//   router's decoded parameter, so only the literal 48-character token
+//   matches: a percent-escaped form of it is refused, and so is a path with
+//   an empty name segment or a further raw "/" after it.
 // - The URL is absoluteUrl(...) on PUBLIC_ORIGIN, never built from the
-//   request's Host (AC-091), has no query string, and its last segment is
-//   the file's name with its real extension (linkFileName), percent-encoded
-//   so it is always one segment: OrcaSlicer names its download after it.
-//   That segment is never used for lookup; the answer's Content-Disposition
-//   carries the same name, built from the stored file (download.ts), so a
-//   slicer that prefers it also gets the real extension.
+//   request's Host (AC-091), and has no query string. Its last segment is
+//   linkSegment: the file's name with its real extension (linkFileName),
+//   with / \ % ? # ; NUL and control characters replaced by _, then
+//   percent-encoded (Jon, 2026-11-12, PR #156), so it is always one segment
+//   and holds nothing a proxy might decode, refuse or split on. OrcaSlicer
+//   names its download after it. That segment is never used for lookup;
+//   the answer's Content-Disposition carries the real stored name with its
+//   extension (download.ts), so a slicer that prefers it gets that.
 // - The route is registered as /s/:token/* rather than /s/:token/:name:
 //   the router refuses a :param over its maxParamLength (100 characters)
 //   with 414, which would break the link of any file whose name is longer.
-//   The URLs it answers are the same: a path with a further raw "/" after
-//   the name segment is refused like a bad token, while a name's own "/",
-//   sent as %2F, stays inside its one segment.
+//   The URLs it answers are the same. A path under /s/ that matches no
+//   route (no name segment, another method) is answered by app.ts's
+//   not-found handler as a refused link: 403, empty, no-store.
 // - POST /app/api/files/:id/slicer-link mints one. It is a session route
 //   that changes state, so the gate (auth/gate.ts) has already checked the
 //   session and that Origin is PUBLIC_ORIGIN before it runs.
@@ -35,6 +42,7 @@ import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { FileContent, FileHead } from "../api/v1.js";
 import {
+  checkObjectSize,
   type DeliveryDeps,
   fileRouteErrors,
   type LinkFile,
@@ -55,6 +63,9 @@ export const LINK_TOKEN_LENGTH = 48;
 
 /** The link route's pattern: the token, then the file name as the rest. */
 export const LINK_ROUTE = "/s/:token/*";
+
+/** What a link's name segment never carries: each is replaced by "_" before encoding. */
+const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}]/gu;
 
 /** The HKDF label of the link key; the login cookie's is "platehouse login cookie v1". */
 const LINK_KEY_LABEL = "platehouse slicer link v1";
@@ -115,6 +126,15 @@ export function readLinkToken(key: Buffer, token: string, now: Date): string | u
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * A link's last segment: linkFileName with / \ % ? # ; NUL and control
+ * characters replaced by "_", then encodeURIComponent. It ends in the file's
+ * real extension, which none of those characters is part of.
+ */
+export function linkSegment(file: Pick<LinkFile, "name" | "originalName" | "kind">): string {
+  return encodeURIComponent(linkFileName(file).replace(UNSAFE_IN_SEGMENT, "_"));
+}
+
 /** A link to the file, minted now, with the protocol URLs for each slicer. */
 export function slicerLink(opts: {
   key: Buffer;
@@ -124,7 +144,7 @@ export function slicerLink(opts: {
 }): SlicerLink {
   const exp = Math.ceil(opts.now.getTime() / 1000) + LINK_LIFETIME_SECONDS;
   const token = mintLinkToken(opts.key, opts.file.id, exp);
-  const url = opts.absoluteUrl(`/s/${token}/${encodeURIComponent(linkFileName(opts.file))}`);
+  const url = opts.absoluteUrl(`/s/${token}/${linkSegment(opts.file)}`);
   const enc = encodeURIComponent(url);
   return {
     url,
@@ -138,15 +158,18 @@ export function slicerLink(opts: {
 }
 
 /**
- * True when the raw request path is /s/<token>/<one segment>: nothing after
- * the name but the query. It reads the path as sent, before the router
- * decodes it, because a name's own "/" arrives as %2F inside the one
- * segment, and the decoded wildcard would show it as a separator.
+ * The token of a raw request path of the form /<s>/<token>/<name>: exactly
+ * one name segment, not empty, and nothing after it but the query. It reads
+ * the path as sent, before the router decodes it, so the token is the
+ * literal text of its segment and a "/" sent as %2F stays inside one
+ * segment. Undefined for any other path.
  */
-function isOneNameSegment(url: string): boolean {
+function linkPath(url: string): string | undefined {
   const at = url.search(/[?#]/);
   const path = at === -1 ? url : url.slice(0, at);
-  return path.split("/").length === 4;
+  const segments = path.split("/");
+  if (segments.length !== 4 || segments[3] === "") return undefined;
+  return segments[2];
 }
 
 /** A link refused: 403, nothing in the body. */
@@ -175,9 +198,10 @@ export async function registerLinks(
       },
     );
 
-    scope.get<{ Params: { token: string } }>(LINK_ROUTE, async (request, reply) => {
-      if (!isOneNameSegment(request.url)) return refuseLink(reply);
-      const fileId = readLinkToken(key, request.params.token, now());
+    scope.get(LINK_ROUTE, async (request, reply) => {
+      const token = linkPath(request.url);
+      if (token === undefined) return refuseLink(reply);
+      const fileId = readLinkToken(key, token, now());
       if (fileId === undefined) return refuseLink(reply);
       // The file's kind and original name give the Content-Disposition name
       // its extension (linkFileName); the database only, the store not yet.
@@ -187,6 +211,7 @@ export async function registerLinks(
       let content: FileHead | FileContent | undefined;
       try {
         content = head ? await deps.files.fileHead(fileId) : await deps.files.openFile(fileId);
+        if (content !== undefined) checkObjectSize(content);
       } catch (error) {
         const answered = unavailable(error, request, reply);
         if (answered !== undefined) return answered;

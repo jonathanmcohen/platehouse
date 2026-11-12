@@ -14,9 +14,20 @@
 //   same way. A blob is read here (createDeliveryLibrary) by the same rules:
 //   its model must be live and its row stored.
 // - The bytes are the store's stream, piped as it arrives; nothing holds a
-//   whole file. Content-Length comes from the database. A HEAD never opens a
-//   GetObject: it confirms the object with a HeadObject (no body) and sends
-//   the headers, so it fails where the GET would.
+//   whole file. Content-Length comes from the database, and the object must
+//   be exactly that size (PR #156 security review): Node does not hold a
+//   response to its Content-Length, so a longer object would put its extra
+//   bytes on the keep-alive socket, where a proxy reusing the connection
+//   reads them as the next answer, and a shorter one would leave the client
+//   waiting. So an object whose size, as the store reports it (objectSize),
+//   differs from the record is 503 before any header (checkObjectSize), and
+//   the bytes are counted as they go (exactSize): a stream that runs past
+//   the record or ends short of it destroys the response, so the client
+//   sees an aborted answer, never a clean end. res.strictContentLength is
+//   not used: on a short stream it throws from res.end() and ends the
+//   process. A HEAD never opens a GetObject: it confirms the object with a
+//   HeadObject (no body) and sends the headers, so it fails where the GET
+//   would.
 // - A file or blob that is unknown, malformed or in the trash is 404. When
 //   the store cannot give the bytes (an outage, a missing object, a refusal)
 //   the answer is 503 "This file is unavailable right now", and nothing is
@@ -29,9 +40,11 @@
 //   the header. The name is linkFileName's: a rename may have left the
 //   stored name without its extension, and a browser saves the download
 //   under this name, so the file's real extension is added when it is
-//   missing. The slicer link (links.ts) names its file the same way. Every
-//   answer carries X-Content-Type-Options: nosniff.
-import { Readable } from "node:stream";
+//   missing. A slicer link's answer (links.ts) carries the same
+//   Content-Disposition; only its URL's name segment has unsafe characters
+//   replaced (linkSegment). Every answer carries X-Content-Type-Options:
+//   nosniff.
+import { pipeline, Readable, Transform } from "node:stream";
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import {
@@ -43,7 +56,13 @@ import {
 } from "../api/v1.js";
 import type { DB, FileKind } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
-import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
+import {
+  BlobNotFound,
+  type BlobStore,
+  objectSize,
+  StoreError,
+  StoreUnavailable,
+} from "../storage/s3.js";
 
 /** What GET /blobs/:id answers in Cache-Control: a blob's bytes never change. */
 export const BLOB_CACHE_CONTROL = "private, max-age=31536000, immutable";
@@ -153,10 +172,65 @@ export function createDeliveryLibrary(deps: {
 }
 
 /**
- * Sends a file's or blob's headers and, for a GET, its stream. A HEAD gets an
- * empty stream, which keeps the Content-Length (an empty body would make
- * Fastify answer 0). An attachment is named fileName (a file's linkFileName),
- * else the content's own name.
+ * Throws StoreError (GetObject, SizeMismatch), after closing the stream,
+ * when the store reported an object size for the content's stream that is
+ * not its recorded size, so the route answers 503 before any header. A
+ * stream with no reported size passes; exactSize still counts its bytes.
+ */
+export function checkObjectSize(content: FileHead | FileContent): void {
+  if (!("stream" in content)) return;
+  const reported = objectSize(content.stream);
+  if (reported === undefined || reported === content.size) return;
+  content.stream.destroy();
+  throw new StoreError("GetObject", "SizeMismatch");
+}
+
+/**
+ * The stream, passed through only while it holds exactly size bytes. A
+ * chunk that would take it past size errors the stream before any of that
+ * chunk is sent, and an end short of size errors it too; Fastify then
+ * destroys the response (or, before any header, answers through the scope's
+ * error handler, 503). The last byte is held until the source ends, so a
+ * client never receives the whole Content-Length from an object that turns
+ * out longer. Destroying the result destroys the source.
+ */
+function exactSize(source: Readable, size: number): Readable {
+  let seen = 0;
+  let held: Buffer | undefined;
+  const counted = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      seen += chunk.length;
+      if (seen > size) {
+        done(new StoreError("GetObject", "SizeMismatch"));
+        return;
+      }
+      if (seen === size && chunk.length > 0) {
+        held = chunk.subarray(chunk.length - 1);
+        done(null, chunk.length > 1 ? chunk.subarray(0, chunk.length - 1) : undefined);
+        return;
+      }
+      done(null, chunk);
+    },
+    flush(done) {
+      if (seen !== size) {
+        done(new StoreError("GetObject", "SizeMismatch"));
+        return;
+      }
+      done(null, held);
+    },
+  });
+  pipeline(source, counted, () => {
+    // An error reaches Fastify through counted, which pipeline destroys
+    // with it; this callback only keeps pipeline from throwing.
+  });
+  return counted;
+}
+
+/**
+ * Sends a file's or blob's headers and, for a GET, its stream, held to the
+ * recorded size (exactSize). A HEAD gets an empty stream, which keeps the
+ * Content-Length (an empty body would make Fastify answer 0). An attachment
+ * is named fileName (a file's linkFileName), else the content's own name.
  */
 export function sendContent(
   reply: FastifyReply,
@@ -171,7 +245,9 @@ export function sendContent(
   if (opts.attachment) {
     reply.header("content-disposition", contentDisposition(opts.fileName ?? content.name));
   }
-  return reply.send("stream" in content ? content.stream : Readable.from([]));
+  return reply.send(
+    "stream" in content ? exactSize(content.stream, content.size) : Readable.from([]),
+  );
 }
 
 /**
@@ -224,6 +300,7 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
       let content: FileHead | FileContent | undefined;
       try {
         content = await read(request.method === "HEAD");
+        if (content !== undefined) checkObjectSize(content);
       } catch (error) {
         const answered = unavailable(error, request, reply);
         if (answered !== undefined) return answered;

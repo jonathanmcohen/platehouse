@@ -12,7 +12,12 @@
 // reaches the client before the store has sent the rest), a HEAD opens no
 // stream, a store outage is 503 "This file is unavailable right now", an
 // error from the database leaks nothing, and the link URL comes from
-// PUBLIC_ORIGIN whatever Host the request carries (AC-091).
+// PUBLIC_ORIGIN whatever Host the request carries (AC-091). A refused link
+// makes no library lookup at all (the MAC is checked first), an object
+// whose size differs from the record is 503 before any header, and a
+// stream that runs past, falls short of or fails before the recorded size
+// reaches the client as an aborted response, never a clean end (PR #156
+// security review).
 //
 // No container: sessions are in memory and the issuer is the local mock.
 // The DB and bucket tests are in delivery.test.ts. Every byte is synthetic.
@@ -23,7 +28,12 @@ import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { FILE_UNAVAILABLE_MESSAGE, type FileContent, type FileHead } from "../../../src/api/v1.js";
+import {
+  contentDisposition,
+  FILE_UNAVAILABLE_MESSAGE,
+  type FileContent,
+  type FileHead,
+} from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { patternClass, type RouteClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
@@ -34,7 +44,7 @@ import {
   type LinkFile,
 } from "../../../src/delivery/download.js";
 import { LINK_LIFETIME_SECONDS, type SlicerLink } from "../../../src/delivery/links.js";
-import { StoreUnavailable } from "../../../src/storage/s3.js";
+import { reportObjectSize, StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import {
   concretePath,
@@ -86,6 +96,16 @@ const blobs = new Map<string, { contentType: string; bytes: Buffer }>([
 
 /** How many streams the stubs opened (each one a GetObject on the real store). */
 let opened = 0;
+/**
+ * How often each library call ran. A refused link must make none of them:
+ * the token's MAC and expiry are checked before any lookup, so a forged
+ * link never reaches the database or the store.
+ */
+const lookups = { linkFile: 0, openFile: 0, fileHead: 0 };
+/** While set, the store reports this object size for every stream it opens. */
+let storedSize: number | undefined;
+/** The last stream the stubs handed out. */
+let lastStream: Readable | undefined;
 /** While set, every read of the store fails this way. */
 let storeFails: Error | undefined;
 /** While set, every database read fails this way. */
@@ -97,8 +117,19 @@ function head(item: StubItem | { contentType: string; bytes: Buffer }, name: str
   return { name, contentType: item.contentType, size: item.bytes.length };
 }
 
+/**
+ * A stub stream as the real store hands it out: with the object's size as
+ * the store reported it (storedSize while a test sets it, else the bytes').
+ */
+function stored(bytes: Buffer): Readable {
+  const stream = reportObjectSize(Readable.from([bytes]), storedSize ?? bytes.length);
+  lastStream = stream;
+  return stream;
+}
+
 const deliveryFiles: DeliveryDeps["files"] = {
   async fileHead(id) {
+    lookups.fileHead += 1;
     if (dbFails) throw dbFails;
     const item = files.get(id);
     if (item === undefined) return undefined;
@@ -106,7 +137,10 @@ const deliveryFiles: DeliveryDeps["files"] = {
     return head(item, item.name);
   },
   async openFile(id): Promise<FileContent | undefined> {
+    lookups.openFile += 1;
     if (dbFails) throw dbFails;
+    // The STREAMED stream reports no object size, as a store that sends no
+    // Content-Length would, so only the byte count guards it.
     if (id === STREAMED && gate) {
       opened += 1;
       return { name: "Streamed.3mf", contentType: "model/3mf", size: 16, stream: gate };
@@ -115,12 +149,13 @@ const deliveryFiles: DeliveryDeps["files"] = {
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
     opened += 1;
-    return { ...head(item, item.name), stream: Readable.from([item.bytes]) };
+    return { ...head(item, item.name), stream: stored(item.bytes) };
   },
 };
 
 const deliveryLibrary: DeliveryDeps["library"] = {
   async linkFile(id) {
+    lookups.linkFile += 1;
     if (dbFails) throw dbFails;
     if (id === STREAMED) {
       return { id, name: "Streamed.3mf", originalName: "Streamed.3mf", kind: "3mf" };
@@ -147,7 +182,7 @@ const deliveryLibrary: DeliveryDeps["library"] = {
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
     opened += 1;
-    return { ...head(item, id), stream: Readable.from([item.bytes]) };
+    return { ...head(item, id), stream: stored(item.bytes) };
   },
 };
 
@@ -201,7 +236,14 @@ afterEach(() => {
   storeFails = undefined;
   dbFails = undefined;
   gate = undefined;
+  storedSize = undefined;
+  lastStream = undefined;
 });
+
+/** Checks that no library call ran since before was taken: 0 of each. */
+function expectNoLookups(before: typeof lookups, label = "") {
+  expect({ ...lookups }, label).toEqual(before);
+}
 
 /** Mints a link for a file through the route, as the UI does. */
 async function mint(fileId: string, headers: Record<string, string> = {}) {
@@ -250,6 +292,7 @@ describe("every registered route, with delivery mounted", () => {
     expect(routes.length).toBeGreaterThan(14);
     const seen = new Set<RouteClass>();
     const before = opened;
+    const looked = { ...lookups };
     for (const route of routes) {
       const cls = patternClass(route.path);
       seen.add(cls);
@@ -271,6 +314,7 @@ describe("every registered route, with delivery mounted", () => {
             expect(res.statusCode, label).toBe(403);
             expect(res.body, label).toBe("");
             expect(opened, label).toBe(before);
+            expectNoLookups(looked, label);
             break;
           case "public":
             expect(res.statusCode, label).not.toBe(401);
@@ -298,6 +342,7 @@ describe("every registered route, with delivery mounted", () => {
     });
     expect(download.statusCode).toBe(200);
     const before = opened;
+    const looked = { ...lookups };
     const link = await app.inject({
       method: "GET",
       url: "/s/not-a-token/Cube%20A.3mf",
@@ -306,6 +351,7 @@ describe("every registered route, with delivery mounted", () => {
     expect(link.statusCode).toBe(403);
     expect(link.body).toBe("");
     expect(opened).toBe(before);
+    expectNoLookups(looked);
   });
 });
 
@@ -408,11 +454,15 @@ describe("GET /s/<token>/<name>", () => {
       expect(live.statusCode).toBe(200);
       t.clock.advance(2_000);
       const before = opened;
-      const dead = await app.inject({ method: "GET", url: pathOf(link.url) });
-      expect(dead.statusCode).toBe(403);
-      expect(dead.body).toBe("");
-      expect(dead.headers["content-disposition"]).toBeUndefined();
+      const looked = { ...lookups };
+      for (const method of ["GET", "HEAD"] as const) {
+        const dead = await app.inject({ method, url: pathOf(link.url) });
+        expect(dead.statusCode, method).toBe(403);
+        expect(dead.body, method).toBe("");
+        expect(dead.headers["content-disposition"], method).toBeUndefined();
+      }
       expect(opened).toBe(before);
+      expectNoLookups(looked);
     } finally {
       t.clock.now = start;
     }
@@ -424,6 +474,7 @@ describe("GET /s/<token>/<name>", () => {
     const bytes = Buffer.from(token ?? "", "base64url");
     bytes[30] = (bytes[30] ?? 0) ^ 0x80;
     const before = opened;
+    const looked = { ...lookups };
     for (const url of [
       `/s/${bytes.toString("base64url")}/${name}`,
       `/s/${token?.slice(0, -1)}/${name}`,
@@ -435,9 +486,99 @@ describe("GET /s/<token>/<name>", () => {
         const res = await app.inject({ method, url });
         expect(res.statusCode, `${method} ${url}`).toBe(403);
         expect(res.body, `${method} ${url}`).toBe("");
+        expect(res.headers["cache-control"], `${method} ${url}`).toBe("no-store");
       }
     }
     expect(opened).toBe(before);
+    expectNoLookups(looked);
+  });
+
+  test("the token is read as sent: a percent-escaped one is refused before any lookup", async () => {
+    // The router decodes the path, so %41 would read as "A"; the link
+    // route reads the token from the raw path, where only a literal token
+    // of 48 base64url characters can match.
+    const link = await linkFor(FILE_A);
+    const [, , token = "", name] = pathOf(link.url).split("/");
+    const first = token.charCodeAt(0).toString(16).toUpperCase();
+    const escaped = `%${first}${token.slice(1)}`;
+    const looked = { ...lookups };
+    const res = await app.inject({ method: "GET", url: `/s/${escaped}/${name}` });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toBe("");
+    expectNoLookups(looked);
+    // The same token as minted still opens the file.
+    const live = await app.inject({ method: "GET", url: `/s/${token}/${name}` });
+    expect(live.statusCode).toBe(200);
+  });
+
+  test("an empty name segment is refused before any lookup", async () => {
+    const link = await linkFor(FILE_A);
+    const [, , token = ""] = pathOf(link.url).split("/");
+    const looked = { ...lookups };
+    for (const url of [`/s/${token}/`, `/s/${token}/?x=1`]) {
+      for (const method of ["GET", "HEAD"] as const) {
+        const res = await app.inject({ method, url });
+        expect(res.statusCode, `${method} ${url}`).toBe(403);
+        expect(res.body, `${method} ${url}`).toBe("");
+      }
+    }
+    expectNoLookups(looked);
+  });
+
+  test("an unmatched /s/ path is 403 with an empty body and no-store, never a 404", async () => {
+    // No name segment (a link cut short), another method, or junk: the
+    // not-found handler answers as a refused link, and echoes nothing.
+    const link = await linkFor(FILE_A);
+    const [, , token = "", name = ""] = pathOf(link.url).split("/");
+    const looked = { ...lookups };
+    const before = opened;
+    const requests: Array<[string, string]> = [
+      ["GET", `/s/${token}`],
+      ["HEAD", `/s/${token}`],
+      ["GET", "/s/"],
+      ["GET", "/s/zzz"],
+      ["POST", `/s/${token}/x.3mf`],
+      ["OPTIONS", `/s/${token}/x.3mf`],
+      ["PUT", `/s/${token}/x.3mf`],
+      ["DELETE", `/s/${token}/x.3mf`],
+      ["PATCH", "/s/zzz/y"],
+    ];
+    expect(name).toContain("%");
+    for (const [method, url] of requests) {
+      const res = await app.inject({
+        method: method as "GET",
+        url,
+        headers: { accept: "application/json", origin: TEST_ORIGIN },
+      });
+      const label = `${method} ${url}`;
+      expect(res.statusCode, label).toBe(403);
+      expect(res.body, label).toBe("");
+      expect(res.headers["cache-control"], label).toBe("no-store");
+      if (method !== "HEAD") expect(res.headers["content-length"], label).toBe("0");
+    }
+    expect(opened).toBe(before);
+    expectNoLookups(looked);
+  });
+
+  test("an unmatched /s/ path with a percent escape is refused by the gate, echoing nothing", async () => {
+    // The gate (auth/gate.ts) classes an unmatched path that is not a plain
+    // route path (a percent escape, a dot segment) as session-class, so it
+    // answers 401 before the not-found handler runs. Nothing is served or
+    // echoed either way; the contract's 403 for these is a gate.ts change.
+    const link = await linkFor(FILE_A);
+    const [, , token = "", name = ""] = pathOf(link.url).split("/");
+    const looked = { ...lookups };
+    for (const method of ["POST", "PUT", "OPTIONS"] as const) {
+      const res = await app.inject({
+        method,
+        url: `/s/${token}/${name}`,
+        headers: { accept: "application/json", origin: TEST_ORIGIN },
+      });
+      expect(res.statusCode, method).toBe(401);
+      expect(res.body, method).not.toContain(token);
+      expect(res.body, method).not.toContain("Cube");
+    }
+    expectNoLookups(looked);
   });
 
   test("a link for file A cannot fetch file B", async () => {
@@ -446,30 +587,42 @@ describe("GET /s/<token>/<name>", () => {
     const tokenA = pathOf(a.url).split("/")[2] ?? "";
     const bytes = Buffer.from(tokenA, "base64url");
     Buffer.from(FILE_B.replaceAll("-", ""), "hex").copy(bytes, 0);
+    const looked = { ...lookups };
     const swapped = await app.inject({
       method: "GET",
       url: `/s/${bytes.toString("base64url")}/Cube%20B.3mf`,
     });
     expect(swapped.statusCode).toBe(403);
     expect(swapped.body).toBe("");
+    expectNoLookups(looked);
     const own = await app.inject({ method: "GET", url: pathOf(b.url) });
     expect(own.rawPayload.equals(files.get(FILE_B)?.bytes ?? Buffer.alloc(0))).toBe(true);
   });
 
-  test("a name with slashes, dot-dot or escapes in it still opens its link", async () => {
-    // The segment is encodeURIComponent(name), so a "/" in the name is %2F:
-    // one segment, which the router decodes back into the name. Only a raw
-    // "/" after the name segment is refused.
-    for (const name of ["../../etc/passwd.3mf", "a/b/c.3mf", "..\\x.3mf", "%2F%00.3mf"]) {
+  test("a name with slashes, dot-dot or escapes in it links with them replaced by _", async () => {
+    // The segment replaces / \ % ? # ; and control characters with _
+    // (Jon, 2026-11-12), so nothing a proxy might decode or refuse is in it;
+    // Content-Disposition still carries the stored name. A raw "/" after
+    // the name segment is refused.
+    const cases: Array<[string, string]> = [
+      ["../../etc/passwd.3mf", ".._.._etc_passwd.3mf"],
+      ["a/b/c.3mf", "a_b_c.3mf"],
+      ["..\\x.3mf", ".._x.3mf"],
+      ["%2F%00.3mf", "_2F_00.3mf"],
+      ["q?h#s;.3mf", "q_h_s_.3mf"],
+    ];
+    for (const [name, segment] of cases) {
       const id = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8efe";
       files.set(id, { ...(files.get(FILE_A) as StubItem), name, originalName: name });
       try {
         const link = await linkFor(id);
         const path = pathOf(link.url);
         expect(path.split("/"), name).toHaveLength(4);
+        expect(path.split("/")[3], name).toBe(segment);
         const res = await app.inject({ method: "GET", url: path });
         expect(res.statusCode, name).toBe(200);
         expect(res.rawPayload.equals(files.get(FILE_A)?.bytes ?? Buffer.alloc(0)), name).toBe(true);
+        expect(res.headers["content-disposition"], name).toBe(contentDisposition(name));
       } finally {
         files.delete(id);
       }
@@ -491,9 +644,12 @@ describe("GET /s/<token>/<name>", () => {
     files.set(id, { ...(files.get(FILE_A) as StubItem), name: "Gone.3mf" });
     const link = await linkFor(id);
     files.delete(id);
+    const looked = { ...lookups };
     const res = await app.inject({ method: "GET", url: pathOf(link.url) });
     expect(res.statusCode).toBe(403);
     expect(res.body).toBe("");
+    // A valid MAC reaches the file lookup, and nothing past it.
+    expect({ ...lookups }).toEqual({ ...looked, linkFile: looked.linkFile + 1 });
   });
 
   test("with the store down it is 503 with the plain message, never a store detail", async () => {
@@ -529,7 +685,7 @@ describe("the request log and slicer links", () => {
       [path, 200],
       [`/s/${altered}/${name}`, 403],
       [`/s/${token}/a/b`, 403],
-      [`/s/${token}`, 404],
+      [`/s/${token}`, 403],
       // Fastify decodes %73 to "s" and routes this to the link route.
       [`/%73/${token}/${name}`, 200],
     ];
@@ -696,5 +852,153 @@ describe("bytes are streamed, never buffered whole", () => {
   test("slicer link", async () => {
     const link = await linkFor(STREAMED);
     await firstChunkArrivesEarly(pathOf(link.url));
+  });
+});
+
+describe("an object whose size differs from the record (PR #156 security review)", () => {
+  const cookies = () => ({ [SESSION_COOKIE]: sessionCookie });
+
+  /** Each GET that streams a stored object, its recorded size and whether it needs a session. */
+  async function targets(): Promise<Array<[string, number, boolean]>> {
+    const link = await linkFor(FILE_A);
+    const fileSize = files.get(FILE_A)?.bytes.length ?? 0;
+    const blobSize = blobs.get(BLOB_T)?.bytes.length ?? 0;
+    return [
+      [`/files/${FILE_A}/download`, fileSize, true],
+      [`/blobs/${BLOB_T}`, blobSize, true],
+      [pathOf(link.url), fileSize, false],
+    ];
+  }
+
+  test.each([
+    ["longer", 5],
+    ["shorter", -3],
+  ])(
+    "an object %s than the record is 503 before any header, its stream closed",
+    async (_label, delta) => {
+      for (const [url, size, session] of await targets()) {
+        storedSize = size + delta;
+        const res = await app.inject({ method: "GET", url, cookies: session ? cookies() : {} });
+        expect(res.statusCode, url).toBe(503);
+        expect(res.json(), url).toEqual({
+          error: "unavailable",
+          message: FILE_UNAVAILABLE_MESSAGE,
+        });
+        expect(res.headers["content-disposition"], url).toBeUndefined();
+        expect(res.headers["cache-control"], url).toBe("no-store");
+        expect(lastStream?.destroyed, url).toBe(true);
+      }
+    },
+  );
+
+  test("an object the size of the record is served whole", async () => {
+    for (const [url, size, session] of await targets()) {
+      storedSize = size;
+      const res = await app.inject({ method: "GET", url, cookies: session ? cookies() : {} });
+      expect(res.statusCode, url).toBe(200);
+      expect(res.rawPayload.length, url).toBe(size);
+    }
+  });
+});
+
+describe("a stream that is not exactly the recorded size reaches the client aborted", () => {
+  // The STREAMED file and blob are recorded at 16 bytes and their stream
+  // reports no object size, so only the byte count stands between a wrong
+  // object and the client: bytes past the record would go out on the
+  // keep-alive socket as the start of the next answer, and a short body
+  // would leave the client waiting, so either one destroys the response.
+  const cookie = () => ({ cookie: `${SESSION_COOKIE}=${sessionCookie}` });
+
+  /**
+   * Fetches url over real HTTP while the stub's stream has sent its first
+   * 12 bytes, reads them, lets feed() finish or break the stream, and reads
+   * on: what arrived, and the error the body ended with, if any.
+   */
+  async function fetchWhile(
+    url: string,
+    headers: Record<string, string>,
+    feed: (stream: PassThrough) => void,
+  ): Promise<{ received: Buffer; error: unknown }> {
+    const stream = new PassThrough();
+    gate = stream;
+    stream.write("first-chunk-");
+    const res = await fetch(`${base}${url}`, { headers });
+    expect(res.status, url).toBe(200);
+    expect(res.headers.get("content-length"), url).toBe("16");
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("no body");
+    const chunks: Buffer[] = [];
+    const first = await reader.read();
+    chunks.push(Buffer.from(first.value ?? []));
+    feed(stream);
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) return { received: Buffer.concat(chunks), error: undefined };
+        chunks.push(Buffer.from(next.value));
+      }
+    } catch (error) {
+      return { received: Buffer.concat(chunks), error };
+    }
+  }
+
+  async function urls(): Promise<Array<[string, Record<string, string>]>> {
+    const link = await linkFor(STREAMED);
+    return [
+      [`/files/${STREAMED}/download`, cookie()],
+      [`/blobs/${STREAMED_BLOB}`, cookie()],
+      [pathOf(link.url), {}],
+    ];
+  }
+
+  test("a stream longer than the record is cut off before its end, never sent past it", async () => {
+    for (const [url, headers] of await urls()) {
+      const got = await fetchWhile(url, headers, (s) => s.end("rest-and-then-more"));
+      expect(got.error, url).toBeDefined();
+      expect(got.received.length, url).toBeLessThan(16);
+      expect(got.received.toString(), url).not.toContain("more");
+    }
+  });
+
+  test("a stream that reaches the record and then goes on is never seen as complete", async () => {
+    // The last recorded byte is held until the source ends, so a client
+    // never holds the whole Content-Length of an object that turns out
+    // longer, and so never takes the cut-off answer for a whole file.
+    for (const [url, headers] of await urls()) {
+      const got = await fetchWhile(url, headers, (s) => {
+        s.write("rest");
+        setTimeout(() => s.end("more"), 50);
+      });
+      expect(got.error, url).toBeDefined();
+      expect(got.received.length, url).toBeLessThan(16);
+    }
+  });
+
+  test("a stream shorter than the record is aborted, not left hanging or ended", async () => {
+    for (const [url, headers] of await urls()) {
+      const got = await fetchWhile(url, headers, (s) => s.end("abc"));
+      expect(got.error, url).toBeDefined();
+      expect(got.received.toString(), url).toBe("first-chunk-abc");
+    }
+  });
+
+  test("a store stream destroyed after its first chunk aborts the response", async () => {
+    for (const [url, headers] of await urls()) {
+      const got = await fetchWhile(url, headers, (s) =>
+        s.destroy(new StoreUnavailable("GetObject", "ECONNRESET")),
+      );
+      expect(got.error, url).toBeDefined();
+      expect(got.received.toString(), url).toBe("first-chunk-");
+    }
+  });
+
+  test("a stream of exactly the recorded size ends cleanly with every byte", async () => {
+    for (const [url, headers] of await urls()) {
+      const got = await fetchWhile(url, headers, (s) => s.end("rest"));
+      expect(got.error, url).toBeUndefined();
+      expect(got.received.toString(), url).toBe("first-chunk-rest");
+    }
+    // The server is still up after the aborted answers.
+    expect((await fetch(`${base}/healthz`)).status).toBe(200);
   });
 });

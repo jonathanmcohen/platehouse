@@ -29,8 +29,12 @@
 //   GET /files/:id/download and a blob's at GET /blobs/:id, both session-
 //   class, and slicer links (delivery/links.ts) are minted at POST
 //   /app/api/files/:id/slicer-link (session-class, so the gate's Origin
-//   check covers it) and served at GET /s/<token>/<name>, link-class: no
-//   session, the token alone. Registered only when deps.delivery is given.
+//   check covers it) and served at GET /s/<token>/<name> (the route
+//   /s/:token/*), link-class: no session, the token alone. Registered only
+//   when deps.delivery is given. A path under /s/ that matches no route (no
+//   name segment, another method, or delivery not registered) is a refused
+//   link: 403 with an empty body and Cache-Control: no-store, never a 404
+//   that echoes the path.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -125,10 +129,12 @@ export interface AppDeps {
   api?: ApiDeps;
   /**
    * File delivery and slicer links (Task 17): GET /files/:id/download, GET
-   * /blobs/:id, POST /app/api/files/:id/slicer-link and GET /s/:token/:name.
-   * The server always passes its own; left out, those routes are not
-   * registered, so their paths are unknown (session-class: 401 without a
-   * session, 404 with one).
+   * /blobs/:id, POST /app/api/files/:id/slicer-link and the link route
+   * /s/:token/* (GET /s/<token>/<name>). The server always passes its own;
+   * left out, those routes are not registered, so their paths are unknown:
+   * /files/ and /blobs/ and the mint route are session-class (401 without a
+   * session, 404 with one), and any /s/ path is link-class, answered by the
+   * not-found handler as a refused link (403, empty body).
    */
   delivery?: DeliveryDeps;
   /**
@@ -333,9 +339,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   // Fastify's own 404 answer; the gate's onSend hook releases any body. An
-  // unknown path under /api/v1 is bearer-class: no token, no 404.
+  // unknown path under /api/v1 is bearer-class: no token, no 404. An
+  // unmatched link-class path (/s/ with no name segment, a POST or OPTIONS
+  // on a link, junk) is a refused link, as the route answers one: 403 with
+  // an empty body and no-store, so the path, a token in it included, is
+  // never echoed and no cache keeps the answer.
   const apiBearer = createBearerHook(api.tokens);
   app.setNotFoundHandler(async (request, reply) => {
+    if (routeClass(request.url) === "link") {
+      return reply.code(403).header("cache-control", "no-store").send();
+    }
     if (routeClass(request.url) === "bearer") {
       await apiBearer(request, reply);
       if (reply.sent) return reply;
