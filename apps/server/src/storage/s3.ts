@@ -4,8 +4,10 @@
 // or anywhere (decision 7, AC-011).
 //
 // Failures leave this module as StoreUnavailable (the store cannot be reached
-// or timed out), BlobNotFound (404) or StoreError (the store refused, or a
-// stored object failed its size check); see errors.ts. None carries a secret.
+// or timed out), BlobNotFound (only a 404 NoSuchKey on a read; any other 404,
+// such as NoSuchBucket, is a StoreError) or StoreError (the store refused, or
+// a stored object failed its size check); see errors.ts. None carries a
+// secret.
 import { createHash } from "node:crypto";
 import { PassThrough, pipeline, Readable, Transform } from "node:stream";
 import {
