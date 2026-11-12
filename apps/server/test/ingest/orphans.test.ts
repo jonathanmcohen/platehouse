@@ -157,4 +157,40 @@ describe("where a run's line goes", () => {
     expect(lines.info).toHaveLength(1);
     expect(lines.info[0]).toContain("deleted 3");
   });
+
+  test("an injected warn hook takes the refusal and an injected log takes the daily line", async () => {
+    const lines = catchConsole();
+    const log: string[] = [];
+    const warn: string[] = [];
+    const hooks = { log: (l: string) => log.push(l), warn: (l: string) => warn.push(l) };
+
+    const refused = fakeStore(3);
+    await createOrphanSweep({ db: fakeDb(false), store: refused.store, ...hooks }).sweepOrphans(
+      new Date(),
+    );
+    expect(log).toEqual([]);
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("deleted nothing");
+
+    const normal = fakeStore(3);
+    await createOrphanSweep({ db: fakeDb(true), store: normal.store, ...hooks }).sweepOrphans(
+      new Date(),
+    );
+    expect(warn).toHaveLength(1);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toContain("deleted 3");
+    expect(lines).toEqual({ info: [], warn: [] });
+  });
+
+  test("an injected log alone does not take the refusal: it still goes to console.warn", async () => {
+    const lines = catchConsole();
+    const log: string[] = [];
+    const { store } = fakeStore(3);
+    await createOrphanSweep({ db: fakeDb(false), store, log: (l) => log.push(l) }).sweepOrphans(
+      new Date(),
+    );
+    expect(log).toEqual([]);
+    expect(lines.warn).toHaveLength(1);
+    expect(lines.warn[0]).toContain("deleted nothing");
+  });
 });

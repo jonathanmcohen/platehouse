@@ -9,7 +9,8 @@ import type { DB } from "./types.js";
 // lesson 14: nothing generates DDL, and a reviewer reads every statement).
 //
 // A migration is a file NNNN_name.sql in migrations/, numbered from 0001 with
-// no gaps. migrate() applies the ones not yet recorded in schema_migrations,
+// no gaps. Names that start with "." or do not end in .sql are skipped; a .sql
+// file named any other way stops migrate(). migrate() applies the ones not yet recorded in schema_migrations,
 // in number order, and records each with the SHA-256 of its bytes. It refuses
 // to run, and applies nothing, when an applied file's checksum has changed or
 // an applied file is missing: an applied migration is never edited, a change
@@ -25,6 +26,17 @@ export const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations/", import.meta
 
 const NAME = /^([0-9]{4})_[a-z0-9_]+\.sql$/;
 
+/**
+ * Whether a folder entry is meant as a migration at all. A name that starts
+ * with "." (a Finder .DS_Store, a macOS ._ file, a vim swap file) or does not
+ * end in .sql (an editor backup such as 0002_x.sql~) is not, and is skipped
+ * so it cannot stop the server (issue #30). The extension is matched in any
+ * case, so 0001_init.SQL still reaches the name check and is refused.
+ */
+function isMigrationCandidate(name: string): boolean {
+  return !name.startsWith(".") && name.toLowerCase().endsWith(".sql");
+}
+
 export class MigrationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -39,7 +51,7 @@ export interface MigrationFile {
 }
 
 export async function listMigrations(dir: string): Promise<MigrationFile[]> {
-  const entries = (await readdir(dir)).sort();
+  const entries = (await readdir(dir)).filter(isMigrationCandidate).sort();
   const files: MigrationFile[] = [];
   for (const [i, name] of entries.entries()) {
     const number = NAME.exec(name)?.[1];
