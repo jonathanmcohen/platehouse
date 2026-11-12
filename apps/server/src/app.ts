@@ -15,10 +15,16 @@
 //   word either way, never an error, a host or a port: the app image's
 //   HEALTHCHECK (Task 24) reads only the status.
 // - The tus upload handler (Task 9) is mounted at /app/uploads behind
-//   requireSession and at /api/v1/uploads behind refuseUntilAuth, which
-//   answers every request 401 until Task 16 replaces it with the bearer
-//   check. Either hook runs before tus sees the request, so a refused
-//   request stores nothing.
+//   requireSession and at /api/v1/uploads behind apiUploadHook: the bearer
+//   check (api/tokens.ts), then, for a creation into an existing model, that
+//   the model is live. Either hook runs before tus sees the request, so a
+//   refused request stores nothing.
+// - The Public API v1 (api/v1.ts, Task 16) is mounted at /api/v1, every route
+//   behind the bearer check, and its OpenAPI document (api/openapi.ts) is
+//   generated from those routes with servers[0].url = absoluteUrl('/api/v1').
+//   A request to an unknown path under /api/v1 gets the bearer check before
+//   its 404, so without a token it is 401 like every other API request. No
+//   CORS plugin is registered.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -31,7 +37,10 @@
 //   hook, so frameworkErrors releases the body for those.
 // - The request log records each request's path without its query
 //   (requestLogValue), so the OAuth code and state on /auth/callback never
-//   reach it.
+//   reach it, and a fixed list of its headers (LOGGED_HEADERS), with
+//   Upload-Metadata cut to its key names (not the file name or model id)
+//   and pino redacting Authorization, Cookie and Proxy-Authorization
+//   (LOG_REDACT_PATHS), so no API token or session cookie reaches the log.
 
 import { STATUS_CODES } from "node:http";
 import fastifyCookie from "@fastify/cookie";
@@ -42,18 +51,14 @@ import Fastify, {
   type FastifyRequest,
   type FastifyServerOptions,
 } from "fastify";
-import type { ApiDeps } from "./api/v1.js";
-import { installGate } from "./auth/gate.js";
+import { registerOpenApi } from "./api/openapi.js";
+import { createBearerHook } from "./api/tokens.js";
+import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
+import { installGate, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
-import {
-  type AuthHook,
-  MAX_UPLOAD_BYTES,
-  registerTus,
-  releaseUnreadBody,
-  type Uploads,
-} from "./uploads/tus.js";
+import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
 export const UPLOAD_PREFIXES = Object.freeze({
@@ -102,7 +107,11 @@ export interface AppDeps {
   /** The one upload store both mounts share (createUploads). */
   uploads: Uploads;
   auth: AppAuth;
-  /** The Public API v1's tokens and library (Task 16). */
+  /**
+   * The Public API v1's tokens and library (Task 16). The server always
+   * passes its own; left out, no token is live (refusingApi), so every API
+   * request is 401.
+   */
   api?: ApiDeps;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
@@ -123,7 +132,57 @@ export type RequestLogValue = {
   host?: string;
   remoteAddress?: string;
   remotePort?: number;
+  /**
+   * The request's LOGGED_HEADERS and credential headers, Upload-Metadata cut
+   * to its key names; pino then redacts LOG_REDACT_PATHS.
+   */
+  headers?: Record<string, string | string[] | undefined>;
 };
+
+/**
+ * The headers whose values the request log records. Any other header is left
+ * out, so a token sent in a header of a client's own choosing, or a Referer
+ * carrying a query, never reaches the log. The credential headers are kept
+ * only for pino to redact (LOG_REDACT_PATHS), so the log shows they were sent.
+ */
+export const LOGGED_HEADERS: readonly string[] = Object.freeze([
+  "accept",
+  "content-length",
+  "content-type",
+  "host",
+  "origin",
+  "tus-resumable",
+  "upload-length",
+  "upload-metadata",
+  "upload-offset",
+  "user-agent",
+  "x-forwarded-for",
+  "x-forwarded-proto",
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+]);
+
+/** What pino replaces with "[Redacted]" in every log line: credentials. */
+export const LOG_REDACT_PATHS: readonly string[] = Object.freeze([
+  "req.headers.authorization",
+  "req.headers.cookie",
+  'req.headers["proxy-authorization"]',
+]);
+
+/**
+ * The key names of a tus Upload-Metadata header, comma-separated, without
+ * their values: the log shows what an upload named, never the file name or
+ * model id it carried.
+ */
+export function uploadMetadataKeys(header: string | string[] | undefined): string {
+  const text = Array.isArray(header) ? header.join(",") : (header ?? "");
+  return text
+    .split(",")
+    .map((pair) => pair.trim().split(" ")[0] ?? "")
+    .filter((key) => key !== "")
+    .join(",");
+}
 
 /**
  * The request log's view of a request: Fastify's default fields, with the
@@ -141,17 +200,17 @@ export function requestLogValue(request: FastifyRequest): RequestLogValue {
   if (request.ip !== undefined) value.remoteAddress = request.ip;
   const port = request.socket?.remotePort;
   if (port !== undefined) value.remotePort = port;
+  if (request.headers !== undefined) {
+    const headers: Record<string, string | string[] | undefined> = {};
+    for (const name of LOGGED_HEADERS) {
+      const header = request.headers[name];
+      if (header === undefined) continue;
+      headers[name] = name === "upload-metadata" ? uploadMetadataKeys(header) : header;
+    }
+    value.headers = headers;
+  }
   return value;
 }
-
-/**
- * The auth hook /api/v1/uploads gets until Task 16: every request is refused
- * with 401, whatever credentials it carries. The gate's onSend hook releases
- * the body it leaves unread.
- */
-export const refuseUntilAuth: AuthHook = async (_request, reply) => {
-  return reply.code(401).send({ error: "unauthorized" });
-};
 
 /** True when check() resolves within ms; a rejection or no answer is false. */
 async function answers(check: () => Promise<unknown>, ms: number): Promise<boolean> {
@@ -189,12 +248,14 @@ function frameworkError(error: FastifyError, request: FastifyRequest, reply: Fas
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { auth } = deps;
+  const api = deps.api ?? refusingApi;
   const log = deps.logger ?? false;
   const logger: NonNullable<FastifyServerOptions["logger"]> =
     log === false
       ? false
       : {
           serializers: { req: requestLogValue },
+          redact: { paths: [...LOG_REDACT_PATHS], censor: "[Redacted]" },
           ...(log === true ? {} : { stream: log }),
         };
   const app = Fastify({
@@ -205,6 +266,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // Cookies are parsed before the gate runs; the login cookie is signed.
   await app.register(fastifyCookie, { secret: auth.cookieSecret });
+  // The OpenAPI generator sees every route registered after it.
+  await registerOpenApi(app, { serverUrl: auth.absoluteUrl(API_PREFIX) });
   const { requireSession } = installGate(app, {
     sessions: auth.sessions,
     publicOrigin: auth.publicOrigin,
@@ -218,8 +281,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return reply.code(up ? 200 : 503).send({ status: up ? "ok" : "unavailable" });
   });
 
-  // Fastify's own 404 answer; the gate's onSend hook releases any body.
+  // Fastify's own 404 answer; the gate's onSend hook releases any body. An
+  // unknown path under /api/v1 is bearer-class: no token, no 404.
+  const apiBearer = createBearerHook(api.tokens);
   app.setNotFoundHandler(async (request, reply) => {
+    if (routeClass(request.url) === "bearer") {
+      await apiBearer(request, reply);
+      if (reply.sent) return reply;
+    }
     return reply.code(404).send({
       message: `Route ${request.method}:${request.url} not found`,
       error: "Not Found",
@@ -241,9 +310,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     authHook: requireSession,
     uploads: deps.uploads,
   });
+  await registerV1(app, api);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
-    authHook: refuseUntilAuth,
+    authHook: apiUploadHook(api),
     uploads: deps.uploads,
   });
 
