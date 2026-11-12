@@ -755,8 +755,11 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   /**
    * Queues again the estimates an outage failed (SLICER_DOWN_DETAIL and
    * STORE_DOWN_DETAIL) for the selected printer and this Orca version. The
-   * poll calls it only once /v1/health has answered; a store failure is
-   * queued only when the store answers a read of that plate's file.
+   * poll calls it only once /v1/health has answered. Store failures are
+   * queued only when the store answers a read, and one read per poll stands
+   * for the whole store: the file of the first store-failed plate that is
+   * still live is read, and that answer decides every store failure in the
+   * same poll (the store is one bucket).
    */
   async function requeueOutageFailures(orca: string): Promise<void> {
     const { printerId } = await repos.settings.get();

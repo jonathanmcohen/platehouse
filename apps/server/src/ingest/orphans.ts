@@ -16,8 +16,9 @@
 // - no blob row, stored or pending, has its key, checked after the page is
 //   listed.
 // A key already gone is not an error, so a run that fails part way is
-// finished by the next one. Each run logs one line of counts. It runs daily
-// on the maintenance queue (jobs/queues.ts).
+// finished by the next one. Each run logs one line of counts, through
+// console.warn for a refused run (below) and console.info otherwise. It runs
+// daily on the maintenance queue (jobs/queues.ts).
 //
 // The bucket is the only copy of the bytes, and "no blob row" is the sweep's
 // only test, so a database that has lost its rows (an empty volume, a wrong
@@ -108,13 +109,19 @@ function logLine(r: OrphanSweepResult): string {
 export function createOrphanSweep(deps: {
   db: Kysely<DB>;
   store: OrphanStore;
-  /** Where the run's line goes; console.info when left out. */
+  /** Where a run's line goes; console.info when left out. */
   log?: (line: string) => void;
+  /**
+   * Where a refused run's line goes instead, so it stands out from the daily
+   * line (issue #54); console.warn when left out, whether or not log is set.
+   */
+  warn?: (line: string) => void;
   /** Objects per listing page; the store's own limit (1000 on S3) when left out. */
   pageSize?: number;
 }) {
   const { db, store, pageSize } = deps;
   const log = deps.log ?? ((line: string) => console.info(line));
+  const warn = deps.warn ?? ((line: string) => console.warn(line));
   if (pageSize !== undefined && (!Number.isSafeInteger(pageSize) || pageSize < 1)) {
     throw new RangeError("pageSize must be a whole number of 1 or more");
   }
@@ -179,7 +186,8 @@ export function createOrphanSweep(deps: {
       log(`${logLine(result)}; stopped by an error, the next run finishes it`);
       throw error;
     }
-    log(logLine(result));
+    if (result.refused !== undefined) warn(logLine(result));
+    else log(logLine(result));
     return result;
   }
 

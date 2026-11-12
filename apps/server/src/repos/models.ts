@@ -325,7 +325,14 @@ export function modelsRepo(db: Kysely<DB>) {
       return result.numUpdatedRows > 0n;
     },
 
-    /** Brings a trashed model back; false when it is unknown or not trashed. */
+    /**
+     * Brings a trashed model back; false when it is unknown, not trashed, or
+     * a purge of it has begun (purge_started_at is set: some of its objects
+     * may already be gone, so only a purge may finish it, and the
+     * models_purge_only_trashed check would refuse the update anyway).
+     * library/trash.ts's restoreModel tells that last case apart and throws
+     * PurgeStarted; this answers false for it, never a database error.
+     */
     async restore(id: string): Promise<boolean> {
       if (!isUuid(id)) return false;
       const result = await db
@@ -333,6 +340,7 @@ export function modelsRepo(db: Kysely<DB>) {
         .set({ trashedAt: null })
         .where("id", "=", id)
         .where("trashedAt", "is not", null)
+        .where("purgeStartedAt", "is", null)
         .executeTakeFirst();
       return result.numUpdatedRows > 0n;
     },
