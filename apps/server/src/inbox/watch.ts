@@ -62,9 +62,13 @@
 //   existing name do) holds bytes never imported, so it moves to failed
 //   with CHANGED_REASON instead. When what is held cannot be checked or
 //   deleted (an lstat, fstat or unlink that throws), it may be the imported
-//   file, so it moves to failed with the reason it already had, else
-//   UNREMOVED_REASON (stored, but not removed from the inbox), never back
-//   under the name. When the imported file (changed, its stored copy
+//   file, so it moves to failed with the reason it already had, never back
+//   under the name. Else, when only the unlink threw, after it was shown to
+//   be the imported file, with UNREMOVED_REASON (stored, but not removed
+//   from the inbox); when the lstat or fstat threw, it may instead be a
+//   newer file renamed over the name just before it was held, so with
+//   UNCHECKED_REASON, which does not say it was imported. When the imported
+//   file (changed, its stored copy
 //   unconfirmed, or not checkable or deletable) cannot be moved to failed,
 //   it is not put back under the name, since a link or a copy back moves its ctime and a
 //   restart would import it again under new ids: it stays in the holding
@@ -247,8 +251,12 @@
 // while its size, mtime and inode stay the same; a new copy under the same
 // name is a new file. That memory is the process's own, so after a restart
 // such a file is tried once more. The exception is an imported file that
-// changed or could not be confirmed: it waits in its holding folder (above),
-// out of the inbox, so a restart never tries it again.
+// changed, could not be confirmed, or could not be checked or deleted in its
+// holding folder, when failed cannot be used: it waits in its holding folder
+// (above), out of the inbox, the folder renamed with -changed,
+// -unconfirmed, -unremoved or -unchecked to say why, so a restart never
+// imports it again and the restart sweep moves it to failed with that
+// reason once failed can be used.
 //
 // Nothing here starts on import: the server calls start() once at boot and
 // stop() on shutdown (plan Task 30 builds that code). It must pass every one
@@ -332,6 +340,16 @@ export const UNREMOVED_REASON =
   "Platehouse imported and stored this file but could not remove it from the inbox, so it was kept here; check whether the model is already in the library before adding it again.";
 
 /**
+ * Reason when what holds an imported file's name could not be checked in
+ * its holding folder (the lstat or the fstat threw), so it is not known
+ * whether it is the imported file or a newer one renamed over the name just
+ * before it was held. UNREMOVED_REASON says it was imported, which would
+ * lead Jon to delete a newer file as a duplicate of the model.
+ */
+export const UNCHECKED_REASON =
+  "Platehouse imported a file with this name but could not check whether this is that file or a newer one put under the same name, so it was kept here; compare it with the model in the library before you delete it or add it again.";
+
+/**
  * What starts the name of the folder, inside the inbox, that an imported
  * file is moved into to be checked and deleted. It starts with a dot, so the
  * watcher never lists it as an inbox file, and it is in the inbox, so the
@@ -388,8 +406,8 @@ export const HELD_REASON =
 
 /**
  * What settleImported adds to the end of a holding folder's name when the
- * imported file in it, changed, unconfirmed or not removed, could not be
- * moved to failed, and the reason each one stands for: Platehouse did not
+ * imported file in it, changed, unconfirmed, not removed or not checked,
+ * could not be moved to failed, and the reason each one stands for: Platehouse did not
  * stop, so the restart sweep moves the file to failed with this reason, not
  * HELD_REASON.
  * A rename of the folder in place needs no new folder or file, so a full
@@ -399,6 +417,7 @@ const KEPT_HOLD_SUFFIXES: ReadonlyArray<readonly [suffix: string, reason: string
   ["-changed", CHANGED_REASON],
   ["-unconfirmed", UNCONFIRMED_REASON],
   ["-unremoved", UNREMOVED_REASON],
+  ["-unchecked", UNCHECKED_REASON],
 ];
 
 /** The suffix that marks a holding folder as kept for reason, if any. */
@@ -1542,8 +1561,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * bytes there that were never imported, so it moves to failed with
    * CHANGED_REASON instead. When what is held cannot be checked or deleted
    * (the lstat, fstat or unlink throws), it may be the imported file, so it
-   * moves to failed too, with UNREMOVED_REASON (its stored copy was
-   * confirmed) unless it already had a reason. When the imported file cannot be moved to failed (the failed
+   * moves to failed too, with the reason it already had, else with
+   * UNREMOVED_REASON when only the unlink threw after it was shown to be the
+   * imported file (its stored copy was confirmed), or UNCHECKED_REASON when
+   * the lstat or fstat threw, since it may be a newer file renamed over the
+   * name just before it was held. When the imported file cannot be moved to failed (the failed
    * folder is a symlink, not a folder, or unwritable), it is not put back
    * under the name: a link or a copy back moves its ctime, which a restart
    * would take as a new arrival and import it again under new ids. It stays
@@ -1598,7 +1620,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         }
         return;
       }
-      let same: boolean;
+      // True only once the lstat and the fstat have both answered and shown
+      // the open file, so in the catch it means only the unlink threw.
+      let same = false;
       try {
         const named = await lstat(held, { bigint: true });
         const opened = await handle.stat({ bigint: true });
@@ -1620,9 +1644,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       } catch (error) {
         // What is held could not be checked or deleted (an EIO, say), so it
         // may be the imported file: never put back (failImported says why).
-        // It moves to failed with the reason it already had, else as stored
-        // but not removed: its stored copy was confirmed.
-        const why = reason ?? UNREMOVED_REASON;
+        // It moves to failed with the reason it already had. Else, when it
+        // was shown to be the imported file (only the unlink threw), as
+        // stored but not removed: its stored copy was confirmed. When the
+        // check itself threw, it may be a newer file renamed over the name
+        // just before it was held, so with a reason that does not say it was
+        // imported (#135).
+        const why = reason ?? (same ? UNREMOVED_REASON : UNCHECKED_REASON);
         log(
           `inbox: imported ${name} as model ${modelId}, but what holds its name could not be ` +
             `checked or deleted in ${holdDir} (${errorText(error)}), so it is kept, not put back`,
