@@ -111,9 +111,9 @@ describe("landrun arguments", () => {
 
   // landrun v0.1.17 asks for Landlock ABI 9 unless it runs best effort, and
   // refuses an older kernel outright: GitHub's runner has ABI 8 (CI run
-  // 42530006914, "Got Landlock ABI v8, wanted Landlock V9"). The filesystem
-  // rules work from ABI 1, and the gate proved this form on Hades. The
-  // server's sandbox self-test (server.test.ts) refuses every render if the
+  // 42530006914, "Got Landlock ABI v8, wanted Landlock V9"). The gate proved
+  // this form on Hades. The server's sandbox self-test (server.test.ts)
+  // refuses every render when the kernel's Landlock ABI is below 6 or the
   // sandbox does not actually block a read outside the job folder.
   test("landrun runs best effort, as the gate proved it", () => {
     expect(split(args).flags).toContain("--best-effort");

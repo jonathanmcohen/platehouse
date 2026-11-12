@@ -1,14 +1,38 @@
 // OpenSCAD renders (AC-052, build plan Task 11): POST /v1/scad/stl and
 // /v1/scad/png. The .scad text is written alone into a fresh job folder and
-// OpenSCAD 2026.11-RC0 renders it under landrun (see sandbox.ts), with no
-// network in the container, a time cap and OPENSCADPATH unset. A render that
-// fails answers with the tail of OpenSCAD's own stderr.
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+// OpenSCAD 2026.11-RC0 renders it under prlimit and landrun (see
+// sandbox.ts), with no network in the container, a time cap and
+// OPENSCADPATH unset. A render that fails answers with the tail of
+// OpenSCAD's own stderr; an output over MAX_RENDER_OUTPUT_BYTES is refused.
+import {
+  accessSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { landrunArgs, runGroup, type ScadOutput, scadArgs, tailLines } from "./sandbox.js";
+import {
+  type GroupResult,
+  landrunArgs,
+  MIN_LANDLOCK_ABI,
+  prlimitArgs,
+  readLandlockAbi,
+  runGroup,
+  type ScadOutput,
+  scadArgs,
+  tailLines,
+} from "./sandbox.js";
 
 export interface ScadConfig {
   landrunBin: string;
+  /** util-linux prlimit, which sets OpenSCAD's resource limits (sandbox.ts). */
+  prlimitBin: string;
   openscadBin: string;
   openscadDir: string;
   scadTimeoutSeconds: number;
@@ -27,6 +51,74 @@ export type RenderResult =
 /** The name the .scad takes inside its job folder. */
 export const SCAD_INPUT = "input.scad";
 
+const MIB = 1024 * 1024;
+
+/**
+ * The largest STL or PNG a render may answer with. The server holds the
+ * output in memory to send it, so an output over this is refused, never
+ * read. 256 MiB is about 5 million triangles of binary STL, far more than a
+ * printable model needs (security review of PR #36, issue #47).
+ */
+export const MAX_RENDER_OUTPUT_BYTES = 256 * MIB;
+
+/**
+ * Reads a finished render's output, or reports its size when it is over
+ * `limit` without reading it. The size is taken from the open file, so the
+ * file read is the file measured.
+ */
+export function readRenderOutput(
+  file: string,
+  limit: number,
+): { ok: true; bytes: Buffer } | { ok: false; size: number } {
+  const fd = openSync(file, "r");
+  try {
+    const { size } = fstatSync(fd);
+    if (size > limit) return { ok: false, size };
+    const bytes = Buffer.alloc(size);
+    let at = 0;
+    while (at < size) {
+      const n = readSync(fd, bytes, at, size - at, at);
+      if (n === 0) break;
+      at += n;
+    }
+    return { ok: true, bytes: bytes.subarray(0, at) };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Runs `command` (OpenSCAD and its arguments) in `dir` the way every render
+ * runs it: prlimit sets the resource limits on itself and runs landrun,
+ * which applies the sandbox and runs OpenSCAD in its place, so OpenSCAD
+ * inherits both. prlimit comes first because nothing outside OpenSCAD's own
+ * tree may run inside the sandbox. `strict` runs landrun without
+ * --best-effort, for the self-test's Landlock ABI check.
+ */
+function runSandboxed(
+  config: ScadConfig,
+  dir: string,
+  command: string[],
+  opts: { timeoutMs: number; strict?: boolean; track?: (kill: (() => void) | null) => void },
+): Promise<GroupResult> {
+  const landrun = landrunArgs({
+    dir,
+    openscadDir: config.openscadDir,
+    command,
+    strict: opts.strict ?? false,
+  });
+  return runGroup(
+    config.prlimitBin,
+    [...prlimitArgs(config.scadTimeoutSeconds), "--", config.landrunBin, ...landrun],
+    {
+      cwd: dir,
+      env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
+      timeoutMs: opts.timeoutMs,
+      ...(opts.track ? { track: opts.track } : {}),
+    },
+  );
+}
+
 /**
  * Renders dir/input.scad (SCAD_INPUT), which the caller has already written,
  * so the server never holds the body in memory.
@@ -40,16 +132,10 @@ export async function renderScad(
   const input = SCAD_INPUT;
   const outputName = `output.${kind}`;
   const command = [config.openscadBin, ...scadArgs(kind, input, outputName)];
-  const run = await runGroup(
-    config.landrunBin,
-    landrunArgs({ dir, openscadDir: config.openscadDir, command }),
-    {
-      cwd: dir,
-      env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: dir, TMPDIR: dir, LANG: "C.UTF-8" },
-      timeoutMs: config.scadTimeoutSeconds * 1000,
-      ...(track ? { track } : {}),
-    },
-  );
+  const run = await runSandboxed(config, dir, command, {
+    timeoutMs: config.scadTimeoutSeconds * 1000,
+    ...(track ? { track } : {}),
+  });
   const output = `${run.stderrTail}\n${run.stdoutTail}`;
   if (run.timedOut) {
     return {
@@ -60,7 +146,13 @@ export async function renderScad(
   }
   const out = join(dir, outputName);
   if (run.code === 0 && existsSync(out) && statSync(out).size > 0) {
-    return { ok: true, bytes: readFileSync(out) };
+    const read = readRenderOutput(out, MAX_RENDER_OUTPUT_BYTES);
+    if (read.ok) return { ok: true, bytes: read.bytes };
+    return {
+      ok: false,
+      message: `OpenSCAD wrote a ${Math.ceil(read.size / MIB)} MiB ${kind.toUpperCase()}, over the ${MAX_RENDER_OUTPUT_BYTES / MIB} MiB limit for a render.`,
+      output,
+    };
   }
   const message = tailLines(output);
   return {
@@ -81,16 +173,35 @@ export interface SandboxCheck {
 const CANNOT_OPEN = "Can't open import file";
 
 /**
+ * The time cap of the Landlock ABI check: a strict landrun either refuses at
+ * once or runs `openscad --version`, which takes well under a second once
+ * the image's files are in the page cache.
+ */
+const ABI_CHECK_SECONDS = 30;
+
+/**
  * Proves the sandbox works before a render runs. landrun runs best effort,
- * which would run OpenSCAD unsandboxed on a kernel without Landlock, so this
- * renders a .scad that imports `probe`, a file outside the job folder,
- * through the same landrun call a real render uses.
+ * which would sandbox OpenSCAD with whatever an older kernel offers, or not
+ * at all, so this checks three things, in order, and passes only when all
+ * three do:
  *
- * The check passes only when OpenSCAD itself reports that it cannot open the
- * probe: "Can't open import file" naming the probe's path. Any other failure
- * (a timeout, a crash, landrun failing to start, a full /work) proves nothing
- * about the sandbox, so it fails the check as inconclusive. A missing probe
- * file fails it too: the import would fail for that reason alone.
+ * 1. The probe, a file outside the job folder, exists, is not empty and can
+ *    be read by the server. A missing or unreadable probe makes OpenSCAD
+ *    print "Can't open import file" with or without a sandbox, so the
+ *    import below would prove nothing: the check is inconclusive.
+ * 2. The kernel's Landlock ABI is at least MIN_LANDLOCK_ABI. landrun reports
+ *    it only when it runs without --best-effort, so this runs the same
+ *    landrun rules strict, with `openscad --version` as the command. An ABI
+ *    landrun does not report makes the check inconclusive.
+ * 3. A .scad that imports the probe, rendered through the same prlimit and
+ *    landrun call a real render uses, fails because OpenSCAD itself reports
+ *    that it cannot open the probe: "Can't open import file" naming the
+ *    probe's path. Any other failure (a timeout, a crash, landrun failing to
+ *    start, a full /work) proves nothing, so it is inconclusive too.
+ *
+ * Every failure, inconclusive or not, refuses renders; the detail says why
+ * in plain words, and the server puts it in its log and in the render's
+ * error.
  */
 export async function sandboxSelfTest(
   config: ScadConfig,
@@ -104,6 +215,36 @@ export async function sandboxSelfTest(
       detail: `the sandbox probe ${probe} is missing, so the sandbox cannot be checked`,
     };
   }
+  try {
+    accessSync(probe, constants.R_OK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? "an error";
+    return {
+      ok: false,
+      detail: `the check was inconclusive: the sandbox probe ${probe} cannot be read by the server (${code}), so OpenSCAD failing to open it would prove nothing`,
+    };
+  }
+
+  const abiRun = await runSandboxed(config, dir, [config.openscadBin, "--version"], {
+    timeoutMs: ABI_CHECK_SECONDS * 1000,
+    strict: true,
+    ...(track ? { track } : {}),
+  });
+  const abi = readLandlockAbi(abiRun);
+  if (abi.abi === null) {
+    return {
+      ok: false,
+      detail: `the check was inconclusive: landrun did not report the kernel's Landlock ABI (${abi.detail})`,
+    };
+  }
+  if (abi.abi < MIN_LANDLOCK_ABI) {
+    return {
+      ok: false,
+      detail: `the kernel's Landlock ABI is ${abi.abi}, below the ${MIN_LANDLOCK_ABI} this sandbox needs, so OpenSCAD would run with fewer restrictions than it is built for`,
+    };
+  }
+  const abiText = `Landlock ABI ${abi.abi}${abi.atLeast ? " or newer" : ""}`;
+
   writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(probe)});\n`);
   const r = await renderScad(config, dir, "stl", track);
   if (r.ok) {
@@ -117,7 +258,10 @@ export async function sandboxSelfTest(
     .split("\n")
     .find((line) => line.includes(CANNOT_OPEN) && [...paths].some((p) => line.includes(p)));
   if (refusal) {
-    return { ok: true, detail: `landrun blocked a read of ${probe}: ${refusal.trim()}` };
+    return {
+      ok: true,
+      detail: `${abiText}; landrun blocked a read of ${probe}: ${refusal.trim()}`,
+    };
   }
   return {
     ok: false,

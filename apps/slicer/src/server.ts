@@ -17,9 +17,11 @@
 // - Every request works in its own folder under WORK_DIR (/work, a tmpfs),
 //   deleted afterwards, success or failure. A delete that fails is logged,
 //   never changes the answer, and is tried again: job folders left behind
-//   are swept at start-up and after every job. /v1/health answers 500 while
-//   no job runs and WORK_DIR has less free space than WORK_MIN_FREE_MIB, so
-//   Docker's health check sees a /work that leftovers have filled.
+//   are swept at start-up, after every job, and by a health check that finds
+//   WORK_DIR below the floor while no job runs. /v1/health answers 500 while
+//   no job runs and WORK_DIR still has less free space than
+//   WORK_MIN_FREE_MIB after that sweep, so Docker's health check sees a
+//   /work that leftovers have filled.
 // - Every external program runs in its own process group, killed whole at
 //   its time cap (SLICE_TIMEOUT_SECONDS, default SLICE_PLATE_SECONDS + 60).
 // - An error in a request costs that request, never the process (guard.ts):
@@ -66,6 +68,8 @@ export interface SlicerConfig {
   openscadBin: string;
   openscadDir: string;
   landrunBin: string;
+  /** util-linux prlimit, which sets OpenSCAD's resource limits (sandbox.ts). */
+  prlimitBin: string;
   /** A file outside every job folder that the sandbox self-test imports. */
   sandboxProbe: string;
   /** The STEP worker module, run with this Node (normally dist/src/step.js). */
@@ -118,6 +122,7 @@ const envSchema = z.object({
   OPENSCAD_BIN: z.string().min(1).default("/opt/openscad/AppRun"),
   OPENSCAD_DIR: z.string().min(1).default("/opt/openscad"),
   LANDRUN_BIN: z.string().min(1).default("/usr/local/bin/landrun"),
+  PRLIMIT_BIN: z.string().min(1).default("/usr/bin/prlimit"),
   SANDBOX_PROBE: z.string().min(1).default("/opt/platehouse/sandbox-probe.stl"),
   STEP_WORKER: z
     .string()
@@ -159,6 +164,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     openscadBin: e.OPENSCAD_BIN,
     openscadDir: e.OPENSCAD_DIR,
     landrunBin: e.LANDRUN_BIN,
+    prlimitBin: e.PRLIMIT_BIN,
     sandboxProbe: e.SANDBOX_PROBE,
     stepWorker: e.STEP_WORKER,
     slicePlateSeconds: e.SLICE_PLATE_SECONDS,

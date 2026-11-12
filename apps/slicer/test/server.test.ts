@@ -1212,8 +1212,10 @@ describe("a failed request never takes the server down", () => {
 // A job folder that fails to delete would otherwise stay under /work, a 1g
 // tmpfs, until the container restarts, and one 512 MiB upload's folder can
 // fill half of it. So deletes retry, leftover job folders are swept at
-// start-up and after every job, and health fails while /work, with no job
-// running, has less free space than the floor (WORK_MIN_FREE_MIB).
+// start-up, after every job, and by a health check that finds /work below
+// the floor (WORK_MIN_FREE_MIB) while no job runs, and health fails while
+// /work, with no job running, still has less free space than the floor
+// after that sweep.
 describe("leftover job folders and /work space", () => {
   const JOB_A = "0b6f1d4e-3c2a-4f8e-9a71-5d2c8e6b4a10";
   const JOB_B = "7e2d9c1b-8a4f-4b3e-a6d5-1f0c9b8e7d62";
