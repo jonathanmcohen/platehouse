@@ -75,6 +75,7 @@ const HTML_SHAPES: Array<[string, string]> = [
   ["dropped elements left open", fill("<script>")],
   ["raw-text elements opened and closed, with quotes inside", fill(`<script>'<a href="</script>`)],
   ["raw-text elements that never close their own kind", fill("<style></script>")],
+  ["raw-text close tags holding < and quoted >", fill(`<script>a</script x<y z='>' >`)],
 ];
 
 describe("a crafted description of 256 KiB converts in bounded time and size", () => {

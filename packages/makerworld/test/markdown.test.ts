@@ -727,6 +727,15 @@ describe("htmlToMarkdown: ported cases", () => {
     ["a self-closing slash, which a browser ignores", "<script/>a</script>b", "b"],
     ["no close at all", "<p>a</p><script><p>b</p>", "a"],
     ["no close but a cut-short one at the end", "<p>a</p><script>b</script", "a"],
+    // A browser reads the close tag as an end tag: it ends the element
+    // whatever follows the name, and ends at the first > outside a quoted
+    // attribute value. A < there is part of an attribute name, so the close
+    // tag cannot fail and leave the drop open (PR #154 review).
+    ["a < after the close tag's name", "<script>a</script <b>y</b><p>z</p>", "y\n\nz"],
+    ["a < in an attribute of a style close tag", "<style>a</style x<y>b", "b"],
+    ["a quoted > in the close tag", `<script>a</script x=">"y>b`, "b"],
+    ["a quote in the close tag that never closes", `<p>a</p><script>b</script x="<p>c</p>`, "a"],
+    ["a close tag with no > at all", "<p>a</p><script>b</script x", "a"],
   ])("raw text runs to its own close tag: %s", (_name, html, expected) => {
     expect(htmlToMarkdown(html)).toBe(expected);
   });
