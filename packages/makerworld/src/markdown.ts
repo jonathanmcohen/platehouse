@@ -87,10 +87,13 @@ const TAG = /<(\/?)([A-Za-z][A-Za-z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y;
 // browser's tokenizer reads it: the name runs to whitespace, /, = or >, but
 // may begin with an = (so "=href" is not href); then an optional value,
 // double-quoted, single-quoted or bare. hrefOf reads them in order.
-const ATTR = /(=?[^\s/=>]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?/y;
-// What separates attributes: whitespace and /, and a > that the scan can
-// only meet inside a value it read differently from TAG. None starts a name.
-const ATTR_SKIP = /[\s/>]/;
+// Whitespace here is HTML's, tab, LF, FF, CR and space, never JavaScript's
+// \s: a browser keeps a no-break space, a BOM or a vertical tab inside a name
+// or a bare value (PR #121 review).
+const ATTR =
+  /(=?[^\t\n\f\r /=>]*)(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]*)))?/y;
+// What separates attributes: HTML whitespace and /. Neither starts a name.
+const ATTR_SKIP = /[\t\n\f\r /]/;
 const isSpace = (c: string): boolean => /\s/.test(c);
 
 interface Inline {
@@ -1046,9 +1049,16 @@ function escapeTextLineStart(line: string): string {
 // an attribute whose name only ends in href (data-mce-href) or an href= inside
 // another attribute's quoted value (issue #28). An href with no value is "",
 // which safeHref refuses. null when there is no href attribute.
+//
+// TAG and ATTR can read a stray quote differently: TAG takes a quote inside a
+// name or bare value (x"y) as opening a quoted run, a browser does not. So
+// the scan can meet a > outside every value as ATTR reads them. A browser
+// ends the tag there, so nothing after it is an attribute, and the scan stops
+// (PR #121 review).
 function hrefOf(attrs: string): string | null {
   let at = 0;
   while (at < attrs.length) {
+    if (attrs.charAt(at) === ">") return null;
     // Separators are skipped here one character at a time, so ATTR is only
     // tried where a name starts. It then always matches at least one
     // character, and the scan stays linear however many separators there are.

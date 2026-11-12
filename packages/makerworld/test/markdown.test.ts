@@ -534,8 +534,28 @@ describe("htmlToMarkdown: ported cases", () => {
     ["no href at all", '<a data-mce-href="https://a.test/">t</a>'],
     ["href only inside a value", '<a title="href=https://a.test/">t</a>'],
     ["href with no value", '<a href title="https://a.test/">t</a>'],
+    // A browser ends the tag at a > outside every value, so an href after it
+    // is not an attribute of the link (PR #121 review).
+    ["an href after a > that ends the tag", '<a x"y>z" href="https://a.test/">t</a>'],
+    ["an href after a > after a bare value", "<a x=y'>z' href=https://a.test/>t</a>"],
+    // A browser splits attributes only on tab, LF, FF, CR and space, so a
+    // no-break space or a BOM is part of the name (PR #121 review).
+    ["a no-break space inside a name", '<a data-x\u00a0href="https://a.test/">t</a>'],
+    ["a BOM inside a name", '<a data-x\ufeffhref="https://a.test/">t</a>'],
+    ["a no-break space before the =", '<a href\u00a0="https://a.test/">t</a>'],
   ])("a link with no href attribute drops to its text: %s", (_name, html) => {
     expect(htmlToMarkdown(html)).toBe("t");
+  });
+
+  it("a > inside a quoted value does not end the attribute scan", () => {
+    const out = htmlToMarkdown("<a title='a>b' href=\"https://b.test/\">t</a>");
+    expect(out).toBe("[t](https://b.test/)");
+  });
+
+  it("a no-break space inside a bare href value stays in the address", () => {
+    const out = htmlToMarkdown("<a href=https://b.test/a\u00a0b>t</a>");
+    expect(out).toBe("[t](https://b.test/a%C2%A0b)");
+    expect(render(out)).toBe(para('<a href="https://b.test/a%C2%A0b">t</a>'));
   });
 
   it("htmlToMarkdown: image-only input gives an empty string", () => {
