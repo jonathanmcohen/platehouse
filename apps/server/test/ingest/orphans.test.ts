@@ -5,14 +5,21 @@
 // blobs table holds no stored rows, or when a run would delete more than its
 // limit: 10 objects, or a tenth of the objects it listed in the blob layout
 // when that is more, and never more than 100.
-import { describe, expect, test } from "vitest";
+import type { Kysely } from "kysely";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { uuidv7 } from "../../src/db/ids.js";
+import type { DB } from "../../src/db/types.js";
 import {
+  createOrphanSweep,
   ORPHAN_DELETE_CAP,
   ORPHAN_DELETE_FLOOR,
   ORPHAN_DELETE_SHARE,
+  ORPHAN_MIN_AGE_MS,
+  type OrphanStore,
   orphanDeleteLimit,
   orphanRefusal,
 } from "../../src/ingest/orphans.js";
+import { blobKey } from "../../src/storage/keys.js";
 
 describe("orphanDeleteLimit", () => {
   test("the limits are 10 objects, a tenth of those listed, and 100 at most", () => {
@@ -61,5 +68,93 @@ describe("orphanRefusal", () => {
 
   test("has nothing to refuse when there are no orphans", () => {
     expect(orphanRefusal({ orphans: 0, inLayout: 5000, hasStoredRows: false })).toBeUndefined();
+  });
+});
+
+// Issue #54: a refused run is a sign to look at the database, so its line
+// must stand out from the daily one. It goes to console.warn, where the daily
+// line goes to console.info; main.ts passes neither hook, so these defaults
+// are what the running server does.
+describe("where a run's line goes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The two blobs queries the sweep makes: no row has any listed key, and the
+   * table holds a stored row only when storedRows is set.
+   */
+  function fakeDb(storedRows: boolean): Kysely<DB> {
+    const query = {
+      select: () => query,
+      where: () => query,
+      limit: () => query,
+      execute: async () => [],
+      executeTakeFirst: async () => (storedRows ? { id: uuidv7() } : undefined),
+    };
+    return { selectFrom: () => query } as unknown as Kysely<DB>;
+  }
+
+  /** A bucket holding `count` objects in the blob layout, all over 24 hours old. */
+  function fakeStore(count: number): { store: OrphanStore; deleted: string[] } {
+    const lastModified = new Date(Date.now() - 2 * ORPHAN_MIN_AGE_MS);
+    const objects = Array.from({ length: count }, () => ({
+      key: blobKey(uuidv7(), uuidv7()),
+      size: 1,
+      lastModified,
+    }));
+    const deleted: string[] = [];
+    const store: OrphanStore = {
+      listPage: async () => ({ objects, next: undefined }),
+      deleteBlobs: async (keys) => {
+        deleted.push(...keys);
+      },
+    };
+    return { store, deleted };
+  }
+
+  function catchConsole(): { info: string[]; warn: string[] } {
+    const lines = { info: [] as string[], warn: [] as string[] };
+    vi.spyOn(console, "info").mockImplementation((line: unknown) => {
+      lines.info.push(String(line));
+    });
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+      lines.warn.push(String(line));
+    });
+    return lines;
+  }
+
+  test("a run refused because the blobs table holds no stored rows goes to console.warn", async () => {
+    const lines = catchConsole();
+    const { store, deleted } = fakeStore(3);
+    const result = await createOrphanSweep({ db: fakeDb(false), store }).sweepOrphans(new Date());
+    expect(result.refused).toContain("no stored rows");
+    expect(deleted).toEqual([]);
+    expect(lines.info).toEqual([]);
+    expect(lines.warn).toHaveLength(1);
+    expect(lines.warn[0]).toContain("deleted nothing");
+    expect(lines.warn[0]).toContain("no stored rows");
+  });
+
+  test("a run refused for going over its limit goes to console.warn", async () => {
+    const lines = catchConsole();
+    const { store, deleted } = fakeStore(ORPHAN_DELETE_FLOOR + 1);
+    const result = await createOrphanSweep({ db: fakeDb(true), store }).sweepOrphans(new Date());
+    expect(result.refused).toContain(`limit of ${ORPHAN_DELETE_FLOOR}`);
+    expect(deleted).toEqual([]);
+    expect(lines.info).toEqual([]);
+    expect(lines.warn).toHaveLength(1);
+    expect(lines.warn[0]).toContain("deleted nothing");
+  });
+
+  test("a run that deletes its orphans goes to console.info and warns nothing", async () => {
+    const lines = catchConsole();
+    const { store, deleted } = fakeStore(3);
+    const result = await createOrphanSweep({ db: fakeDb(true), store }).sweepOrphans(new Date());
+    expect(result.refused).toBeUndefined();
+    expect(deleted).toHaveLength(3);
+    expect(lines.warn).toEqual([]);
+    expect(lines.info).toHaveLength(1);
+    expect(lines.info[0]).toContain("deleted 3");
   });
 });
