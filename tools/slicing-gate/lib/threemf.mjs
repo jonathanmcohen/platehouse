@@ -18,7 +18,9 @@ export const LIMITS = Object.freeze({
 const MODEL_SETTINGS = "Metadata/model_settings.config";
 const SLICE_INFO = "Metadata/slice_info.config";
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
-const PLATE_PNG = /^Metadata\/plate_(\d+)(?:_small)?\.png$/;
+// The packages/threemf rule (parse.ts): N has no leading zero, and a name
+// whose N is not a safe integer is not a plate (see platesFromPngs).
+const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(?:_small)?\.png$/;
 
 class Damaged extends Error {}
 
@@ -56,9 +58,13 @@ function metadata(block) {
   return meta;
 }
 
+// The packages/threemf rule (parse.ts int()): plain digits that make a safe
+// integer, or null. From 9007199254740992 up a number is rounded, so a
+// 17-digit plater_id would be read as a different plate (issue #129).
 function int(v) {
-  if (typeof v !== "string" || !/^\s*-?\d+\s*$/.test(v)) return null;
-  return Number.parseInt(v, 10);
+  if (typeof v !== "string" || !/^\s*-?[0-9]+\s*$/.test(v)) return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 function num(v) {
@@ -90,8 +96,11 @@ function platesFromModelSettings(zip) {
 function platesFromPngs(zip) {
   const indexes = new Set();
   for (const name of zip.names()) {
+    // From 9007199254740992 up, Number() rounds (or gives Infinity), so such
+    // a name would be read as some other plate number; skip it instead.
     const m = PLATE_PNG.exec(name);
-    if (m && Number(m[1]) > 0) indexes.add(Number(m[1]));
+    const index = m ? Number(m[1]) : null;
+    if (Number.isSafeInteger(index)) indexes.add(index);
   }
   if (indexes.size > LIMITS.plates) throw new Damaged();
   return [...indexes].sort((a, b) => a - b).map((index) => ({ index, objectCount: null }));
