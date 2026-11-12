@@ -58,9 +58,13 @@ function metadata(block) {
   return meta;
 }
 
+// The packages/threemf rule (parse.ts int()): plain digits that make a safe
+// integer, or null. From 9007199254740992 up a number is rounded, so a
+// 17-digit plater_id would be read as a different plate (issue #129).
 function int(v) {
-  if (typeof v !== "string" || !/^\s*-?\d+\s*$/.test(v)) return null;
-  return Number.parseInt(v, 10);
+  if (typeof v !== "string" || !/^\s*-?[0-9]+\s*$/.test(v)) return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 function num(v) {
