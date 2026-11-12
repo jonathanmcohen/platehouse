@@ -238,6 +238,13 @@ describe("slicer links (AC-041)", () => {
     expect(link.url.endsWith("/Renamed%20plate.3mf")).toBe(true);
     const res = await call("GET", pathOf(link.url));
     expect(res.status).toBe(200);
+    // A browser or slicer that names the file from Content-Disposition gets
+    // the real extension too, on the link and on the download.
+    const expected = `attachment; filename="Renamed plate.3mf"; filename*=UTF-8''Renamed%20plate.3mf`;
+    expect(res.headers.get("content-disposition")).toBe(expected);
+    const download = await call("GET", `/files/${file.id}/download`, { session: true });
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-disposition")).toBe(expected);
   });
 
   test("link expires after 10 minutes: 9:59 works, 10:01 is 403 with an empty body", async () => {
@@ -418,12 +425,14 @@ describe("hostile file names (Review Focus 1)", () => {
     const seeded = await seedStoredModel(env);
     for (const name of hostile) {
       const { file, bytes } = await seedNamedFile(seeded.model.id, name, "orig.3mf");
+      // The stored name, with the real extension added when it lacks one.
+      const expected = linkFileName({ name, originalName: "orig.3mf", kind: "3mf" });
 
       const download = await call("GET", `/files/${file.id}/download`, { session: true });
       expect(download.status, name).toBe(200);
       expect(download.bytes.equals(bytes), name).toBe(true);
       const d = disposition(download.headers.get("content-disposition"));
-      expect(decodeURIComponent(d.encoded), name).toBe(name);
+      expect(decodeURIComponent(d.encoded), name).toBe(expected);
       expect(d.fallback, name).toMatch(/^[\x20-\x7e]*$/);
 
       const link = await mint(file.id);
@@ -433,14 +442,13 @@ describe("hostile file names (Review Focus 1)", () => {
       const segments = pathOf(link.url).split("/");
       expect(segments, name).toHaveLength(4);
       const last = segments[3] ?? "";
-      const expected = linkFileName({ name, originalName: "orig.3mf", kind: "3mf" });
       expect(last, name).toBe(encodeURIComponent(expected));
       expect(last.endsWith(".3mf"), name).toBe(true);
       const fetched = await call("GET", pathOf(link.url));
       expect(fetched.status, name).toBe(200);
       expect(fetched.bytes.equals(bytes), name).toBe(true);
       const l = disposition(fetched.headers.get("content-disposition"));
-      expect(decodeURIComponent(l.encoded), name).toBe(name);
+      expect(decodeURIComponent(l.encoded), name).toBe(expected);
     }
   });
 

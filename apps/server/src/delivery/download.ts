@@ -26,7 +26,11 @@
 // - A file goes out as an attachment with the stored name in an ASCII
 //   fallback and in filename*=UTF-8'' (api/v1.ts contentDisposition), so a
 //   name with spaces, accents, slashes, quotes or line breaks never breaks
-//   the header. Every answer carries X-Content-Type-Options: nosniff.
+//   the header. The name is linkFileName's: a rename may have left the
+//   stored name without its extension, and a browser saves the download
+//   under this name, so the file's real extension is added when it is
+//   missing. The slicer link (links.ts) names its file the same way. Every
+//   answer carries X-Content-Type-Options: nosniff.
 import { Readable } from "node:stream";
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
@@ -53,6 +57,31 @@ export interface LinkFile {
   name: string;
   originalName: string;
   kind: FileKind;
+}
+
+/** The extensions each file kind is stored under, the first the default. */
+const EXTENSIONS: Record<FileKind, readonly string[]> = {
+  "3mf": [".3mf"],
+  stl: [".stl"],
+  step: [".step", ".stp"],
+  scad: [".scad"],
+};
+
+/**
+ * The name a file is delivered under, in a slicer link's last segment and
+ * in Content-Disposition: the stored (display) name, which a rename may
+ * have left without its extension, with the file's real extension added
+ * when it does not already end in one for its kind (case ignored). The real
+ * extension is the original name's, when that is one for the kind, else
+ * the kind's first, in lower case.
+ */
+export function linkFileName(file: Pick<LinkFile, "name" | "originalName" | "kind">): string {
+  const exts = EXTENSIONS[file.kind];
+  const lower = file.name.toLowerCase();
+  if (exts.some((ext) => lower.endsWith(ext))) return file.name;
+  const original = file.originalName.toLowerCase();
+  const ext = exts.find((e) => original.endsWith(e)) ?? exts[0] ?? "";
+  return `${file.name}${ext}`;
 }
 
 /** What delivery reads beyond Task 16's file content: blobs, and a file for its link. */
@@ -126,19 +155,22 @@ export function createDeliveryLibrary(deps: {
 /**
  * Sends a file's or blob's headers and, for a GET, its stream. A HEAD gets an
  * empty stream, which keeps the Content-Length (an empty body would make
- * Fastify answer 0).
+ * Fastify answer 0). An attachment is named fileName (a file's linkFileName),
+ * else the content's own name.
  */
 export function sendContent(
   reply: FastifyReply,
   content: FileHead | FileContent,
-  opts: { attachment: boolean; cacheControl?: string },
+  opts: { attachment: boolean; cacheControl?: string; fileName?: string },
 ) {
   reply
     .header("content-type", content.contentType)
     .header("content-length", String(content.size))
     .header("x-content-type-options", "nosniff")
     .header("cache-control", opts.cacheControl ?? FILE_CACHE_CONTROL);
-  if (opts.attachment) reply.header("content-disposition", contentDisposition(content.name));
+  if (opts.attachment) {
+    reply.header("content-disposition", contentDisposition(opts.fileName ?? content.name));
+  }
   return reply.send("stream" in content ? content.stream : Readable.from([]));
 }
 
@@ -187,7 +219,7 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
       request: FastifyRequest,
       reply: FastifyReply,
       read: (head: boolean) => Promise<FileHead | FileContent | undefined>,
-      opts: { attachment: boolean; cacheControl: string },
+      opts: { attachment: boolean; cacheControl: string; fileName?: string },
     ) {
       let content: FileHead | FileContent | undefined;
       try {
@@ -197,19 +229,25 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
         if (answered !== undefined) return answered;
         throw error;
       }
-      if (content === undefined) {
-        return reply.code(404).header("cache-control", "no-store").send({ error: "not_found" });
-      }
+      if (content === undefined) return notFound(reply);
       return sendContent(reply, content, opts);
+    }
+
+    function notFound(reply: FastifyReply) {
+      return reply.code(404).header("cache-control", "no-store").send({ error: "not_found" });
     }
 
     scope.get<IdParams>("/files/:id/download", async (request, reply) => {
       const { id } = request.params;
+      // The file's kind and original name give the extension its
+      // Content-Disposition name needs (linkFileName); the database only.
+      const file = await deps.library.linkFile(id);
+      if (file === undefined) return notFound(reply);
       return serve(
         request,
         reply,
         (head) => (head ? deps.files.fileHead(id) : deps.files.openFile(id)),
-        { attachment: true, cacheControl: FILE_CACHE_CONTROL },
+        { attachment: true, cacheControl: FILE_CACHE_CONTROL, fileName: linkFileName(file) },
       );
     });
 

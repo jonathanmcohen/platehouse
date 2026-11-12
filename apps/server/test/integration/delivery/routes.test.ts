@@ -537,6 +537,37 @@ describe("GET /files/:id/download and GET /blobs/:id", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
+  test("a file renamed without its extension downloads and links with the real one", async () => {
+    // A browser saves a download under the Content-Disposition name, so a
+    // name a rename left bare gets the file's real extension there too.
+    const id = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8efd";
+    files.set(id, {
+      ...(files.get(FILE_A) as StubItem),
+      name: "Renamed plate",
+      originalName: "plate.3mf",
+    });
+    const expected = `attachment; filename="Renamed plate.3mf"; filename*=UTF-8''Renamed%20plate.3mf`;
+    try {
+      for (const method of ["GET", "HEAD"] as const) {
+        const download = await app.inject({
+          method,
+          url: `/files/${id}/download`,
+          cookies: cookies(),
+        });
+        expect(download.statusCode, method).toBe(200);
+        expect(download.headers["content-disposition"], method).toBe(expected);
+
+        const link = await linkFor(id);
+        expect(link.url.endsWith("/Renamed%20plate.3mf")).toBe(true);
+        const fetched = await app.inject({ method, url: pathOf(link.url) });
+        expect(fetched.statusCode, method).toBe(200);
+        expect(fetched.headers["content-disposition"], method).toBe(expected);
+      }
+    } finally {
+      files.delete(id);
+    }
+  });
+
   test("a HEAD on either opens no stream", async () => {
     const before = opened;
     for (const url of [`/files/${FILE_A}/download`, `/blobs/${BLOB_T}`]) {

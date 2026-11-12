@@ -20,7 +20,8 @@
 //   the file's name with its real extension (linkFileName), percent-encoded
 //   so it is always one segment: OrcaSlicer names its download after it.
 //   That segment is never used for lookup; the answer's Content-Disposition
-//   carries the stored name.
+//   carries the same name, built from the stored file (download.ts), so a
+//   slicer that prefers it also gets the real extension.
 // - The route is registered as /s/:token/* rather than /s/:token/:name:
 //   the router refuses a :param over its maxParamLength (100 characters)
 //   with 414, which would break the link of any file whose name is longer.
@@ -37,9 +38,14 @@ import {
   type DeliveryDeps,
   fileRouteErrors,
   type LinkFile,
+  linkFileName,
   sendContent,
   unavailable,
 } from "./download.js";
+
+// linkFileName lives in download.ts, which this module imports, so the
+// download route can use it without an import cycle; links still export it.
+export { linkFileName };
 
 /** How long a slicer link works (Q14). */
 export const LINK_LIFETIME_SECONDS = 600;
@@ -106,30 +112,6 @@ export function readLinkToken(key: Buffer, token: string, now: Date): string | u
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The extensions each file kind is stored under, the first the default. */
-const EXTENSIONS: Record<LinkFile["kind"], readonly string[]> = {
-  "3mf": [".3mf"],
-  stl: [".stl"],
-  step: [".step", ".stp"],
-  scad: [".scad"],
-};
-
-/**
- * The name a link ends in: the stored (display) name, which a rename may
- * have left without its extension, with the file's real extension added
- * when it does not already end in one for its kind (case ignored). The real
- * extension is the original name's, when that is one for the kind, else
- * the kind's first, in lower case.
- */
-export function linkFileName(file: Pick<LinkFile, "name" | "originalName" | "kind">): string {
-  const exts = EXTENSIONS[file.kind];
-  const lower = file.name.toLowerCase();
-  if (exts.some((ext) => lower.endsWith(ext))) return file.name;
-  const original = file.originalName.toLowerCase();
-  const ext = exts.find((e) => original.endsWith(e)) ?? exts[0] ?? "";
-  return `${file.name}${ext}`;
-}
-
 /** A link to the file, minted now, with the protocol URLs for each slicer. */
 export function slicerLink(opts: {
   key: Buffer;
@@ -194,6 +176,10 @@ export async function registerLinks(
       if (!isOneNameSegment(request.url)) return refuseLink(reply);
       const fileId = readLinkToken(key, request.params.token, now());
       if (fileId === undefined) return refuseLink(reply);
+      // The file's kind and original name give the Content-Disposition name
+      // its extension (linkFileName); the database only, the store not yet.
+      const file = await deps.library.linkFile(fileId);
+      if (file === undefined) return refuseLink(reply);
       const head = request.method === "HEAD";
       let content: FileHead | FileContent | undefined;
       try {
@@ -204,7 +190,7 @@ export async function registerLinks(
         throw error;
       }
       if (content === undefined) return refuseLink(reply);
-      return sendContent(reply, content, { attachment: true });
+      return sendContent(reply, content, { attachment: true, fileName: linkFileName(file) });
     });
   });
 }
