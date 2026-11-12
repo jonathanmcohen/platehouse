@@ -320,3 +320,85 @@ describe("Platehouse's limits", () => {
     expect(plan.leftOut[1]).toMatch(/^collection g{40}\.\.\. left out: 101 characters/);
   });
 });
+
+// Platehouse trims every tag and collection name before it stores or matches
+// it, and matches without case (apps/server/src/repos/tags.ts tagName,
+// collections.ts collectionName), so the plan compares and sends them the
+// same way.
+describe("tags and collections as Platehouse stores them", () => {
+  it("sends a new model's padded labels trimmed, each once", () => {
+    const plan = planModel(
+      source({ tags: ["  boat ", "Boat", "\tCalibration\n", "   "], collections: [" Gifts "] }),
+      undefined,
+    );
+    expect(plan.create?.tags).toEqual(["boat", "Calibration"]);
+    expect(plan.create?.collections).toEqual(["Gifts"]);
+  });
+
+  it("finds nothing missing when an existing model holds the trimmed labels", () => {
+    const plan = planModel(
+      source({ tags: ["boat ", " Calibration"], collections: ["Gifts "] }),
+      existing(),
+    );
+    expect(plan.tags).toEqual([]);
+    expect(plan.collections).toEqual([]);
+    expect(plan.leftOut).toEqual([]);
+  });
+
+  it("sends a label an existing model lacks trimmed", () => {
+    const plan = planModel(source({ tags: [" dock "], collections: [" Shelf "] }), existing());
+    expect(plan.tags).toEqual(["dock"]);
+    expect(plan.collections).toEqual(["Shelf"]);
+  });
+
+  it("measures a padded label after trimming it", () => {
+    const label = `  ${"a".repeat(100)}  `;
+    const plan = planModel(source({ tags: [label], collections: [] }), existing({ tags: [] }));
+    expect(plan.tags).toEqual(["a".repeat(100)]);
+    expect(plan.leftOut).toEqual([]);
+  });
+});
+
+// A label sent by PUT rides in the URL path. "." and ".." are dot segments:
+// the URL parser resolves them, %2e forms included, so the PUT would reach
+// another route. They are left out with the reason rather than sent.
+describe("labels that would be URL dot segments", () => {
+  it("leaves out a . or .. tag or collection an existing model lacks, with the reason", () => {
+    const plan = planModel(
+      source({ tags: ["boat", ".", " .. ", "dock"], collections: [".."] }),
+      existing(),
+    );
+    expect(plan.tags).toEqual(["dock"]);
+    expect(plan.collections).toEqual([]);
+    expect(plan.leftOut).toEqual([
+      'tag . left out: a URL path cannot carry "." or ".." as a name',
+      'tag .. left out: a URL path cannot carry "." or ".." as a name',
+      'collection .. left out: a URL path cannot carry "." or ".." as a name',
+    ]);
+  });
+
+  it("leaves out a . or .. label past a new model's first 100", () => {
+    const tags = [...Array.from({ length: 100 }, (_, i) => `t${i}`), "..", "t100"];
+    const plan = planModel(source({ tags }), undefined);
+    expect(plan.create?.tags).toHaveLength(100);
+    expect(plan.tags).toEqual(["t100"]);
+    expect(plan.leftOut).toEqual([
+      'tag .. left out: a URL path cannot carry "." or ".." as a name',
+    ]);
+  });
+
+  it("sends a . or .. label in a new model's create body, which carries no path", () => {
+    const plan = planModel(source({ tags: [".", "boat"], collections: [".."] }), undefined);
+    expect(plan.create?.tags).toEqual([".", "boat"]);
+    expect(plan.create?.collections).toEqual([".."]);
+    expect(plan.leftOut).toEqual([]);
+  });
+
+  it("keeps a label with dots in it that is not only dots, or is three dots", () => {
+    const plan = planModel(
+      source({ tags: ["v1.2", "...", ".hidden"], collections: [] }),
+      existing({ tags: [] }),
+    );
+    expect(plan.tags).toEqual(["v1.2", "...", ".hidden"]);
+  });
+});

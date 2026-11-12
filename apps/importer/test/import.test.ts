@@ -274,6 +274,49 @@ describe("re-running", () => {
   });
 });
 
+describe("tags and collections on a re-run", () => {
+  it("are compared trimmed, as Platehouse stores them, so a padded label is not sent again", async () => {
+    const lib = library();
+    const m3 = lib.models[2];
+    const gifts = lib.collections[1];
+    if (m3 === undefined || gifts === undefined) throw new Error("unreachable");
+    m3.keywords = ["filament ", " storage"];
+    m3.collectionIds = ["col2"];
+    gifts.name = "Gifts ";
+    const s = setup(lib);
+    const first = await s.run(["--apply"]);
+    expect(first.code).toBe(0);
+    expect([...byRef(s, "m3").tags].sort()).toEqual(["filament", "storage"]);
+    expect(byRef(s, "m3").collections).toEqual(["Gifts"]);
+    seen.length = 0;
+    const again = await s.run(["--apply"]);
+    expect(again.code).toBe(0);
+    const m3Again = again.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3Again?.outcome).toBe("skipped");
+    expect(m3Again?.reason).toBe("already in Platehouse, nothing missing");
+    expect(platehouseCalls().filter((c) => c.startsWith("PUT "))).toEqual([]);
+  });
+
+  it("leave out a . or .. label an existing model lacks, and send no PUT to another route", async () => {
+    const lib = library();
+    const s = setup(lib);
+    await s.run(["--apply"]);
+    const m3 = lib.models[2];
+    if (m3 === undefined) throw new Error("unreachable");
+    m3.keywords = ["filament", "..", "."];
+    seen.length = 0;
+    const again = await s.run(["--apply"]);
+    expect(again.code).toBe(0);
+    const m3Again = again.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3Again?.outcome).toBe("skipped");
+    expect(m3Again?.leftOut).toEqual([
+      'tag .. left out: a URL path cannot carry "." or ".." as a name',
+      'tag . left out: a URL path cannot carry "." or ".." as a name',
+    ]);
+    expect(platehouseCalls().filter((c) => c.startsWith("PUT "))).toEqual([]);
+  });
+});
+
 describe("sizes", () => {
   it("a download whose size is not contentSize is reported and not counted imported", async () => {
     const lib = library();

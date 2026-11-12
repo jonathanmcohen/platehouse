@@ -169,8 +169,14 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
     };
   }
 
+  /**
+   * As the server's tags and collections repos do (tagName, collectionName):
+   * the name is trimmed before it is stored or matched, and matched without
+   * case, so "Gifts " lands on an existing "gifts".
+   */
   function addLabel(list: string[], label: string) {
-    if (!list.some((x) => x.toLowerCase() === label.toLowerCase())) list.push(label);
+    const name = label.trim();
+    if (!list.some((x) => x.toLowerCase() === name.toLowerCase())) list.push(name);
   }
 
   function ingest(upload: Upload) {

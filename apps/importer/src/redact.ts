@@ -6,7 +6,10 @@
 // under them, for the cases they cannot see, such as a server that echoes a
 // credential back in an error body. The clients also run an error body
 // through redact() before they cut it to its quote length, since a value cut
-// in two is no longer one this redactor can find.
+// in two is no longer one this redactor can find. Control characters are
+// taken out (cleanText) before redact() runs, in the clients and the CLI
+// alike: taken out after it, they could join up a credential that was echoed
+// with one inside it, past the redactor.
 //
 // Text that came from Manyfold (model and file names) is printed through
 // cleanText as well, so a name cannot move the terminal's cursor, ring it,

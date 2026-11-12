@@ -218,6 +218,59 @@ describe("the output never shows a credential or a signed query", () => {
     expect(r.output).not.toContain(basic.slice(0, 8));
   });
 
+  // Control characters are taken out of what is printed. If that happened
+  // after redaction, a credential echoed with control characters inside it
+  // would slip past the redactor and then be joined back up.
+  it("when Manyfold echoes its token with control characters inside it, across the quote limit", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(`${MANYFOLD}/models/m1`, ({ request }) => {
+        const echoed = (request.headers.get("authorization") ?? "").replace("Bearer ", "");
+        const broken = `${echoed.slice(0, 10)}\u0001\u001b${echoed.slice(10, 20)}\u007f${echoed.slice(20)}`;
+        return new HttpResponse(`${"x".repeat(180)}${broken}`, { status: 403 });
+      }),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(s.manyfold.accessToken.slice(0, 12));
+    expect(r.output).toContain(REDACTED);
+  });
+
+  it("when Platehouse echoes its token with control characters inside it, across the quote limit", async () => {
+    const s = setup(library());
+    const head = FAKE_BEARER.slice(0, 5);
+    const rest = FAKE_BEARER.slice(5);
+    server.use(
+      http.post(
+        `${PLATEHOUSE}/api/v1/uploads`,
+        () => new HttpResponse(`${"y".repeat(185)}${head}\u0007${rest}`, { status: 403 }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(FAKE_BEARER.slice(0, 8));
+    expect(r.output).toContain(`${"y".repeat(185)}${REDACTED}`);
+  });
+
+  it("when Platehouse's first check echoes its token with a control character inside it", async () => {
+    const s = setup(library());
+    const head = FAKE_BEARER.slice(0, 5);
+    const rest = FAKE_BEARER.slice(5);
+    server.use(
+      http.get(
+        `${PLATEHOUSE}/api/v1/models`,
+        () => new HttpResponse(`upstream said ${head}\u0000${rest}`, { status: 500 }),
+      ),
+    );
+    const r = await s.run([]);
+    expect(r.code).toBe(2);
+    expect(r.stderr.join("\n")).toMatch(/could not start/);
+    expectClean(s, r.output);
+    expect(r.output).toContain(`upstream said ${REDACTED}`);
+  });
+
   it("when a credential variable is missing", async () => {
     const s = setup(library());
     const env: Record<string, string | undefined> = { ...ENV };

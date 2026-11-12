@@ -31,6 +31,8 @@
 //   A result that never comes is reported as an unknown outcome; the next
 //   run finds the file if the ingest finished.
 
+import { cleanText } from "./redact.js";
+
 export class PlatehouseError extends Error {
   readonly status: number | null;
   constructor(message: string, status: number | null = null) {
@@ -154,6 +156,19 @@ function toModel(j: Json): PlatehouseModel {
 
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 
+/**
+ * A value as one URL path segment. encodeURIComponent escapes "/", "?", "#"
+ * and "%", but leaves "." and ".." as they are, and the URL parser resolves
+ * those as dot segments, so a PUT would reach another route. plan.ts leaves
+ * such a label out; this refuses one before anything is sent, as a floor.
+ */
+function segment(value: string): string {
+  if (value === "." || value === "..") {
+    throw new PlatehouseError(`"${value}" cannot be sent as one path segment`);
+  }
+  return encodeURIComponent(value);
+}
+
 export function createPlatehouse(options: PlatehouseOptions): Platehouse {
   const origin = new URL(options.base).origin;
   const doFetch = options.fetch ?? globalThis.fetch;
@@ -220,9 +235,12 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
     } catch {
       // Not JSON: quote the text.
     }
-    // Redacted before the cut: a credential that crosses BODY_QUOTE would
-    // otherwise be printed in part, which the redactor cannot recognise.
-    detail = redact(detail).replace(/\s+/g, " ").trim().slice(0, BODY_QUOTE);
+    // On one line and without control characters, then redacted, then cut:
+    // stripping a control character after redaction could join a credential
+    // back up, and a credential cut in two is not one the redactor can find.
+    detail = redact(cleanText(detail.replace(/\s+/g, " ")))
+      .trim()
+      .slice(0, BODY_QUOTE);
     return new PlatehouseError(
       `${method} ${url.pathname}: HTTP ${res.status}${detail === "" ? "" : ` ${detail}`}`,
       res.status,
@@ -409,13 +427,10 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
       throw await failure(url, "POST", res);
     },
 
-    addTag: (modelId, tag) =>
-      put(api(`/models/${encodeURIComponent(modelId)}/tags/${encodeURIComponent(tag)}`)),
+    addTag: async (modelId, tag) => put(api(`/models/${segment(modelId)}/tags/${segment(tag)}`)),
 
-    addToCollection: (modelId, collection) =>
-      put(
-        api(`/collections/${encodeURIComponent(collection)}/models/${encodeURIComponent(modelId)}`),
-      ),
+    addToCollection: async (modelId, collection) =>
+      put(api(`/collections/${segment(collection)}/models/${segment(modelId)}`)),
 
     async upload(modelId, filename, bytes) {
       const create = api("/uploads");

@@ -331,8 +331,10 @@ async function importModel(
 
 export async function run(options: RunOptions): Promise<RunResult> {
   const redactor = createRedactor();
-  const out = (line: string) => options.stdout(cleanText(redactor.redact(line)));
-  const err = (line: string) => options.stderr(cleanText(redactor.redact(line)));
+  // Control characters come out before redaction: taken out after it, they
+  // could join up a credential that was echoed with one inside it.
+  const out = (line: string) => options.stdout(redactor.redact(cleanText(line)));
+  const err = (line: string) => options.stderr(redactor.redact(cleanText(line)));
   const usage = () => {
     for (const line of USAGE.split("\n")) err(line);
   };

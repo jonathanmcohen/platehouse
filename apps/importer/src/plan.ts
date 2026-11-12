@@ -7,8 +7,11 @@
 // - A model Platehouse lacks is created with Manyfold's name, caption,
 //   description, creator, licence (an SPDX id), tags (keywords) and
 //   collections (isPartOf), each sent only when Manyfold has a value. Tags
-//   and collections go once each, compared without case, as Platehouse
-//   stores them.
+//   and collections are trimmed and go once each, compared without case, as
+//   Platehouse stores and matches them (apps/server/src/repos/tags.ts
+//   tagName and collections.ts collectionName trim with String.trim and
+//   match with lower() on both sides). So a padded "Gifts " is sent as
+//   "Gifts", and a re-run finds it held and sends nothing.
 // - A model Platehouse has is never edited: the API has no route to change a
 //   model's details, and a field Jon changed stays his. It only gets the
 //   tags and collections it lacks, and the files it lacks.
@@ -38,6 +41,10 @@
 //   answers 414 past 100, before LABEL is checked. So a label sent by PUT
 //   must also be at most 100 UTF-16 units; a longer one is left out with the
 //   reason. The create body is not affected: Ajv counts code points there.
+// - A label that is "." or ".." cannot go in a URL path at all: the URL
+//   parser resolves it as a dot segment (%2e forms included), so the PUT
+//   would reach another route. It is left out with the reason. In a new
+//   model's create body, which carries no path, it is sent as it is.
 import type { NewModel, PlatehouseFile, PlatehouseModel } from "./platehouse.js";
 
 export interface SourceFile {
@@ -139,6 +146,10 @@ function fitting(labels: string[], what: "tag" | "collection", leftOut: string[]
  */
 function fittingPath(labels: string[], what: "tag" | "collection", leftOut: string[]): string[] {
   return labels.filter((label) => {
+    if (label === "." || label === "..") {
+      leftOut.push(`${what} ${label} left out: a URL path cannot carry "." or ".." as a name`);
+      return false;
+    }
     if (label.length <= LIMITS.pathParam) return true;
     leftOut.push(
       `${what} ${shown(label)} left out: ${label.length} UTF-16 units in a URL path, ` +
@@ -148,13 +159,17 @@ function fittingPath(labels: string[], what: "tag" | "collection", leftOut: stri
   });
 }
 
-/** Each label once, the first spelling winning, compared without case. */
+/** A label as Platehouse matches it: trimmed, without case. */
+const labelKey = (label: string) => label.trim().toLowerCase();
+
+/** Each label once, trimmed, the first spelling winning, compared as labelKey does. */
 function unique(labels: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const label of labels) {
-    const key = label.toLowerCase();
-    if (label.trim() === "" || seen.has(key)) continue;
+  for (const raw of labels) {
+    const label = raw.trim();
+    const key = labelKey(label);
+    if (label === "" || seen.has(key)) continue;
     seen.add(key);
     out.push(label);
   }
@@ -167,10 +182,10 @@ function lacking(
   what: "tag" | "collection",
   leftOut: string[],
 ): string[] {
-  const held = new Set(have.map((x) => x.toLowerCase()));
+  const held = new Set(have.map(labelKey));
   return fittingPath(
     fitting(
-      unique(wanted).filter((x) => !held.has(x.toLowerCase())),
+      unique(wanted).filter((x) => !held.has(labelKey(x))),
       what,
       leftOut,
     ),

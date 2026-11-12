@@ -13,6 +13,7 @@ import {
   manyfoldCalls,
   OBJECTS,
   PLATEHOUSE,
+  seen,
   server,
   setup,
   useServer,
@@ -134,6 +135,38 @@ describe("the Platehouse client", () => {
     expect(stored.size).toBe(4000);
     expect(stored.sha256).toBe(sha256(bytes));
   });
+
+  it("sends a tag or collection with a slash or a percent sign as one path segment, to the right route", async () => {
+    const s = setup(library());
+    const made = await s.run(["--apply", "--model", "m3"]);
+    expect(made.code).toBe(0);
+    const model = s.platehouse.byRef("manyfold:m3")[0];
+    if (model === undefined) throw new Error("unreachable");
+    seen.length = 0;
+    const ph = createPlatehouse({ base: PLATEHOUSE, bearer: FAKE_BEARER, sleep: noSleep });
+    await ph.addTag(model.id, "a/b?c#d");
+    await ph.addToCollection(model.id, "x/../y");
+    await ph.addTag(model.id, "%2e%2E");
+    expect(seen.map((r) => `${r.method} ${new URL(r.url).pathname}`)).toEqual([
+      `PUT /api/v1/models/${model.id}/tags/a%2Fb%3Fc%23d`,
+      `PUT /api/v1/collections/x%2F..%2Fy/models/${model.id}`,
+      `PUT /api/v1/models/${model.id}/tags/%252e%252E`,
+    ]);
+    expect(s.platehouse.byRef("manyfold:m3")[0]?.tags).toContain("%2e%2E");
+    expect(s.platehouse.byRef("manyfold:m3")[0]?.tags).toContain("a/b?c#d");
+    expect(s.platehouse.byRef("manyfold:m3")[0]?.collections).toContain("x/../y");
+  });
+
+  it.each([".", ".."])(
+    "refuses to send a tag or collection named %s, which would reach another route",
+    async (label) => {
+      setup(library());
+      const ph = createPlatehouse({ base: PLATEHOUSE, bearer: FAKE_BEARER, sleep: noSleep });
+      await expect(ph.addTag("abc", label)).rejects.toThrow(/one path segment/);
+      await expect(ph.addToCollection("abc", label)).rejects.toThrow(/one path segment/);
+      expect(seen).toEqual([]);
+    },
+  );
 
   it("reads a model back by its externalRef when the answer to its create was lost", async () => {
     const s = setup(library());
