@@ -164,3 +164,30 @@ describe("values left out over Platehouse's limits", () => {
     expect(exitCode(report([model({ leftOut: ["a"] })]))).toBe(0);
   });
 });
+
+describe("files already in Platehouse", () => {
+  const present = model({
+    outcome: "skipped",
+    newModel: false,
+    files: [
+      {
+        name: "old.3mf",
+        manyfoldSize: 7,
+        storedSize: 7,
+        sha256: "ff".repeat(32),
+        status: "already in Platehouse",
+        reason: null,
+      },
+    ],
+  });
+
+  it("make the summary say their content was matched by size only, not checked", () => {
+    const text = summaryLines(report([present])).join("\n");
+    expect(text).toMatch(/matched by name and size only; their SHA-256 is not checked again/);
+    expect(text).toMatch(/only in the report of the run that uploaded it/);
+  });
+
+  it("leave the summary without that line when there are none", () => {
+    expect(summaryLines(report([model()])).join("\n")).not.toMatch(/name and size only/);
+  });
+});

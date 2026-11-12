@@ -47,6 +47,7 @@ import {
   type Mode,
   type ModelResult,
   modelLines,
+  PRESENT_UNCHECKED,
   type Report,
   SIZE_MISMATCH,
   summaryLines,
@@ -141,9 +142,11 @@ function plannedRows(plan: ModelPlan, notImported?: string): FileRow[] {
     const size = f.file.contentSize;
     switch (f.action) {
       case "present":
+        // Matched by name and size only; its SHA-256 is Platehouse's, not compared.
         return row(f.file.filename, size, "already in Platehouse", {
           storedSize: f.stored.size,
           sha256: f.stored.sha256,
+          reason: PRESENT_UNCHECKED,
         });
       case "skip":
         return row(f.file.filename, size, "skipped", { reason: f.reason });

@@ -65,11 +65,21 @@ export interface Totals {
 /** How a file row's reason starts when its size is not Manyfold's contentSize. */
 export const SIZE_MISMATCH = "size mismatch";
 
+/**
+ * The reason on a file row that is already in Platehouse. It was matched by
+ * original name and size alone (plan.ts, as Jon decided on 2026-11-12); its
+ * SHA-256 is shown as Platehouse recorded it but is not compared with
+ * Manyfold's bytes, so a mismatch is reported only by the run that uploaded it.
+ */
+export const PRESENT_UNCHECKED = "matched by name and size; content not checked again";
+
 /** How many hex digits of a SHA-256 the report shows. */
 const SHA_SHOWN = 12;
 
+const files = (report: Report) => report.models.flatMap((m) => m.files);
+
 export function totals(report: Report): Totals {
-  const files = report.models.flatMap((m) => m.files);
+  const rows = files(report);
   const count = (outcome: Outcome) => report.models.filter((m) => m.outcome === outcome).length;
   return {
     found: report.found,
@@ -77,10 +87,10 @@ export function totals(report: Report): Totals {
     skipped: count("skipped"),
     failed: count("failed"),
     newModels: report.models.filter((m) => m.newModel).length,
-    filesImported: files.filter((f) => f.status === "imported" || f.status === "would import")
+    filesImported: rows.filter((f) => f.status === "imported" || f.status === "would import")
       .length,
-    filesSkipped: files.filter((f) => f.status === "skipped").length,
-    sizeMismatches: files.filter((f) => f.reason?.startsWith(SIZE_MISMATCH) === true).length,
+    filesSkipped: rows.filter((f) => f.status === "skipped").length,
+    sizeMismatches: rows.filter((f) => f.reason?.startsWith(SIZE_MISMATCH) === true).length,
     valuesLeftOut: report.models.reduce((n, m) => n + (m.leftOut?.length ?? 0), 0),
   };
 }
@@ -113,6 +123,13 @@ export function summaryLines(report: Report): string[] {
     `  new models ${t.newModels}, files imported ${t.filesImported}, ` +
       `files skipped ${t.filesSkipped}, size mismatches ${t.sizeMismatches}`,
   ];
+  if (files(report).some((f) => f.status === "already in Platehouse")) {
+    lines.push(
+      "  Files already in Platehouse are matched by name and size only; their SHA-256 is not " +
+        "checked again. A SHA-256 mismatch, or an upload whose outcome was unknown, shows " +
+        "only in the report of the run that uploaded it.",
+    );
+  }
   if (t.valuesLeftOut > 0) {
     lines.push(
       `  values left out ${t.valuesLeftOut}: over Platehouse's limits, each named on its model's line`,

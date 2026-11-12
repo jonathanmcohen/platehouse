@@ -3,6 +3,7 @@
 // report and the exit codes.
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { PRESENT_UNCHECKED } from "../src/report.js";
 import {
   ENV,
   FAKE_BEARER,
@@ -167,6 +168,21 @@ describe("re-running", () => {
     expect(planned).toHaveLength(0);
     expect(models.every((m) => m.outcome === "skipped")).toBe(true);
     expect(models[0]?.reason).toMatch(/already in Platehouse/);
+  });
+
+  it("marks each file already in Platehouse as matched by size, not content-checked", async () => {
+    const s = setup(library());
+    expect((await s.run(["--apply"])).code).toBe(0);
+    const again = await s.run(["--apply"]);
+    expect(again.code).toBe(0);
+    const present = (again.report?.models ?? [])
+      .flatMap((m) => m.files)
+      .filter((f) => f.status === "already in Platehouse");
+    expect(present).toHaveLength(4);
+    for (const f of present) expect(f.reason).toBe(PRESENT_UNCHECKED);
+    const out = again.stdout.join("\n");
+    expect(out).toContain(`already in Platehouse - ${PRESENT_UNCHECKED}`);
+    expect(out).toMatch(/matched by name and size only; their SHA-256 is not checked again/);
   });
 
   it("with --apply again creates no duplicate model or file", async () => {
