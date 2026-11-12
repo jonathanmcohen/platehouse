@@ -516,6 +516,33 @@ describe("embedded slice data", () => {
     );
     expect(badNozzle.slicedFor).toBeUndefined();
   });
+
+  // estimates.printer_id is part of a btree unique key, and a btree entry
+  // over 2704 bytes fails the insert, which failed the whole upload. A
+  // printer model id past 64 characters is no Bambu id (C12, N2S), so it
+  // reads as absent, like an empty one, and the file is stored (#142).
+  it("leaves slicedFor out when the printer model id is over 64 characters", async () => {
+    const at = (printerModelId: string) =>
+      mustRead(build3mf({ plates: [{ index: 1 }], slices: [slicedP1S(1, { printerModelId })] }));
+    const longest = "C".repeat(64);
+    expect((await at(longest)).slicedFor).toEqual({ printerModelId: longest, nozzle: 0.4 });
+    const over = await at("C".repeat(65));
+    expect(over.plates[0]?.sliced).toBe(true);
+    expect(over.slicedFor).toBeUndefined();
+    // Text that does not compress, a few KB of it, as the issue describes.
+    const noise = Array.from({ length: 4096 }, (_, i) =>
+      String.fromCharCode(33 + ((i * 7919) % 90)),
+    ).join("");
+    expect((await at(noise)).slicedFor).toBeUndefined();
+  });
+
+  it("counts the 64 after NUL is removed", async () => {
+    const printerModelId = `${"C".repeat(64)}\u0000`;
+    const project = await mustRead(
+      build3mf({ plates: [{ index: 1 }], slices: [slicedP1S(1, { printerModelId })] }),
+    );
+    expect(project.slicedFor).toEqual({ printerModelId: "C".repeat(64), nozzle: 0.4 });
+  });
 });
 
 describe("colours", () => {
