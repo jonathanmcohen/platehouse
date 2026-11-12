@@ -29,7 +29,10 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # Before any of that, each stage writes /etc/apt/apt.conf.d/80retries so apt
 # retries a failed download 10 times, not its default 3: snapshot.ubuntu.com
 # often answers 502 or 503 for longer than 3 retries last, and that failed CI
-# builds.
+# builds. The update against the snapshot runs with --error-on=any: apt-get
+# update only warns on an index it could not fetch and exits 0, so an outage
+# that outlasted the retries failed the build a command later with a
+# misleading "Unable to locate package" (issue #150).
 #
 # Both stages run Node, and the Node 26 linux-x64 binary links libatomic.so.1,
 # which the base image does not carry, so both install libatomic1 from the
@@ -47,7 +50,7 @@ RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acqui
  && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
- && apt-get update \
+ && apt-get update --error-on=any \
  && apt-get install -y --no-install-recommends ca-certificates openssl curl xz-utils unzip git libatomic1 \
  && rm -rf /var/lib/apt/lists/*
 
@@ -223,7 +226,7 @@ RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acqui
  && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
- && apt-get update \
+ && apt-get update --error-on=any \
  && apt-get install -y --no-install-recommends \
       ca-certificates openssl \
       time \

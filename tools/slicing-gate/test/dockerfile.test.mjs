@@ -350,3 +350,77 @@ test("the fetch stage copies check-libs.sh after its last download", () => {
   assert.ok(downloads.length >= 7, `the downloads: ${downloads.length}`);
   for (const { l, i } of downloads) assert.ok(i < copyAt, `download after the check-libs.sh COPY: ${l.slice(0, 100)}`);
 });
+
+// The two images' Dockerfiles: this gate's, and the slicer's, whose apt
+// stages follow it (apps/slicer/Dockerfile). These checks read both. The
+// gate's CI job runs them when tools/slicing-gate changes.
+const REPO = join(HERE, "..", "..");
+const DOCKERFILES = [
+  ["tools/slicing-gate/Dockerfile", join(HERE, "Dockerfile")],
+  ["apps/slicer/Dockerfile", join(REPO, "apps", "slicer", "Dockerfile")],
+];
+/** Every RUN of a Dockerfile, its line continuations joined. */
+const runsOf = (file) =>
+  readFileSync(file, "utf8")
+    .replace(/\\\n/g, " ")
+    .split("\n")
+    .filter((l) => /^RUN\b/.test(l));
+
+// Issue #148: snapshot.ubuntu.com answered GitHub's runners with 502 and 503
+// errors for hours (PR #147), so every RUN that runs apt-get update first
+// writes /etc/apt/apt.conf.d/80retries with Acquire::Retries "10". The
+// check that every update came after it was run by hand for PR #147; this
+// pins it, so a new or reworked apt stage cannot drop it.
+for (const [name, file] of DOCKERFILES) {
+  test(`${name}: every RUN that runs apt-get update writes 80retries first`, () => {
+    const aptRuns = runsOf(file).filter((r) => /\bapt-get update\b/.test(r));
+    assert.ok(aptRuns.length >= 2, `${name} has an apt stage before and after the build: ${aptRuns.length}`);
+    for (const run of aptRuns) {
+      const retries = run.search(/'Acquire::Retries "10";'[^&]*> \/etc\/apt\/apt\.conf\.d\/80retries\b/);
+      const update = run.search(/\bapt-get update\b/);
+      assert.ok(retries !== -1, `no 80retries with Acquire::Retries "10" in: ${run.slice(0, 100)}`);
+      assert.ok(retries < update, `80retries is written after the first apt-get update in: ${run.slice(0, 100)}`);
+    }
+  });
+
+  // Issue #150: apt-get update only warns on an index it could not fetch
+  // and exits 0, so an outage that outlasts the retries failed the build a
+  // command later with a misleading "Unable to locate package". The update
+  // against the snapshot runs with --error-on=any, so it fails there, with
+  // the server's error.
+  test(`${name}: every apt-get update after the snapshot is switched on runs with --error-on=any`, () => {
+    let checked = 0;
+    for (const run of runsOf(file)) {
+      const at = run.indexOf("APT::Snapshot");
+      if (at === -1) continue;
+      for (const m of run.slice(at).matchAll(/\bapt-get update\b[^&]*/g)) {
+        assert.match(m[0], /\s--error-on=any\b/, `in ${name}: ${m[0].trim()}`);
+        checked++;
+      }
+    }
+    assert.ok(checked >= 2, `${name}: snapshot updates checked: ${checked}`);
+  });
+}
+
+// Issue #153 item 5: Landlock's no-new-privileges covers a setuid helper
+// inside OpenSCAD's sandbox, but Orca runs outside it, and an Ubuntu install
+// script can leave a helper setuid when setcap is missing. The slicer's
+// runtime stage strips every setuid and setgid bit, as root, after its last
+// package and file is in place, and fails the build if any is left.
+test("apps/slicer/Dockerfile: the runtime stage strips setuid and setgid bits and checks none is left", () => {
+  const text = readFileSync(join(REPO, "apps", "slicer", "Dockerfile"), "utf8").replace(/\\\n/g, " ");
+  const lines = text.split("\n");
+  const runtime = lines.findLastIndex((l) => /^FROM\b/.test(l));
+  const user = lines.findIndex((l, i) => i > runtime && /^USER 10001$/.test(l));
+  assert.ok(runtime !== -1 && user > runtime, "the runtime stage switches to the slicer user");
+  const strip = lines.findIndex(
+    (l, i) => i > runtime && /^RUN\b/.test(l) && l.includes("-perm /6000") && l.includes("chmod a-s"),
+  );
+  assert.ok(strip !== -1 && strip < user, "a RUN before USER strips the bits");
+  assert.match(lines[strip], /find \/ -xdev -perm \/6000 -type f -exec chmod a-s/, "it strips them across the image filesystem");
+  assert.match(lines[strip], /need -z "\$\(find \/ -xdev -perm \/6000 -type f\)"/, "it fails the build if any is left");
+  const lastRootChange = lines.findLastIndex(
+    (l, i) => i > runtime && i < user && i !== strip && /^(RUN|COPY|ADD)\b/.test(l),
+  );
+  assert.ok(lastRootChange < strip, `a step after the strip could add one back: ${lines[lastRootChange]}`);
+});
