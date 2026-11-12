@@ -590,7 +590,11 @@ export function htmlToMarkdown(html: string | null | undefined): string {
   };
 
   const onTag = (closing: boolean, rawTag: string, attrs: string): void => {
-    const tag = rawTag.toLowerCase();
+    // A browser lowercases only A-Z in a tag name. toLowerCase also folds
+    // Unicode, and TAG lets non-ASCII into a name, so U+212A KELVIN SIGN
+    // would fold to k and make an unknown tag read as blockquote (PR #121
+    // review).
+    const tag = rawTag.replace(/[A-Z]/g, (c) => c.toLowerCase());
     if (DROP_CONTENT.has(tag)) {
       if (!attrs.trim().endsWith("/")) dropDepth = Math.max(0, dropDepth + (closing ? -1 : 1));
       return;
@@ -1062,6 +1066,13 @@ function escapeTextLineStart(line: string): string {
 // the scan can meet a > outside every value as ATTR reads them. A browser
 // ends the tag there, so nothing after it is an attribute, and the scan stops
 // (PR #121 review).
+//
+// The same mismatch for a quote that opens a value and never closes inside
+// the tag: ATTR's quoted forms fail, and its bare form takes the quote as an
+// ordinary character. A browser starts a quoted value there that runs past
+// the tag's > into the text after it, so nothing later is an attribute and
+// the link has no href. The bare form only starts with a quote when the
+// quoted forms failed, so that is the signal to stop (PR #121 review).
 function hrefOf(attrs: string): string | null {
   let at = 0;
   while (at < attrs.length) {
@@ -1076,7 +1087,9 @@ function hrefOf(attrs: string): string | null {
     ATTR.lastIndex = at;
     const m = ATTR.exec(attrs) as RegExpExecArray;
     at = ATTR.lastIndex;
-    if ((m[1] as string).toLowerCase() === "href") return m[2] ?? m[3] ?? m[4] ?? "";
+    const bare = m[4];
+    if (bare !== undefined && (bare.startsWith('"') || bare.startsWith("'"))) return null;
+    if ((m[1] as string).toLowerCase() === "href") return m[2] ?? m[3] ?? bare ?? "";
   }
   return null;
 }

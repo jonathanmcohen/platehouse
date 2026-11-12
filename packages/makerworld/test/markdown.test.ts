@@ -543,6 +543,12 @@ describe("htmlToMarkdown: ported cases", () => {
     ["a no-break space inside a name", '<a data-x\u00a0href="https://a.test/">t</a>'],
     ["a BOM inside a name", '<a data-x\ufeffhref="https://a.test/">t</a>'],
     ["a no-break space before the =", '<a href\u00a0="https://a.test/">t</a>'],
+    // A quote that opens a value and never closes inside the tag starts a
+    // quoted value that, in a browser, runs past the tag's > into the text
+    // after it, so no later href is an attribute of the link.
+    ["an unterminated double-quoted value before href", "<a b'c=\" d' href=https://a.test/>t</a>"],
+    ["an unterminated single-quoted value before href", '<a b"c=\' d" href=https://a.test/>t</a>'],
+    ["an unterminated quoted href value", "<a x'y href=\"https://a.test/ z'>t</a>"],
   ])("a link with no href attribute drops to its text: %s", (_name, html) => {
     expect(htmlToMarkdown(html)).toBe("t");
   });
@@ -589,6 +595,17 @@ describe("htmlToMarkdown: ported cases", () => {
     const out = htmlToMarkdown(html);
     expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
     expect(render(out)).not.toMatch(/<h[1-6]>/);
+  });
+
+  // A browser lowercases only A-Z in a tag name. JavaScript's toLowerCase
+  // also folds Unicode, and U+212A KELVIN SIGN folds to k, so a name holding
+  // it once read as blockquote and wrote a paragraph break.
+  it("a tag name is lowercased in ASCII only, so a Kelvin sign makes no blockquote", () => {
+    const name = "bloc\u212aquote";
+    const html = `<p>a<${name}>b</${name}>c</p>`;
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(out).toBe("abc");
   });
 
   it("a tag whose name only begins with script keeps its text, as a browser shows it", () => {
