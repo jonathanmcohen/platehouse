@@ -2,12 +2,14 @@
 // over HTTP, one heavy job (slice, render or STEP conversion) at a time with
 // 409 busy for the rest, the kill at SLICE_TIMEOUT_SECONDS, the body limits,
 // the request timeouts and the Orca arguments of the T1 recipe.
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { request } from "node:http";
@@ -813,6 +815,55 @@ describe("OpenSCAD and STEP", () => {
     writeFileSync(file, "0123456789");
     expect(readRenderOutput(file, 10)).toEqual({ ok: true, bytes: Buffer.from("0123456789") });
     expect(readRenderOutput(file, 9)).toEqual({ ok: false, size: 10 });
+  });
+
+  // Issue #153 item 2: code running inside OpenSCAD could replace its output
+  // with a symlink to any file the server can read, and the server, which is
+  // not sandboxed, would send that file back as the render. The output is
+  // opened without following a link, and anything but a regular file is
+  // refused unread; a FIFO is opened without blocking.
+  test("a render output that is a symlink, a FIFO or a folder is refused, not read", () => {
+    const dir = stubDir();
+    const secret = join(dir, "secret.txt");
+    writeFileSync(secret, "not for the client");
+    const link = join(dir, "output.stl");
+    symlinkSync(secret, link);
+    expect(readRenderOutput(link, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+      ok: false,
+      notRegular: true,
+    });
+    const fifo = join(dir, "output.png");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    expect(readRenderOutput(fifo, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+      ok: false,
+      notRegular: true,
+    });
+    const folder = join(dir, "folder.stl");
+    mkdirSync(folder);
+    expect(readRenderOutput(folder, MAX_RENDER_OUTPUT_BYTES)).toEqual({
+      ok: false,
+      notRegular: true,
+    });
+  });
+
+  test("scad/stl refuses an output OpenSCAD left as a symlink, and sends none of its target", async () => {
+    const s = setup();
+    const secret = join(s.stubs, "secret.txt");
+    writeFileSync(secret, "not for the client");
+    const lr = fakeLandrun(s.stubs, { kind: "symlink", target: secret });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await fetch(`${base}/v1/scad/stl`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "cube(10);",
+    });
+    expect(res.status).toBe(422);
+    const text = await res.text();
+    expect(text).not.toContain("not for the client");
+    const body = slicerContract.renderError.parse(JSON.parse(text));
+    expect(body.error).toBe("render_failed");
+    expect(body.message).toBe("OpenSCAD's STL output was not a regular file, so it was not read.");
+    expect(readdirSync(s.workDir)).toEqual([]);
   });
 
   test("scad/stl runs OpenSCAD through landrun and returns the STL", async () => {

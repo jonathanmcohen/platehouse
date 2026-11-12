@@ -4,16 +4,100 @@
 //   OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--", or it reads OpenSCAD's own -o as a
 //   landrun flag (run 3: "flag provided but not defined: -o").
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   LANDRUN_STRICT_ABI,
   landrunArgs,
   MAX_RENDER_OUTPUT_BYTES,
   MIN_LANDLOCK_ABI,
+  orphansOfInit,
   prlimitArgs,
   readLandlockAbi,
+  reapOrphans,
+  runsUnderTini,
   scadArgs,
 } from "../src/sandbox.js";
+
+// Issue #153 item 3: a program that calls setsid() leaves its job's process
+// group, so the kill at the time cap misses it, and it is re-parented to
+// tini (PID 1). After each job the server kills every process whose parent
+// is PID 1 other than itself. A process docker exec starts, the health
+// check included, has parent 0 and is left alone.
+describe("orphans re-parented to PID 1", () => {
+  /** A fake /proc holding one stat file per [pid, comm, ppid]. */
+  function proc(
+    entries: Array<[number, string, number]>,
+    extra: Record<string, string> = {},
+  ): string {
+    const dir = mkdtempSync(join(tmpdir(), "slicer-proc-"));
+    for (const [pid, comm, ppid] of entries) {
+      mkdirSync(join(dir, String(pid)));
+      writeFileSync(
+        join(dir, String(pid), "stat"),
+        `${pid} (${comm}) S ${ppid} ${pid} ${pid} 0 -1 4194560 0\n`,
+      );
+      writeFileSync(join(dir, String(pid), "comm"), `${comm}\n`);
+    }
+    for (const [name, text] of Object.entries(extra)) {
+      mkdirSync(join(dir, name), { recursive: true });
+      writeFileSync(join(dir, name, "stat"), text);
+    }
+    writeFileSync(join(dir, "uptime"), "1.00 1.00\n");
+    return dir;
+  }
+
+  const TREE: Array<[number, string, number]> = [
+    [1, "tini", 0],
+    [7, "node", 1], // the server
+    [42, "sleep", 1], // escaped its job with setsid
+    [43, "orca-slicer", 7], // a job's own program, still the server's child
+    [50, "node", 0], // the health check, started by docker exec
+    [51, "a) S 1 (b", 7], // a name built to look like parent 1
+  ];
+
+  test("lists every process whose parent is PID 1, except the server itself", () => {
+    expect(orphansOfInit(proc(TREE), 7)).toEqual([42]);
+  });
+
+  test("reads the parent after the last ) of the name, so a crafted name cannot fake it", () => {
+    expect(orphansOfInit(proc(TREE), 7)).not.toContain(51);
+  });
+
+  test("skips a stat it cannot read or parse, and names that are not process ids", () => {
+    const dir = proc(TREE, { "60": "garbage", self: "7 (node) S 1 7 7\n" });
+    expect(orphansOfInit(dir, 7)).toEqual([42]);
+  });
+
+  test("reapOrphans sends SIGKILL to each and returns their ids; a kill that fails is skipped", () => {
+    const dir = proc([...TREE, [44, "sleep", 1]]);
+    const killed: Array<[number, string]> = [];
+    const out = reapOrphans({
+      procDir: dir,
+      selfPid: 7,
+      kill: (pid, signal) => {
+        if (pid === 44) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        killed.push([pid, signal]);
+      },
+    });
+    expect(killed).toEqual([[42, "SIGKILL"]]);
+    expect(out).toEqual([42]);
+  });
+
+  test("runsUnderTini holds only on Linux, with the server's parent PID 1 named tini", () => {
+    const dir = proc(TREE);
+    expect(runsUnderTini({ procDir: dir, ppid: 1, platform: "linux" })).toBe(true);
+    expect(runsUnderTini({ procDir: dir, ppid: 2, platform: "linux" })).toBe(false);
+    expect(runsUnderTini({ procDir: dir, ppid: 1, platform: "darwin" })).toBe(false);
+    const other = proc([[1, "systemd", 0]]);
+    expect(runsUnderTini({ procDir: other, ppid: 1, platform: "linux" })).toBe(false);
+    expect(runsUnderTini({ procDir: join(other, "missing"), ppid: 1, platform: "linux" })).toBe(
+      false,
+    );
+  });
+});
 
 const DIR = "/work/0b5f4c2e-6a7d-4d1b-9a3e-2b7c1d9e8f00";
 const OPENSCAD = "/opt/openscad/AppRun";
@@ -53,9 +137,10 @@ describe("landrun arguments", () => {
 
   // Security review of PR #36 (issue #47): OpenSCAD may run code only from
   // its own tree, the multiarch library folder its libraries and Mesa's EGL
-  // drivers live in, and the ELF loader. No shell or other program: /usr/bin
+  // drivers live in, and the ELF loader. No shell or system command: /usr/bin
   // and /bin are gone, and so is /lib, which on Ubuntu 24.04 is a link to all
-  // of /usr/lib.
+  // of /usr/lib. (The multiarch folder still holds a few runnable helpers;
+  // sandbox.ts says why that is accepted, issue #153.)
   test("--rox is only the OpenSCAD tree, the multiarch libraries and the loader", () => {
     const { flags } = split(args);
     expect(values(flags, "--rox").sort()).toEqual(

@@ -54,7 +54,7 @@ import { z } from "zod";
 import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } from "./guard.js";
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
-import { runGroup } from "./sandbox.js";
+import { reapOrphans, runGroup, runsUnderTini } from "./sandbox.js";
 import { renderScad, type SandboxCheck, SCAD_INPUT, sandboxSelfTest } from "./scad.js";
 import { runStepWorker, STEP_INPUT } from "./step.js";
 
@@ -88,6 +88,13 @@ export interface SlicerConfig {
    */
   workMinFreeBytes: number;
   limits: Limits;
+  /**
+   * Kill every process re-parented to PID 1 once a job is released
+   * (reapOrphans in sandbox.ts, issue #153). loadConfig turns it on only
+   * where the server runs under tini as in the image (runsUnderTini), never
+   * on a host where PID 1 has children of its own.
+   */
+  reapOrphans?: boolean;
 }
 
 const seconds = (key: string) =>
@@ -175,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SlicerConfig {
     openscadVersion: e.OPENSCAD_VERSION,
     workMinFreeBytes: e.WORK_MIN_FREE_MIB * MIB,
     limits: LIMITS,
+    reapOrphans: runsUnderTini(),
   };
 }
 
@@ -441,6 +449,17 @@ export function createSlicer(config: SlicerConfig): Slicer {
         released = true;
         try {
           job.track.killNow();
+          // A program that called setsid() left the group killNow kills and
+          // was re-parented to tini; nothing of the job may outlive it, or a
+          // sleeping process holds /work files open until a restart.
+          if (config.reapOrphans) {
+            const reaped = reapOrphans();
+            if (reaped.length > 0) {
+              log(
+                `killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`,
+              );
+            }
+          }
           if (dir) removeJobDir(dir);
           if (holder === job) sweepJobDirs(dir);
         } finally {

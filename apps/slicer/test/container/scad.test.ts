@@ -172,6 +172,79 @@ describe("OpenSCAD in the image", () => {
     expect(r.stderr).toMatch(/Permission denied/);
   });
 
+  // Security review of PR #123 (issue #153 item 6): the /etc/passwd link
+  // above sits in a sibling folder that is denied anyway, so it cannot show
+  // that a link inside the job's own folder is followed to its target. This
+  // one is in the folder landrun gives read and write access to, and points
+  // at the probe outside it.
+  test("a link inside the job's own folder to a file outside it cannot be read under landrun", () => {
+    const setup = slicer.exec([
+      "sh",
+      "-c",
+      `ln -sf ${PROBE} ${SHELL_DIR}/inside-link.stl && printf 'import("inside-link.stl");\\n' > ${SHELL_DIR}/link.scad`,
+    ]);
+    expect(setup.code, setup.stderr).toBe(0);
+    const r = landrunInContainer([
+      "/opt/openscad/AppRun",
+      "--backend=manifold",
+      "-o",
+      `${SHELL_DIR}/link.stl`,
+      `${SHELL_DIR}/link.scad`,
+    ]);
+    expect(`${r.stdout}${r.stderr}`).toContain(CANNOT_OPEN);
+    // control: without landrun the same link opens and renders
+    const control = importWithoutSandbox(`${SHELL_DIR}/inside-link.stl`);
+    expect(control.stdout).not.toContain(CANNOT_OPEN);
+    expect(control.stdout).toContain("WROTE");
+  });
+
+  // Issue #153 item 3: a process that calls setsid() leaves its job's process
+  // group, so the kill at the time cap misses it, and it is re-parented to
+  // tini. The server kills every such process when a job is released. A
+  // setsid'd sleep started through docker exec stands for one: once its
+  // shell exits, its parent is PID 1, as an escaped OpenSCAD child's would
+  // be. A process docker exec starts directly has parent 0 and is not hit.
+  test("a process re-parented to PID 1 does not outlive the next job", async () => {
+    // The sleep writes its own pid (exec keeps it), whether setsid forked or not.
+    const started = slicer.exec([
+      "sh",
+      "-c",
+      `setsid sh -c 'echo $$ > /work/escapee.pid; exec sleep 600' </dev/null >/dev/null 2>&1 &
+       for i in $(seq 50); do [ -s /work/escapee.pid ] && break; sleep 0.1; done; cat /work/escapee.pid`,
+    ]);
+    const pid = started.stdout.trim();
+    expect(pid, started.stderr).toMatch(/^\d+$/);
+    const ppidOf = () =>
+      slicer
+        .exec([
+          "sh",
+          "-c",
+          `cat /proc/${pid}/stat 2>/dev/null | sed 's/.*) [A-Z] \\([0-9]*\\) .*/\\1/'`,
+        ])
+        .stdout.trim();
+    // control: it is alive, and its parent is tini
+    expect(ppidOf()).toBe("1");
+
+    const res = await post("/v1/scad/stl", "cube([1, 1, 1]);\n");
+    expect(await statusOf(res)).toBe("200");
+    let left = ppidOf();
+    for (let i = 0; i < 50 && left !== ""; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      left = ppidOf();
+    }
+    expect(left, `process ${pid} is still there`).toBe("");
+    // Other orphans may go with it, such as the listener the /dev/tcp test
+    // above left running through docker exec.
+    expect(slicer.logs()).toMatch(new RegExp(`left behind by the job: [0-9, ]*\\b${pid}\\b`));
+  });
+
+  // Issue #153 item 5: the image's build strips every setuid and setgid bit
+  // and fails if any is left; this checks the image as it runs.
+  test("no file in the image is setuid or setgid", () => {
+    const r = slicer.exec(["sh", "-c", "find / -xdev -perm /6000 -type f 2>/dev/null; echo done"]);
+    expect(r.stdout.trim()).toBe("done");
+  });
+
   // The job folders' tmpfs carries noexec, nosuid and nodev, as Hades mounts
   // it (Task 26 copies these options into compose); every test in this
   // directory runs the image on such a mount.
