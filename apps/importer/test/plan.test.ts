@@ -227,7 +227,7 @@ describe("Platehouse's limits", () => {
     expect(plan.create).toMatchObject({ caption: "c".repeat(2000), tags: ["t".repeat(100)] });
   });
 
-  it("counts characters as the server's validator does, by code point", () => {
+  it("counts characters in the create body as the server's validator does, by code point", () => {
     const tag = "\u{1F6A2}".repeat(100); // 100 code points, 200 UTF-16 units
     const plan = planModel(source({ tags: [tag] }), undefined);
     expect(plan.create?.tags).toEqual([tag]);
@@ -247,7 +247,9 @@ describe("Platehouse's limits", () => {
     ]);
   });
 
-  it("sends at most 100 tags and 100 collections, leaving out the rest with the reason", () => {
+  it("sends 100 tags and 100 collections in the create, and adds the rest with PUTs", () => {
+    // NEW_MODEL's maxItems caps only the create body; the tag and collection
+    // PUTs have no per-model cap, so nothing past the first 100 is left out.
     const many = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
     const plan = planModel(
       source({ tags: many("t", 103), collections: many("c", 101) }),
@@ -255,9 +257,39 @@ describe("Platehouse's limits", () => {
     );
     expect(plan.create?.tags).toEqual(many("t", 100));
     expect(plan.create?.collections).toEqual(many("c", 100));
+    expect(plan.tags).toEqual(["t100", "t101", "t102"]);
+    expect(plan.collections).toEqual(["c100"]);
+    expect(plan.leftOut).toEqual([]);
+  });
+
+  it("leaves out a label too long for a URL path, past the first 100 on a new model", () => {
+    const many = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+    const wide = "\u{1F6A2}".repeat(51); // 51 code points, 102 UTF-16 units
+    const plan = planModel(source({ tags: [...many("t", 100), wide, "t100"] }), undefined);
+    expect(plan.create?.tags).toEqual(many("t", 100));
+    expect(plan.tags).toEqual(["t100"]);
     expect(plan.leftOut).toEqual([
-      "3 tags left out: Platehouse takes at most 100 on a new model (t100, t101, t102)",
-      "1 collection left out: Platehouse takes at most 100 on a new model (c100)",
+      expect.stringMatching(
+        /^tag \u{1F6A2}{40}\.\.\. left out: 102 UTF-16 units in a URL path, .* at most 100$/u,
+      ),
+    ]);
+  });
+
+  it("leaves out a tag or collection an existing model lacks that is over 100 UTF-16 units", () => {
+    // The tag and collection PUTs carry the label in the URL path, and
+    // Platehouse's router (find-my-way maxParamLength 100) counts the decoded
+    // parameter in UTF-16 units, answering 414 past 100.
+    const wide = "\u{1F6A2}".repeat(51); // 51 code points, 102 UTF-16 units
+    const fits = "\u{1F6A2}".repeat(50); // 100 UTF-16 units
+    const plan = planModel(
+      source({ tags: ["boat", wide, fits], collections: [`g${wide}`] }),
+      existing(),
+    );
+    expect(plan.tags).toEqual([fits]);
+    expect(plan.collections).toEqual([]);
+    expect(plan.leftOut).toEqual([
+      expect.stringMatching(/^tag .* left out: 102 UTF-16 units in a URL path, .* at most 100$/),
+      expect.stringMatching(/^collection g.* left out: 103 UTF-16 units in a URL path/),
     ]);
   });
 

@@ -11,6 +11,7 @@
 //   GET  /api/v1/files/:id
 //   PUT  /api/v1/models/:id/tags/:tag    204 | 404 | 400 a tag outside LABEL
 //   PUT  /api/v1/collections/:name/models/:id   204 | 404 | 400 a name outside LABEL
+//   (either PUT: 414 for a path parameter over the router's maxParamLength)
 //   POST /api/v1/uploads                 tus 1.0.0 creation: 201 + Location,
 //                                        400 no filename, 415 unsupported
 //                                        type, 404 modelId not live
@@ -36,6 +37,28 @@ function validLabel(v: unknown): boolean {
 
 const badLabel = () =>
   HttpResponse.json({ error: "bad_request", message: "bad label" }, { status: 400 });
+
+/**
+ * Fastify's router (find-my-way, default maxParamLength 100, not overridden
+ * in apps/server/src/app.ts) measures each path parameter after decoding, in
+ * UTF-16 units with String.length, and answers 414 before any hook runs, so
+ * before the bearer check. MSW hands the params over decoded too.
+ */
+const MAX_PARAM_LENGTH = 100;
+
+function overLongParam(request: Request, params: Record<string, unknown>): Response | null {
+  const over = Object.values(params).some((v) => String(v).length > MAX_PARAM_LENGTH);
+  if (!over) return null;
+  return HttpResponse.json(
+    {
+      error: "URI Too Long",
+      code: "FST_ERR_MAX_PARAM_LENGTH",
+      message: `'${new URL(request.url).pathname}' is exceeding the max param length`,
+      statusCode: 414,
+    },
+    { status: 414 },
+  );
+}
 
 export interface StubPlatehouseModel {
   id: string;
@@ -292,6 +315,8 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
     }),
 
     http.put(`${api}/models/:id/tags/:tag`, ({ request, params }) => {
+      const tooLong = overLongParam(request, params);
+      if (tooLong !== null) return tooLong;
       if (!authorised(request)) return unauthorised();
       if (!validLabel(String(params.tag))) return badLabel();
       const m = live(String(params.id));
@@ -301,6 +326,8 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
     }),
 
     http.put(`${api}/collections/:name/models/:id`, ({ request, params }) => {
+      const tooLong = overLongParam(request, params);
+      if (tooLong !== null) return tooLong;
       if (!authorised(request)) return unauthorised();
       if (!validLabel(String(params.name))) return badLabel();
       const m = live(String(params.id));

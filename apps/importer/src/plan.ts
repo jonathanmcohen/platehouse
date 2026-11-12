@@ -27,6 +27,17 @@
 //   limit is left out with the reason in leftOut, and the rest of the model
 //   still goes. A name or externalRef over its limit cannot be left out, so
 //   the model is refused with the reason, and only when it would be made.
+// - NEW_MODEL takes at most 100 tags and 100 collections in the create body,
+//   but the tag and collection PUTs have no per-model cap. So a new model
+//   gets its first 100 of each in the create and the rest with PUTs in the
+//   same run (they ride in tags and collections), and nothing is left out
+//   for the count; a re-run then finds nothing missing.
+// - A PUT carries its label in the URL path, where Platehouse's router
+//   (Fastify's find-my-way, default maxParamLength 100, not overridden in
+//   apps/server/src/app.ts) measures it after decoding in UTF-16 units and
+//   answers 414 past 100, before LABEL is checked. So a label sent by PUT
+//   must also be at most 100 UTF-16 units; a longer one is left out with the
+//   reason. The create body is not affected: Ajv counts code points there.
 import type { NewModel, PlatehouseFile, PlatehouseModel } from "./platehouse.js";
 
 export interface SourceFile {
@@ -61,9 +72,9 @@ export interface ModelPlan {
   refused: string | null;
   /** Each value left out because it is over Platehouse's limit, with the reason. */
   leftOut: string[];
-  /** Tags an existing model lacks. */
+  /** Tags to add by PUT: those an existing model lacks, or a new model's past the first 100. */
   tags: string[];
-  /** Collections an existing model lacks. */
+  /** Collections to add by PUT: as tags. */
   collections: string[];
   files: FilePlan[];
 }
@@ -99,6 +110,8 @@ export const LIMITS = {
   externalRef: 300,
   label: 100,
   labels: 100,
+  /** Fastify's maxParamLength: a label in a PUT's path, in UTF-16 units. */
+  pathParam: 100,
 } as const;
 
 /** Length as JSON Schema's maxLength counts it: in code points, not UTF-16 units. */
@@ -119,17 +132,20 @@ function fitting(labels: string[], what: "tag" | "collection", leftOut: string[]
   });
 }
 
-/** At most 100 labels on a new model; the rest go to leftOut. */
-function capped(labels: string[], what: "tag" | "collection", leftOut: string[]): string[] {
-  if (labels.length <= LIMITS.labels) return labels;
-  const rest = labels.slice(LIMITS.labels);
-  const names = rest.slice(0, 5).map(shown).join(", ") + (rest.length > 5 ? ", ..." : "");
-  const noun = rest.length === 1 ? what : `${what}s`;
-  leftOut.push(
-    `${rest.length} ${noun} left out: Platehouse takes at most ${LIMITS.labels} ` +
-      `on a new model (${names})`,
-  );
-  return labels.slice(0, LIMITS.labels);
+/**
+ * Labels that also fit a PUT's URL path: at most 100 UTF-16 units once
+ * decoded, as the router measures them (String.length); each one that does
+ * not goes to leftOut.
+ */
+function fittingPath(labels: string[], what: "tag" | "collection", leftOut: string[]): string[] {
+  return labels.filter((label) => {
+    if (label.length <= LIMITS.pathParam) return true;
+    leftOut.push(
+      `${what} ${shown(label)} left out: ${label.length} UTF-16 units in a URL path, ` +
+        `Platehouse takes at most ${LIMITS.pathParam}`,
+    );
+    return false;
+  });
 }
 
 /** Each label once, the first spelling winning, compared without case. */
@@ -152,8 +168,12 @@ function lacking(
   leftOut: string[],
 ): string[] {
   const held = new Set(have.map((x) => x.toLowerCase()));
-  return fitting(
-    unique(wanted).filter((x) => !held.has(x.toLowerCase())),
+  return fittingPath(
+    fitting(
+      unique(wanted).filter((x) => !held.has(x.toLowerCase())),
+      what,
+      leftOut,
+    ),
     what,
     leftOut,
   );
@@ -172,7 +192,24 @@ function refusal(model: NewModel): string | null {
   return null;
 }
 
-function newModel(source: SourceModel, leftOut: string[]): NewModel {
+/** A new model's labels: the first 100 go in the create, the rest by PUT. */
+function split(
+  labels: string[],
+  what: "tag" | "collection",
+  leftOut: string[],
+): { body: string[]; put: string[] } {
+  const all = fitting(unique(labels), what, leftOut);
+  return {
+    body: all.slice(0, LIMITS.labels),
+    put: fittingPath(all.slice(LIMITS.labels), what, leftOut),
+  };
+}
+
+/** The model to create, and the tags and collections to add after it by PUT. */
+function newModel(
+  source: SourceModel,
+  leftOut: string[],
+): { model: NewModel; tags: string[]; collections: string[] } {
   const model: NewModel = { name: source.name, externalRef: externalRefFor(source.id) };
   const optional = [
     ["caption", "caption", source.caption, LIMITS.caption],
@@ -186,15 +223,11 @@ function newModel(source: SourceModel, leftOut: string[]): NewModel {
     if (n > limit) leftOut.push(`${label} left out: ${over(n, limit)}`);
     else model[key] = value;
   }
-  const tags = capped(fitting(unique(source.tags), "tag", leftOut), "tag", leftOut);
-  if (tags.length > 0) model.tags = tags;
-  const collections = capped(
-    fitting(unique(source.collections), "collection", leftOut),
-    "collection",
-    leftOut,
-  );
-  if (collections.length > 0) model.collections = collections;
-  return model;
+  const tags = split(source.tags, "tag", leftOut);
+  if (tags.body.length > 0) model.tags = tags.body;
+  const collections = split(source.collections, "collection", leftOut);
+  if (collections.body.length > 0) model.collections = collections.body;
+  return { model, tags: tags.put, collections: collections.put };
 }
 
 function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
@@ -236,13 +269,13 @@ function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
 export function planModel(source: SourceModel, existing: PlatehouseModel | undefined): ModelPlan {
   const leftOut: string[] = [];
   if (existing === undefined) {
-    const create = newModel(source, leftOut);
+    const { model: create, tags, collections } = newModel(source, leftOut);
     return {
       create,
       refused: refusal(create),
       leftOut,
-      tags: [],
-      collections: [],
+      tags,
+      collections,
       files: planFiles(source.files, []),
     };
   }

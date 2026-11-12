@@ -473,7 +473,8 @@ describe("text from Manyfold", () => {
 });
 
 // POST /api/v1/models and the tag and collection PUTs refuse a value over the
-// server's limits (apps/server/src/api/v1.ts NEW_MODEL and LABEL) with 400.
+// server's limits (apps/server/src/api/v1.ts NEW_MODEL and LABEL) with 400,
+// and the PUTs a label over the router's maxParamLength with 414.
 describe("Platehouse's limits", () => {
   const auth = { Authorization: `Bearer ${FAKE_BEARER}` };
 
@@ -505,9 +506,85 @@ describe("Platehouse's limits", () => {
     const id = byRef(s, "x").id;
     const put = (path: string) =>
       fetch(`${PLATEHOUSE}/api/v1${path}`, { method: "PUT", headers: auth });
-    expect((await put(`/models/${id}/tags/${"t".repeat(101)}`)).status).toBe(400);
-    expect((await put(`/collections/${"g".repeat(101)}/models/${id}`)).status).toBe(400);
+    // A label in the path is measured by the router before LABEL is checked:
+    // past 100 is the router's 414; a blank one within it is LABEL's 400.
+    expect((await put(`/models/${id}/tags/${"t".repeat(101)}`)).status).toBe(414);
+    expect((await put(`/collections/${"g".repeat(101)}/models/${id}`)).status).toBe(414);
+    expect((await put(`/models/${id}/tags/%20`)).status).toBe(400);
+    expect((await put(`/collections/%20/models/${id}`)).status).toBe(400);
     expect((await put(`/models/${id}/tags/${"t".repeat(100)}`)).status).toBe(204);
+    // The router counts a decoded path parameter in UTF-16 units, not code points.
+    const wide = encodeURIComponent("\u{1F6A2}".repeat(51));
+    expect((await put(`/models/${id}/tags/${wide}`)).status).toBe(414);
+    expect((await put(`/collections/${wide}/models/${id}`)).status).toBe(414);
+    const fits = encodeURIComponent("\u{1F6A2}".repeat(50));
+    expect((await put(`/models/${id}/tags/${fits}`)).status).toBe(204);
+  });
+
+  it("--apply gives a new model all of its 101 or more tags, and a second --apply skips it", async () => {
+    const lib = library();
+    const m1 = lib.models[0];
+    if (m1 === undefined) throw new Error("unreachable");
+    const many = Array.from({ length: 103 }, (_, i) => `k${i}`);
+    m1.keywords = many;
+    const s = setup(lib);
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect([...byRef(s, "m1").tags].sort()).toEqual([...many].sort());
+    const first = r.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(first?.outcome).toBe("imported");
+    expect(first?.leftOut).toBeUndefined();
+    expect(r.stdout.join("\n")).not.toMatch(/values left out/);
+    const again = await s.run(["--apply"]);
+    expect(again.code).toBe(0);
+    const second = again.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(second).toMatchObject({
+      outcome: "skipped",
+      reason: "already in Platehouse, nothing missing",
+    });
+  });
+
+  it("adds the tags past the first 100 to a model read back after a lost create answer", async () => {
+    const lib = library();
+    const m1 = lib.models[0];
+    if (m1 === undefined) throw new Error("unreachable");
+    const many = Array.from({ length: 101 }, (_, i) => `k${i}`);
+    m1.keywords = many;
+    const s = setup(lib);
+    server.use(
+      http.post(
+        `${PLATEHOUSE}/api/v1/models`,
+        async ({ request }) => {
+          s.platehouse.createModel((await request.json()) as Record<string, unknown>);
+          return HttpResponse.error();
+        },
+        { once: true },
+      ),
+    );
+    expect((await s.run(["--apply"])).code).toBe(0);
+    expect([...byRef(s, "m1").tags].sort()).toEqual([...many].sort());
+    const again = await s.run(["--apply"]);
+    const second = again.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(second?.outcome).toBe("skipped");
+  });
+
+  it("a re-run leaves out a tag too long for a URL path, rather than failing the model on a 414", async () => {
+    const lib = library();
+    const s = setup(lib);
+    expect((await s.run(["--apply"])).code).toBe(0);
+    const m1 = lib.models[0];
+    if (m1 === undefined) throw new Error("unreachable");
+    const wide = "\u{1F6A2}".repeat(51); // 51 code points, 102 UTF-16 units
+    m1.keywords = ["boat", "calibration", "dock", wide];
+    const again = await s.run(["--apply"]);
+    expect(again.code).toBe(0);
+    expect([...byRef(s, "m1").tags].sort()).toEqual(["boat", "calibration", "dock"]);
+    const result = again.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(result?.outcome).toBe("imported");
+    expect(result?.reason).toMatch(/left out: 102 UTF-16 units in a URL path/);
+    expect(
+      platehouseCalls().filter((c) => c.startsWith("PUT") && c.includes("%F0%9F%9A%A2")),
+    ).toEqual([]);
   });
 
   it("--apply makes a model without the values over them, keeps the rest and says what it left out", async () => {
