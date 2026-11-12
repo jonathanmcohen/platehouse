@@ -494,6 +494,199 @@ describe("htmlToMarkdown: ported cases", () => {
     ).toBe("t u v");
   });
 
+  // The address is read from the attribute named exactly href. The first
+  // href= anywhere in the tag once won, so an attribute whose name only ends
+  // in href (TinyMCE writes data-mce-href) or an href= inside another
+  // attribute's quoted value linked to the wrong address (issue #28).
+  it.each([
+    [
+      "an attribute whose name ends in href, before href",
+      '<a data-mce-href="https://a.test/" href="https://b.test/">t</a>',
+    ],
+    ["data-href before href", "<a data-href='https://a.test/' href=https://b.test/>t</a>"],
+    [
+      "href= inside another attribute's quoted value",
+      '<a title="x href=https://a.test/ y" href="https://b.test/">t</a>',
+    ],
+    [
+      "href= inside a single-quoted value",
+      "<a title='href=\"https://a.test/\"' href='https://b.test/'>t</a>",
+    ],
+    ["an upper-case HREF", '<a class="x" HREF="https://b.test/">t</a>'],
+    [
+      "two href attributes: the first wins, as in a browser",
+      '<a href="https://b.test/" href="https://a.test/">t</a>',
+    ],
+    ["spaces around the =", '<a target=_blank href = "https://b.test/">t</a>'],
+    // A browser starts an attribute name with a stray =, so this name is
+    // "=href", not href.
+    [
+      "an attribute named =href before href",
+      '<a =href="https://a.test/" href="https://b.test/">t</a>',
+    ],
+  ])("a link's address comes from its href attribute: %s", (_name, html) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe("[t](https://b.test/)");
+    expect(render(out)).toBe(para('<a href="https://b.test/">t</a>'));
+  });
+
+  it.each([
+    ["no href at all", '<a data-mce-href="https://a.test/">t</a>'],
+    ["href only inside a value", '<a title="href=https://a.test/">t</a>'],
+    ["href with no value", '<a href title="https://a.test/">t</a>'],
+    // A browser splits attributes only on tab, LF, FF, CR and space, so a
+    // no-break space or a BOM is part of the name (PR #121 review).
+    ["a no-break space inside a name", '<a data-x\u00a0href="https://a.test/">t</a>'],
+    ["a BOM inside a name", '<a data-x\ufeffhref="https://a.test/">t</a>'],
+    ["a no-break space before the =", '<a href\u00a0="https://a.test/">t</a>'],
+  ])("a link with no href attribute drops to its text: %s", (_name, html) => {
+    expect(htmlToMarkdown(html)).toBe("t");
+  });
+
+  // A stray quote in a name or a bare value is an ordinary character to a
+  // browser, which ends the tag at the first > outside a quoted value, so an
+  // href after it is not an attribute of the link and the text after that >
+  // shows. A quote that opens a value straight after an = and never closes
+  // runs, in a browser, past the tag's > to the end, so no later href is an
+  // attribute either; the converter does not hide the rest of the
+  // description, it keeps the tag's markup as text. Either way there is no
+  // link (PR #121 review). The converter once paired every quote after a tag
+  // name, so each of these read as one tag and wrote only "t".
+  it.each([
+    [
+      "an href after a > that ends the tag",
+      '<a x"y>z" href="https://a.test/">t</a>',
+      'z" href="https://a.test/"\\>t',
+    ],
+    [
+      "an href after a > after a bare value",
+      "<a x=y'>z' href=https://a.test/>t</a>",
+      "z' href=https://a.test/\\>t",
+    ],
+    [
+      "an unterminated double-quoted value before href",
+      "<a b'c=\" d' href=https://a.test/>t</a>",
+      "\\<a b'c=\" d' href=https://a.test/\\>t",
+    ],
+    [
+      "an unterminated single-quoted value before href",
+      '<a b"c=\' d" href=https://a.test/>t</a>',
+      '\\<a b"c=\' d" href=https://a.test/\\>t',
+    ],
+    [
+      "an unterminated quoted href value",
+      "<a x'y href=\"https://a.test/ z'>t</a>",
+      "\\<a x'y href=\"https://a.test/ z'\\>t",
+    ],
+  ])("a stray quote before href makes no link: %s", (_name, html, text) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(text);
+    expect(render(out)).not.toMatch(/<a /);
+  });
+
+  // A browser's tag name runs to HTML whitespace, / or >, so <a-x>, <a:x> and
+  // <a"q"> are other elements, not anchors, and <ul-x> or <h2:x> is no list
+  // or heading. The converter once ended the name at the first character that
+  // was not a letter or digit, so each of these acted as the element its name
+  // began with (issue #131). Each is now an unknown element: its tags are
+  // dropped and its text stays, exactly as for a <span>.
+  it.each([
+    ["a hyphen after a", '<p><a-x href="https://e.test/">t</a-x></p>', "<p><span>t</span></p>"],
+    ["a colon after a", '<p><a:x href="https://e.test/">t</a:x></p>', "<p><span>t</span></p>"],
+    ["a quote after a", '<p><a"q" href="https://e.test/">t</a></p>', "<p><span>t</span></p>"],
+    ["upper case", '<p><A-X HREF="https://e.test/">t</A-X></p>', "<p><span>t</span></p>"],
+  ])("a tag whose name only begins with a makes no link: %s", (_name, html, asSpan) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan));
+    expect(out).toBe("t");
+    expect(render(out)).not.toMatch(/<a /);
+  });
+
+  const asSpan = (html: string, name: string): string =>
+    html.replaceAll(`<${name}>`, "<span>").replaceAll(`</${name}>`, "</span>");
+
+  // Each would open a list nested in the item; as an unknown element it opens
+  // none, so its item is the outer list's next item.
+  it.each([
+    ["ul-x", "ul", "<ul><li>a<ul-x><li>b</li></ul-x>c</li></ul>"],
+    ["ul:x", "ul", "<ul><li>a<ul:x><li>b</li></ul:x>c</li></ul>"],
+    ["ol:x", "ol", "<ol><li>a<ol:x><li>b</li></ol:x>c</li><li>d</li></ol>"],
+    ['ol"q"', "ol", '<ol><li>a<ol"q"><li>b</li></ol"q">c</li><li>d</li></ol>'],
+  ])("a tag whose name only begins with a list name opens no list: %s", (name, list, html) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(render(out).match(new RegExp(`<${list}>`, "g"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["h2:x", "<p>x</p><h2:x>Title</h2:x><p>y</p>"],
+    ["h1-x", "<p>x</p><h1-x>Title</h1-x><p>y</p>"],
+    ['h3"q"', '<p>x</p><h3"q">Title</h3"q"><p>y</p>'],
+  ])("a tag whose name only begins with a heading name is no heading: %s", (name, html) => {
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(render(out)).not.toMatch(/<h[1-6]>/);
+  });
+
+  // A quote in a tag name is part of the name, and a browser opens a quoted
+  // value only straight after an =, so the quote after y below belongs to the
+  // attribute name y" and the tag ends at its first >. The converter once
+  // paired every quote it met after the name, so an odd number of quotes in a
+  // name made the tag fail and its markup show as text, or run past its real
+  // > to a later one and hide the text between (PR #121 review).
+  it.each([
+    ["an odd number of quotes in the name", '<p>a<span"x y">b</span>c</p>', "abc"],
+    ["an odd number of quotes in an end tag", '<p>a<span>b</span"x y">c</p>', "abc"],
+    ["inch marks after the tag", '<p>a<span"x y">5" tall > 3" wide</span>c</p>', null],
+  ])("a quote in a tag name ends the tag where a browser does: %s", (_name, html, text) => {
+    const out = htmlToMarkdown(html);
+    const plain = html.replaceAll('<span"x y">', "<span>").replaceAll('</span"x y">', "</span>");
+    expect(out).toBe(htmlToMarkdown(plain));
+    if (text !== null) expect(out).toBe(text);
+    expect(out).not.toContain("span");
+  });
+
+  // A browser lowercases only A-Z in a tag name. JavaScript's toLowerCase
+  // also folds Unicode, and U+212A KELVIN SIGN folds to k, so a name holding
+  // it once read as blockquote and wrote a paragraph break.
+  it("a tag name is lowercased in ASCII only, so a Kelvin sign makes no blockquote", () => {
+    const name = "bloc\u212aquote";
+    const html = `<p>a<${name}>b</${name}>c</p>`;
+    const out = htmlToMarkdown(html);
+    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(out).toBe("abc");
+  });
+
+  it("a tag whose name only begins with script keeps its text, as a browser shows it", () => {
+    expect(htmlToMarkdown("<p>a<script-x>b</script-x>c</p>")).toBe("abc");
+  });
+
+  it.each([
+    ["a tab", '<a\thref="https://b.test/">t</a>'],
+    ["a line feed", '<a\nhref="https://b.test/">t</a>'],
+    ["a form feed", '<a\fhref="https://b.test/">t</a>'],
+    ["a carriage return", '<a\rhref="https://b.test/">t</a>'],
+    ["a slash", '<a/href="https://b.test/">t</a>'],
+  ])("a tag name ended by %s is still the element", (_name, html) => {
+    expect(htmlToMarkdown(html)).toBe("[t](https://b.test/)");
+  });
+
+  it("a heading or list whose name is ended by > is still structure", () => {
+    const out = htmlToMarkdown("<h2>T</h2><ul><li>a</li></ul>");
+    expect(render(out)).toBe("<h2>T</h2>\n<ul>\n<li>a</li>\n</ul>\n");
+  });
+
+  it("a > inside a quoted value does not end the attribute scan", () => {
+    const out = htmlToMarkdown("<a title='a>b' href=\"https://b.test/\">t</a>");
+    expect(out).toBe("[t](https://b.test/)");
+  });
+
+  it("a no-break space inside a bare href value stays in the address", () => {
+    const out = htmlToMarkdown("<a href=https://b.test/a\u00a0b>t</a>");
+    expect(out).toBe("[t](https://b.test/a%C2%A0b)");
+    expect(render(out)).toBe(para('<a href="https://b.test/a%C2%A0b">t</a>'));
+  });
+
   it("htmlToMarkdown: image-only input gives an empty string", () => {
     expect(
       htmlToMarkdown('<p><img src="https://example.com/a.png" alt="a"></p><p>&nbsp;</p>'),
@@ -1408,6 +1601,27 @@ describe("a close tag with nothing of its kind open is ignored", () => {
       "<ul>\n<li>ab</li>\n<li>c</li>\n</ul>\n",
     ],
     ["a </ul> with no list open", "<p>a</ul>b</p>", "ab", para("ab")],
+    // A </table> with no table open wrote a paragraph break, which ended the
+    // list it sat in (issue #48).
+    [
+      "a </table> in an ordered item",
+      "<ol><li>a</table>b</li><li>c</li></ol>",
+      "1. ab\n2. c",
+      "<ol>\n<li>ab</li>\n<li>c</li>\n</ol>\n",
+    ],
+    [
+      "a </table> in an unordered item",
+      "<ul><li>a</table>b</li><li>c</li></ul>",
+      "- ab\n- c",
+      "<ul>\n<li>ab</li>\n<li>c</li>\n</ul>\n",
+    ],
+    ["a </table> in a paragraph", "<p>a</table>b</p>", "ab", para("ab")],
+    [
+      "a </table> after a table has closed",
+      "<ol><li>a<table><tr><td>t</td></tr></table></table>b</li><li>c</li></ol>",
+      null,
+      null,
+    ],
   ])("%s", (_name, html, expected, rendered) => {
     const out = htmlToMarkdown(html);
     if (expected !== null) expect(out).toBe(expected);
@@ -1425,6 +1639,120 @@ describe("a close tag with nothing of its kind open is ignored", () => {
     expect(out).toBe("- a\n  1. bc\n  2. d\n- e");
     expect(render(out)).toBe(
       "<ul>\n<li>a\n<ol>\n<li>bc</li>\n<li>d</li>\n</ol>\n</li>\n<li>e</li>\n</ul>\n",
+    );
+  });
+
+  // A table is a scope boundary: a browser ignores a </ul> or </ol> in it
+  // that closes no list opened inside it. In a table inside a list item of
+  // the same type, the converter closed that outer list instead, which split
+  // the table and ended the list (issue #43). The close is now ignored, so
+  // the output is what it would be without it.
+  // Each place takes the stray close (or "" for the same input without it)
+  // and the type of list the case is about. In a list, the last item holds a
+  // nested list, which stays nested only while the outer list is still open:
+  // a list popped by the stray close once wrote that item with no list
+  // behind it, which in an unordered list looked the same until then.
+  const TABLE_STRAY_PLACES: Array<[string, (close: string, list: string) => string]> = [
+    ["between rows", (c) => `<table><tr><td>a</td></tr>${c}<tr><td>b</td></tr></table>`],
+    [
+      "in a row, after a cell",
+      (c) => `<table><tr><td>a</td>${c}<td>x</td></tr><tr><td>b</td></tr></table>`,
+    ],
+    [
+      "in a row, before its first cell",
+      (c) => `<table><tr><td>a</td></tr><tr>${c}<td>b</td></tr></table>`,
+    ],
+    [
+      "after the cell its list opened in",
+      (c, list) => `<table><tr><td>a</td></tr><tr><td><${list}><li>b</td>${c}</tr></table>`,
+    ],
+  ];
+  const LAST_ITEM = "<li>j<ul><li>k</li></ul></li>";
+  const TABLE_STRAY_CASES = TABLE_STRAY_PLACES.flatMap(([place, make]) =>
+    ["</ul>", "</ol>"].flatMap((close) => {
+      const same = close === "</ol>" ? "ol" : "ul";
+      const other = close === "</ol>" ? "ul" : "ol";
+      return [
+        [`${close} ${place}, top-level table`, make(close, same), make("", same)],
+        [
+          `${close} ${place}, table in a list item of the same type`,
+          `<${same}><li>i${make(close, same)}</li>${LAST_ITEM}</${same}>`,
+          `<${same}><li>i${make("", same)}</li>${LAST_ITEM}</${same}>`,
+        ],
+        [
+          `${close} ${place}, table in a list item of the other type`,
+          `<${other}><li>i${make(close, same)}</li>${LAST_ITEM}</${other}>`,
+          `<${other}><li>i${make("", same)}</li>${LAST_ITEM}</${other}>`,
+        ],
+      ] as Array<[string, string, string]>;
+    }),
+  );
+  it.each(TABLE_STRAY_CASES)(
+    "a stray list close in a table is ignored: %s",
+    (_name, html, without) => {
+      const out = htmlToMarkdown(html);
+      expect(out).toBe(htmlToMarkdown(without));
+      const r = render(out);
+      expect(r.match(/<table>/g)).toHaveLength(1);
+      expect(r).toMatch(/<td>(?:- |1\. )?b<\/td>/);
+      expect(renderWithImages(out)).not.toMatch(/<img/);
+      if (html.startsWith("<ul>") || html.startsWith("<ol>")) {
+        const list = html.slice(1, 3);
+        // One outer list, plus the nested <ul> in its last item.
+        expect(r.match(new RegExp(`<${list}>`, "g"))).toHaveLength(list === "ul" ? 2 : 1);
+        // The last item is still an item of that list, its nested list in it.
+        expect(r).toMatch(
+          new RegExp(
+            `<li>\\n?(?:<p>)?j(?:</p>)?\\n<ul>\\n<li>k</li>\\n</ul>\\n</li>\\n</${list}>\\n$`,
+          ),
+        );
+        // The table stays inside the first item.
+        expect(r.indexOf("<table>")).toBeLessThan(r.indexOf("j"));
+      }
+    },
+  );
+
+  // A heading a table or list ended before its close tag kept its "ended"
+  // mark, so a stray heading close in a later list item still wrote a
+  // paragraph break: the rest of that item went to column 0, the list ended,
+  // and the next numbered item rendered as text (issue #46).
+  it.each([
+    [
+      "a table ended the heading",
+      "<ol><li>a<h2>x<table><tr><td>t</td></tr></table></li><li>b</h2>c</li><li>d</li></ol>",
+    ],
+    [
+      "a nested list ended the heading",
+      "<ol><li><h2>x<ul><li>y</li></ul></li><li>a</h3>b</li><li>d</li></ol>",
+    ],
+    [
+      "the heading's item closed and a later list holds the close",
+      "<ol><li>a<h2>x<table><tr><td>t</td></tr></table></li></ol><ol><li>b</h2>c</li><li>d</li></ol>",
+    ],
+  ])("a stray heading close after an unclosed heading keeps a later list: %s", (_name, html) => {
+    const out = htmlToMarkdown(html);
+    const r = render(out);
+    expect(renderWithImages(out)).not.toMatch(/<img/);
+    // "d" is still an item, the last of its ordered list.
+    expect(r).toMatch(/<li>(?:\n<p>)?d(?:<\/p>\n)?<\/li>\n<\/ol>\n$/);
+    // The item that holds the stray close keeps its text together.
+    expect(r).not.toMatch(/<p>c<\/p>|<p>b<\/p>/);
+  });
+
+  it("a stray heading close after an unclosed heading writes nothing (#46)", () => {
+    expect(
+      htmlToMarkdown(
+        "<ol><li>a<h2>x<table><tr><td>t</td></tr></table></li><li>b</h2>c</li><li>d</li></ol>",
+      ),
+    ).toBe(
+      htmlToMarkdown(
+        "<ol><li>a<h2>x<table><tr><td>t</td></tr></table></li><li>bc</li><li>d</li></ol>",
+      ),
+    );
+    // The heading sat in a list with no item; once that list has closed, its
+    // close is stray too.
+    expect(htmlToMarkdown("<ul><h2>x<table><tr><td>t</td></tr></table></ul>a</h2>b")).toBe(
+      htmlToMarkdown("<ul><h2>x<table><tr><td>t</td></tr></table></ul>ab"),
     );
   });
 
