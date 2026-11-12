@@ -1,7 +1,8 @@
 // The import report (AC-001, AC-004): one line per model with its outcome,
 // one size row per file under it (Manyfold's contentSize, the size
 // Platehouse stored and the first 12 hex digits of the SHA-256 it recorded),
-// and the totals: models found, imported, skipped with a reason, and failed.
+// and the totals: models found, imported, skipped with a reason, and failed,
+// and how many values were left out for being over Platehouse's limits.
 //
 // Every value that came from Manyfold or a server goes through cleanText, and
 // the CLI sends every line through its redactor as well.
@@ -38,6 +39,8 @@ export interface ModelResult {
   /** The model was made in Platehouse by this run (in a dry run: would be). */
   newModel: boolean;
   files: FileRow[];
+  /** Values left out because they are over Platehouse's limits (plan.ts), each with its reason. */
+  leftOut?: string[];
 }
 
 export interface Report {
@@ -55,6 +58,8 @@ export interface Totals {
   filesImported: number;
   filesSkipped: number;
   sizeMismatches: number;
+  /** Values left out over Platehouse's limits, across every model. */
+  valuesLeftOut: number;
 }
 
 /** How a file row's reason starts when its size is not Manyfold's contentSize. */
@@ -76,6 +81,7 @@ export function totals(report: Report): Totals {
       .length,
     filesSkipped: files.filter((f) => f.status === "skipped").length,
     sizeMismatches: files.filter((f) => f.reason?.startsWith(SIZE_MISMATCH) === true).length,
+    valuesLeftOut: report.models.reduce((n, m) => n + (m.leftOut?.length ?? 0), 0),
   };
 }
 
@@ -107,6 +113,11 @@ export function summaryLines(report: Report): string[] {
     `  new models ${t.newModels}, files imported ${t.filesImported}, ` +
       `files skipped ${t.filesSkipped}, size mismatches ${t.sizeMismatches}`,
   ];
+  if (t.valuesLeftOut > 0) {
+    lines.push(
+      `  values left out ${t.valuesLeftOut}: over Platehouse's limits, each named on its model's line`,
+    );
+  }
   if (report.mode === "dry run") {
     lines.push(
       "  A dry run writes nothing: imported means would be imported. A model in " +

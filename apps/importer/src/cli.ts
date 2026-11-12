@@ -23,6 +23,8 @@
 //   so a re-run after a full or an interrupted run finishes what is missing
 //   and makes no duplicate (AC-002);
 // - in Platehouse's trash: skipped, with that reason (Review Focus 4).
+// A value over the API's limits is left out and named on the model's line;
+// a name too long to send fails the model, in a dry run too (plan.ts).
 // Each file's download is checked against Manyfold's contentSize, and what
 // Platehouse stored is checked against it and against the downloaded bytes'
 // SHA-256 (AC-004). The report names every model and has one size row per
@@ -176,6 +178,17 @@ interface Context {
   nameOf: (url: string) => Promise<string | null>;
 }
 
+/** The result with the plan's left-out values added to its reason and counted. */
+function noting(result: ModelResult, plan: ModelPlan): ModelResult {
+  if (plan.leftOut.length === 0) return result;
+  const note = plan.leftOut.join("; ");
+  return {
+    ...result,
+    reason: result.reason === null ? note : `${result.reason}; ${note}`,
+    leftOut: plan.leftOut,
+  };
+}
+
 function dryRun(plan: ModelPlan, base: { manyfoldId: string; name: string }): ModelResult {
   const files = plannedRows(plan);
   const extra: string[] = [];
@@ -190,7 +203,7 @@ function dryRun(plan: ModelPlan, base: { manyfoldId: string; name: string }): Mo
     "nothing to do",
   );
   if (result.outcome === "imported" && extra.length > 0) result.reason = extra.join("; ");
-  return result;
+  return noting(result, plan);
 }
 
 async function importModel(
@@ -212,6 +225,16 @@ async function importModel(
   }
   const plan = planModel(source, existing);
   const base = { manyfoldId: source.id, name: source.name };
+  if (plan.refused !== null) {
+    // Platehouse would refuse the create with 400 (plan.ts), in either mode.
+    return {
+      ...base,
+      newModel: false,
+      outcome: "failed",
+      reason: `cannot be made in Platehouse: ${plan.refused}`,
+      files: plannedRows(plan, "the model cannot be made"),
+    };
+  }
   if (ctx.mode === "dry run") return dryRun(plan, base);
 
   let modelId: string;
@@ -297,7 +320,10 @@ async function importModel(
       files.push(row(filename, contentSize, "failed", { reason: `upload: ${message(error)}` }));
     }
   }
-  return outcomeOf({ ...base, newModel, files }, changed, problems, "nothing missing");
+  return noting(
+    outcomeOf({ ...base, newModel, files }, changed, problems, "nothing missing"),
+    plan,
+  );
 }
 
 export async function run(options: RunOptions): Promise<RunResult> {

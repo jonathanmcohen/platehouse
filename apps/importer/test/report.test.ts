@@ -1,6 +1,13 @@
 // The report's totals and exit code (AC-001, AC-004).
 import { describe, expect, it } from "vitest";
-import { exitCode, type ModelResult, modelLines, type Report, totals } from "../src/report.js";
+import {
+  exitCode,
+  type ModelResult,
+  modelLines,
+  type Report,
+  summaryLines,
+  totals,
+} from "../src/report.js";
 
 const model = (over: Partial<ModelResult> = {}): ModelResult => ({
   manyfoldId: "m1",
@@ -82,6 +89,7 @@ describe("totals", () => {
       filesImported: 1,
       filesSkipped: 1,
       sizeMismatches: 1,
+      valuesLeftOut: 0,
     });
   });
 });
@@ -138,5 +146,21 @@ describe("modelLines", () => {
     expect(lines[1]).toContain("manyfold 3000");
     expect(lines[1]).toContain("stored 3000");
     expect(lines[1]).toContain("sha256 0123456789ab");
+  });
+});
+
+describe("values left out over Platehouse's limits", () => {
+  it("are counted across models and named in the summary only when there are any", () => {
+    const r = report([
+      model({ leftOut: ["caption left out: 2001 characters, Platehouse takes at most 2000"] }),
+      model({ manyfoldId: "m2", leftOut: ["a", "b"] }),
+    ]);
+    expect(totals(r).valuesLeftOut).toBe(3);
+    expect(summaryLines(r).join("\n")).toMatch(/values left out 3: over Platehouse's limits/);
+    expect(summaryLines(report([model()])).join("\n")).not.toMatch(/left out/);
+  });
+
+  it("do not by themselves make the exit code 1", () => {
+    expect(exitCode(report([model({ leftOut: ["a"] })]))).toBe(0);
   });
 });

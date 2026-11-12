@@ -5,6 +5,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import {
   ENV,
+  FAKE_BEARER,
   MANYFOLD,
   manyfoldCalls,
   PLATEHOUSE,
@@ -452,5 +453,96 @@ describe("text from Manyfold", () => {
     expect(r.code).toBe(0);
     expect(r.stdout.join("\n")).toContain("busy[2J now");
     expect(controlCharacters(r.output)).toEqual([]);
+  });
+});
+
+// POST /api/v1/models and the tag and collection PUTs refuse a value over the
+// server's limits (apps/server/src/api/v1.ts NEW_MODEL and LABEL) with 400.
+describe("Platehouse's limits", () => {
+  const auth = { Authorization: `Bearer ${FAKE_BEARER}` };
+
+  it("are enforced by the Platehouse stub as the server enforces them", async () => {
+    const s = setup(library());
+    const post = (body: Record<string, unknown>) =>
+      fetch(`${PLATEHOUSE}/api/v1/models`, {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "ok", externalRef: "manyfold:x", ...body }),
+      });
+    const refused = [
+      { name: "n".repeat(501) },
+      { caption: "c".repeat(2001) },
+      { description: "d".repeat(200_001) },
+      { creator: "m".repeat(301) },
+      { creator: " " },
+      { license: "l".repeat(201) },
+      { license: "" },
+      { externalRef: "e".repeat(301) },
+      { tags: ["t".repeat(101)] },
+      { tags: [" "] },
+      { collections: Array.from({ length: 101 }, (_, i) => `c${i}`) },
+    ];
+    for (const body of refused) expect((await post(body)).status, JSON.stringify(body)).toBe(400);
+    expect(s.platehouse.models.size).toBe(0);
+    const made = await post({ tags: ["\u{1F6A2}".repeat(100)], caption: "c".repeat(2000) });
+    expect(made.status).toBe(201);
+    const id = byRef(s, "x").id;
+    const put = (path: string) =>
+      fetch(`${PLATEHOUSE}/api/v1${path}`, { method: "PUT", headers: auth });
+    expect((await put(`/models/${id}/tags/${"t".repeat(101)}`)).status).toBe(400);
+    expect((await put(`/collections/${"g".repeat(101)}/models/${id}`)).status).toBe(400);
+    expect((await put(`/models/${id}/tags/${"t".repeat(100)}`)).status).toBe(204);
+  });
+
+  it("--apply makes a model without the values over them, keeps the rest and says what it left out", async () => {
+    const lib = library();
+    const m1 = lib.models[0];
+    if (m1 === undefined) throw new Error("unreachable");
+    m1.caption = "c".repeat(2001);
+    m1.keywords = ["boat", "k".repeat(101)];
+    const s = setup(lib);
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    const made = byRef(s, "m1");
+    expect(made).toMatchObject({ caption: null, description: "Print it **flat**." });
+    expect(made.tags).toEqual(["boat"]);
+    expect(fileNames(s, "m1")).toEqual(["benchy.3mf", "stand.stl"]);
+    const result = r.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(result?.outcome).toBe("imported");
+    expect(result?.reason).toMatch(/caption left out: 2001 characters/);
+    expect(result?.reason).toMatch(/tag k{40}\.\.\. left out: 101 characters/);
+    expect(r.stdout.join("\n")).toMatch(/values left out 2/);
+  });
+
+  it("a re-run adds no tag over the limit to an existing model, and says so", async () => {
+    const lib = library();
+    const s = setup(lib);
+    expect((await s.run(["--apply"])).code).toBe(0);
+    const m1 = lib.models[0];
+    if (m1 === undefined) throw new Error("unreachable");
+    m1.keywords = ["boat", "calibration", "dock", "k".repeat(101)];
+    const again = await s.run(["--apply"]);
+    expect(again.code).toBe(0);
+    expect([...byRef(s, "m1").tags].sort()).toEqual(["boat", "calibration", "dock"]);
+    const result = again.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(result?.reason).toMatch(/tag k{40}\.\.\. left out/);
+  });
+
+  it("fails a model whose name is over 500 characters in a dry run and under --apply, and makes the rest", async () => {
+    const lib = library();
+    const m3 = lib.models[2];
+    if (m3 === undefined) throw new Error("unreachable");
+    m3.name = "n".repeat(501);
+    const s = setup(lib);
+    const dry = await s.run([]);
+    expect(dry.code).toBe(1);
+    const planned = dry.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(planned?.outcome).toBe("failed");
+    expect(planned?.reason).toMatch(/name is 501 characters; Platehouse takes at most 500/);
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expect(s.platehouse.byRef("manyfold:m3")).toHaveLength(0);
+    expect(s.platehouse.models.size).toBe(2);
+    expect(platehouseCalls().filter((c) => c === "POST /api/v1/models")).toHaveLength(2);
   });
 });

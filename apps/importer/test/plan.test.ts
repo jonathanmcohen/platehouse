@@ -180,3 +180,111 @@ describe("a model Platehouse already has", () => {
     expect(plan.files.every((f) => f.action === "present")).toBe(true);
   });
 });
+
+// The limits POST /api/v1/models and the tag and collection PUTs enforce
+// (apps/server/src/api/v1.ts NEW_MODEL and LABEL). One value over a limit
+// would get the whole create refused with 400 on every run, so the planner
+// leaves that value out with a reason and keeps the rest of the model.
+describe("Platehouse's limits", () => {
+  it("leaves out a caption, description, creator or licence over its limit, and keeps the rest", () => {
+    const plan = planModel(
+      source({
+        caption: "c".repeat(2001),
+        description: "d".repeat(200_001),
+        creator: "m".repeat(301),
+        license: "l".repeat(201),
+      }),
+      undefined,
+    );
+    expect(plan.refused).toBeNull();
+    expect(plan.create).toEqual({
+      name: "Benchy Stand",
+      externalRef: "manyfold:abc123",
+      tags: ["boat", "Calibration"],
+      collections: ["Gifts"],
+    });
+    expect(plan.leftOut).toEqual([
+      expect.stringMatching(/^caption left out: 2001 characters, Platehouse takes at most 2000$/),
+      expect.stringMatching(/^description left out: 200001 characters, .* at most 200000$/),
+      expect.stringMatching(/^creator left out: 301 characters, .* at most 300$/),
+      expect.stringMatching(/^licence left out: 201 characters, .* at most 200$/),
+    ]);
+  });
+
+  it("keeps values exactly at each limit", () => {
+    const plan = planModel(
+      source({
+        name: "n".repeat(500),
+        caption: "c".repeat(2000),
+        creator: "m".repeat(300),
+        license: "l".repeat(200),
+        tags: ["t".repeat(100)],
+      }),
+      undefined,
+    );
+    expect(plan.refused).toBeNull();
+    expect(plan.leftOut).toEqual([]);
+    expect(plan.create).toMatchObject({ caption: "c".repeat(2000), tags: ["t".repeat(100)] });
+  });
+
+  it("counts characters as the server's validator does, by code point", () => {
+    const tag = "\u{1F6A2}".repeat(100); // 100 code points, 200 UTF-16 units
+    const plan = planModel(source({ tags: [tag] }), undefined);
+    expect(plan.create?.tags).toEqual([tag]);
+    expect(plan.leftOut).toEqual([]);
+  });
+
+  it("leaves out a tag or collection over 100 characters, with the reason", () => {
+    const plan = planModel(
+      source({ tags: ["boat", "t".repeat(101)], collections: ["g".repeat(150), "Gifts"] }),
+      undefined,
+    );
+    expect(plan.create?.tags).toEqual(["boat"]);
+    expect(plan.create?.collections).toEqual(["Gifts"]);
+    expect(plan.leftOut).toEqual([
+      expect.stringMatching(/^tag t{40}\.\.\. left out: 101 characters, .* at most 100$/),
+      expect.stringMatching(/^collection g{40}\.\.\. left out: 150 characters, .* at most 100$/),
+    ]);
+  });
+
+  it("sends at most 100 tags and 100 collections, leaving out the rest with the reason", () => {
+    const many = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+    const plan = planModel(
+      source({ tags: many("t", 103), collections: many("c", 101) }),
+      undefined,
+    );
+    expect(plan.create?.tags).toEqual(many("t", 100));
+    expect(plan.create?.collections).toEqual(many("c", 100));
+    expect(plan.leftOut).toEqual([
+      "3 tags left out: Platehouse takes at most 100 on a new model (t100, t101, t102)",
+      "1 collection left out: Platehouse takes at most 100 on a new model (c100)",
+    ]);
+  });
+
+  it("refuses to make a model whose name is over 500 characters, saying why", () => {
+    const plan = planModel(source({ name: "n".repeat(501) }), undefined);
+    expect(plan.refused).toMatch(/^the name is 501 characters; Platehouse takes at most 500$/);
+  });
+
+  it("refuses to make a model whose externalRef would be over 300 characters", () => {
+    const plan = planModel(source({ id: "i".repeat(292) }), undefined);
+    expect(plan.refused).toMatch(/externalRef .* 301 characters; Platehouse takes at most 300$/);
+  });
+
+  it("does not refuse a model already in Platehouse for a long name, since none is sent", () => {
+    const plan = planModel(source({ name: "n".repeat(501) }), existing());
+    expect(plan.refused).toBeNull();
+  });
+
+  it("leaves out a tag or collection over 100 characters that an existing model lacks", () => {
+    const plan = planModel(
+      source({ tags: ["boat", "dock", "t".repeat(101)], collections: ["g".repeat(101)] }),
+      existing(),
+    );
+    expect(plan.tags).toEqual(["dock"]);
+    expect(plan.collections).toEqual([]);
+    expect(plan.leftOut).toHaveLength(2);
+    expect(plan.leftOut[0]).toMatch(/^tag t{40}\.\.\. left out: 101 characters/);
+    expect(plan.leftOut[1]).toMatch(/^collection g{40}\.\.\. left out: 101 characters/);
+  });
+});

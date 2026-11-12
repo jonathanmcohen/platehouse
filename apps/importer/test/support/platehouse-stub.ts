@@ -5,11 +5,12 @@
 //   GET  /api/v1/models?externalRef=     live model with that ref, or none;
 //                                        400 when combined with other fields
 //   GET  /api/v1/models?limit=           live models
-//   POST /api/v1/models                  201 {model} | 409 {error, trashed}
+//   POST /api/v1/models                  201 {model} | 409 {error, trashed};
+//                                        400 outside NEW_MODEL's limits
 //   GET  /api/v1/models/:id              404 when trashed
 //   GET  /api/v1/files/:id
-//   PUT  /api/v1/models/:id/tags/:tag    204 | 404
-//   PUT  /api/v1/collections/:name/models/:id   204 | 404
+//   PUT  /api/v1/models/:id/tags/:tag    204 | 404 | 400 a tag outside LABEL
+//   PUT  /api/v1/collections/:name/models/:id   204 | 404 | 400 a name outside LABEL
 //   POST /api/v1/uploads                 tus 1.0.0 creation: 201 + Location,
 //                                        400 no filename, 415 unsupported
 //                                        type, 404 modelId not live
@@ -21,6 +22,20 @@
 // trashes a model with trash(), as Jon would in the UI.
 import { createHash, randomUUID } from "node:crypto";
 import { HttpResponse, http } from "msw";
+
+/** LABEL in apps/server/src/api/v1.ts: a tag or collection name, 1 to 100 code points, not blank. */
+const MAX_LABEL = 100;
+/** NEW_MODEL's maxItems for tags and for collections. */
+const MAX_LABELS = 100;
+
+function validLabel(v: unknown): boolean {
+  if (typeof v !== "string") return false;
+  const n = [...v].length;
+  return n >= 1 && n <= MAX_LABEL && /\S/.test(v);
+}
+
+const badLabel = () =>
+  HttpResponse.json({ error: "bad_request", message: "bad label" }, { status: 400 });
 
 export interface StubPlatehouseModel {
   id: string;
@@ -158,6 +173,34 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
     upload.result = { status: "done", modelId: model.id, fileId: file.id };
   }
 
+  /** POST /api/v1/models's NEW_MODEL schema (apps/server/src/api/v1.ts), lengths in code points. */
+  function validNewModel(
+    body: Record<string, unknown>,
+  ): body is Record<string, unknown> & { name: string } {
+    const text = (key: string, min: number, max: number, nonBlank: boolean) => {
+      const v = body[key];
+      if (v === undefined && key !== "name") return true;
+      if (typeof v !== "string") return false;
+      const n = [...v].length;
+      return n >= min && n <= max && (!nonBlank || /\S/.test(v));
+    };
+    const labels = (key: string) => {
+      const v = body[key];
+      if (v === undefined) return true;
+      return Array.isArray(v) && v.length <= MAX_LABELS && v.every(validLabel);
+    };
+    return (
+      text("name", 1, 500, true) &&
+      text("caption", 0, 2000, false) &&
+      text("description", 0, 200_000, false) &&
+      text("creator", 1, 300, true) &&
+      text("license", 1, 200, false) &&
+      text("externalRef", 1, 300, false) &&
+      labels("tags") &&
+      labels("collections")
+    );
+  }
+
   /** POST /api/v1/models with this parsed body, as the server answers it. */
   function createModel(body: Record<string, unknown>): Response {
     const allowed = [
@@ -171,7 +214,7 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
       "collections",
     ];
     const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
-    if (typeof body.name !== "string" || !/\S/.test(body.name) || unknown.length > 0) {
+    if (unknown.length > 0 || !validNewModel(body)) {
       return HttpResponse.json({ error: "bad_request", message: "bad body" }, { status: 400 });
     }
     const ref = typeof body.externalRef === "string" ? body.externalRef : null;
@@ -250,6 +293,7 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
 
     http.put(`${api}/models/:id/tags/:tag`, ({ request, params }) => {
       if (!authorised(request)) return unauthorised();
+      if (!validLabel(String(params.tag))) return badLabel();
       const m = live(String(params.id));
       if (m === undefined) return HttpResponse.json(NOT_FOUND, { status: 404 });
       addLabel(m.tags, String(params.tag));
@@ -258,6 +302,7 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
 
     http.put(`${api}/collections/:name/models/:id`, ({ request, params }) => {
       if (!authorised(request)) return unauthorised();
+      if (!validLabel(String(params.name))) return badLabel();
       const m = live(String(params.id));
       if (m === undefined) return HttpResponse.json(NOT_FOUND, { status: 404 });
       addLabel(m.collections, String(params.name));
