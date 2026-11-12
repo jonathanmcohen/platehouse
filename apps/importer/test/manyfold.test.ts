@@ -171,7 +171,7 @@ describe("file downloads", () => {
     expect(r.output).not.toContain("X-Amz-Credential");
   });
 
-  it("keep the token on a redirect to Manyfold's own host, rewritten to https", async () => {
+  it("keep the token on an https redirect to Manyfold's own host", async () => {
     const s = setup(library());
     const rawAuth: Array<string | null> = [];
     server.use(
@@ -180,7 +180,7 @@ describe("file downloads", () => {
         () =>
           new HttpResponse(null, {
             status: 302,
-            headers: { location: "http://manyfold.example.test/models/m3/raw/air-dry.3mf" },
+            headers: { location: "https://manyfold.example.test/models/m3/raw/air-dry.3mf" },
           }),
         { once: true },
       ),
@@ -193,7 +193,36 @@ describe("file downloads", () => {
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(0);
     expect(rawAuth).toEqual([`Bearer ${s.manyfold.accessToken}`]);
+  });
+
+  // The plan: a non-https redirect is refused. That holds on Manyfold's own
+  // host too: the redirect is not upgraded to https and followed.
+  it("refuse an http:// redirect to Manyfold's own host and import nothing for that file", async () => {
+    const s = setup(library());
+    const rawAuth: Array<string | null> = [];
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+        () =>
+          new HttpResponse(null, {
+            status: 302,
+            headers: { location: "http://manyfold.example.test/models/m3/raw/air-dry.3mf" },
+          }),
+      ),
+      http.get(`${MANYFOLD}/models/m3/raw/air-dry.3mf`, ({ request }) => {
+        rawAuth.push(request.headers.get("authorization"));
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expect(rawAuth).toEqual([]);
     expect(seen.some((x) => x.url.startsWith("http://"))).toBe(false);
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.status).toBe("failed");
+    expect(m3?.files[0]?.reason).toBe(
+      "GET /models/m3/model_files/f5.3mf: refusing a redirect that is not https, to manyfold.example.test",
+    );
   });
 
   it("refuse a redirect that is not https and import nothing for that file", async () => {
@@ -294,6 +323,37 @@ describe("retries", () => {
     expect(r.code).toBe(0);
     expect(s.waits).toContain(7000);
     expect(seen.filter((x) => x.url === `${MANYFOLD}/models/m1`)).toHaveLength(2);
+  });
+
+  it.each(["-5", "0", "soon", "Wed, 21 Oct 2026 07:28:00 GMT", "1e999x"])(
+    "back off as normal on a 429 whose Retry-After is %j, never waiting zero",
+    async (after) => {
+      const s = setup(library());
+      server.use(
+        http.get(
+          `${MANYFOLD}/models/m1`,
+          () => new HttpResponse(null, { status: 429, headers: { "retry-after": after } }),
+          { once: true },
+        ),
+      );
+      const r = await s.run(["--apply"]);
+      expect(r.code).toBe(0);
+      expect(s.waits[0]).toBe(2000);
+      expect(s.waits.every((ms) => ms > 0)).toBe(true);
+      expect(seen.filter((x) => x.url === `${MANYFOLD}/models/m1`)).toHaveLength(2);
+    },
+  );
+
+  it("wait 60 s on a 429 with no Retry-After at all", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(`${MANYFOLD}/models/m1`, () => new HttpResponse(null, { status: 429 }), {
+        once: true,
+      }),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(s.waits[0]).toBe(60_000);
   });
 
   it("back off after a 5xx and go on", async () => {

@@ -13,14 +13,16 @@
 //   token is never sent anywhere else. A link to another origin is refused
 //   before anything is sent there.
 // - A file download is the one exception. Manyfold answers it with a
-//   redirect: to its own host (followed with the token, as https), to
+//   redirect: to its own host over https (followed with the token), to
 //   another https host such as its object store (followed without the
 //   Authorization header, since the presigned URL's signature is its
 //   credential, and that query string is handed to the sensitive callback and
-//   never logged), or to anything else (refused). At most 3 redirects.
+//   never logged), or to anything that is not https, its own host included
+//   (refused, not upgraded). At most 3 redirects.
 // - Every request has a timeout. GETs retry network errors and 5xx with
 //   backoff (2, 4, 8 s) and wait out a 429 for its Retry-After (at most 300
-//   s), up to 4 attempts in all.
+//   s; 60 s when there is none; the normal backoff when it is not a positive
+//   number of seconds), up to 4 attempts in all.
 // - A download's byte count is checked against Manyfold's contentSize while
 //   it streams; a mismatch is a SizeMismatch and nothing is returned.
 // - Log lines and errors name the path on Manyfold, and only the host and
@@ -124,6 +126,21 @@ const BODY_QUOTE = 200;
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** The backoff before retry n (1, 2, 3): 2, 4, 8 s. */
+const backoff = (attempt: number) => 2000 * 2 ** (attempt - 1);
+
+/**
+ * How long to wait after a 429, in ms. No Retry-After: 60 s, as the prior
+ * art waited. A positive number of seconds: that, at most 300 s. Anything
+ * else, such as a negative or zero value, an HTTP date or junk: the normal
+ * backoff, so a 429 is never retried with no wait.
+ */
+function retryAfter(header: string | null, attempt: number): number {
+  if (header === null) return 60_000;
+  const seconds = Number(header);
+  return seconds > 0 ? Math.min(seconds, MAX_RETRY_AFTER_S) * 1000 : backoff(attempt);
+}
+
 /**
  * An error body as it may be quoted: on one line, without control
  * characters, redacted, then cut to BODY_QUOTE. The order matters. Control
@@ -209,22 +226,22 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
         const reason = why(error, timeout);
         if (attempt < attempts) {
           log(`  GET ${shortPath(url)}: ${reason}, retry ${attempt}`);
-          await sleep(2000 * 2 ** (attempt - 1));
+          await sleep(backoff(attempt));
           continue;
         }
         throw new ManyfoldError(`GET ${shortPath(url)}: ${reason}`);
       }
       if (res.status === 429 && attempt < attempts) {
-        const wait = Math.min(Number(res.headers.get("retry-after")) || 60, MAX_RETRY_AFTER_S);
-        log(`  GET ${shortPath(url)}: HTTP 429, waiting ${wait} s`);
+        const wait = retryAfter(res.headers.get("retry-after"), attempt);
+        log(`  GET ${shortPath(url)}: HTTP 429, waiting ${wait / 1000} s`);
         await res.body?.cancel();
-        await sleep(wait * 1000);
+        await sleep(wait);
         continue;
       }
       if (res.status >= 500 && attempt < attempts) {
         log(`  GET ${shortPath(url)}: HTTP ${res.status}, retry ${attempt}`);
         await res.body?.cancel();
-        await sleep(2000 * 2 ** (attempt - 1));
+        await sleep(backoff(attempt));
         continue;
       }
       return res;
@@ -443,16 +460,19 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
             throw new ManyfoldError(`GET ${shortPath(url)}: more than ${MAX_REDIRECTS} redirects`);
           }
           const next = new URL(location, url);
-          if (next.hostname === hostname) {
-            url = safeUrl(next.toString());
-          } else if (next.protocol === "https:") {
-            if (next.search.length > 1) sensitive(next.search.slice(1));
-            url = next;
-          } else {
+          if (next.protocol !== "https:") {
+            // Refused on Manyfold's own host too, not upgraded: the plan
+            // says a non-https redirect is refused.
             if (next.search.length > 1) sensitive(next.search.slice(1));
             throw new ManyfoldError(
               `GET ${shortPath(url)}: refusing a redirect that is not https, to ${next.host}`,
             );
+          }
+          if (next.hostname === hostname) {
+            url = safeUrl(next.toString());
+          } else {
+            if (next.search.length > 1) sensitive(next.search.slice(1));
+            url = next;
           }
           continue;
         }

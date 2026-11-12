@@ -168,6 +168,30 @@ describe("the Platehouse client", () => {
     },
   );
 
+  it.each(["-5", "0", "soon"])(
+    "backs off as normal on a 429 whose Retry-After is %j, never waiting zero",
+    async (after) => {
+      setup(library());
+      server.use(
+        http.get(
+          `${PLATEHOUSE}/api/v1/models`,
+          () => new HttpResponse(null, { status: 429, headers: { "retry-after": after } }),
+          { once: true },
+        ),
+      );
+      const waits: number[] = [];
+      const ph = createPlatehouse({
+        base: PLATEHOUSE,
+        bearer: FAKE_BEARER,
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      });
+      await ph.check();
+      expect(waits).toEqual([2000]);
+    },
+  );
+
   it("reads a model back by its externalRef when the answer to its create was lost", async () => {
     const s = setup(library());
     server.use(
