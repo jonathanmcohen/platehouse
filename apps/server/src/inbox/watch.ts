@@ -60,8 +60,11 @@
 //   while its size and mtime are still those that settled: one written in
 //   place since the check (O_TRUNC, as Windows Explorer or cp onto an
 //   existing name do) holds bytes never imported, so it moves to failed
-//   with CHANGED_REASON instead. When the imported file (changed, or its
-//   stored copy unconfirmed) cannot be moved to failed, it is not put back
+//   with CHANGED_REASON instead. When what is held cannot be checked or
+//   deleted (an lstat, fstat or unlink that throws), it may be the imported
+//   file, so it moves to failed with the reason it already had, else
+//   UNCONFIRMED_REASON, never back under the name. When the imported file (changed, its stored copy unconfirmed,
+//   or not checkable) cannot be moved to failed, it is not put back
 //   under the name, since a link or a copy back moves its ctime and a
 //   restart would import it again under new ids: it stays in the holding
 //   folder, logged, the folder renamed to say why (KEPT_HOLD_SUFFIXES), for
@@ -1456,6 +1459,55 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /**
+   * Moves an imported file, or what may be one, from its holding folder to
+   * failed with reason. When that fails (the failed folder is a symlink, not
+   * a folder, or unwritable) it is not put back under its name: a link or a
+   * copy back moves its ctime, so a restart would take it for a new arrival,
+   * give it ids no attempt used and import it a second time. It stays held,
+   * out of the listing, and the restart sweep (sweepHolds) moves it to
+   * failed, or leaves it held and logged while the failed folder is still
+   * unusable. The folder is renamed to say why it was kept
+   * (KEPT_HOLD_SUFFIXES), so the sweep gives this reason and not
+   * HELD_REASON, which says Platehouse stopped.
+   */
+  async function failImported(
+    name: string,
+    holdDir: string,
+    modelId: string,
+    reason: string,
+    pass: InboxPass,
+  ): Promise<void> {
+    const held = join(holdDir, name);
+    try {
+      const moved = await moveToFailed(name, held, reason);
+      pass.failed.push({ name, reason });
+      log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
+      return;
+    } catch (error) {
+      let at = held;
+      const suffix = keptHoldSuffix(reason);
+      if (suffix !== undefined) {
+        try {
+          await rename(holdDir, `${holdDir}${suffix}`);
+          at = join(`${holdDir}${suffix}`, name);
+        } catch (renameError) {
+          log(
+            `inbox: could not mark ${holdDir} with why ${name} was kept ` +
+              `(${errorText(renameError)}); the restart moves it to ${FAILED_DIR} with a ` +
+              "reason that says Platehouse stopped",
+          );
+        }
+      }
+      log(
+        `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it was ` +
+          `imported as model ${modelId}, so it is not put back under its name to be ` +
+          `imported again: it stays at ${at} and moves to ${FAILED_DIR} when the watcher ` +
+          `next starts. Why it failed: ${reason}`,
+      );
+    }
+  }
+
+  /**
    * Deletes the inbox copy of an import that checked out (reason undefined),
    * or moves it to failed with reason when it changed or its stored copy
    * could not be confirmed, and never touches a file put under its name
@@ -1470,14 +1522,17 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * were read under): a writer that wrote the same inode in place since the
    * check (O_TRUNC, as Windows Explorer or cp onto an existing name do) put
    * bytes there that were never imported, so it moves to failed with
-   * CHANGED_REASON instead. When the imported file cannot be moved to failed
-   * (the failed folder is a symlink, not a folder, or unwritable), it is not
-   * put back under the name: a link or a copy back moves its ctime, which a
-   * restart would take as a new arrival and import it again under new ids.
-   * It stays in the holding folder, logged, out of the listing, the folder
-   * renamed to say why (KEPT_HOLD_SUFFIXES), and the restart sweep
-   * (sweepHolds) moves it to failed with that reason, or leaves it there,
-   * logged, while the failed folder is still unusable.
+   * CHANGED_REASON instead. When what is held cannot be checked or deleted
+   * (the lstat, fstat or unlink throws), it may be the imported file, so it
+   * moves to failed too, with UNCONFIRMED_REASON unless it already had a
+   * reason. When the imported file cannot be moved to failed (the failed
+   * folder is a symlink, not a folder, or unwritable), it is not put back
+   * under the name: a link or a copy back moves its ctime, which a restart
+   * would take as a new arrival and import it again under new ids. It stays
+   * in the holding folder, logged, out of the listing, the folder renamed to
+   * say why (KEPT_HOLD_SUFFIXES), and the restart sweep (sweepHolds) moves it
+   * to failed with that reason, or leaves it there, logged, while the failed
+   * folder is still unusable (failImported).
    * Anything else goes back under the name for the next pass to look at from
    * the start (putBack), or, when another file took the name in the
    * meantime, to failed with SWAPPED_REASON (PUT_BACK_FAILED_REASON when
@@ -1545,55 +1600,21 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           return;
         }
       } catch (error) {
-        // What is held could not be checked or deleted: it goes back.
-        let back = false;
-        try {
-          back = await putBack(name, held, path, pass);
-        } catch {
-          back = false;
-        }
-        if (!back) await failHeld(name, held, UNCONFIRMED_REASON, pass);
-        await couldNotSettle(error);
+        // What is held could not be checked or deleted (an EIO, say), so it
+        // may be the imported file: never put back (failImported says why).
+        // It moves to failed, as unconfirmed unless it already had a reason.
+        const why = reason ?? UNCONFIRMED_REASON;
+        log(
+          `inbox: imported ${name} as model ${modelId}, but what holds its name could not be ` +
+            `checked or deleted in ${holdDir} (${errorText(error)}), so it is kept, not put back`,
+        );
+        await failImported(name, holdDir, modelId, why, pass);
         return;
       }
       if (same && reason !== undefined) {
         // The file that was imported, and it changed or is unconfirmed.
-        try {
-          const moved = await moveToFailed(name, held, reason);
-          pass.failed.push({ name, reason });
-          log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
-          return;
-        } catch (error) {
-          // Not put back: a link or a copy back under the name moves its
-          // ctime, so a restart would take it for a new arrival, give it ids
-          // no attempt used and import it a second time. It stays held, out
-          // of the listing, and the restart sweep (sweepHolds) moves it to
-          // failed, or leaves it held and logged while the failed folder is
-          // still unusable. The folder is renamed to say why it was kept
-          // (KEPT_HOLD_SUFFIXES), so the sweep gives this reason and not
-          // HELD_REASON, which says Platehouse stopped.
-          let at = held;
-          const suffix = keptHoldSuffix(reason);
-          if (suffix !== undefined) {
-            try {
-              await rename(holdDir, `${holdDir}${suffix}`);
-              at = join(`${holdDir}${suffix}`, name);
-            } catch (renameError) {
-              log(
-                `inbox: could not mark ${holdDir} with why ${name} was kept ` +
-                  `(${errorText(renameError)}); the restart moves it to ${FAILED_DIR} with a ` +
-                  "reason that says Platehouse stopped",
-              );
-            }
-          }
-          log(
-            `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it was ` +
-              `imported as model ${modelId}, so it is not put back under its name to be ` +
-              `imported again: it stays at ${at} and moves to ${FAILED_DIR} when the watcher ` +
-              `next starts. Why it failed: ${reason}`,
-          );
-          return;
-        }
+        await failImported(name, holdDir, modelId, reason, pass);
+        return;
       }
       // Another file was put under the name after the check: never deleted
       // or moved to failed under the imported file's reason. SWAPPED_REASON
