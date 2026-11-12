@@ -92,7 +92,7 @@
 //   failed with PUT_BACK_FAILED_REASON; a symlink is made again with its
 //   target; a folder is renamed back, which can replace only an empty
 //   folder; anything else (a FIFO, a socket) is not put back and moves to
-//   failed. The holding folder is removed after. One a stopped process left
+//   failed with PUT_BACK_FAILED_REASON. The holding folder is removed after. One a stopped process left
 //   behind (a crash in that moment) is emptied into failed with HELD_REASON
 //   at the first pass (one holding an imported file that could not be moved
 //   to failed, with the reason its name gives), a copy being put back
@@ -348,8 +348,9 @@ export const SWAPPED_REASON =
 
 /**
  * Reason when putting such a file back failed with an error (a full disk, a
- * held file that cannot be read, a filesystem with no hard links): nothing
- * is known to have taken the name, so SWAPPED_REASON would be false.
+ * held file that cannot be read, a filesystem with no hard links) or cannot
+ * be done at all (a FIFO or a socket): nothing is known to have taken the
+ * name, so SWAPPED_REASON would be false.
  */
 export const PUT_BACK_FAILED_REASON =
   "This file was put in the inbox under the name of a file Platehouse had just imported, and it could not be put back under its name, so it was kept here and not imported; add it again.";
@@ -1262,9 +1263,11 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    *   EEXIST when the name is taken), then unlinked from the holding folder.
    * - A folder is renamed back, which can only ever replace an empty folder,
    *   never a file or a folder with anything in it.
-   * - Anything else (a FIFO, a socket) is not put back.
-   * Returns false when it is not put back, the held item left where it is.
-   * Throws when putting it back failed, with nothing left under the name.
+   * - Anything else (a FIFO, a socket) is not put back: it throws, since
+   *   nothing took the name, so SWAPPED_REASON would be false for it.
+   * Returns false only when the name was taken, the held item left where it
+   * is. Throws when putting it back failed or cannot be done, with nothing
+   * left under the name.
    */
   async function putBack(
     name: string,
@@ -1304,7 +1307,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       }
       return true;
     }
-    return false;
+    throw new Error(
+      `${path} is not a regular file, a symlink or a folder (a FIFO or a socket, say), ` +
+        "so it cannot be put back",
+    );
   }
 
   /**
@@ -1631,8 +1637,9 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       }
       // Another file was put under the name after the check: never deleted
       // or moved to failed under the imported file's reason. SWAPPED_REASON
-      // only when putBack says the name was taken; an error says nothing of
-      // the kind, so its own reason (the error itself goes to the log).
+      // only when putBack says the name was taken; an error (one that cannot
+      // be put back, a FIFO or a socket, included) says nothing of the kind,
+      // so its own reason (the error itself goes to the log).
       let back = false;
       let why = "another file took the name first";
       let failReason = SWAPPED_REASON;
