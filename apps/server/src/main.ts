@@ -35,9 +35,11 @@
 // then pg-boss marks them failed; a slicer job then runs again on its
 // retries, an ingest job, never retried, fails visibly), then the database. Each step
 // has its own time limit and a step that fails or overruns is logged and the
-// next one runs, so the whole stop fits well inside SHUTDOWN_DEADLINE_MS. The
-// signal handler adds that deadline as a last resort: past 30 s the process
-// exits 1 whatever is still running.
+// next one runs, so the whole stop fits well inside SHUTDOWN_DEADLINE_MS.
+// Once the last step has run, stop() rejects if any step failed or overran,
+// or if pg-boss cut a job off at its timeout, so the process exits 1 and only
+// a clean stop exits 0 (#106). The signal handler adds that deadline as a
+// last resort: past 30 s the process exits 1 whatever is still running.
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
@@ -88,24 +90,89 @@ function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 300);
 }
 
+/** One step of a shutdown: what it stops, its time limit, and how. */
+export interface ShutdownStep {
+  label: string;
+  ms: number;
+  run(): Promise<unknown>;
+}
+
 /**
  * Runs one shutdown step. It never throws: a step that fails or takes longer
- * than ms is logged and the shutdown goes on to the next one.
+ * than its limit is logged, and what went wrong is returned so the shutdown
+ * can go on to the next step and still report it at the end.
  */
-async function step(label: string, ms: number, run: () => Promise<unknown>): Promise<void> {
+async function step({ label, ms, run }: ShutdownStep): Promise<string | undefined> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<"late">((resolve) => {
     timer = setTimeout(() => resolve("late"), ms);
   });
   try {
     const outcome = await Promise.race([run().then(() => "done" as const), late]);
-    if (outcome === "late") {
-      console.error(`shutdown: ${label} did not stop within ${ms / 1000} s; going on`);
-    }
+    if (outcome === "done") return undefined;
+    const problem = `${label} did not stop within ${ms / 1000} s`;
+    console.error(`shutdown: ${problem}; going on`);
+    return problem;
   } catch (error) {
-    console.error(`shutdown: stopping ${label} failed: ${describe(error)}`);
+    const problem = `stopping ${label} failed: ${describe(error)}`;
+    console.error(`shutdown: ${problem}`);
+    return problem;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Runs the steps in order. Every step runs even when an earlier one failed
+ * or overran; once the last has run, the shutdown rejects if any of them
+ * went wrong, naming each, so the process exits 1 rather than 0 (#106).
+ */
+export async function runShutdown(steps: readonly ShutdownStep[]): Promise<void> {
+  const problems: string[] = [];
+  for (const s of steps) {
+    const problem = await step(s);
+    if (problem !== undefined) problems.push(problem);
+  }
+  if (problems.length > 0) throw new Error(`the shutdown was not clean: ${problems.join("; ")}`);
+}
+
+/**
+ * Counts the job handlers that are running. pg-boss's graceful stop resolves
+ * the same way whether every active job finished or some were still running
+ * at its timeout (it marks those failed and stops waiting for them), so this
+ * count is how the shutdown tells the two apart.
+ */
+export function jobCounter() {
+  let running = 0;
+  return {
+    track<A extends unknown[], R>(handler: (...args: A) => Promise<R>) {
+      return async (...args: A): Promise<R> => {
+        running += 1;
+        try {
+          return await handler(...args);
+        } finally {
+          running -= 1;
+        }
+      };
+    },
+    running: (): number => running,
+  };
+}
+
+/**
+ * The pg-boss step: a graceful stop, which gives active jobs
+ * BOSS_STOP_TIMEOUT_MS. It fails when a job handler is still running once
+ * pg-boss has stopped, since pg-boss then cut that job off and marked it
+ * failed.
+ */
+export async function stopBoss(boss: Pick<PgBoss, "stop">, running: () => number): Promise<void> {
+  await boss.stop({ graceful: true, timeout: BOSS_STOP_TIMEOUT_MS });
+  const cut = running();
+  if (cut > 0) {
+    throw new Error(
+      `${cut} ${cut === 1 ? "job was" : "jobs were"} still running at the ` +
+        `${BOSS_STOP_TIMEOUT_MS / 1000} s limit and pg-boss marked ${cut === 1 ? "it" : "them"} failed`,
+    );
   }
 }
 
@@ -127,25 +194,34 @@ export async function start(config: Config): Promise<Server> {
   let app: FastifyInstance | undefined;
   let queuesRunning = false;
   let stopping: Promise<void> | undefined;
+  const jobs = jobCounter();
 
   async function shutdown(): Promise<void> {
     queuesRunning = false;
+    const steps: ShutdownStep[] = [];
     const http = app;
     if (http !== undefined) {
-      await step("the HTTP server", HTTP_CLOSE_GRACE_MS + 2_000, () =>
-        closeHttp(http, HTTP_CLOSE_GRACE_MS),
-      );
+      steps.push({
+        label: "the HTTP server",
+        ms: HTTP_CLOSE_GRACE_MS + 2_000,
+        run: () => closeHttp(http, HTTP_CLOSE_GRACE_MS),
+      });
     }
     const inbox = watcher;
-    if (inbox !== undefined) await step("the inbox watcher", WATCHER_STOP_MS, () => inbox.stop());
+    if (inbox !== undefined) {
+      steps.push({ label: "the inbox watcher", ms: WATCHER_STOP_MS, run: () => inbox.stop() });
+    }
     const queues = boss;
     if (queues !== undefined) {
-      await step("pg-boss", BOSS_STOP_TIMEOUT_MS + 2_000, () =>
-        queues.stop({ graceful: true, timeout: BOSS_STOP_TIMEOUT_MS }),
-      );
+      steps.push({
+        label: "pg-boss",
+        ms: BOSS_STOP_TIMEOUT_MS + 2_000,
+        run: () => stopBoss(queues, jobs.running),
+      });
     }
-    await step("the database", DB_CLOSE_MS, () => db.destroy());
-    store.destroy();
+    steps.push({ label: "the database", ms: DB_CLOSE_MS, run: () => db.destroy() });
+    steps.push({ label: "the storage client", ms: 1_000, run: async () => store.destroy() });
+    await runShutdown(steps);
   }
 
   const stop = (): Promise<void> => {
@@ -176,6 +252,13 @@ export async function start(config: Config): Promise<Server> {
       sliceTimeoutMs: sliceTimeoutMs(config.slicer.plateSeconds),
     });
     const derived = createDerived({ db, store, slicerUrl: config.slicer.url, queue: startedBoss });
+    // Two hooks on purpose, afterCommit here and onIngested below (Jon,
+    // 2026-11-11): afterCommit runs inside ingestFile, only for the attempt
+    // whose rows committed, while onIngested also runs on the inbox
+    // watcher's lost-answer path (inbox/watch.ts, earlierImport), where an
+    // earlier attempt's import is found and ingestFile is not called again.
+    // Folding the render into onIngested would change when renders are
+    // queued; a render that path misses is picked up by checkRenders.
     const ingest = createIngest({
       db,
       store,
@@ -186,16 +269,24 @@ export async function start(config: Config): Promise<Server> {
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
 
+    // Every handler a pg-boss worker runs is counted (jobs), so stopping
+    // pg-boss can tell a job cut off at its timeout from a clean stop. The
+    // inbox watcher's onIngested is not a job and stays uncounted.
+    const slicerJobs = Object.fromEntries(
+      Object.entries({ ...derivedJobHandlers(derived), ...estimates.slicerJobs }).map(
+        ([kind, handler]) => [kind, jobs.track(handler)],
+      ),
+    );
     const queueDeps: ServerQueueDeps = {
-      ingestFile: uploads.ingestUpload((input) => ingest.ingestFile(input)),
-      purgeExpired: (now) => trash.purgeExpired(now),
-      sweepOrphans: (now) => orphans.sweepOrphans(now),
-      sweepUploads: (now) => uploads.sweepStaleUploads(now),
-      slicerJobs: { ...derivedJobHandlers(derived), ...estimates.slicerJobs },
-      pollOrca: () => estimates.pollOrca(),
-      onIngested,
-      checkRenders: (now) => derived.checkRenders(now),
-      purgeSessions: (now) => repos.sessions.deleteExpired(now),
+      ingestFile: jobs.track(uploads.ingestUpload((input) => ingest.ingestFile(input))),
+      purgeExpired: jobs.track((now: Date) => trash.purgeExpired(now)),
+      sweepOrphans: jobs.track((now: Date) => orphans.sweepOrphans(now)),
+      sweepUploads: jobs.track((now: Date) => uploads.sweepStaleUploads(now)),
+      slicerJobs,
+      pollOrca: jobs.track(() => estimates.pollOrca()),
+      onIngested: jobs.track(onIngested),
+      checkRenders: jobs.track((now: Date) => derived.checkRenders(now)),
+      purgeSessions: jobs.track((now: Date) => repos.sessions.deleteExpired(now)),
     };
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;
