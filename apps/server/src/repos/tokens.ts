@@ -38,6 +38,17 @@ export function tokensRepo(db: Kysely<DB>) {
         .executeTakeFirst();
     },
 
+    /** Records that a live token was used at this time (Task 16; shown by Task 21). */
+    async touchLastUsed(id: string, at: Date): Promise<void> {
+      if (!isUuid(id)) return;
+      await db
+        .updateTable("apiTokens")
+        .set({ lastUsedAt: at })
+        .where("id", "=", id)
+        .where("revokedAt", "is", null)
+        .execute();
+    },
+
     /** Revokes one token; false when it is unknown or already revoked. */
     async revoke(id: string): Promise<boolean> {
       if (!isUuid(id)) return false;

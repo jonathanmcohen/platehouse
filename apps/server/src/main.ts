@@ -24,7 +24,10 @@
 //      OIDC_ISSUER with redirect_uri absoluteUrl('/auth/callback'), and the
 //      login cookie's key derived from LINK_SECRET (loginCookieKey). Pocket
 //      ID is not contacted at startup, only at the first login, so the
-//      server starts while it is down.
+//      server starts while it is down. The Public API v1 (Task 16) gets
+//      tokens from the api_tokens table and reads the library through the
+//      same database, store and estimates.plateNumbers; it never touches
+//      Pocket ID, so API tokens keep working while it is down (AC-081).
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
@@ -38,6 +41,8 @@
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
+import { createTokens, dbTokenStore } from "./api/tokens.js";
+import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
@@ -227,6 +232,14 @@ export async function start(config: Config): Promise<Server> {
         absoluteUrl: (path) => config.absoluteUrl(path),
         group: config.oidc.group,
         cookieSecret: loginCookieKey(config.linkSecret),
+      },
+      api: {
+        tokens: createTokens({ store: dbTokenStore(db) }),
+        library: createApiLibrary({
+          db,
+          store,
+          plateNumbers: (plateId) => estimates.plateNumbers(plateId),
+        }),
       },
       logger: true,
     });
