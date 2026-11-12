@@ -479,7 +479,7 @@ const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SLICER_DOWN_MESSAGE =
   "The slicer is not answering. The render will need to be started again.";
 const REPLACE_SLICER_DOWN_MESSAGE =
-  "The slicer is not answering, so the previous version is kept. The replacement will need to be sent again.";
+  "The slicer is not answering, so the replacement was not saved. It will need to be sent again.";
 const LIVE = new Set(["created", "retry", "active"]);
 
 /** DerivedDeps.now: a clock the test moves by hand. */
@@ -637,7 +637,7 @@ describe("a slicer that stays down (issue #100)", () => {
 
 const STORE_DOWN_MESSAGE = "Storage is not answering. The render will need to be started again.";
 const REPLACE_STORE_DOWN_MESSAGE =
-  "Storage is not answering, so the previous version is kept. The replacement will need to be sent again.";
+  "Storage is not answering, so the replacement was not saved. It will need to be sent again.";
 
 /** The env's store with reads, writes or both failing as StoreUnavailable; deletes still work. */
 function storeDown(opts: { reads?: boolean; writes?: boolean }): DerivedStore {
@@ -760,8 +760,7 @@ describe("a store that cannot be reached (uses no retry)", () => {
 });
 
 const STORE_REFUSED_MESSAGE = "Storage refused this file, so the render could not finish.";
-const REPLACE_STORE_REFUSED_MESSAGE =
-  "Storage refused the replacement, so the previous version is kept.";
+const REPLACE_STORE_REFUSED_MESSAGE = "Storage refused the replacement, so it was not saved.";
 
 /** Synthetic store settings for a scripted fake S3 endpoint. */
 function fakeSettings(endpoint: string): Config["s3"] {
@@ -1016,7 +1015,11 @@ describe("the slicer queue's worker", () => {
 
 /** Put before OpenSCAD's message when the STL and preview are from an earlier source than the file's. */
 const PREVIOUS_RENDERS_SCAD =
-  "OpenSCAD rejected this file, so the STL and preview shown are from the previous version. OpenSCAD said:";
+  "OpenSCAD rejected the current version of this file, so the STL and preview shown are from an earlier version. OpenSCAD said:";
+
+/** A replacement the slicer could not render, or whose render did not finish, is dropped. */
+const REPLACE_FAILED_MESSAGE = "The slicer could not render the replacement, so it was not saved.";
+const REPLACE_LOST_MESSAGE = "The render of the replacement did not finish, so it was not saved.";
 
 describe("replacing a .scad (AC-053)", () => {
   test("replacing a .scad renders a new STL and preview and removes the old blobs", async () => {
@@ -1080,7 +1083,7 @@ describe("replacing a .scad (AC-053)", () => {
       size: before.size,
       renderStlBlobId: before.renderStlBlobId,
       renderPngBlobId: before.renderPngBlobId,
-      derivedMessage: DERIVED_MESSAGES.replaceFailed,
+      derivedMessage: REPLACE_FAILED_MESSAGE,
     });
     expect(after?.sha256).toEqual(before.sha256);
     // No staged source and no half render left behind, in rows or objects.
@@ -1701,7 +1704,7 @@ describe("the render check (issues #90 and #91)", () => {
       renderStlBlobId: before.renderStlBlobId,
       renderPngBlobId: before.renderPngBlobId,
       derivedStatus: "failed",
-      derivedMessage: DERIVED_MESSAGES.replaceLost,
+      derivedMessage: REPLACE_LOST_MESSAGE,
     });
     // The staged source's row and object are gone; nothing else is.
     const blobs = await blobsOf(env, modelId);
@@ -1790,7 +1793,7 @@ describe("the render check (issues #90 and #91)", () => {
 // own message. Only the sentence goes, not "OpenSCAD said:", which would put
 // the slicer's or the store's words in OpenSCAD's mouth.
 const PREVIOUS_VERSION_SCAD =
-  "OpenSCAD rejected this file, so the STL and preview shown are from the previous version.";
+  "OpenSCAD rejected the current version of this file, so the STL and preview shown are from an earlier version.";
 
 describe("after a rejected replacement, a later failure keeps the previous-version sentence (issue #104)", () => {
   afterEach(async () => {
@@ -1952,7 +1955,7 @@ describe("after a rejected replacement, a later failure keeps the previous-versi
 
     const result = await env.derived.checkRenders(pastGrace());
     expect(result.failed).toContain(fileId);
-    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceLost);
+    await expectKept(fileId, before, rejectedBlobId, REPLACE_LOST_MESSAGE);
   });
 
   test("a render of the rejected source that cannot be queued keeps the sentence", async () => {

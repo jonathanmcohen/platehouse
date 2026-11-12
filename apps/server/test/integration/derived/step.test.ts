@@ -66,7 +66,7 @@ async function uploadStep(text: string, name = "Housing.step") {
 
 /** Put before the converter's message when the mesh is from an earlier source than the file's. */
 const PREVIOUS_MESH =
-  "The STEP converter rejected this file, so the mesh shown is from the previous version. The converter said:";
+  "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version. The converter said:";
 
 describe("STEP meshes (AC-050)", () => {
   test("a .step upload produces a GLB mesh blob", async () => {
@@ -485,7 +485,11 @@ describe("a store that goes away while a STEP source is sent", () => {
 // render check finds dead, keeps that sentence before its own message. Only
 // the sentence goes, not "The converter said:".
 const PREVIOUS_VERSION_STEP =
-  "The STEP converter rejected this file, so the mesh shown is from the previous version.";
+  "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version.";
+
+/** A further replacement the store refused, or whose conversion did not finish, is dropped. */
+const REPLACE_STORE_REFUSED_MESSAGE = "Storage refused the replacement, so it was not saved.";
+const REPLACE_LOST_MESSAGE = "The render of the replacement did not finish, so it was not saved.";
 
 describe("after a rejected STEP replacement, a later failure keeps the previous-version sentence (issue #104)", () => {
   /** A queue that holds each job an hour, so only the test runs it; retryLimit 0 when noRetries. */
@@ -624,7 +628,7 @@ describe("after a rejected STEP replacement, a later failure keeps the previous-
       status: "failed",
       reason: "store_refused",
     });
-    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceStoreRefused);
+    await expectKept(fileId, before, rejectedBlobId, REPLACE_STORE_REFUSED_MESSAGE);
     expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(blobsBefore);
   });
 
@@ -641,7 +645,7 @@ describe("after a rejected STEP replacement, a later failure keeps the previous-
       new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
     );
     expect(result.failed).toContain(fileId);
-    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceLost);
+    await expectKept(fileId, before, rejectedBlobId, REPLACE_LOST_MESSAGE);
   });
 
   test("a conversion of the rejected source that cannot be queued keeps the sentence", async () => {
