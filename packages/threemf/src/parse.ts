@@ -8,6 +8,11 @@
 //   read (one with '..' or an absolute path, say) never makes a damaged file;
 // - the plate list comes from model_settings.config, else the plate_N.png
 //   names; a plate index from either is kept only as a safe integer from 1;
+// - a plate index or filament slot past 2147483647 is damage, whatever its
+//   source, because plates.index and the slot columns are 32-bit Postgres
+//   integers (#78);
+// - every text value returned has NUL removed, because Postgres text cannot
+//   hold it (#78); a value that was only NUL reads as absent;
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - only the parser's own reads of the file (opening the zip, listing it,
@@ -32,6 +37,8 @@ const MODEL = "3D/3dmodel.model";
 const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(_small)?\.png$/;
 const COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 const INTEGER = /^\s*-?[0-9]+\s*$/;
+/** The largest plate index or filament slot the database holds (Postgres integer). */
+const MAX_STORED_INDEX = 2147483647;
 const RESOURCES = Buffer.from("<resources", "latin1");
 const READ_CHUNK = 64 * 1024;
 
@@ -370,7 +377,7 @@ async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<
     return end < 0 && buf.length < MODEL_PREFIX_BYTES;
   });
   const stop = end < 0 ? buf.length : end;
-  return buf.subarray(0, Math.min(stop, MODEL_PREFIX_BYTES)).toString("utf8");
+  return withoutNul(buf.subarray(0, Math.min(stop, MODEL_PREFIX_BYTES)).toString("utf8"));
 }
 
 /**
@@ -460,6 +467,25 @@ function int(v: unknown): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+/**
+ * A plate index or filament slot: int(v), except that a whole number past
+ * MAX_STORED_INDEX is damage, never a skipped value. That covers numbers past
+ * Number.MAX_SAFE_INTEGER too (Number gives Infinity for 400 digits), so no
+ * size of number can become a plate or a slot the database cannot store.
+ * Anything that is not a whole number stays null, as int has it.
+ */
+function storedIndex(v: unknown): number | null {
+  if (typeof v === "string" && INTEGER.test(v) && Number(v) > MAX_STORED_INDEX) {
+    throw new Damaged("plate index or filament slot past the 32-bit range");
+  }
+  return int(v);
+}
+
+/** The text with every NUL removed: Postgres text cannot hold one (#78). */
+function withoutNul(s: string): string {
+  return s.replaceAll("\u0000", "");
+}
+
 function nonNegative(v: unknown): number | null {
   if (typeof v !== "string" || v.trim() === "") return null;
   const n = Number(v);
@@ -485,9 +511,9 @@ function platesFromModelSettings(text: string | null): Listed[] | null {
   const seen = new Map<number, Listed>();
   for (const block of blocks) {
     const meta = metadata(block);
-    const index = int(meta.get("plater_id"));
+    const index = storedIndex(meta.get("plater_id"));
     if (index === null || index < 1 || seen.has(index)) continue;
-    const name = meta.get("plater_name") ?? "";
+    const name = withoutNul(meta.get("plater_name") ?? "");
     seen.set(index, {
       index,
       // A blank name is no name, so the page shows "Plate N" for it.
@@ -502,10 +528,9 @@ function platesFromModelSettings(text: string | null): Listed[] | null {
 function platesFromPngs(entries: Map<string, yauzl.Entry>): Listed[] {
   const indexes = new Set<number>();
   for (const name of entries.keys()) {
-    // The same safe-integer check as plater_id: a name whose N is past
-    // Number.MAX_SAFE_INTEGER (from 9007199254740992, so every name of 17
-    // digits or more) is not a plate.
-    const index = int(PLATE_PNG.exec(name)?.[1]);
+    // The same check as plater_id: a name whose N is past 2147483647, of
+    // any length, is damage (#78).
+    const index = storedIndex(PLATE_PNG.exec(name)?.[1]);
     if (index !== null) indexes.add(index);
   }
   if (indexes.size > LIMITS.plates) throw new Damaged("too many plate thumbnails");
@@ -528,17 +553,17 @@ function sliceData(text: string | null): Map<number, Slice> {
   for (const block of nodes(config.plate)) {
     if (count(block.filament) > LIMITS.filaments) throw new Damaged("too many plate filaments");
     const meta = metadata(block);
-    const index = int(meta.get("index"));
+    const index = storedIndex(meta.get("index"));
     const prediction = int(meta.get("prediction"));
     if (index === null || index < 1 || out.has(index)) continue;
     if (prediction === null || prediction < 1 || prediction > LIMITS.predictionSeconds) continue;
     const slice: Slice = {
       predictionSeconds: prediction,
       filaments: nodes(block.filament).map((f, i) => {
-        const slot = int(f.id);
+        const slot = storedIndex(f.id);
         return {
           slot: slot !== null && slot >= 1 ? slot : i + 1,
-          type: typeof f.type === "string" ? f.type : "",
+          type: typeof f.type === "string" ? withoutNul(f.type) : "",
           colour: colour(f.color),
           grams: nonNegative(f.used_g),
         };
@@ -546,7 +571,7 @@ function sliceData(text: string | null): Map<number, Slice> {
     };
     const weight = nonNegative(meta.get("weight"));
     if (weight !== null) slice.weightGrams = weight;
-    const printerModelId = meta.get("printer_model_id") ?? "";
+    const printerModelId = withoutNul(meta.get("printer_model_id") ?? "");
     const nozzle = nonNegative(
       meta
         .get("nozzle_diameters")
@@ -565,7 +590,7 @@ function sliceData(text: string | null): Map<number, Slice> {
 
 function strings(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
-  return v.map((x) => (typeof x === "string" ? x : ""));
+  return v.map((x) => (typeof x === "string" ? withoutNul(x) : ""));
 }
 
 function projectSettings(text: string | null): { filaments: Filament[]; processName?: string } {
@@ -590,8 +615,7 @@ function projectSettings(text: string | null): { filaments: Filament[]; processN
     grams: null,
   }));
   const raw = data.print_settings_id;
-  const process = Array.isArray(raw) ? raw[0] : raw;
-  return typeof process === "string" && process !== ""
-    ? { filaments, processName: process }
-    : { filaments };
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  const process = typeof first === "string" ? withoutNul(first) : "";
+  return process !== "" ? { filaments, processName: process } : { filaments };
 }
