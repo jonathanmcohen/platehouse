@@ -15,6 +15,19 @@ import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
 /**
+ * The sentence that says the renders a file shows are from an earlier
+ * source than its own, for a .scad (STL and preview) and a STEP file
+ * (mesh). It is written here once: previousRendersScad and
+ * previousRendersStep below add the lead-in to the program's own words,
+ * and derived.ts puts it, without a lead-in, before a later failure's
+ * message while those renders are still shown (issue #104).
+ */
+export const PREVIOUS_RENDERS_SENTENCE = {
+  scad: "OpenSCAD rejected this file, so the STL and preview shown are from the previous version.",
+  step: "The STEP converter rejected this file, so the mesh shown is from the previous version.",
+} as const;
+
+/**
  * What files.derived_message holds when the slicer or the store, not
  * OpenSCAD or the STEP converter, is why a file has no render. A render or
  * conversion error stores the program's own message instead, after
@@ -56,11 +69,9 @@ export const DERIVED_MESSAGES = {
    * source (a replacement OpenSCAD rejected becomes the source, and the
    * previous version's renders stay until a render succeeds; issue #103).
    */
-  previousRendersScad:
-    "OpenSCAD rejected this file, so the STL and preview shown are from the previous version. OpenSCAD said:",
+  previousRendersScad: `${PREVIOUS_RENDERS_SENTENCE.scad} OpenSCAD said:`,
   /** The same, before the STEP converter's own message, for a mesh from an earlier source. */
-  previousRendersStep:
-    "The STEP converter rejected this file, so the mesh shown is from the previous version. The converter said:",
+  previousRendersStep: `${PREVIOUS_RENDERS_SENTENCE.step} The converter said:`,
   /** A .scad over the contract's 1 MiB limit is never sent. */
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */

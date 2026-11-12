@@ -161,6 +161,7 @@ import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../s
 import {
   DERIVED_MESSAGES,
   isRetryable,
+  PREVIOUS_RENDERS_SENTENCE,
   RENDER_TIMEOUT_MS,
   RENDER_UPLOAD_TIMEOUT_MS,
   RenderFailed,
@@ -356,19 +357,18 @@ const PREVIOUS_RENDERS: Readonly<Record<DerivedKind, string>> = {
 
 /**
  * The same sentence without its lead-in to the program's words ("OpenSCAD
- * said:", "The converter said:"): what goes before a later final failure
- * that is the slicer's or the store's, a render that could not be queued,
- * or a render the render check found dead, while the renders the file shows are still from an earlier source
- * (issue #104). The lead-in would put the slicer's or the store's message
- * in the program's mouth. Renders older than the file's source only stay
- * attached after the program rejected that source (commitRenderError), so
- * the sentence is still true when it is used.
+ * said:", "The converter said:"), PREVIOUS_RENDERS_SENTENCE from client.ts:
+ * what goes before a later final failure that is the slicer's or the
+ * store's, a render that could not be queued, or a render the render check
+ * found dead, while the renders the file shows are still from an earlier
+ * source (issue #104). The lead-in would put the slicer's or the store's
+ * message in the program's mouth. Renders older than the file's source only
+ * stay attached after the program rejected that source (commitRenderError),
+ * so the sentence is still true when it is used.
  */
-const PREVIOUS_RENDERS_SENTENCE: Readonly<Record<DerivedKind, string>> = {
-  [DERIVED_KINDS.renderScad]:
-    "OpenSCAD rejected this file, so the STL and preview shown are from the previous version.",
-  [DERIVED_KINDS.convertStep]:
-    "The STEP converter rejected this file, so the mesh shown is from the previous version.",
+const PREVIOUS_RENDERS_SENTENCE_OF: Readonly<Record<DerivedKind, string>> = {
+  [DERIVED_KINDS.renderScad]: PREVIOUS_RENDERS_SENTENCE.scad,
+  [DERIVED_KINDS.convertStep]: PREVIOUS_RENDERS_SENTENCE.step,
 };
 
 /** What a job waits out without using a retry: a slicer or a store that is down. */
@@ -940,7 +940,7 @@ export function createDerived(deps: DerivedDeps) {
     message: string,
   ): Promise<string> {
     return (await rendersPredate(trx, row, jobKind, row.blobId, false))
-      ? `${PREVIOUS_RENDERS_SENTENCE[jobKind]} ${message}`
+      ? `${PREVIOUS_RENDERS_SENTENCE_OF[jobKind]} ${message}`
       : message;
   }
 
