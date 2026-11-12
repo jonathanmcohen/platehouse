@@ -486,7 +486,12 @@ describe("the operations", () => {
       const head = await fetch(url, { method: "HEAD", headers });
       await head.arrayBuffer();
       const get = await call("GET", `/api/v1/files/${fileId}/content`);
-      return { head: head.status, get: get.status, body: get.json() };
+      // A 200 carries the file's bytes, not JSON, so only an error is parsed.
+      return {
+        head: head.status,
+        get: get.status,
+        body: get.status === 200 ? get.text : get.json(),
+      };
     };
     const unavailable = { error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE };
 
@@ -510,7 +515,7 @@ describe("the operations", () => {
     } finally {
       storeDown = false;
     }
-    expect(await headAndGet(down.fileId ?? "")).toMatchObject({ head: 200, get: 200 });
+    expect(await headAndGet(down.fileId ?? "")).toEqual({ head: 200, get: 200, body: ASCII_STL });
   });
 
   test("add and remove tag", async () => {
