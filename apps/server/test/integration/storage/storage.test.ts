@@ -20,6 +20,7 @@ import {
   BlobNotFound,
   type BlobStore,
   createBlobStore,
+  objectSize,
   StoreError,
   StoreUnavailable,
 } from "../../../src/storage/s3.js";
@@ -164,6 +165,24 @@ describe("putBlob", () => {
 });
 
 describe("getBlobStream", () => {
+  it("reports the stored object's size, also after the object is overwritten", async () => {
+    const bucket = await newBucket();
+    const store = storeFor(bucket);
+    const key = blobKey(randomUUIDv7(), randomUUIDv7());
+    await store.putBlob(streamOf(randomBytes(1234)), { key, size: 1234, contentType: "model/stl" });
+    const stream = await store.getBlobStream(key);
+    expect(objectSize(stream)).toBe(1234);
+    expect((await buffer(stream)).length).toBe(1234);
+    // A restored older version, or a write behind the app's back, changes
+    // the object under the same key; the size reported is the new one.
+    await server().client.send(
+      new PutObjectCommand({ Bucket: bucket, Key: key, Body: randomBytes(99) }),
+    );
+    const again = await store.getBlobStream(key);
+    expect(objectSize(again)).toBe(99);
+    again.destroy();
+  });
+
   it("a missing key is BlobNotFound, not StoreUnavailable", async () => {
     const store = storeFor(await newBucket());
     const err = await errorOf(store.getBlobStream(blobKey(randomUUIDv7(), randomUUIDv7())));

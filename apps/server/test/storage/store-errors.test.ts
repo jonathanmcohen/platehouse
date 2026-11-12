@@ -12,6 +12,8 @@ import {
   BlobNotFound,
   type BlobStore,
   createBlobStore,
+  objectSize,
+  reportObjectSize,
   StoreError,
   StoreUnavailable,
   WRITE_CHECK_KEY,
@@ -169,6 +171,26 @@ describe("getBlobStream when the store goes away partway through the body", () =
     cleanups.push(() => store.destroy());
     const err = await errorOf(readBody(store));
     expect(err).toBeInstanceOf(StoreUnavailable);
+  });
+
+  // PR #156 security review: delivery compares the object's real size with
+  // the recorded one before it sends a header, so the stream carries the
+  // Content-Length the store answered GetObject with.
+  it("reports the object's size as the store sent it", async () => {
+    const store = await storeAt(() => ({
+      status: 200,
+      headers: { "content-type": "application/octet-stream" },
+      body: "synthetic object bytes",
+    }));
+    const stream = await store.getBlobStream(KEY);
+    expect(objectSize(stream)).toBe(22);
+    stream.destroy();
+  });
+
+  it("reports no size for a stream the store did not open", () => {
+    expect(objectSize(Readable.from([Buffer.from("abc")]))).toBeUndefined();
+    const reported = reportObjectSize(Readable.from([Buffer.from("abc")]), 3);
+    expect(objectSize(reported)).toBe(3);
   });
 
   it("a body read to its end is passed through unchanged", async () => {
