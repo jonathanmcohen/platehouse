@@ -67,6 +67,7 @@ import {
   SWAPPED_REASON,
   TOO_LARGE_REASON,
   tooLargeReason,
+  UNCHECKED_REASON,
   UNCONFIRMED_REASON,
   UNREMOVED_REASON,
 } from "../../src/inbox/watch.js";
@@ -1191,30 +1192,74 @@ describe("an imported file whose check or delete in its holding folder fails", (
   // be the imported file, and putting it back under its name (a link, or a
   // copy under EPERM) moves its ctime, so a restart would take it for a new
   // arrival, give it new ids and import it a second time (#124, the second
-  // path of #95). So it is never put back. The stored copy was confirmed,
-  // so its reason says it was stored but not removed (UNREMOVED_REASON),
-  // never that the stored copy could not be confirmed.
+  // path of #95). So it is never put back. When the unlink throws, what is
+  // held was first shown to be the imported file and its stored copy was
+  // confirmed, so its reason says it was stored but not removed
+  // (UNREMOVED_REASON), never that the stored copy could not be confirmed.
+  // When the lstat or the fstat throws, that was never shown: a newer file
+  // may have been renamed over the name just before it was held, so its
+  // reason never says it was imported (UNCHECKED_REASON, #135).
   const name = "held.stl";
   const TEXT = "solid held\nendsolid held\n";
+  const NEWER = "solid newer, put under the name\nendsolid newer\n";
 
-  /** Makes the first lstat or unlink of the held file fail with EIO. */
-  function failInHold(fault: "lstat" | "unlink"): () => boolean {
+  const inHold = (at: string) =>
+    at.startsWith(join(inbox, HOLD_PREFIX)) && at.endsWith(`${sep}${name}`);
+
+  /**
+   * Makes the first lstat or unlink of the held file fail with EIO, or, for
+   * fstat, the first stat of the open inbox file after that lstat: the
+   * check that would show whether what is held is the imported file.
+   */
+  function failInHold(fault: "lstat" | "fstat" | "unlink"): () => boolean {
     let fired = false;
-    const hook = async (at: string) => {
-      if (fired || !at.startsWith(join(inbox, HOLD_PREFIX)) || !at.endsWith(`${sep}${name}`)) {
-        return;
-      }
+    const fail = (at: string) => {
       fired = true;
-      throw coded(`EIO: i/o error, ${fault} '${at}'`, "EIO");
+      return coded(`EIO: i/o error, ${fault} '${at}'`, "EIO");
+    };
+    if (fault === "fstat") {
+      let armed = false;
+      fsHooks.beforeLstat = async (at) => {
+        if (!fired && inHold(at)) armed = true;
+      };
+      fsHooks.wrap = (opened, handle) => {
+        if (opened !== join(inbox, name)) return handle;
+        return patched(handle, {
+          stat: async (...args: unknown[]) => {
+            if (armed && !fired) throw fail(opened);
+            return Reflect.apply(handle.stat, handle, args);
+          },
+        });
+      };
+      return () => fired;
+    }
+    const hook = async (at: string) => {
+      if (fired || !inHold(at)) return;
+      throw fail(at);
     };
     if (fault === "lstat") fsHooks.beforeLstat = hook;
     else fsHooks.beforeUnlink = hook;
     return () => fired;
   }
 
-  test.each([["lstat"], ["unlink"]] as const)(
-    "when its %s throws, it moves to failed with a reason that says it was stored but not removed from the inbox, is never put back under its name, and is not imported again after a restart",
-    async (fault) => {
+  /** Renames NEWER over the name at the moment the watcher moves it into its holding folder. */
+  function newerAtHold(): () => boolean {
+    let swapped = false;
+    fsHooks.beforeCreate = async (newPath) => {
+      if (swapped || !inHold(newPath)) return;
+      swapped = true;
+      renameOverSync(name, NEWER);
+    };
+    return () => swapped;
+  }
+
+  test.each([
+    ["lstat", "a reason that never says it was imported", UNCHECKED_REASON],
+    ["fstat", "a reason that never says it was imported", UNCHECKED_REASON],
+    ["unlink", "a reason that says it was stored but not removed from the inbox", UNREMOVED_REASON],
+  ] as const)(
+    "when its %s throws, it moves to failed with %s, is never put back under its name, and is not imported again after a restart",
+    async (fault, _l, reason) => {
       const fake = fakeIngest();
       const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
       const w = watcher(fake, deps);
@@ -1226,10 +1271,10 @@ describe("an imported file whose check or delete in its holding folder fails", (
 
       expect(fired()).toBe(true);
       expect(pass.imported.map((i) => i.name)).toEqual([name]);
-      expect(pass.failed).toEqual([{ name, reason: UNREMOVED_REASON }]);
+      expect(pass.failed).toEqual([{ name, reason: reason }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
       expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-        `${UNREMOVED_REASON}\n`,
+        `${reason}\n`,
       );
       // Nothing under the name, no holding folder left, the error logged.
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
@@ -1244,9 +1289,13 @@ describe("an imported file whose check or delete in its holding folder fails", (
     },
   );
 
-  test.each([["lstat"], ["unlink"]] as const)(
+  test.each([
+    ["lstat", UNCHECKED_REASON],
+    ["fstat", UNCHECKED_REASON],
+    ["unlink", UNREMOVED_REASON],
+  ] as const)(
     "when its %s throws and the failed folder is unusable, it stays in its holding folder, is not imported again after a restart, and moves to failed with that reason once the folder is usable",
-    async (fault) => {
+    async (fault, reason) => {
       const fake = fakeIngest();
       const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
       const w = watcher(fake, deps);
@@ -1268,7 +1317,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       const held = join(inbox, holds[0] ?? "", name);
       expect(await readFile(held, "utf8")).toBe(TEXT);
       expect(lines.some((l) => l.includes(name) && l.includes("EIO"))).toBe(true);
-      expect(lines.some((l) => l.includes(held) && l.includes(UNREMOVED_REASON))).toBe(true);
+      expect(lines.some((l) => l.includes(held) && l.includes(reason))).toBe(true);
       await tick(w, 15_000);
       await tick(w, 15_000);
       expect(fake.calls).toEqual([name]);
@@ -1283,7 +1332,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(swept.failed).toEqual([]);
       expect(fake.calls).toEqual([name]);
       expect(await readFile(held, "utf8")).toBe(TEXT);
-      expect(lines.some((l) => l.includes(name) && l.includes(UNREMOVED_REASON))).toBe(true);
+      expect(lines.some((l) => l.includes(name) && l.includes(reason))).toBe(true);
       expect(lines.some((l) => l.includes(HELD_REASON))).toBe(false);
 
       // Once the folder is usable, the next restart moves it to failed, kept,
@@ -1291,7 +1340,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       await rm(join(inbox, FAILED_DIR));
       const fixed = watcher(fake, deps);
       const moved = await fixed.pollOnce();
-      expect(moved.failed).toEqual([{ name, reason: UNREMOVED_REASON }]);
+      expect(moved.failed).toEqual([{ name, reason: reason }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
       await tick(fixed, 15_000);
@@ -1299,6 +1348,55 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(fake.calls).toEqual([name]);
     },
   );
+
+  test.each([["lstat"], ["fstat"]] as const)(
+    "a newer file renamed over the name just before it is held, whose %s there throws, moves to failed with a reason that never says it was imported",
+    async (fault) => {
+      // The check after the import passed, then a writer renamed a newer
+      // file over the name, so the newer file is what is held. Its check
+      // throws, so nothing showed it is the imported file: a reason saying
+      // it was imported and stored would lead Jon to delete it as a
+      // duplicate of the model already in the library (#135).
+      const fake = fakeIngest();
+      const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
+      const w = watcher(fake, deps);
+      const swapped = newerAtHold();
+      const fired = failInHold(fault);
+      await writeFile(join(inbox, name), TEXT);
+      await w.pollOnce();
+      const pass = await tick(w, 15_000);
+
+      expect(swapped()).toBe(true);
+      expect(fired()).toBe(true);
+      expect(pass.imported.map((i) => i.name)).toEqual([name]);
+      expect(pass.failed).toEqual([{ name, reason: UNCHECKED_REASON }]);
+      expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(NEWER);
+      const why = await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8");
+      expect(why).toBe(`${UNCHECKED_REASON}\n`);
+      expect(why).not.toBe(`${UNREMOVED_REASON}\n`);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    },
+  );
+
+  test("an imported file whose delete throws after it was shown to be the imported file keeps UNREMOVED_REASON", async () => {
+    // The lstat and fstat both answered and showed the same file, its size
+    // and mtime unchanged, so only the unlink failed: it was imported and
+    // stored, and the reason may say so.
+    const fake = fakeIngest();
+    const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
+    const w = watcher(fake, deps);
+    const fired = failInHold("unlink");
+    await writeFile(join(inbox, name), TEXT);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(fired()).toBe(true);
+    expect(pass.failed).toEqual([{ name, reason: UNREMOVED_REASON }]);
+    expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
+    expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
+      `${UNREMOVED_REASON}\n`,
+    );
+  });
 
   test("when its lstat throws after an import that could not be confirmed, it moves to failed with UNCONFIRMED_REASON", async () => {
     // No record of the stored file: the stored copy really was not confirmed,
