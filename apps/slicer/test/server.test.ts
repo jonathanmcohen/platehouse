@@ -750,7 +750,7 @@ describe("OpenSCAD and STEP", () => {
   // prlimit sets the limits on itself and then runs landrun, which runs
   // OpenSCAD: limits are inherited across exec, so OpenSCAD runs under them.
   // landrun is outside the sandbox's own rules, so prlimit must come first.
-  test("OpenSCAD runs under prlimit with CPU-time, address-space, process-count and file-size limits", async () => {
+  test("OpenSCAD runs under prlimit with CPU-time, address-space, process-count, file-size and core-file limits", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
     const base = await start({ ...s.config, landrunBin: lr.bin });
@@ -763,6 +763,7 @@ describe("OpenSCAD and STEP", () => {
       "--as=4294967296",
       "--nproc=512",
       "--fsize=268435456",
+      "--core=0",
     ]);
     expect(args[at + 1]).toBe(lr.bin);
     expect(args.slice(at + 2)).toContain("--best-effort");

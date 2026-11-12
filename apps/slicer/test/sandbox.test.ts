@@ -170,13 +170,22 @@ describe("prlimit arguments", () => {
     expect(prlimitArgs(30)).toContain("--cpu=180");
   });
 
-  test("address space is the container's 4 GiB, processes are capped at 512 and files at 256 MiB", () => {
+  test("address space is the container's 4 GiB, processes are capped at 512, files at 256 MiB and core files at 0", () => {
     expect(prlimitArgs(120)).toEqual([
       "--cpu=540",
       "--as=4294967296",
       "--nproc=512",
       "--fsize=268435456",
+      "--core=0",
     ]);
+  });
+
+  // SIGXFSZ, which the file-size limit sends, dumps core by default. With
+  // the core-file size at 0 a render a request makes too big on purpose
+  // leaves no core file in /work and sends none to the host's handler.
+  test("the core-file size limit is 0, so a render the file-size limit stops dumps no core", () => {
+    expect(prlimitArgs(120)).toContain("--core=0");
+    expect(prlimitArgs(30)).toContain("--core=0");
   });
 
   // The file-size limit stops OpenSCAD while it writes past the render output

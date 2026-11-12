@@ -22,8 +22,9 @@
 // check has passed.
 //
 // OpenSCAD also runs under prlimit (prlimitArgs): kernel limits on CPU
-// time, address space and process count, a second line behind the server's
-// wall-clock cap and the container's own limits.
+// time, address space, process count, file size and core-file size, a
+// second line behind the server's wall-clock cap and the container's own
+// limits.
 //
 // runGroup, below, is how the server runs every external program (Orca,
 // prlimit and landrun with OpenSCAD, the STEP worker): in its own process
@@ -174,8 +175,12 @@ export const MAX_RENDER_OUTPUT_BYTES = 256 * 1024 * 1024;
  * prlimit's arguments, before its "--". The CPU-time limit is the wall-clock
  * cap on SLICER_CPUS CPUs plus CPU_MARGIN_SECONDS (540 s at the default 120 s
  * cap), so it stops only a render the wall-clock kill somehow missed. The
- * file-size limit is MAX_RENDER_OUTPUT_BYTES. Each value sets the soft and
- * the hard limit.
+ * file-size limit is MAX_RENDER_OUTPUT_BYTES. The core-file size is 0:
+ * SIGXFSZ, which the file-size limit sends, dumps core by default, and a
+ * request can make a render too big on purpose, so without it each such
+ * render could leave a core of up to the address-space limit in /work or
+ * hand one to the host's core handler. Each value sets the soft and the
+ * hard limit.
  */
 export function prlimitArgs(timeoutSeconds: number): string[] {
   return [
@@ -183,6 +188,7 @@ export function prlimitArgs(timeoutSeconds: number): string[] {
     `--as=${OPENSCAD_ADDRESS_SPACE_BYTES}`,
     `--nproc=${OPENSCAD_PROCESS_LIMIT}`,
     `--fsize=${MAX_RENDER_OUTPUT_BYTES}`,
+    "--core=0",
   ];
 }
 
