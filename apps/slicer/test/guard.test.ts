@@ -13,7 +13,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { type Sent, streamChunked } from "./support/http.js";
+import type { Sent } from "./support/http.js";
 
 const GUARD = new URL("../src/guard.ts", import.meta.url).href;
 
@@ -66,6 +66,9 @@ const server = createServer(
         return never();
       case "/hang":
         whenRequestFails(() => log("cleanup ran for /hang"));
+        return never();
+      case "/hang-beside-data":
+        whenRequestFails(() => log("cleanup ran for /hang-beside-data"));
         return never();
       default:
         res.writeHead(404);
@@ -137,6 +140,40 @@ function get(path: string): Promise<Sent> {
   });
 }
 
+/**
+ * A POST that sends its headers at once and its first body chunk `ms` later,
+ * so the chunk reaches the server only after the handler has run.
+ */
+function postBodyLater(url: string, ms: number): Promise<Sent> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r: Sent) => {
+      if (!done) {
+        done = true;
+        resolve(r);
+      }
+    };
+    const req = request(
+      url,
+      { method: "POST", agent: false, headers: { "content-type": "application/octet-stream" } },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => {
+          body += c;
+        });
+        res.on("end", () => finish({ status: res.statusCode ?? 0, body }));
+        res.on("error", (e) => finish({ error: e.message }));
+      },
+    );
+    req.on("error", (e: NodeJS.ErrnoException) => finish({ error: e.code ?? e.message }));
+    req.flushHeaders();
+    setTimeout(() => {
+      if (!req.destroyed) req.write(Buffer.alloc(1024, 1));
+    }, ms);
+  });
+}
+
 async function expectStillServing(): Promise<void> {
   expect(child.exitCode).toBeNull();
   expect(child.signalCode).toBeNull();
@@ -174,10 +211,28 @@ describe("crash guard", () => {
     await expectStillServing();
   });
 
-  test("a request data listener that throws fails that request and nothing else", async () => {
-    const res = await streamChunked(`${base}/data-listener-throws`, 64 * 1024, { chunk: 1024 });
-    if ("status" in res) expect(res).toEqual(INTERNAL);
+  // A body chunk that arrives from the connection after the handler has
+  // attached its "data" listener is delivered in the connection's context,
+  // not the handler's, so an error the listener throws cannot be traced to
+  // its request, and guard.ts fails every request in flight. The body is sent
+  // only once the handler is listening, so the chunk takes that path every
+  // time. (A chunk already buffered when the listener is attached is
+  // delivered from the handler's own context instead, and its error fails
+  // only its own request; which path a chunk sent with the headers takes
+  // depends on timing, so this test does not rely on it.)
+  // /hang-beside-data stands for another request in flight at the time; it
+  // never answers on its own, so its 500 and its cleanup come only from the
+  // guard failing it.
+  test("a data listener that throws on a chunk from the connection cannot be traced: every request in flight fails, and the server keeps serving", async () => {
+    const hanging = get("/hang-beside-data");
+    // let the other request reach its handler before the error
+    await new Promise((r) => setTimeout(r, 100));
+    const res = await postBodyLater(`${base}/data-listener-throws`, 200);
+    expect(res).toEqual(INTERNAL);
+    expect(await hanging).toEqual(INTERNAL);
     await waitForOutput("a data listener threw");
+    await waitForOutput("request failed by an error outside it");
+    await waitForOutput("cleanup ran for /hang-beside-data");
     await expectStillServing();
   });
 

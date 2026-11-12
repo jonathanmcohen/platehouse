@@ -50,6 +50,8 @@ export interface RunningSlicer {
   base: string;
   exec(args: string[]): Run;
   health(): string;
+  /** The server's output so far (docker logs), stdout and stderr together. */
+  logs(): string;
   stop(): void;
 }
 
@@ -114,6 +116,10 @@ export async function startSlicer(): Promise<RunningSlicer> {
       base: `http://127.0.0.1:${port}`,
       exec: (args) => docker(["exec", id, ...args]),
       health,
+      logs: () => {
+        const r = docker(["logs", id]);
+        return `${r.stdout}${r.stderr}`;
+      },
       stop,
     };
   } catch (err) {
