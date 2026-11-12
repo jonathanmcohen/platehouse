@@ -3,8 +3,13 @@
 // no flash. data-theme on the html element and the color-scheme meta come
 // from the ph_theme cookie; Dark is the default and anything that is not
 // dark, light or system is dark. Only those two places change.
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { patternClass } from "../../src/auth/gate.js";
 import {
@@ -110,6 +115,42 @@ describe("parseShellTemplate", () => {
     const shell = parseShellTemplate(source);
     expect(themeOf(shell.render("system"))).toBe("system");
     expect(schemeOf(shell.render("system"))).toBe("light dark");
+  });
+
+  // The server parses the BUILT index.html, not the source one above, and a
+  // template it refuses stops buildApp, so the whole server fails to start.
+  // A Vite or plugin upgrade, or an HTML transform added later, could rewrite
+  // the html element or the color-scheme meta while the source file stays
+  // the same. This runs the web app's real vite build (its own vite.config.ts)
+  // into a temporary folder and parses what it writes.
+  test("accepts the index.html that vite build writes", { timeout: 120_000 }, async () => {
+    const web = fileURLToPath(new URL("../../../web/", import.meta.url));
+    const out = await mkdtemp(join(tmpdir(), "platehouse-web-build-"));
+    try {
+      await promisify(execFile)(
+        process.execPath,
+        [join(web, "node_modules/vite/bin/vite.js"), "build", "--outDir", out, "--emptyOutDir"],
+        { cwd: web },
+      );
+      const built = await readFile(join(out, "index.html"), "utf8");
+      // It is the build's output, not a copy of the source: the entry script
+      // is now a hashed file under /assets/.
+      expect(built).not.toContain("/src/main.tsx");
+      expect(built).toMatch(/src="\/assets\/[^"]+\.js"/);
+      const shell = parseShellTemplate(built);
+      expect(shell.render(undefined)).toBe(built);
+      for (const [cookie, theme, scheme] of [
+        ["dark", "dark", "dark"],
+        ["light", "light", "light"],
+        ["system", "system", "light dark"],
+      ]) {
+        const html = shell.render(cookie);
+        expect(themeOf(html)).toBe(theme);
+        expect(schemeOf(html)).toBe(scheme);
+      }
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
   });
 });
 
