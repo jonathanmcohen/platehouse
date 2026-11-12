@@ -2,7 +2,14 @@
 // over HTTP, one heavy job (slice, render or STEP conversion) at a time with
 // 409 busy for the rest, the kill at SLICE_TIMEOUT_SECONDS, the body limits,
 // the request timeouts and the Orca arguments of the T1 recipe.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,12 +18,14 @@ import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
+import { MAX_RENDER_OUTPUT_BYTES, readRenderOutput } from "../src/scad.js";
 import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
 import { streamChunked } from "./support/http.js";
 import { profileTree, put, TREE_PRINTERS } from "./support/profiles.js";
 import {
   fakeLandrun,
   fakeOrca,
+  fakePrlimit,
   fakeStepWorker,
   fakeTime,
   type OrcaMode,
@@ -81,6 +90,7 @@ function setup(
   buildProfiles(loadIndex(tree), profilesDir);
   const workDir = mkdtempSync(join(tmpdir(), "slicer-work-"));
   const fake = fakeOrca(stubs, orca);
+  const prlimit = fakePrlimit(stubs);
   const sandboxProbe = join(stubs, "sandbox-probe.stl");
   writeFileSync(sandboxProbe, "solid probe\nendsolid probe\n");
   const config: SlicerConfig = {
@@ -92,6 +102,7 @@ function setup(
     openscadBin: "/opt/openscad/AppRun",
     openscadDir: "/opt/openscad",
     landrunBin: fakeLandrun(stubs, { kind: "ok", content: "solid x" }).bin,
+    prlimitBin: prlimit.bin,
     sandboxProbe,
     stepWorker: fakeStepWorker(stubs, { kind: "ok", content: "glTF" }),
     slicePlateSeconds: 120,
@@ -106,7 +117,7 @@ function setup(
     limits: LIMITS,
     ...over,
   };
-  return { config, stubs, fake, workDir };
+  return { config, stubs, fake, workDir, prlimit };
 }
 
 async function start(config: SlicerConfig): Promise<string> {
@@ -600,13 +611,210 @@ describe("sandbox self-test", () => {
     expect(slicerContract.renderError.parse(await res.json()).message).toMatch(/sandbox/i);
   });
 
+  // A probe the slicer user cannot read makes OpenSCAD print "Can't open
+  // import file" with or without a sandbox, so the import would pass the
+  // check while proving nothing. (Root reads a mode 000 file anyway, so the
+  // test cannot make the probe unreadable when it runs as root; CI runs it
+  // as the runner user.)
+  test.skipIf(process.getuid?.() === 0)(
+    "a probe the server cannot read makes the self-test inconclusive and refuses the render",
+    async () => {
+      const s = setup();
+      const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+      chmodSync(s.config.sandboxProbe, 0o000);
+      const base = await start({ ...s.config, landrunBin: lr.bin });
+      const res = await render(base);
+      expect(res.status).toBe(422);
+      const message = slicerContract.renderError.parse(await res.json()).message;
+      expect(message).toMatch(/sandbox/i);
+      expect(message).toMatch(/cannot be read/);
+      expect(message).toMatch(/inconclusive/);
+      // nothing was rendered, and the probe import never ran
+      expect(() => readFileSync(lr.runsLog)).toThrow();
+    },
+  );
+
   test("SANDBOX_PROBE defaults to the file the image ships", () => {
     const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
     expect(c.sandboxProbe).toBe("/opt/platehouse/sandbox-probe.stl");
   });
 });
 
+// The self-test also refuses renders on a kernel whose Landlock ABI is below
+// 6 (Jon, 2026-11-11; Hades runs kernel 6.17). landrun runs best effort, so
+// it would sandbox OpenSCAD with whatever an old kernel offers; ABI 6 is the
+// first with every right this sandbox counts on (signal and abstract socket
+// scoping, on top of TCP and the filesystem rules). landrun reports the ABI
+// only when it runs without --best-effort, so the check runs it that way.
+describe("sandbox self-test: Landlock ABI", () => {
+  const render = (base: string, kind = "stl") =>
+    fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+  const logged = () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    return { lines, restore: () => spy.mockRestore() };
+  };
+
+  test.each([0, 5])(
+    "a kernel with Landlock ABI %i refuses every render, saying why in the answer and the log",
+    async (abi) => {
+      const s = setup();
+      const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi });
+      const base = await start({ ...s.config, landrunBin: lr.bin });
+      const log = logged();
+      try {
+        for (const kind of ["stl", "png"]) {
+          const res = await render(base, kind);
+          expect(res.status).toBe(422);
+          const message = slicerContract.renderError.parse(await res.json()).message;
+          expect(message).toContain(`the kernel's Landlock ABI is ${abi}, below the 6`);
+        }
+      } finally {
+        log.restore();
+      }
+      expect(
+        log.lines.some(
+          (l) =>
+            l.includes("sandbox self-test: FAILED") &&
+            l.includes(`the kernel's Landlock ABI is ${abi}, below the 6`),
+        ),
+      ).toBe(true);
+      // the ABI check ran before each request, and neither the probe import
+      // nor a render ran
+      expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(2);
+      expect(() => readFileSync(lr.runsLog)).toThrow();
+    },
+  );
+
+  test.each([6, 8, 9])("a kernel with Landlock ABI %i renders", async (abi) => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const log = logged();
+    let res: Response;
+    try {
+      res = await render(base);
+      expect(res.status).toBe(200);
+    } finally {
+      log.restore();
+    }
+    // ABI 9 is what landrun asks for, so it only shows the kernel has at least 9
+    const shown = abi >= 9 ? "Landlock ABI 9 or newer" : `Landlock ABI ${abi};`;
+    expect(log.lines.some((l) => l.includes("sandbox self-test: ok") && l.includes(shown))).toBe(
+      true,
+    );
+    expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  test("an answer that names no ABI proves nothing: the render is refused and the next one checks again", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: "garbled" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    let res = await render(base);
+    expect(res.status).toBe(422);
+    const message = slicerContract.renderError.parse(await res.json()).message;
+    expect(message).toMatch(/inconclusive/);
+    expect(message).toMatch(/Landlock ABI/);
+    lr.setAbi(7);
+    res = await render(base);
+    expect(res.status).toBe(200);
+    expect(readFileSync(lr.abiLog, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  test("the ABI check runs landrun with the render's own rules, without --best-effort, under prlimit", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" }, { abi: "garbled" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect((await render(base)).status).toBe(422);
+    // the garbled ABI answer stops the self-test there, so prlimit's latest
+    // run is the ABI check
+    const args = readFileSync(s.prlimit.argsLog, "utf8").trimEnd().split("\n");
+    const at = args.indexOf("--");
+    expect(args[at + 1]).toBe(lr.bin);
+    const landrun = args.slice(at + 2);
+    expect(landrun).not.toContain("--best-effort");
+    expect(landrun).toContain("--rox");
+    expect(landrun).toContain("--rw");
+    const cmd = landrun.slice(landrun.indexOf("--") + 1);
+    expect(cmd).toEqual(["/opt/openscad/AppRun", "--version"]);
+  });
+});
+
 describe("OpenSCAD and STEP", () => {
+  const render = (base: string, kind = "stl") =>
+    fetch(`${base}/v1/scad/${kind}`, { method: "POST", body: "cube(10);" });
+
+  // prlimit sets the limits on itself and then runs landrun, which runs
+  // OpenSCAD: limits are inherited across exec, so OpenSCAD runs under them.
+  // landrun is outside the sandbox's own rules, so prlimit must come first.
+  test("OpenSCAD runs under prlimit with CPU-time, address-space, process-count, file-size and core-file limits", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    expect((await render(base)).status).toBe(200);
+    const args = readFileSync(s.prlimit.argsLog, "utf8").trimEnd().split("\n");
+    const at = args.indexOf("--");
+    // CPU time: the 30 s wall cap of this setup on 4 CPUs, plus 60 s
+    expect(args.slice(0, at)).toEqual([
+      "--cpu=180",
+      "--as=4294967296",
+      "--nproc=512",
+      "--fsize=268435456",
+      "--core=0",
+    ]);
+    expect(args[at + 1]).toBe(lr.bin);
+    expect(args.slice(at + 2)).toContain("--best-effort");
+  });
+
+  test("PRLIMIT_BIN defaults to util-linux's prlimit in the image", () => {
+    const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
+    expect(c.prlimitBin).toBe("/usr/bin/prlimit");
+  });
+
+  test("a render output over 256 MiB is refused with a plain reason, not read", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "big", bytes: 256 * 1024 * 1024 + 1 });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (const kind of ["stl", "png"]) {
+      const res = await render(base, kind);
+      expect(res.status).toBe(422);
+      const message = slicerContract.renderError.parse(await res.json()).message;
+      expect(message).toContain("over the 256 MiB limit");
+      expect(message).toContain(kind.toUpperCase());
+    }
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  // prlimit's --fsize: when OpenSCAD writes past the cap the kernel sends it
+  // SIGXFSZ, which kills it (the fake landrun sends itself the signal). The
+  // answer is a render error with a plain reason, not a 500.
+  test("a render the file-size limit stops is 422 render_failed with a plain reason", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "fsize" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    for (const kind of ["stl", "png"]) {
+      const res = await render(base, kind);
+      expect(res.status).toBe(422);
+      const body = slicerContract.renderError.parse(await res.json());
+      expect(body.error).toBe("render_failed");
+      expect(body.message).toBe(
+        `OpenSCAD's ${kind.toUpperCase()} went over the 256 MiB limit for a render, so it was stopped while writing it.`,
+      );
+    }
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("the output cap lets a file of exactly the limit through and refuses one byte more", () => {
+    expect(MAX_RENDER_OUTPUT_BYTES).toBe(256 * 1024 * 1024);
+    const file = join(stubDir(), "output.stl");
+    writeFileSync(file, "0123456789");
+    expect(readRenderOutput(file, 10)).toEqual({ ok: true, bytes: Buffer.from("0123456789") });
+    expect(readRenderOutput(file, 9)).toEqual({ ok: false, size: 10 });
+  });
+
   test("scad/stl runs OpenSCAD through landrun and returns the STL", async () => {
     const s = setup();
     const lr = fakeLandrun(s.stubs, { kind: "ok", content: "solid ok" });
@@ -1029,8 +1237,10 @@ describe("a failed request never takes the server down", () => {
 // A job folder that fails to delete would otherwise stay under /work, a 1g
 // tmpfs, until the container restarts, and one 512 MiB upload's folder can
 // fill half of it. So deletes retry, leftover job folders are swept at
-// start-up and after every job, and health fails while /work, with no job
-// running, has less free space than the floor (WORK_MIN_FREE_MIB).
+// start-up, after every job, and by a health check that finds /work below
+// the floor (WORK_MIN_FREE_MIB) while no job runs, and health fails while
+// /work, with no job running, still has less free space than the floor
+// after that sweep.
 describe("leftover job folders and /work space", () => {
   const JOB_A = "0b6f1d4e-3c2a-4f8e-9a71-5d2c8e6b4a10";
   const JOB_B = "7e2d9c1b-8a4f-4b3e-a6d5-1f0c9b8e7d62";
