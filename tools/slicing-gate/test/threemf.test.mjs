@@ -108,6 +108,66 @@ test("a plate_N.png name at Number.MAX_SAFE_INTEGER is still a plate", () => {
   );
 });
 
+// Issue #129: the gate's int(), which reads plater_id from model_settings and
+// the plate index and filament ids from slice_info, used a bare parseInt, so
+// a 17-digit value came back as a different, rounded number. It now follows
+// packages/threemf (parse.ts int()): plain digits that make a safe integer,
+// or null. 12345678901234567 and 12345678901234568 both round to ...568.
+test("a plater_id with 17 digits is not a plate", () => {
+  const file = writeTmp("id.3mf", build3mf({ plates: [{ index: 2 }, { index: "12345678901234567" }] }));
+  assert.deepEqual(
+    readProjectMeta(file).plates.map((p) => p.index),
+    [2],
+  );
+});
+
+test("two 17-digit plater_ids that round to the same number do not become one plate", () => {
+  const file = writeTmp(
+    "two.3mf",
+    build3mf({
+      plates: [
+        { index: "12345678901234567", objects: 3 },
+        { index: "12345678901234568", objects: 5 },
+        { index: 2 },
+      ],
+    }),
+  );
+  assert.deepEqual(
+    readProjectMeta(file).plates.map((p) => [p.index, p.objectCount]),
+    [[2, 1]],
+  );
+});
+
+test("a plater_id at Number.MAX_SAFE_INTEGER is still a plate", () => {
+  const file = writeTmp("maxid.3mf", build3mf({ plates: [{ index: 2 }, { index: "9007199254740991" }] }));
+  assert.deepEqual(
+    readProjectMeta(file).plates.map((p) => p.index),
+    [2, Number.MAX_SAFE_INTEGER],
+  );
+});
+
+// A slice_info index can only reach the output through a plate with the same
+// number, and a plate's own number is now always safe, so this pins the two
+// together: before the fix the 17-digit slice_info index was rounded onto the
+// rounded plater_id and gave that plate Bambu numbers.
+test("a 17-digit slice_info index gives no plate Bambu numbers", () => {
+  const file = writeTmp(
+    "si.3mf",
+    build3mf({ plates: [slicedPlate(1), { index: "12345678901234568" }, slicedPlate("12345678901234567")] }),
+  );
+  const meta = readProjectMeta(file);
+  assert.deepEqual(
+    meta.plates.map((p) => [p.index, p.sliced]),
+    [[1, true]],
+  );
+});
+
+test("a 17-digit filament id in slice_info gives no slot", () => {
+  const filaments = [{ id: "12345678901234567", type: "PLA", usedG: 3 }];
+  const file = writeTmp("fid.3mf", build3mf({ plates: [slicedPlate(1, { filaments })] }));
+  assert.deepEqual(readProjectMeta(file).plates[0].filaments, [{ slot: null, type: "PLA", grams: 3 }]);
+});
+
 test("a prediction over ten years counts as unsliced", () => {
   const file = writeTmp(
     "t.3mf",
