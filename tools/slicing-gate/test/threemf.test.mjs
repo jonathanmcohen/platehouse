@@ -80,6 +80,34 @@ test("the plate list falls back to the plate_N.png names", () => {
   assert.equal(meta.project.printerModel, null);
 });
 
+// Issue #25: the plate number in a plate_N.png name used to go through a bare
+// Number(), so a name past Number.MAX_SAFE_INTEGER came back as a different,
+// rounded plate number (or Infinity). The gate now follows packages/threemf:
+// N must match [1-9][0-9]* and be a safe integer, or the name is not a plate.
+for (const [label, n] of [
+  ["17 digits", "12345678901234567"],
+  ["the first unsafe integer, 9007199254740992", "9007199254740992"],
+  ["the next one, which a bare Number() rounds down to the one before", "9007199254740993"],
+  ["so many digits that Number() gives Infinity", "9".repeat(400)],
+  ["a leading zero", "01"],
+]) {
+  test(`a plate_N.png name with ${label} is not a plate`, () => {
+    const file = writeTmp("big.3mf", build3mf({ plates: [{ index: 2 }, { index: n }], pngOnly: true }));
+    assert.deepEqual(
+      readProjectMeta(file).plates.map((p) => p.index),
+      [2],
+    );
+  });
+}
+
+test("a plate_N.png name at Number.MAX_SAFE_INTEGER is still a plate", () => {
+  const file = writeTmp("max.3mf", build3mf({ plates: [{ index: 2 }, { index: "9007199254740991" }], pngOnly: true }));
+  assert.deepEqual(
+    readProjectMeta(file).plates.map((p) => p.index),
+    [2, Number.MAX_SAFE_INTEGER],
+  );
+});
+
 test("a prediction over ten years counts as unsliced", () => {
   const file = writeTmp(
     "t.3mf",
