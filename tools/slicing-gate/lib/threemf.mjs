@@ -18,7 +18,9 @@ export const LIMITS = Object.freeze({
 const MODEL_SETTINGS = "Metadata/model_settings.config";
 const SLICE_INFO = "Metadata/slice_info.config";
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
-const PLATE_PNG = /^Metadata\/plate_(\d+)(?:_small)?\.png$/;
+// The packages/threemf rule (parse.ts): N has no leading zero, and a name
+// whose N is not a safe integer is not a plate (see platesFromPngs).
+const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(?:_small)?\.png$/;
 
 class Damaged extends Error {}
 
@@ -90,8 +92,11 @@ function platesFromModelSettings(zip) {
 function platesFromPngs(zip) {
   const indexes = new Set();
   for (const name of zip.names()) {
+    // From 9007199254740992 up, Number() rounds (or gives Infinity), so such
+    // a name would be read as some other plate number; skip it instead.
     const m = PLATE_PNG.exec(name);
-    if (m && Number(m[1]) > 0) indexes.add(Number(m[1]));
+    const index = m ? Number(m[1]) : null;
+    if (Number.isSafeInteger(index)) indexes.add(index);
   }
   if (indexes.size > LIMITS.plates) throw new Damaged();
   return [...indexes].sort((a, b) => a - b).map((index) => ({ index, objectCount: null }));

@@ -330,7 +330,9 @@ export function writeRecipe(index, outDir, { printers, types, companions = false
  *     (flattenPreset's dangling): its keys, instantiation and
  *     default_print_profile included, may come from that parent, so it can
  *     be neither trusted nor told apart from an instantiable machine;
- *   - it has no default_print_profile, or one that is not a non-empty string;
+ *   - it has no default_print_profile, or one that is not a non-empty string,
+ *     or one that is not a plain file name (a slash, a backslash or a NUL,
+ *     or a leading dot), which could write outside the folder;
  *   - its default process is not in the bundle, has a dangling parent of its
  *     own (the file would lack the parent's keys and Orca would quietly use
  *     its built-in defaults for them), or is not a process preset.
@@ -366,7 +368,8 @@ export function writeProcessFull(index, outDir) {
       continue;
     }
     if (proc.includes("/") || proc.includes("\\") || proc.includes("\0") || proc.startsWith(".")) {
-      throw new Error(`machine "${name}" names default process "${proc}", which is not a plain file name`);
+      problems.push(`machine "${name}" names default process "${proc}", which is not a plain file name`);
+      continue;
     }
     if (!wanted.has(proc)) wanted.set(proc, []);
     wanted.get(proc).push(name);
