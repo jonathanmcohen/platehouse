@@ -74,7 +74,9 @@
 //   it is not put back under the name, since a link or a copy back moves its ctime and a
 //   restart would import it again under new ids: it stays in the holding
 //   folder, logged, the folder renamed to say why (KEPT_HOLD_SUFFIXES), for
-//   the restart sweep below, which gives that reason. A file put under
+//   the sweep below, which gives that reason and tries a marked folder at
+//   every pass, so it moves to failed at the first pass after failed can be
+//   used. A file put under
 //   the name after the check is put back under it, never over anything that
 //   took the name since, and looked at from the start as a new file; when
 //   another file took the name meanwhile, it moves to failed with
@@ -103,7 +105,10 @@
 //   to failed, with the reason its name gives), a copy being put back
 //   (HOLD_COPY_PREFIX) deleted rather than kept, and anything set aside from
 //   under the name (HOLD_ASIDE_PREFIX) kept under its inbox name; while
-//   failed is still unusable it stays there, logged.
+//   failed is still unusable it stays there, logged. A marked folder (one
+//   holding an imported file that could not be moved to failed) is tried
+//   again at every later pass too, and is logged as not moved once, not on
+//   every pass.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence. failed/ is made when missing, and refused
@@ -256,8 +261,8 @@
 // holding folder, when failed cannot be used: it waits in its holding folder
 // (above), out of the inbox, the folder renamed with -changed,
 // -unconfirmed, -unremoved or -unchecked to say why, so a restart never
-// imports it again and the restart sweep moves it to failed with that
-// reason once failed can be used.
+// imports it again, and the sweep moves it to failed with that reason at
+// the first pass after failed can be used, in this process or the next.
 //
 // Nothing here starts on import: the server calls start() once at boot and
 // stop() on shutdown (plan Task 30 builds that code). It must pass every one
@@ -298,7 +303,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { type Kysely, sql } from "kysely";
 import { uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
@@ -409,8 +414,8 @@ export const HELD_REASON =
  * What settleImported adds to the end of a holding folder's name when the
  * imported file in it, changed, unconfirmed, not removed or not checked,
  * could not be moved to failed, and the reason each one stands for: Platehouse did not
- * stop, so the restart sweep moves the file to failed with this reason, not
- * HELD_REASON.
+ * stop, so the sweep (at every pass for a marked folder) moves the file to
+ * failed with this reason, not HELD_REASON.
  * A rename of the folder in place needs no new folder or file, so a full
  * disk does not stop it.
  */
@@ -426,7 +431,12 @@ function keptHoldSuffix(reason: string): string | undefined {
   return KEPT_HOLD_SUFFIXES.find(([, why]) => why === reason)?.[0];
 }
 
-/** The reason the restart sweep gives what is in a holding folder. */
+/** Whether a holding folder was marked as kept (KEPT_HOLD_SUFFIXES). */
+function isKeptHold(folder: string): boolean {
+  return KEPT_HOLD_SUFFIXES.some(([suffix]) => folder.endsWith(suffix));
+}
+
+/** The reason the sweep gives what is in a holding folder. */
 function holdReason(folder: string): string {
   return KEPT_HOLD_SUFFIXES.find(([suffix]) => folder.endsWith(suffix))?.[1] ?? HELD_REASON;
 }
@@ -1019,8 +1029,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   let copiesSwept = false;
   // Whether holding folders a process before this one left in the inbox (a
   // crash while an imported file was being deleted) have been swept; done
-  // once, at this watcher's first pass.
+  // once, at this watcher's first pass. Folders marked as kept
+  // (KEPT_HOLD_SUFFIXES) are swept again at every later pass too.
   let holdsSwept = false;
+  // Marked holding folders whose file has already been logged as not moved
+  // to failed, so a later pass that still cannot move it says nothing more.
+  const keptLogged = new Set<string>();
 
   // Files being watched for the settle window, by name.
   const seen = new Map<string, Seen>();
@@ -1483,16 +1497,22 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     held: string,
     reason: string,
     pass: InboxPass,
-  ): Promise<void> {
+    opts: { kept?: boolean; quiet?: boolean } = {},
+  ): Promise<boolean> {
     try {
       const moved = await moveToFailed(name, held, reason);
       pass.failed.push({ name, reason });
       log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
+      return true;
     } catch (error) {
-      log(
-        `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays at ` +
-          `${held} and moves to ${FAILED_DIR} when the watcher next starts. Why: ${reason}`,
-      );
+      if (!opts.quiet) {
+        const when = opts.kept ? "once that folder can be used" : "when the watcher next starts";
+        log(
+          `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays at ` +
+            `${held} and moves to ${FAILED_DIR} ${when}. Why: ${reason}`,
+        );
+      }
+      return false;
     }
   }
 
@@ -1502,9 +1522,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * a folder, or unwritable) it is not put back under its name: a link or a
    * copy back moves its ctime, so a restart would take it for a new arrival,
    * give it ids no attempt used and import it a second time. It stays held,
-   * out of the listing, and the restart sweep (sweepHolds) moves it to
-   * failed, or leaves it held and logged while the failed folder is still
-   * unusable. The folder is renamed to say why it was kept
+   * out of the listing, and the sweep (sweepHolds), which tries a marked
+   * folder at every pass, moves it to failed once the failed folder can be
+   * used, or leaves it held, logged once, while it is still unusable. The
+   * folder is renamed to say why it was kept
    * (KEPT_HOLD_SUFFIXES), so the sweep gives this reason and not
    * HELD_REASON, which says Platehouse stopped.
    */
@@ -1523,11 +1544,15 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       return;
     } catch (error) {
       let at = held;
+      let when = "when the watcher next starts";
       const suffix = keptHoldSuffix(reason);
       if (suffix !== undefined) {
         try {
           await rename(holdDir, `${holdDir}${suffix}`);
           at = join(`${holdDir}${suffix}`, name);
+          when = "once that folder can be used";
+          // Logged below: a later pass that still cannot move it is quiet.
+          keptLogged.add(`${basename(holdDir)}${suffix}`);
         } catch (renameError) {
           log(
             `inbox: could not mark ${holdDir} with why ${name} was kept ` +
@@ -1539,8 +1564,8 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       log(
         `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it was ` +
           `imported as model ${modelId}, so it is not put back under its name to be ` +
-          `imported again: it stays at ${at} and moves to ${FAILED_DIR} when the watcher ` +
-          `next starts. Why it failed: ${reason}`,
+          `imported again: it stays at ${at} and moves to ${FAILED_DIR} ${when}. ` +
+          `Why it failed: ${reason}`,
       );
     }
   }
@@ -1571,9 +1596,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * under the name: a link or a copy back moves its ctime, which a restart
    * would take as a new arrival and import it again under new ids. It stays
    * in the holding folder, logged, out of the listing, the folder renamed to
-   * say why (KEPT_HOLD_SUFFIXES), and the restart sweep (sweepHolds) moves it
-   * to failed with that reason, or leaves it there, logged, while the failed
-   * folder is still unusable (failImported).
+   * say why (KEPT_HOLD_SUFFIXES), and the sweep (sweepHolds), at every pass
+   * for a marked folder, moves it to failed with that reason once the failed
+   * folder can be used, or leaves it there, logged once, while it is still
+   * unusable (failImported).
    * Anything else goes back under the name for the next pass to look at from
    * the start (putBack), or, when another file took the name in the
    * meantime, to failed with SWAPPED_REASON (PUT_BACK_FAILED_REASON when
@@ -1713,13 +1739,20 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * kept, not deleted or imported. A copy copyBack was writing
    * (HOLD_COPY_PREFIX) is deleted instead. What takeBackCopy set aside
    * (HOLD_ASIDE_PREFIX) is kept, under the inbox name in its aside name. When
-   * failed is still unusable, failHeld logs it and it stays. Run once per
-   * process, before its first import.
+   * failed is still unusable, failHeld logs it and it stays. Every folder is
+   * swept once per process, at its first pass, before its first import; a
+   * marked folder is swept again at every later pass, so a kept file moves
+   * to failed at the first pass after failed can be used, not at the next
+   * restart. A marked folder is only made once settleImported is done with
+   * it, so no pass is still using it. While failed stays unusable, a marked
+   * folder already logged (keptLogged) is retried without a word.
    */
   async function sweepHolds(folders: string[], pass: InboxPass): Promise<void> {
     for (const folder of folders) {
       const holdDir = join(dir, folder);
       const reason = holdReason(folder);
+      const kept = isKeptHold(folder);
+      const quiet = kept && keptLogged.has(folder);
       try {
         for (const entry of await readdir(holdDir)) {
           if (entry.startsWith(HOLD_COPY_PREFIX)) {
@@ -1731,12 +1764,19 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           // What takeBackCopy set aside may be a writer's file, never only
           // the copy, so it is kept, under the inbox name it had.
           const shown = entry.startsWith(HOLD_ASIDE_PREFIX) ? asideOrigin(entry) : entry;
-          await failHeld(shown, join(holdDir, entry), reason, pass);
+          await failHeld(shown, join(holdDir, entry), reason, pass, { kept, quiet });
         }
         await rmdir(holdDir);
+        keptLogged.delete(folder);
       } catch (error) {
-        if (codeOf(error) === "ENOENT") continue;
-        log(`inbox: could not clear the holding folder ${holdDir}: ${errorText(error)}`);
+        if (codeOf(error) === "ENOENT") {
+          keptLogged.delete(folder);
+          continue;
+        }
+        if (!quiet) {
+          log(`inbox: could not clear the holding folder ${holdDir}: ${errorText(error)}`);
+        }
+        if (kept) keptLogged.add(folder);
       }
     }
   }
@@ -2193,6 +2233,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     if (!holdsSwept) {
       holdsSwept = true;
       await sweepHolds(holds, pass);
+    } else {
+      // A kept file waits only for failed to be usable, so its marked folder
+      // is tried at every pass, not only after a restart.
+      await sweepHolds(holds.filter(isKeptHold), pass);
     }
 
     // Forget files no longer in the inbox.
