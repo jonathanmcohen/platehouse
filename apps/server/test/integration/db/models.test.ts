@@ -185,6 +185,26 @@ describe("trash and restore", () => {
     expect(await repos.models.restore("nope")).toBe(false);
   });
 
+  // Issue #37: a purge that has begun may already have deleted the model's
+  // objects, so only a purge may finish it. restoreModel (library/trash.ts)
+  // refuses it with PurgeStarted; a direct call to the repository must answer
+  // false too, not hit the models_purge_only_trashed check (a 500 later).
+  test("restore answers false, and leaves the model in the trash, once a purge has begun", async () => {
+    const made = await repos.models.create({ name: unique("Purge begun") });
+    expect(await repos.models.trash(made.id)).toBe(true);
+    await sql`update models set purge_started_at = now() where id = ${made.id}`.execute(t.db);
+
+    expect(await repos.models.restore(made.id)).toBe(false);
+
+    const after = await t.db
+      .selectFrom("models")
+      .select(["trashedAt", "purgeStartedAt"])
+      .where("id", "=", made.id)
+      .executeTakeFirstOrThrow();
+    expect(after.trashedAt).toBeInstanceOf(Date);
+    expect(after.purgeStartedAt).toBeInstanceOf(Date);
+  });
+
   test("purgeable lists models trashed before the given time, oldest first", async () => {
     const old = await repos.models.create({ name: "Old" });
     const recent = await repos.models.create({ name: "Recent" });
