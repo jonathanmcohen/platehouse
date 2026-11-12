@@ -25,6 +25,12 @@
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
+// - File delivery (delivery/download.ts, Task 17) streams a file's bytes at
+//   GET /files/:id/download and a blob's at GET /blobs/:id, both session-
+//   class, and slicer links (delivery/links.ts) are minted at POST
+//   /app/api/files/:id/slicer-link (session-class, so the gate's Origin
+//   check covers it) and served at GET /s/<token>/<name>, link-class: no
+//   session, the token alone. Registered only when deps.delivery is given.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -58,6 +64,8 @@ import { installGate, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
+import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
+import { registerLinks } from "./delivery/links.js";
 import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
@@ -113,6 +121,14 @@ export interface AppDeps {
    * request is 401.
    */
   api?: ApiDeps;
+  /**
+   * File delivery and slicer links (Task 17): GET /files/:id/download, GET
+   * /blobs/:id, POST /app/api/files/:id/slicer-link and GET /s/:token/:name.
+   * The server always passes its own; left out, those routes are not
+   * registered, so their paths are unknown (session-class: 401 without a
+   * session, 404 with one).
+   */
+  delivery?: DeliveryDeps;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged
@@ -330,6 +346,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     authHook: apiUploadHook(api),
     uploads: deps.uploads,
   });
+
+  if (deps.delivery !== undefined) {
+    await registerDownloads(app, deps.delivery);
+    await registerLinks(app, { ...deps.delivery, absoluteUrl: auth.absoluteUrl });
+  }
 
   return app;
 }
