@@ -73,6 +73,8 @@ const HTML_SHAPES: Array<[string, string]> = [
   ["many links", fill('<a href="https://e.test/">x</a>')],
   ["whitespace runs", fill(" \t\n")],
   ["dropped elements left open", fill("<script>")],
+  ["raw-text elements opened and closed, with quotes inside", fill(`<script>'<a href="</script>`)],
+  ["raw-text elements that never close their own kind", fill("<style></script>")],
 ];
 
 describe("a crafted description of 256 KiB converts in bounded time and size", () => {

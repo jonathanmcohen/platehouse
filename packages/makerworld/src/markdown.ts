@@ -39,6 +39,23 @@ const DROP_CONTENT: ReadonlySet<string> = new Set([
   "template",
   "svg",
 ]);
+// The dropped elements a browser reads as raw text: everything up to the
+// matching close tag (</ then the name, any case, then HTML whitespace, / or
+// >) is text, so nothing inside them is a tag. The tokenizer skips straight
+// to that close tag; with none, the element runs to the end. Tokenizing tags
+// in there let a quoted attribute value opened in the script text run past
+// </script>, so the drop never ended and the rest of the description was
+// hidden (issue #141). The other dropped elements hold markup a browser
+// parses, so their tags still count. One simplification: a script whose text
+// holds "<!--<script>" hides more in a browser (its next </script> does not
+// end it), and the converter ends it at that close tag and shows what
+// follows; nothing is hidden that a browser shows.
+const RAW_TEXT_CLOSE: ReadonlyMap<string, RegExp> = new Map(
+  ["script", "style", "iframe", "noscript"].map((name) => [
+    name,
+    new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi"),
+  ]),
+);
 // Emphasis is written with *, never _: CommonMark refuses _ emphasis inside a
 // word ("screw_s_" shows the underscores), and has no such rule for *. Text
 // asterisks are escaped, so they cannot clash.
@@ -595,7 +612,12 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     // review).
     const tag = rawTag.replace(/[A-Z]/g, (c) => c.toLowerCase());
     if (DROP_CONTENT.has(tag)) {
-      if (!attrs.trim().endsWith("/")) dropDepth = Math.max(0, dropDepth + (closing ? -1 : 1));
+      // A close always ends one drop, and a raw-text element always opens
+      // one: a browser ignores a self-closing slash on both, and the
+      // tokenizer skips a raw-text element's content to its close tag
+      // either way. Only an svg, say, can close itself with a slash.
+      if (closing) dropDepth = Math.max(0, dropDepth - 1);
+      else if (RAW_TEXT_CLOSE.has(tag) || !attrs.trim().endsWith("/")) dropDepth++;
       return;
     }
     if (dropDepth > 0) return;
@@ -986,8 +1008,20 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     const m = TAG.exec(html);
     const end = m ? tagEnd(html, TAG.lastIndex, tagScan) : -1;
     if (m && end !== -1) {
-      onTag(m[1] === "/", m[2] as string, html.slice(TAG.lastIndex, end));
+      const closing = m[1] === "/";
+      const name = m[2] as string;
+      onTag(closing, name, html.slice(TAG.lastIndex, end));
       i = end + 1;
+      // A raw-text element's content is skipped whole (RAW_TEXT_CLOSE). The
+      // search starts where the content does and the tokenizer moves on from
+      // where it stops, so the pass stays linear.
+      const close = closing
+        ? undefined
+        : RAW_TEXT_CLOSE.get(name.replace(/[A-Z]/g, (c) => c.toLowerCase()));
+      if (close !== undefined) {
+        close.lastIndex = i;
+        i = close.exec(html)?.index ?? html.length;
+      }
     } else {
       onText("<"); // a < that starts no tag is text
       i += 1;

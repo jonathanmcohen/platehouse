@@ -703,6 +703,38 @@ describe("htmlToMarkdown: ported cases", () => {
     ).toBe("kept");
   });
 
+  // A browser reads script, style, iframe and noscript as raw text up to the
+  // matching close tag, so nothing inside them is a tag. The converter once
+  // tokenized tags there, and a quoted attribute value opened inside the
+  // script text could run past </script>, so the drop never ended and the
+  // rest of the description was hidden (issue #141).
+  it.each([
+    ["script", `<script>var s='<a href="';</script><p title="x">y</p>`],
+    ["style", `<style>p::after{content:'<a href="'}</style><p title="x">y</p>`],
+    ["iframe", `<iframe><a href="</iframe><p title="x">y</p>`],
+    ["noscript", `<noscript><a href="</noscript><p title="x">y</p>`],
+  ])("a quote inside %s cannot hide the text after it", (_name, html) => {
+    expect(htmlToMarkdown(html)).toBe("y");
+  });
+
+  it.each([
+    ["upper case", "<script>a</SCRIPT>b", "b"],
+    ["mixed case and a space before >", "<Script>a</sCrIpT >b", "b"],
+    ["a tab before >", "<script>a</script\t>b", "b"],
+    ["a slash before >", "<script>a</script/>b", "b"],
+    ["a longer name that only begins with script", "<script>a</scripts>b</script>c", "c"],
+    ["a close of another element inside", "<video><script></video></script>t</video>u", "u"],
+    ["a self-closing slash, which a browser ignores", "<script/>a</script>b", "b"],
+    ["no close at all", "<p>a</p><script><p>b</p>", "a"],
+    ["no close but a cut-short one at the end", "<p>a</p><script>b</script", "a"],
+  ])("raw text runs to its own close tag: %s", (_name, html, expected) => {
+    expect(htmlToMarkdown(html)).toBe(expected);
+  });
+
+  it("video, svg and the other dropped elements still drop tags inside them", () => {
+    expect(htmlToMarkdown("<svg><title>x</title></svg><video><p>y</p></video>z")).toBe("z");
+  });
+
   it("htmlToMarkdown: entities decoded, blank lines collapsed, result trimmed", () => {
     const out = htmlToMarkdown(
       "<p>&lt;3 &amp; &quot;q&quot; &#x41;&#66; caf&eacute;?</p><p></p><p></p><p>end&hellip;</p>\n\n",
@@ -1616,6 +1648,9 @@ describe("a close tag with nothing of its kind open is ignored", () => {
       "<ul>\n<li>ab</li>\n<li>c</li>\n</ul>\n",
     ],
     ["a </table> in a paragraph", "<p>a</table>b</p>", "ab", para("ab")],
+    // Nor does it end an open heading: before #48 it ended the heading and
+    // wrote a paragraph break, so b fell out of it (PR #121 review, #130).
+    ["a </table> in an open heading", "<h2>a</table>b</h2>", "## ab", "<h2>ab</h2>\n"],
     [
       "a </table> after a table has closed",
       "<ol><li>a<table><tr><td>t</td></tr></table></table>b</li><li>c</li></ol>",
