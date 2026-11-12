@@ -4,7 +4,9 @@
 // arrives, and each signed query of an object-store redirect as it is seen.
 // The clients already keep these out of their messages; this is the floor
 // under them, for the cases they cannot see, such as a server that echoes a
-// credential back in an error body.
+// credential back in an error body. The clients also run an error body
+// through redact() before they cut it to its quote length, since a value cut
+// in two is no longer one this redactor can find.
 //
 // Text that came from Manyfold (model and file names) is printed through
 // cleanText as well, so a name cannot move the terminal's cursor, ring it,

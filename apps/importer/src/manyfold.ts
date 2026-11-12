@@ -23,8 +23,8 @@
 //   it streams; a mismatch is a SizeMismatch and nothing is returned.
 // - Log lines and errors name the path on Manyfold, and only the host and
 //   path anywhere else. An error answer's body is quoted (200 characters at
-//   most) only when it came from Manyfold; the token request quotes only
-//   Doorkeeper's error code.
+//   most, redacted before it is cut) only when it came from Manyfold; the
+//   token request quotes only Doorkeeper's error code.
 
 /** The media type of Manyfold's JSON API (v0). */
 export const MANYFOLD_MEDIA_TYPE = "application/vnd.manyfold.v0+json";
@@ -60,6 +60,12 @@ export interface ManyfoldOptions {
   log?: (line: string) => void;
   /** Called with every value the output must never show: the token, a signed query. */
   sensitive?: (value: string) => void;
+  /**
+   * Applied to an error body before it is cut to its quote length, so a
+   * credential Manyfold echoes is replaced whole rather than cut in two
+   * (the CLI passes its redactor).
+   */
+  redact?: (text: string) => string;
   retries?: number;
   timeoutMs?: number;
   downloadTimeoutMs?: number;
@@ -139,6 +145,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   const sleep = options.sleep ?? realSleep;
   const log = options.log ?? (() => {});
   const sensitive = options.sensitive ?? (() => {});
+  const redact = options.redact ?? ((text: string) => text);
   const attempts = options.retries ?? 4;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const downloadTimeoutMs = options.downloadTimeoutMs ?? 600_000;
@@ -209,7 +216,9 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     let quote = "";
     if (url.origin === origin) {
       const text = await res.text().catch(() => "");
-      quote = text.replace(/\s+/g, " ").trim().slice(0, BODY_QUOTE);
+      // Redacted before the cut: a credential that crosses BODY_QUOTE would
+      // otherwise be printed in part, which the redactor cannot recognise.
+      quote = redact(text).replace(/\s+/g, " ").trim().slice(0, BODY_QUOTE);
     } else {
       await res.body?.cancel();
     }

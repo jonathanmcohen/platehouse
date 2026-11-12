@@ -5,6 +5,7 @@
 // URL-encoded and as the Basic header Manyfold's token request carries.
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { REDACTED } from "../src/redact.js";
 import {
   ENV,
   FAKE_BEARER,
@@ -161,6 +162,60 @@ describe("the output never shows a credential or a signed query", () => {
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(1);
     expectClean(s, r.output);
+  });
+
+  // The clients quote at most 200 characters of an error body. A credential
+  // that crosses that mark must be redacted before the cut, or only its
+  // first part is printed and the whole-value redactor no longer sees it.
+  it("when Platehouse echoes its token across the 200-character quote limit", async () => {
+    const s = setup(library());
+    server.use(
+      http.post(
+        `${PLATEHOUSE}/api/v1/uploads`,
+        ({ request }) =>
+          new HttpResponse(`${"x".repeat(180)}${request.headers.get("authorization")}`, {
+            status: 403,
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(FAKE_BEARER.slice(0, 8));
+    expect(r.output).toContain(`${"x".repeat(180)}Bearer ${REDACTED}`);
+  });
+
+  it("when Manyfold echoes its token across the 200-character quote limit", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m1`,
+        ({ request }) =>
+          new HttpResponse(`${"x".repeat(180)}${request.headers.get("authorization")}`, {
+            status: 403,
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(s.manyfold.accessToken.slice(0, 12));
+    expect(r.output).toContain(`${"x".repeat(180)}Bearer ${REDACTED}`);
+  });
+
+  it("when Manyfold echoes the Basic header across the 200-character quote limit", async () => {
+    const s = setup(library());
+    const basic = Buffer.from(`${FAKE_ID}:${FAKE_KEY}`).toString("base64");
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m1`,
+        () => new HttpResponse(`${"x".repeat(185)}Basic ${basic}`, { status: 403 }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(basic.slice(0, 8));
   });
 
   it("when a credential variable is missing", async () => {

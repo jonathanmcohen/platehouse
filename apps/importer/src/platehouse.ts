@@ -78,6 +78,12 @@ export interface PlatehouseOptions {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
+  /**
+   * Applied to an error body before it is cut to its quote length, so a
+   * credential the server echoes is replaced whole rather than cut in two
+   * (the CLI passes its redactor).
+   */
+  redact?: (text: string) => string;
   retries?: number;
   timeoutMs?: number;
 }
@@ -153,6 +159,7 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
   const doFetch = options.fetch ?? globalThis.fetch;
   const sleep = options.sleep ?? realSleep;
   const log = options.log ?? (() => {});
+  const redact = options.redact ?? ((text: string) => text);
   const attempts = options.retries ?? 4;
   const timeoutMs = options.timeoutMs ?? 30_000;
 
@@ -213,7 +220,9 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
     } catch {
       // Not JSON: quote the text.
     }
-    detail = detail.replace(/\s+/g, " ").trim().slice(0, BODY_QUOTE);
+    // Redacted before the cut: a credential that crosses BODY_QUOTE would
+    // otherwise be printed in part, which the redactor cannot recognise.
+    detail = redact(detail).replace(/\s+/g, " ").trim().slice(0, BODY_QUOTE);
     return new PlatehouseError(
       `${method} ${url.pathname}: HTTP ${res.status}${detail === "" ? "" : ` ${detail}`}`,
       res.status,

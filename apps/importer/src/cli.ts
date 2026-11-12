@@ -349,6 +349,9 @@ export async function run(options: RunOptions): Promise<RunResult> {
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
       log: out,
+      // Error bodies are redacted inside the clients, before they are cut
+      // to 200 characters, as well as here when each line is printed.
+      redact: (text: string) => redactor.redact(text),
     };
     const manyfold = createManyfold({
       ...common,
