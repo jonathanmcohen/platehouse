@@ -67,6 +67,7 @@ import {
   TOO_LARGE_REASON,
   tooLargeReason,
   UNCONFIRMED_REASON,
+  UNREMOVED_REASON,
 } from "../../src/inbox/watch.js";
 import {
   INGEST_FAILED_MESSAGE,
@@ -1158,7 +1159,9 @@ describe("an imported file whose check or delete in its holding folder fails", (
   // be the imported file, and putting it back under its name (a link, or a
   // copy under EPERM) moves its ctime, so a restart would take it for a new
   // arrival, give it new ids and import it a second time (#124, the second
-  // path of #95). So it is never put back.
+  // path of #95). So it is never put back. The stored copy was confirmed,
+  // so its reason says it was stored but not removed (UNREMOVED_REASON),
+  // never that the stored copy could not be confirmed.
   const name = "held.stl";
   const TEXT = "solid held\nendsolid held\n";
 
@@ -1178,7 +1181,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
   }
 
   test.each([["lstat"], ["unlink"]] as const)(
-    "when its %s throws, it moves to failed with a reason that says a model was made, is never put back under its name, and is not imported again after a restart",
+    "when its %s throws, it moves to failed with a reason that says it was stored but not removed from the inbox, is never put back under its name, and is not imported again after a restart",
     async (fault) => {
       const fake = fakeIngest();
       const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
@@ -1191,10 +1194,10 @@ describe("an imported file whose check or delete in its holding folder fails", (
 
       expect(fired()).toBe(true);
       expect(pass.imported.map((i) => i.name)).toEqual([name]);
-      expect(pass.failed).toEqual([{ name, reason: UNCONFIRMED_REASON }]);
+      expect(pass.failed).toEqual([{ name, reason: UNREMOVED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
       expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-        `${UNCONFIRMED_REASON}\n`,
+        `${UNREMOVED_REASON}\n`,
       );
       // Nothing under the name, no holding folder left, the error logged.
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
@@ -1233,7 +1236,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       const held = join(inbox, holds[0] ?? "", name);
       expect(await readFile(held, "utf8")).toBe(TEXT);
       expect(lines.some((l) => l.includes(name) && l.includes("EIO"))).toBe(true);
-      expect(lines.some((l) => l.includes(held) && l.includes(UNCONFIRMED_REASON))).toBe(true);
+      expect(lines.some((l) => l.includes(held) && l.includes(UNREMOVED_REASON))).toBe(true);
       await tick(w, 15_000);
       await tick(w, 15_000);
       expect(fake.calls).toEqual([name]);
@@ -1248,7 +1251,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(swept.failed).toEqual([]);
       expect(fake.calls).toEqual([name]);
       expect(await readFile(held, "utf8")).toBe(TEXT);
-      expect(lines.some((l) => l.includes(name) && l.includes(UNCONFIRMED_REASON))).toBe(true);
+      expect(lines.some((l) => l.includes(name) && l.includes(UNREMOVED_REASON))).toBe(true);
       expect(lines.some((l) => l.includes(HELD_REASON))).toBe(false);
 
       // Once the folder is usable, the next restart moves it to failed, kept,
@@ -1256,7 +1259,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       await rm(join(inbox, FAILED_DIR));
       const fixed = watcher(fake, deps);
       const moved = await fixed.pollOnce();
-      expect(moved.failed).toEqual([{ name, reason: UNCONFIRMED_REASON }]);
+      expect(moved.failed).toEqual([{ name, reason: UNREMOVED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
       await tick(fixed, 15_000);
@@ -1264,6 +1267,28 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(fake.calls).toEqual([name]);
     },
   );
+
+  test("when its lstat throws after an import that could not be confirmed, it moves to failed with UNCONFIRMED_REASON", async () => {
+    // No record of the stored file: the stored copy really was not confirmed,
+    // so that reason stands, not UNREMOVED_REASON.
+    const fake = fakeIngest();
+    const deps = {
+      storedFile: async () => undefined,
+      findImported: async (q: ImportedQuery) => storedRow(fake, q),
+    };
+    const w = watcher(fake, deps);
+    const fired = failInHold("lstat");
+    await writeFile(join(inbox, name), TEXT);
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+
+    expect(fired()).toBe(true);
+    expect(pass.failed).toEqual([{ name, reason: UNCONFIRMED_REASON }]);
+    expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
+      `${UNCONFIRMED_REASON}\n`,
+    );
+    expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+  });
 });
 
 describe("putting a file back under its name without hard links", () => {
