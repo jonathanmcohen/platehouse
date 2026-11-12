@@ -181,6 +181,31 @@ test("every broken machine is named in the one failure, not just the first", () 
   );
 });
 
+// Issue #12: the unsafe-name check used to throw at once, so the one error
+// named only the first problem it met. Both orders are pinned: the unsafe
+// machine sorted first (the broken machine after it was never reached) and
+// sorted second (the problem already collected before it was thrown away).
+for (const [label, unsafe, broken] of [
+  ["sorted before", "Odd 0.4 nozzle", "Odd 0.6 nozzle"],
+  ["sorted after", "Odd 0.6 nozzle", "Odd 0.4 nozzle"],
+]) {
+  test(`an unsafe default process name ${label} another broken machine: both are named in the one failure, and nothing is written`, () => {
+    const root = profileTree();
+    machine(root, unsafe, { instantiation: "true", default_print_profile: "../escape" });
+    machine(root, broken, { inherits: "Odd nozzle gone", instantiation: "true" });
+    const out = freshDir();
+    assert.throws(
+      () => flatten.writeProcessFull(flatten.loadIndex(root), out),
+      (err) =>
+        new RegExp(`machine "${unsafe}" names default process "\\.\\./escape", which is not a plain file name`).test(err.message) &&
+        new RegExp(`machine "${broken}" inherits "Odd nozzle gone"`).test(err.message) &&
+        /^2 problem\(s\)/.test(err.message),
+    );
+    assert.equal(existsSync(join(dirname(out), "escape.json")), false);
+    assert.equal(existsSync(out) ? readdirSync(out).length : 0, 0);
+  });
+}
+
 test("templates, _common presets, machine models and non-instantiable machines are passed over, and only instantiable ones are counted", () => {
   const root = profileTree();
   machine(root, "Shelf 0.4 nozzle", { inherits: "fdm_bbl_3dp_001_common", instantiation: "false" });
