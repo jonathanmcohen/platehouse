@@ -37,6 +37,7 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Estimates } from "../../src/estimates/service.js";
 import {
+  asideName,
   BACKOFF_FIRST_MS,
   BACKOFF_MAX_MS,
   CHANGED_REASON,
@@ -1115,12 +1116,19 @@ describe("a file put under an imported file's name during the import", () => {
       expect(fake.calls).toEqual([name]);
       expect(await readFile(held, "utf8")).toBe(expected);
       expect(lines.some((l) => l.includes(name) && l.includes("could not move"))).toBe(true);
+      // Platehouse did not stop: the sweep gives the reason it was kept.
+      expect(lines.some((l) => l.includes(name) && l.includes(reason))).toBe(true);
+      expect(lines.some((l) => l.includes(HELD_REASON))).toBe(false);
 
-      // Once the folder is usable, the next restart moves it to failed, kept.
+      // Once the folder is usable, the next restart moves it to failed, kept,
+      // with the reason it was kept, never HELD_REASON.
       await rm(join(inbox, FAILED_DIR));
       const fixed = watcher(fake, deps);
       const moved = await fixed.pollOnce();
-      expect(moved.failed).toEqual([{ name, reason: HELD_REASON }]);
+      expect(moved.failed).toEqual([{ name, reason }]);
+      expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
+        `${reason}\n`,
+      );
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
       await tick(fixed, 15_000);
@@ -1578,6 +1586,36 @@ describe("putting a file back under its name without hard links", () => {
     ].sort();
     expect(kept).toEqual([SECOND, THIRD].sort());
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("an aside name for a long inbox name fits in a file name and keeps the extension", () => {
+    const name = `${"a".repeat(240)}.stl`;
+    const aside = asideName(name);
+    expect(aside.startsWith(HOLD_ASIDE_PREFIX)).toBe(true);
+    expect(Buffer.byteLength(aside)).toBeLessThanOrEqual(255);
+    expect(aside.endsWith(".stl")).toBe(true);
+    // A short name is kept whole.
+    expect(asideName("part.stl").endsWith("-part.stl")).toBe(true);
+  });
+
+  test("a set-aside file with a long inbox name moves to failed with its extension", async () => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    await writeFile(join(holding, asideName(`${"b".repeat(240)}.3mf`)), THIRD);
+    const w = watcher(fake);
+    const pass = await w.pollOnce();
+
+    expect(pass.failed).toHaveLength(1);
+    const shown = pass.failed[0]?.name ?? "";
+    expect(shown.endsWith(".3mf")).toBe(true);
+    expect(shown.startsWith("b")).toBe(true);
+    const failed = join(inbox, FAILED_DIR);
+    const files = (await readdir(failed)).filter((f) => !f.endsWith(REASON_SUFFIX));
+    expect(files).toHaveLength(1);
+    expect(files[0]?.endsWith(".3mf")).toBe(true);
+    expect(await readFile(join(failed, files[0] ?? ""), "utf8")).toBe(THIRD);
     expect(fake.calls).toEqual([]);
   });
 });

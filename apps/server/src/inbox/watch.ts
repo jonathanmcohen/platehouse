@@ -64,7 +64,8 @@
 //   stored copy unconfirmed) cannot be moved to failed, it is not put back
 //   under the name, since a link or a copy back moves its ctime and a
 //   restart would import it again under new ids: it stays in the holding
-//   folder, logged, for the restart sweep below. A file put under
+//   folder, logged, the folder renamed to say why (KEPT_HOLD_SUFFIXES), for
+//   the restart sweep below, which gives that reason. A file put under
 //   the name after the check is put back under it, never over anything that
 //   took the name since, and looked at from the start as a new file; when
 //   another file took the name meanwhile, it moves to failed with
@@ -88,12 +89,12 @@
 //   target; a folder is renamed back, which can replace only an empty
 //   folder; anything else (a FIFO, a socket) is not put back and moves to
 //   failed. The holding folder is removed after. One a stopped process left
-//   behind (a crash in that moment), or one holding an imported file that
-//   could not be moved to failed, is emptied into failed with HELD_REASON at
-//   the first pass, a copy being put back (HOLD_COPY_PREFIX) deleted rather
-//   than kept, and anything set aside from under the name (HOLD_ASIDE_PREFIX)
-//   kept under its inbox name; while failed is still unusable it stays
-//   there, logged.
+//   behind (a crash in that moment) is emptied into failed with HELD_REASON
+//   at the first pass (one holding an imported file that could not be moved
+//   to failed, with the reason its name gives), a copy being put back
+//   (HOLD_COPY_PREFIX) deleted rather than kept, and anything set aside from
+//   under the name (HOLD_ASIDE_PREFIX) kept under its inbox name; while
+//   failed is still unusable it stays there, logged.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one plain sentence. failed/ is made when missing, and refused
@@ -370,6 +371,29 @@ export const HOLD_ASIDE_PREFIX = ".platehouse-aside-";
 /** Reason for a file a stopped process left in a holding folder. */
 export const HELD_REASON =
   "Platehouse stopped while it was deleting this file after an import, so it was kept here; check the library before adding it again.";
+
+/**
+ * What settleImported adds to the end of a holding folder's name when the
+ * imported file in it, changed or unconfirmed, could not be moved to failed,
+ * and the reason each one stands for: Platehouse did not stop, so the
+ * restart sweep moves the file to failed with this reason, not HELD_REASON.
+ * A rename of the folder in place needs no new folder or file, so a full
+ * disk does not stop it.
+ */
+const KEPT_HOLD_SUFFIXES: ReadonlyArray<readonly [suffix: string, reason: string]> = [
+  ["-changed", CHANGED_REASON],
+  ["-unconfirmed", UNCONFIRMED_REASON],
+];
+
+/** The suffix that marks a holding folder as kept for reason, if any. */
+function keptHoldSuffix(reason: string): string | undefined {
+  return KEPT_HOLD_SUFFIXES.find(([, why]) => why === reason)?.[0];
+}
+
+/** The reason the restart sweep gives what is in a holding folder. */
+function holdReason(folder: string): string {
+  return KEPT_HOLD_SUFFIXES.find(([suffix]) => folder.endsWith(suffix))?.[1] ?? HELD_REASON;
+}
 
 /** Reason when the file's name is not valid UTF-8. */
 export const NON_UTF8_REASON =
@@ -853,17 +877,26 @@ function truncateUtf8(text: string, maxBytes: number): string {
  * its reason suffix still fits in a file name.
  */
 export function failedName(name: string, n: number): string {
+  const suffix = n === 1 ? "" : ` (${n})`;
+  return fitName(name, NAME_MAX_BYTES - Buffer.byteLength(REASON_SUFFIX), suffix);
+}
+
+/**
+ * name with suffix before its extension, in at most maxBytes of UTF-8: the
+ * stem is shortened and the extension kept, so a long name still ends in
+ * .stl or .3mf. An "extension" longer than a quarter of a file name is taken
+ * as part of the name.
+ */
+function fitName(name: string, maxBytes: number, suffix = ""): string {
   const dot = name.lastIndexOf(".");
   let ext = dot > 0 ? name.slice(dot) : "";
   let stem = dot > 0 ? name.slice(0, dot) : name;
-  const suffix = n === 1 ? "" : ` (${n})`;
-  const fixed = Buffer.byteLength(REASON_SUFFIX) + Buffer.byteLength(suffix);
   if (Buffer.byteLength(ext) > NAME_MAX_BYTES / 4) {
     // An "extension" this long is part of the name.
     stem = name;
     ext = "";
   }
-  const budget = NAME_MAX_BYTES - fixed - Buffer.byteLength(ext);
+  const budget = maxBytes - Buffer.byteLength(suffix) - Buffer.byteLength(ext);
   return `${truncateUtf8(stem, budget)}${suffix}${ext}`;
 }
 
@@ -874,10 +907,12 @@ const ASIDE_ID_CHARS = 36 + 1;
  * The name takeBackCopy sets aside under: HOLD_ASIDE_PREFIX, a fresh uuid, a
  * dash and the inbox name, shortened to fit in a file name, so the rename is
  * never refused for its length (which would leave the copy under the name).
+ * The stem is shortened and the extension kept (fitName, as failedName
+ * does), so a file the restart sweep moves to failed keeps its extension.
  */
-function asideName(name: string): string {
+export function asideName(name: string): string {
   const head = `${HOLD_ASIDE_PREFIX}${uuidv7()}-`;
-  return `${head}${truncateUtf8(name, NAME_MAX_BYTES - Buffer.byteLength(head))}`;
+  return `${head}${fitName(name, NAME_MAX_BYTES - Buffer.byteLength(head))}`;
 }
 
 /** The inbox name an aside name was made from (asideName), or the entry itself. */
@@ -1439,9 +1474,10 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * (the failed folder is a symlink, not a folder, or unwritable), it is not
    * put back under the name: a link or a copy back moves its ctime, which a
    * restart would take as a new arrival and import it again under new ids.
-   * It stays in the holding folder, logged, out of the listing, and the
-   * restart sweep (sweepHolds) moves it to failed with HELD_REASON, or leaves
-   * it there, logged, while the failed folder is still unusable.
+   * It stays in the holding folder, logged, out of the listing, the folder
+   * renamed to say why (KEPT_HOLD_SUFFIXES), and the restart sweep
+   * (sweepHolds) moves it to failed with that reason, or leaves it there,
+   * logged, while the failed folder is still unusable.
    * Anything else goes back under the name for the next pass to look at from
    * the start (putBack), or, when another file took the name in the
    * meantime, to failed with SWAPPED_REASON (PUT_BACK_FAILED_REASON when
@@ -1532,12 +1568,28 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           // ctime, so a restart would take it for a new arrival, give it ids
           // no attempt used and import it a second time. It stays held, out
           // of the listing, and the restart sweep (sweepHolds) moves it to
-          // failed with HELD_REASON, or leaves it held and logged while the
-          // failed folder is still unusable.
+          // failed, or leaves it held and logged while the failed folder is
+          // still unusable. The folder is renamed to say why it was kept
+          // (KEPT_HOLD_SUFFIXES), so the sweep gives this reason and not
+          // HELD_REASON, which says Platehouse stopped.
+          let at = held;
+          const suffix = keptHoldSuffix(reason);
+          if (suffix !== undefined) {
+            try {
+              await rename(holdDir, `${holdDir}${suffix}`);
+              at = join(`${holdDir}${suffix}`, name);
+            } catch (renameError) {
+              log(
+                `inbox: could not mark ${holdDir} with why ${name} was kept ` +
+                  `(${errorText(renameError)}); the restart moves it to ${FAILED_DIR} with a ` +
+                  "reason that says Platehouse stopped",
+              );
+            }
+          }
           log(
             `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it was ` +
               `imported as model ${modelId}, so it is not put back under its name to be ` +
-              `imported again: it stays at ${held} and moves to ${FAILED_DIR} when the watcher ` +
+              `imported again: it stays at ${at} and moves to ${FAILED_DIR} when the watcher ` +
               `next starts. Why it failed: ${reason}`,
           );
           return;
@@ -1580,7 +1632,8 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * Moves what a process that stopped part way through settleImported or
    * takeBackCopy left in a holding folder, or an imported file settleImported
    * could not move to failed, to failed with HELD_REASON, and removes the
-   * folder. It may be an imported file or one put under its name, so it is
+   * folder; a folder settleImported marked (KEPT_HOLD_SUFFIXES) gives the
+   * reason its imported file was kept instead. It may be an imported file or one put under its name, so it is
    * kept, not deleted or imported. A copy copyBack was writing
    * (HOLD_COPY_PREFIX) is deleted instead. What takeBackCopy set aside
    * (HOLD_ASIDE_PREFIX) is kept, under the inbox name in its aside name. When
@@ -1590,6 +1643,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   async function sweepHolds(folders: string[], pass: InboxPass): Promise<void> {
     for (const folder of folders) {
       const holdDir = join(dir, folder);
+      const reason = holdReason(folder);
       try {
         for (const entry of await readdir(holdDir)) {
           if (entry.startsWith(HOLD_COPY_PREFIX)) {
@@ -1601,7 +1655,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           // What takeBackCopy set aside may be a writer's file, never only
           // the copy, so it is kept, under the inbox name it had.
           const shown = entry.startsWith(HOLD_ASIDE_PREFIX) ? asideOrigin(entry) : entry;
-          await failHeld(shown, join(holdDir, entry), HELD_REASON, pass);
+          await failHeld(shown, join(holdDir, entry), reason, pass);
         }
         await rmdir(holdDir);
       } catch (error) {
