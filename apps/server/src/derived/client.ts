@@ -15,6 +15,23 @@ import { Readable } from "node:stream";
 import { slicerContract } from "@platehouse/slicer-contract";
 
 /**
+ * The sentence that says the renders a file shows are from an earlier
+ * source than its own, for a .scad (STL and preview) and a STEP file
+ * (mesh). It is written here once: previousRendersScad and
+ * previousRendersStep below add the lead-in to the program's own words,
+ * and derived.ts puts it, without a lead-in, before a later failure's
+ * message while those renders are still shown (issue #104). It names the
+ * file's own source "the current version" and the renders' source "an
+ * earlier version", and the replace* messages say a dropped replacement
+ * "was not saved", so a message that joins the two never uses one name
+ * for two different uploads (issue #127).
+ */
+export const PREVIOUS_RENDERS_SENTENCE = {
+  scad: "OpenSCAD rejected the current version of this file, so the STL and preview shown are from an earlier version.",
+  step: "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version.",
+} as const;
+
+/**
  * What files.derived_message holds when the slicer or the store, not
  * OpenSCAD or the STEP converter, is why a file has no render. A render or
  * conversion error stores the program's own message instead, after
@@ -25,17 +42,17 @@ export const DERIVED_MESSAGES = {
   /** slicer_error: the slicer stayed busy or unreachable through every retry, or answered oddly. */
   slicerError: "The slicer could not render this file.",
   /** slicer_error on a replacement: the file keeps its previous source and renders. */
-  replaceFailed: "The slicer could not render the replacement, so the previous version is kept.",
+  replaceFailed: "The slicer could not render the replacement, so it was not saved.",
   /** The slicer stayed down (SlicerDown) for more than 2 hours, so the job stopped waiting. */
   slicerDown: "The slicer is not answering. The render will need to be started again.",
   /** The same, for a replacement: its staged source is discarded and the previous version kept. */
   replaceSlicerDown:
-    "The slicer is not answering, so the previous version is kept. The replacement will need to be sent again.",
+    "The slicer is not answering, so the replacement was not saved. It will need to be sent again.",
   /** The store stayed unreachable (StoreUnavailable) for more than 2 hours, so the job stopped waiting. */
   storeDown: "Storage is not answering. The render will need to be started again.",
   /** The same, for a replacement: its staged source is discarded and the previous version kept. */
   replaceStoreDown:
-    "Storage is not answering, so the previous version is kept. The replacement will need to be sent again.",
+    "Storage is not answering, so the replacement was not saved. It will need to be sent again.",
   /**
    * The store answered and refused (StoreError: an HTTP 500, AccessDenied,
    * NoSuchBucket, a body that failed with no network code), or the source
@@ -43,24 +60,22 @@ export const DERIVED_MESSAGES = {
    */
   storeRefused: "Storage refused this file, so the render could not finish.",
   /** The same, for a replacement: its staged source is discarded and the previous version kept. */
-  replaceStoreRefused: "Storage refused the replacement, so the previous version is kept.",
+  replaceStoreRefused: "Storage refused the replacement, so it was not saved.",
   /** The job could not be queued after the upload committed. */
   queueFailed: "The render could not be queued.",
   /** The render check found the job's last attempt ended without an outcome. */
   renderLost: "The render did not finish.",
   /** The same, for a replacement: the file keeps its previous source and renders. */
-  replaceLost: "The render of the replacement did not finish, so the previous version is kept.",
+  replaceLost: "The render of the replacement did not finish, so it was not saved.",
   /**
    * Put before OpenSCAD's own message when it rejects the file's source
    * while the file still shows an STL and preview rendered from an earlier
    * source (a replacement OpenSCAD rejected becomes the source, and the
    * previous version's renders stay until a render succeeds; issue #103).
    */
-  previousRendersScad:
-    "OpenSCAD rejected this file, so the STL and preview shown are from the previous version. OpenSCAD said:",
+  previousRendersScad: `${PREVIOUS_RENDERS_SENTENCE.scad} OpenSCAD said:`,
   /** The same, before the STEP converter's own message, for a mesh from an earlier source. */
-  previousRendersStep:
-    "The STEP converter rejected this file, so the mesh shown is from the previous version. The converter said:",
+  previousRendersStep: `${PREVIOUS_RENDERS_SENTENCE.step} The converter said:`,
   /** A .scad over the contract's 1 MiB limit is never sent. */
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */
