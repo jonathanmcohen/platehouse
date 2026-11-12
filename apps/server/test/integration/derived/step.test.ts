@@ -6,13 +6,18 @@
 // is all the browser ever loads for a STEP file.
 import { randomBytes } from "node:crypto";
 import { truncate } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { LIMITS } from "@platehouse/slicer-contract";
+import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   createDerived,
   DERIVED_KINDS,
+  DERIVED_MESSAGES,
+  type DerivedDeps,
   DerivedError,
   type DerivedJob,
   type DerivedStore,
@@ -471,5 +476,171 @@ describe("a store that goes away while a STEP source is sent", () => {
     // The source is kept.
     const source = await env.repos.blobs.get(file.blobId);
     expect(await readObject(env, source?.key ?? "")).toEqual(Buffer.from(text));
+  });
+});
+
+// Issue #104, as for a .scad: after a replacement the converter rejected, the
+// file keeps the previous version's mesh and its message says so, and a later
+// final failure that is the slicer's or the store's, or a conversion the
+// render check finds dead, keeps that sentence before its own message. Only
+// the sentence goes, not "The converter said:".
+const PREVIOUS_VERSION_STEP =
+  "The STEP converter rejected this file, so the mesh shown is from the previous version.";
+
+describe("after a rejected STEP replacement, a later failure keeps the previous-version sentence (issue #104)", () => {
+  /** A queue that holds each job an hour, so only the test runs it; retryLimit 0 when noRetries. */
+  function holdingQueue(opts: { noRetries?: boolean } = {}): DerivedDeps["queue"] {
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+        ...(opts.noRetries ? { retryLimit: 0 } : {}),
+      });
+    };
+    return { send, findJobs: env.boss.findJobs.bind(env.boss) };
+  }
+
+  function derivedWith(overrides: Partial<DerivedDeps>) {
+    return createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: holdingQueue(),
+      retryDelaySeconds: 1,
+      ...overrides,
+    });
+  }
+
+  async function heldJob(fileId: string) {
+    const held = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
+      (j) => j.state === "created",
+    );
+    expect(held).toHaveLength(1);
+    const job = held[0];
+    if (!job) throw new Error("no held job");
+    return job;
+  }
+
+  /** Takes the file's one held job off the queue and runs it, as its first or its last attempt. */
+  async function runHeld(
+    fileId: string,
+    derived: ReturnType<typeof createDerived>,
+    opts: { last?: boolean } = {},
+  ) {
+    const job = await heldJob(fileId);
+    await env.boss.cancel(QUEUE.slicer, job.id);
+    return derived.runJob(job.data, {
+      retryCount: opts.last ? job.retryLimit : 0,
+      retryLimit: job.retryLimit,
+    });
+  }
+
+  async function nothingListening(): Promise<string> {
+    const s = createServer();
+    await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = s.address() as AddressInfo;
+    await new Promise<void>((resolve) => s.close(() => resolve()));
+    return `http://127.0.0.1:${port}`;
+  }
+
+  /** A converted STEP file, then a replacement the converter rejects. */
+  async function rejectedReplacement(label: string) {
+    const { modelId, fileId } = await uploadStep(uniqueStep(`${label}, original`));
+    const before = await settledFile(env, fileId);
+    const refusal = "STEP import failed: no shapes found";
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: refusal });
+    const { sourceBlobId } = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep(`${label}, rejected`)),
+    );
+    expect(await settledFile(env, fileId)).toMatchObject({
+      blobId: sourceBlobId,
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_MESH} ${refusal}`,
+    });
+    await until(
+      () => env.boss.findJobs(QUEUE.slicer, { data: { fileId } }),
+      (js) => js.every((j) => j.state === "completed"),
+    );
+    env.stub.renders.reset();
+    return { modelId, fileId, before, rejectedBlobId: sourceBlobId };
+  }
+
+  async function expectKept(
+    fileId: string,
+    before: { meshBlobId: string | null },
+    rejectedBlobId: string,
+    message: string,
+  ) {
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: rejectedBlobId,
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_VERSION_STEP} ${message}`,
+    });
+  }
+
+  test("a conversion of the rejected source whose slicer stays down past 2 hours keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("slicer down");
+    let now = Date.now();
+    const refused = await nothingListening();
+    const down = () => derivedWith({ slicerUrl: refused, now: () => new Date(now) });
+    await derivedWith({}).convertStep(fileId);
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "slicer_down" });
+    now += 2 * 60 * 60 * 1000 + 1000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "slicer_down" });
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.slicerDown);
+  });
+
+  test("a further replacement whose source the store refuses partway on the last attempt keeps the sentence and the rejected source", async () => {
+    const { modelId, fileId, before, rejectedBlobId } = await rejectedReplacement("refused");
+    const blobsBefore = (await blobsOf(env, modelId)).map((b) => b.id);
+    const next = uniqueStep("refused, never sent whole");
+    await derivedWith({}).replaceFile(fileId, await writeUpload(env, next));
+    // The first bytes of the staged source, then a body that fails with no
+    // network code: a store that answered and refused (issue #102).
+    const refusing: DerivedStore = {
+      putBlob: env.store.putBlob.bind(env.store),
+      getBlobStream: async () => {
+        let sent = false;
+        return new Readable({
+          read() {
+            if (sent) {
+              setTimeout(() => this.destroy(new StoreError("GetObject", "Unknown")), 10);
+              return;
+            }
+            sent = true;
+            this.push(Buffer.from(next.slice(0, 64)));
+          },
+        });
+      },
+      deleteBlobs: env.store.deleteBlobs.bind(env.store),
+    };
+
+    expect(await runHeld(fileId, derivedWith({ store: refusing }), { last: true })).toEqual({
+      status: "failed",
+      reason: "store_refused",
+    });
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceStoreRefused);
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(blobsBefore);
+  });
+
+  test("a further replacement whose last job died keeps the sentence and the rejected source when the render check settles it", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("died");
+    await derivedWith({ queue: holdingQueue({ noRetries: true }) }).replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("died, replacement")),
+    );
+    const job = await heldJob(fileId);
+    await env.boss.fail(QUEUE.slicer, job.id, { message: "the process died mid-conversion" });
+
+    const result = await env.derived.checkRenders(
+      new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
+    );
+    expect(result.failed).toContain(fileId);
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceLost);
   });
 });

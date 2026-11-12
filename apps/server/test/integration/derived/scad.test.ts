@@ -1782,3 +1782,176 @@ describe("the render check (issues #90 and #91)", () => {
     expect(await jobsFor(unqueued)).toHaveLength(1);
   });
 });
+
+// Issue #104: after a replacement OpenSCAD rejected, the file keeps the
+// previous version's STL and preview and its message says so. A later final
+// failure that is the slicer's or the store's, or a render the render check
+// finds dead, must keep saying it: the sentence goes before that failure's
+// own message. Only the sentence goes, not "OpenSCAD said:", which would put
+// the slicer's or the store's words in OpenSCAD's mouth.
+const PREVIOUS_VERSION_SCAD =
+  "OpenSCAD rejected this file, so the STL and preview shown are from the previous version.";
+
+describe("after a rejected replacement, a later failure keeps the previous-version sentence (issue #104)", () => {
+  afterEach(async () => {
+    while (fakeStores.length > 0) await fakeStores.pop()?.();
+  });
+
+  /**
+   * A rendered .scad, then a replacement OpenSCAD rejects: the file's source
+   * is the replacement, its STL and preview the previous version's.
+   */
+  async function rejectedReplacement(label: string) {
+    const { modelId, fileId } = await uploadScad(unique(`${label}, original`));
+    const before = await settledFile(env, fileId);
+    const refusal = 'ERROR: Parser error in file "input.scad", line 2';
+    env.stub.renders.queue("/v1/scad/stl", { kind: "failed", message: refusal });
+    const { sourceBlobId } = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, unique(`${label}, rejected`)),
+    );
+    expect(await settledFile(env, fileId)).toMatchObject({
+      blobId: sourceBlobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_RENDERS_SCAD} ${refusal}`,
+    });
+    await until(
+      () => jobsFor(fileId),
+      (js) => js.every((j) => j.state === "completed"),
+    );
+    env.stub.renders.reset();
+    return { modelId, fileId, before, rejectedBlobId: sourceBlobId };
+  }
+
+  /** The file still shows the rejected source and the previous version's renders, and says so. */
+  async function expectKept(
+    fileId: string,
+    before: { renderStlBlobId: string | null; renderPngBlobId: string | null },
+    rejectedBlobId: string,
+    message: string,
+  ) {
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: rejectedBlobId,
+      renderStlBlobId: before.renderStlBlobId,
+      renderPngBlobId: before.renderPngBlobId,
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIOUS_VERSION_SCAD} ${message}`,
+    });
+  }
+
+  test("a render of the rejected source whose slicer stays down past 2 hours keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, slicer down");
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const refused = await nothingListening();
+    const down = () =>
+      derivedWith({ slicerUrl: refused, queue: holdingQueue(), ...clocked(clock) });
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "slicer_down" });
+    now += TWO_HOURS_MS + 1000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "slicer_down" });
+    await expectKept(fileId, before, rejectedBlobId, SLICER_DOWN_MESSAGE);
+  });
+
+  test("a further replacement whose slicer stays down past 2 hours keeps the sentence and the rejected source", async () => {
+    const { modelId, fileId, before, rejectedBlobId } = await rejectedReplacement(
+      "replacement, slicer down",
+    );
+    const blobsBefore = (await blobsOf(env, modelId)).map((b) => b.id);
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const refused = await nothingListening();
+    const down = () =>
+      derivedWith({ slicerUrl: refused, queue: holdingQueue(), ...clocked(clock) });
+    await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("replacement, slicer down, never renders")),
+    );
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "slicer_down" });
+    now += TWO_HOURS_MS + 1000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "slicer_down" });
+    await expectKept(fileId, before, rejectedBlobId, REPLACE_SLICER_DOWN_MESSAGE);
+    // The staged source is gone; the rejected source and the old renders stay.
+    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(blobsBefore);
+  });
+
+  test("a render of the rejected source whose store stays down past 2 hours keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, store down");
+    let now = Date.now();
+    const clock = () => new Date(now);
+    const down = () =>
+      derivedWith({ store: storeDown({ reads: true }), queue: holdingQueue(), ...clocked(clock) });
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+
+    expect(await runHeld(fileId, down())).toEqual({ status: "requeued", reason: "store_down" });
+    now += TWO_HOURS_MS + 1000;
+    expect(await runHeld(fileId, down())).toEqual({ status: "failed", reason: "store_down" });
+    await expectKept(fileId, before, rejectedBlobId, STORE_DOWN_MESSAGE);
+  });
+
+  test("a render of the rejected source whose renders the store refuses (AccessDenied) keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, refused");
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+    const refusing = derivedWith({
+      store: await refusingStore({ writes: s3Error(403, "AccessDenied") }),
+      queue: holdingQueue(),
+    });
+
+    expect(await runHeld(fileId, refusing)).toEqual({ status: "failed", reason: "store_refused" });
+    await expectKept(fileId, before, rejectedBlobId, STORE_REFUSED_MESSAGE);
+  });
+
+  test("a further replacement whose GetObject answers 500 on the last attempt keeps the sentence and the rejected source", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("replacement, refused");
+    await derivedWith({ queue: holdingQueue() }).replaceFile(
+      fileId,
+      await writeUpload(env, unique("replacement, refused, never read")),
+    );
+    const refusing = derivedWith({
+      store: await refusingStore({ reads: s3Error(500, "InternalError") }),
+      queue: holdingQueue(),
+    });
+
+    expect(await runHeld(fileId, refusing, { last: true })).toEqual({
+      status: "failed",
+      reason: "store_refused",
+    });
+    await expectKept(fileId, before, rejectedBlobId, REPLACE_STORE_REFUSED_MESSAGE);
+  });
+
+  test("a render of the rejected source that ends in slicer_error on its last attempt keeps the sentence", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, dropped");
+    await derivedWith({ queue: holdingQueue() }).renderScad(fileId);
+    env.stub.renders.always("/v1/scad/stl", { kind: "drop" });
+
+    expect(await runHeld(fileId, derivedWith({ queue: holdingQueue() }), { last: true })).toEqual({
+      status: "failed",
+      reason: "slicer_error",
+    });
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.slicerError);
+  });
+
+  test("a render of the rejected source whose last job died keeps the sentence when the render check settles it", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("re-render, died");
+    await heldDerived().renderScad(fileId);
+    await killJob(fileId);
+
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.failed).toContain(fileId);
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.renderLost);
+  });
+
+  test("a further replacement whose last job died keeps the sentence and the rejected source when the render check settles it", async () => {
+    const { fileId, before, rejectedBlobId } = await rejectedReplacement("replacement, died");
+    await heldDerived().replaceFile(fileId, await writeUpload(env, unique("replacement, died")));
+    await killJob(fileId);
+
+    const result = await env.derived.checkRenders(pastGrace());
+    expect(result.failed).toContain(fileId);
+    await expectKept(fileId, before, rejectedBlobId, DERIVED_MESSAGES.replaceLost);
+  });
+});
