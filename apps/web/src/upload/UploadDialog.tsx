@@ -9,8 +9,10 @@
 // earlier round is still uploading join the same model (ingest joins every
 // later file of a batch to the model the first one made). Hiding the dialog
 // while files are sending is closing it too: when that round finishes while
-// it is hidden, the batch ends, the switch goes off and the settled rows are
-// cleared, so a file added later is never joined to the earlier model. Into
+// it is hidden, the batch ends and the switch goes off, so a file added later
+// is never joined to the earlier model, and the rows that went in are
+// cleared. A row that failed keeps its reason, and a row not yet sent stays,
+// until the dialog is next closed with nothing in flight. Into
 // an existing model (modelId) there is nothing to combine, so the switch is
 // not shown.
 //
@@ -20,9 +22,10 @@
 // handled on the document while it is open, so they keep working wherever
 // focus has gone, and Tab from outside it (the shell behind) goes back into
 // it; pressing the backdrop keeps focus in the dialog. Closing while
-// files are still sending only hides it: the uploads go on and their rows
-// are there when it is opened again. Files that are not a supported type
-// are listed with the reason and never sent.
+// files are still sending only hides it: the uploads go on, and every row
+// still sending, failed or not yet sent is there when it is opened again (a
+// row that went in is cleared when its round ends while hidden). Files that
+// are not a supported type are listed with the reason and never sent.
 //
 // While it is open, files dropped on it or anywhere on its backdrop (which
 // covers the page) are added to the list. It is rendered beside the routes,
@@ -146,10 +149,12 @@ export function UploadDialog({
     ...(fetchResult === undefined ? {} : { fetchResult }),
     ...(resultDelayMs === undefined ? {} : { resultDelayMs }),
     onFinished: () => {
-      // Hidden while it was sending: the user has closed it, so the round
-      // ends here, as close() would have ended it.
+      // Hidden while it was sending: the user has closed it, so the batch
+      // ends here, as close() would have ended it. Only the rows that went
+      // in are cleared: a failed row keeps its reason and an unsent row
+      // stays, so they are there when the dialog is opened again.
       if (!isOpen.current) {
-        upload.clearSettled();
+        upload.clearDone();
         setCombine(false);
         batch.current = null;
       }

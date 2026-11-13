@@ -379,6 +379,11 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
     setItems((list) => list.filter((i) => i.status === "uploading" || i.status === "adding"));
   }, []);
 
+  /** Removes only the rows that went in; a failed or unsent row stays to be seen. */
+  const clearDone = useCallback(() => {
+    setItems((list) => list.filter((i) => i.status !== "done"));
+  }, []);
+
   async function waitForResult(key: string, uploadUrl: string) {
     const until = Date.now() + RESULT_TIMEOUT_MS;
     for (;;) {
@@ -433,5 +438,5 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
   };
 
   const busy = items.some((i) => i.status === "uploading" || i.status === "adding");
-  return { items, addFiles, begin, clearSettled, busy };
+  return { items, addFiles, begin, clearSettled, clearDone, busy };
 }

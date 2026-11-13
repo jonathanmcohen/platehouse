@@ -1014,6 +1014,73 @@ describe("upload dialog shows progress per file and honours combine", () => {
     expect(started[1]?.target).toEqual({ kind: "new" });
   });
 
+  test("combine on: a file that fails while the dialog is hidden keeps its row and reason", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    const c = new File([new Uint8Array(300)], "c.step");
+    const d = new File([new Uint8Array(400)], "d.scad");
+    const dialog = (open: boolean, files: File[]) => (
+      <UploadDialog
+        open={open}
+        files={files}
+        onClose={() => {}}
+        start={start}
+        fetchResult={fetchResult}
+        resultDelayMs={0}
+      />
+    );
+    const round1 = [a, b];
+    await render(dialog(true, round1));
+    await act(async () => {
+      switchInput()?.click();
+    });
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    await act(async () => {
+      button(/^hide$/i).click();
+    });
+    await render(dialog(false, round1));
+    // A file added while hidden is listed and not sent.
+    const added = [c];
+    await render(dialog(false, added));
+    // One file fails and one goes in while the dialog is hidden.
+    await act(async () => {
+      started[0]?.handlers.onError(new Error("network down"));
+      started[1]?.handlers.onSuccess("https://platehouse.test/app/uploads/u-8");
+    });
+    await settle();
+    // Opened again: the batch has ended, the failed row is there with its
+    // reason, the unsent row is there, and the row that went in is gone.
+    const round2 = [d];
+    await render(dialog(true, round2));
+    expect(switchInput()?.checked).toBe(false);
+    expect(container.querySelector('[data-upload="a.3mf"]')?.textContent).toContain(
+      "The upload failed: network down.",
+    );
+    expect(container.querySelector('[data-upload="b.stl"]')).toBeNull();
+    expect(container.querySelector('[data-upload="c.step"]')?.textContent).toContain("Ready");
+    expect(container.querySelector('[data-upload="d.scad"]')).not.toBeNull();
+    await act(async () => {
+      button(/^upload 2 files/i).click();
+    });
+    expect(started.map((s) => s.file.name)).toEqual(["a.3mf", "b.stl", "c.step", "d.scad"]);
+    expect(started[2]?.target).toEqual({ kind: "new" });
+    expect(started[3]?.target).toEqual({ kind: "new" });
+    await act(async () => {
+      started[2]?.handlers.onSuccess("https://platehouse.test/app/uploads/u-9");
+      started[3]?.handlers.onSuccess("https://platehouse.test/app/uploads/u-10");
+    });
+    await settle();
+    // Closed with nothing in flight: only now is the failed row cleared.
+    await act(async () => {
+      button(/^close$/i).click();
+    });
+    await render(dialog(false, round2));
+    await render(dialog(true, round2));
+    expect(container.querySelector('[data-upload="a.3mf"]')).toBeNull();
+    expect(container.textContent).toContain("No files yet");
+  });
+
   test("combine on: a round that finishes while the dialog is open keeps the batch until Close", async () => {
     const { started, start, fetchResult } = stubUploads();
     const c = new File([new Uint8Array(300)], "c.step");
