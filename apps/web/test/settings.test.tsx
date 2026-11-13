@@ -117,6 +117,24 @@ function json(status: number, body?: unknown): Response {
   });
 }
 
+function sameName(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * The name a tag or collection is stored under: one per name ignoring case,
+ * and the first one written is kept, as the server's repositories do
+ * (ON CONFLICT (lower(name)) DO NOTHING).
+ */
+function storedName(key: "tags" | "collections", typed: string): string {
+  const name = typed.trim();
+  for (const m of state.models) {
+    const found = m[key].find((n) => sameName(n, name));
+    if (found !== undefined) return found;
+  }
+  return name;
+}
+
 function counts(key: "tags" | "collections" | "creator") {
   const byName = new Map<string, number>();
   for (const m of state.models) {
@@ -232,16 +250,24 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     const m = model(seg[1]);
     const tag = seg[3] as string;
     if (m === undefined) return json(404, { error: "not_found" });
-    if (method === "PUT" && !m.tags.includes(tag)) m.tags.push(tag);
-    if (method === "DELETE") m.tags = m.tags.filter((t) => t !== tag);
+    if (method === "PUT") {
+      const name = storedName("tags", tag);
+      if (!m.tags.some((t) => sameName(t, name))) m.tags.push(name);
+      return json(200, { name });
+    }
+    if (method === "DELETE") m.tags = m.tags.filter((t) => !sameName(t, tag));
     return json(204);
   }
   if (seg[0] === "collections" && seg[2] === "models") {
     const m = model(seg[3]);
     const name = seg[1] as string;
     if (m === undefined) return json(404, { error: "not_found" });
-    if (method === "PUT" && !m.collections.includes(name)) m.collections.push(name);
-    if (method === "DELETE") m.collections = m.collections.filter((c) => c !== name);
+    if (method === "PUT") {
+      const stored = storedName("collections", name);
+      if (!m.collections.some((c) => sameName(c, stored))) m.collections.push(stored);
+      return json(200, { name: stored });
+    }
+    if (method === "DELETE") m.collections = m.collections.filter((c) => !sameName(c, name));
     return json(204);
   }
   if (method === "POST" && seg[0] === "models" && seg[2] === "trash") {
@@ -505,7 +531,8 @@ describe("the settings page", () => {
     expect(text()).not.toContain(token.slice(3));
     expect(text()).toContain("Claude Code on mini01");
     expect(text()).toContain(token.slice(0, 8));
-    expect(text()).toContain("Never used");
+    expect(text()).toContain(", never used");
+    expect(text()).not.toContain("Never used");
 
     // A fresh visit to the page still never shows it.
     await act(async () => root.unmount());
@@ -691,6 +718,34 @@ describe("the organising pages", () => {
     await click(button("Remove Hook from collection Garage"));
     expect(callsTo("DELETE", "/app/api/collections/Garage/models/m2")).toHaveLength(1);
   });
+
+  test.each([
+    ["Creators", "/creators?name=Other", () => <CreatorsPage />],
+    ["Collections", "/collections?name=Garage", () => <CollectionsPage />],
+    ["Tags", "/tags?name=PETG", () => <TagsPage />],
+  ])(
+    "on the %s page, a tag or collection added in other capitals shows the stored name",
+    async (_page, path, page) => {
+      // "pla" and "Shelf" exist already, on Cable clip; Hook has neither.
+      const [clip, hook] = state.models as [FakeModel, FakeModel];
+      clip.tags = ["pla"];
+      clip.collections = ["Desk", "Shelf"];
+      hook.tags = ["PETG"];
+      await show(path, page());
+
+      await type(labelled<HTMLInputElement>("Add a tag to Hook"), "PLA");
+      await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
+      expect(callsTo("PUT", "/app/api/models/m2/tags/PLA")).toHaveLength(1);
+      expect(() => button("Remove tag pla from Hook")).not.toThrow();
+      expect(() => button("Remove tag PLA from Hook")).toThrow();
+
+      await type(labelled<HTMLInputElement>("Add Hook to a collection"), "SHELF");
+      await submit(labelled<HTMLInputElement>("Add Hook to a collection"));
+      expect(callsTo("PUT", "/app/api/collections/SHELF/models/m2")).toHaveLength(1);
+      expect(() => button("Remove Hook from collection Shelf")).not.toThrow();
+      expect(() => button("Remove Hook from collection SHELF")).toThrow();
+    },
+  );
 
   test("a change that answers last keeps a change that answered first", async () => {
     await show("/collections?name=Desk", <CollectionsPage />);

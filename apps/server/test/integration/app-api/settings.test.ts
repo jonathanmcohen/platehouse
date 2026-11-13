@@ -460,11 +460,13 @@ describe("organising", () => {
 
     for (const id of [a.model.id, b.model.id]) {
       const put = await call("PUT", tagPath(id));
-      expect(put.status, put.text).toBe(204);
+      expect(put.status, put.text).toBe(200);
+      expect(put.json()).toEqual({ name: tag });
     }
     for (const name of [shelf, desk]) {
       const put = await call("PUT", shelfPath(name, a.model.id));
-      expect(put.status, put.text).toBe(204);
+      expect(put.status, put.text).toBe(200);
+      expect(put.json()).toEqual({ name });
     }
 
     const tags = (await call("GET", "/app/api/tags")).json() as {
@@ -502,6 +504,30 @@ describe("organising", () => {
     expect(await env.repos.collections.forModel(a.model.id)).toEqual([desk]);
     // Taking off what is not there is 404.
     expect((await call("DELETE", tagPath(b.model.id))).status).toBe(404);
+  });
+
+  test("a tag or collection added in other capitals answers the name already stored", async () => {
+    // Tags and collections are one per name ignoring case, and the first
+    // name written is kept, so the page shows the answer's name on the chip.
+    const tag = `pla-${marker()}`;
+    const shelf = `Shelf ${marker()}`;
+    const a = await seedStoredModel(env);
+    const b = await seedStoredModel(env);
+    const tagPath = (id: string, name: string) =>
+      `/app/api/models/${id}/tags/${encodeURIComponent(name)}`;
+    const shelfPath = (name: string, id: string) =>
+      `/app/api/collections/${encodeURIComponent(name)}/models/${id}`;
+    expect((await call("PUT", tagPath(a.model.id, tag))).json()).toEqual({ name: tag });
+    expect((await call("PUT", shelfPath(shelf, a.model.id))).json()).toEqual({ name: shelf });
+
+    const upperTag = await call("PUT", tagPath(b.model.id, `  ${tag.toUpperCase()} `));
+    expect(upperTag.status, upperTag.text).toBe(200);
+    expect(upperTag.json()).toEqual({ name: tag });
+    const upperShelf = await call("PUT", shelfPath(shelf.toUpperCase(), b.model.id));
+    expect(upperShelf.status, upperShelf.text).toBe(200);
+    expect(upperShelf.json()).toEqual({ name: shelf });
+    expect(await env.repos.tags.forModel(b.model.id)).toEqual([tag]);
+    expect(await env.repos.collections.forModel(b.model.id)).toEqual([shelf]);
   });
 
   test("a trashed model cannot be renamed, tagged or put in a collection", async () => {
