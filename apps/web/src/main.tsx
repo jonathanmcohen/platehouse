@@ -12,8 +12,9 @@
 //
 // The model page (Task 20) is at /models/:id. Files dropped on it open a
 // dialog aimed at that model (modelId), where the Combine switch is not
-// shown (Jon, 2026-11-12); Add and a drop on the library open the dialog for
-// new models. There is one dialog per target, never one dialog whose target
+// shown (Jon, 2026-11-12), and so does the page's Add files button, with no
+// files, which is how a hidden model dialog is opened again; Add and a drop
+// on the library open the dialog for new models. There is one dialog per target, never one dialog whose target
 // changes: the dialog for new models, and one for each model files were
 // dropped on, each mounted from its first use for as long as the app runs.
 // The dialog sends every unsent row to its target when Upload is pressed

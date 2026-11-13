@@ -36,6 +36,12 @@
 //   opens Task 19's upload dialog aimed at this model, where the Combine
 //   switch is not shown. refreshKey changes when an upload round finishes,
 //   and the page loads the model again.
+// - Add files, a button in the page head, calls onFiles with no files and
+//   this model's id, which opens the same dialog with the rows it already
+//   has. It is the keyboard route to this model's dialog (the top bar's Add
+//   opens the dialog for new models), and the way back to it after it was
+//   hidden: a row that failed, with its reason, or was left unsent, and
+//   the progress of a hidden upload, are there without dropping a file.
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { DropZone } from "../upload/DropZone";
@@ -146,7 +152,10 @@ export interface ModelPageProps {
   navigateTo?: (url: string) => void;
   /** Read from the browser when left out. */
   platform?: Platform;
-  /** Files dropped on the page, with this model's id, for the upload dialog. */
+  /**
+   * Files dropped on the page, with this model's id, for the upload dialog;
+   * Add files calls it with none, to open that dialog as it is.
+   */
   onFiles?: (files: File[], modelId: string) => void;
   /** Changes when an upload round finishes; the page loads the model again. */
   refreshKey?: number;
@@ -334,6 +343,7 @@ export function ModelPage({
         loadThree={loadThree}
         navigateTo={navigateTo}
         platform={platform}
+        {...(onFiles === undefined ? {} : { onAddFiles: () => onFiles([], model.id) })}
       />
     </DropZone>
   );
@@ -345,6 +355,8 @@ interface ModelDetailProps {
   loadThree?: ThreeLoader | undefined;
   navigateTo?: ((url: string) => void) | undefined;
   platform?: Platform | undefined;
+  /** Opens this model's upload dialog with no new files (Add files). */
+  onAddFiles?: () => void;
 }
 
 /** The first file the viewer shows: the first .3mf, else the first file it can show. */
@@ -354,7 +366,14 @@ function firstShown(model: ModelView): string | null {
   return first?.id ?? null;
 }
 
-function ModelDetail({ model, onRetry, loadThree, navigateTo, platform }: ModelDetailProps) {
+function ModelDetail({
+  model,
+  onRetry,
+  loadThree,
+  navigateTo,
+  platform,
+  onAddFiles,
+}: ModelDetailProps) {
   const base = useId();
   const has3mf = model.files.some((f) => f.kind === "3mf");
   const tabNames: TabName[] = has3mf ? ["plates", "files", "about"] : ["files", "about"];
@@ -416,6 +435,11 @@ function ModelDetail({ model, onRetry, loadThree, navigateTo, platform }: ModelD
         </p>
         <h1>{model.name}</h1>
         {model.creator === null ? null : <p className="studio-byline">by {model.creator}</p>}
+        {onAddFiles === undefined ? null : (
+          <button type="button" className="studio-button" onClick={onAddFiles}>
+            Add files
+          </button>
+        )}
       </div>
       <div className="studio-model">
         <section className="studio-viewer" aria-label="Viewer">

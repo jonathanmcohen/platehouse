@@ -18,7 +18,9 @@
 // - open in Bambu Studio on macOS builds bambustudioopen://<encoded link>
 // - .3mf shows no 3D view
 // Also: dropping files on the page hands them to Task 19's upload dialog with
-// this model as the target, and the dialog then hides the Combine switch; the layout (viewer left, tabs Plates, Files and About, Plates first
+// this model as the target, and the dialog then hides the Combine switch;
+// the page's Add files button opens that dialog again with no files, so a
+// row that failed or was left unsent while it was hidden is seen; the layout (viewer left, tabs Plates, Files and About, Plates first
 // and only with a .3mf), each set of numbers labelled with where it came
 // from, the About tab rendering Task 7's renderMarkdown with the licence
 // note beside the licence, and the page CSS using only studio.css tokens.
@@ -57,7 +59,12 @@ import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
  */
 const recorded = vi.hoisted(() => ({
   roots: [] as Array<{ unmount(): void }>,
-  uploads: [] as Array<{ name: string; metadata: Record<string, string> }>,
+  uploads: [] as Array<{
+    name: string;
+    metadata: Record<string, string>;
+    /** Ends this upload as tus-js-client does when it gives up. */
+    fail(error: Error): void;
+  }>,
 }));
 
 vi.mock("react-dom/client", async (importOriginal) => {
@@ -76,8 +83,15 @@ vi.mock("tus-js-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("tus-js-client")>();
   class Upload {
     url: string | null = null;
-    constructor(file: File, options: { metadata?: Record<string, string> }) {
-      recorded.uploads.push({ name: file.name, metadata: { ...options.metadata } });
+    constructor(
+      file: File,
+      options: { metadata?: Record<string, string>; onError?: (error: Error) => void },
+    ) {
+      recorded.uploads.push({
+        name: file.name,
+        metadata: { ...options.metadata },
+        fail: (error) => options.onError?.(error),
+      });
     }
     findPreviousUploads() {
       return Promise.resolve([]);
@@ -1185,6 +1199,17 @@ describe("dropping files on the model page", () => {
     expect(onFiles).toHaveBeenCalledWith([file], MODEL_ID);
   });
 
+  test("Add files, a button on the page, hands no files and this model's id to onFiles, so its dialog opens from the keyboard too", async () => {
+    const onFiles = vi.fn();
+    await render(pageAt(MODEL_ID, { onFiles }));
+    const add = button(/^add files$/i);
+    expect(add.type).toBe("button");
+    expect(add.disabled).toBe(false);
+    await click(add);
+    expect(onFiles).toHaveBeenCalledTimes(1);
+    expect(onFiles).toHaveBeenCalledWith([], MODEL_ID);
+  });
+
   test("the dialog for this model hides the Combine switch and uploads into the model", async () => {
     const started: Array<{ file: File; target: UploadTarget }> = [];
     const start: StartUpload = (file, target) => {
@@ -1584,6 +1609,27 @@ describe("the app's upload dialog keeps each file's target from when it was adde
         ["b.stl", MODEL_ID],
         ["d.stl", MODEL_ID],
       ]);
+
+      // The model's uploads fail while its dialog is hidden. Add files on
+      // the model page, with nothing dropped, opens that model's dialog
+      // again, where the failed rows and their reason are; the top bar's
+      // Add still opens the dialog for new models, without them.
+      await click(button(/^hide$/i, dialog()));
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      await act(async () => {
+        for (const upload of recorded.uploads) {
+          if (upload.metadata.modelId === MODEL_ID) upload.fail(new Error("the server went away"));
+        }
+      });
+      await settle();
+      await click(button(/^add files$/i, appRoot));
+      expect(text(dialog())).toContain("The files are added to this model.");
+      expect(listed()).toEqual(["a.stl", "b.stl", "d.stl"]);
+      expect(text(dialog())).toContain("The upload failed: the server went away.");
+      await click(button(/^hide$|^close$/i, dialog()));
+      await click(button(/^\+?\s*add$/i, appRoot));
+      expect(text(dialog())).toContain("Each file becomes its own model");
+      expect(listed()).toEqual(["c.stl", "e.stl"]);
     } finally {
       const appReact = recorded.roots[rootsBefore];
       await act(async () => appReact?.unmount());
