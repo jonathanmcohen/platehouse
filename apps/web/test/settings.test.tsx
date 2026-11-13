@@ -512,6 +512,7 @@ describe("the settings page", () => {
   test("changing printer queues re-estimation and the old numbers stay marked", async () => {
     await show("/settings", <SettingsPage />);
     await choose(labelled<HTMLSelectElement>("Printer"), X1C);
+    await click(button("Save printer"));
     expect(callsTo("PUT", "/app/api/settings/printer")).toEqual([
       { method: "PUT", path: "/app/api/settings/printer", body: { printerId: X1C } },
     ]);
@@ -536,11 +537,59 @@ describe("the settings page", () => {
     expect(text()).toContain("Choose a printer from the list");
 
     await choose(select, P1S);
+    await click(button("Save printer"));
     expect(callsTo("PUT", "/app/api/settings/printer")).toEqual([
       { method: "PUT", path: "/app/api/settings/printer", body: { printerId: P1S } },
     ]);
     expect(labelled<HTMLSelectElement>("Printer").value).toBe(P1S);
     expect(text()).not.toContain("Choose a printer from the list");
+  });
+
+  test("moving through the printer menu saves nothing until Save printer is pressed", async () => {
+    // On Windows, an arrow key on a focused, closed select changes its value
+    // and fires change at once, so a change alone must not save a printer
+    // and queue re-estimation of the whole library.
+    await show("/settings", <SettingsPage />);
+    const select = labelled<HTMLSelectElement>("Printer");
+    await choose(select, P1S_06);
+    await choose(select, X1C);
+    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(0);
+    expect(select.value).toBe(X1C);
+
+    // Save with no change from the stored printer sends nothing.
+    await choose(select, P1S);
+    await click(button("Save printer"));
+    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(0);
+  });
+
+  test("while a printer save runs, focus stays where it was and a change is ignored", async () => {
+    await show("/settings", <SettingsPage />);
+    const release = hold("PUT /app/api/settings/printer");
+    const select = labelled<HTMLSelectElement>("Printer");
+    const save = button("Save printer");
+    await choose(select, X1C);
+    save.focus();
+    await click(save);
+    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(1);
+
+    // Neither control takes the disabled attribute, which would push focus
+    // to the page body; both are marked aria-disabled and ignore input.
+    expect(focused()).toBe(save);
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(select.matches(":disabled")).toBe(false);
+    expect(select.getAttribute("aria-disabled")).toBe("true");
+    select.focus();
+    await choose(select, P1S_06);
+    expect(focused()).toBe(select);
+    expect(select.value).toBe(X1C);
+    await click(save);
+    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(1);
+
+    await release();
+    expect(select.getAttribute("aria-disabled")).toBe("false");
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      `Re-estimating the library for ${X1C}`,
+    );
   });
 
   test("new token is shown once and never again", async () => {
@@ -922,6 +971,65 @@ describe("the organising pages", () => {
 
     await click(button("Remove Hook from collection Garage"));
     expect(callsTo("DELETE", "/app/api/models/m2/collections?name=Garage")).toHaveLength(1);
+  });
+
+  test("a chip remove in flight keeps focus on its button, then focus goes to the add input", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("DELETE /app/api/models/m1/tags");
+    const input = labelled<HTMLInputElement>("Add a tag to Cable clip");
+    const remove = button("Remove tag PLA from Cable clip");
+    const add = button("Add tag", input.form as HTMLFormElement);
+    remove.focus();
+    await click(remove);
+    expect(callsTo("DELETE", "/app/api/models/m1/tags?name=PLA")).toHaveLength(1);
+
+    // No disabled attribute while it runs, so focus stays on the pressed
+    // button; a second press, or an add, is ignored until it answers.
+    expect(focused()).toBe(remove);
+    expect(remove.getAttribute("aria-disabled")).toBe("true");
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    await click(remove);
+    await type(input, "PETG");
+    await submit(input);
+    expect(callsTo("DELETE", "/app/api/models/m1/tags?name=PLA")).toHaveLength(1);
+    expect(callsTo("PUT", "/app/api/models/m1/tags?name=PETG")).toHaveLength(0);
+
+    await release();
+    expect(remove.isConnected).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(add.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("a chip remove that fails leaves focus on its button", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("DELETE /app/api/models/m1/tags");
+    const remove = button("Remove tag PLA from Cable clip");
+    remove.focus();
+    await click(remove);
+    // Gone on the server before the remove lands, so the remove fails.
+    state.models = state.models.filter((m) => m.id !== "m1");
+    await release();
+    expect(remove.isConnected).toBe(true);
+    expect(focused()).toBe(remove);
+    expect(remove.getAttribute("aria-disabled")).toBe("false");
+    expect(text()).toContain("no longer there");
+  });
+
+  test("an Add pressed from the keyboard keeps focus while the add runs", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("PUT /app/api/models/m2/tags");
+    const input = labelled<HTMLInputElement>("Add a tag to Hook");
+    const add = button("Add tag", input.form as HTMLFormElement);
+    await type(input, "PETG");
+    add.focus();
+    await click(add);
+    expect(callsTo("PUT", "/app/api/models/m2/tags?name=PETG")).toHaveLength(1);
+    expect(focused()).toBe(add);
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    await release();
+    expect(focused()).toBe(add);
+    expect(add.getAttribute("aria-disabled")).toBe("false");
+    expect(() => button("Remove tag PETG from Hook")).not.toThrow();
   });
 
   test('a tag or collection named "." or ".." can be added and removed', async () => {

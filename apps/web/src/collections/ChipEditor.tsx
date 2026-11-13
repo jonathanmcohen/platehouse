@@ -2,7 +2,13 @@
 // 21; AC-061, AC-062). Each chip has its own remove button, named for what
 // it removes; a themed input with its button adds one. Adding a name the
 // model already has does nothing on the server and shows no second chip.
-import { type FormEvent, useId, useState } from "react";
+// While a change runs, every remove button and the add button are marked
+// aria-disabled and ignore a press, and so does Enter in the input. As in
+// ConfirmDialog and InlineRename, none takes the disabled attribute, because
+// a browser moves focus out of a focused button that becomes disabled. A
+// remove that works unmounts its chip's button, so focus then goes to the
+// add input; a remove that fails leaves focus on its button.
+import { type FormEvent, useId, useRef, useState } from "react";
 import { errorText } from "../settings/api";
 import "../settings/organise.css";
 
@@ -34,8 +40,10 @@ export function ChipEditor({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const input = useRef<HTMLInputElement>(null);
 
   async function run(change: () => Promise<void>) {
+    if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -49,6 +57,7 @@ export function ChipEditor({
 
   function add(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return;
     const value = draft.trim();
     if (value === "") return;
     void run(async () => {
@@ -65,8 +74,13 @@ export function ChipEditor({
           <button
             type="button"
             aria-label={removeLabel(value)}
-            disabled={busy}
-            onClick={() => run(() => onRemove(value))}
+            aria-disabled={busy}
+            onClick={() =>
+              run(async () => {
+                await onRemove(value);
+                input.current?.focus();
+              })
+            }
           >
             <span aria-hidden="true">x</span>
           </button>
@@ -77,6 +91,7 @@ export function ChipEditor({
           {addLabel}
         </label>
         <input
+          ref={input}
           id={id}
           className="studio-input ph-small"
           value={draft}
@@ -84,7 +99,7 @@ export function ChipEditor({
           autoComplete="off"
           onChange={(event) => setDraft(event.currentTarget.value)}
         />
-        <button type="submit" className="studio-button ph-small" disabled={busy}>
+        <button type="submit" className="studio-button ph-small" aria-disabled={busy}>
           {addButton}
         </button>
       </form>

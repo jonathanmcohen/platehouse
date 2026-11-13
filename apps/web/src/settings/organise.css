@@ -40,7 +40,8 @@
   min-width: 0;
 }
 
-.ph-inline-form .studio-input {
+.ph-inline-form .studio-input,
+.ph-inline-form .ph-select {
   flex: 1 1 12rem;
 }
 
@@ -51,9 +52,12 @@
   min-width: 0;
 }
 
-/* A button that ignores a press while a change runs (aria-disabled, not
-   disabled, so it keeps focus): it looks like studio.css's disabled button. */
-.studio-button[aria-disabled="true"] {
+/* A button, chip button or select that ignores input while a change runs
+   (aria-disabled, not disabled, so it keeps focus): it looks like
+   studio.css's disabled button. */
+.studio-button[aria-disabled="true"],
+.ph-select[aria-disabled="true"],
+.ph-chip > button[aria-disabled="true"] {
   cursor: not-allowed;
   filter: none;
   opacity: 0.6;
