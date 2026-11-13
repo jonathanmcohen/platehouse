@@ -31,6 +31,10 @@
 //      File delivery and slicer links (Task 17) read files through that
 //      same library and blobs through the same database and store, and
 //      sign links with a key links.ts derives from LINK_SECRET.
+//      The library page's app API (Task 19) reads the same database and
+//      Task 12's plate numbers, with the display context (the settings row
+//      and estimates.listPrinters, through readDisplayContext) read once per
+//      page rather than once per plate.
 //      The web app's own API under /app/api (Task 21: settings, tokens,
 //      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
@@ -56,6 +60,7 @@ import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
+import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
 import { recordVersioning } from "./app-api/settings.js";
 import { dbTokenList } from "./app-api/tokens.js";
 import { createOidc } from "./auth/oidc.js";
@@ -67,6 +72,7 @@ import { migrate } from "./db/migrate.js";
 import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
 import { createSlicerClient, sliceTimeoutMs } from "./estimates/client.js";
+import { plateNumbers } from "./estimates/display.js";
 import { createEstimates } from "./estimates/service.js";
 import { createInboxWatcher, type InboxWatcher, inboxProbes } from "./inbox/watch.js";
 import { createIngest, type IngestResult } from "./ingest/ingest.js";
@@ -427,6 +433,15 @@ export async function start(config: Config): Promise<Server> {
         library: createDeliveryLibrary({ db, store }),
         linkSecret: config.linkSecret,
       },
+      library: createAppLibrary({
+        db,
+        displayContext: () =>
+          readDisplayContext({
+            settings: () => repos.settings.get(),
+            listPrinters: () => estimates.listPrinters(),
+          }),
+        plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+      }),
       // The settings, trash and organising pages (Task 21).
       appApi: {
         settings: { settings: repos.settings, estimates },

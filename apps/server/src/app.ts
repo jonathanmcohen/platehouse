@@ -26,10 +26,11 @@
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
-// - The web app's own JSON API under /app/api (app-api/, Task 21: settings,
-//   tokens, organising and the trash), session-class, so the gate's session
-//   and Origin checks cover every route. Without appApi its routes are still
-//   registered and answer 503.
+// - The web app's own JSON API under /app/api (app-api/: Task 19's library,
+//   and Task 21's settings, tokens, organising and the trash), session-class,
+//   so the gate's session and Origin checks cover every route. Without
+//   library the library routes answer an empty library, and without appApi
+//   Task 21's routes are still registered and answer 503.
 // - The web app (web/shell.ts, Task 18): the shell pages (session-class)
 //   answer with the built index.html, data-theme and the color-scheme meta
 //   written in from the ph_theme cookie, and the hashed build output is
@@ -77,6 +78,7 @@ import Fastify, {
 import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
+import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
@@ -152,6 +154,13 @@ export interface AppDeps {
    * not-found handler as a refused link (403, empty body).
    */
   delivery?: DeliveryDeps;
+  /**
+   * The library's app API (Task 19): the cards and tag filter of the library
+   * page, read from the database and Task 12's plate numbers. Left out, the
+   * routes are still there and answer an empty library, so the route-class
+   * test walks them.
+   */
+  library?: AppLibrary;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged
@@ -419,6 +428,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     authHook: requireSession,
     uploads: deps.uploads,
   });
+  await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerV1(app, api);
   await registerSettingsApi(app, deps.appApi?.settings);
   await registerTokensApi(app, deps.appApi?.tokens);
