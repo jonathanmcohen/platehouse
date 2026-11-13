@@ -4,12 +4,17 @@
 // it when it opens and kept there (Tab and Shift+Tab wrap), Escape closes it,
 // and on close focus goes back to the control that opened it
 // (returnFocusTo), so a keyboard user never lands on the document body.
+// A press on the backdrop does not move focus out of the panel either.
 // ConfirmDialog asks before something that cannot be undone, with the safe
 // choice, Cancel, focused first. Once the change is sent it cannot be called
-// back, so while it runs Cancel is disabled and Escape does nothing: the
-// dialog stays open until the change has answered, and shows any failure.
+// back, so while it runs both buttons are marked aria-disabled and ignore a
+// press, and Escape does nothing: the dialog stays open until the change has
+// answered, and announces any failure. The buttons are never given the
+// disabled attribute, because a browser moves focus out of a focused button
+// that becomes disabled, and the dialog's keys would then stop working.
 import {
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -64,17 +69,27 @@ export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }
       event.preventDefault();
       return;
     }
-    if (event.shiftKey && document.activeElement === first) {
+    // The panel itself (focused when it has nothing focusable, or after a
+    // click on its text) counts as the stop before the first control.
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === panel.current)) {
       event.preventDefault();
       last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
+    } else if (!event.shiftKey && active === last) {
       event.preventDefault();
       first.focus();
     }
   }
 
+  // A press on the backdrop would move focus to the page body, out of reach
+  // of the panel's keys; the page behind is not usable while the dialog is open.
+  function keepFocus(event: MouseEvent<HTMLDivElement>) {
+    if (event.target === event.currentTarget) event.preventDefault();
+  }
+
   return (
-    <div className="ph-dialog-backdrop">
+    // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop only stops a press from taking focus away; the dialog's own controls and keys do the work.
+    <div className="ph-dialog-backdrop" onMouseDown={keepFocus}>
       <div
         ref={panel}
         className="ph-dialog"
@@ -115,6 +130,7 @@ export function ConfirmDialog({
   const [error, setError] = useState<string | undefined>(undefined);
 
   async function go() {
+    if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -139,13 +155,17 @@ export function ConfirmDialog({
       {...(returnFocusTo === undefined ? {} : { returnFocusTo })}
     >
       <p>{message}</p>
-      {error === undefined ? null : <p className="studio-alert studio-alert-alert">{error}</p>}
+      {error === undefined ? null : (
+        <p role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </p>
+      )}
       <div className="studio-actions">
         <button
           type="button"
           className="studio-button ph-button-danger"
           onClick={go}
-          disabled={busy}
+          aria-disabled={busy}
         >
           {confirmLabel}
         </button>
@@ -154,7 +174,7 @@ export function ConfirmDialog({
           type="button"
           className="studio-button"
           onClick={close}
-          disabled={busy}
+          aria-disabled={busy}
         >
           Cancel
         </button>

@@ -51,6 +51,14 @@
   min-width: 0;
 }
 
+/* A button that ignores a press while a change runs (aria-disabled, not
+   disabled, so it keeps focus): it looks like studio.css's disabled button. */
+.studio-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  filter: none;
+  opacity: 0.6;
+}
+
 .ph-small {
   padding: 4px 10px;
   font-size: 0.9rem;

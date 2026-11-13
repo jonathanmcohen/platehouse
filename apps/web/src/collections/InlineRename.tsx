@@ -2,7 +2,12 @@
 // with a Rename button beside it; Rename swaps in a text input with Save and
 // Cancel. Enter or Save saves, Escape or Cancel leaves without saving, and
 // either way focus goes back to the Rename button. A rename changes only the
-// displayed name; the server keeps the file's bucket key.
+// displayed name; the server keeps the file's bucket key. A save that has
+// been sent cannot be called back, so while it runs Save and Cancel are
+// marked aria-disabled and ignore a press, Escape and Enter do nothing, and
+// the form stays open until the save answers, announcing any failure. As in
+// ConfirmDialog, the buttons never take the disabled attribute, which would
+// push focus out of the form. The form always opens without an old error.
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { errorText } from "../settings/api";
 import "../settings/organise.css";
@@ -46,6 +51,7 @@ export function InlineRename({
   }, [editing]);
 
   function leave() {
+    if (busy) return;
     refocus.current = true;
     setEditing(false);
     setError(undefined);
@@ -53,6 +59,7 @@ export function InlineRename({
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return;
     const name = draft.trim();
     if (name === "") {
       setError("A name cannot be empty.");
@@ -66,12 +73,14 @@ export function InlineRename({
     setError(undefined);
     try {
       await onSave(name);
-      leave();
     } catch (failure) {
       setError(errorText(failure));
-    } finally {
       setBusy(false);
+      return;
     }
+    setBusy(false);
+    refocus.current = true;
+    setEditing(false);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -92,6 +101,7 @@ export function InlineRename({
           aria-label={buttonLabel}
           onClick={() => {
             setDraft(value);
+            setError(undefined);
             setEditing(true);
           }}
         >
@@ -116,14 +126,16 @@ export function InlineRename({
         onChange={(event) => setDraft(event.currentTarget.value)}
         onKeyDown={onKeyDown}
       />
-      <button type="submit" className="studio-button ph-small" disabled={busy}>
+      <button type="submit" className="studio-button ph-small" aria-disabled={busy}>
         Save
       </button>
-      <button type="button" className="studio-button ph-small" onClick={leave}>
+      <button type="button" className="studio-button ph-small" onClick={leave} aria-disabled={busy}>
         Cancel
       </button>
       {error === undefined ? null : (
-        <span className="studio-alert studio-alert-alert">{error}</span>
+        <span role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </span>
       )}
     </form>
   );

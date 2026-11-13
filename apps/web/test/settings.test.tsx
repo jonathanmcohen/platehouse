@@ -434,11 +434,24 @@ async function choose(select: HTMLSelectElement, value: string): Promise<void> {
   await settle();
 }
 
-async function press(el: Element, key: string): Promise<void> {
+async function press(el: Element, key: string, init: KeyboardEventInit = {}): Promise<void> {
   await act(async () => {
-    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
   });
   await settle();
+}
+
+/**
+ * Where a browser sends the next key. jsdom leaves focus on a button that
+ * has just been disabled, but Chromium applies the HTML focus fixup rule and
+ * moves focus to the page body, where the dialog's key handling never sees
+ * it. This does the same as Chromium before reading the focused element, so
+ * a test that presses keys on focused() presses them where a user would.
+ */
+function focused(): Element {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.matches(":disabled")) active.blur();
+  return document.activeElement ?? document.body;
 }
 
 async function submit(input: HTMLInputElement): Promise<void> {
@@ -592,9 +605,9 @@ describe("the settings page", () => {
     expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(1);
 
     const cancel = button("Cancel", dialog() as HTMLElement);
-    expect(cancel.disabled).toBe(true);
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
     await click(cancel);
-    await press(dialog() as HTMLElement, "Escape");
+    await press(focused(), "Escape");
     expect(dialog()).not.toBeNull();
 
     await release();
@@ -664,8 +677,8 @@ describe("the trash", () => {
     await click(button("Empty trash", dialog() as HTMLElement));
 
     const cancel = button("Cancel", dialog() as HTMLElement);
-    expect(cancel.disabled).toBe(true);
-    await press(dialog() as HTMLElement, "Escape");
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
+    await press(focused(), "Escape");
     await click(cancel);
     expect(dialog()).not.toBeNull();
 
@@ -727,6 +740,71 @@ describe("the trash", () => {
     await press(document.activeElement as Element, "Tab");
     expect(document.activeElement).toBe(focusable[0]);
   });
+  test("while a change runs, focus stays on a control inside the dialog", async () => {
+    await show("/trash", <TrashPage />);
+    const release = hold("POST /app/api/trash/empty");
+    await click(button("Empty trash"));
+    const confirm = button("Empty trash", dialog() as HTMLElement);
+    confirm.focus();
+    await click(confirm);
+    const active = focused();
+    expect(active).not.toBe(document.body);
+    expect(dialog()?.contains(active)).toBe(true);
+    // Pressing it again while the change runs sends nothing more.
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await click(confirm);
+    expect(callsTo("POST", "/app/api/trash/empty")).toHaveLength(1);
+    await release();
+  });
+
+  test("after a failed change, the error is announced, Tab cycles and Escape closes", async () => {
+    emptyIncomplete = true;
+    await show("/trash", <TrashPage />);
+    const release = hold("POST /app/api/trash/empty");
+    const empty = button("Empty trash");
+    await click(empty);
+    const ask = dialog() as HTMLElement;
+    const confirm = button("Empty trash", ask);
+    const cancel = button("Cancel", ask);
+    confirm.focus();
+    await click(confirm);
+    expect(ask.contains(focused())).toBe(true);
+    await release();
+
+    const alert = ask.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("1 model could not be deleted");
+    expect(confirm.getAttribute("aria-disabled")).toBe("false");
+    expect(focused()).toBe(confirm);
+    await press(focused(), "Tab", { shiftKey: true });
+    expect(document.activeElement).toBe(cancel);
+    await press(focused(), "Tab");
+    expect(document.activeElement).toBe(confirm);
+    await press(focused(), "Escape");
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(empty);
+  });
+
+  test("Shift+Tab from the dialog's panel itself goes to its last control", async () => {
+    await show("/trash", <TrashPage />);
+    await click(button("Empty trash"));
+    const ask = dialog() as HTMLElement;
+    ask.focus();
+    await press(ask, "Tab", { shiftKey: true });
+    expect(document.activeElement).toBe(button("Cancel", ask));
+  });
+
+  test("a press on the backdrop does not take focus out of the dialog", async () => {
+    await show("/trash", <TrashPage />);
+    await click(button("Empty trash"));
+    const backdrop = dialog()?.parentElement as HTMLElement;
+    let kept = false;
+    await act(async () => {
+      kept = !backdrop.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(kept).toBe(true);
+  });
 });
 
 describe("the organising pages", () => {
@@ -774,6 +852,58 @@ describe("the organising pages", () => {
     await press(input, "Escape");
     expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
     expect(document.activeElement).toBe(button("Rename Cable clip"));
+  });
+
+  test("a rename that is saving cannot be cancelled: Cancel and Escape wait for the answer", async () => {
+    await show("/tags?name=PLA", <TagsPage />);
+    const release = hold("PATCH /app/api/models/m1");
+    await click(button("Rename Cable clip"));
+    const input = labelled<HTMLInputElement>("New name for Cable clip");
+    await type(input, "Cable clip v2");
+    const save = button("Save", input.form as HTMLFormElement);
+    const cancel = button("Cancel", input.form as HTMLFormElement);
+    save.focus();
+    await click(save);
+    expect(callsTo("PATCH", "/app/api/models/m1")).toHaveLength(1);
+
+    // Focus stays in the form, and nothing in it can leave or save again.
+    expect(input.form?.contains(focused())).toBe(true);
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
+    await click(cancel);
+    await press(input, "Escape");
+    await submit(input);
+    expect(input.isConnected).toBe(true);
+    expect(callsTo("PATCH", "/app/api/models/m1")).toHaveLength(1);
+
+    await release();
+    expect(input.isConnected).toBe(false);
+    expect(text()).toContain("Cable clip v2");
+    expect(document.activeElement).toBe(button("Rename Cable clip v2"));
+  });
+
+  test("a rename that fails shows its error in the open form, and the next rename starts clean", async () => {
+    await show("/tags?name=PLA", <TagsPage />);
+    const release = hold("PATCH /app/api/models/m1");
+    await click(button("Rename Cable clip"));
+    const input = labelled<HTMLInputElement>("New name for Cable clip");
+    await type(input, "Cable clip v2");
+    await submit(input);
+    // Gone on the server before the rename lands, so the rename fails.
+    state.models = state.models.filter((m) => m.id !== "m1");
+    await press(input, "Escape");
+    await release();
+
+    expect(input.isConnected).toBe(true);
+    const alert = input.form?.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe("That is no longer there. Reload the page to see the latest.");
+
+    await press(input, "Escape");
+    expect(input.isConnected).toBe(false);
+    await click(button("Rename Cable clip"));
+    const again = labelled<HTMLInputElement>("New name for Cable clip");
+    expect(again.form?.querySelector('[role="alert"]')).toBeNull();
+    expect(again.form?.textContent).not.toContain("no longer there");
   });
 
   test("tag and collection chips can be added and removed", async () => {
