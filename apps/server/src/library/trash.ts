@@ -257,17 +257,22 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
     },
 
     /**
-     * Empty trash: purges every model in the trash. Throws PurgeIncomplete,
-     * after trying them all, when any could not be purged.
+     * Empty trash: purges every model in the trash, or, given ids, only those
+     * of them still in the trash, so a caller showing a list purges what it
+     * showed and not a model trashed since. Malformed, unknown and live ids
+     * are skipped. Throws PurgeIncomplete, after trying them all, when any
+     * could not be purged.
      */
-    async emptyTrash(): Promise<PurgeResult> {
-      const trashed = await db
-        .selectFrom("models")
-        .select("id")
-        .where("trashedAt", "is not", null)
-        .orderBy("trashedAt")
-        .orderBy("id")
-        .execute();
+    async emptyTrash(only?: readonly string[]): Promise<PurgeResult> {
+      let query = db.selectFrom("models").select("id").where("trashedAt", "is not", null);
+      if (only !== undefined) {
+        const ids = [...new Set(only.filter(isUuid))];
+        if (ids.length === 0) return { purged: [] };
+        // One array parameter, not one per id, so a long list stays inside
+        // Postgres's parameter limit.
+        query = query.where("id", "=", sql<string>`any(${ids}::uuid[])`);
+      }
+      const trashed = await query.orderBy("trashedAt").orderBy("id").execute();
       return purgeAll(
         trashed.map((m) => m.id),
         undefined,

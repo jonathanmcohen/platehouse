@@ -211,19 +211,22 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(204);
   }
   if (method === "GET" && path === "/app/api/trash") return json(200, { models: state.trash });
-  if (method === "POST" && path === "/app/api/trash/empty" && emptyIncomplete) {
-    const stuck = state.trash.slice(-1);
-    const purged = state.trash.length - stuck.length;
-    state.trash = stuck;
-    return json(500, {
-      error: "incomplete",
-      purged,
-      message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
-    });
-  }
+  // Empty trash purges only the ids it is sent that are still in the trash,
+  // as the server does: a model trashed after the page read the list stays.
   if (method === "POST" && path === "/app/api/trash/empty") {
-    const purged = state.trash.length;
-    state.trash = [];
+    if (!Array.isArray(body?.ids)) return json(400, { error: "bad_request" });
+    const sent = new Set<string>(body.ids);
+    const asked = state.trash.filter((m) => sent.has(m.id));
+    const stuck = emptyIncomplete ? asked.slice(-1) : [];
+    const purged = asked.length - stuck.length;
+    state.trash = state.trash.filter((m) => !sent.has(m.id) || stuck.includes(m));
+    if (emptyIncomplete) {
+      return json(500, {
+        error: "incomplete",
+        purged,
+        message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
+      });
+    }
     return json(200, { purged });
   }
   if (method === "POST" && seg[0] === "trash" && seg[2] === "restore") {
@@ -808,6 +811,33 @@ describe("the trash", () => {
     expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(1);
     expect(text()).not.toContain("Old benchy");
     expect(text()).not.toContain("Broken clip");
+  });
+
+  test("empty trash deletes only the models the page showed, and says how many", async () => {
+    await show("/trash", <TrashPage />);
+    // Something else trashes a model after the page read the list: an API v1
+    // client, the importer or another tab.
+    state.trash = [
+      ...state.trash,
+      {
+        id: "m-trashed-later",
+        name: "Unseen bracket",
+        creator: null,
+        trashedAt: "2026-11-12T12:00:00.000Z",
+        purgeAt: "2026-12-12T12:00:00.000Z",
+        purgeStarted: false,
+      },
+    ];
+    await click(button("Empty trash"));
+    expect(dialog()?.textContent).toContain("The 2 models listed here are deleted for good");
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
+      { ids: ["m-trashed-1", "m-trashed-2"] },
+    ]);
+    expect(text()).toContain("Deleted 2 models for good.");
+    // The list is read again, so the model nobody confirmed shows, still restorable.
+    expect(text()).toContain("Unseen bracket");
+    expect(text()).not.toContain("Old benchy");
   });
 
   test("empty trash reads the trash again after it answers", async () => {

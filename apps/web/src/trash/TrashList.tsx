@@ -2,8 +2,11 @@
 // and on the settings page. Each trashed model shows the day after which
 // the daily purge deletes it for good (30 days after it was trashed) and a
 // Restore button, which brings it back with its files, tags and
-// collections. Empty trash deletes everything in the trash at once, after a
-// themed confirmation, never the browser's own dialog. A model whose purge has
+// collections. Empty trash deletes the models the page lists at once, after a
+// themed confirmation that says how many, never the browser's own dialog. It
+// sends their ids, and the server purges only those: a model something else
+// trashed after the list was read (an API v1 client, the importer, another
+// tab) is not deleted unseen, and shows when the list is read again. A model whose purge has
 // begun cannot be restored, and says so. After any Empty trash, done or not,
 // the list is read again, so a model deleted for good never stays on screen.
 // When only some models could be deleted, the dialog says how many were and
@@ -53,7 +56,8 @@ function incompleteFailure(failure: unknown): unknown {
 
 export function TrashList() {
   const trash = useAppApi<{ models: TrashedModel[] }>("/trash");
-  const [asking, setAsking] = useState(false);
+  /** The ids Empty trash asks to delete: the models listed when the dialog opened; null when closed. */
+  const [asking, setAsking] = useState<readonly string[] | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const emptyButton = useRef<HTMLButtonElement>(null);
@@ -96,11 +100,13 @@ export function TrashList() {
   async function emptyTrash() {
     setStatus("");
     try {
-      const answer = await appApi<{ purged: number }>("POST", "/trash/empty");
+      const answer = await appApi<{ purged: number }>("POST", "/trash/empty", {
+        ids: asking ?? [],
+      });
       trash.set({ models: [] });
       // The result goes where focus goes; Empty trash has nothing left to do.
       emptyReturn.current = statusLine.current;
-      setAsking(false);
+      setAsking(null);
       setStatus(deletedSentence(answer.purged));
     } catch (failure) {
       // The dialog shows this; the list below is read again either way.
@@ -125,7 +131,7 @@ export function TrashList() {
           onClick={() => {
             if (models.length === 0) return;
             emptyReturn.current = emptyButton.current;
-            setAsking(true);
+            setAsking(models.map((m) => m.id));
           }}
         >
           Empty trash
@@ -180,13 +186,17 @@ export function TrashList() {
           ))}
         </ul>
       ) : null}
-      {asking ? (
+      {asking !== null ? (
         <ConfirmDialog
           title="Empty the trash?"
-          message="Every model in the trash is deleted for good, with its files. This cannot be undone."
+          message={
+            asking.length === 1
+              ? "The 1 model listed here is deleted for good, with its files. This cannot be undone."
+              : `The ${asking.length} models listed here are deleted for good, with their files. This cannot be undone.`
+          }
           confirmLabel="Empty trash"
           onConfirm={emptyTrash}
-          onCancel={() => setAsking(false)}
+          onCancel={() => setAsking(null)}
           returnFocusTo={emptyReturn}
         />
       ) : null}

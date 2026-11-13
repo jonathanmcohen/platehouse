@@ -13,7 +13,7 @@
 //   POST   /app/api/models/:id/trash                  move to the trash
 //   GET    /app/api/trash                             {models: [... purgeAt]}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
-//   POST   /app/api/trash/empty                       {purged}
+//   POST   /app/api/trash/empty  {ids}                {purged}
 //
 // Every change calls what Task 14 built: renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
@@ -36,6 +36,10 @@
 // the daily purge (03:30) removes it on its first run after that. A model
 // whose purge has begun is listed with purgeStarted, and restore refuses it
 // (409), as restoreModel does.
+//
+// Empty trash takes the ids the page listed and purges only those still in
+// the trash: a model something else trashed after the page read the list (an
+// API v1 client, the importer, another tab) stays, and can be restored.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
@@ -104,7 +108,14 @@ const ROWS_QUERY = {
   },
 } as const;
 
+const IDS_BODY = {
+  type: "object",
+  properties: { ids: { type: "array", items: ID } },
+  required: ["ids"],
+} as const;
+
 type IdParams = { id: string };
+type IdsBody = { ids: string[] };
 type NameQuery = { name: string };
 type NameBody = { name: string };
 type RowsQuery = { creator?: string; collection?: string; tag?: string; cursor?: string };
@@ -371,23 +382,27 @@ export async function registerOrganiseApi(
       },
     );
 
-    scope.post("/trash/empty", async (request, reply) => {
-      try {
-        const { purged } = await need(deps).trash.emptyTrash();
-        return { purged: purged.length };
-      } catch (error) {
-        if (error instanceof PurgeIncomplete) {
-          request.log.error({ err: error }, "app api: empty trash was not finished");
-          const n = error.failed.length;
-          return reply.code(500).send({
-            error: "incomplete",
-            purged: error.purged.length,
-            message: `${n} ${n === 1 ? "model" : "models"} could not be deleted and ${n === 1 ? "stays" : "stay"} in the trash; the next purge tries again.`,
-          });
+    scope.post<{ Body: IdsBody }>(
+      "/trash/empty",
+      { schema: { body: IDS_BODY } },
+      async (request, reply) => {
+        try {
+          const { purged } = await need(deps).trash.emptyTrash(request.body.ids);
+          return { purged: purged.length };
+        } catch (error) {
+          if (error instanceof PurgeIncomplete) {
+            request.log.error({ err: error }, "app api: empty trash was not finished");
+            const n = error.failed.length;
+            return reply.code(500).send({
+              error: "incomplete",
+              purged: error.purged.length,
+              message: `${n} ${n === 1 ? "model" : "models"} could not be deleted and ${n === 1 ? "stays" : "stay"} in the trash; the next purge tries again.`,
+            });
+          }
+          throw error;
         }
-        throw error;
-      }
-    });
+      },
+    );
   });
 }
 

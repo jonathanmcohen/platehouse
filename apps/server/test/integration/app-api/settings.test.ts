@@ -577,6 +577,12 @@ describe("organising", () => {
   });
 });
 
+/** The ids GET /app/api/trash lists now, as the trash page holds them. */
+async function listedTrash(): Promise<string[]> {
+  const res = await call("GET", "/app/api/trash");
+  return (res.json() as { models: Array<{ id: string }> }).models.map((m) => m.id);
+}
+
 describe("the trash", () => {
   test("lists each trashed model with its purge date, and restore brings it back", async () => {
     const tag = `kept-${marker()}`;
@@ -617,15 +623,17 @@ describe("the trash", () => {
     });
   });
 
-  test("empty trash purges every trashed model, its rows and its bucket objects", async () => {
+  test("empty trash purges the listed trashed models, their rows and their bucket objects", async () => {
     const a = await seedStoredModel(env);
     const b = await seedStoredModel(env);
     const live = await seedStoredModel(env);
     for (const m of [a, b]) await call("POST", `/app/api/models/${m.model.id}/trash`);
+    const ids = await listedTrash();
+    expect(ids).toEqual(expect.arrayContaining([a.model.id, b.model.id]));
 
-    const res = await call("POST", "/app/api/trash/empty");
+    const res = await call("POST", "/app/api/trash/empty", { json: { ids } });
     expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBeGreaterThanOrEqual(2);
+    expect((res.json() as { purged: number }).purged).toBe(ids.length);
     for (const m of [a, b]) {
       expect(await env.store.listPrefix(`models/${m.model.id}/`)).toEqual([]);
       expect((await rowCounts(env.db, m.model.id)).models).toBe(0);
@@ -650,7 +658,9 @@ describe("the trash", () => {
       },
     };
     try {
-      const res = await call("POST", "/app/api/trash/empty");
+      const res = await call("POST", "/app/api/trash/empty", {
+        json: { ids: await listedTrash() },
+      });
       // The shape the trash page reads (apps/web TrashList's incompleteFailure).
       expect(res.status, res.text).toBe(500);
       expect(res.json()).toEqual({
@@ -668,11 +678,45 @@ describe("the trash", () => {
     }
 
     // With the bucket back, the next Empty trash finishes it.
-    const retry = await call("POST", "/app/api/trash/empty");
+    const retry = await call("POST", "/app/api/trash/empty", {
+      json: { ids: await listedTrash() },
+    });
     expect(retry.status, retry.text).toBe(200);
     expect((await rowCounts(env.db, failing.model.id)).models).toBe(0);
     expect(await env.store.listPrefix(failingPrefix)).toEqual([]);
     expect((await call("GET", "/app/api/trash")).json()).toEqual({ models: [] });
+  });
+
+  test("empty trash leaves a model trashed after the page read the list", async () => {
+    const shown = await seedStoredModel(env);
+    const unseen = await seedStoredModel(env);
+    await call("POST", `/app/api/models/${shown.model.id}/trash`);
+    const ids = await listedTrash();
+    expect(ids).toContain(shown.model.id);
+    // Trashed by something else (here the same route; API v1 and the
+    // importer reach the same trash) after the page read the list.
+    await call("POST", `/app/api/models/${unseen.model.id}/trash`);
+
+    const res = await call("POST", "/app/api/trash/empty", { json: { ids } });
+    expect(res.status, res.text).toBe(200);
+    expect((res.json() as { purged: number }).purged).toBe(ids.length);
+    expect((await rowCounts(env.db, shown.model.id)).models).toBe(0);
+    expect((await env.repos.models.get(unseen.model.id))?.trashedAt).not.toBeNull();
+    expect(await env.store.listPrefix(`models/${unseen.model.id}/`)).not.toEqual([]);
+    expect(await listedTrash()).toContain(unseen.model.id);
+    // It can still be restored.
+    expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
+  });
+
+  test("empty trash without a list of ids is refused and changes nothing", async () => {
+    const seeded = await seedStoredModel(env);
+    await call("POST", `/app/api/models/${seeded.model.id}/trash`);
+    for (const json of [undefined, {}, { ids: seeded.model.id }]) {
+      const res = await call("POST", "/app/api/trash/empty", { json });
+      expect(res.status, `${JSON.stringify(json)}: ${res.text}`).toBe(400);
+    }
+    expect((await rowCounts(env.db, seeded.model.id)).models).toBe(1);
+    expect((await call("POST", `/app/api/trash/${seeded.model.id}/restore`)).status).toBe(204);
   });
 });
 
@@ -701,7 +745,10 @@ describe("every /app/api route", () => {
   test("a refused empty trash changes nothing", async () => {
     const seeded = await seedStoredModel(env);
     await call("POST", `/app/api/models/${seeded.model.id}/trash`);
-    const res = await call("POST", "/app/api/trash/empty", { origin: "https://evil.test" });
+    const res = await call("POST", "/app/api/trash/empty", {
+      origin: "https://evil.test",
+      json: { ids: [seeded.model.id] },
+    });
     expect(res.status).toBe(403);
     expect((await rowCounts(env.db, seeded.model.id)).models).toBe(1);
   });
