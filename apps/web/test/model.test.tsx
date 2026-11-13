@@ -52,13 +52,16 @@ import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
- * For the app test at the end, which loads main.tsx itself: every React root
- * made, so it can unmount the app's, and every tus upload started, with its
- * metadata (the target). The stand-in Upload sends nothing; no other test
- * here starts a real tus upload.
+ * For the app tests at the end, which load main.tsx itself: every React root
+ * made, so a test can unmount the app's; what main.tsx rendered into #root,
+ * so a later test can mount a fresh app (the module renders only when it is
+ * first imported); and every tus upload started, with its metadata (the
+ * target). The stand-in Upload sends nothing; no other test here starts a
+ * real tus upload.
  */
 const recorded = vi.hoisted(() => ({
   roots: [] as Array<{ unmount(): void }>,
+  app: null as unknown,
   uploads: [] as Array<{
     name: string;
     metadata: Record<string, string>;
@@ -74,6 +77,13 @@ vi.mock("react-dom/client", async (importOriginal) => {
     createRoot: (...args: Parameters<typeof actual.createRoot>) => {
       const made = actual.createRoot(...args);
       recorded.roots.push(made);
+      if ((args[0] as Element).id === "root") {
+        const render = made.render.bind(made);
+        made.render = (node) => {
+          recorded.app = node;
+          render(node);
+        };
+      }
       return made;
     },
   };
@@ -1602,19 +1612,45 @@ describe("the app's upload dialog keeps each file's target from when it was adde
     return recorded.uploads.map(({ name, metadata }) => [name, metadata.modelId ?? "new"]);
   }
 
-  test("files left unsent for a model never go to new models, and new-model files never join the model", async () => {
-    models.set(MODEL_ID, model([STL_FILE]));
-    recorded.uploads.length = 0;
-    window.history.pushState({}, "", `/models/${MODEL_ID}`);
+  /**
+   * Mounts the app from main.tsx into a new #root at the current URL, with
+   * fresh state: the first time by importing main.tsx, after that by
+   * rendering what it rendered then into a new root. Returns the root to
+   * unmount and the element.
+   */
+  async function startApp(): Promise<{ appRoot: HTMLElement; unmount(): Promise<void> }> {
     const appRoot = document.createElement("div");
     appRoot.id = "root";
     document.body.append(appRoot);
     const rootsBefore = recorded.roots.length;
-    try {
+    if (recorded.app === null) {
       await act(async () => {
         await import("../src/main");
       });
-      await settle();
+    } else {
+      const fresh = createRoot(appRoot);
+      await act(async () => {
+        fresh.render(recorded.app as ReactNode);
+      });
+    }
+    await settle();
+    const appReact = recorded.roots[rootsBefore];
+    return {
+      appRoot,
+      async unmount() {
+        await act(async () => appReact?.unmount());
+        appRoot.remove();
+      },
+    };
+  }
+
+  test("files left unsent for a model never go to new models, and new-model files never join the model", async () => {
+    models.set(MODEL_ID, model([STL_FILE]));
+    recorded.uploads.length = 0;
+    window.history.pushState({}, "", `/models/${MODEL_ID}`);
+    const app = await startApp();
+    const { appRoot } = app;
+    try {
       const page = () => appRoot.querySelector("[data-dropzone]");
       const backdrop = () => document.querySelector(".ph-dialog-backdrop");
 
@@ -1676,9 +1712,67 @@ describe("the app's upload dialog keeps each file's target from when it was adde
       expect(text(dialog())).toContain("Each file becomes its own model");
       expect(listed()).toEqual(["c.stl", "e.stl"]);
     } finally {
-      const appReact = recorded.roots[rootsBefore];
-      await act(async () => appReact?.unmount());
-      appRoot.remove();
+      await app.unmount();
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  test("files left unsent on a model page, then a drop on the library: Upload in each sends each file to its own target", async () => {
+    // The case the upload dialog used to get wrong: one dialog whose target
+    // was read when Upload was pressed sent the model page's unsent file to
+    // new models after a drop on the library.
+    models.set(MODEL_ID, model([STL_FILE]));
+    recorded.uploads.length = 0;
+    window.history.pushState({}, "", `/models/${MODEL_ID}`);
+    const app = await startApp();
+    const { appRoot } = app;
+    try {
+      const dropZone = () => appRoot.querySelector("[data-dropzone]");
+
+      // On the model page: one.stl is sending; two.stl is added and left
+      // unsent, and the dialog is hidden.
+      await dropOn(dropZone(), [stl("one.stl")]);
+      expect(text(dialog())).toContain("The files are added to this model.");
+      await click(button(/^upload/i, dialog()));
+      await dropOn(document.querySelector(".ph-dialog-backdrop"), [stl("two.stl")]);
+      expect(listed()).toEqual(["one.stl", "two.stl"]);
+      await click(button(/^hide$/i, dialog()));
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+      // On the library, by the sidebar: a drop opens the dialog for new
+      // models with only the dropped file, and Upload sends only that file,
+      // as a new model.
+      const library = [...appRoot.querySelectorAll("a")].find((a) => text(a) === "Library");
+      await click(library);
+      expect(window.location.pathname).toBe("/");
+      await dropOn(dropZone(), [stl("three.stl")]);
+      expect(text(dialog())).toContain("Each file becomes its own model");
+      expect(listed()).toEqual(["three.stl"]);
+      await click(button(/^upload/i, dialog()));
+      expect(sent()).toEqual([
+        ["one.stl", MODEL_ID],
+        ["three.stl", "new"],
+      ]);
+      await click(button(/^hide$/i, dialog()));
+
+      // Back on the model page, Add files opens its dialog with two.stl
+      // still waiting, and Upload sends it into the model.
+      await act(async () => {
+        window.history.pushState({}, "", `/models/${MODEL_ID}`);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
+      await settle();
+      await click(button(/^add files$/i, appRoot));
+      expect(text(dialog())).toContain("The files are added to this model.");
+      expect(listed()).toEqual(["one.stl", "two.stl"]);
+      await click(button(/^upload/i, dialog()));
+      expect(sent()).toEqual([
+        ["one.stl", MODEL_ID],
+        ["three.stl", "new"],
+        ["two.stl", MODEL_ID],
+      ]);
+    } finally {
+      await app.unmount();
       window.history.pushState({}, "", "/");
     }
   });
