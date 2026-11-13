@@ -182,7 +182,7 @@ export function Tokens() {
                 <time dateTime={item.createdAt}>{formatDate(item.createdAt)}</time>
                 {", "}
                 {item.lastUsedAt === null ? (
-                  "Never used"
+                  "never used"
                 ) : (
                   <>
                     {"last used "}

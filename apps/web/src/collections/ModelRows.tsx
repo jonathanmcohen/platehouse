@@ -5,7 +5,9 @@
 // answers, shows on the row; a refusal shows its sentence on the row. Each
 // change is applied to the list as it is when that change answers (an
 // updater, never a copy taken at the click), so two changes in flight, on
-// one row or two, never undo each other.
+// one row or two, never undo each other. Tags and collections are one per
+// name ignoring case, so an added chip shows the name the server answers
+// with, the one stored, which may differ in capitals from the one typed.
 import { useState } from "react";
 import { appApi, errorText, segment } from "../settings/api";
 import { ChipEditor } from "./ChipEditor";
@@ -19,6 +21,11 @@ export interface OrganiseModel {
   tags: string[];
   collections: string[];
   files: Array<{ id: string; name: string; kind: string }>;
+}
+
+/** What PUT answers for a tag or a collection: the name it is stored under. */
+interface StoredName {
+  name: string;
 }
 
 function sameName(a: string, b: string): boolean {
@@ -102,9 +109,9 @@ function ModelRow({
         addButton="Add tag"
         removeLabel={(tag) => `Remove tag ${tag} from ${model.name}`}
         onAdd={async (tag) => {
-          await appApi("PUT", `/models/${id}/tags/${segment(tag)}`);
+          const { name } = await appApi<StoredName>("PUT", `/models/${id}/tags/${segment(tag)}`);
           update((m) =>
-            m.tags.some((t) => sameName(t, tag)) ? m : { ...m, tags: [...m.tags, tag] },
+            m.tags.some((t) => sameName(t, name)) ? m : { ...m, tags: [...m.tags, name] },
           );
         }}
         onRemove={async (tag) => {
@@ -118,8 +125,11 @@ function ModelRow({
         addLabel={`Add ${model.name} to a collection`}
         addButton="Add"
         removeLabel={(name) => `Remove ${model.name} from collection ${name}`}
-        onAdd={async (name) => {
-          await appApi("PUT", `/collections/${segment(name)}/models/${id}`);
+        onAdd={async (typed) => {
+          const { name } = await appApi<StoredName>(
+            "PUT",
+            `/collections/${segment(typed)}/models/${id}`,
+          );
           update((m) =>
             m.collections.some((c) => sameName(c, name))
               ? m
