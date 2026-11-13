@@ -820,6 +820,51 @@ describe("estimating state renders and is replaced when numbers arrive", () => {
     await settle();
     expect(modelRequests()).toBe(2);
   });
+
+  test("stale answers with an estimate still pending keep the page polling until the estimate lands", async () => {
+    // The server reads a plate's numbers and estimatePending together, so a
+    // stale set beside estimatePending true means the new estimate is still
+    // coming: every such answer asks again, and only the answer with the
+    // finished estimate ends the polling.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const waiting = () =>
+      model([
+        threeMf([
+          plate(
+            1,
+            "Base",
+            { platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }) },
+            true,
+          ),
+        ]),
+      ]);
+    models.set(MODEL_ID, waiting());
+    await render(pageAt(MODEL_ID));
+    for (let poll = 2; poll <= 5; poll += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_MS);
+      });
+      await settle();
+      expect(modelRequests()).toBe(poll);
+      expect(text(plateItems()[0])).toMatch(/previous printer/i);
+    }
+
+    models.set(
+      MODEL_ID,
+      model([threeMf([plate(1, "Base", { platehouse: estimate("current") }, false)])]),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(modelRequests()).toBe(6);
+    expect(text(plateItems()[0])).not.toMatch(/previous printer/i);
+    expect(text(plateItems()[0])).toContain(formatDuration(5025));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(6);
+  });
 });
 
 describe("failed plate shows the plain reason and a retry button", () => {

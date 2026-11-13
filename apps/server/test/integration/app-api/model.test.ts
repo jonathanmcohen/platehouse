@@ -29,11 +29,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
+import { CamelCasePlugin, Kysely, PostgresDialect } from "kysely";
+import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
-import { createAppModel, MODEL_API_PATHS, type ModelView } from "../../../src/app-api/model.js";
+import {
+  type AppModel,
+  createAppModel,
+  MODEL_API_PATHS,
+  type ModelView,
+} from "../../../src/app-api/model.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { createPool } from "../../../src/db/kysely.js";
+import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
 import { REASON_WORDS } from "../../../src/estimates/reasons.js";
@@ -471,6 +480,137 @@ describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
     });
     expect(plates[0]?.numbers.file?.timeSeconds).toBe(1000);
     expect(plates[2]?.numbers.file?.timeSeconds).toBe(3000);
+  });
+});
+
+describe("one answer reads a plate's numbers and estimatePending together", () => {
+  // An estimate that lands, or is queued, while one GET is being answered
+  // must not leave the numbers and estimatePending disagreeing: a stale set
+  // with estimatePending false stops the page's polling for good, so a
+  // finished estimate would never be shown. The model here reads through a
+  // database handle whose connections run a hook just before the second
+  // query on the estimates table in one answer, after the first has
+  // finished, whichever of the two reads comes first. The hook changes the
+  // estimate from another connection and commits, so it lands between the
+  // two reads.
+  type Change = () => Promise<void>;
+  let armed: { change: Change; first?: Promise<unknown>; fired: boolean } | null = null;
+  let pool: pg.Pool;
+  let between: AppModel;
+
+  const READS_ESTIMATES = /\bfrom "estimates"/;
+
+  beforeAll(() => {
+    pool = createPool(env.url, { max: 4 });
+    pool.on("connect", (client) => {
+      const query = client.query.bind(client) as (
+        text: string,
+        values?: unknown[],
+      ) => Promise<unknown>;
+      // Kysely calls query(text, values); the hook runs only while armed.
+      (client as { query: unknown }).query = async (text: string, values?: unknown[]) => {
+        const gate = armed;
+        if (gate !== null && typeof text === "string" && READS_ESTIMATES.test(text)) {
+          if (gate.first === undefined) {
+            const read = query(text, values);
+            gate.first = read.catch(() => undefined);
+            return read;
+          }
+          if (!gate.fired) {
+            gate.fired = true;
+            await gate.first;
+            await gate.change();
+          }
+        }
+        return query(text, values);
+      };
+    });
+    const db = new Kysely<DB>({
+      dialect: new PostgresDialect({ pool }),
+      plugins: [new CamelCasePlugin()],
+    });
+    between = createAppModel({
+      db,
+      displayContext: async () => CONTEXT,
+      plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+      retryEstimate: async () => false,
+    });
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  /** One answer with change landing between its two reads of the estimates table. */
+  async function answerWith(modelId: string, change: Change) {
+    armed = { change, fired: false };
+    try {
+      const view = await between.get(modelId);
+      expect(armed.fired, "the change never landed between two reads").toBe(true);
+      const p = view?.files[0]?.plates[0];
+      return [p?.numbers.platehouse?.state, p?.estimatePending] as const;
+    } finally {
+      armed = null;
+    }
+  }
+
+  test("an estimate that finishes between the reads: stale and pending, or current and not pending", async () => {
+    const { modelId, fileId } = await ingest(`Landing ${marker()}.3mf`, build3mf({ plates: 1 }));
+    const [only] = await platesOf(fileId);
+    const plateId = only?.id ?? "";
+    // An older finished estimate for the X1C, shown meanwhile, and the P1S
+    // estimate slicing.
+    const older = await env.repos.estimates.upsertPending({
+      plateId,
+      printerId: X1C.id,
+      printerModelId: X1C.modelId,
+      nozzle: X1C.nozzle,
+      slicer: "OrcaSlicer",
+      slicerVersion: "2.5.0",
+    });
+    await env.db
+      .updateTable("estimates")
+      .set({ status: "ok", timeSeconds: 700, weightGrams: 6, finishedAt: new Date() })
+      .where("id", "=", older.id)
+      .execute();
+    const id = await platehouseEstimate(plateId, "pending");
+    await env.db.updateTable("estimates").set({ status: "running" }).where("id", "=", id).execute();
+
+    const pair = await answerWith(modelId, async () => {
+      await env.db
+        .updateTable("estimates")
+        .set({ status: "ok", timeSeconds: 900, weightGrams: 7, finishedAt: new Date() })
+        .where("id", "=", id)
+        .execute();
+    });
+    expect([
+      ["stale", true],
+      ["current", false],
+    ]).toContainEqual(pair);
+
+    // The change did land: the next answer shows the finished estimate.
+    const after = (await modelView(modelId)).files[0]?.plates[0];
+    expect([after?.numbers.platehouse?.state, after?.estimatePending]).toEqual(["current", false]);
+  });
+
+  test("an estimate queued between the reads: nothing and not pending, or estimating and pending", async () => {
+    const { modelId, fileId } = await ingest(`Queued ${marker()}.3mf`, build3mf({ plates: 1 }));
+    const [only] = await platesOf(fileId);
+    const plateId = only?.id ?? "";
+
+    const pair = await answerWith(modelId, async () => {
+      await platehouseEstimate(plateId, "pending");
+    });
+    expect([
+      [undefined, false],
+      ["estimating", true],
+    ]).toContainEqual(pair);
+
+    const after = (await modelView(modelId)).files[0]?.plates[0];
+    expect([after?.numbers.platehouse?.state, after?.estimatePending]).toEqual([
+      "estimating",
+      true,
+    ]);
   });
 });
 
