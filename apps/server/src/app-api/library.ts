@@ -25,14 +25,16 @@
 //   with no plates (STL, STEP, SCAD) has neither; its card shows the
 //   file-type icon for fileKind.
 // - The display context (the settings row and the printer menu) is read once
-//   per page and shared by every plate's lookup. The menu comes from the
-//   slicer's /v1/profiles until the estimates service has it cached, so a
-//   page asks the slicer at most once, never once per plate. Each plate's
+//   per page by readDisplayContext and shared by every plate's lookup. The
+//   menu is the estimates service's listPrinters, which asks the slicer's
+//   /v1/profiles only until it has the answer cached, so a page asks the
+//   slicer at most once, never once per plate. Each plate's
 //   lookup is two queries, and at most PLATE_NUMBERS_CONCURRENCY run at once
 //   (mapLimit), so a page of many plates leaves most of the database pool to
 //   the ingest and slicer workers.
 // - Answers are JSON and never cached; an invalid cursor is 400. Errors carry
 //   no detail from the database.
+import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
@@ -69,6 +71,32 @@ export async function mapLimit<T, R>(
   const workers = Math.max(1, Math.min(limit, items.length));
   await Promise.all(Array.from({ length: workers }, worker));
   return out;
+}
+
+/** What readDisplayContext reads; main.ts hands it the settings repo and the estimates service. */
+export interface DisplayContextSources {
+  /** The settings row (repos.settings.get). */
+  settings(): Promise<{ printerId: string; lastOrcaVersion: string | null }>;
+  /** The printer menu (estimates.listPrinters), the cached /v1/profiles answer. */
+  listPrinters(): Promise<readonly Printer[]>;
+}
+
+/**
+ * The selected printer, the Orca version and the printer menu, read the same
+ * way the estimates service reads them for its own plateNumbers
+ * (estimates/service.ts displayContext): while the slicer is down the menu is
+ * empty and printers are labelled by their stored names, so the page still
+ * shows its numbers. A settings read that fails rejects.
+ */
+export async function readDisplayContext(src: DisplayContextSources): Promise<DisplayContext> {
+  const settings = await src.settings();
+  let printers: readonly Printer[] = [];
+  try {
+    printers = await src.listPrinters();
+  } catch {
+    // The slicer is down; the menu stays empty.
+  }
+  return { printerId: settings.printerId, orcaVersion: settings.lastOrcaVersion, printers };
 }
 
 /** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
@@ -112,7 +140,7 @@ export interface AppLibraryDeps {
   db: Kysely<DB>;
   /**
    * The selected printer, the Orca version and the printer menu
-   * (estimates.displayContext), read once per page.
+   * (readDisplayContext), read once per page.
    */
   displayContext(): Promise<DisplayContext>;
   /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */

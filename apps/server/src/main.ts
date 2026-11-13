@@ -32,7 +32,8 @@
 //      same library and blobs through the same database and store, and
 //      sign links with a key links.ts derives from LINK_SECRET.
 //      The library page's app API (Task 19) reads the same database and
-//      Task 12's plate numbers, with estimates.displayContext read once per
+//      Task 12's plate numbers, with the display context (the settings row
+//      and estimates.listPrinters, through readDisplayContext) read once per
 //      page rather than once per plate.
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
@@ -55,7 +56,7 @@ import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
-import { createAppLibrary } from "./app-api/library.js";
+import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -421,7 +422,11 @@ export async function start(config: Config): Promise<Server> {
       },
       library: createAppLibrary({
         db,
-        displayContext: () => estimates.displayContext(),
+        displayContext: () =>
+          readDisplayContext({
+            settings: () => repos.settings.get(),
+            listPrinters: () => estimates.listPrinters(),
+          }),
         plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
       }),
       logger: true,

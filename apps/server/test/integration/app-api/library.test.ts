@@ -14,7 +14,10 @@
 // - A card has time and weight for the selected printer only when every
 //   plate has numbers for it; otherwise it says partial. The display context
 //   (settings and the printer menu) is read once per page, and at most
-//   PLATE_NUMBERS_CONCURRENCY plate lookups run at once.
+//   PLATE_NUMBERS_CONCURRENCY plate lookups run at once. readDisplayContext
+//   reads the settings row and the printer menu as the estimates service
+//   does, with an empty menu while the slicer is down, and mapLimit keeps
+//   the cap and the plates' order.
 // - The tag filter narrows the grid; search finds name, caption, creator and
 //   tag; a trashed model is never listed.
 // - Every route is session-class: no session, 401 JSON.
@@ -30,11 +33,14 @@ import {
   createAppLibrary,
   LIBRARY_API_PATHS,
   type LibraryCard,
+  mapLimit,
   PLATE_NUMBERS_CONCURRENCY,
+  readDisplayContext,
 } from "../../../src/app-api/library.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
 import { createTags } from "../../../src/library/tags.js";
+import { createRepos } from "../../../src/repos/index.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import {
   ASCII_STL,
@@ -387,6 +393,109 @@ describe("plate numbers for a page", () => {
     // Twelve plates, never more than the cap in flight.
     expect(mostLookupsInFlight).toBeGreaterThan(0);
     expect(mostLookupsInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
+  });
+});
+
+describe("readDisplayContext", () => {
+  test("the settings row's printer and Orca version, and the printer menu", async () => {
+    const settings = createRepos(env.db).settings;
+    const stored = await settings.get();
+    let menuReads = 0;
+    const ctx = await readDisplayContext({
+      settings: () => settings.get(),
+      listPrinters: async () => {
+        menuReads += 1;
+        return [P1S, X1C];
+      },
+    });
+    expect(ctx).toEqual({
+      printerId: stored.printerId,
+      orcaVersion: stored.lastOrcaVersion,
+      printers: [P1S, X1C],
+    });
+    expect(menuReads).toBe(1);
+  });
+
+  test("while the slicer is down the menu is empty and the page still has a context", async () => {
+    const ctx = await readDisplayContext({
+      settings: async () => ({ printerId: P1S.id, lastOrcaVersion: null }),
+      listPrinters: async () => {
+        throw new Error("slicer unreachable");
+      },
+    });
+    expect(ctx).toEqual({ printerId: P1S.id, orcaVersion: null, printers: [] });
+  });
+
+  test("a settings read that fails rejects", async () => {
+    await expect(
+      readDisplayContext({
+        settings: async () => {
+          throw new Error("the database is down");
+        },
+        listPrinters: async () => [P1S],
+      }),
+    ).rejects.toThrow("the database is down");
+  });
+});
+
+/** Lets every pending promise callback run. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("mapLimit", () => {
+  test("keeps the results in the items' order", async () => {
+    const out = await mapLimit([30, 10, 20, 0], 2, async (ms) => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return ms * 2;
+    });
+    expect(out).toEqual([60, 20, 40, 0]);
+  });
+
+  test("never has more than the limit in flight, and uses all of it", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const releases: Array<() => void> = [];
+    const done = mapLimit(
+      Array.from({ length: 10 }, (_, i) => i),
+      3,
+      async (i) => {
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        inFlight -= 1;
+        return i;
+      },
+    );
+    for (let round = 0; round < 20; round += 1) {
+      await tick();
+      expect(inFlight).toBeLessThanOrEqual(3);
+      for (const release of releases.splice(0)) release();
+    }
+    expect(await done).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(most).toBe(3);
+  });
+
+  test("an empty list calls nothing", async () => {
+    let calls = 0;
+    expect(
+      await mapLimit([], 4, async () => {
+        calls += 1;
+      }),
+    ).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  test("a failure rejects the whole map", async () => {
+    await expect(
+      mapLimit([1, 2, 3], 2, async (n) => {
+        if (n === 2) throw new Error("the database is down");
+        return n;
+      }),
+    ).rejects.toThrow("the database is down");
+  });
+
+  test("the library's cap is small next to the pool of 10", () => {
+    expect(PLATE_NUMBERS_CONCURRENCY).toBeGreaterThan(0);
+    expect(PLATE_NUMBERS_CONCURRENCY).toBeLessThanOrEqual(4);
   });
 });
 
