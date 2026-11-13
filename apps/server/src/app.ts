@@ -11,7 +11,8 @@
 // - GET /auth/login, GET /auth/callback and POST /auth/logout (auth/routes.ts)
 //   log Jon in with Pocket ID and out again.
 // - GET /healthz answers 200 only when the database answers a query within
-//   HEALTH_TIMEOUT_MS and pg-boss is started, else 503. The body is a fixed
+//   HEALTH_TIMEOUT_MS and pg-boss is started (and, when web.required is
+//   set, the web build is there), else 503. The body is a fixed
 //   word either way, never an error, a host or a port: the app image's
 //   HEALTHCHECK (Task 24) reads only the status.
 // - The tus upload handler (Task 9) is mounted at /app/uploads behind
@@ -25,6 +26,11 @@
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
+// - The web app (web/shell.ts, Task 18): the shell pages (session-class)
+//   answer with the built index.html, data-theme and the color-scheme meta
+//   written in from the ph_theme cookie, and the hashed build output is
+//   served under /assets/ (public-class). A missing build is logged at
+//   startup; it also makes /healthz 503 only when web.required is set.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -59,6 +65,7 @@ import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
 import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
+import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
 export const UPLOAD_PREFIXES = Object.freeze({
@@ -119,6 +126,12 @@ export interface AppDeps {
    * by requestLogValue, so its query is never in the log.
    */
   logger?: boolean | { write(line: string): unknown };
+  /**
+   * The built web app (Task 18); apps/web/dist beside the server, not
+   * required, when left out. With required, /healthz is also 503 while the
+   * build is missing.
+   */
+  web?: WebDeps;
 }
 
 /**
@@ -288,9 +301,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return payload;
   });
 
+  const webDeps = deps.web ?? { dir: defaultWebDir() };
   app.get("/healthz", async (_request, reply) => {
     const up =
-      deps.health.queuesRunning() && (await answers(deps.health.database, HEALTH_TIMEOUT_MS));
+      deps.health.queuesRunning() &&
+      (await answers(deps.health.database, HEALTH_TIMEOUT_MS)) &&
+      (webDeps.required !== true || (await web.built()));
     reply.header("cache-control", "no-store");
     return reply.code(up ? 200 : 503).send({ status: up ? "ok" : "unavailable" });
   });
@@ -330,6 +346,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     authHook: apiUploadHook(api),
     uploads: deps.uploads,
   });
+  // /healthz reads web, which is set here before the app can answer.
+  const web = await registerWeb(app, webDeps);
 
   return app;
 }
