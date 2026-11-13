@@ -1,8 +1,11 @@
 // The Files tab (build plan Task 20): every file of the model with its type
 // and size, View (shows it in the viewer on the left), Download (Task 17's
 // /files/:id/download), and, for a .3mf, Open in Bambu Studio and Open in
-// OrcaSlicer (AC-040). A SCAD file shows its rendered preview image, and a
-// render that failed shows OpenSCAD's own message (AC-052).
+// OrcaSlicer (AC-040). A SCAD file shows its rendered preview image. A STEP
+// or SCAD file whose mesh or render is still being made says so, and one
+// that failed says it could not be rendered, with the server's reason
+// (OpenSCAD's own message for a SCAD it rejects, AC-052). The page polls
+// while a render is pending, so View appears here when it lands.
 import type { ModelFile } from "./ModelPage";
 import { OpenInSlicer, type Platform } from "./OpenInSlicer";
 import { parseStatusWords } from "./PlatesTab";
@@ -20,6 +23,18 @@ export function formatSize(bytes: number): string {
   if (bytes < 1_000_000) return `${Number((bytes / 1000).toFixed(1))} KB`;
   if (bytes < 1_000_000_000) return `${Number((bytes / 1_000_000).toFixed(1))} MB`;
   return `${Number((bytes / 1_000_000_000).toFixed(2))} GB`;
+}
+
+/** What a STEP or SCAD file says about its mesh or render, by derived status. */
+export function derivedStatusWords(file: Pick<ModelFile, "derivedStatus">): string | null {
+  switch (file.derivedStatus) {
+    case "pending":
+      return "Still being rendered.";
+    case "failed":
+      return "This file could not be rendered.";
+    default:
+      return null;
+  }
 }
 
 /** Whether the viewer can show the file: a .3mf's plates, a 3D view, or a preview image. */
@@ -42,7 +57,7 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
   return (
     <ul className="studio-list">
       {files.map((file) => {
-        const words = file.kind === "3mf" ? parseStatusWords(file) : null;
+        const words = file.kind === "3mf" ? parseStatusWords(file) : derivedStatusWords(file);
         return (
           <li key={file.id} className="studio-list-item">
             <div className="studio-row">

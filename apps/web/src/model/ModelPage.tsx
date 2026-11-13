@@ -12,15 +12,20 @@
 //   loads three.js only then. View in the Files tab moves the viewer to
 //   another file.
 // - Everything comes from one request, GET /app/api/models/:id. While any
-//   plate is estimating (isEstimating), the page asks again every POLL_MS
-//   (5 s). Polling stops when nothing is estimating, when the page unmounts
-//   and when it moves to another model: the timer is cleared and the
-//   request in flight aborted, and an answer that comes back after that is
-//   dropped, so no request is made after unmount and an earlier model's
-//   answer never replaces the one navigated to.
+//   plate is estimating (isEstimating) or any STEP or SCAD file is still
+//   having its mesh or render made (isDeriving, derivedStatus 'pending'),
+//   the page asks again every POLL_MS (5 s), on one timer for both
+//   (needsPolling). So a render that lands after an upload shows in the
+//   viewer, with View in the Files tab, without a reload, and a render that
+//   fails shows its reason. Polling stops when nothing is estimating or
+//   being rendered, when the page unmounts and when it moves to another
+//   model: the timer is cleared and the request in flight aborted, and an
+//   answer that comes back after that is dropped, so no request is made
+//   after unmount and an earlier model's answer never replaces the one
+//   navigated to.
 // - A reload that fails while the model is on screen keeps the model shown
-//   and says it could not refresh, with Try again. While a plate is
-//   estimating it is also asked again in POLL_MS, and the next successful
+//   and says it could not refresh, with Try again. While the page is
+//   polling it is also asked again in POLL_MS, and the next successful
 //   load clears the notice; otherwise (a reload after an upload or a Retry)
 //   it is not asked again. A 401 ends the asking either way and says the
 //   user is signed out.
@@ -145,7 +150,7 @@ export interface ModelPageProps {
   refreshKey?: number;
 }
 
-/** How often the page asks again while a plate is estimating. */
+/** How often the page asks again while a plate is estimating or a file is being rendered. */
 export const POLL_MS = 5000;
 
 /**
@@ -159,9 +164,18 @@ export function isEstimating(numbers: PlateNumbers): boolean {
   return state === "stale" && numbers.failure === undefined;
 }
 
-/** Whether any plate of the model is estimating. */
+/**
+ * Whether a STEP's mesh or a SCAD's render is still being made: its
+ * derivedStatus is 'pending' while the job is queued or running, then 'ok'
+ * or 'failed' (null for a .3mf or an STL, which have nothing derived).
+ */
+export function isDeriving(file: ModelFile): boolean {
+  return file.derivedStatus === "pending";
+}
+
+/** Whether the page should ask again: a plate is estimating or a file is being rendered. */
 export function needsPolling(model: ModelView): boolean {
-  return model.files.some((f) => f.plates.some((p) => isEstimating(p.numbers)));
+  return model.files.some((f) => isDeriving(f) || f.plates.some((p) => isEstimating(p.numbers)));
 }
 
 type Load =
@@ -186,7 +200,7 @@ export function ModelPage({
   const [reload, setReload] = useState(0);
   /** The model id whose model is on screen, so a failed poll keeps it. */
   const shownFor = useRef<string | null>(null);
-  /** Whether the model on screen has a plate estimating, so a failed poll is asked again. */
+  /** Whether the model on screen needs polling (needsPolling), so a failed poll is asked again. */
   const polling = useRef(false);
   /** Why the model on screen could not be refreshed, for that model's id. */
   const [notice, setNotice] = useState<{ id: string; kind: "failed" | "signed-out" } | null>(null);
@@ -206,7 +220,7 @@ export function ModelPage({
       }
       // A failed poll or reload keeps the model on screen. A 401 will not
       // change by asking again. Anything else says the model could not be
-      // refreshed, and is asked again only while a plate is estimating; the
+      // refreshed, and is asked again only while the page is polling; the
       // next successful load clears the notice.
       if (status === 401) {
         setNotice({ id, kind: "signed-out" });
@@ -491,17 +505,30 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
       />
     );
   }
+  if (file.preview !== null) {
+    return (
+      <div className="studio-viewer-frame">
+        <img className="studio-plate-large" src={file.preview} alt={`Preview of ${file.name}`} />
+      </div>
+    );
+  }
+  // A render that failed says so, with the reason the server gave (a
+  // sentence of its own, or the program's message, as text).
+  if (file.derivedStatus === "failed") {
+    return (
+      <div className="studio-viewer-frame">
+        <div className="studio-placeholder ph-viewer-failed">
+          <p>{`${file.name} could not be rendered.`}</p>
+          {file.derivedMessage === null ? null : (
+            <pre className="ph-detail">{file.derivedMessage}</pre>
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="studio-viewer-frame">
-      {file.preview === null ? (
-        <p className="studio-placeholder">
-          {file.derivedMessage === null
-            ? `No view of ${file.name} yet.`
-            : `${file.name} could not be rendered.`}
-        </p>
-      ) : (
-        <img className="studio-plate-large" src={file.preview} alt={`Preview of ${file.name}`} />
-      )}
+      <p className="studio-placeholder">{`No view of ${file.name} yet.`}</p>
     </div>
   );
 }

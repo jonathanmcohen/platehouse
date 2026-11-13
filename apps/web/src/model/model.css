@@ -174,3 +174,15 @@
   border-radius: 8px;
   background: var(--raised);
 }
+
+/* A failed render in the viewer: the sentence above the server's reason. */
+.ph-viewer-failed {
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.ph-viewer-failed p {
+  margin: 0;
+}
