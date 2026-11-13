@@ -16,9 +16,14 @@
 //   /app/uploads, and a resume fingerprint that names the target.
 // - tag filter narrows the grid, and the top bar's search box drives the
 //   library's search.
+// - creator and collection filters: the library reads ?creator= and
+//   ?collection= (the Creators and Collections pages' Show in the library
+//   link, Task 21), asks the API for them with the search, the tag and every
+//   Load more, shows each one with a link that clears it, and keeps a name
+//   with spaces, an ampersand and non-ASCII characters intact.
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Filters } from "../src/library/Filters";
 import { LibraryPage } from "../src/library/LibraryPage";
@@ -112,8 +117,17 @@ let root: Root;
 /** Every URL the page fetched, in order. */
 let requests: string[];
 
-/** A fetch that answers the library's two routes from these cards. */
-function stubServer(cards: LibraryCard[], tags: string[] = ["Gridfinity", "PLA"]) {
+/**
+ * A fetch that answers the library's two routes from these cards. collections
+ * names the collections each card (by id) is in, as a card does not carry
+ * them. As the server does, the creator filter is the exact name and the tag
+ * and collection filters ignore case.
+ */
+function stubServer(
+  cards: LibraryCard[],
+  tags: string[] = ["Gridfinity", "PLA"],
+  collections: Record<string, string[]> = {},
+) {
   const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "https://platehouse.test");
     requests.push(`${url.pathname}${url.search}`);
@@ -126,10 +140,15 @@ function stubServer(cards: LibraryCard[], tags: string[] = ["Gridfinity", "PLA"]
     if (url.pathname === "/app/api/library") {
       const tag = url.searchParams.get("tag");
       const q = url.searchParams.get("q");
+      const creator = url.searchParams.get("creator");
+      const collection = url.searchParams.get("collection");
       const models = cards.filter(
         (c) =>
           (tag === null || c.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) &&
-          (q === null || c.name.toLowerCase().includes(q.toLowerCase())),
+          (q === null || c.name.toLowerCase().includes(q.toLowerCase())) &&
+          (creator === null || c.creator === creator) &&
+          (collection === null ||
+            (collections[c.id] ?? []).some((n) => n.toLowerCase() === collection.toLowerCase())),
       );
       return json({ printer: PRINTER, models, nextCursor: null });
     }
@@ -378,6 +397,218 @@ describe("tag filter narrows the grid", () => {
     expect(hrefs).toEqual(["/?q=box", "/?q=box&tag=Gridfinity", "/?q=box&tag=PLA"]);
     const active = container.querySelector('a.studio-chip[aria-current="true"]');
     expect(active?.textContent).toBe("PLA");
+  });
+});
+
+/** The query of the last request for the library's cards. */
+function lastLibraryQuery(): URLSearchParams {
+  const last = requests.filter((r) => /^\/app\/api\/library(?:\?|$)/.test(r)).at(-1);
+  if (last === undefined) throw new Error("the library was never asked for");
+  return new URL(last, "https://platehouse.test").searchParams;
+}
+
+/** The link whose text is name, or undefined. */
+function linkNamed(name: string): HTMLAnchorElement | undefined {
+  return [...container.querySelectorAll("a")].find((a) => a.textContent?.trim() === name);
+}
+
+/** Moves the router of the Navigator on the page to another address. */
+let goTo: (to: string) => void = () => {};
+
+/** Hands goTo the router's navigate, as a link or the search box would use it. */
+function Navigator() {
+  const navigate = useNavigate();
+  goTo = (to) => {
+    void navigate(to);
+  };
+  return null;
+}
+
+/** A name with spaces, an ampersand and non-ASCII characters, made from code points. */
+const AWKWARD = [
+  "R",
+  String.fromCodePoint(0xe9),
+  "my & ",
+  String.fromCodePoint(0x5c71, 0x7530),
+  " ",
+  String.fromCodePoint(0x1f9f0),
+].join("");
+
+describe("creator and collection filters", () => {
+  const CLIP = makeCard({
+    id: "0198f0c4-0000-7000-8000-000000000006",
+    name: "Cable clip",
+    creator: "Maker One",
+    tags: ["PLA"],
+  });
+
+  test("?creator= asks for that creator, trimmed, with the search and tag", async () => {
+    stubServer([PLATED, CLIP, STL]);
+    await render(
+      libraryAt(
+        `/?${new URLSearchParams({ q: "box", tag: "Gridfinity", creator: "  Maker One  " })}`,
+      ),
+    );
+    const query = lastLibraryQuery();
+    expect(query.get("creator")).toBe("Maker One");
+    expect(query.get("q")).toBe("box");
+    expect(query.get("tag")).toBe("Gridfinity");
+    expect(cardNames()).toEqual(["Plated box"]);
+  });
+
+  test("?collection= asks for that collection, trimmed, and shows only its models", async () => {
+    stubServer([PLATED, CLIP, STL], undefined, { [CLIP.id]: ["Desk"], [STL.id]: ["Desk"] });
+    await render(libraryAt(`/?${new URLSearchParams({ collection: " Desk " })}`));
+    expect(lastLibraryQuery().get("collection")).toBe("Desk");
+    expect(cardNames()).toEqual(["Cable clip", "Bracket"]);
+  });
+
+  test("a new search or tag keeps the creator and collection", async () => {
+    stubServer([PLATED, CLIP, STL], undefined, { [PLATED.id]: ["Desk"], [CLIP.id]: ["Desk"] });
+    await render(
+      <MemoryRouter
+        initialEntries={[`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk" })}`]}
+      >
+        <Navigator />
+        <Routes>
+          <Route path="/" element={<LibraryPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(cardNames()).toEqual(["Plated box", "Cable clip"]);
+
+    await act(async () =>
+      goTo(`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk", tag: "PLA" })}`),
+    );
+    await settle();
+    let query = lastLibraryQuery();
+    expect([query.get("creator"), query.get("collection"), query.get("tag")]).toEqual([
+      "Maker One",
+      "Desk",
+      "PLA",
+    ]);
+    expect(cardNames()).toEqual(["Cable clip"]);
+
+    await act(async () =>
+      goTo(`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk", q: "box" })}`),
+    );
+    await settle();
+    query = lastLibraryQuery();
+    expect([query.get("creator"), query.get("collection"), query.get("q")]).toEqual([
+      "Maker One",
+      "Desk",
+      "box",
+    ]);
+    expect(cardNames()).toEqual(["Plated box"]);
+  });
+
+  test("Load more keeps the creator and collection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        requests.push(`${url.pathname}${url.search}`);
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+        if (url.searchParams.get("cursor") === "c-1") {
+          return json({ printer: PRINTER, models: [CLIP], nextCursor: null });
+        }
+        return json({ printer: PRINTER, models: [PLATED], nextCursor: "c-1" });
+      }),
+    );
+    await render(
+      libraryAt(`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk" })}`),
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".studio-pager button")?.click();
+    });
+    await settle();
+    const query = lastLibraryQuery();
+    expect([query.get("cursor"), query.get("creator"), query.get("collection")]).toEqual([
+      "c-1",
+      "Maker One",
+      "Desk",
+    ]);
+    expect(cardNames()).toEqual(["Plated box", "Cable clip"]);
+  });
+
+  test("the active creator is shown, and its themed Clear link returns to the library it came from", async () => {
+    stubServer([PLATED, CLIP, STL]);
+    await render(
+      libraryAt(`/?${new URLSearchParams({ q: "c", tag: "PLA", creator: "Maker One" })}`),
+    );
+    expect(cardNames()).toEqual(["Cable clip"]);
+    const shown = container.querySelector('[aria-label="Library filters"]');
+    expect(shown?.textContent).toContain("Creator: Maker One");
+
+    const clear = linkNamed("Clear creator filter");
+    expect(clear, "no Clear creator filter link").toBeDefined();
+    // A real link, so Tab reaches it and studio.css's :focus-visible ring
+    // draws on it; drawn as a studio.css chip, with no style of its own.
+    expect(clear?.getAttribute("href")).toBe("/?q=c&tag=PLA");
+    expect(clear?.className).toBe("studio-chip");
+    expect(clear?.hasAttribute("style")).toBe(false);
+    expect(clear?.getAttribute("tabindex")).toBeNull();
+
+    await act(async () => clear?.click());
+    await settle();
+    expect(lastLibraryQuery().has("creator")).toBe(false);
+    expect(cardNames()).toEqual(["Cable clip", "Bracket"]);
+    expect(container.querySelector('[aria-label="Library filters"]')).toBeNull();
+  });
+
+  test("with a creator and a collection, each is shown and cleared on its own", async () => {
+    stubServer([PLATED, CLIP, STL], undefined, { [CLIP.id]: ["Desk"], [STL.id]: ["Desk"] });
+    await render(
+      libraryAt(`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk" })}`),
+    );
+    expect(cardNames()).toEqual(["Cable clip"]);
+    const shown = container.querySelector('[aria-label="Library filters"]')?.textContent ?? "";
+    expect(shown).toContain("Creator: Maker One");
+    expect(shown).toContain("Collection: Desk");
+
+    await act(async () => linkNamed("Clear creator filter")?.click());
+    await settle();
+    expect(lastLibraryQuery().get("collection")).toBe("Desk");
+    expect(lastLibraryQuery().has("creator")).toBe(false);
+    expect(cardNames()).toEqual(["Cable clip", "Bracket"]);
+
+    await act(async () => linkNamed("Clear collection filter")?.click());
+    await settle();
+    expect([...lastLibraryQuery().keys()]).toEqual([]);
+    expect(cardNames()).toEqual(["Plated box", "Cable clip", "Bracket"]);
+  });
+
+  test("a filtered library with no match says no models match", async () => {
+    stubServer([PLATED, CLIP]);
+    await render(libraryAt(`/?${new URLSearchParams({ creator: "Nobody" })}`));
+    expect(cardNames()).toEqual([]);
+    expect(container.querySelector(".studio-empty")?.textContent).toMatch(/no models match/i);
+  });
+
+  test("a name with spaces, an ampersand and non-ASCII characters round-trips intact", async () => {
+    const odd = makeCard({
+      id: "0198f0c4-0000-7000-8000-000000000007",
+      name: "Odd one",
+      creator: AWKWARD,
+    });
+    stubServer([PLATED, odd], undefined, { [odd.id]: [AWKWARD] });
+    for (const key of ["creator", "collection"] as const) {
+      requests = [];
+      await render(libraryAt(`/?${new URLSearchParams({ [key]: AWKWARD })}`));
+      expect(lastLibraryQuery().get(key)).toBe(AWKWARD);
+      expect(cardNames()).toEqual(["Odd one"]);
+      const label = key === "creator" ? "Creator" : "Collection";
+      expect(container.querySelector('[aria-label="Library filters"]')?.textContent).toContain(
+        `${label}: ${AWKWARD}`,
+      );
+      await act(async () => root.unmount());
+      root = createRoot(container);
+    }
   });
 });
 

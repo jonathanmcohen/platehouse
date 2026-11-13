@@ -20,6 +20,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
+import { LibraryPage } from "../src/library/LibraryPage";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
 import { TagsPage } from "../src/tags/TagsPage";
@@ -261,6 +262,34 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     );
     return json(200, { models, nextCursor: null });
   }
+  // The library (Task 19's routes), for the Show in the library link: the
+  // creator filter is the exact name and the collection filter ignores case,
+  // as the server's search does (apps/server/src/library/search.ts).
+  if (method === "GET" && path === "/app/api/library/tags") return json(200, { tags: [] });
+  if (method === "GET" && path === "/app/api/library") {
+    const collection = url.searchParams.get("collection");
+    const creator = url.searchParams.get("creator");
+    const models = state.models
+      .filter(
+        (m) =>
+          (collection === null || m.collections.some((c) => sameName(c, collection))) &&
+          (creator === null || m.creator === creator),
+      )
+      .map((m) => ({
+        id: m.id,
+        name: m.name,
+        creator: m.creator,
+        tags: m.tags,
+        plateCount: 0,
+        thumbnail: null,
+        fileKind: m.files[0]?.kind ?? null,
+        timeSeconds: null,
+        weightGrams: null,
+        partial: false,
+        numbersUnavailable: false,
+      }));
+    return json(200, { printer: P1S, models, nextCursor: null });
+  }
   if (method === "PATCH" && seg[0] === "models") {
     const m = model(seg[1]);
     if (m === undefined) return json(404, { error: "not_found" });
@@ -415,6 +444,37 @@ async function show(path: string, page: ReactNode): Promise<void> {
     );
   });
   await settle();
+}
+
+/** A group page at path, with the library at / for its Show in the library link. */
+async function showWithLibrary(path: string, page: ReactNode): Promise<void> {
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path={path.split("?")[0]} element={page} />
+          <Route path="/" element={<LibraryPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  });
+  await settle();
+}
+
+/** The query of the last request for the library's cards. */
+function lastLibraryQuery(): URLSearchParams {
+  const last = calls
+    .filter((c) => c.method === "GET" && /^\/app\/api\/library(?:\?|$)/.test(c.path))
+    .at(-1);
+  if (last === undefined) throw new Error("the library was never asked for");
+  return new URL(last.path, "https://platehouse.test").searchParams;
+}
+
+/** The names on the library's cards. */
+function libraryCards(): string[] {
+  return [...document.querySelectorAll(".studio-grid .studio-card-title")].map(
+    (el) => el.textContent ?? "",
+  );
 }
 
 function text(): string {
@@ -1571,6 +1631,87 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
     expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(0);
     expect(focusedNotBody()).toBe(restore);
   });
+
+  // The Creators and Collections pages link a name to the library filtered
+  // by it (?creator= or ?collection=), which the library page reads.
+  const libraryLinks = [
+    {
+      title: "Creators",
+      path: "/creators",
+      page: () => <CreatorsPage />,
+      filter: "creator",
+      label: "Creator",
+      name: "Other",
+      models: ["Hook"],
+    },
+    {
+      title: "Collections",
+      path: "/collections",
+      page: () => <CollectionsPage />,
+      filter: "collection",
+      label: "Collection",
+      name: "Desk",
+      models: ["Cable clip", "Hook"],
+    },
+  ] as const;
+
+  test.each(libraryLinks)(
+    "Show in the library from $title asks the library for that $filter and shows its models",
+    async ({ path, page, filter, label, name, models }) => {
+      state.models.push({
+        id: "m3",
+        name: "Shelf bracket",
+        creator: "Third",
+        tags: [],
+        collections: [],
+        files: [{ id: "f3", name: "Shelf bracket.stl", kind: "stl" }],
+      });
+      await showWithLibrary(`${path}?${new URLSearchParams({ name })}`, page());
+      await click(link("Show in the library"));
+      expect(lastLibraryQuery().get(filter)).toBe(name);
+      expect(libraryCards()).toEqual(models);
+      expect(document.querySelector('[aria-label="Library filters"]')?.textContent).toContain(
+        `${label}: ${name}`,
+      );
+
+      // Clearing the filter returns to the full library.
+      await click(link(`Clear ${filter} filter`));
+      expect(lastLibraryQuery().has(filter)).toBe(false);
+      expect(libraryCards()).toEqual(["Cable clip", "Hook", "Shelf bracket"]);
+      expect(document.querySelector('[aria-label="Library filters"]')).toBeNull();
+    },
+  );
+
+  test.each(libraryLinks)(
+    "Show in the library from $title keeps a name with spaces, an ampersand and non-ASCII characters intact",
+    async ({ path, page, filter, label }) => {
+      // Built from code points, so this file stays ASCII.
+      const name = [
+        "R",
+        String.fromCodePoint(0xe9),
+        "my & ",
+        String.fromCodePoint(0x5c71, 0x7530),
+        " ",
+        String.fromCodePoint(0x1f9f0),
+      ].join("");
+      state.models.push({
+        id: "m3",
+        name: "Odd one",
+        creator: name,
+        tags: [],
+        collections: [name],
+        files: [{ id: "f3", name: "Odd one.stl", kind: "stl" }],
+      });
+      await showWithLibrary(`${path}?${new URLSearchParams({ name })}`, page());
+      expect(document.querySelector("h2")?.textContent).toBe(name);
+      await click(link("Show in the library"));
+      expect(lastLibraryQuery().get(filter)).toBe(name);
+      expect(libraryCards()).toEqual(["Odd one"]);
+      expect(document.querySelector('[aria-label="Library filters"]')?.textContent).toContain(
+        `${label}: ${name}`,
+      );
+    },
+  );
 
   // The Creators, Collections and Tags pages swap one view for the other in
   // place: a name in the list opens its models, and All goes back to the
