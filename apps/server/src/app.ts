@@ -60,6 +60,7 @@ import Fastify, {
 import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
+import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
 import { installGate, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -120,6 +121,13 @@ export interface AppDeps {
    * request is 401.
    */
   api?: ApiDeps;
+  /**
+   * The library's app API (Task 19): the cards and tag filter of the library
+   * page, read from the database and Task 12's plate numbers. Left out, the
+   * routes are still there and answer an empty library, so the route-class
+   * test walks them.
+   */
+  library?: AppLibrary;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged
@@ -340,6 +348,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     authHook: requireSession,
     uploads: deps.uploads,
   });
+  await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerV1(app, api);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
