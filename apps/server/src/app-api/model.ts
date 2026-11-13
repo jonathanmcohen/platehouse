@@ -118,14 +118,6 @@ export interface AppModelDeps {
   db: Kysely<DB>;
   /** The selected printer, the Orca version and the printer menu, read once per page. */
   displayContext(): Promise<DisplayContext>;
-  /**
-   * Not called. The model page reads Task 12's plateNumbers (estimates/
-   * display.ts) itself, on the transaction it reads estimatePending on, so
-   * both come from one snapshot; a function given here could only read
-   * outside it. Kept optional so main.ts's wiring, which still passes one,
-   * builds; it goes when that line does.
-   */
-  plateNumbers?: (ctx: DisplayContext, plateId: string) => Promise<PlateNumbers>;
   /** Task 12's retryEstimate (estimates/service.ts). */
   retryEstimate(estimateId: string): Promise<boolean>;
 }

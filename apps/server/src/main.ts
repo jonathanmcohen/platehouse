@@ -452,7 +452,6 @@ export async function start(config: Config): Promise<Server> {
       model: createAppModel({
         db,
         displayContext,
-        plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
         retryEstimate: (estimateId) => estimates.retryEstimate(estimateId),
       }),
       // The settings, trash and organising pages (Task 21).
