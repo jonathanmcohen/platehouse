@@ -18,7 +18,10 @@
 //
 // For each Manyfold model, matched by externalRef manyfold:<id> (plan.ts):
 // - not in Platehouse: it is made with Manyfold's details, tags and
-//   collections, then every file Platehouse takes is uploaded;
+//   collections, then every file Platehouse takes is uploaded. If the create
+//   answers 409 and a live model is read back (an earlier attempt or a run
+//   beside this one made it), that model is treated as already in
+//   Platehouse, as below, so only what it lacks is added;
 // - in Platehouse: only the missing files, tags and collections are added,
 //   so a re-run after a full or an interrupted run finishes what is missing
 //   and makes no duplicate (AC-002);
@@ -232,7 +235,7 @@ async function importModel(
   if (source.name.trim() === "") {
     return { ...fallback, outcome: "failed", reason: "the Manyfold model has no name" };
   }
-  const plan = planModel(source, existing);
+  let plan = planModel(source, existing);
   const base = { manyfoldId: source.id, name: source.name };
   if (plan.refused !== null) {
     // Platehouse would refuse the create with 400 (plan.ts), in either mode.
@@ -260,8 +263,16 @@ async function importModel(
           files: plannedRows(plan, "its model is in Platehouse's trash"),
         };
       }
-      modelId = made.created.id;
-      newModel = true;
+      if ("found" in made) {
+        // Not made by this POST, and it may already hold files: plan against
+        // it as found, keeping the reasons the create body left values out.
+        const found = planModel(source, made.found);
+        plan = { ...found, leftOut: [...new Set([...plan.leftOut, ...found.leftOut])] };
+        modelId = made.found.id;
+      } else {
+        modelId = made.created.id;
+        newModel = true;
+      }
     } catch (error) {
       return {
         ...base,

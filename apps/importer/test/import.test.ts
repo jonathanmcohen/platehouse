@@ -240,6 +240,50 @@ describe("re-running", () => {
     expect(fileNames(s, "m1")).toEqual(["benchy.3mf", "stand.stl"]);
   });
 
+  it("treats a live model a run beside it made as existing, and uploads only the files it lacks", async () => {
+    const lib = library();
+    const s = setup(lib);
+    const benchy = lib.models[0]?.files[0];
+    if (benchy === undefined) throw new Error("unreachable");
+    // Another run makes m1 and uploads benchy.3mf just before this run's
+    // create, so Platehouse answers this run's POST with 409, not trashed.
+    server.use(
+      http.post(
+        `${PLATEHOUSE}/api/v1/models`,
+        async ({ request }) => {
+          const body = (await request.clone().json()) as Record<string, unknown>;
+          if (body.externalRef !== "manyfold:m1") return undefined;
+          s.platehouse.createModel(body);
+          const model = byRef(s, "m1");
+          s.platehouse.files.set("other-run-file", {
+            id: "other-run-file",
+            modelId: model.id,
+            name: "benchy.3mf",
+            originalName: "benchy.3mf",
+            kind: "3mf",
+            size: benchy.bytes.length,
+            sha256: sha256(benchy.bytes),
+            createdAt: model.createdAt,
+            updatedAt: model.createdAt,
+          });
+          return undefined;
+        },
+        { once: true },
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(fileNames(s, "m1")).toEqual(["benchy.3mf", "stand.stl"]);
+    const m1 = r.report?.models.find((m) => m.manyfoldId === "m1");
+    expect(m1?.newModel).toBe(false);
+    expect(m1?.files.map((f) => [f.name, f.status])).toEqual([
+      ["benchy.3mf", "already in Platehouse"],
+      ["stand.stl", "imported"],
+    ]);
+    // Three uploads in all: stand.stl for m1, and one file each for m2 and m3.
+    expect(platehouseCalls().filter((c) => c === "POST /api/v1/uploads")).toHaveLength(3);
+  });
+
   it("skips a model Jon trashed in Platehouse, with the reason, and makes no new copy", async () => {
     const s = setup(library());
     await s.run(["--apply"]);

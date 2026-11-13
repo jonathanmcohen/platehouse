@@ -71,7 +71,15 @@ export interface NewModel {
   collections?: string[];
 }
 
-export type CreateResult = { created: PlatehouseModel } | { exists: true; trashed: boolean };
+/**
+ * created: this POST made the model. found: the POST answered 409 and a live
+ * model with that externalRef was read back, with whatever files it already
+ * holds. exists: the model with that externalRef is in the trash.
+ */
+export type CreateResult =
+  | { created: PlatehouseModel }
+  | { found: PlatehouseModel }
+  | { exists: true; trashed: boolean };
 
 export interface PlatehouseOptions {
   base: string;
@@ -411,14 +419,15 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
         const trashed = isObject(body) && body.trashed === true;
         if (trashed) return { exists: true, trashed: true };
         // Live and taken: made by a first attempt whose answer was lost, or
-        // by a run beside this one. Either way it is read back, not made again.
+        // by a run beside this one, which may have uploaded files to it.
+        // Either way it is read back with its files, not made again.
         const found = await findByExternalRef(input.externalRef);
         if (found === undefined) {
           throw new PlatehouseError(
             `POST /api/v1/models: ${input.externalRef} is taken, but no live model has it`,
           );
         }
-        return { created: found };
+        return { found };
       }
       throw await failure(url, "POST", res);
     },

@@ -206,7 +206,9 @@ describe("the Platehouse client", () => {
     );
     const ph = createPlatehouse({ base: PLATEHOUSE, bearer: FAKE_BEARER, sleep: noSleep });
     const result = await ph.createModel({ name: "Lost Answer", externalRef: "manyfold:zz9" });
-    expect("created" in result && result.created.externalRef).toBe("manyfold:zz9");
+    // Read back, not made by this answer: the model may already hold files.
+    expect("created" in result).toBe(false);
+    expect("found" in result && result.found.externalRef).toBe("manyfold:zz9");
     expect(s.platehouse.byRef("manyfold:zz9")).toHaveLength(1);
   });
 });
