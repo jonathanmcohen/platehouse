@@ -36,7 +36,7 @@ import { createEstimates, type Estimates } from "../../../src/estimates/service.
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { QUEUE, startQueues } from "../../../src/jobs/queues.js";
-import { createTrash } from "../../../src/library/trash.js";
+import { createTrash, type PurgeStore } from "../../../src/library/trash.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import { NOT_BUILT } from "../../../src/web/shell.js";
@@ -63,6 +63,11 @@ let tokens: Tokens;
 let auth: TestAuth;
 let app: FastifyInstance;
 let session: string;
+/**
+ * The store the app's trash deletes through: the test bucket, unless a test
+ * swaps in one that fails, and puts the bucket back when it is done.
+ */
+let purgeStore: PurgeStore;
 /** Every line the app logged. */
 const lines: string[] = [];
 /** Every token this file was given, for the log check. */
@@ -196,6 +201,7 @@ beforeAll(async () => {
     pollingIntervalSeconds: 0.5,
   });
   tokens = createTokens({ store: dbTokenStore(env.db) });
+  purgeStore = env.store;
   auth = await testAuth();
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
@@ -216,7 +222,16 @@ beforeAll(async () => {
     appApi: {
       settings: { settings: env.repos.settings, estimates },
       tokens: { tokens, list: dbTokenList(env.db) },
-      organise: { db: env.db, trash: createTrash({ db: env.db, store: env.store }) },
+      organise: {
+        db: env.db,
+        trash: createTrash({
+          db: env.db,
+          store: {
+            listPrefix: (p) => purgeStore.listPrefix(p),
+            deleteBlobs: (keys) => purgeStore.deleteBlobs(keys),
+          },
+        }),
+      },
     },
     logger: { write: (line: string) => lines.push(line) },
     // A web folder that is never built, so a shell page answers NOT_BUILT
@@ -558,6 +573,47 @@ describe("the trash", () => {
       expect((await rowCounts(env.db, m.model.id)).models).toBe(0);
     }
     expect((await rowCounts(env.db, live.model.id)).models).toBe(1);
+    expect((await call("GET", "/app/api/trash")).json()).toEqual({ models: [] });
+  });
+
+  test("an empty trash that fails one model answers incomplete, and that model stays in the trash", async () => {
+    const failing = await seedStoredModel(env);
+    const done = await seedStoredModel(env);
+    for (const m of [failing, done]) await call("POST", `/app/api/models/${m.model.id}/trash`);
+    const failingPrefix = `models/${failing.model.id}/`;
+    // The bucket drops the connection after deleting one of the failing
+    // model's objects; every other delete goes through.
+    purgeStore = {
+      listPrefix: (p) => env.store.listPrefix(p),
+      async deleteBlobs(keys) {
+        if (!keys.some((k) => k.startsWith(failingPrefix))) return env.store.deleteBlobs(keys);
+        await env.store.deleteBlobs(keys.slice(0, 1));
+        throw new StoreUnavailable("DeleteObjects", "ECONNRESET");
+      },
+    };
+    try {
+      const res = await call("POST", "/app/api/trash/empty");
+      // The shape the trash page reads (apps/web TrashList's incompleteFailure).
+      expect(res.status, res.text).toBe(500);
+      expect(res.json()).toEqual({
+        error: "incomplete",
+        purged: 1,
+        message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
+      });
+      expect((await rowCounts(env.db, done.model.id)).models).toBe(0);
+      expect(await env.store.listPrefix(`models/${done.model.id}/`)).toEqual([]);
+      expect((await call("GET", "/app/api/trash")).json()).toEqual({
+        models: [expect.objectContaining({ id: failing.model.id, purgeStarted: true })],
+      });
+    } finally {
+      purgeStore = env.store;
+    }
+
+    // With the bucket back, the next Empty trash finishes it.
+    const retry = await call("POST", "/app/api/trash/empty");
+    expect(retry.status, retry.text).toBe(200);
+    expect((await rowCounts(env.db, failing.model.id)).models).toBe(0);
+    expect(await env.store.listPrefix(failingPrefix)).toEqual([]);
     expect((await call("GET", "/app/api/trash")).json()).toEqual({ models: [] });
   });
 });
