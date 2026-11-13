@@ -12,12 +12,15 @@
 //   given the database and plateNumbers and no store, so it has no way to
 //   read a model file at all.
 // - A card has time and weight for the selected printer only when every
-//   plate has numbers for it; otherwise it says partial. The display context
-//   (settings and the printer menu) is read once per page, and at most
+//   plate has numbers for it; otherwise it says partial. While the printer
+//   menu cannot be read (the slicer is down), a card the database cannot
+//   total says numbers unavailable instead. The display context (settings
+//   and the printer menu) is read once per page, and at most
 //   PLATE_NUMBERS_CONCURRENCY plate lookups run at once. readDisplayContext
 //   reads the settings row and the printer menu as the estimates service
-//   does, with an empty menu while the slicer is down, and mapLimit keeps
-//   the cap and the plates' order.
+//   does, with an empty menu while the slicer is down or slower than
+//   DISPLAY_MENU_TIMEOUT_MS, and mapLimit keeps the cap and the plates'
+//   order.
 // - The tag filter narrows the grid; search finds name, caption, creator and
 //   tag; a trashed model is never listed.
 // - Every route is session-class: no session, 401 JSON.
@@ -31,6 +34,7 @@ import { buildApp } from "../../../src/app.js";
 import {
   type AppLibraryPage,
   createAppLibrary,
+  DISPLAY_MENU_TIMEOUT_MS,
   LIBRARY_API_PATHS,
   type LibraryCard,
   mapLimit,
@@ -91,6 +95,8 @@ let dist: string;
 let uploadsDir: string;
 /** Every line the app logged. */
 const lines: string[] = [];
+/** The display context the library is handed; a test may swap the menu out. */
+let context: DisplayContext = CONTEXT;
 /** How often the library read the display context, and what it handed on. */
 let contextReads = 0;
 const contexts = new Set<DisplayContext>();
@@ -155,7 +161,7 @@ beforeAll(async () => {
       db: env.db,
       displayContext: async () => {
         contextReads += 1;
-        return CONTEXT;
+        return context;
       },
       plateNumbers: async (ctx, plateId) => {
         contexts.add(ctx);
@@ -371,6 +377,73 @@ describe("card shows time and weight only when every plate is known", () => {
   });
 });
 
+describe("while the slicer's printer menu cannot be read", () => {
+  /** The selected printer with an empty menu, as readDisplayContext gives while the slicer is down. */
+  const NO_MENU: DisplayContext = { printerId: P1S.id, orcaVersion: "2.5.0", printers: [] };
+
+  /** The page at query with the menu empty, the menu put back afterwards. */
+  async function libraryWithoutMenu(query: string): Promise<AppLibraryPage> {
+    context = NO_MENU;
+    try {
+      return await library(query);
+    } finally {
+      context = CONTEXT;
+    }
+  }
+
+  test("a card the file's numbers would total says numbers unavailable, not partial", async () => {
+    const word = marker();
+    const done = await ingest(`No menu ${word}.3mf`, build3mf({ plates: 2, sliced: [1, 2] }));
+    const stl = await ingest(`No menu bracket ${word}.stl`, ASCII_STL);
+    const page = await libraryWithoutMenu(`?q=${word}`);
+    expect(page.printer).toBe(P1S.id);
+    expect(card(page, done.modelId)).toMatchObject({
+      plateCount: 2,
+      timeSeconds: null,
+      weightGrams: null,
+      partial: false,
+      numbersUnavailable: true,
+    });
+    // A model with no plates has no numbers to miss.
+    expect(card(page, stl.modelId)).toMatchObject({ partial: false, numbersUnavailable: false });
+    // With the menu back the same card has its totals.
+    expect(card(await library(`?q=${word}`), done.modelId)).toMatchObject({
+      timeSeconds: 3000,
+      partial: false,
+      numbersUnavailable: false,
+    });
+  });
+
+  test("current Platehouse estimates for the selected printer still give the totals", async () => {
+    const word = marker();
+    const other = await ingest(
+      `No menu estimated ${word}.3mf`,
+      build3mf({ plates: 1, sliced: [1], printerModelId: X1C.modelId }),
+    );
+    const plate = await env.db
+      .selectFrom("plates")
+      .select("id")
+      .where("fileId", "=", other.fileId)
+      .executeTakeFirstOrThrow();
+    const pending = await env.repos.estimates.upsertPending({
+      plateId: plate.id,
+      printerId: P1S.id,
+      printerModelId: P1S.modelId,
+      nozzle: P1S.nozzle,
+      slicer: "OrcaSlicer",
+      slicerVersion: "2.5.0",
+    });
+    await env.db
+      .updateTable("estimates")
+      .set({ status: "ok", timeSeconds: 900, weightGrams: 7, finishedAt: new Date() })
+      .where("id", "=", pending.id)
+      .execute();
+    const shown = card(await libraryWithoutMenu(`?q=${word}`), other.modelId);
+    expect(shown).toMatchObject({ timeSeconds: 900, partial: false, numbersUnavailable: false });
+    expect(shown.weightGrams).toBeCloseTo(7, 5);
+  });
+});
+
 describe("plate numbers for a page", () => {
   test("one display context per page, and a capped number of plate lookups at once", async () => {
     const word = marker();
@@ -424,6 +497,33 @@ describe("readDisplayContext", () => {
       },
     });
     expect(ctx).toEqual({ printerId: P1S.id, orcaVersion: null, printers: [] });
+  });
+
+  test("a slicer that never answers leaves the menu empty after the menu timeout", async () => {
+    let settled = false;
+    const reading = readDisplayContext(
+      {
+        settings: async () => ({ printerId: P1S.id, lastOrcaVersion: "2.5.0" }),
+        listPrinters: () => new Promise<readonly Printer[]>(() => {}),
+      },
+      { menuTimeoutMs: 50 },
+    ).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+    const started = Date.now();
+    await expect(reading).resolves.toEqual({
+      printerId: P1S.id,
+      orcaVersion: "2.5.0",
+      printers: [],
+    });
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("the menu timeout is short, well under the slicer client's 10 s request timeout", () => {
+    expect(DISPLAY_MENU_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DISPLAY_MENU_TIMEOUT_MS).toBeLessThanOrEqual(2_000);
   });
 
   test("a settings read that fails rejects", async () => {

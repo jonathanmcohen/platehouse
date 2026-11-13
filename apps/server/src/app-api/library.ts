@@ -21,14 +21,22 @@
 // - Time and weight are for the selected printer (settings.printer_id), from
 //   Task 12's plateNumbers per plate: a plate has numbers for that printer
 //   when the file's own numbers are for it or a current Platehouse estimate
-//   is. A card has totals only when every plate does, else partial. A model
+//   is. A card has totals only when every plate does, else partial. While
+//   the printer menu cannot be read (the slicer is down or slow), the file's
+//   own numbers cannot be matched to the selected printer, which the menu
+//   names by its id and the file by its BBL model id; a card without totals
+//   then says numbersUnavailable, not partial, since nothing is known to be
+//   missing. Current Platehouse estimates still count then. A model
 //   with no plates (STL, STEP, SCAD) has neither; its card shows the
 //   file-type icon for fileKind.
 // - The display context (the settings row and the printer menu) is read once
 //   per page by readDisplayContext and shared by every plate's lookup. The
 //   menu is the estimates service's listPrinters, which asks the slicer's
 //   /v1/profiles only until it has the answer cached, so a page asks the
-//   slicer at most once, never once per plate. Each plate's
+//   slicer at most once, never once per plate, and waits for it at most
+//   DISPLAY_MENU_TIMEOUT_MS, so a slicer that accepts connections but never
+//   answers does not hold the page for the slicer client's 10 s request
+//   timeout. Each plate's
 //   lookup is two queries, and at most PLATE_NUMBERS_CONCURRENCY run at once
 //   (mapLimit), so a page of many plates leaves most of the database pool to
 //   the ingest and slicer workers.
@@ -82,19 +90,38 @@ export interface DisplayContextSources {
 }
 
 /**
+ * Longest the library page waits for the printer menu. The slicer client's
+ * own request timeout is 10 s (estimates/client.ts); a menu not read by then
+ * is left empty for this page, and the request goes on, so its answer is
+ * cached for the next page when it comes.
+ */
+export const DISPLAY_MENU_TIMEOUT_MS = 1_500;
+
+/**
  * The selected printer, the Orca version and the printer menu, read the same
  * way the estimates service reads them for its own plateNumbers
- * (estimates/service.ts displayContext): while the slicer is down the menu is
- * empty and printers are labelled by their stored names, so the page still
- * shows its numbers. A settings read that fails rejects.
+ * (estimates/service.ts displayContext). While the slicer is down, or slower
+ * than menuTimeoutMs, the menu is empty: a file's own numbers are then
+ * labelled with its bare BBL model id, which never matches the selected
+ * printer's id, so the cards say numbersUnavailable rather than partial. A
+ * settings read that fails rejects.
  */
-export async function readDisplayContext(src: DisplayContextSources): Promise<DisplayContext> {
+export async function readDisplayContext(
+  src: DisplayContextSources,
+  { menuTimeoutMs = DISPLAY_MENU_TIMEOUT_MS }: { menuTimeoutMs?: number } = {},
+): Promise<DisplayContext> {
   const settings = await src.settings();
   let printers: readonly Printer[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    printers = await src.listPrinters();
+    const timedOut = new Promise<readonly Printer[]>((resolve) => {
+      timer = setTimeout(() => resolve([]), menuTimeoutMs);
+    });
+    printers = await Promise.race([src.listPrinters(), timedOut]);
   } catch {
     // The slicer is down; the menu stays empty.
+  } finally {
+    clearTimeout(timer);
   }
   return { printerId: settings.printerId, orcaVersion: settings.lastOrcaVersion, printers };
 }
@@ -120,6 +147,12 @@ export interface LibraryCard {
   weightGrams: number | null;
   /** True when some plate has no numbers for the selected printer. */
   partial: boolean;
+  /**
+   * True when the card has plates but no totals and the printer menu could
+   * not be read, so the file's own numbers could not be matched to the
+   * selected printer. Never true beside partial.
+   */
+  numbersUnavailable: boolean;
 }
 
 export interface AppLibraryPage {
@@ -245,6 +278,8 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         weightGrams += n.weightGrams;
       }
       const known = ownPlates.length > 0 && timeSeconds !== null;
+      const unmatched = ownPlates.length > 0 && !known;
+      const noMenu = ctx.printers.length === 0;
       return {
         id: model.id,
         name: model.name,
@@ -255,7 +290,8 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         fileKind: (first3mf ?? own[0])?.kind ?? null,
         timeSeconds: known ? timeSeconds : null,
         weightGrams: known ? weightGrams : null,
-        partial: ownPlates.length > 0 && !known,
+        partial: unmatched && !noMenu,
+        numbersUnavailable: unmatched && noMenu,
       };
     });
   }

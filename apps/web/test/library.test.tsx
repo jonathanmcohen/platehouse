@@ -60,6 +60,7 @@ function makeCard(overrides: Partial<LibraryCard> & { id: string; name: string }
     timeSeconds: null,
     weightGrams: null,
     partial: false,
+    numbersUnavailable: false,
     ...overrides,
   };
 }
@@ -82,6 +83,14 @@ const PARTIAL = makeCard({
   thumbnail: "/blobs/0198f0c4-0000-7000-8000-0000000000a2",
   fileKind: "3mf",
   partial: true,
+});
+const UNAVAILABLE = makeCard({
+  id: "0198f0c4-0000-7000-8000-000000000005",
+  name: "Slicer away",
+  plateCount: 2,
+  thumbnail: "/blobs/0198f0c4-0000-7000-8000-0000000000a5",
+  fileKind: "3mf",
+  numbersUnavailable: true,
 });
 const STL = makeCard({
   id: "0198f0c4-0000-7000-8000-000000000003",
@@ -247,6 +256,16 @@ describe("card shows time and weight only when every plate is known", () => {
     const text = li.textContent ?? "";
     expect(text).toContain("3 plates");
     expect(text).toContain("partial");
+    expect(text).not.toMatch(/\d+m\b/);
+    expect(text).not.toMatch(/\d g\b/);
+  });
+
+  test("the printer menu could not be read: numbers unavailable, not partial", async () => {
+    const li = await renderCard(UNAVAILABLE);
+    const text = li.textContent ?? "";
+    expect(text).toContain("2 plates");
+    expect(text).toContain("numbers unavailable");
+    expect(text).not.toMatch(/partial/i);
     expect(text).not.toMatch(/\d+m\b/);
     expect(text).not.toMatch(/\d g\b/);
   });

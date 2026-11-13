@@ -1,7 +1,9 @@
 // One card in the library grid (build plan Task 19, AC-073, AC-050): plate
 // 1's thumbnail, the name, the creator, the plate count, and the total time
 // and weight for the selected printer when every plate has numbers for it,
-// "partial" when some plate does not. An STL, STEP or SCAD model (no plate
+// "partial" when some plate does not, and "numbers unavailable" when the
+// slicer's printer menu could not be read, so the file's own numbers could
+// not be matched to the printer. An STL, STEP or SCAD model (no plate
 // thumbnail) shows a generic file-type icon instead. The card links to the
 // model page (Task 20).
 //
@@ -22,6 +24,8 @@ export interface LibraryCard {
   timeSeconds: number | null;
   weightGrams: number | null;
   partial: boolean;
+  /** True when the printer menu could not be read, so a plate's numbers could not be matched. */
+  numbersUnavailable: boolean;
 }
 
 /** A print time as the card shows it: 50m, 1h 25m. Never less than 1m. */
@@ -93,6 +97,13 @@ export function ModelCard({ card }: { card: LibraryCard }) {
             <span className="studio-card-meta">
               {formatDuration(card.timeSeconds as number)} -{" "}
               {formatWeight(card.weightGrams as number)}
+            </span>
+          ) : card.numbersUnavailable ? (
+            <span
+              className="studio-card-meta"
+              title="The slicer could not be reached, so this printer's numbers cannot be shown yet"
+            >
+              numbers unavailable
             </span>
           ) : card.partial ? (
             <span
