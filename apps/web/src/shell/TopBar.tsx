@@ -3,8 +3,13 @@
 // A search goes to the library with ?q=, which the library page (Task 19)
 // reads. Add opens the upload dialog, which Task 19 passes in as onAdd;
 // until then the button is shown disabled.
-import type { FormEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+// The box follows the URL: the shell stays mounted across routes, so on every
+// navigation (a search, Back, Forward, a sidebar link) the box is reset to
+// the new ?q=, and typing between navigations is kept as a draft. It is a
+// controlled input rather than one keyed on ?q=, because a new key would
+// remount it and drop focus out of the box after a search.
+import { type FormEvent, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { MenuButton } from "./MenuButton";
 import { ThemeSwitch } from "./ThemeSwitch";
 import type { Theme } from "./theme";
@@ -23,6 +28,16 @@ export interface TopBarProps {
 export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarProps) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  const location = useLocation();
+  const urlQuery = params.get("q") ?? "";
+  const [query, setQuery] = useState(urlQuery);
+  const [shownFor, setShownFor] = useState(location.key);
+  if (shownFor !== location.key) {
+    // State adjusted during render, as React's docs recommend for state
+    // derived from a changing value; React re-renders before painting.
+    setShownFor(location.key);
+    setQuery(urlQuery);
+  }
 
   function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -43,7 +58,8 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
             id="ph-q"
             name="q"
             maxLength={MAX_QUERY}
-            defaultValue={params.get("q") ?? ""}
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
             placeholder="Search names, creators and tags"
             autoComplete="off"
           />
