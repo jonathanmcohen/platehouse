@@ -3,9 +3,12 @@
 // bar's Add. It lists every file with its own progress bar and state, and
 // has the "Combine into one model" switch, off by default: off, each file
 // becomes its own model; on, every file is sent with one batch id and
-// combine, so they land in one model (Task 8's batch target). Into an
-// existing model (modelId) there is nothing to combine, so the switch is
-// not shown.
+// combine, so they land in one model (Task 8's batch target). The batch id
+// is made at the first Upload with the switch on and kept until the dialog
+// is closed or the switch is changed, so files added and sent while an
+// earlier round is still uploading join the same model (ingest joins every
+// later file of a batch to the model the first one made). Into an existing
+// model (modelId) there is nothing to combine, so the switch is not shown.
 //
 // It is a themed dialog in the page (role dialog, aria-modal), never a
 // native browser dialog: focus moves into it when it opens, Tab stays inside
@@ -129,6 +132,8 @@ export function UploadDialog({
   /** The current close(), for the document's key handler. */
   const closeRef = useRef<() => void>(() => {});
   const [combine, setCombine] = useState(false);
+  /** The combined batch's id, from its first Upload until close or a switch change. */
+  const batch = useRef<string | null>(null);
   const upload = useTusUpload({
     ...(start === undefined ? {} : { start }),
     ...(fetchResult === undefined ? {} : { fetchResult }),
@@ -200,17 +205,19 @@ export function UploadDialog({
     if (!busy) {
       upload.clearSettled();
       setCombine(false);
+      batch.current = null;
     }
     onClose();
   }
   closeRef.current = close;
 
   function send() {
+    if (modelId === undefined && combine && batch.current === null) batch.current = newBatchId();
     const target: UploadTarget =
       modelId !== undefined
         ? { kind: "model", modelId }
-        : combine
-          ? { kind: "batch", batch: newBatchId() }
+        : combine && batch.current !== null
+          ? { kind: "batch", batch: batch.current }
           : { kind: "new" };
     upload.begin(target);
   }
@@ -311,7 +318,10 @@ export function UploadDialog({
                 aria-checked={combine}
                 checked={combine}
                 disabled={busy}
-                onChange={(event) => setCombine(event.currentTarget.checked)}
+                onChange={(event) => {
+                  batch.current = null;
+                  setCombine(event.currentTarget.checked);
+                }}
               />
               <span>Combine into one model</span>
             </label>

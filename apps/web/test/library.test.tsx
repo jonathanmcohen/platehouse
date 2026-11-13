@@ -790,6 +790,72 @@ describe("upload dialog shows progress per file and honours combine", () => {
     }
   });
 
+  test("combine on: files added while a round is sending join the same batch", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    const c = new File([new Uint8Array(300)], "c.step");
+    const dialog = (files: File[]) => (
+      <UploadDialog open files={files} onClose={() => {}} start={start} fetchResult={fetchResult} />
+    );
+    await render(dialog([a, b]));
+    await act(async () => {
+      switchInput()?.click();
+    });
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    expect(started).toHaveLength(2);
+    // The first round is still sending; a third file is added and sent.
+    await render(dialog([c]));
+    expect(switchInput()?.checked).toBe(true);
+    await act(async () => {
+      button(/^upload 1 file/i).click();
+    });
+    expect(started.map((s) => s.file.name)).toEqual(["a.3mf", "b.stl", "c.step"]);
+    expect(started[0]?.target.kind).toBe("batch");
+    for (const s of started) expect(s.target).toEqual(started[0]?.target);
+  });
+
+  test("combine on: closing the dialog ends the batch, so the next one is a new model", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    const dialog = (open: boolean, files: File[]) => (
+      <UploadDialog
+        open={open}
+        files={files}
+        onClose={() => {}}
+        start={start}
+        fetchResult={fetchResult}
+        resultDelayMs={0}
+      />
+    );
+    const round1 = [a];
+    await render(dialog(true, round1));
+    await act(async () => {
+      switchInput()?.click();
+    });
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    await act(async () => {
+      started[0]?.handlers.onSuccess("https://platehouse.test/app/uploads/u-4");
+    });
+    await settle();
+    await act(async () => {
+      button(/^close$/i).click();
+    });
+    await render(dialog(false, round1));
+    await render(dialog(true, [b]));
+    await act(async () => {
+      switchInput()?.click();
+    });
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    expect(started.map((s) => s.file.name)).toEqual(["a.3mf", "b.stl"]);
+    expect(started[0]?.target.kind).toBe("batch");
+    expect(started[1]?.target.kind).toBe("batch");
+    expect(started[1]?.target).not.toEqual(started[0]?.target);
+  });
+
   test("a failed upload shows its reason on its own row", async () => {
     const { started, start } = stubUploads();
     const fetchResult = vi.fn<FetchResult>(async () => ({
