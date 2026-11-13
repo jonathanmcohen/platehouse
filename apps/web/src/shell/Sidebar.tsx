@@ -1,5 +1,5 @@
 // Platehouse's navigation (build plan Task 18, AC-071): Library, Creators,
-// Collections and Tags. Rendered as the sidebar on wide screens and, with
+// Collections and Tags, then Task 21's Trash and Settings. Rendered as the sidebar on wide screens and, with
 // menu, inside the narrow-screen menu panel. NavLink marks the current
 // section aria-current="page"; Library matches only its own path. The
 // server answers with the shell only at listed paths (SHELL_PAGES in
@@ -12,6 +12,9 @@ export const SECTIONS: ReadonlyArray<{ label: string; to: string }> = [
   { label: "Creators", to: "/creators" },
   { label: "Collections", to: "/collections" },
   { label: "Tags", to: "/tags" },
+  // Task 21: the trash and settings pages.
+  { label: "Trash", to: "/trash" },
+  { label: "Settings", to: "/settings" },
 ];
 
 export interface SidebarProps {

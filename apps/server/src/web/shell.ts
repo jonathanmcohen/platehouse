@@ -57,6 +57,8 @@ export const SHELL_PAGES: readonly string[] = Object.freeze([
   "/creators",
   "/collections",
   "/tags",
+  "/trash",
+  "/settings",
 ]);
 
 /** Where the hashed build output is served from (public in the Route classes table). */

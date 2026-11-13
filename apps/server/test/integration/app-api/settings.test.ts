@@ -12,6 +12,7 @@
 // log is captured from buildApp's logger stream, and the last test reads it:
 // no token this file made appears in any line, with or without its prefix.
 // Sessions are in memory (Task 15's test support). Every file is generated.
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
@@ -218,6 +219,9 @@ beforeAll(async () => {
       organise: { db: env.db, trash: createTrash({ db: env.db, store: env.store }) },
     },
     logger: { write: (line: string) => lines.push(line) },
+    // A web folder that is never built, so a shell page answers NOT_BUILT
+    // whatever is in apps/web/dist on the machine running this.
+    web: { dir: join(env.dir, "no-web-build") },
   });
   await app.ready();
   session = (await auth.sessions.start("jon")).id;

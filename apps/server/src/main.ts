@@ -28,6 +28,10 @@
 //      tokens from the api_tokens table and reads the library through the
 //      same database, store and estimates.plateNumbers; it never touches
 //      Pocket ID, so API tokens keep working while it is down (AC-081).
+//      The web app's own API under /app/api (Task 21: settings, tokens,
+//      organising and the trash) shares those tokens, estimates and the
+//      trash; the bucket's versioning state is read just before, for the
+//      settings page's warning (AC-013).
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
@@ -49,6 +53,8 @@ import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
+import { recordVersioning } from "./app-api/settings.js";
+import { dbTokenList } from "./app-api/tokens.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -377,6 +383,13 @@ export async function start(config: Config): Promise<Server> {
     watcher = startedWatcher;
     startedWatcher.start();
 
+    // The settings page warns while bucket versioning is off (AC-013); the
+    // state is read once here, in the background, so a store that is slow to
+    // answer never holds up the start. recordVersioning never throws: a store
+    // that cannot be reached is logged and leaves the last state recorded.
+    void recordVersioning({ store, settings: repos.settings });
+
+    const tokens = createTokens({ store: dbTokenStore(db) });
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -398,12 +411,18 @@ export async function start(config: Config): Promise<Server> {
         cookieSecret: loginCookieKey(config.linkSecret),
       },
       api: {
-        tokens: createTokens({ store: dbTokenStore(db) }),
+        tokens,
         library: createApiLibrary({
           db,
           store,
           plateNumbers: (plateId) => estimates.plateNumbers(plateId),
         }),
+      },
+      // The settings, trash and organising pages (Task 21).
+      appApi: {
+        settings: { settings: repos.settings, estimates },
+        tokens: { tokens, list: dbTokenList(db) },
+        organise: { db, trash },
       },
       logger: true,
     });
