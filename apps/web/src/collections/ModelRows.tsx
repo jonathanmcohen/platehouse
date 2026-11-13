@@ -2,7 +2,10 @@
 // (build plan Task 21; AC-060 to AC-063): inline rename of the model and of
 // each of its files, tag chips and collection chips that can be added and
 // removed, and Move to trash. Every change goes to the app API and, once it
-// answers, shows on the row; a refusal shows its sentence on the row.
+// answers, shows on the row; a refusal shows its sentence on the row. Each
+// change is applied to the list as it is when that change answers (an
+// updater, never a copy taken at the click), so two changes in flight, on
+// one row or two, never undo each other.
 import { useState } from "react";
 import { appApi, errorText, segment } from "../settings/api";
 import { ChipEditor } from "./ChipEditor";
@@ -22,13 +25,16 @@ function sameName(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
+/** Changes a list of models, or one model, as it is when the change lands. */
+export type Update<T> = (change: (prev: T) => T) => void;
+
 function ModelRow({
   model,
-  onChange,
+  update,
   onTrashed,
 }: {
   model: OrganiseModel;
-  onChange(next: OrganiseModel): void;
+  update: Update<OrganiseModel>;
   onTrashed(): void;
 }) {
   const [error, setError] = useState<string | undefined>(undefined);
@@ -54,7 +60,7 @@ function ModelRow({
             inputLabel={`New name for ${model.name}`}
             onSave={async (name) => {
               await appApi("PATCH", `/models/${id}`, { name });
-              onChange({ ...model, name });
+              update((m) => ({ ...m, name }));
             }}
           />
         </div>
@@ -79,10 +85,10 @@ function ModelRow({
                 inputLabel={`New name for ${file.name}`}
                 onSave={async (name) => {
                   await appApi("PATCH", `/files/${segment(file.id)}`, { name });
-                  onChange({
-                    ...model,
-                    files: model.files.map((f) => (f.id === file.id ? { ...f, name } : f)),
-                  });
+                  update((m) => ({
+                    ...m,
+                    files: m.files.map((f) => (f.id === file.id ? { ...f, name } : f)),
+                  }));
                 }}
               />
             </li>
@@ -97,13 +103,13 @@ function ModelRow({
         removeLabel={(tag) => `Remove tag ${tag} from ${model.name}`}
         onAdd={async (tag) => {
           await appApi("PUT", `/models/${id}/tags/${segment(tag)}`);
-          if (!model.tags.some((t) => sameName(t, tag))) {
-            onChange({ ...model, tags: [...model.tags, tag] });
-          }
+          update((m) =>
+            m.tags.some((t) => sameName(t, tag)) ? m : { ...m, tags: [...m.tags, tag] },
+          );
         }}
         onRemove={async (tag) => {
           await appApi("DELETE", `/models/${id}/tags/${segment(tag)}`);
-          onChange({ ...model, tags: model.tags.filter((t) => t !== tag) });
+          update((m) => ({ ...m, tags: m.tags.filter((t) => t !== tag) }));
         }}
       />
       <span className="studio-filaments-label">Collections</span>
@@ -114,13 +120,15 @@ function ModelRow({
         removeLabel={(name) => `Remove ${model.name} from collection ${name}`}
         onAdd={async (name) => {
           await appApi("PUT", `/collections/${segment(name)}/models/${id}`);
-          if (!model.collections.some((c) => sameName(c, name))) {
-            onChange({ ...model, collections: [...model.collections, name] });
-          }
+          update((m) =>
+            m.collections.some((c) => sameName(c, name))
+              ? m
+              : { ...m, collections: [...m.collections, name] },
+          );
         }}
         onRemove={async (name) => {
           await appApi("DELETE", `/collections/${segment(name)}/models/${id}`);
-          onChange({ ...model, collections: model.collections.filter((c) => c !== name) });
+          update((m) => ({ ...m, collections: m.collections.filter((c) => c !== name) }));
         }}
       />
     </li>
@@ -129,10 +137,11 @@ function ModelRow({
 
 export interface ModelRowsProps {
   models: OrganiseModel[];
-  onChange(models: OrganiseModel[]): void;
+  /** Changes the shown list as it is when a change answers. */
+  update: Update<OrganiseModel[]>;
 }
 
-export function ModelRows({ models, onChange }: ModelRowsProps) {
+export function ModelRows({ models, update }: ModelRowsProps) {
   const [status, setStatus] = useState("");
 
   return (
@@ -143,9 +152,11 @@ export function ModelRows({ models, onChange }: ModelRowsProps) {
           <ModelRow
             key={model.id}
             model={model}
-            onChange={(next) => onChange(models.map((m) => (m.id === next.id ? next : m)))}
+            update={(change) =>
+              update((list) => list.map((m) => (m.id === model.id ? change(m) : m)))
+            }
             onTrashed={() => {
-              onChange(models.filter((m) => m.id !== model.id));
+              update((list) => list.filter((m) => m.id !== model.id));
               setStatus(
                 `Moved ${model.name} to the trash. Restore it from the trash within 30 days.`,
               );

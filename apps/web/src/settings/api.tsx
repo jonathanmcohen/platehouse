@@ -4,16 +4,20 @@
 // DELETE, the Origin header the server's gate checks, so nothing here adds
 // a credential. An answer that is not a success becomes an AppApiError
 // carrying one plain sentence for the page to show; no server detail is
-// shown beyond the message the server wrote for the page.
-import { useCallback, useEffect, useState } from "react";
+// shown beyond the message the server wrote for the page. A .tsx module
+// like the pages that use it: useAppApi is a React hook.
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export class AppApiError extends Error {
   readonly status: number;
+  /** The answer's JSON body, or null; a page reads a route's own fields from it. */
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body: unknown = null) {
     super(message);
     this.name = "AppApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -51,7 +55,7 @@ export async function appApi<T = undefined>(
   } catch {
     data = null;
   }
-  if (!res.ok) throw new AppApiError(res.status, sentenceFor(res.status, data));
+  if (!res.ok) throw new AppApiError(res.status, sentenceFor(res.status, data), data);
   return data as T;
 }
 
@@ -68,16 +72,27 @@ export function errorText(error: unknown): string {
 export interface Loaded<T> {
   data: T | undefined;
   error: string | undefined;
-  /** Replaces the data the page shows, after a change it made. */
-  set(data: T): void;
+  /**
+   * Changes the data the page shows, after a change it made. Give it an
+   * updater (prev => next) whenever the next value is built from the current
+   * one: it gets the data as it is when the change lands, so two changes in
+   * flight never undo each other. An updater does nothing while nothing is
+   * loaded.
+   */
+  set(next: T | ((prev: T) => T)): void;
+  /** GETs path again and shows the answer, keeping the current data meanwhile. */
+  reload(): void;
 }
 
 /** GETs path when the component mounts (and when path changes). */
 export function useAppApi<T>(path: string | null): Loaded<T> {
   const [data, setData] = useState<T | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
+  /** The path now shown, so a reload's answer for an earlier path is dropped. */
+  const current = useRef(path);
 
   useEffect(() => {
+    current.current = path;
     if (path === null) return;
     let live = true;
     setData(undefined);
@@ -95,8 +110,30 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
     };
   }, [path]);
 
-  const set = useCallback((value: T) => setData(value), []);
-  return { data, error, set };
+  const set = useCallback((next: T | ((prev: T) => T)) => {
+    if (typeof next !== "function") {
+      setData(next);
+      return;
+    }
+    const update = next as (prev: T) => T;
+    setData((prev) => (prev === undefined ? prev : update(prev)));
+  }, []);
+
+  const reload = useCallback(() => {
+    if (path === null) return;
+    appApi<T>("GET", path).then(
+      (value) => {
+        if (current.current !== path) return;
+        setData(value);
+        setError(undefined);
+      },
+      (failure: unknown) => {
+        if (current.current === path) setError(errorText(failure));
+      },
+    );
+  }, [path]);
+
+  return { data, error, set, reload };
 }
 
 /** A date for display, in the browser's own language. */

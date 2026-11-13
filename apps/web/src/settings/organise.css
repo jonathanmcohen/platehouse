@@ -3,7 +3,9 @@
  * the themed dialog, text inputs and selects, removable chips and the token
  * box. Built only from studio.css's tokens and shapes (Task 18), so both
  * palettes, their contrast checks and the focus ring apply unchanged; no
- * colour is defined here. Nothing here restyles the shell.
+ * colour value is written here, only var() references to those tokens (the
+ * dialog's backdrop is the page's own --bg, mixed toward transparent).
+ * Nothing here restyles the shell.
  */
 
 /* Text inputs and selects, in the look of the top bar's search box. */
@@ -99,7 +101,7 @@
   overflow-wrap: anywhere;
 }
 
-/* The themed dialog: a panel over a dimmed page. */
+/* The themed dialog: a panel over the page, veiled in the palette's --bg. */
 .ph-dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -107,7 +109,7 @@
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgb(0 0 0 / 0.55);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
 }
 
 .ph-dialog {

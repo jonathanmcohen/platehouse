@@ -11,6 +11,9 @@
 // Every dialog is the app's own themed one (role="dialog"); the tests spy
 // on window.confirm, alert and prompt and expect none to be called. Every
 // token here is made by the run, never written into this file.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -76,6 +79,34 @@ interface FakeState {
 
 let state: FakeState;
 const calls: Call[] = [];
+/**
+ * Answers held back: a call whose "METHOD path" is here waits for its
+ * release before the fake acts on it, so a test can have two changes in
+ * flight and choose which answers first.
+ */
+const held = new Map<string, Promise<void>>();
+
+/** Holds the next answers to "METHOD path" until the returned release is called. */
+function hold(key: string): () => Promise<void> {
+  let release: () => void = () => {};
+  held.set(
+    key,
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
+  return async () => {
+    held.delete(key);
+    release();
+    await settle();
+  };
+}
+
+/**
+ * When set, Empty trash leaves the last model in the trash and answers as
+ * the server does for PurgeIncomplete (apps/server/src/app-api/organise.ts).
+ */
+let emptyIncomplete = false;
 /** Every token value the fake handed out. */
 const issued: string[] = [];
 
@@ -102,6 +133,8 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
   const path = decodeURIComponent(url.pathname);
   calls.push({ method, path: `${path}${url.search}`, body });
+  const gate = held.get(`${method} ${path}`);
+  if (gate !== undefined) await gate;
   const seg = path.split("/").slice(3); // after /app/api
   const model = (id: string | undefined) => state.models.find((m) => m.id === id);
 
@@ -144,6 +177,16 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(204);
   }
   if (method === "GET" && path === "/app/api/trash") return json(200, { models: state.trash });
+  if (method === "POST" && path === "/app/api/trash/empty" && emptyIncomplete) {
+    const stuck = state.trash.slice(-1);
+    const purged = state.trash.length - stuck.length;
+    state.trash = stuck;
+    return json(500, {
+      error: "incomplete",
+      purged,
+      message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
+    });
+  }
   if (method === "POST" && path === "/app/api/trash/empty") {
     const purged = state.trash.length;
     state.trash = [];
@@ -268,6 +311,8 @@ beforeEach(() => {
   };
   calls.length = 0;
   issued.length = 0;
+  held.clear();
+  emptyIncomplete = false;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
     confirm: vi.spyOn(window, "confirm").mockImplementation(() => true),
@@ -531,6 +576,45 @@ describe("the trash", () => {
     expect(dialogs.confirm).not.toHaveBeenCalled();
   });
 
+  test("two restores in flight both stay restored, whichever answers last", async () => {
+    await show("/trash", <TrashPage />);
+    const release = hold("POST /app/api/trash/m-trashed-1/restore");
+    await click(button("Restore Old benchy"));
+    await click(button("Restore Broken clip"));
+    expect(text()).not.toContain("Broken clip");
+    await release();
+    expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(1);
+    expect(text()).not.toContain("Old benchy");
+    expect(text()).not.toContain("Broken clip");
+  });
+
+  test("empty trash reads the trash again after it answers", async () => {
+    await show("/trash", <TrashPage />);
+    expect(callsTo("GET", "/app/api/trash")).toHaveLength(1);
+    await click(button("Empty trash"));
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
+    expect(text()).toContain("The trash is empty.");
+  });
+
+  test("an Empty trash that only partly worked says so and shows what is left", async () => {
+    emptyIncomplete = true;
+    await show("/trash", <TrashPage />);
+    await click(button("Empty trash"));
+    await click(button("Empty trash", dialog() as HTMLElement));
+    const ask = dialog();
+    expect(ask).not.toBeNull();
+    expect(ask?.textContent).toContain(
+      "Deleted 1 model for good. 1 model could not be deleted and stays in the trash; the next purge tries again.",
+    );
+    expect(ask?.textContent).not.toContain("Something went wrong");
+    // The list is read again: the purged model is gone, the stuck one stays.
+    expect(callsTo("GET", "/app/api/trash")).toHaveLength(2);
+    await click(button("Cancel", ask as HTMLElement));
+    expect(text()).not.toContain("Old benchy");
+    expect(text()).toContain("Broken clip");
+  });
+
   test("the dialog keeps focus inside it", async () => {
     await show("/trash", <TrashPage />);
     await click(button("Empty trash"));
@@ -608,10 +692,49 @@ describe("the organising pages", () => {
     expect(callsTo("DELETE", "/app/api/collections/Garage/models/m2")).toHaveLength(1);
   });
 
+  test("a change that answers last keeps a change that answered first", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("POST /app/api/models/m1/trash");
+    await click(button("Move Cable clip to the trash"));
+    await click(button("Rename Hook"));
+    const input = labelled<HTMLInputElement>("New name for Hook");
+    await type(input, "Wall hook");
+    await submit(input);
+    expect(text()).toContain("Wall hook");
+    await release();
+    expect(text()).not.toContain("Cable clip.3mf");
+    expect(text()).toContain("Wall hook");
+  });
+
+  test("two chips added to one model at once both stay", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("PUT /app/api/models/m2/tags/PETG");
+    await type(labelled<HTMLInputElement>("Add a tag to Hook"), "PETG");
+    await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
+    await type(labelled<HTMLInputElement>("Add Hook to a collection"), "Shed");
+    await submit(labelled<HTMLInputElement>("Add Hook to a collection"));
+    expect(() => button("Remove Hook from collection Shed")).not.toThrow();
+    await release();
+    expect(() => button("Remove tag PETG from Hook")).not.toThrow();
+    expect(() => button("Remove Hook from collection Shed")).not.toThrow();
+  });
+
   test("a model can be moved to the trash", async () => {
     await show("/creators?name=Other", <CreatorsPage />);
     await click(button("Move Hook to the trash"));
     expect(callsTo("POST", "/app/api/models/m2/trash")).toHaveLength(1);
     expect(text()).not.toContain("Hook.stl");
+  });
+});
+
+describe("the pages' stylesheet", () => {
+  test("organise.css writes no colour of its own, only studio.css's tokens", () => {
+    // A path, not a URL: this file runs under jsdom, whose URL is not Node's.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "../src/settings/organise.css"), "utf8");
+    const rules = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(rules).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    expect(rules).not.toMatch(/\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i);
+    expect(rules).not.toMatch(/\b(?:black|white)\b/i);
   });
 });

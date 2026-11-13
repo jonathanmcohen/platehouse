@@ -90,9 +90,7 @@ function GroupModels({ title, filter, name }: GroupPageProps & { name: string })
         {models.length > 0 ? (
           <ModelRows
             models={models}
-            onChange={(next) =>
-              rows.set({ models: next, nextCursor: rows.data?.nextCursor ?? null })
-            }
+            update={(change) => rows.set((prev) => ({ ...prev, models: change(prev.models) }))}
           />
         ) : null}
         {rows.data?.nextCursor ? (

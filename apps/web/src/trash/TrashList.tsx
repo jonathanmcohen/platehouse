@@ -4,9 +4,12 @@
 // Restore button, which brings it back with its files, tags and
 // collections. Empty trash deletes everything in the trash at once, after a
 // themed confirmation, never the browser's own dialog. A model whose purge has
-// begun cannot be restored, and says so.
+// begun cannot be restored, and says so. After any Empty trash, done or not,
+// the list is read again, so a model deleted for good never stays on screen.
+// When only some models could be deleted, the dialog says how many were and
+// gives the server's sentence for the rest.
 import { useRef, useState } from "react";
-import { appApi, errorText, formatDate, segment, useAppApi } from "../settings/api";
+import { AppApiError, appApi, errorText, formatDate, segment, useAppApi } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 
 export interface TrashedModel {
@@ -16,6 +19,27 @@ export interface TrashedModel {
   trashedAt: string;
   purgeAt: string;
   purgeStarted: boolean;
+}
+
+function deletedSentence(purged: number): string {
+  return `Deleted ${purged} ${purged === 1 ? "model" : "models"} for good.`;
+}
+
+/**
+ * The sentence for an Empty trash that deleted some models but not all: the
+ * server answers 500 with error "incomplete", the count it purged and a
+ * sentence for the page (apps/server/src/app-api/organise.ts). Any other
+ * failure is left as it is.
+ */
+function incompleteFailure(failure: unknown): unknown {
+  if (!(failure instanceof AppApiError)) return failure;
+  const body = failure.body as { error?: unknown; purged?: unknown; message?: unknown } | null;
+  if (body?.error !== "incomplete" || typeof body.message !== "string") return failure;
+  const done = typeof body.purged === "number" && body.purged > 0;
+  const sentence = done
+    ? `${deletedSentence(body.purged as number)} ${body.message}`
+    : body.message;
+  return new AppApiError(failure.status, sentence, failure.body);
 }
 
 export function TrashList() {
@@ -31,7 +55,7 @@ export function TrashList() {
     setStatus("");
     try {
       await appApi("POST", `/trash/${segment(model.id)}/restore`);
-      trash.set({ models: models.filter((m) => m.id !== model.id) });
+      trash.set((prev) => ({ models: prev.models.filter((m) => m.id !== model.id) }));
       setStatus("Restored. The model is back in the library with its files, tags and collections.");
     } catch (failure) {
       setError(errorText(failure));
@@ -40,10 +64,17 @@ export function TrashList() {
 
   async function emptyTrash() {
     setStatus("");
-    const answer = await appApi<{ purged: number }>("POST", "/trash/empty");
-    trash.set({ models: [] });
-    setAsking(false);
-    setStatus(`Deleted ${answer.purged} ${answer.purged === 1 ? "model" : "models"} for good.`);
+    try {
+      const answer = await appApi<{ purged: number }>("POST", "/trash/empty");
+      trash.set({ models: [] });
+      setAsking(false);
+      setStatus(deletedSentence(answer.purged));
+    } catch (failure) {
+      // The dialog shows this; the list below is read again either way.
+      throw incompleteFailure(failure);
+    } finally {
+      trash.reload();
+    }
   }
 
   return (

@@ -104,7 +104,7 @@ export function Tokens() {
         createdAt: answer.createdAt,
         lastUsedAt: answer.lastUsedAt,
       };
-      list.set({ tokens: [row, ...rows.filter((r) => r.id !== row.id)] });
+      list.set((prev) => ({ tokens: [row, ...prev.tokens.filter((r) => r.id !== row.id)] }));
       setName("");
       setCreated({ name: answer.name, value: answer.token });
     } catch (failure) {
@@ -116,7 +116,7 @@ export function Tokens() {
 
   async function revoke(item: ListedToken) {
     await appApi("DELETE", `/tokens/${segment(item.id)}`);
-    list.set({ tokens: rows.filter((r) => r.id !== item.id) });
+    list.set((prev) => ({ tokens: prev.tokens.filter((r) => r.id !== item.id) }));
     // Its own button is gone with it; focus goes to Create token.
     revokeReturn.current = createButton.current;
     setRevoking(null);
