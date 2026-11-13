@@ -4,6 +4,7 @@
     { "path": "./apps/importer" },
     { "path": "./apps/server" },
     { "path": "./apps/slicer" },
+    { "path": "./apps/web" },
     { "path": "./packages/slicer-contract" },
     { "path": "./packages/threemf" },
     { "path": "./packages/makerworld" }
