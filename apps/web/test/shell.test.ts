@@ -1,6 +1,7 @@
 // Build plan Task 18, AC-070, AC-071, AC-074 and AC-075: the shell around
 // every page. Rendered to static markup (react-dom/server) inside a memory
-// router: a left sidebar with Library, Creators, Collections and Tags, a top
+// router: a left sidebar with Library, Creators, Collections and Tags (and,
+// since Task 21, Trash and Settings), a top
 // bar with the narrow-screen menu button, search and Add, the Dark / Light /
 // System switch, a skip link and the main landmark. Also: index.html carries
 // the defaults the server rewrites (data-theme and the color-scheme meta),
@@ -52,9 +53,12 @@ describe("the sidebar", () => {
     ["Creators", "/creators"],
     ["Collections", "/collections"],
     ["Tags", "/tags"],
+    // Task 21's pages.
+    ["Trash", "/trash"],
+    ["Settings", "/settings"],
   ];
 
-  test("links Library, Creators, Collections and Tags in a labelled navigation", () => {
+  test("links Library, Creators, Collections, Tags, Trash and Settings in a labelled navigation", () => {
     const html = render("/");
     const nav = tags(html, "nav").find((t) => attr(t, "class")?.includes("studio-sidebar"));
     expect(nav, "no sidebar nav").toBeDefined();

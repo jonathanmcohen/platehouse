@@ -41,7 +41,12 @@ export default defineConfig({
         extends: true,
         test: {
           name: "unit",
-          include: ["apps/*/test/**/*.test.ts", "packages/*/test/**/*.test.ts"],
+          // .test.tsx: the web app's React tests written in JSX (Task 21).
+          include: [
+            "apps/*/test/**/*.test.ts",
+            "apps/*/test/**/*.test.tsx",
+            "packages/*/test/**/*.test.ts",
+          ],
           exclude: [...INTEGRATION, ...CONTAINER],
         },
       },
