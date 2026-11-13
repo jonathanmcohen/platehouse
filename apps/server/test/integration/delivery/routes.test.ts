@@ -590,6 +590,66 @@ describe("GET /s/<token>/<name>", () => {
     expectNoLookups(looked);
   });
 
+  test("a link path the router cannot decode or measure is 403, empty, no-store (PR #156)", async () => {
+    // Fastify answers these before any route or hook runs (frameworkErrors
+    // in app.ts): a bad percent escape is its 400 and a segment over the
+    // router's maxParamLength (100 characters) its 414, each with a body
+    // that repeated the path, the token in it included. Under /s/ they are
+    // refused links like any other.
+    const link = await linkFor(FILE_A);
+    const [, , token = ""] = pathOf(link.url).split("/");
+    const looked = { ...lookups };
+    const before = opened;
+    const urls: Array<[string, string]> = [
+      ["a bad percent escape", `/s/${token}/x%zz.3mf`],
+      ["a truncated UTF-8 escape", `/s/${token}/x%E0%A4%A.3mf`],
+      ["an overlong UTF-8 encoding", `/s/${token}/x%C0%AF.3mf`],
+      ["a bad escape in the token segment", `/s/${token.slice(0, -2)}%zz/x.3mf`],
+      ["a token segment over 100 characters", `/s/${token}${"A".repeat(60)}/x.3mf`],
+    ];
+    for (const [label, url] of urls) {
+      for (const method of ["GET", "HEAD"] as const) {
+        const res = await app.inject({
+          method,
+          url,
+          headers: { accept: "application/json", origin: TEST_ORIGIN },
+        });
+        const what = `${method} ${label}`;
+        expect(res.statusCode, what).toBe(403);
+        expect(res.body, what).toBe("");
+        expect(res.headers["cache-control"], what).toBe("no-store");
+        expect(res.headers["content-type"], what).toBeUndefined();
+        if (method === "GET") expect(res.headers["content-length"], what).toBe("0");
+      }
+    }
+    expect(opened).toBe(before);
+    expectNoLookups(looked);
+  });
+
+  test("Fastify's own 400 and 414 off /s/ never repeat the path", async () => {
+    // The same framework answers on any other path keep their status and
+    // code, without the message that repeated the path.
+    const cases: Array<[string, number, string]> = [
+      [`/files/x%zz${FILE_A}/download`, 400, "FST_ERR_BAD_URL"],
+      [`/files/${"9".repeat(101)}/download`, 414, "FST_ERR_MAX_PARAM_LENGTH"],
+    ];
+    for (const [url, status, code] of cases) {
+      const res = await app.inject({
+        method: "GET",
+        url,
+        cookies: { [SESSION_COOKIE]: sessionCookie },
+      });
+      expect(res.statusCode, url).toBe(status);
+      expect(res.json(), url).toEqual({
+        error: status === 400 ? "Bad Request" : "URI Too Long",
+        code,
+        statusCode: status,
+      });
+      expect(res.body, url).not.toContain("/files/");
+      expect(res.body, url).not.toContain(FILE_A);
+    }
+  });
+
   test("a link for file A cannot fetch file B", async () => {
     const a = await linkFor(FILE_A);
     const b = await linkFor(FILE_B);

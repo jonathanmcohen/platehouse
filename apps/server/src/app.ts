@@ -40,7 +40,8 @@
 //   when deps.delivery is given. A path under /s/ that matches no route (no
 //   name segment, another method, or delivery not registered) is a refused
 //   link: 403 with an empty body and Cache-Control: no-store, never a 404
-//   that echoes the path.
+//   that echoes the path. So is a /s/ path Fastify itself refuses (a bad
+//   percent escape, a segment over its maxParamLength): frameworkError.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -289,15 +290,22 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  * (FST_ERR_MAX_PARAM_LENGTH, 414) or a failed async constraint (500). Without
  * this Fastify writes the answer straight to the socket, so the gate's onSend
  * hook never releases a body the client declared and Node reads it for up to
- * REQUEST_TIMEOUT_MS. The body is Fastify's own.
+ * REQUEST_TIMEOUT_MS.
+ *
+ * Under /s/ (the raw path, as sent) it is a refused link, as the link route
+ * and the not-found handler answer one: 403, an empty body and no-store. Off
+ * /s/ the body is Fastify's own without its message, which repeats the path
+ * (PR #156 security re-check).
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
-  const status = error.statusCode ?? 500;
   releaseUnreadBody(request, reply);
+  if (request.url.startsWith("/s/")) {
+    return reply.code(403).header("cache-control", "no-store").send();
+  }
+  const status = error.statusCode ?? 500;
   return reply.code(status).send({
     error: STATUS_CODES[status] ?? "Error",
     code: error.code,
-    message: error.message,
     statusCode: status,
   });
 }
