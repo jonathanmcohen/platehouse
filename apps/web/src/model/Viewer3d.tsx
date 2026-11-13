@@ -11,6 +11,9 @@
 // If anything fails (no WebGL, the store unavailable), the viewer says so
 // and offers the file's download instead.
 import { useEffect, useRef, useState } from "react";
+// A type-only import, erased from the build, so three.js still loads only
+// through the dynamic imports in defaultLoadThree.
+import type { Object3D } from "three";
 
 export interface ThreeSource {
   kind: "stl" | "glb";
@@ -43,8 +46,8 @@ export const ZOOM_STEP = 0.8;
 
 /**
  * three.js and its STL, GLTF and orbit-control add-ons, imported only now.
- * The modules are untyped (three.d.ts), so this one function is the only
- * code that touches them.
+ * This one function is the only code that touches them; @types/three types
+ * it, and everything outside sees only the ThreeViewer interface.
  */
 export const defaultLoadThree: ThreeLoader = async () => {
   const [THREE, stlModule, gltfModule, orbitModule] = await Promise.all([
@@ -63,7 +66,7 @@ export const defaultLoadThree: ThreeLoader = async () => {
       if (!res.ok) throw new Error(`the mesh answered ${res.status}`);
       const bytes = await res.arrayBuffer();
 
-      let object: unknown;
+      let object: Object3D;
       if (source.kind === "stl") {
         const geometry = new stlModule.STLLoader().parse(bytes);
         geometry.computeVertexNormals();
@@ -78,14 +81,7 @@ export const defaultLoadThree: ThreeLoader = async () => {
         mesh.rotation.x = -Math.PI / 2;
         object = mesh;
       } else {
-        object = await new Promise((resolve, reject) => {
-          new gltfModule.GLTFLoader().parse(
-            bytes,
-            "",
-            (gltf: { scene: unknown }) => resolve(gltf.scene),
-            reject,
-          );
-        });
+        object = (await new gltfModule.GLTFLoader().parseAsync(bytes, "")).scene;
       }
       signal?.throwIfAborted();
 
@@ -154,10 +150,16 @@ export const defaultLoadThree: ThreeLoader = async () => {
           renderer.setAnimationLoop(null);
           resize.disconnect();
           controls.dispose();
-          scene.traverse((node: { geometry?: { dispose(): void }; material?: unknown }) => {
-            node.geometry?.dispose();
-            const materials = Array.isArray(node.material) ? node.material : [node.material];
-            for (const m of materials) (m as { dispose?: () => void } | undefined)?.dispose?.();
+          // Meshes, points, lines and sprites carry a geometry and one or
+          // more materials; lights, groups and the scene carry neither.
+          scene.traverse((node) => {
+            if ("geometry" in node && node.geometry instanceof THREE.BufferGeometry) {
+              node.geometry.dispose();
+            }
+            if ("material" in node) {
+              const materials = Array.isArray(node.material) ? node.material : [node.material];
+              for (const m of materials) if (m instanceof THREE.Material) m.dispose();
+            }
           });
           renderer.dispose();
           renderer.domElement.remove();
