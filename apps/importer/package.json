@@ -1,0 +1,16 @@
+{
+  "name": "@platehouse/importer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "platehouse-import": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. --project unit apps/importer"
+  },
+  "devDependencies": {
+    "msw": "3.0.5"
+  }
+}

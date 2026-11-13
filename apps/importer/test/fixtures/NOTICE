@@ -1,0 +1,39 @@
+NOTICE for manyfold-openapi-0.154.1.json
+
+What it is
+  manyfold-openapi-0.154.1.json in this folder is Manyfold's OpenAPI
+  document for its REST API, version 0, copied from Manyfold's public
+  source code.
+
+Where it came from
+  Project:     Manyfold
+  Repository:  https://github.com/manyfold3d/manyfold
+  Tag:         v0.154.1
+  Commit:      d8bccfee8ad18608f102dff0143c45883b9a9070
+  Path:        app/api/v0/openapi.json
+  Source URL:  https://github.com/manyfold3d/manyfold/blob/v0.154.1/app/api/v0/openapi.json
+
+Copyright and licence
+  The file is copyright the authors of Manyfold and is licensed by them
+  under the GNU Affero General Public License version 3 (AGPL-3.0).
+  The upstream repository names no single copyright holder: its
+  LICENSE.md is the AGPL-3.0 text with no copyright line of its own, its
+  .github/CONTRIBUTING.md asks contributors to sign a Contributor
+  License Agreement licensing their code as AGPL-3.0, and its
+  CONTRIBUTORS.md lists the contributors.
+
+  The full AGPL-3.0 text, as Manyfold ships it:
+  https://github.com/manyfold3d/manyfold/blob/v0.154.1/LICENSE.md
+
+Changes made here
+  Only whitespace was changed, by this repository's Biome formatter:
+  running it on the upstream file gives this file byte for byte. Every
+  key, value and string is unchanged: the file parses to the same JSON
+  as the upstream file, and its non-whitespace characters are identical
+  and in the same order.
+
+How Platehouse uses it
+  It is test data. The importer's tests build their stub of the Manyfold
+  API from it, so the stub serves only the paths and shapes Manyfold
+  documents. No Platehouse code reads it at run time. It is never
+  shipped in the Platehouse app image, and no image build may copy it.
