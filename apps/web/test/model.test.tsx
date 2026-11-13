@@ -1029,6 +1029,33 @@ describe("the page CSS", () => {
     expect(page).not.toMatch(/\b(rgb|rgba|hsl|hsla|oklch|color-mix)\(/i);
     expect([...page].findIndex((c) => c.charCodeAt(0) > 0x7f)).toBe(-1);
   });
+
+  test("with the page's stylesheets loaded, only the chosen tab panel is drawn", async () => {
+    // studio.css gives .studio-panel display: grid, and any author rule beats
+    // the browser's own [hidden] { display: none }, so the hidden panels need
+    // a rule of their own. jsdom applies loaded style sheets to
+    // getComputedStyle, so this reads the display a browser would use.
+    const read = (rel: string) =>
+      readFileSync(fileURLToPath(new URL(rel, import.meta.url).href), "utf8");
+    const sheets = ["../src/styles/studio.css", "../src/model/model.css"].map((rel) => {
+      const style = document.createElement("style");
+      style.textContent = read(rel);
+      document.head.append(style);
+      return style;
+    });
+    try {
+      await render(pageAt(MODEL_ID));
+      const displays = () =>
+        [...container.querySelectorAll<HTMLElement>('[role="tabpanel"]')].map(
+          (p) => getComputedStyle(p).display,
+        );
+      expect(displays()).toEqual(["grid", "none", "none"]);
+      await click(tab("Files"));
+      expect(displays()).toEqual(["none", "grid", "none"]);
+    } finally {
+      for (const style of sheets) style.remove();
+    }
+  });
 });
 
 describe("dropping files on the model page", () => {
@@ -1082,5 +1109,93 @@ describe("dropping files on the model page", () => {
       `GET /app/api/models/${MODEL_ID}`,
       `GET /app/api/models/${MODEL_ID}`,
     ]);
+  });
+
+  test("the first upload into a model with no files shows that file in the viewer", async () => {
+    models.set(MODEL_ID, model([]));
+    await render(pageAt(MODEL_ID, { refreshKey: 0 }));
+    const viewer = () => container.querySelector('[aria-label="Viewer"]');
+    expect(text(viewer())).toContain("This model has no files.");
+    models.set(MODEL_ID, model([STL_FILE]));
+    await render(pageAt(MODEL_ID, { refreshKey: 1 }));
+    expect(text(viewer())).not.toContain("This model has no files.");
+    expect(loads).toEqual([STL_FILE.view]);
+  });
+});
+
+describe("a reload that fails while the model is on screen", () => {
+  function modelRequests(): number {
+    return requests.filter((r) => r === `GET /app/api/models/${MODEL_ID}`).length;
+  }
+
+  function estimatingModel(): ModelView {
+    return model([threeMf([plate(1, "Waiting", { platehouse: estimate("estimating") })])]);
+  }
+
+  function failedModel(): ModelView {
+    return model([
+      threeMf([
+        plate(1, "Huge", {
+          failure: { estimateId: EST_FAILED, reason: "bed_too_small", words: "x", detail: null },
+        }),
+      ]),
+    ]);
+  }
+
+  test("a failed poll while a plate is estimating is asked again in 5 s", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, estimatingModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, 503);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await settle();
+    expect(modelRequests()).toBe(2);
+    models.set(MODEL_ID, estimatingModel());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await settle();
+    expect(modelRequests()).toBe(3);
+    expect(text(container.querySelector("h1"))).toBe("Cube set");
+  });
+
+  test("a failed reload with nothing estimating is not asked again, and says so with Try again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    retryStatus = 202;
+    models.set(MODEL_ID, 500);
+    await click(button(/retry/i, plateItems()[0] as HTMLElement));
+    expect(modelRequests()).toBe(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(2);
+    expect(text(container.querySelector("h1"))).toBe("Cube set");
+    const notice = container.querySelector('[role="alert"]');
+    expect(text(notice)).toMatch(/could not be refreshed/i);
+    models.set(MODEL_ID, estimatingModel());
+    await click(button(/try again/i, notice as HTMLElement));
+    expect(modelRequests()).toBe(3);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test("a 401 ends the polling and asks the user to sign in again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, estimatingModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, 401);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await settle();
+    expect(modelRequests()).toBe(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(2);
+    expect(text(container.querySelector('[role="alert"]'))).toMatch(/signed out.*sign in again/i);
   });
 });

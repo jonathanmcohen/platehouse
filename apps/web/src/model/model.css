@@ -22,6 +22,13 @@
   font-weight: 600;
 }
 
+/* studio.css gives .studio-panel display: grid, and any author rule beats the
+   browser's own [hidden] { display: none }, so a hidden tab panel would
+   still be drawn without this. */
+.studio-panel[hidden] {
+  display: none;
+}
+
 .studio-plate-strip button {
   display: block;
   width: 72px;

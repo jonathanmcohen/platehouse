@@ -18,6 +18,11 @@
 //   request in flight aborted, and an answer that comes back after that is
 //   dropped, so no request is made after unmount and an earlier model's
 //   answer never replaces the one navigated to.
+// - A reload that fails while the model is on screen keeps the model shown.
+//   While a plate is estimating it is asked again in POLL_MS; otherwise (a
+//   reload after an upload or a Retry) it is not, and the page says it could
+//   not refresh, with Try again. A 401 ends the asking either way and says
+//   the user is signed out.
 // - Retry on a failed plate posts to /app/api/estimates/:id/retry (the
 //   gate's Origin check passes a same-origin fetch) and loads the model
 //   again, which starts the polling while the plate estimates.
@@ -180,12 +185,31 @@ export function ModelPage({
   const [reload, setReload] = useState(0);
   /** The model id whose model is on screen, so a failed poll keeps it. */
   const shownFor = useRef<string | null>(null);
+  /** Whether the model on screen has a plate estimating, so a failed poll is asked again. */
+  const polling = useRef(false);
+  /** Why the model on screen could not be refreshed, for that model's id. */
+  const [notice, setNotice] = useState<{ id: string; kind: "failed" | "signed-out" } | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload and refreshKey are triggers: a change of either loads the model again.
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
+
+    /** A failed load; status is the answer's, undefined when no answer came. */
+    function failed(status?: number) {
+      // A failed first load says so, with Try again.
+      if (shownFor.current !== id) {
+        setLoad({ id, status: "failed" });
+        return;
+      }
+      // A failed poll or reload keeps the model on screen. A 401 will not
+      // change by asking again; anything else is asked again only while a
+      // plate is estimating.
+      if (status === 401) setNotice({ id, kind: "signed-out" });
+      else if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
+      else setNotice({ id, kind: "failed" });
+    }
 
     async function fetchModel() {
       timer = undefined;
@@ -200,18 +224,20 @@ export function ModelPage({
           setLoad({ id, status: "missing" });
           return;
         }
-        if (!res.ok) throw new Error(`the model answered ${res.status}`);
+        if (!res.ok) {
+          failed(res.status);
+          return;
+        }
         const model = (await res.json()) as ModelView;
         if (cancelled) return;
         shownFor.current = id;
+        polling.current = needsPolling(model);
+        setNotice(null);
         setLoad({ id, status: "ready", model });
-        if (needsPolling(model)) timer = setTimeout(fetchModel, POLL_MS);
+        if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
       } catch {
         if (cancelled) return;
-        // A failed poll or reload keeps the model on screen and tries again
-        // in POLL_MS; a failed first load says so, with Try again.
-        if (shownFor.current === id) timer = setTimeout(fetchModel, POLL_MS);
-        else setLoad({ id, status: "failed" });
+        failed();
       }
     }
 
@@ -264,6 +290,18 @@ export function ModelPage({
   const { model } = current;
   return (
     <DropZone onFiles={(files) => onFiles?.(files, model.id)}>
+      {notice?.id !== model.id ? null : notice.kind === "signed-out" ? (
+        <div role="alert" className="studio-alert studio-alert-alert">
+          <p>You are signed out. Reload the page to sign in again.</p>
+        </div>
+      ) : (
+        <div role="alert" className="studio-alert studio-alert-alert">
+          <p>The model could not be refreshed right now.</p>
+          <button type="button" className="studio-button" onClick={() => setReload((n) => n + 1)}>
+            Try again
+          </button>
+        </div>
+      )}
       <ModelDetail
         key={model.id}
         model={model}
@@ -301,6 +339,17 @@ function ModelDetail({ model, onRetry, loadThree, navigateTo, platform }: ModelD
   const tabRefs = useRef(new Map<TabName, HTMLButtonElement>());
 
   const shown = model.files.find((f) => f.id === shownId) ?? null;
+  // A reload of the same model keeps this component's state, so when the
+  // viewer names no file of the model (it had none, or the one shown has
+  // gone), pick the first file again: the first upload into an empty model
+  // shows in the viewer.
+  if (shown === null) {
+    const next = firstShown(model);
+    if (next !== shownId) {
+      setShownId(next);
+      setPlateIndex(1);
+    }
+  }
 
   function choose(next: TabName, focus: boolean) {
     setTab(next);
