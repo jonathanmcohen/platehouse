@@ -34,7 +34,9 @@
 //      The library page's app API (Task 19) reads the same database and
 //      Task 12's plate numbers, with the display context (the settings row
 //      and estimates.listPrinters, through readDisplayContext) read once per
-//      page rather than once per plate.
+//      page rather than once per plate. The model page's app API (Task 20)
+//      reads them the same way, once per model, and queues a failed
+//      estimate again through estimates.retryEstimate.
 //      The web app's own API under /app/api (Task 21: settings, tokens,
 //      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
@@ -61,6 +63,7 @@ import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
 import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
+import { createAppModel } from "./app-api/model.js";
 import { recordVersioning } from "./app-api/settings.js";
 import { dbTokenList } from "./app-api/tokens.js";
 import { createOidc } from "./auth/oidc.js";
@@ -407,6 +410,13 @@ export async function start(config: Config): Promise<Server> {
       store,
       plateNumbers: (plateId) => estimates.plateNumbers(plateId),
     });
+    // The selected printer, the Orca version and the printer menu, read once
+    // per page by the library and the model page.
+    const displayContext = () =>
+      readDisplayContext({
+        settings: () => repos.settings.get(),
+        listPrinters: () => estimates.listPrinters(),
+      });
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -435,12 +445,15 @@ export async function start(config: Config): Promise<Server> {
       },
       library: createAppLibrary({
         db,
-        displayContext: () =>
-          readDisplayContext({
-            settings: () => repos.settings.get(),
-            listPrinters: () => estimates.listPrinters(),
-          }),
+        displayContext,
         plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+      }),
+      // The model page (Task 20).
+      model: createAppModel({
+        db,
+        displayContext,
+        plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+        retryEstimate: (estimateId) => estimates.retryEstimate(estimateId),
       }),
       // The settings, trash and organising pages (Task 21).
       appApi: {

@@ -51,6 +51,9 @@ export const THEME_COOKIE = "ph_theme";
  * The paths that answer with the shell: the sidebar's sections. Tasks 19 to
  * 21 add their own pages here (the model page, trash, settings). A test
  * checks every SECTIONS path in the web app's Sidebar.tsx is listed here.
+ * /models/:id is the model page (Task 20): any id answers with the shell,
+ * and the page itself asks the model's app API, which says 404 for a model
+ * that is not in the library.
  */
 export const SHELL_PAGES: readonly string[] = Object.freeze([
   "/",
@@ -59,6 +62,7 @@ export const SHELL_PAGES: readonly string[] = Object.freeze([
   "/tags",
   "/trash",
   "/settings",
+  "/models/:id",
 ]);
 
 /** Where the hashed build output is served from (public in the Route classes table). */

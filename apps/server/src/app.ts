@@ -27,10 +27,11 @@
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
 // - The web app's own JSON API under /app/api (app-api/: Task 19's library,
-//   and Task 21's settings, tokens, organising and the trash), session-class,
-//   so the gate's session and Origin checks cover every route. Without
-//   library the library routes answer an empty library, and without appApi
-//   Task 21's routes are still registered and answer 503.
+//   Task 20's model page, and Task 21's settings, tokens, organising and the
+//   trash), session-class, so the gate's session and Origin checks cover
+//   every route. Without library the library routes answer an empty
+//   library, without model every model is 404 and nothing is retried, and
+//   without appApi Task 21's routes are still registered and answer 503.
 // - The web app (web/shell.ts, Task 18): the shell pages (session-class)
 //   answer with the built index.html, data-theme and the color-scheme meta
 //   written in from the ph_theme cookie, and the hashed build output is

@@ -273,6 +273,17 @@ async function settle() {
   }
 }
 
+/** Waits, in real time, until the selector matches: the About tab imports its renderer on first use. */
+async function until(selector: string, ms = 5_000) {
+  const end = Date.now() + ms;
+  while (container.querySelector(selector) === null) {
+    if (Date.now() > end) throw new Error(`nothing matched ${selector} within ${ms} ms`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+}
+
 async function render(node: ReactNode) {
   await act(async () => {
     root.render(node);
@@ -951,6 +962,7 @@ describe("the About tab", () => {
         <AboutTab model={model([], { description })} />
       </MemoryRouter>,
     );
+    await until(".studio-prose");
     const prose = container.querySelector(".studio-prose");
     expect(prose?.querySelector("strong")?.textContent).toBe("bold");
     expect(container.querySelector("script")).toBeNull();
@@ -970,6 +982,7 @@ describe("the About tab", () => {
         />
       </MemoryRouter>,
     );
+    await until(".studio-prose");
     const licence = [...container.querySelectorAll("dt")].find((dt) =>
       /licen[cs]e/i.test(text(dt)),
     );
