@@ -131,7 +131,10 @@ describe("a session store that fails", () => {
 });
 
 describe("the Origin check on state-changing session requests: /app/api", () => {
-  const url = "/app/api/models/abc/tags/x";
+  // A session-class path under /app/api that no route serves (Task 21's
+  // /app/api routes answer 503 in this app, which has no app API), so a
+  // request past the gate is a plain 404.
+  const url = "/app/api/no-such-route/abc";
 
   test("a cross-origin POST to /app/api is 403", async () => {
     const res = await t.app.inject({
@@ -174,7 +177,7 @@ describe("the Origin check on state-changing session requests: /app/api", () => 
         headers: { origin: TEST_ORIGIN },
         cookies: { [SESSION_COOKIE]: session },
       });
-      // No /app/api route exists yet (Task 19), so past the gate is a 404.
+      // No route serves this path, so past the gate is a 404.
       expect(res.statusCode, method).toBe(404);
     }
   });
