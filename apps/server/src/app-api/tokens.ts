@@ -16,6 +16,9 @@
 // - The list is every live token, newest first, with the 8-character prefix
 //   that tells tokens apart and when each was last used (Task 16 records it
 //   at most once a minute). A revoked token is not listed.
+// - The create answer is built from the list, read after the token is made.
+//   If that read fails, the token is revoked before the 500, so a token whose
+//   value was never shown does not stay live.
 import type { FastifyInstance } from "fastify";
 import type { Kysely } from "kysely";
 import { MAX_TOKEN_NAME_LENGTH, type Tokens } from "../api/tokens.js";
@@ -98,8 +101,24 @@ export async function registerTokensApi(
           }
           throw error;
         }
-        const row = (await list()).find((t) => t.id === created.id);
-        if (row === undefined) throw new Error("the new token is not in the list");
+        let row: ListedToken | undefined;
+        try {
+          row = (await list()).find((t) => t.id === created.id);
+          if (row === undefined) throw new Error("the new token is not in the list");
+        } catch (error) {
+          // The token is made but this answer, the only place its value is
+          // ever shown, cannot be built. Revoke it, so no live token is left
+          // whose value nobody saw; the page says to try again.
+          try {
+            await tokens.revokeToken(created.id);
+          } catch (revokeError) {
+            request.log.error(
+              { err: revokeError, tokenId: created.id },
+              "app api: could not revoke a token whose create answer failed",
+            );
+          }
+          throw error;
+        }
         // The one answer that carries the token; no-store, like every answer here.
         return reply.code(201).send({ ...entry(row), token: created.token });
       },

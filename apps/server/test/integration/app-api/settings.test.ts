@@ -28,7 +28,7 @@ import {
 import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { recordVersioning } from "../../../src/app-api/settings.js";
-import { dbTokenList } from "../../../src/app-api/tokens.js";
+import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
@@ -68,6 +68,11 @@ let session: string;
  * swaps in one that fails, and puts the bucket back when it is done.
  */
 let purgeStore: PurgeStore;
+/**
+ * The token list the app's token routes read: the api_tokens table, unless a
+ * test swaps in one that fails, and puts the table back when it is done.
+ */
+let tokenList: () => Promise<ListedToken[]>;
 /** Every line the app logged. */
 const lines: string[] = [];
 /** Every token this file was given, for the log check. */
@@ -202,6 +207,7 @@ beforeAll(async () => {
   });
   tokens = createTokens({ store: dbTokenStore(env.db) });
   purgeStore = env.store;
+  tokenList = dbTokenList(env.db);
   auth = await testAuth();
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
@@ -221,7 +227,7 @@ beforeAll(async () => {
     },
     appApi: {
       settings: { settings: env.repos.settings, estimates },
-      tokens: { tokens, list: dbTokenList(env.db) },
+      tokens: { tokens, list: () => tokenList() },
       organise: {
         db: env.db,
         trash: createTrash({
@@ -412,6 +418,39 @@ describe("API tokens", () => {
     expect(ids).not.toContain(drop.id);
     expect((await call("DELETE", `/app/api/tokens/${drop.id}`)).status).toBe(404);
     expect((await call("DELETE", "/app/api/tokens/not-a-token")).status).toBe(404);
+  });
+
+  test("a new token whose answer cannot be built is revoked, not left live and unseen", async () => {
+    // The token row is written, then the read that builds the answer fails
+    // (a dropped connection) or comes back without it. The answer is 500 with
+    // no token in it, so the token must not stay live: nobody has its value.
+    const failures: Array<[string, () => Promise<ListedToken[]>]> = [
+      ["read fails", async () => Promise.reject(new Error("Connection terminated unexpectedly"))],
+      ["row missing", async () => []],
+    ];
+    for (const [what, failing] of failures) {
+      const name = `unseen ${marker()}`;
+      const liveBefore = (await dbTokenList(env.db)()).map((t) => t.id);
+      tokenList = failing;
+      try {
+        const res = await call("POST", "/app/api/tokens", { json: { name } });
+        expect(res.status, `${what}: ${res.text}`).toBe(500);
+        expect(res.text).not.toContain(TOKEN_PREFIX);
+      } finally {
+        tokenList = dbTokenList(env.db);
+      }
+      expect(
+        (await dbTokenList(env.db)()).map((t) => t.id),
+        what,
+      ).toEqual(liveBefore);
+      const made = await env.db
+        .selectFrom("apiTokens")
+        .select(["revokedAt"])
+        .where("name", "=", name)
+        .execute();
+      expect(made, what).toHaveLength(1);
+      expect(made[0]?.revokedAt, what).not.toBeNull();
+    }
   });
 
   test("a token needs a name of 1 to 100 characters", async () => {
