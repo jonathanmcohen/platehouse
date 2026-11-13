@@ -5,15 +5,16 @@
 // The clients already keep these out of their messages; this is the floor
 // under them, for the cases they cannot see, such as a server that echoes a
 // credential back in an error body. The clients quote an error body through
-// one helper, quoteBody: control characters out (cleanText), then redact(),
-// then whitespace made one line, then the cut to the quote length. Control
-// characters come out first, in the clients and the CLI alike: taken out
-// after redact(), they could join up a credential that was echoed with one
-// inside it, past the redactor. That includes newline, tab and CR, so
-// whitespace is collapsed only after redact(): made a space first, one of
-// them inside a credential would split it into two halves the redactor
-// cannot find. And redaction comes before the cut, since a value cut in two
-// is no longer one this redactor can find.
+// one helper, quoteBody, and the CLI cleans every line it prints. Control
+// characters come out before redact(), in the clients and the CLI alike:
+// taken out after it, they could join up a credential that was echoed with
+// one inside it, past the redactor. That includes newline, tab and CR, so
+// quoteBody first redacts the body with them taken out (cleanText). Only if
+// that finds nothing does it quote the body with the line breaks and tabs
+// made spaces instead, redacted again, so separate lines do not run
+// together; whitespace is collapsed only after redact(). And redaction comes
+// before the cut, since a value cut in two is no longer one this redactor can
+// find.
 //
 // A credential is registered with the forms it can be echoed in: as given,
 // trimmed, and with control characters taken out, each URL-encoded too. So a
@@ -89,13 +90,29 @@ export function cleanText(text: string): string {
   return out;
 }
 
+/** text with each tab, newline, VT, FF and CR (0x09 to 0x0d) made a space. */
+function spaced(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    out += cp >= 0x09 && cp <= 0x0d ? " " : ch;
+  }
+  return out;
+}
+
 /**
- * An error body as the clients quote it: control and bidi characters
- * removed, then redacted, then on one line with each whitespace run made one
- * space, then cut to max characters. The order is what keeps a credential
- * echoed with a control character inside it (newline, tab and CR included)
- * from being printed even in part; see the top of this file.
+ * An error body as the clients quote it, on one line with each whitespace
+ * run made one space, then cut to max characters. Redacted with every control
+ * and bidi character removed first (cleanText), so a credential echoed with
+ * a newline, tab or CR inside it is found whole. If that finds a credential,
+ * that redacted text is what is quoted. If not, the body is quoted with its
+ * line breaks and tabs made spaces and the other control and bidi characters
+ * removed, redacted again (a credential may itself hold a space), so the
+ * words of separate lines stay apart. See the top of this file.
  */
 export function quoteBody(text: string, redact: (text: string) => string, max: number): string {
-  return redact(cleanText(text)).replace(/\s+/g, " ").trim().slice(0, max);
+  const cleaned = cleanText(text);
+  const redacted = redact(cleaned);
+  const quoted = redacted !== cleaned ? redacted : redact(cleanText(spaced(text)));
+  return quoted.replace(/\s+/g, " ").trim().slice(0, max);
 }

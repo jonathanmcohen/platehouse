@@ -91,6 +91,24 @@ describe("quoteBody", () => {
     }
   });
 
+  it("keeps the words of separate lines apart when no secret is in them", () => {
+    expect(quoteBody("Bad Gateway\nupstream timed out", r.redact, 200)).toBe(
+      "Bad Gateway upstream timed out",
+    );
+    expect(quoteBody("a\r\nb\tc\u000bd\u000ce", r.redact, 200)).toBe("a b c d e");
+  });
+
+  it("still takes other control and bidi characters out without a space", () => {
+    expect(quoteBody(`a\u001b[2Jb\u0007c${String.fromCodePoint(0x202e)}d`, r.redact, 200)).toBe(
+      "a[2Jbcd",
+    );
+  });
+
+  it("redacts a secret that holds a space and is echoed split by a newline", () => {
+    const spaced = createRedactor(["abc defghijkl"]);
+    expect(quoteBody("xx abc\ndefghijkl yy", spaced.redact, 200)).toBe(`xx ${REDACTED} yy`);
+  });
+
   it("puts the quote on one line, with ordinary space runs made one space", () => {
     expect(quoteBody("  a   b\u00a0\u00a0c  ", r.redact, 200)).toBe("a b c");
   });
