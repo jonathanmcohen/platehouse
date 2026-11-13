@@ -378,9 +378,17 @@ export async function run(options: RunOptions): Promise<RunResult> {
       return { code: 2, report: null };
     }
 
-    const values = CREDENTIALS.map((k) => options.env[k] ?? "");
+    // Each credential is normalized once, control characters out and then
+    // trimmed, and that one value is what is checked, sent and redacted. A
+    // newline or space around it would otherwise go into the Basic header,
+    // where Manyfold refuses it, or into the Bearer header, where a leading
+    // space makes Platehouse refuse it and a leading newline makes fetch
+    // throw. The raw value is registered too, in case it is echoed as given.
+    const raw = CREDENTIALS.map((k) => options.env[k] ?? "");
+    for (const v of raw) redactor.add(v);
+    const values = raw.map((v) => cleanText(v).trim());
     for (const v of values) redactor.add(v);
-    const missing = CREDENTIALS.filter((_, i) => (values[i] ?? "").trim() === "");
+    const missing = CREDENTIALS.filter((_, i) => (values[i] ?? "") === "");
     if (missing.length > 0) {
       err(`${missing.join(", ")} not set; run it under claude-env.`);
       usage();
@@ -388,9 +396,8 @@ export async function run(options: RunOptions): Promise<RunResult> {
     }
     const [clientId, clientKey, bearer] = values as [string, string, string];
     // The Platehouse token's body without its ph_ prefix, in case only that is
-    // echoed; looked for on the trimmed token, as fetch sends it.
-    const sent = cleanText(bearer).trim();
-    if (sent.startsWith("ph_") && sent.length > 19) redactor.add(sent.slice(3));
+    // echoed.
+    if (bearer.startsWith("ph_") && bearer.length > 19) redactor.add(bearer.slice(3));
 
     const mode: Mode = args.apply ? "apply" : "dry run";
     const manyfoldBase = options.manyfoldBase ?? MANYFOLD_BASE;

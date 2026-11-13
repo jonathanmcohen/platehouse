@@ -15,6 +15,7 @@ import {
   OBJECTS,
   PLATEHOUSE,
   type Setup,
+  seen,
   server,
   setup,
   useServer,
@@ -348,9 +349,10 @@ describe("the output never shows a credential or a signed query", () => {
   });
 
   // claude-env, or whoever sets the variable, may pass a token with a
-  // newline or space before or after it. Fetch strips that from the header,
-  // so Platehouse sees, and may echo, the bare token. A 403 is used
-  // because its body is quoted; a 401's is not.
+  // newline or space before or after it. The importer sends it trimmed (see
+  // "a credential set with padding around it is sent bare", below), so
+  // Platehouse sees, and may echo, the bare token. A 403 is used because its
+  // body is quoted; a 401's is not.
   const PADDED = [
     ["a trailing newline", `${FAKE_BEARER}\n`],
     ["a trailing CRLF", `${FAKE_BEARER}\r\n`],
@@ -394,8 +396,10 @@ describe("the output never shows a credential or a signed query", () => {
   });
 
   it("when Manyfold's client secret is set with a trailing newline and Manyfold echoes it bare", async () => {
-    // Manyfold takes the padded secret as it was sent, then echoes it trimmed.
-    const s = setup(library(), { manyfold: { clientKey: `${FAKE_KEY}\n` } });
+    // The stub compares the Basic header with the bare secret, as Doorkeeper
+    // would, so this gets past the token request only if the secret is sent
+    // trimmed.
+    const s = setup(library());
     server.use(
       http.get(
         `${MANYFOLD}/models/m1`,
@@ -416,4 +420,53 @@ describe("the output never shows a credential or a signed query", () => {
     expect(r.code).toBe(2);
     expectClean(s, r.output);
   });
+});
+
+describe("a credential set with padding around it is sent bare", () => {
+  // The stubs compare each credential exactly, as the real servers do: the
+  // Manyfold stub the Basic header built from the bare id and secret, the
+  // Platehouse stub "Bearer " and the bare token. Fetch would only strip
+  // padding at the very end of a header, so a token with a leading space
+  // would go out as "Bearer  ph_..." and one with a leading newline would
+  // make fetch throw; the importer trims each credential itself.
+  const PADS = [
+    ["a trailing newline", (v: string) => `${v}\n`],
+    ["a trailing CRLF", (v: string) => `${v}\r\n`],
+    ["a trailing space", (v: string) => `${v} `],
+    ["a trailing tab", (v: string) => `${v}\t`],
+    ["a leading newline", (v: string) => `\n${v}`],
+    ["a leading space", (v: string) => ` ${v}`],
+    ["a newline on both sides", (v: string) => `\n${v}\n`],
+  ] as const;
+
+  const bareBasic = `Basic ${Buffer.from(`${FAKE_ID}:${FAKE_KEY}`).toString("base64")}`;
+
+  for (const [what, pad] of PADS) {
+    it(`Platehouse's token, set with ${what}`, async () => {
+      const s = setup(library());
+      const r = await s.run([], { ...ENV, [PH_VAR]: pad(FAKE_BEARER) });
+      expect(r.stderr).toEqual([]);
+      expect(r.code).toBe(0);
+      const sent = seen.filter((q) => q.url.startsWith(PLATEHOUSE)).map((q) => q.authorization);
+      expect(sent.length).toBeGreaterThan(0);
+      for (const a of sent) expect(a).toBe(`Bearer ${FAKE_BEARER}`);
+      expectClean(s, r.output);
+    });
+
+    it(`Manyfold's client id and secret, each set with ${what}`, async () => {
+      const s = setup(library());
+      const r = await s.run([], {
+        ...ENV,
+        MANYFOLD_CLIENT_ID: pad(FAKE_ID),
+        [KEY_VAR]: pad(FAKE_KEY),
+      });
+      expect(r.stderr).toEqual([]);
+      expect(r.code).toBe(0);
+      expect(s.manyfold.tokenRequests).toHaveLength(1);
+      expect(s.manyfold.tokenRequests[0]?.basicOk).toBe(true);
+      const token = seen.filter((q) => q.url === `${MANYFOLD}/oauth/token`);
+      expect(token.map((q) => q.authorization)).toEqual([bareBasic]);
+      expectClean(s, r.output);
+    });
+  }
 });
