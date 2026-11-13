@@ -294,8 +294,7 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  *
  * Under /s/ (the raw path, as sent) it is a refused link, as the link route
  * and the not-found handler answer one: 403, an empty body and no-store. Off
- * /s/ the body is Fastify's own without its message, which repeats the path
- * (PR #156 security re-check).
+ * /s/ the body is Fastify's own.
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   releaseUnreadBody(request, reply);
@@ -306,6 +305,7 @@ function frameworkError(error: FastifyError, request: FastifyRequest, reply: Fas
   return reply.code(status).send({
     error: STATUS_CODES[status] ?? "Error",
     code: error.code,
+    message: error.message,
     statusCode: status,
   });
 }

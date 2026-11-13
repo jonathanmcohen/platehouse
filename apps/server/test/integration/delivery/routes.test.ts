@@ -626,9 +626,11 @@ describe("GET /s/<token>/<name>", () => {
     expectNoLookups(looked);
   });
 
-  test("Fastify's own 400 and 414 off /s/ never repeat the path", async () => {
-    // The same framework answers on any other path keep their status and
-    // code, without the message that repeated the path.
+  test("Fastify's own 400 and 414 off /s/ keep Fastify's own body", async () => {
+    // Only a /s/ path is a refused link. The same framework answers on any
+    // other path stay as they were before Task 17: status, code and
+    // Fastify's own message. Dropping that message elsewhere is its own
+    // change, outside Task 17.
     const cases: Array<[string, number, string]> = [
       [`/files/x%zz${FILE_A}/download`, 400, "FST_ERR_BAD_URL"],
       [`/files/${"9".repeat(101)}/download`, 414, "FST_ERR_MAX_PARAM_LENGTH"],
@@ -643,10 +645,10 @@ describe("GET /s/<token>/<name>", () => {
       expect(res.json(), url).toEqual({
         error: status === 400 ? "Bad Request" : "URI Too Long",
         code,
+        message: expect.any(String),
         statusCode: status,
       });
-      expect(res.body, url).not.toContain("/files/");
-      expect(res.body, url).not.toContain(FILE_A);
+      expect(res.json().message, url).not.toBe("");
     }
   });
 
