@@ -74,6 +74,8 @@ interface FakeState {
     purgeAt: string;
     purgeStarted: boolean;
   }>;
+  /** The server's clock: GET /app/api/trash answers it as readAt. */
+  now: string;
   models: FakeModel[];
 }
 
@@ -210,16 +212,22 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
   }
-  if (method === "GET" && path === "/app/api/trash") return json(200, { models: state.trash });
-  // Empty trash purges only the ids it is sent that are still in the trash,
-  // as the server does: a model trashed after the page read the list stays.
+  if (method === "GET" && path === "/app/api/trash") {
+    return json(200, { models: state.trash, readAt: state.now });
+  }
+  // Empty trash purges only the models trashed at or before the cutoff it is
+  // sent, as the server does: a model trashed after the page read the list
+  // stays. A cutoff that is not a time, or is later than the server's clock,
+  // is refused.
   if (method === "POST" && path === "/app/api/trash/empty") {
-    if (!Array.isArray(body?.ids)) return json(400, { error: "bad_request" });
-    const sent = new Set<string>(body.ids);
-    const asked = state.trash.filter((m) => sent.has(m.id));
+    const cutoff = typeof body?.cutoff === "string" ? Date.parse(body.cutoff) : Number.NaN;
+    if (Number.isNaN(cutoff) || cutoff > Date.parse(state.now)) {
+      return json(400, { error: "bad_request" });
+    }
+    const asked = state.trash.filter((m) => Date.parse(m.trashedAt) <= cutoff);
     const stuck = emptyIncomplete ? asked.slice(-1) : [];
     const purged = asked.length - stuck.length;
-    state.trash = state.trash.filter((m) => !sent.has(m.id) || stuck.includes(m));
+    state.trash = state.trash.filter((m) => !asked.includes(m) || stuck.includes(m));
     if (emptyIncomplete) {
       return json(500, {
         error: "incomplete",
@@ -339,6 +347,7 @@ beforeEach(() => {
         purgeStarted: false,
       },
     ],
+    now: "2026-11-12T09:00:00.000Z",
     models: [
       {
         id: "m1",
@@ -813,10 +822,10 @@ describe("the trash", () => {
     expect(text()).not.toContain("Broken clip");
   });
 
-  test("empty trash deletes only the models the page showed, and says how many", async () => {
+  test("empty trash deletes only the models trashed before the page read the list, and says how many", async () => {
     await show("/trash", <TrashPage />);
-    // Something else trashes a model after the page read the list: an API v1
-    // client, the importer or another tab.
+    // Another tab or browser trashes a model after the page read the list.
+    state.now = "2026-11-12T12:00:05.000Z";
     state.trash = [
       ...state.trash,
       {
@@ -831,13 +840,46 @@ describe("the trash", () => {
     await click(button("Empty trash"));
     expect(dialog()?.textContent).toContain("The 2 models listed here are deleted for good");
     await click(button("Empty trash", dialog() as HTMLElement));
+    // It sends the time the server read the list, not the models' ids.
     expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
-      { ids: ["m-trashed-1", "m-trashed-2"] },
+      { cutoff: "2026-11-12T09:00:00.000Z" },
     ]);
     expect(text()).toContain("Deleted 2 models for good.");
     // The list is read again, so the model nobody confirmed shows, still restorable.
     expect(text()).toContain("Unseen bracket");
     expect(text()).not.toContain("Old benchy");
+  });
+
+  test("after a restore, Empty trash still sends when the list was read", async () => {
+    await show("/trash", <TrashPage />);
+    await click(button("Restore Old benchy"));
+    await click(button("Empty trash"));
+    expect(dialog()?.textContent).toContain("The 1 model listed here is deleted for good");
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/trash/empty").map((c) => c.body)).toEqual([
+      { cutoff: "2026-11-12T09:00:00.000Z" },
+    ]);
+    expect(text()).toContain("Deleted 1 model for good.");
+  });
+
+  test("a large trash sends the same small body", async () => {
+    state.trash = Array.from({ length: 3000 }, (_, i) => ({
+      id: `0190f7a2-0000-7000-8000-${String(i).padStart(12, "0")}`,
+      name: `Model ${i}`,
+      creator: null,
+      trashedAt: "2026-11-10T12:00:00.000Z",
+      purgeAt: "2026-12-10T12:00:00.000Z",
+      purgeStarted: false,
+    }));
+    await show("/trash", <TrashPage />);
+    await click(button("Empty trash"));
+    expect(dialog()?.textContent).toContain("The 3000 models listed here are deleted for good");
+    await click(button("Empty trash", dialog() as HTMLElement));
+    const sent = callsTo("POST", "/app/api/trash/empty").map((c) => c.body);
+    expect(sent).toEqual([{ cutoff: "2026-11-12T09:00:00.000Z" }]);
+    // Far under the server's 64 KiB body limit, however long the list.
+    expect(JSON.stringify(sent[0]).length).toBeLessThan(100);
+    expect(text()).toContain("Deleted 3000 models for good.");
   });
 
   test("empty trash reads the trash again after it answers", async () => {

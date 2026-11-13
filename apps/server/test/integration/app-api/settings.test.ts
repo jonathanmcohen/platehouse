@@ -577,10 +577,19 @@ describe("organising", () => {
   });
 });
 
-/** The ids GET /app/api/trash lists now, as the trash page holds them. */
-async function listedTrash(): Promise<string[]> {
+/** What GET /app/api/trash answers now, as the trash page holds it. */
+async function listedTrash(): Promise<{ ids: string[]; readAt: string }> {
   const res = await call("GET", "/app/api/trash");
-  return (res.json() as { models: Array<{ id: string }> }).models.map((m) => m.id);
+  expect(res.status, res.text).toBe(200);
+  const body = res.json() as { models: Array<{ id: string }>; readAt: string };
+  return { ids: body.models.map((m) => m.id), readAt: body.readAt };
+}
+
+/** Sets a trashed model's trash time exactly, to the microsecond. */
+async function trashedAtExactly(modelId: string, at: string): Promise<void> {
+  await sql`update models set trashed_at = ${at}::timestamptz where id = ${modelId}`.execute(
+    env.db,
+  );
 }
 
 describe("the trash", () => {
@@ -623,15 +632,24 @@ describe("the trash", () => {
     });
   });
 
-  test("empty trash purges the listed trashed models, their rows and their bucket objects", async () => {
+  test("the trash list says when the server read it", async () => {
+    const before = Date.now();
+    const { readAt } = await listedTrash();
+    expect(readAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // The database's clock, which also stamps trashed_at; allow for a
+    // little drift from this process's clock.
+    expect(Math.abs(Date.parse(readAt) - before)).toBeLessThan(60_000);
+  });
+
+  test("empty trash purges the trashed models listed by then, their rows and their bucket objects", async () => {
     const a = await seedStoredModel(env);
     const b = await seedStoredModel(env);
     const live = await seedStoredModel(env);
     for (const m of [a, b]) await call("POST", `/app/api/models/${m.model.id}/trash`);
-    const ids = await listedTrash();
+    const { ids, readAt } = await listedTrash();
     expect(ids).toEqual(expect.arrayContaining([a.model.id, b.model.id]));
 
-    const res = await call("POST", "/app/api/trash/empty", { json: { ids } });
+    const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: readAt } });
     expect(res.status, res.text).toBe(200);
     expect((res.json() as { purged: number }).purged).toBe(ids.length);
     for (const m of [a, b]) {
@@ -639,7 +657,7 @@ describe("the trash", () => {
       expect((await rowCounts(env.db, m.model.id)).models).toBe(0);
     }
     expect((await rowCounts(env.db, live.model.id)).models).toBe(1);
-    expect((await call("GET", "/app/api/trash")).json()).toEqual({ models: [] });
+    expect((await listedTrash()).ids).toEqual([]);
   });
 
   test("an empty trash that fails one model answers incomplete, and that model stays in the trash", async () => {
@@ -659,7 +677,7 @@ describe("the trash", () => {
     };
     try {
       const res = await call("POST", "/app/api/trash/empty", {
-        json: { ids: await listedTrash() },
+        json: { cutoff: (await listedTrash()).readAt },
       });
       // The shape the trash page reads (apps/web TrashList's incompleteFailure).
       expect(res.status, res.text).toBe(500);
@@ -672,6 +690,7 @@ describe("the trash", () => {
       expect(await env.store.listPrefix(`models/${done.model.id}/`)).toEqual([]);
       expect((await call("GET", "/app/api/trash")).json()).toEqual({
         models: [expect.objectContaining({ id: failing.model.id, purgeStarted: true })],
+        readAt: expect.any(String),
       });
     } finally {
       purgeStore = env.store;
@@ -679,41 +698,75 @@ describe("the trash", () => {
 
     // With the bucket back, the next Empty trash finishes it.
     const retry = await call("POST", "/app/api/trash/empty", {
-      json: { ids: await listedTrash() },
+      json: { cutoff: (await listedTrash()).readAt },
     });
     expect(retry.status, retry.text).toBe(200);
     expect((await rowCounts(env.db, failing.model.id)).models).toBe(0);
     expect(await env.store.listPrefix(failingPrefix)).toEqual([]);
-    expect((await call("GET", "/app/api/trash")).json()).toEqual({ models: [] });
+    expect((await listedTrash()).ids).toEqual([]);
   });
 
   test("empty trash leaves a model trashed after the page read the list", async () => {
     const shown = await seedStoredModel(env);
     const unseen = await seedStoredModel(env);
     await call("POST", `/app/api/models/${shown.model.id}/trash`);
-    const ids = await listedTrash();
-    expect(ids).toContain(shown.model.id);
-    // Trashed by something else (here the same route; API v1 and the
-    // importer reach the same trash) after the page read the list.
+    const { ids, readAt } = await listedTrash();
+    expect(ids).toEqual([shown.model.id]);
+    // Another tab trashes a model after the page read the list. The cutoff
+    // is to the millisecond, so trash it in a later millisecond than readAt.
+    await sleep(5);
     await call("POST", `/app/api/models/${unseen.model.id}/trash`);
 
-    const res = await call("POST", "/app/api/trash/empty", { json: { ids } });
+    const res = await call("POST", "/app/api/trash/empty", { json: { cutoff: readAt } });
     expect(res.status, res.text).toBe(200);
-    expect((res.json() as { purged: number }).purged).toBe(ids.length);
+    expect((res.json() as { purged: number }).purged).toBe(1);
     expect((await rowCounts(env.db, shown.model.id)).models).toBe(0);
     expect((await env.repos.models.get(unseen.model.id))?.trashedAt).not.toBeNull();
     expect(await env.store.listPrefix(`models/${unseen.model.id}/`)).not.toEqual([]);
-    expect(await listedTrash()).toContain(unseen.model.id);
+    expect((await listedTrash()).ids).toEqual([unseen.model.id]);
     // It can still be restored.
     expect((await call("POST", `/app/api/trash/${unseen.model.id}/restore`)).status).toBe(204);
   });
 
-  test("empty trash without a list of ids is refused and changes nothing", async () => {
+  test("the cutoff includes its whole millisecond and nothing after it", async () => {
+    const inside = await seedStoredModel(env);
+    const after = await seedStoredModel(env);
+    for (const m of [inside, after]) await call("POST", `/app/api/models/${m.model.id}/trash`);
+    // trashed_at keeps microseconds; the cutoff the page sends has
+    // milliseconds, as readAt does.
+    await trashedAtExactly(inside.model.id, "2026-11-10T10:00:00.123999Z");
+    await trashedAtExactly(after.model.id, "2026-11-10T10:00:00.124000Z");
+
+    const res = await call("POST", "/app/api/trash/empty", {
+      json: { cutoff: "2026-11-10T10:00:00.123Z" },
+    });
+    expect(res.status, res.text).toBe(200);
+    expect((res.json() as { purged: number }).purged).toBe(1);
+    expect((await rowCounts(env.db, inside.model.id)).models).toBe(0);
+    expect((await listedTrash()).ids).toEqual([after.model.id]);
+    expect((await call("POST", `/app/api/trash/${after.model.id}/restore`)).status).toBe(204);
+  });
+
+  test("empty trash without a valid cutoff is refused and changes nothing", async () => {
     const seeded = await seedStoredModel(env);
     await call("POST", `/app/api/models/${seeded.model.id}/trash`);
-    for (const json of [undefined, {}, { ids: seeded.model.id }]) {
+    const { readAt } = await listedTrash();
+    const tomorrow = new Date(Date.parse(readAt) + DAY_MS).toISOString();
+    for (const json of [
+      undefined,
+      {},
+      { ids: [seeded.model.id] },
+      { cutoff: 1794474000000 },
+      { cutoff: "" },
+      { cutoff: "yesterday" },
+      { cutoff: "2026-11-12" },
+      { cutoff: "2026-11-12T09:00:00+01:00" },
+      { cutoff: "2026-02-30T00:00:00.000Z" },
+      { cutoff: tomorrow },
+    ]) {
       const res = await call("POST", "/app/api/trash/empty", { json });
       expect(res.status, `${JSON.stringify(json)}: ${res.text}`).toBe(400);
+      expect((res.json() as { error: string }).error).toBe("bad_request");
     }
     expect((await rowCounts(env.db, seeded.model.id)).models).toBe(1);
     expect((await call("POST", `/app/api/trash/${seeded.model.id}/restore`)).status).toBe(204);
@@ -747,7 +800,7 @@ describe("every /app/api route", () => {
     await call("POST", `/app/api/models/${seeded.model.id}/trash`);
     const res = await call("POST", "/app/api/trash/empty", {
       origin: "https://evil.test",
-      json: { ids: [seeded.model.id] },
+      json: { cutoff: new Date().toISOString() },
     });
     expect(res.status).toBe(403);
     expect((await rowCounts(env.db, seeded.model.id)).models).toBe(1);

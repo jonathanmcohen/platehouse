@@ -11,14 +11,14 @@
 //   PUT    /app/api/models/:id/tags?name=             tag {name} (DELETE: untag)
 //   PUT    /app/api/models/:id/collections?name=      add {name} (DELETE: take out)
 //   POST   /app/api/models/:id/trash                  move to the trash
-//   GET    /app/api/trash                             {models: [... purgeAt]}
+//   GET    /app/api/trash                             {models: [... purgeAt], readAt}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
-//   POST   /app/api/trash/empty  {ids}                {purged}
+//   POST   /app/api/trash/empty  {cutoff}             {purged}
 //
 // Every change calls what Task 14 built: renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
 // addToCollection and removeFromCollection (flat collections, made on first
-// use), trashModel, restoreModel and emptyTrash. Each refuses a model that
+// use), trashModel, restoreModel and purgeExpired. Each refuses a model that
 // is unknown or in the trash, which is 404 here; taking off a tag or a
 // collection the model does not have is 404 too. The lists count live
 // models only, and the model rows are Task 14's search with one filter, a
@@ -37,9 +37,22 @@
 // whose purge has begun is listed with purgeStarted, and restore refuses it
 // (409), as restoreModel does.
 //
-// Empty trash takes the ids the page listed and purges only those still in
-// the trash: a model something else trashed after the page read the list (an
-// API v1 client, the importer, another tab) stays, and can be restored.
+// Empty trash purges only what the page listed. GET /app/api/trash answers
+// readAt, the database's time when it read the list (the clock that stamps
+// trashed_at, so a browser's clock never matters), and the page sends it back
+// as the cutoff. The route purges the models trashed at or before that
+// millisecond, through Task 14's purgeExpired (see emptyTrashBefore), so a
+// model another tab or browser trashed after the page read the list stays,
+// and can be restored. The body is one timestamp however long the trash is.
+// A cutoff that is not in readAt's form, or is later than the database's
+// clock, is refused with 400.
+//
+// What a cutoff cannot tell apart: a model whose trashing began before the
+// list was read but committed after (a window of one UPDATE, about a
+// millisecond), or one trashed later in readAt's own millisecond, is purged
+// though the page did not show it. purgeExpired also finishes every model
+// whose purge already began, whenever it was trashed; such a model cannot be
+// restored anyway, and the daily purge would finish it.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
@@ -62,7 +75,7 @@ const DAY_MS = 86_400_000;
 
 export interface OrganiseDeps {
   db: Kysely<DB>;
-  trash: Pick<ReturnType<typeof createTrash>, "trashModel" | "restoreModel" | "emptyTrash">;
+  trash: Pick<ReturnType<typeof createTrash>, "trashModel" | "restoreModel" | "purgeExpired">;
 }
 
 /** A model as the organising pages show it: its chips and its files. */
@@ -108,14 +121,19 @@ const ROWS_QUERY = {
   },
 } as const;
 
-const IDS_BODY = {
+const CUTOFF_BODY = {
   type: "object",
-  properties: { ids: { type: "array", items: ID } },
-  required: ["ids"],
+  properties: { cutoff: { type: "string", maxLength: 40 } },
+  required: ["cutoff"],
 } as const;
 
+/** The form Date.prototype.toISOString writes, which readAt is sent in. */
+const ISO_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+const STALE_TRASH = "The trash list is out of date. Reload the page and try again.";
+
 type IdParams = { id: string };
-type IdsBody = { ids: string[] };
+type CutoffBody = { cutoff: string };
 type NameQuery = { name: string };
 type NameBody = { name: string };
 type RowsQuery = { creator?: string; collection?: string; tag?: string; cursor?: string };
@@ -223,7 +241,19 @@ async function organiseRows(
   }));
 }
 
-async function trashedModels(db: Kysely<DB>): Promise<TrashedModel[]> {
+/** The database's clock, which stamps trashed_at. */
+async function databaseNow(db: Kysely<DB>): Promise<Date> {
+  const { rows } = await sql<{ now: Date }>`select now() as now`.execute(db);
+  const now = rows[0]?.now;
+  if (now === undefined) throw new Error("select now() answered no row");
+  return now;
+}
+
+/**
+ * The trash, newest first, and readAt: the database's time when it read the
+ * list, taken in the same statement so the list and the time agree.
+ */
+async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; readAt: string }> {
   const rows = await db
     .selectFrom("models")
     .leftJoin("creators", "creators.id", "models.creatorId")
@@ -233,12 +263,14 @@ async function trashedModels(db: Kysely<DB>): Promise<TrashedModel[]> {
       "creators.name as creator",
       "models.trashedAt",
       "models.purgeStartedAt",
+      sql<Date>`now()`.as("readAt"),
     ])
     .where("models.trashedAt", "is not", null)
     .orderBy("models.trashedAt", "desc")
     .orderBy("models.id", "desc")
     .execute();
-  return rows.map((r) => {
+  const readAt = rows[0]?.readAt ?? (await databaseNow(db));
+  const models = rows.map((r): TrashedModel => {
     const trashedAt = r.trashedAt as Date;
     return {
       id: r.id,
@@ -249,6 +281,21 @@ async function trashedModels(db: Kysely<DB>): Promise<TrashedModel[]> {
       purgeStarted: r.purgeStartedAt !== null,
     };
   });
+  return { models, readAt: readAt.toISOString() };
+}
+
+/**
+ * Empty trash up to a cutoff: purges every model trashed at or before the
+ * cutoff's millisecond, with Task 14's purgeExpired, which purges the models
+ * trashed before now - TRASH_RETENTION_DAYS. Handing it the cutoff plus the
+ * retention plus 1 ms makes that "trashed before cutoff + 1 ms": trashed_at
+ * keeps microseconds, so a model trashed at 12:00:00.123456 is inside a
+ * cutoff of 12:00:00.123, as readAt (truncated to milliseconds) needs. Each
+ * model is checked again under its row lock, so one restored and trashed
+ * again since the cutoff is not purged.
+ */
+function emptyTrashBefore(trash: OrganiseDeps["trash"], cutoff: Date) {
+  return trash.purgeExpired(new Date(cutoff.getTime() + TRASH_RETENTION_DAYS * DAY_MS + 1));
 }
 
 /** Registers the organising routes. */
@@ -359,7 +406,7 @@ export async function registerOrganiseApi(
       },
     );
 
-    scope.get("/trash", async () => ({ models: await trashedModels(need(deps).db) }));
+    scope.get("/trash", async () => trashListing(need(deps).db));
 
     scope.post<{ Params: IdParams }>(
       "/trash/:id/restore",
@@ -382,12 +429,23 @@ export async function registerOrganiseApi(
       },
     );
 
-    scope.post<{ Body: IdsBody }>(
+    scope.post<{ Body: CutoffBody }>(
       "/trash/empty",
-      { schema: { body: IDS_BODY } },
+      { schema: { body: CUTOFF_BODY } },
       async (request, reply) => {
+        const { db, trash } = need(deps);
+        const { cutoff } = request.body;
+        const at = Date.parse(cutoff);
+        // Only readAt's own form: a date alone, an offset, or a day that
+        // Date rolls over (February 30) is refused, not guessed at.
+        if (!ISO_MILLIS.test(cutoff) || Number.isNaN(at) || new Date(at).toISOString() !== cutoff) {
+          return refuse(reply, 400, "bad_request", STALE_TRASH);
+        }
+        if (at > (await databaseNow(db)).getTime()) {
+          return refuse(reply, 400, "bad_request", STALE_TRASH);
+        }
         try {
-          const { purged } = await need(deps).trash.emptyTrash(request.body.ids);
+          const { purged } = await emptyTrashBefore(trash, new Date(at));
           return { purged: purged.length };
         } catch (error) {
           if (error instanceof PurgeIncomplete) {

@@ -4,10 +4,12 @@
 // Restore button, which brings it back with its files, tags and
 // collections. Empty trash deletes the models the page lists at once, after a
 // themed confirmation that says how many, never the browser's own dialog. It
-// sends their ids, and the server purges only those: a model something else
-// trashed after the list was read (an API v1 client, the importer, another
-// tab) is not deleted unseen, and shows when the list is read again. A model whose purge has
-// begun cannot be restored, and says so. After any Empty trash, done or not,
+// sends the time the server read the list (readAt), not the models' ids, so
+// its body stays small however long the trash is, and the server purges only
+// the models trashed at or before that time: a model another tab or browser
+// trashed after the list was read is not deleted unseen, and shows when the
+// list is read again. A model whose purge has begun cannot be restored, and
+// says so. After any Empty trash, done or not,
 // the list is read again, so a model deleted for good never stays on screen.
 // When only some models could be deleted, the dialog says how many were and
 // gives the server's sentence for the rest. After an Empty trash that worked,
@@ -54,10 +56,19 @@ function incompleteFailure(failure: unknown): unknown {
   return new AppApiError(failure.status, sentence, failure.body);
 }
 
+/** GET /app/api/trash: the trash, and the server's time when it read it. */
+interface TrashListing {
+  models: TrashedModel[];
+  readAt: string;
+}
+
 export function TrashList() {
-  const trash = useAppApi<{ models: TrashedModel[] }>("/trash");
-  /** The ids Empty trash asks to delete: the models listed when the dialog opened; null when closed. */
-  const [asking, setAsking] = useState<readonly string[] | null>(null);
+  const trash = useAppApi<TrashListing>("/trash");
+  /**
+   * What Empty trash asks to delete, from when the dialog opened: how many
+   * models were listed and the time the list was read; null when closed.
+   */
+  const [asking, setAsking] = useState<{ count: number; cutoff: string } | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const emptyButton = useRef<HTMLButtonElement>(null);
@@ -88,7 +99,7 @@ export function TrashList() {
     setStatus("");
     try {
       await appApi("POST", `/trash/${segment(model.id)}/restore`);
-      trash.set((prev) => ({ models: prev.models.filter((m) => m.id !== model.id) }));
+      trash.set((prev) => ({ ...prev, models: prev.models.filter((m) => m.id !== model.id) }));
       setStatus("Restored. The model is back in the library with its files, tags and collections.");
     } catch (failure) {
       setError(errorText(failure));
@@ -98,12 +109,13 @@ export function TrashList() {
   }
 
   async function emptyTrash() {
+    if (asking === null) return;
     setStatus("");
     try {
       const answer = await appApi<{ purged: number }>("POST", "/trash/empty", {
-        ids: asking ?? [],
+        cutoff: asking.cutoff,
       });
-      trash.set({ models: [] });
+      trash.set((prev) => ({ ...prev, models: [] }));
       // The result goes where focus goes; Empty trash has nothing left to do.
       emptyReturn.current = statusLine.current;
       setAsking(null);
@@ -129,9 +141,9 @@ export function TrashList() {
           className="studio-button ph-button-danger"
           aria-disabled={models.length === 0}
           onClick={() => {
-            if (models.length === 0) return;
+            if (trash.data === undefined || models.length === 0) return;
             emptyReturn.current = emptyButton.current;
-            setAsking(models.map((m) => m.id));
+            setAsking({ count: models.length, cutoff: trash.data.readAt });
           }}
         >
           Empty trash
@@ -190,9 +202,9 @@ export function TrashList() {
         <ConfirmDialog
           title="Empty the trash?"
           message={
-            asking.length === 1
+            asking.count === 1
               ? "The 1 model listed here is deleted for good, with its files. This cannot be undone."
-              : `The ${asking.length} models listed here are deleted for good, with their files. This cannot be undone.`
+              : `The ${asking.count} models listed here are deleted for good, with their files. This cannot be undone.`
           }
           confirmLabel="Empty trash"
           onConfirm={emptyTrash}

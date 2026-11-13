@@ -652,28 +652,4 @@ describe("emptyTrash", () => {
     expect(left).toEqual([]);
     expect((await trash.emptyTrash()).purged).toEqual([]);
   });
-
-  test("given ids, empty trash purges only those that are still in the trash", async () => {
-    const shown = await seedStoredModel(env);
-    const unseen = await seedStoredModel(env);
-    const live = await seedStoredModel(env);
-    const trash = trashFor();
-    await trash.trashModel(shown.model.id);
-    await trash.trashModel(unseen.model.id);
-
-    // The page listed only `shown`; `live` was never trashed; a malformed id
-    // and an unknown one are skipped, not failures.
-    const result = await trash.emptyTrash([shown.model.id, live.model.id, "not-a-uuid", uuidv7()]);
-
-    expect(result.purged).toEqual([shown.model.id]);
-    expect((await rowCounts(env.db, shown.model.id)).models).toBe(0);
-    expect(await env.store.listPrefix(prefix(shown.model.id))).toEqual([]);
-    expect((await env.repos.models.get(unseen.model.id))?.trashedAt).not.toBeNull();
-    expect(await env.store.listPrefix(prefix(unseen.model.id))).toHaveLength(2);
-    expect((await env.repos.models.get(live.model.id))?.trashedAt).toBeNull();
-    expect(await env.store.listPrefix(prefix(live.model.id))).toHaveLength(2);
-    expect((await trash.emptyTrash([])).purged).toEqual([]);
-
-    await trash.emptyTrash([unseen.model.id]);
-  });
 });
