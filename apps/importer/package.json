@@ -11,6 +11,6 @@
     "test": "vitest run --root ../.. --project unit apps/importer"
   },
   "devDependencies": {
-    "msw": "3.0.4"
+    "msw": "3.0.5"
   }
 }
