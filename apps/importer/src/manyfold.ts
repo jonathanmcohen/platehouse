@@ -31,7 +31,7 @@
 //   only when it came from Manyfold; the token request quotes only
 //   Doorkeeper's error code.
 
-import { cleanText } from "./redact.js";
+import { quoteBody } from "./redact.js";
 
 /** The media type of Manyfold's JSON API (v0). */
 export const MANYFOLD_MEDIA_TYPE = "application/vnd.manyfold.v0+json";
@@ -141,18 +141,9 @@ function retryAfter(header: string | null, attempt: number): number {
   return seconds > 0 ? Math.min(seconds, MAX_RETRY_AFTER_S) * 1000 : backoff(attempt);
 }
 
-/**
- * An error body as it may be quoted: on one line, without control
- * characters, redacted, then cut to BODY_QUOTE. The order matters. Control
- * characters go before redaction, or a credential echoed with one inside it
- * would get past the redactor and be joined up when they are taken out;
- * redaction goes before the cut, or a credential that crosses BODY_QUOTE
- * would be printed in part, which the redactor cannot recognise.
- */
+/** An error body as it may be quoted: see quoteBody for the order and why. */
 function quoted(text: string, redact: (text: string) => string): string {
-  return redact(cleanText(text.replace(/\s+/g, " ")))
-    .trim()
-    .slice(0, BODY_QUOTE);
+  return quoteBody(text, redact, BODY_QUOTE);
 }
 
 type Json = Record<string, unknown>;

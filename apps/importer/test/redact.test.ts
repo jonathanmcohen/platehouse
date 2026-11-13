@@ -1,7 +1,7 @@
 // The redactor every printed line goes through (AC-003), and the cleaning of
 // text that came from Manyfold.
 import { describe, expect, it } from "vitest";
-import { cleanText, createRedactor, REDACTED } from "../src/redact.js";
+import { cleanText, createRedactor, quoteBody, REDACTED } from "../src/redact.js";
 
 describe("createRedactor", () => {
   it("replaces every occurrence of each secret", () => {
@@ -54,5 +54,25 @@ describe("cleanText", () => {
   it("keeps ordinary text, accents and emoji", () => {
     const text = `Caf${String.fromCodePoint(0xe9)} ${String.fromCodePoint(0xfc)}ber ${String.fromCodePoint(0x1f600)} 3D-Druck`;
     expect(cleanText(text)).toBe(text);
+  });
+});
+
+describe("quoteBody", () => {
+  const r = createRedactor(["abcdefghijkl"]);
+
+  it("redacts a secret split by a newline, tab, CR, VT or FF", () => {
+    for (const ws of ["\n", "\t", "\r", "\u000b", "\u000c", "\r\n"]) {
+      expect(quoteBody(`xx abcdef${ws}ghijkl`, r.redact, 200)).toBe(`xx ${REDACTED}`);
+    }
+  });
+
+  it("puts the quote on one line, with ordinary space runs made one space", () => {
+    expect(quoteBody("  a   b\u00a0\u00a0c  ", r.redact, 200)).toBe("a b c");
+  });
+
+  it("redacts before it cuts, so a secret across the limit is not printed in part", () => {
+    expect(quoteBody(`${"x".repeat(195)}abcdefghijkl`, r.redact, 200)).toBe(
+      `${"x".repeat(195)}${REDACTED.slice(0, 5)}`,
+    );
   });
 });

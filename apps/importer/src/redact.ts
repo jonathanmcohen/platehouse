@@ -4,12 +4,16 @@
 // arrives, and each signed query of an object-store redirect as it is seen.
 // The clients already keep these out of their messages; this is the floor
 // under them, for the cases they cannot see, such as a server that echoes a
-// credential back in an error body. The clients also run an error body
-// through redact() before they cut it to its quote length, since a value cut
-// in two is no longer one this redactor can find. Control characters are
-// taken out (cleanText) before redact() runs, in the clients and the CLI
-// alike: taken out after it, they could join up a credential that was echoed
-// with one inside it, past the redactor.
+// credential back in an error body. The clients quote an error body through
+// one helper, quoteBody: control characters out (cleanText), then redact(),
+// then whitespace made one line, then the cut to the quote length. Control
+// characters come out first, in the clients and the CLI alike: taken out
+// after redact(), they could join up a credential that was echoed with one
+// inside it, past the redactor. That includes newline, tab and CR, so
+// whitespace is collapsed only after redact(): made a space first, one of
+// them inside a credential would split it into two halves the redactor
+// cannot find. And redaction comes before the cut, since a value cut in two
+// is no longer one this redactor can find.
 //
 // Text that came from Manyfold (model and file names) is printed through
 // cleanText as well, so a name cannot move the terminal's cursor, ring it,
@@ -66,4 +70,15 @@ export function cleanText(text: string): string {
   let out = "";
   for (const ch of text) if (!unsafe(ch.codePointAt(0) ?? 0)) out += ch;
   return out;
+}
+
+/**
+ * An error body as the clients quote it: control and bidi characters
+ * removed, then redacted, then on one line with each whitespace run made one
+ * space, then cut to max characters. The order is what keeps a credential
+ * echoed with a control character inside it (newline, tab and CR included)
+ * from being printed even in part; see the top of this file.
+ */
+export function quoteBody(text: string, redact: (text: string) => string, max: number): string {
+  return redact(cleanText(text)).replace(/\s+/g, " ").trim().slice(0, max);
 }

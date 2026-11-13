@@ -271,6 +271,79 @@ describe("the output never shows a credential or a signed query", () => {
     expect(r.output).toContain(`upstream said ${REDACTED}`);
   });
 
+  // Newline, tab and CR are control characters too, and \s matches them. If
+  // whitespace were made into spaces before control characters were taken
+  // out, a credential echoed with one inside it would reach the redactor as
+  // two halves it cannot find, and both would be printed.
+  it("when Manyfold echoes its token with a newline and a tab inside it", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(`${MANYFOLD}/models/m1`, ({ request }) => {
+        const echoed = (request.headers.get("authorization") ?? "").replace("Bearer ", "");
+        const broken = `${echoed.slice(0, 10)}\n${echoed.slice(10, 20)}\t${echoed.slice(20)}`;
+        return new HttpResponse(`denied ${broken}`, { status: 403 });
+      }),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(s.manyfold.accessToken.slice(0, 10));
+    expect(r.output).toContain(`denied ${REDACTED}`);
+  });
+
+  it("when Manyfold echoes the Basic header with a CR and LF inside it", async () => {
+    const s = setup(library());
+    const basic = Buffer.from(`${FAKE_ID}:${FAKE_KEY}`).toString("base64");
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m1`,
+        () =>
+          new HttpResponse(`denied Basic ${basic.slice(0, 8)}\r\n${basic.slice(8)}`, {
+            status: 403,
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(basic.slice(0, 8));
+    expect(r.output).toContain(`denied Basic ${REDACTED}`);
+  });
+
+  it("when Platehouse echoes its token with a CR, LF and tab inside it", async () => {
+    const s = setup(library());
+    const head = FAKE_BEARER.slice(0, 5);
+    const rest = FAKE_BEARER.slice(5);
+    server.use(
+      http.post(
+        `${PLATEHOUSE}/api/v1/uploads`,
+        () => new HttpResponse(`denied ${head}\r\n\t${rest}`, { status: 403 }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(head);
+    expect(r.output).toContain(`denied ${REDACTED}`);
+  });
+
+  it("when a failed PATCH echoes Platehouse's token with a newline inside it, in the retry line", async () => {
+    const s = setup(library());
+    const head = FAKE_BEARER.slice(0, 5);
+    const rest = FAKE_BEARER.slice(5);
+    server.use(
+      http.patch(
+        `${PLATEHOUSE}/api/v1/uploads/:id`,
+        () => new HttpResponse(`busy ${head}\n${rest}`, { status: 503 }),
+        { once: true },
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expectClean(s, r.output);
+    expect(r.output).not.toContain(head);
+    expect(r.output).toMatch(/PATCH .*HTTP 503 busy \[redacted\]; asking where the upload stands/);
+  });
+
   it("when a credential variable is missing", async () => {
     const s = setup(library());
     const env: Record<string, string | undefined> = { ...ENV };

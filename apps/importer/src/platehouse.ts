@@ -31,7 +31,7 @@
 //   A result that never comes is reported as an unknown outcome; the next
 //   run finds the file if the ingest finished.
 
-import { cleanText } from "./redact.js";
+import { quoteBody } from "./redact.js";
 
 export class PlatehouseError extends Error {
   readonly status: number | null;
@@ -235,12 +235,8 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
     } catch {
       // Not JSON: quote the text.
     }
-    // On one line and without control characters, then redacted, then cut:
-    // stripping a control character after redaction could join a credential
-    // back up, and a credential cut in two is not one the redactor can find.
-    detail = redact(cleanText(detail.replace(/\s+/g, " ")))
-      .trim()
-      .slice(0, BODY_QUOTE);
+    // Control characters out, redacted, on one line, then cut: see quoteBody.
+    detail = quoteBody(detail, redact, BODY_QUOTE);
     return new PlatehouseError(
       `${method} ${url.pathname}: HTTP ${res.status}${detail === "" ? "" : ` ${detail}`}`,
       res.status,
