@@ -38,6 +38,7 @@ import {
   UPLOAD_ENDPOINT,
   type UploadHandlers,
   type UploadTarget,
+  uploadEndpoint,
   uploadFingerprint,
   uploadMetadata,
   uploadOptions,
@@ -376,8 +377,17 @@ describe("the tus options", () => {
     const options = uploadOptions(file, { kind: "new" }, handlers);
     expect(CHUNK_SIZE).toBe(5 * 1024 * 1024);
     expect(options.chunkSize).toBe(CHUNK_SIZE);
-    expect(options.endpoint).toBe(UPLOAD_ENDPOINT);
     expect(UPLOAD_ENDPOINT).toBe("/app/uploads");
+    // Absolute on the page's own origin: tus-js-client resolves the upload's
+    // Location with new URL(location, endpoint), which throws for a
+    // relative endpoint.
+    const endpoint = new URL(options.endpoint);
+    expect(endpoint.origin).toBe(window.location.origin);
+    expect(endpoint.pathname).toBe("/app/uploads");
+    expect(endpoint.search).toBe("");
+    expect(new URL("/app/uploads/0198f0c4", options.endpoint).pathname).toBe(
+      "/app/uploads/0198f0c4",
+    );
     expect(options.metadata).toEqual({ filename: "Air Dry - AMS.3mf" });
     expect(options.storeFingerprintForResuming).not.toBe(false);
   });
@@ -403,10 +413,10 @@ describe("the tus options", () => {
       { kind: "batch", batch: "b-1" },
       { kind: "batch", batch: "b-2" },
     ];
-    const prints = targets.map((t) => uploadFingerprint(file, t, UPLOAD_ENDPOINT));
+    const prints = targets.map((t) => uploadFingerprint(file, t, uploadEndpoint()));
     expect(new Set(prints).size).toBe(targets.length);
     // The same file to the same target resumes.
-    expect(uploadFingerprint(file, { kind: "new" }, UPLOAD_ENDPOINT)).toBe(prints[0]);
+    expect(uploadFingerprint(file, { kind: "new" }, uploadEndpoint())).toBe(prints[0]);
     // tus-js-client asks the options' fingerprint function for it.
     const handlers: UploadHandlers = {
       onProgress: () => {},

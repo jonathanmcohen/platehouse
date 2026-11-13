@@ -1,40 +1,132 @@
-// Uploads through Task 9's tus endpoint (build plan Task 19, AC-020). Not yet
-// implemented: this commit carries the interfaces and the failing tests.
-import type { UploadOptions } from "tus-js-client";
+// Uploads through Task 9's tus endpoint (build plan Task 19, AC-020), with
+// tus-js-client:
+//
+// - Every file goes to /app/uploads (session-class; the browser sends the
+//   session cookie and Origin, which the gate checks) in 5 MiB chunks, so a
+//   phone that loses its connection resends at most one chunk.
+// - The metadata names the target (the Public API v1 contract): nothing for
+//   a new model of its own, modelId for an existing model, or batch with
+//   combine for the "Combine into one model" batch.
+// - tus-js-client keeps a resume fingerprint in localStorage, so a dropped
+//   upload resumes when the same file is sent again. The fingerprint
+//   includes the target, so the same file sent to a different target starts
+//   a new upload instead of resuming the old one (Jon, 2026-11-09, issue
+//   #77). A finished upload's fingerprint is removed too: Task 9 answers a
+//   HEAD on an ingested upload as finished, so resuming it would store
+//   nothing (uploads/tus.ts).
+// - When the last byte is accepted, GET <upload>/result is polled until the
+//   ingest is done or failed.
+//
+// useTusUpload holds one dialog's files and their progress; the start and
+// result calls can be replaced, which the tests do.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Upload, type UploadOptions } from "tus-js-client";
 
+/** Task 9's tus handler for the UI: the path on this page's own origin. */
 export const UPLOAD_ENDPOINT = "/app/uploads";
 
-export const CHUNK_SIZE = 0;
+/**
+ * The endpoint as tus-js-client needs it: absolute, on the page's origin.
+ * tus-js-client resolves the upload's Location with new URL(location,
+ * endpoint), which throws for a relative endpoint.
+ */
+export function uploadEndpoint(): string {
+  return new URL(UPLOAD_ENDPOINT, window.location.href).href;
+}
+
+/** The chunk tus-js-client sends per PATCH: 5 MiB. */
+export const CHUNK_SIZE = 5 * 1024 * 1024;
+
+/** The file types Platehouse takes (AC-020); anything else is refused (AC-024). */
+export const SUPPORTED_EXTENSIONS: readonly string[] = [".3mf", ".stl", ".step", ".stp", ".scad"];
+
+/** What the file input offers. */
+export const ACCEPT = SUPPORTED_EXTENSIONS.join(",");
+
+/** Shown on a row whose file is not a supported type; it is never sent. */
+export const UNSUPPORTED_TEXT = "Not a supported file type: use .3mf, .stl, .step, .stp or .scad";
+
+/** How often a finished upload's result is asked for while its ingest runs. */
+export const RESULT_POLL_MS = 1_000;
+
+/** How long a result is waited for before the row says it could not be confirmed. */
+export const RESULT_TIMEOUT_MS = 10 * 60 * 1_000;
 
 export type UploadTarget =
   | { kind: "new" }
   | { kind: "model"; modelId: string }
   | { kind: "batch"; batch: string };
 
-export function isSupportedFile(_name: string): boolean {
-  return false;
+export function isSupportedFile(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return SUPPORTED_EXTENSIONS.includes(name.slice(dot).toLowerCase());
 }
 
-export function uploadMetadata(_file: File, _target: UploadTarget): Record<string, string> {
-  return {};
+/** The upload's target as one word for the fingerprint. */
+function targetKey(target: UploadTarget): string {
+  if (target.kind === "model") return `model:${target.modelId}`;
+  if (target.kind === "batch") return `batch:${target.batch}`;
+  return "new";
 }
 
-export function uploadFingerprint(_file: File, _target: UploadTarget, _endpoint: string): string {
-  return "";
+/** The tus Upload-Metadata for a file sent to this target. */
+export function uploadMetadata(file: File, target: UploadTarget): Record<string, string> {
+  if (target.kind === "model") return { filename: file.name, modelId: target.modelId };
+  if (target.kind === "batch") return { filename: file.name, batch: target.batch, combine: "1" };
+  return { filename: file.name };
+}
+
+/**
+ * The resume fingerprint: tus-js-client's own fields (name, type, size, last
+ * change, endpoint) plus the target.
+ */
+export function uploadFingerprint(file: File, target: UploadTarget, endpoint: string): string {
+  return [
+    "platehouse",
+    targetKey(target),
+    file.name,
+    file.type,
+    file.size,
+    file.lastModified,
+    endpoint,
+  ].join("-");
 }
 
 export interface UploadHandlers {
   onProgress(bytesSent: number, bytesTotal: number): void;
+  /** The last byte was accepted; uploadUrl is the upload's own URL. */
   onSuccess(uploadUrl: string): void;
   onError(error: Error): void;
 }
 
+/**
+ * tus-js-client's options for one file. uploadUrl reads the Upload's own url
+ * once it is known, for onSuccess.
+ */
 export function uploadOptions(
-  _file: File,
-  _target: UploadTarget,
-  _handlers: UploadHandlers,
-): UploadOptions {
-  return {};
+  file: File,
+  target: UploadTarget,
+  handlers: UploadHandlers,
+  uploadUrl: () => string | null = () => null,
+): UploadOptions & { endpoint: string } {
+  const endpoint = uploadEndpoint();
+  return {
+    endpoint,
+    chunkSize: CHUNK_SIZE,
+    metadata: uploadMetadata(file, target),
+    fingerprint: async () => uploadFingerprint(file, target, endpoint),
+    storeFingerprintForResuming: true,
+    removeFingerprintOnSuccess: true,
+    retryDelays: [0, 1_000, 3_000, 5_000, 10_000],
+    onProgress: (sent, total) => handlers.onProgress(sent, total),
+    onSuccess: () => {
+      const url = uploadUrl();
+      if (url !== null) handlers.onSuccess(url);
+      else handlers.onError(new Error("the server gave the upload no address"));
+    },
+    onError: (error) => handlers.onError(error),
+  };
 }
 
 export interface UploadHandle {
@@ -47,6 +139,34 @@ export type StartUpload = (
   handlers: UploadHandlers,
 ) => UploadHandle;
 
+/** Starts a tus upload of the file, resuming an earlier one to the same target. */
+export const startTusUpload: StartUpload = (file, target, handlers) => {
+  let url: () => string | null = () => null;
+  const upload = new Upload(
+    file,
+    uploadOptions(file, target, handlers, () => url()),
+  );
+  url = () => upload.url;
+  let stopped = false;
+  void upload
+    .findPreviousUploads()
+    .then((previous) => {
+      if (stopped) return;
+      const last = previous[0];
+      if (last !== undefined) upload.resumeFromPreviousUpload(last);
+      upload.start();
+    })
+    .catch((error: unknown) => {
+      handlers.onError(error instanceof Error ? error : new Error(String(error)));
+    });
+  return {
+    abort() {
+      stopped = true;
+      void upload.abort();
+    },
+  };
+};
+
 export interface UploadResult {
   status: "pending" | "done" | "failed";
   modelId?: string;
@@ -55,3 +175,169 @@ export interface UploadResult {
 }
 
 export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
+
+/** GET <upload>/result: Task 9's answer for a finished upload. */
+export const fetchUploadResult: FetchResult = async (uploadUrl) => {
+  const res = await fetch(`${uploadUrl}/result`, { headers: { accept: "application/json" } });
+  if (!res.ok) return { status: "pending" };
+  return (await res.json()) as UploadResult;
+};
+
+export type UploadStatus = "ready" | "unsupported" | "uploading" | "adding" | "done" | "failed";
+
+export interface UploadItem {
+  key: string;
+  file: File;
+  status: UploadStatus;
+  sent: number;
+  total: number;
+  /** A failure's reason, or why a file is not sent. */
+  message?: string;
+  modelId?: string;
+}
+
+export interface UseTusUploadOptions {
+  start?: StartUpload;
+  fetchResult?: FetchResult;
+  /** How long to wait between result polls; RESULT_POLL_MS when left out. */
+  resultDelayMs?: number;
+  /** Runs once when every sent file has finished, done or failed. */
+  onFinished?: (items: UploadItem[]) => void;
+}
+
+let keyCounter = 0;
+
+function itemFor(file: File): UploadItem {
+  keyCounter += 1;
+  const supported = isSupportedFile(file.name);
+  return {
+    key: `u${keyCounter}`,
+    file,
+    status: supported ? "ready" : "unsupported",
+    sent: 0,
+    total: file.size,
+    ...(supported ? {} : { message: UNSUPPORTED_TEXT }),
+  };
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The files of one upload dialog and how far each has got. */
+export function useTusUpload(opts: UseTusUploadOptions = {}) {
+  const start = opts.start ?? startTusUpload;
+  const fetchResult = opts.fetchResult ?? fetchUploadResult;
+  const delay = opts.resultDelayMs ?? RESULT_POLL_MS;
+  const [items, setItems] = useState<UploadItem[]>([]);
+  const handles = useRef(new Map<string, UploadHandle>());
+  const onFinished = useRef(opts.onFinished);
+  onFinished.current = opts.onFinished;
+  const latest = useRef<UploadItem[]>([]);
+  latest.current = items;
+  const running = useRef(false);
+
+  const update = useCallback((key: string, patch: Partial<UploadItem>) => {
+    setItems((list) => list.map((item) => (item.key === key ? { ...item, ...patch } : item)));
+  }, []);
+
+  // Once every sent file has ended, report it once.
+  useEffect(() => {
+    if (!running.current) return;
+    const sent = items.filter((i) => i.status !== "ready" && i.status !== "unsupported");
+    if (sent.length === 0) return;
+    if (sent.every((i) => i.status === "done" || i.status === "failed")) {
+      running.current = false;
+      onFinished.current?.(items);
+    }
+  }, [items]);
+
+  useEffect(() => {
+    const open = handles.current;
+    return () => {
+      for (const handle of open.values()) handle.abort();
+    };
+  }, []);
+
+  /** Adds files to the list; a file already listed and not yet sent is not added twice. */
+  const addFiles = useCallback((files: File[]) => {
+    setItems((list) => {
+      const fresh = files.filter(
+        (f) =>
+          !list.some(
+            (i) =>
+              i.status === "ready" &&
+              i.file.name === f.name &&
+              i.file.size === f.size &&
+              i.file.lastModified === f.lastModified,
+          ),
+      );
+      return [...list, ...fresh.map(itemFor)];
+    });
+  }, []);
+
+  /** Removes the rows that are not in flight: done, failed, unsupported or not sent. */
+  const clearSettled = useCallback(() => {
+    setItems((list) => list.filter((i) => i.status === "uploading" || i.status === "adding"));
+  }, []);
+
+  async function waitForResult(key: string, uploadUrl: string) {
+    const until = Date.now() + RESULT_TIMEOUT_MS;
+    for (;;) {
+      let result: UploadResult;
+      try {
+        result = await fetchResult(uploadUrl);
+      } catch {
+        result = { status: "pending" };
+      }
+      if (result.status === "done") {
+        update(key, {
+          status: "done",
+          ...(result.modelId === undefined ? {} : { modelId: result.modelId }),
+        });
+        return;
+      }
+      if (result.status === "failed") {
+        update(key, { status: "failed", message: result.error ?? "The upload failed." });
+        return;
+      }
+      if (Date.now() > until) {
+        update(key, {
+          status: "failed",
+          message: "The upload could not be confirmed; check the library before sending it again.",
+        });
+        return;
+      }
+      await sleep(delay);
+    }
+  }
+
+  /** Sends every ready file to the target. */
+  const begin = (target: UploadTarget) => {
+    const ready = latest.current.filter((i) => i.status === "ready");
+    if (ready.length === 0) return;
+    running.current = true;
+    setItems((list) =>
+      list.map((i) => (i.status === "ready" ? { ...i, status: "uploading" as const } : i)),
+    );
+    for (const item of ready) {
+      const handle = start(item.file, target, {
+        onProgress: (sent, total) => update(item.key, { sent, total }),
+        onSuccess: (uploadUrl) => {
+          handles.current.delete(item.key);
+          update(item.key, { status: "adding", sent: item.file.size, total: item.file.size });
+          void waitForResult(item.key, uploadUrl);
+        },
+        onError: (error) => {
+          handles.current.delete(item.key);
+          update(item.key, {
+            status: "failed",
+            message: `The upload failed: ${error.message || "the connection was lost"}.`,
+          });
+        },
+      });
+      handles.current.set(item.key, handle);
+    }
+  };
+
+  const busy = items.some((i) => i.status === "uploading" || i.status === "adding");
+  return { items, addFiles, begin, clearSettled, busy };
+}
