@@ -78,40 +78,46 @@ export function PrinterMenu({ printerId, printers }: PrinterMenuProps) {
 
   return (
     <div className="ph-field">
-      <label htmlFor={id}>Printer</label>
       {printers === null ? (
-        <p className="studio-muted">
-          The slicer cannot be reached, so the printer list is not available right now. The selected
-          printer is {printerId}.
-        </p>
+        <>
+          {/* No select to name, so plain text, not a label pointing at nothing. */}
+          <span>Printer</span>
+          <p className="studio-muted">
+            The slicer cannot be reached, so the printer list is not available right now. The
+            selected printer is {printerId}.
+          </p>
+        </>
       ) : (
-        <div className="ph-inline-form">
-          <select
-            id={id}
-            className="ph-select"
-            value={selected}
-            onChange={pick}
-            aria-disabled={busy}
-          >
-            {offered ? null : (
-              <option value={saved} disabled>
-                {goneLabel(saved)}
-              </option>
-            )}
-            {printers.map((group) => (
-              <optgroup key={group.model} label={group.model}>
-                {group.printers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {nozzleLabel(p.nozzle)}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-          <button type="button" className="studio-button" onClick={save} aria-disabled={busy}>
-            Save printer
-          </button>
-        </div>
+        <>
+          <label htmlFor={id}>Printer</label>
+          <div className="ph-inline-form">
+            <select
+              id={id}
+              className="ph-select"
+              value={selected}
+              onChange={pick}
+              aria-disabled={busy}
+            >
+              {offered ? null : (
+                <option value={saved} disabled>
+                  {goneLabel(saved)}
+                </option>
+              )}
+              {printers.map((group) => (
+                <optgroup key={group.model} label={group.model}>
+                  {group.printers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {nozzleLabel(p.nozzle)}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <button type="button" className="studio-button" onClick={save} aria-disabled={busy}>
+              Save printer
+            </button>
+          </div>
+        </>
       )}
       {offered ? null : (
         <p className="studio-alert studio-alert-alert">
@@ -123,7 +129,11 @@ export function PrinterMenu({ printerId, printers }: PrinterMenuProps) {
         Platehouse estimates time, weight and filament for every plate on this printer.
       </p>
       <p role="status">{status}</p>
-      {error === undefined ? null : <p className="studio-alert studio-alert-alert">{error}</p>}
+      {error === undefined ? null : (
+        <p role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

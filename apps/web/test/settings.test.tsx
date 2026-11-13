@@ -113,6 +113,11 @@ const failing = new Set<string>();
  * the server does for PurgeIncomplete (apps/server/src/app-api/organise.ts).
  */
 let emptyIncomplete = false;
+/**
+ * When set, GET /app/api/settings answers printers: null, as the server does
+ * when the slicer is unreachable, busy or refuses (apps/server/src/app-api/settings.ts).
+ */
+let slicerDown = false;
 /** Every token value the fake handed out. */
 const issued: string[] = [];
 
@@ -169,16 +174,18 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(200, {
       printerId: state.printerId,
       bucketVersioning: state.bucketVersioning,
-      printers: [
-        {
-          model: "Bambu Lab P1S",
-          printers: [
-            { id: P1S, nozzle: 0.4 },
-            { id: P1S_06, nozzle: 0.6 },
+      printers: slicerDown
+        ? null
+        : [
+            {
+              model: "Bambu Lab P1S",
+              printers: [
+                { id: P1S, nozzle: 0.4 },
+                { id: P1S_06, nozzle: 0.6 },
+              ],
+            },
+            { model: "Bambu Lab X1 Carbon", printers: [{ id: X1C, nozzle: 0.4 }] },
           ],
-        },
-        { model: "Bambu Lab X1 Carbon", printers: [{ id: X1C, nozzle: 0.4 }] },
-      ],
     });
   }
   if (method === "PUT" && path === "/app/api/settings/printer") {
@@ -353,6 +360,7 @@ beforeEach(() => {
   held.clear();
   failing.clear();
   emptyIncomplete = false;
+  slicerDown = false;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
     confirm: vi.spyOn(window, "confirm").mockImplementation(() => true),
@@ -475,6 +483,18 @@ function callsTo(method: string, path: string): Call[] {
   return calls.filter((c) => c.method === method && c.path === path);
 }
 
+/** What the page's role="alert" elements say, which a screen reader announces. */
+function announced(): string {
+  return [...document.querySelectorAll('[role="alert"]')].map((el) => el.textContent).join(" ");
+}
+
+/** The link whose text is name. */
+function link(name: string): HTMLAnchorElement {
+  const found = [...document.querySelectorAll("a")].find((a) => a.textContent?.trim() === name);
+  if (found === undefined) throw new Error(`no link named ${JSON.stringify(name)}`);
+  return found;
+}
+
 describe("the settings page", () => {
   test("versioning off shows the warning", async () => {
     state.bucketVersioning = "off";
@@ -572,6 +592,32 @@ describe("the settings page", () => {
     await choose(select, P1S);
     await click(button("Save printer"));
     expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(0);
+  });
+
+  test("a printer save that fails goes back to the saved printer and announces the error", async () => {
+    await show("/settings", <SettingsPage />);
+    failing.add("PUT /app/api/settings/printer");
+    const select = labelled<HTMLSelectElement>("Printer");
+    await choose(select, X1C);
+    const save = button("Save printer");
+    save.focus();
+    await click(save);
+    expect(select.value).toBe(P1S);
+    expect(announced()).toContain("This is unavailable right now.");
+    expect(focusedNotBody()).toBe(save);
+  });
+
+  test("with the slicer unreachable, the page says so and no label points at a missing control", async () => {
+    slicerDown = true;
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("The slicer cannot be reached");
+    expect(text()).toContain(`The selected printer is ${P1S}.`);
+    const labels = [...document.querySelectorAll("label")];
+    expect(labels.some((l) => l.textContent?.trim() === "Printer")).toBe(false);
+    for (const label of labels) {
+      const id = label.getAttribute("for");
+      if (id !== null) expect(document.getElementById(id), label.textContent ?? "").not.toBeNull();
+    }
   });
 
   test("while a printer save runs, focus stays where it was and a change is ignored", async () => {
@@ -1025,6 +1071,7 @@ describe("the organising pages", () => {
     expect(focused()).toBe(remove);
     expect(remove.getAttribute("aria-disabled")).toBe("false");
     expect(text()).toContain("no longer there");
+    expect(announced()).toContain("no longer there");
   });
 
   test("an Add pressed from the keyboard keeps focus while the add runs", async () => {
@@ -1216,6 +1263,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
     await release();
     expect(dialog()).toBeNull();
     expect(text()).toContain("This is unavailable right now. Try again in a moment.");
+    expect(announced()).toContain("This is unavailable right now. Try again in a moment.");
     expect(focusedNotBody()).toBe(create);
     expect(create.getAttribute("aria-disabled")).toBe("false");
   });
@@ -1367,6 +1415,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
     await release();
     expect(trash.isConnected).toBe(true);
     expect(text()).toContain("That is no longer there.");
+    expect(announced()).toContain("That is no longer there.");
     expect(focusedNotBody()).toBe(trash);
     expect(trash.getAttribute("aria-disabled")).toBe("false");
   });
@@ -1382,6 +1431,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
     await release();
     expect(restore.isConnected).toBe(true);
     expect(text()).toContain("That is no longer there.");
+    expect(announced()).toContain("That is no longer there.");
     expect(focusedNotBody()).toBe(restore);
     expect(restore.getAttribute("aria-disabled")).toBe("false");
   });
@@ -1449,6 +1499,47 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
     expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(0);
     expect(focusedNotBody()).toBe(restore);
   });
+
+  // The Creators, Collections and Tags pages swap one view for the other in
+  // place: a name in the list opens its models, and All goes back to the
+  // list. The link that was pressed leaves with the old view, so focus goes
+  // to the new view's heading.
+  const groupPages = [
+    { title: "Creators", path: "/creators", page: () => <CreatorsPage />, name: "Maker" },
+    { title: "Collections", path: "/collections", page: () => <CollectionsPage />, name: "Desk" },
+    { title: "Tags", path: "/tags", page: () => <TagsPage />, name: "PLA" },
+  ];
+
+  test.each(groupPages)(
+    "view swap: opening a name on $title puts focus on its heading",
+    async ({ path, page, name }) => {
+      await show(path, page());
+      const open = link(name);
+      open.focus();
+      await click(open);
+      expect(open.isConnected).toBe(false);
+      const heading = focusedNotBody();
+      expect(heading.tagName).toBe("H2");
+      expect(heading.textContent).toBe(name);
+      expect(heading.getAttribute("tabindex")).toBe("-1");
+    },
+  );
+
+  test.each(groupPages)(
+    "view swap: All on $title goes back to the list with focus on its heading",
+    async ({ title, path, page, name }) => {
+      await show(`${path}?${new URLSearchParams({ name })}`, page());
+      const all = link(`All ${title.toLowerCase()}`);
+      all.focus();
+      await click(all);
+      expect(all.isConnected).toBe(false);
+      expect(link(name).isConnected).toBe(true);
+      const heading = focusedNotBody();
+      expect(heading.tagName).toBe("H1");
+      expect(heading.textContent).toBe(title);
+      expect(heading.getAttribute("tabindex")).toBe("-1");
+    },
+  );
 });
 
 describe("the pages' stylesheet", () => {

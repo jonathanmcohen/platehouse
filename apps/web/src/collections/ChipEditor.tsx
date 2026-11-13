@@ -105,7 +105,9 @@ export function ChipEditor({
         </button>
       </form>
       {error === undefined ? null : (
-        <span className="studio-alert studio-alert-alert">{error}</span>
+        <span role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </span>
       )}
     </div>
   );

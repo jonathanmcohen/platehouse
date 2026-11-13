@@ -134,7 +134,11 @@ export function TrashList() {
       <p ref={statusLine} role="status" tabIndex={-1}>
         {status}
       </p>
-      {error === undefined ? null : <p className="studio-alert studio-alert-alert">{error}</p>}
+      {error === undefined ? null : (
+        <p role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </p>
+      )}
       {trash.error === undefined ? null : (
         <p className="studio-alert studio-alert-alert">{trash.error}</p>
       )}

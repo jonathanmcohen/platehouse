@@ -154,7 +154,11 @@ export function Tokens() {
           Create token
         </button>
       </form>
-      {error === undefined ? null : <p className="studio-alert studio-alert-alert">{error}</p>}
+      {error === undefined ? null : (
+        <p role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </p>
+      )}
       {list.error === undefined ? null : (
         <p className="studio-alert studio-alert-alert">{list.error}</p>
       )}

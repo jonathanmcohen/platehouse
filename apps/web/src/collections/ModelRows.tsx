@@ -95,7 +95,11 @@ function ModelRow({
         </button>
       </div>
       {model.creator === null ? null : <span className="studio-muted">By {model.creator}</span>}
-      {error === undefined ? null : <p className="studio-alert studio-alert-alert">{error}</p>}
+      {error === undefined ? null : (
+        <p role="alert" className="studio-alert studio-alert-alert">
+          {error}
+        </p>
+      )}
       {model.files.length === 0 ? null : (
         <ul className="studio-list" aria-label={`Files of ${model.name}`}>
           {model.files.map((file) => (
