@@ -33,7 +33,9 @@ import { UploadDialog } from "../src/upload/UploadDialog";
 import {
   CHUNK_SIZE,
   type FetchResult,
+  failureMessage,
   isSupportedFile,
+  MAX_UPLOAD_BYTES,
   type StartUpload,
   UPLOAD_ENDPOINT,
   type UploadHandlers,
@@ -365,6 +367,126 @@ describe("dropping files on the library", () => {
   });
 });
 
+/** A drag event carrying these files, as a browser sends one. */
+function fileDrag(type: "dragover" | "drop", files: File[], types = ["Files"]): Event {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", {
+    value: { types, files, dropEffect: "none" },
+  });
+  return event;
+}
+
+describe("dropping files on the open upload dialog", () => {
+  const noUploads: StartUpload = () => ({ abort: () => {} });
+
+  test("a file dropped on the dialog or its backdrop is added to the list", async () => {
+    await render(<UploadDialog open files={[]} onClose={() => {}} start={noUploads} />);
+    const dialog = container.querySelector('[role="dialog"]');
+    const backdrop = container.querySelector(".ph-dialog-backdrop");
+    expect(dialog).not.toBeNull();
+    expect(backdrop).not.toBeNull();
+    const one = new File(["solid x"], "one.stl");
+    const two = new File(["solid y"], "two.stl");
+    await act(async () => {
+      const over = fileDrag("dragover", []);
+      dialog?.dispatchEvent(over);
+      expect(over.defaultPrevented).toBe(true);
+      dialog?.dispatchEvent(fileDrag("drop", [one]));
+    });
+    await act(async () => {
+      const over = fileDrag("dragover", []);
+      backdrop?.dispatchEvent(over);
+      expect(over.defaultPrevented).toBe(true);
+      const drop = fileDrag("drop", [two]);
+      backdrop?.dispatchEvent(drop);
+      expect(drop.defaultPrevented).toBe(true);
+    });
+    expect(container.querySelector('[data-upload="one.stl"]')).not.toBeNull();
+    expect(container.querySelector('[data-upload="two.stl"]')).not.toBeNull();
+    expect(dialog?.textContent).not.toMatch(/drop them on the library/i);
+  });
+
+  test("a file dropped where nothing takes it never reaches the browser", async () => {
+    await render(<UploadDialog open={false} files={[]} onClose={() => {}} start={noUploads} />);
+    const elsewhere = document.createElement("nav");
+    document.body.append(elsewhere);
+    try {
+      const over = fileDrag("dragover", []);
+      elsewhere.dispatchEvent(over);
+      expect(over.defaultPrevented).toBe(true);
+      const drop = fileDrag("drop", [new File(["x"], "lost.3mf")]);
+      elsewhere.dispatchEvent(drop);
+      expect(drop.defaultPrevented).toBe(true);
+      // Text or a link dragged over the page keeps the browser's own handling.
+      const text = fileDrag("drop", [], ["text/plain"]);
+      elsewhere.dispatchEvent(text);
+      expect(text.defaultPrevented).toBe(false);
+    } finally {
+      elsewhere.remove();
+    }
+  });
+
+  test("once the dialog is gone the page no longer stops file drops", async () => {
+    await render(<UploadDialog open={false} files={[]} onClose={() => {}} start={noUploads} />);
+    await act(async () => root.render(<p>nothing</p>));
+    const drop = fileDrag("drop", [new File(["x"], "late.3mf")]);
+    document.body.dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(false);
+  });
+});
+
+/** An error as tus-js-client gives one for an answer the server refused. */
+function refusal(status: number, body: string): Error {
+  const error = new Error(
+    `tus: unexpected response while creating upload, originated from request (method: POST, url: https://platehouse.test/app/uploads, response code: ${status}, response text: ${body}, request id: n/a)`,
+  );
+  return Object.assign(error, {
+    originalRequest: {},
+    originalResponse: { getStatus: () => status, getBody: () => body, getHeader: () => undefined },
+  });
+}
+
+describe("upload failures read as plain words", () => {
+  test("a refusal shows the server's own reason, not tus-js-client's diagnostic", () => {
+    const text = failureMessage(
+      refusal(415, "Not a supported file type: use .3mf, .stl, .step, .stp or .scad\n"),
+    );
+    expect(text).toBe(
+      "The upload was refused: Not a supported file type: use .3mf, .stl, .step, .stp or .scad",
+    );
+    expect(text).not.toMatch(/tus:|originated from|request id/);
+  });
+
+  test("413 says the file is too large, whatever the body", () => {
+    for (const body of ["Maximum size exceeded\n", "<html><body>413</body></html>"]) {
+      const text = failureMessage(refusal(413, body));
+      expect(text).toMatch(/too large/i);
+      expect(text).toContain("512 MiB");
+      expect(text).not.toMatch(/tus:|<html>/);
+    }
+  });
+
+  test("a body that is not a plain line (a proxy's page) gives a short line for the status", () => {
+    expect(failureMessage(refusal(502, "<html><body>Bad Gateway</body></html>"))).toBe(
+      "The server could not take the upload right now (HTTP 502). Try again shortly.",
+    );
+    expect(failureMessage(refusal(403, ""))).toBe("The server refused the upload (HTTP 403).");
+  });
+
+  test("a lost connection says so, without tus-js-client's diagnostic", () => {
+    const lost = Object.assign(
+      new Error("tus: failed to upload chunk at offset 0, caused by [object ProgressEvent]"),
+      { originalRequest: {}, originalResponse: null },
+    );
+    expect(failureMessage(lost)).toBe("The upload failed: the connection was lost.");
+  });
+
+  test("any other error keeps its message", () => {
+    expect(failureMessage(new Error("network down"))).toBe("The upload failed: network down.");
+    expect(failureMessage(new Error(""))).toBe("The upload failed: the connection was lost.");
+  });
+});
+
 describe("the tus options", () => {
   const file = new File([new Uint8Array(10)], "Air Dry - AMS.3mf", { lastModified: 1_700_000 });
 
@@ -618,6 +740,47 @@ describe("upload dialog shows progress per file and honours combine", () => {
     expect(container.querySelector('[data-upload="b.stl"]')?.textContent).toContain(
       "Unsupported file type",
     );
+  });
+
+  test("a refused upload shows the server's reason on its row", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    await render(
+      <UploadDialog open files={[a]} onClose={() => {}} start={start} fetchResult={fetchResult} />,
+    );
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    await act(async () => {
+      started[0]?.handlers.onError(refusal(400, "Give modelId or batch, not both\n"));
+    });
+    const row = container.querySelector('[data-upload="a.3mf"]')?.textContent ?? "";
+    expect(row).toContain("The upload was refused: Give modelId or batch, not both");
+    expect(row).not.toMatch(/tus:|originated from/);
+  });
+
+  test("a file over the server's 512 MiB limit is listed with the reason and never sent", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    const huge = new File([new Uint8Array(1)], "huge.3mf");
+    Object.defineProperty(huge, "size", { value: MAX_UPLOAD_BYTES + 1 });
+    const limit = new File([new Uint8Array(1)], "limit.3mf");
+    Object.defineProperty(limit, "size", { value: MAX_UPLOAD_BYTES });
+    await render(
+      <UploadDialog
+        open
+        files={[huge, limit]}
+        onClose={() => {}}
+        start={start}
+        fetchResult={fetchResult}
+      />,
+    );
+    expect(MAX_UPLOAD_BYTES).toBe(512 * 1024 * 1024);
+    const row = container.querySelector('[data-upload="huge.3mf"]')?.textContent ?? "";
+    expect(row).toMatch(/too large/i);
+    expect(row).toContain("512 MiB");
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    expect(started.map((s) => s.file.name)).toEqual(["limit.3mf"]);
   });
 
   test("into an existing model: no combine switch, every file goes to that model", async () => {

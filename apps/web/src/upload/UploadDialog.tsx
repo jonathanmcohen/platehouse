@@ -13,7 +13,15 @@
 // files are still sending only hides it: the uploads go on and their rows
 // are there when it is opened again. Files that are not a supported type
 // are listed with the reason and never sent.
-import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+//
+// While it is open, files dropped on it or anywhere on its backdrop (which
+// covers the page) are added to the list. It is rendered beside the routes,
+// so a page's DropZone is under the backdrop and never sees the drop. Being
+// mounted on every page, it also stops the browser's own handling of a file
+// dropped where nothing takes it (the sidebar, the top bar, a page with no
+// drop zone), which would otherwise open or download the file and leave the
+// app. Text and links dragged over the page keep the browser's handling.
+import { type DragEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import "./upload.css";
 import {
   ACCEPT,
@@ -39,6 +47,34 @@ export interface UploadDialogProps {
   fetchResult?: FetchResult;
   /** Wait between result checks, in ms. */
   resultDelayMs?: number;
+}
+
+function carriesFiles(event: { dataTransfer: DataTransfer | null }): boolean {
+  const types = event.dataTransfer?.types;
+  return types !== undefined && Array.from(types).includes("Files");
+}
+
+/**
+ * Stops a file drop no drop target took from leaving the app. Drop targets
+ * handle the event first (React listens on the root, below window) and call
+ * preventDefault; an untouched dragover is marked "none", so the pointer
+ * shows the file cannot be dropped there.
+ */
+function guardFileDrops(): () => void {
+  const onDragOver = (event: globalThis.DragEvent) => {
+    if (event.defaultPrevented || !carriesFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "none";
+  };
+  const onDrop = (event: globalThis.DragEvent) => {
+    if (carriesFiles(event)) event.preventDefault();
+  };
+  window.addEventListener("dragover", onDragOver);
+  window.addEventListener("drop", onDrop);
+  return () => {
+    window.removeEventListener("dragover", onDragOver);
+    window.removeEventListener("drop", onDrop);
+  };
 }
 
 function newBatchId(): string {
@@ -100,6 +136,8 @@ export function UploadDialog({
     if (files.length > 0) addFiles(files);
   }, [files, addFiles]);
 
+  useEffect(() => guardFileDrops(), []);
+
   // Focus moves into the dialog when it opens and back when it closes.
   useEffect(() => {
     if (!open) return;
@@ -133,6 +171,19 @@ export function UploadDialog({
     upload.begin(target);
   }
 
+  function onDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function onDrop(event: DragEvent<HTMLDivElement>) {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    const dropped = Array.from(event.dataTransfer.files ?? []);
+    if (dropped.length > 0) addFiles(dropped);
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -157,7 +208,8 @@ export function UploadDialog({
   }
 
   return (
-    <div className="ph-dialog-backdrop">
+    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files is a pointer gesture only; Choose files is the keyboard route.
+    <div className="ph-dialog-backdrop" onDragOver={onDragOver} onDrop={onDrop}>
       <div
         ref={dialog}
         className="ph-dialog"
@@ -176,7 +228,7 @@ export function UploadDialog({
         </p>
 
         {items.length === 0 ? (
-          <p className="studio-empty">No files yet. Choose files, or drop them on the library.</p>
+          <p className="studio-empty">No files yet. Choose files, or drop them here.</p>
         ) : (
           <ul className="ph-upload-list" aria-label="Files">
             {items.map((item) => (

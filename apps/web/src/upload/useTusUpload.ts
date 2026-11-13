@@ -16,11 +16,16 @@
 //   nothing (uploads/tus.ts).
 // - When the last byte is accepted, GET <upload>/result is polled until the
 //   ingest is done or failed.
+// - A file over the server's 512 MiB limit (MAX_UPLOAD_BYTES in
+//   apps/server/src/uploads/tus.ts) is listed with the reason and never
+//   sent, like a type Platehouse does not take. A refused or failed upload
+//   shows plain words (failureMessage): the server's own one-line reason, or
+//   a short line for the status, never tus-js-client's diagnostic text.
 //
 // useTusUpload holds one dialog's files and their progress; the start and
 // result calls can be replaced, which the tests do.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, type UploadOptions } from "tus-js-client";
+import { type HttpResponse, Upload, type UploadOptions } from "tus-js-client";
 
 /** Task 9's tus handler for the UI: the path on this page's own origin. */
 export const UPLOAD_ENDPOINT = "/app/uploads";
@@ -45,6 +50,48 @@ export const ACCEPT = SUPPORTED_EXTENSIONS.join(",");
 
 /** Shown on a row whose file is not a supported type; it is never sent. */
 export const UNSUPPORTED_TEXT = "Not a supported file type: use .3mf, .stl, .step, .stp or .scad";
+
+/** The largest file the server takes: 512 MiB (uploads/tus.ts MAX_UPLOAD_BYTES). */
+export const MAX_UPLOAD_BYTES = 536_870_912;
+
+/** Shown on a row whose file is over MAX_UPLOAD_BYTES; it is never sent. */
+export const TOO_LARGE_TEXT = "The file is too large: Platehouse takes files up to 512 MiB";
+
+/** Longest server reason shown as it is; a longer body gets the status line. */
+const REASON_CHARS = 300;
+
+/**
+ * What a failed upload's row says. tus-js-client's DetailedError carries the
+ * server's answer as originalResponse, and its message is a diagnostic
+ * (method, url, response text, request id) that is not for the user: the row
+ * shows the server's own reason when the body is one plain line, as the tus
+ * handler's refusals are, and otherwise a short line for the status. A
+ * DetailedError with no answer lost the connection.
+ */
+export function failureMessage(error: Error): string {
+  const detailed = error as Error & {
+    originalRequest?: unknown;
+    originalResponse?: HttpResponse | null;
+  };
+  const response = detailed.originalResponse ?? null;
+  if (response !== null) {
+    const status = response.getStatus();
+    if (status === 413) return `${TOO_LARGE_TEXT}.`;
+    const body = (response.getBody() ?? "").trim();
+    const plain =
+      body.length > 0 &&
+      body.length <= REASON_CHARS &&
+      !body.startsWith("<") &&
+      /^[\x20-\x7e]+$/.test(body);
+    if (plain) return `The upload was refused: ${body}`;
+    if (status >= 500) {
+      return `The server could not take the upload right now (HTTP ${status}). Try again shortly.`;
+    }
+    return `The server refused the upload (HTTP ${status}).`;
+  }
+  if (detailed.originalRequest !== undefined) return "The upload failed: the connection was lost.";
+  return `The upload failed: ${error.message || "the connection was lost"}.`;
+}
 
 /** How often a finished upload's result is asked for while its ingest runs. */
 export const RESULT_POLL_MS = 1_000;
@@ -209,14 +256,18 @@ let keyCounter = 0;
 
 function itemFor(file: File): UploadItem {
   keyCounter += 1;
-  const supported = isSupportedFile(file.name);
+  const refused = !isSupportedFile(file.name)
+    ? UNSUPPORTED_TEXT
+    : file.size > MAX_UPLOAD_BYTES
+      ? TOO_LARGE_TEXT
+      : undefined;
   return {
     key: `u${keyCounter}`,
     file,
-    status: supported ? "ready" : "unsupported",
+    status: refused === undefined ? "ready" : "unsupported",
     sent: 0,
     total: file.size,
-    ...(supported ? {} : { message: UNSUPPORTED_TEXT }),
+    ...(refused === undefined ? {} : { message: refused }),
   };
 }
 
@@ -328,10 +379,7 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
         },
         onError: (error) => {
           handles.current.delete(item.key);
-          update(item.key, {
-            status: "failed",
-            message: `The upload failed: ${error.message || "the connection was lost"}.`,
-          });
+          update(item.key, { status: "failed", message: failureMessage(error) });
         },
       });
       handles.current.set(item.key, handle);
