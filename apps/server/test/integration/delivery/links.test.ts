@@ -66,6 +66,25 @@ const ACCENTED = String.fromCodePoint(
   0x672c,
 );
 
+/** U+202E RIGHT-TO-LEFT OVERRIDE: "rlo<RLO>exe.3mf" displays as "rlofm3.exe". */
+const RLO = String.fromCodePoint(0x202e);
+/** The bidi embeddings, overrides (U+202A to U+202E) and isolates (U+2066 to U+2069). */
+const BIDI = String.fromCodePoint(
+  0x202a,
+  0x202b,
+  0x202c,
+  0x202d,
+  0x202e,
+  0x2066,
+  0x2067,
+  0x2068,
+  0x2069,
+);
+/** Zero-width space, non-joiner and joiner, word joiner, and the BOM. */
+const ZERO_WIDTH = String.fromCodePoint(0x200b, 0x200c, 0x200d, 0x2060, 0xfeff);
+/** More of \p{Cf}: soft hyphen, Arabic letter mark, LRM, RLM and a tag character. */
+const OTHER_FORMAT = String.fromCodePoint(0xad, 0x61c, 0x200e, 0x200f, 0xe0041);
+
 const RUN_SECRET = randomBytes(32).toString("hex");
 /** The link key for RUN_SECRET. */
 function key(): Buffer {
@@ -284,9 +303,12 @@ describe("the link's name segment (Review Focus 1)", () => {
   });
 
   // Jon, 2026-11-12 (PR #156): the segment is the delivered name with
-  // / \ % ? # ; NUL and control characters replaced by _, then
-  // percent-encoded, so a link never depends on how a proxy treats an
-  // encoded slash, backslash or percent sign. [stored name, segment]
+  // / \ % ? # ; NUL, control characters and invisible format characters
+  // (\p{Cf}: bidi overrides and isolates, zero-width characters) replaced
+  // by _, then percent-encoded, so a link never depends on how a proxy
+  // treats an encoded slash, backslash or percent sign, and a slicer that
+  // decodes the segment never shows a name reordered to read as another
+  // extension. [stored name, segment]
   const hostile: Array<[string, string]> = [
     ["a b  c.3mf", "a%20b%20%20c.3mf"],
     [`${ACCENTED}.3mf`, encodeURIComponent(`${ACCENTED}.3mf`)],
@@ -302,6 +324,11 @@ describe("the link's name segment (Review Focus 1)", () => {
       `nul${String.fromCodePoint(0)}del${String.fromCodePoint(0x7f)}c1${String.fromCodePoint(0x85)}.3mf`,
       "nul_del_c1_.3mf",
     ],
+    [`rlo${RLO}exe.3mf`, "rlo_exe.3mf"],
+    [`x.3mf${RLO}`, "x.3mf_.3mf"],
+    [`bidi${BIDI}.3mf`, `bidi${"_".repeat(9)}.3mf`],
+    [`zero${ZERO_WIDTH}width.3mf`, `zero${"_".repeat(5)}width.3mf`],
+    [`other${OTHER_FORMAT}.3mf`, `other${"_".repeat(5)}.3mf`],
     ["a/b", "a_b.3mf"],
     ["..", "...3mf"],
     [`${"x".repeat(230)}.3mf`, `${"x".repeat(230)}.3mf`],
@@ -321,11 +348,26 @@ describe("the link's name segment (Review Focus 1)", () => {
       const last = parts[3] ?? "";
       expect(last).toBe(segment);
       expect(linkSegment(file({ name }))).toBe(segment);
-      expect(decodeURIComponent(last)).not.toMatch(/[/\\%?#;\p{Cc}]/u);
+      expect(decodeURIComponent(last)).not.toMatch(/[/\\%?#;\p{Cc}\p{Cf}]/u);
       expect(last.endsWith(".3mf")).toBe(true);
       expect(l.url).toMatch(/^[\x21-\x7e]+$/);
     },
   );
+
+  test("every invisible format character (\\p{Cf}) is replaced, and the extension stays last", () => {
+    let checked = 0;
+    for (let cp = 0; cp <= 0x10ffff; cp += 1) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue;
+      const c = String.fromCodePoint(cp);
+      if (!/\p{Cf}/u.test(c)) continue;
+      checked += 1;
+      expect(linkSegment(file({ name: `a${c}b.3mf` })), `U+${cp.toString(16)}`).toBe("a_b.3mf");
+      expect(linkSegment(file({ name: `a${c}`, kind: "stl" })), `U+${cp.toString(16)}`).toBe(
+        "a_.stl",
+      );
+    }
+    expect(checked).toBeGreaterThan(150);
+  });
 
   test("the segment keeps the name's own extension when it already has one", () => {
     expect(linkSegment(file({ name: "Bracket.STP", kind: "step" }))).toBe("Bracket.STP");

@@ -669,16 +669,20 @@ describe("GET /s/<token>/<name>", () => {
   });
 
   test("a name with slashes, dot-dot or escapes in it links with them replaced by _", async () => {
-    // The segment replaces / \ % ? # ; and control characters with _
-    // (Jon, 2026-11-12), so nothing a proxy might decode or refuse is in it;
+    // The segment replaces / \ % ? # ;, control characters and invisible
+    // format characters (\p{Cf}, such as U+202E RIGHT-TO-LEFT OVERRIDE) with
+    // _ (Jon, 2026-11-12), so nothing a proxy might decode or refuse is in
+    // it and a decoded name never reads as another extension;
     // Content-Disposition still carries the stored name. A raw "/" after
     // the name segment is refused.
+    const rlo = String.fromCodePoint(0x202e);
     const cases: Array<[string, string]> = [
       ["../../etc/passwd.3mf", ".._.._etc_passwd.3mf"],
       ["a/b/c.3mf", "a_b_c.3mf"],
       ["..\\x.3mf", ".._x.3mf"],
       ["%2F%00.3mf", "_2F_00.3mf"],
       ["q?h#s;.3mf", "q_h_s_.3mf"],
+      [`rlo${rlo}exe.3mf`, "rlo_exe.3mf"],
     ];
     for (const [name, segment] of cases) {
       const id = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8efe";

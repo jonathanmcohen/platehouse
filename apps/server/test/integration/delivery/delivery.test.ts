@@ -54,9 +54,11 @@ const ACCENTED = String.fromCodePoint(
 );
 
 /** What a link's name segment never carries (the Slicer link contract). */
-const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}]/gu;
+const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}]/gu;
 /** The same, for one test (no global flag, so no state between calls). */
-const UNSAFE_CHAR = /[/\\%?#;\p{Cc}]/u;
+const UNSAFE_CHAR = /[/\\%?#;\p{Cc}\p{Cf}]/u;
+/** U+202E RIGHT-TO-LEFT OVERRIDE: "rlo<RLO>exe.3mf" displays as "rlofm3.exe". */
+const RLO = String.fromCodePoint(0x202e);
 
 const CONTEXT: DisplayContext = {
   printerId: "Bambu Lab P1S 0.4 nozzle",
@@ -447,6 +449,7 @@ describe("hostile file names (Review Focus 1)", () => {
     "percent %2F %00.3mf",
     "hash # question ?.3mf",
     "new\nline\r\ttab.3mf",
+    `rlo${RLO}exe.3mf`,
     `${"x".repeat(230)}.3mf`,
     `${E_ACUTE.repeat(210)}.3mf`,
     "..",
@@ -486,8 +489,9 @@ describe("hostile file names (Review Focus 1)", () => {
       const segments = pathOf(link.url).split("/");
       expect(segments, name).toHaveLength(4);
       const last = segments[3] ?? "";
-      // The segment has / \ % ? # ; and control characters replaced by _
-      // (Jon, 2026-11-12); Content-Disposition keeps the stored name.
+      // The segment has / \ % ? # ;, control characters and invisible
+      // format characters (\p{Cf}) replaced by _ (Jon, 2026-11-12);
+      // Content-Disposition keeps the stored name.
       expect(last, name).toBe(encodeURIComponent(expected.replace(UNSAFE_IN_SEGMENT, "_")));
       expect(decodeURIComponent(last), name).not.toMatch(UNSAFE_CHAR);
       expect(last.endsWith(".3mf"), name).toBe(true);
