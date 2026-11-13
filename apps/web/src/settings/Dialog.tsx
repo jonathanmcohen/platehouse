@@ -5,7 +5,9 @@
 // and on close focus goes back to the control that opened it
 // (returnFocusTo), so a keyboard user never lands on the document body.
 // ConfirmDialog asks before something that cannot be undone, with the safe
-// choice, Cancel, focused first.
+// choice, Cancel, focused first. Once the change is sent it cannot be called
+// back, so while it runs Cancel is disabled and Escape does nothing: the
+// dialog stays open until the change has answered, and shows any failure.
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -123,10 +125,16 @@ export function ConfirmDialog({
     }
   }
 
+  // A change in flight is not stopped by closing the dialog, so it cannot close
+  // until the change has answered.
+  function close() {
+    if (!busy) onCancel();
+  }
+
   return (
     <Dialog
       title={title}
-      onClose={onCancel}
+      onClose={close}
       initialFocus={cancel}
       {...(returnFocusTo === undefined ? {} : { returnFocusTo })}
     >
@@ -141,7 +149,13 @@ export function ConfirmDialog({
         >
           {confirmLabel}
         </button>
-        <button ref={cancel} type="button" className="studio-button" onClick={onCancel}>
+        <button
+          ref={cancel}
+          type="button"
+          className="studio-button"
+          onClick={close}
+          disabled={busy}
+        >
           Cancel
         </button>
       </div>

@@ -584,6 +584,24 @@ describe("the settings page", () => {
     expect(text()).not.toContain("Claude Code on mba");
   });
 
+  test("a revoke in flight cannot be cancelled: Cancel and Escape wait for the answer", async () => {
+    await show("/settings", <SettingsPage />);
+    const release = hold("DELETE /app/api/tokens/t0");
+    await click(button("Revoke Claude Code on mba"));
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(1);
+
+    const cancel = button("Cancel", dialog() as HTMLElement);
+    expect(cancel.disabled).toBe(true);
+    await click(cancel);
+    await press(dialog() as HTMLElement, "Escape");
+    expect(dialog()).not.toBeNull();
+
+    await release();
+    expect(dialog()).toBeNull();
+    expect(text()).not.toContain("Claude Code on mba");
+  });
+
   test("the settings page holds the trash", async () => {
     await show("/settings", <SettingsPage />);
     expect(text()).toContain("Old benchy");
@@ -625,6 +643,28 @@ describe("the trash", () => {
     expect(dialog()).toBeNull();
     expect(text()).toContain("The trash is empty.");
     expect(dialogs.confirm).not.toHaveBeenCalled();
+  });
+
+  test("an Empty trash in flight cannot be cancelled, so a partial result is still shown", async () => {
+    emptyIncomplete = true;
+    await show("/trash", <TrashPage />);
+    const release = hold("POST /app/api/trash/empty");
+    await click(button("Empty trash"));
+    await click(button("Empty trash", dialog() as HTMLElement));
+
+    const cancel = button("Cancel", dialog() as HTMLElement);
+    expect(cancel.disabled).toBe(true);
+    await press(dialog() as HTMLElement, "Escape");
+    await click(cancel);
+    expect(dialog()).not.toBeNull();
+
+    await release();
+    const ask = dialog();
+    expect(ask).not.toBeNull();
+    expect(ask?.textContent).toContain("1 model could not be deleted");
+    // Once the answer is in, Cancel works again.
+    await click(button("Cancel", ask as HTMLElement));
+    expect(dialog()).toBeNull();
   });
 
   test("two restores in flight both stay restored, whichever answers last", async () => {
