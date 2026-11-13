@@ -875,6 +875,124 @@ describe("upload dialog shows progress per file and honours combine", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  describe("keyboard after a click on the backdrop", () => {
+    /** A control behind the dialog, as the shell's sidebar and top bar are. */
+    let behind: HTMLButtonElement;
+
+    beforeEach(() => {
+      behind = document.createElement("button");
+      behind.textContent = "Sidebar link";
+      document.body.append(behind);
+    });
+
+    afterEach(() => {
+      behind.remove();
+    });
+
+    function dialogEl(): HTMLElement {
+      const el = container.querySelector<HTMLElement>('[role="dialog"]');
+      if (el === null) throw new Error("the dialog is not open");
+      return el;
+    }
+
+    function press(target: EventTarget, key: string, shiftKey = false): KeyboardEvent {
+      const event = new KeyboardEvent("keydown", {
+        key,
+        shiftKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(event);
+      return event;
+    }
+
+    test("pressing the backdrop keeps focus in the dialog", async () => {
+      const { start, fetchResult } = stubUploads();
+      await render(
+        <UploadDialog
+          open
+          files={[a]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+      const backdrop = container.querySelector<HTMLElement>(".ph-dialog-backdrop");
+      if (backdrop === null) throw new Error("no backdrop");
+      (document.activeElement as HTMLElement | null)?.blur();
+      const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      await act(async () => {
+        backdrop.dispatchEvent(down);
+      });
+      expect(down.defaultPrevented).toBe(true);
+      expect(dialogEl().contains(document.activeElement)).toBe(true);
+    });
+
+    test("Escape closes it with focus outside the dialog", async () => {
+      const { start, fetchResult } = stubUploads();
+      const onClose = vi.fn();
+      await render(
+        <UploadDialog open files={[a]} onClose={onClose} start={start} fetchResult={fetchResult} />,
+      );
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(dialogEl().contains(document.activeElement)).toBe(false);
+      await act(async () => {
+        press(document.body, "Escape");
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    test("Tab from behind the dialog goes back into it, never into the shell", async () => {
+      const { start, fetchResult } = stubUploads();
+      await render(
+        <UploadDialog
+          open
+          files={[a]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+      behind.focus();
+      let tab: KeyboardEvent | undefined;
+      await act(async () => {
+        tab = press(behind, "Tab");
+      });
+      expect(tab?.defaultPrevented).toBe(true);
+      expect(dialogEl().contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).toBe(button(/choose files/i));
+
+      behind.focus();
+      await act(async () => {
+        tab = press(behind, "Tab", true);
+      });
+      expect(tab?.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(button(/^upload/i));
+    });
+
+    test("closed, it leaves the page's keys alone", async () => {
+      const { start, fetchResult } = stubUploads();
+      const onClose = vi.fn();
+      await render(
+        <UploadDialog
+          open={false}
+          files={[a]}
+          onClose={onClose}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+      behind.focus();
+      let tab: KeyboardEvent | undefined;
+      await act(async () => {
+        press(document.body, "Escape");
+        tab = press(behind, "Tab");
+      });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(tab?.defaultPrevented).toBe(false);
+    });
+  });
+
   test("closed, it shows nothing", async () => {
     const { start, fetchResult } = stubUploads();
     await render(

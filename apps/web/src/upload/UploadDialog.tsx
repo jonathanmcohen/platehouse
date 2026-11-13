@@ -9,7 +9,10 @@
 //
 // It is a themed dialog in the page (role dialog, aria-modal), never a
 // native browser dialog: focus moves into it when it opens, Tab stays inside
-// it, Escape closes it, and focus goes back where it was. Closing while
+// it, Escape closes it, and focus goes back where it was. Escape and Tab are
+// handled on the document while it is open, so they keep working wherever
+// focus has gone, and Tab from outside it (the shell behind) goes back into
+// it; pressing the backdrop keeps focus in the dialog. Closing while
 // files are still sending only hides it: the uploads go on and their rows
 // are there when it is opened again. Files that are not a supported type
 // are listed with the reason and never sent.
@@ -21,7 +24,7 @@
 // dropped where nothing takes it (the sidebar, the top bar, a page with no
 // drop zone), which would otherwise open or download the file and leave the
 // app. Text and links dragged over the page keep the browser's handling.
-import { type DragEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { type DragEvent, type MouseEvent, useEffect, useId, useRef, useState } from "react";
 import "./upload.css";
 import {
   ACCEPT,
@@ -123,6 +126,8 @@ export function UploadDialog({
   const dialog = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const returnFocus = useRef<Element | null>(null);
+  /** The current close(), for the document's key handler. */
+  const closeRef = useRef<() => void>(() => {});
   const [combine, setCombine] = useState(false);
   const upload = useTusUpload({
     ...(start === undefined ? {} : { start }),
@@ -149,6 +154,44 @@ export function UploadDialog({
     };
   }, [open]);
 
+  // Escape and the Tab trap, on the document while the dialog is open: a
+  // click on the backdrop or elsewhere can leave focus outside the dialog,
+  // and the shell behind it is not inert.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const box = dialog.current;
+      if (box === null) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      const active = document.activeElement;
+      if (first === undefined || last === undefined) {
+        event.preventDefault();
+        box.focus();
+        return;
+      }
+      if (!box.contains(active)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && (active === first || active === box)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
   if (!open) return null;
 
   const ready = items.filter((i) => i.status === "ready").length;
@@ -160,6 +203,7 @@ export function UploadDialog({
     }
     onClose();
   }
+  closeRef.current = close;
 
   function send() {
     const target: UploadTarget =
@@ -184,32 +228,22 @@ export function UploadDialog({
     if (dropped.length > 0) addFiles(dropped);
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      close();
-      return;
-    }
-    if (event.key !== "Tab" || dialog.current === null) return;
-    const focusable = [...dialog.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (first === undefined || last === undefined) return;
-    if (
-      event.shiftKey &&
-      (document.activeElement === first || document.activeElement === dialog.current)
-    ) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+  // Pressing the backdrop itself would move focus to the page behind the
+  // dialog; it stays in the dialog instead.
+  function onBackdropMouseDown(event: MouseEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    if (!dialog.current?.contains(document.activeElement)) dialog.current?.focus();
   }
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files is a pointer gesture only; Choose files is the keyboard route.
-    <div className="ph-dialog-backdrop" onDragOver={onDragOver} onDrop={onDrop}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: dropping files and pressing the backdrop are pointer gestures only; Choose files is the keyboard route, and Escape and Tab are handled on the document.
+    <div
+      className="ph-dialog-backdrop"
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onMouseDown={onBackdropMouseDown}
+    >
       <div
         ref={dialog}
         className="ph-dialog"
@@ -217,7 +251,6 @@ export function UploadDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        onKeyDown={onKeyDown}
       >
         <h2 id={titleId}>Add files</h2>
         <p className="studio-muted">
