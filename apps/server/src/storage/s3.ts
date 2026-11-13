@@ -60,7 +60,10 @@ export interface BlobStore {
    * NoSuchKey); any other 404, a missing bucket for one, is a StoreError.
    * A failure while the bytes are read (the connection dropped, or no data
    * moved for socketTimeoutMs) is the stream's error, mapped the same way:
-   * StoreUnavailable for an outage, never the SDK's own error.
+   * StoreUnavailable for an outage, never the SDK's own error. The object's
+   * size, as the store's Content-Length gave it, is objectSize(stream), so
+   * a reader can refuse an object that is not the size it recorded before
+   * it sends anything.
    */
   getBlobStream(key: string): Promise<Readable>;
   /**
@@ -122,6 +125,30 @@ export interface ListedObject {
  * one once the next check writes over it.
  */
 export const WRITE_CHECK_KEY = "checks/write-check";
+
+const objectSizes = new WeakMap<Readable, number>();
+
+/**
+ * Records the object size the store reported for a stream it opened, and
+ * returns the stream. getBlobStream calls it; a test's stand-in store may
+ * too, to hand out a stream the way the real one does.
+ */
+export function reportObjectSize(stream: Readable, size: number | undefined): Readable {
+  if (size !== undefined) objectSizes.set(stream, size);
+  return stream;
+}
+
+/**
+ * The size of the object a getBlobStream stream reads, as the store's
+ * GetObject answer gave it (its Content-Length); undefined for a stream the
+ * store did not open, or when the store sent no length. A restored older
+ * version of an object, or a write to the bucket behind the app's back,
+ * makes this differ from the size the database recorded (PR #156 security
+ * review).
+ */
+export function objectSize(stream: Readable): number | undefined {
+  return objectSizes.get(stream);
+}
 
 // DeleteObjects takes at most 1000 keys per request.
 const DELETE_BATCH = 1000;
@@ -250,14 +277,16 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
 
     async getBlobStream(key) {
       let body: unknown;
+      let length: number | undefined;
       try {
         const out = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
         body = out.Body;
+        length = out.ContentLength;
       } catch (err) {
         throw toStoreError(err, "GetObject", { notFound: true });
       }
       if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
-      return withStoreErrors(body, "GetObject");
+      return reportObjectSize(withStoreErrors(body, "GetObject"), length);
     },
 
     async headBlob(key) {

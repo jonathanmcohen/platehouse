@@ -28,8 +28,11 @@
 //      tokens from the api_tokens table and reads the library through the
 //      same database, store and estimates.plateNumbers; it never touches
 //      Pocket ID, so API tokens keep working while it is down (AC-081).
+//      File delivery and slicer links (Task 17) read files through that
+//      same library and blobs through the same database and store, and
+//      sign links with a key links.ts derives from LINK_SECRET.
 //      The web app's own API under /app/api (Task 21: settings, tokens,
-//      organising and the trash) shares those tokens, estimates and the
+//      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
 //      settings page's warning (AC-013).
 //
@@ -61,6 +64,7 @@ import { createSessions, dbSessionStore } from "./auth/sessions.js";
 import { type Config, ConfigError, loadConfig } from "./config.js";
 import { createDb } from "./db/kysely.js";
 import { migrate } from "./db/migrate.js";
+import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
 import { createSlicerClient, sliceTimeoutMs } from "./estimates/client.js";
 import { createEstimates } from "./estimates/service.js";
@@ -390,6 +394,13 @@ export async function start(config: Config): Promise<Server> {
     void recordVersioning({ store, settings: repos.settings });
 
     const tokens = createTokens({ store: dbTokenStore(db) });
+    // One library for the API's content route and the file deliveries, so
+    // both find a live file and its stored blob the same way.
+    const apiLibrary = createApiLibrary({
+      db,
+      store,
+      plateNumbers: (plateId) => estimates.plateNumbers(plateId),
+    });
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -410,13 +421,11 @@ export async function start(config: Config): Promise<Server> {
         group: config.oidc.group,
         cookieSecret: loginCookieKey(config.linkSecret),
       },
-      api: {
-        tokens,
-        library: createApiLibrary({
-          db,
-          store,
-          plateNumbers: (plateId) => estimates.plateNumbers(plateId),
-        }),
+      api: { tokens, library: apiLibrary },
+      delivery: {
+        files: apiLibrary,
+        library: createDeliveryLibrary({ db, store }),
+        linkSecret: config.linkSecret,
       },
       // The settings, trash and organising pages (Task 21).
       appApi: {
