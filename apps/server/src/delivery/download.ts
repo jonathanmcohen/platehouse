@@ -196,7 +196,8 @@ export function checkObjectSize(content: FileHead | FileContent): void {
  * chunk that would take it past size errors the stream before any of that
  * chunk is sent, and an end short of size errors it too; Fastify then
  * destroys the response (or, before any header, answers through the scope's
- * error handler, 503). The last byte is held until the source ends, so a
+ * error handler, 503 with the file's content headers taken off by
+ * dropContentHeaders). The last byte is held until the source ends, so a
  * client never receives the whole Content-Length from an object that turns
  * out longer. Destroying the result destroys the source.
  */
@@ -256,10 +257,31 @@ export function sendContent(
   );
 }
 
+/** The headers sendContent sets that describe the bytes, not the answer. */
+const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition"] as const;
+
+/**
+ * Takes the content headers sendContent set off an error answer. A stream
+ * that fails before its first byte is answered through the scope's error
+ * handler, but Fastify has already copied the reply's headers onto the raw
+ * response (res.setHeader) and removes only its own copy of content-type
+ * and content-length; reply.getHeader falls back to the raw response. Left
+ * there, the file's content-type makes the JSON error an invalid payload
+ * (Fastify's own 500 instead of the 503), and its Content-Disposition would
+ * make a client save the error under the model's file name (PR #156 review).
+ */
+function dropContentHeaders(reply: FastifyReply): void {
+  for (const name of CONTENT_HEADERS) {
+    reply.removeHeader(name);
+    if (!reply.raw.headersSent) reply.raw.removeHeader(name);
+  }
+}
+
 /**
  * The answer when the store cannot give the bytes: 503 "This file is
- * unavailable right now", the cause in the log only. Undefined for any
- * other error, which the caller rethrows.
+ * unavailable right now", the cause in the log only, with no content
+ * header of the file's (dropContentHeaders). Undefined for any other
+ * error, which the caller rethrows.
  */
 export function unavailable(error: unknown, request: FastifyRequest, reply: FastifyReply) {
   if (
@@ -268,6 +290,7 @@ export function unavailable(error: unknown, request: FastifyRequest, reply: Fast
     error instanceof StoreError
   ) {
     request.log.warn({ err: error }, "delivery: the bytes could not be read");
+    dropContentHeaders(reply);
     return reply
       .code(503)
       .header("cache-control", "no-store")
@@ -279,13 +302,15 @@ export function unavailable(error: unknown, request: FastifyRequest, reply: Fast
 /**
  * The delivery scopes' error handler: a store error is unavailable(), any
  * other is logged and answered 500 with no detail (a database host, a
- * port, a query never reaches the answer).
+ * port, a query never reaches the answer) and, as unavailable(), with no
+ * content header of the file's.
  */
 export function fileRouteErrors(logMessage: string) {
   return async (error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
     const answered = unavailable(error, request, reply);
     if (answered !== undefined) return answered;
     request.log.error({ err: error }, logMessage);
+    dropContentHeaders(reply);
     return reply.code(500).header("cache-control", "no-store").send({ error: "internal" });
   };
 }

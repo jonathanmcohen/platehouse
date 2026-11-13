@@ -17,7 +17,8 @@
 // whose size differs from the record is 503 before any header, and a
 // stream that runs past, falls short of or fails before the recorded size
 // reaches the client as an aborted response, never a clean end (PR #156
-// security review).
+// security review). A stream that fails before its first byte is a 503 (or
+// 500) with none of the file's content headers (PR #156 review).
 //
 // No container: sessions are in memory and the issuer is the local mock.
 // The DB and bucket tests are in delivery.test.ts. Every byte is synthetic.
@@ -112,6 +113,11 @@ let storeFails: Error | undefined;
 let dbFails: Error | undefined;
 /** The stream the STREAMED file and blob hand out; the test writes into it. */
 let gate: PassThrough | undefined;
+/**
+ * While set (and gate is not), the STREAMED file and blob hand out a new
+ * stream from this each time they are opened, recorded at 16 bytes.
+ */
+let streamed: (() => Readable) | undefined;
 
 function head(item: StubItem | { contentType: string; bytes: Buffer }, name: string): FileHead {
   return { name, contentType: item.contentType, size: item.bytes.length };
@@ -141,9 +147,10 @@ const deliveryFiles: DeliveryDeps["files"] = {
     if (dbFails) throw dbFails;
     // The STREAMED stream reports no object size, as a store that sends no
     // Content-Length would, so only the byte count guards it.
-    if (id === STREAMED && gate) {
+    if (id === STREAMED && (gate || streamed)) {
       opened += 1;
-      return { name: "Streamed.3mf", contentType: "model/3mf", size: 16, stream: gate };
+      const stream = gate ?? (streamed as () => Readable)();
+      return { name: "Streamed.3mf", contentType: "model/3mf", size: 16, stream };
     }
     const item = files.get(id);
     if (item === undefined) return undefined;
@@ -174,9 +181,10 @@ const deliveryLibrary: DeliveryDeps["library"] = {
   },
   async openBlob(id) {
     if (dbFails) throw dbFails;
-    if (id === STREAMED_BLOB && gate) {
+    if (id === STREAMED_BLOB && (gate || streamed)) {
       opened += 1;
-      return { name: id, contentType: "image/png", size: 16, stream: gate };
+      const stream = gate ?? (streamed as () => Readable)();
+      return { name: id, contentType: "image/png", size: 16, stream };
     }
     const item = blobs.get(id);
     if (item === undefined) return undefined;
@@ -236,6 +244,7 @@ afterEach(() => {
   storeFails = undefined;
   dbFails = undefined;
   gate = undefined;
+  streamed = undefined;
   storedSize = undefined;
   lastStream = undefined;
 });
@@ -1000,5 +1009,62 @@ describe("a stream that is not exactly the recorded size reaches the client abor
     }
     // The server is still up after the aborted answers.
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
+  });
+});
+
+describe("a stream that fails before its first byte is answered with no attachment header", () => {
+  // Fastify copies the reply's headers onto the response before the first
+  // chunk, so a stream that fails before it is answered through the scope's
+  // error handler (fileRouteErrors). That answer is a JSON error, so it must
+  // not keep the download's Content-Disposition, or a client that ignores
+  // the status saves the error under the model's file name (PR #156 review).
+  const cookies = () => ({ [SESSION_COOKIE]: sessionCookie });
+
+  async function urls(): Promise<Array<[string, boolean]>> {
+    const link = await linkFor(STREAMED);
+    return [
+      [`/files/${STREAMED}/download`, true],
+      [`/blobs/${STREAMED_BLOB}`, true],
+      [pathOf(link.url), false],
+    ];
+  }
+
+  /** A stream that fails with error on its first read, before any byte. */
+  function failsAtOnce(error: Error): () => Readable {
+    return () =>
+      new Readable({
+        read() {
+          this.destroy(error);
+        },
+      });
+  }
+
+  test.each<[string, () => Readable]>([
+    [
+      "the store fails on the first read",
+      failsAtOnce(new StoreUnavailable("GetObject", "ETIMEDOUT")),
+    ],
+    ["the object is empty", () => Readable.from([])],
+    ["the first chunk is already past the record", () => Readable.from([Buffer.alloc(20, 0x61)])],
+  ])("%s: 503, no Content-Disposition", async (_label, open) => {
+    for (const [url, session] of await urls()) {
+      streamed = open;
+      const res = await app.inject({ method: "GET", url, cookies: session ? cookies() : {} });
+      expect(res.statusCode, url).toBe(503);
+      expect(res.json(), url).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
+      expect(res.headers["content-disposition"], url).toBeUndefined();
+      expect(res.headers["cache-control"], url).toBe("no-store");
+    }
+  });
+
+  test("any other failure before the first byte: 500, no Content-Disposition", async () => {
+    for (const [url, session] of await urls()) {
+      streamed = failsAtOnce(new Error("synthetic stream failure"));
+      const res = await app.inject({ method: "GET", url, cookies: session ? cookies() : {} });
+      expect(res.statusCode, url).toBe(500);
+      expect(res.json(), url).toEqual({ error: "internal" });
+      expect(res.headers["content-disposition"], url).toBeUndefined();
+      expect(res.headers["cache-control"], url).toBe("no-store");
+    }
   });
 });
