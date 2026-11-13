@@ -169,6 +169,14 @@ export interface Estimates {
   /** The Orca-version poll (startup and every 10 minutes). */
   pollOrca(): Promise<{ orca: string; changed: boolean }>;
   plateNumbers(plateId: string): Promise<PlateNumbers>;
+  /**
+   * The selected printer, the Orca version and the printer menu that
+   * plateNumbers reads on every call, for a caller that looks up many plates
+   * at once (the library page) and passes it to display.ts plateNumbers. The
+   * menu is the cached /v1/profiles answer, asked for when none is cached;
+   * while the slicer is down it is empty.
+   */
+  displayContext(): Promise<DisplayContext>;
   /** The AC-032 query (display.ts). */
   platesWithoutNumbers(): Promise<string[]>;
   /** The slice job's handler. */
@@ -893,6 +901,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     retryEstimate,
     pollOrca,
     plateNumbers: async (plateId) => plateNumbers(db, await displayContext(), plateId),
+    displayContext,
     platesWithoutNumbers: async () => platesWithoutNumbers(db, await displayContext()),
     runSliceJob,
     slicerJobs: Object.freeze({

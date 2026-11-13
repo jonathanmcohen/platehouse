@@ -12,7 +12,9 @@
 //   given the database and plateNumbers and no store, so it has no way to
 //   read a model file at all.
 // - A card has time and weight for the selected printer only when every
-//   plate has numbers for it; otherwise it says partial.
+//   plate has numbers for it; otherwise it says partial. The display context
+//   (settings and the printer menu) is read once per page, and at most
+//   PLATE_NUMBERS_CONCURRENCY plate lookups run at once.
 // - The tag filter narrows the grid; search finds name, caption, creator and
 //   tag; a trashed model is never listed.
 // - Every route is session-class: no session, 401 JSON.
@@ -28,6 +30,7 @@ import {
   createAppLibrary,
   LIBRARY_API_PATHS,
   type LibraryCard,
+  PLATE_NUMBERS_CONCURRENCY,
 } from "../../../src/app-api/library.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
@@ -82,6 +85,12 @@ let dist: string;
 let uploadsDir: string;
 /** Every line the app logged. */
 const lines: string[] = [];
+/** How often the library read the display context, and what it handed on. */
+let contextReads = 0;
+const contexts = new Set<DisplayContext>();
+/** Plate number lookups running now, and the most that ever ran at once. */
+let lookupsInFlight = 0;
+let mostLookupsInFlight = 0;
 
 async function ingest(name: string, bytes: Buffer | string) {
   const tmpPath = await writeUpload(env, bytes);
@@ -138,8 +147,20 @@ beforeAll(async () => {
     web: { dir: dist },
     library: createAppLibrary({
       db: env.db,
-      plateNumbers: (plateId) => plateNumbers(env.db, CONTEXT, plateId),
-      selectedPrinter: async () => CONTEXT.printerId,
+      displayContext: async () => {
+        contextReads += 1;
+        return CONTEXT;
+      },
+      plateNumbers: async (ctx, plateId) => {
+        contexts.add(ctx);
+        lookupsInFlight += 1;
+        mostLookupsInFlight = Math.max(mostLookupsInFlight, lookupsInFlight);
+        try {
+          return await plateNumbers(env.db, ctx, plateId);
+        } finally {
+          lookupsInFlight -= 1;
+        }
+      },
     }),
     logger: { write: (line: string) => lines.push(line) },
   });
@@ -341,6 +362,31 @@ describe("card shows time and weight only when every plate is known", () => {
     const shown = card(await library(`?q=${word}`), other.modelId);
     expect(shown).toMatchObject({ timeSeconds: 1800, partial: false });
     expect(shown.weightGrams).toBeCloseTo(15, 5);
+  });
+});
+
+describe("plate numbers for a page", () => {
+  test("one display context per page, and a capped number of plate lookups at once", async () => {
+    const word = marker();
+    const models = [];
+    for (let i = 0; i < 3; i += 1) {
+      models.push(
+        await ingest(`Many plates ${i} ${word}.3mf`, build3mf({ plates: 4, sliced: [1, 2, 3, 4] })),
+      );
+    }
+    contextReads = 0;
+    contexts.clear();
+    mostLookupsInFlight = 0;
+    const page = await library(`?q=${word}`);
+    expect(page.models).toHaveLength(3);
+    for (const m of models) expect(card(page, m.modelId)).toMatchObject({ partial: false });
+    // The settings and the printer menu (a slicer request while it is not
+    // cached) are read once for the page, not once per plate.
+    expect(contextReads).toBe(1);
+    expect([...contexts]).toEqual([CONTEXT]);
+    // Twelve plates, never more than the cap in flight.
+    expect(mostLookupsInFlight).toBeGreaterThan(0);
+    expect(mostLookupsInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
   });
 });
 

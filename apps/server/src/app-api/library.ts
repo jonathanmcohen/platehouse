@@ -24,12 +24,19 @@
 //   is. A card has totals only when every plate does, else partial. A model
 //   with no plates (STL, STEP, SCAD) has neither; its card shows the
 //   file-type icon for fileKind.
+// - The display context (the settings row and the printer menu) is read once
+//   per page and shared by every plate's lookup. The menu comes from the
+//   slicer's /v1/profiles until the estimates service has it cached, so a
+//   page asks the slicer at most once, never once per plate. Each plate's
+//   lookup is two queries, and at most PLATE_NUMBERS_CONCURRENCY run at once
+//   (mapLimit), so a page of many plates leaves most of the database pool to
+//   the ingest and slicer workers.
 // - Answers are JSON and never cached; an invalid cursor is 400. Errors carry
 //   no detail from the database.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
-import type { Numbers, PlateNumbers } from "../estimates/display.js";
+import type { DisplayContext, Numbers, PlateNumbers } from "../estimates/display.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
 
 /** The library's routes, every one session-class (the Route classes contract). */
@@ -37,6 +44,32 @@ export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/library",
   "/app/api/library/tags",
 ]);
+
+/** Most plate number lookups one page runs at once; the pool holds 10 connections. */
+export const PLATE_NUMBERS_CONCURRENCY = 4;
+
+/**
+ * fn over every item, at most limit calls in flight, the results in the
+ * items' order. The first failure rejects the whole map.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next;
+      next += 1;
+      out[i] = await fn(items[i] as T);
+    }
+  }
+  const workers = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workers }, worker));
+  return out;
+}
 
 /** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
 export const BLOB_PREFIX = "/blobs/";
@@ -77,10 +110,13 @@ export interface AppLibrary {
 
 export interface AppLibraryDeps {
   db: Kysely<DB>;
-  /** Task 12's plateNumbers for the selected printer (estimates.plateNumbers). */
-  plateNumbers(plateId: string): Promise<PlateNumbers>;
-  /** settings.printer_id, the printer the numbers are for. */
-  selectedPrinter(): Promise<string>;
+  /**
+   * The selected printer, the Orca version and the printer menu
+   * (estimates.displayContext), read once per page.
+   */
+  displayContext(): Promise<DisplayContext>;
+  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
+  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
 }
 
 /** The numbers a plate has for the selected printer, if any: time and weight both known. */
@@ -107,8 +143,9 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 
   async function cards(
     models: Array<{ id: string; name: string; creator: string | null }>,
-    printerId: string,
+    ctx: DisplayContext,
   ): Promise<LibraryCard[]> {
+    const { printerId } = ctx;
     const ids = models.map((m) => m.id);
     if (ids.length === 0) return [];
     const [files, plates, tagRows] = await Promise.all([
@@ -153,11 +190,11 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
     ]);
 
     const numbers = new Map(
-      await Promise.all(
-        plates.map(
-          async (p) =>
-            [p.plateId, numbersFor(await deps.plateNumbers(p.plateId), printerId)] as const,
-        ),
+      await mapLimit(
+        plates,
+        PLATE_NUMBERS_CONCURRENCY,
+        async (p) =>
+          [p.plateId, numbersFor(await deps.plateNumbers(ctx, p.plateId), printerId)] as const,
       ),
     );
 
@@ -197,8 +234,12 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 
   return {
     async list(query) {
-      const [page, printer] = await Promise.all([search.search(query), deps.selectedPrinter()]);
-      return { printer, models: await cards(page.models, printer), nextCursor: page.nextCursor };
+      const [page, ctx] = await Promise.all([search.search(query), deps.displayContext()]);
+      return {
+        printer: ctx.printerId,
+        models: await cards(page.models, ctx),
+        nextCursor: page.nextCursor,
+      };
     },
 
     async tags() {
