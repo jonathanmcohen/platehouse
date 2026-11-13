@@ -1,0 +1,160 @@
+/*
+ * The settings, trash and organising pages' own pieces (build plan Task 21):
+ * the themed dialog, text inputs and selects, removable chips and the token
+ * box. Built only from studio.css's tokens and shapes (Task 18), so both
+ * palettes, their contrast checks and the focus ring apply unchanged; no
+ * colour value is written here, only var() references to those tokens (the
+ * dialog's backdrop is the page's own --bg, mixed toward transparent).
+ * Nothing here restyles the shell.
+ */
+
+/* Text inputs and selects, in the look of the top bar's search box. */
+.studio-input,
+.ph-select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--muted);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.ph-select {
+  width: 100%;
+  max-width: 28rem;
+}
+
+.ph-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ph-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ph-inline-form .studio-input,
+.ph-inline-form .ph-select {
+  flex: 1 1 12rem;
+}
+
+.ph-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 28px;
+  min-width: 0;
+}
+
+/* A button, chip button or select that ignores input while a change runs
+   (aria-disabled, not disabled, so it keeps focus): it looks like
+   studio.css's disabled button. */
+.studio-button[aria-disabled="true"],
+.ph-select[aria-disabled="true"],
+.ph-chip > button[aria-disabled="true"] {
+  cursor: not-allowed;
+  filter: none;
+  opacity: 0.6;
+}
+
+.ph-small {
+  padding: 4px 10px;
+  font-size: 0.9rem;
+}
+
+.ph-button-danger {
+  color: var(--danger);
+}
+
+/* A chip with a remove button inside it. */
+.ph-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.ph-chip > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ph-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ph-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The themed dialog: a panel over the page, veiled in the palette's --bg. */
+.ph-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+}
+
+.ph-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(34rem, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.ph-dialog p {
+  margin: 0;
+}
+
+/* The new token, shown once: easy to select whole. */
+.ph-token-value {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+  user-select: all;
+}
+
+.ph-model-name {
+  font-weight: 650;
+  min-width: 0;
+}

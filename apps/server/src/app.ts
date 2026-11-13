@@ -26,6 +26,11 @@
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
+// - The web app's own JSON API under /app/api (app-api/: Task 19's library,
+//   and Task 21's settings, tokens, organising and the trash), session-class,
+//   so the gate's session and Origin checks cover every route. Without
+//   library the library routes answer an empty library, and without appApi
+//   Task 21's routes are still registered and answer 503.
 // - The web app (web/shell.ts, Task 18): the shell pages (session-class)
 //   answer with the built index.html, data-theme and the color-scheme meta
 //   written in from the ph_theme cookie, and the hashed build output is
@@ -74,6 +79,9 @@ import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
 import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
+import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
+import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
+import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
 import { installGate, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -165,6 +173,20 @@ export interface AppDeps {
    * build is missing.
    */
   web?: WebDeps;
+  /**
+   * The web app's own JSON API under /app/api (Task 21: settings, tokens and
+   * organising). Session-class like every route outside the listed
+   * prefixes. Left out, the routes still exist (so the route-class gate
+   * covers them) and answer 503.
+   */
+  appApi?: AppApiDeps;
+}
+
+/** What the /app/api routes of Task 21 read and change. */
+export interface AppApiDeps {
+  settings: SettingsApiDeps;
+  tokens: TokensApiDeps;
+  organise: OrganiseDeps;
 }
 
 /**
@@ -408,6 +430,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerV1(app, api);
+  await registerSettingsApi(app, deps.appApi?.settings);
+  await registerTokensApi(app, deps.appApi?.tokens);
+  await registerOrganiseApi(app, deps.appApi?.organise);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
     authHook: apiUploadHook(api),

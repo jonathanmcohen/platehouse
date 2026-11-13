@@ -35,6 +35,10 @@
 //      Task 12's plate numbers, with the display context (the settings row
 //      and estimates.listPrinters, through readDisplayContext) read once per
 //      page rather than once per plate.
+//      The web app's own API under /app/api (Task 21: settings, tokens,
+//      organising and the trash) shares the API's tokens, estimates and the
+//      trash; the bucket's versioning state is read just before, for the
+//      settings page's warning (AC-013).
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
@@ -57,6 +61,8 @@ import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
 import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
+import { recordVersioning } from "./app-api/settings.js";
+import { dbTokenList } from "./app-api/tokens.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -387,6 +393,13 @@ export async function start(config: Config): Promise<Server> {
     watcher = startedWatcher;
     startedWatcher.start();
 
+    // The settings page warns while bucket versioning is off (AC-013); the
+    // state is read once here, in the background, so a store that is slow to
+    // answer never holds up the start. recordVersioning never throws: a store
+    // that cannot be reached is logged and leaves the last state recorded.
+    void recordVersioning({ store, settings: repos.settings });
+
+    const tokens = createTokens({ store: dbTokenStore(db) });
     // One library for the API's content route and the file deliveries, so
     // both find a live file and its stored blob the same way.
     const apiLibrary = createApiLibrary({
@@ -414,7 +427,7 @@ export async function start(config: Config): Promise<Server> {
         group: config.oidc.group,
         cookieSecret: loginCookieKey(config.linkSecret),
       },
-      api: { tokens: createTokens({ store: dbTokenStore(db) }), library: apiLibrary },
+      api: { tokens, library: apiLibrary },
       delivery: {
         files: apiLibrary,
         library: createDeliveryLibrary({ db, store }),
@@ -429,6 +442,12 @@ export async function start(config: Config): Promise<Server> {
           }),
         plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
       }),
+      // The settings, trash and organising pages (Task 21).
+      appApi: {
+        settings: { settings: repos.settings, estimates },
+        tokens: { tokens, list: dbTokenList(db) },
+        organise: { db, trash },
+      },
       logger: true,
     });
     app = startedApp;
