@@ -25,9 +25,15 @@
 //   the record or ends short of it destroys the response, so the client
 //   sees an aborted answer, never a clean end. res.strictContentLength is
 //   not used: on a short stream it throws from res.end() and ends the
-//   process. A HEAD never opens a GetObject: it confirms the object with a
-//   HeadObject (no body) and sends the headers, so it fails where the GET
-//   would.
+//   process. A HEAD never opens a GetObject: it confirms the object exists
+//   with a HeadObject (no body) and sends the headers, so it fails where the
+//   GET would for an unknown, trashed or missing object or a store outage.
+//   It does not compare the object's size with the record (headBlob returns
+//   no size), so for an object whose size differs (a restored older
+//   version, a write behind the app's back) the GET answers 503 while the
+//   HEAD answers 200 with a Content-Length the GET will never deliver.
+//   Closing that gap needs HeadObject's size in fileHead (api/v1.ts) and
+//   blobHead, compared as checkObjectSize does; it is not in this change.
 // - A file or blob that is unknown, malformed or in the trash is 404. When
 //   the store cannot give the bytes (an outage, a missing object, a refusal)
 //   the answer is 503 "This file is unavailable right now", and nothing is
