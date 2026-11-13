@@ -88,12 +88,13 @@ async function ingest(name: string, bytes: Buffer | string) {
   return env.ingest.ingestFile({ tmpPath, originalName: name, target: "new" });
 }
 
-async function get(url: string, cookie: string | undefined = session) {
+/** A GET as the browser sends it; cookie null sends no session at all. */
+async function get(url: string, cookie: string | null = session) {
   return app.inject({
     method: "GET",
     url,
     headers: { accept: "application/json" },
-    ...(cookie === undefined ? {} : { cookies: { [SESSION_COOKIE]: cookie } }),
+    ...(cookie === null ? {} : { cookies: { [SESSION_COOKIE]: cookie } }),
   });
 }
 
@@ -159,7 +160,7 @@ describe("the library's routes", () => {
     expect(LIBRARY_API_PATHS.length).toBeGreaterThan(0);
     for (const path of LIBRARY_API_PATHS) {
       expect(path.startsWith("/app/api/"), path).toBe(true);
-      const res = await get(path, undefined);
+      const res = await get(path, null);
       expect(res.statusCode, path).toBe(401);
       expect(res.json(), path).toEqual({ error: "unauthorized" });
     }

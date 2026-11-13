@@ -28,6 +28,8 @@
 //      tokens from the api_tokens table and reads the library through the
 //      same database, store and estimates.plateNumbers; it never touches
 //      Pocket ID, so API tokens keep working while it is down (AC-081).
+//      The library page's app API (Task 19) reads the same database and
+//      estimates.plateNumbers, for the printer in settings.
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
@@ -49,6 +51,7 @@ import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
+import { createAppLibrary } from "./app-api/library.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -405,6 +408,11 @@ export async function start(config: Config): Promise<Server> {
           plateNumbers: (plateId) => estimates.plateNumbers(plateId),
         }),
       },
+      library: createAppLibrary({
+        db,
+        plateNumbers: (plateId) => estimates.plateNumbers(plateId),
+        selectedPrinter: async () => (await repos.settings.get()).printerId,
+      }),
       logger: true,
     });
     app = startedApp;
