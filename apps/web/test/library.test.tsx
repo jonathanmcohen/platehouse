@@ -34,8 +34,11 @@ import {
   CHUNK_SIZE,
   type FetchResult,
   failureMessage,
+  fetchUploadResult,
   isSupportedFile,
   MAX_UPLOAD_BYTES,
+  NOT_CONFIRMED_TEXT,
+  SENT_SESSION_ENDED_TEXT,
   type StartUpload,
   UPLOAD_ENDPOINT,
   type UploadHandlers,
@@ -221,6 +224,55 @@ describe("library render requests no model file", () => {
       /try again/i.test(b.textContent ?? ""),
     );
     expect(retry, "no Try again button").toBeDefined();
+  });
+
+  test("a failed Load more keeps the loaded cards and offers a retry beside the button", async () => {
+    let nextFails = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        requests.push(`${url.pathname}${url.search}`);
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+        if (url.searchParams.get("cursor") === "c-1") {
+          if (nextFails) return new Response("busy", { status: 503 });
+          return json({ printer: PRINTER, models: [STL], nextCursor: null });
+        }
+        return json({ printer: PRINTER, models: [PLATED, PARTIAL], nextCursor: "c-1" });
+      }),
+    );
+    await render(libraryAt("/"));
+    expect(cardNames()).toEqual(["Plated box", "Half known"]);
+    const pagerButton = () => container.querySelector<HTMLButtonElement>(".studio-pager button");
+    expect(pagerButton()?.textContent).toBe("Load more");
+
+    await act(async () => {
+      pagerButton()?.click();
+    });
+    await settle();
+    // The cards already loaded stay, and the page-wide failure is not shown.
+    expect(cardNames()).toEqual(["Plated box", "Half known"]);
+    expect(container.textContent).not.toMatch(/the library could not be loaded/i);
+    const alert = container.querySelector('.studio-pager [role="alert"]');
+    expect(alert?.textContent).toMatch(/more models could not be loaded/i);
+    expect(pagerButton()?.textContent).toBe("Try again");
+
+    // The retry asks for the same next page, not page 1.
+    nextFails = false;
+    const before = requests.length;
+    await act(async () => {
+      pagerButton()?.click();
+    });
+    await settle();
+    expect(requests.slice(before)).toEqual(["/app/api/library?cursor=c-1"]);
+    expect(cardNames()).toEqual(["Plated box", "Half known", "Bracket"]);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(pagerButton()).toBeNull();
   });
 });
 
@@ -565,6 +617,70 @@ describe("upload failures read as plain words", () => {
   });
 });
 
+describe("the result check after the last byte", () => {
+  const UPLOAD = "https://platehouse.test/app/uploads/u-9";
+
+  function answer(status: number, body: unknown) {
+    const fetchStub = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  }
+
+  test("asks GET <upload>/result and passes its answer on", async () => {
+    const fetchStub = answer(200, { status: "done", modelId: STL.id, fileId: "f-1" });
+    expect(await fetchUploadResult(UPLOAD)).toEqual({
+      status: "done",
+      modelId: STL.id,
+      fileId: "f-1",
+    });
+    expect(String(fetchStub.mock.calls[0]?.[0])).toBe(`${UPLOAD}/result`);
+  });
+
+  test("503 (the database is busy) is still pending, so it is asked again", async () => {
+    answer(503, { error: "unavailable", message: "try again" });
+    expect(await fetchUploadResult(UPLOAD)).toEqual({ status: "pending" });
+  });
+
+  test("401 (the session ended during ingest) fails the row: the file was sent, sign in and check", async () => {
+    answer(401, { error: "unauthorized" });
+    expect(await fetchUploadResult(UPLOAD)).toEqual({
+      status: "failed",
+      error: SENT_SESSION_ENDED_TEXT,
+    });
+    expect(SENT_SESSION_ENDED_TEXT).toMatch(/sent/i);
+    expect(SENT_SESSION_ENDED_TEXT).toMatch(/session has ended/i);
+    expect(SENT_SESSION_ENDED_TEXT).toMatch(/sign in/i);
+    expect(SENT_SESSION_ENDED_TEXT).toMatch(/check the library/i);
+  });
+
+  test("404 (an upload the server no longer knows) says it could not be confirmed, at once", async () => {
+    answer(404, { error: "not_found" });
+    expect(await fetchUploadResult(UPLOAD)).toEqual({
+      status: "failed",
+      error: NOT_CONFIRMED_TEXT,
+    });
+    expect(NOT_CONFIRMED_TEXT).toBe(
+      "The upload could not be confirmed; check the library before sending it again.",
+    );
+  });
+
+  test("any other refusal is not waited on either", async () => {
+    for (const status of [400, 403, 500, 502]) {
+      answer(status, { error: "x" });
+      expect(await fetchUploadResult(UPLOAD), String(status)).toEqual({
+        status: "failed",
+        error: NOT_CONFIRMED_TEXT,
+      });
+    }
+  });
+});
+
 describe("the tus options", () => {
   const file = new File([new Uint8Array(10)], "Air Dry - AMS.3mf", { lastModified: 1_700_000 });
 
@@ -854,6 +970,137 @@ describe("upload dialog shows progress per file and honours combine", () => {
     expect(started[0]?.target.kind).toBe("batch");
     expect(started[1]?.target.kind).toBe("batch");
     expect(started[1]?.target).not.toEqual(started[0]?.target);
+  });
+
+  test("combine on: a round that finishes while the dialog is hidden ends the batch", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    const dialog = (open: boolean, files: File[]) => (
+      <UploadDialog
+        open={open}
+        files={files}
+        onClose={() => {}}
+        start={start}
+        fetchResult={fetchResult}
+        resultDelayMs={0}
+      />
+    );
+    const round1 = [a];
+    await render(dialog(true, round1));
+    await act(async () => {
+      switchInput()?.click();
+    });
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    // Still sending: Hide only hides it.
+    await act(async () => {
+      button(/^hide$/i).click();
+    });
+    await render(dialog(false, round1));
+    // The round finishes while the dialog is hidden.
+    await act(async () => {
+      started[0]?.handlers.onSuccess("https://platehouse.test/app/uploads/u-5");
+    });
+    await settle();
+    // Opened again later with a new file: the switch is off and the old row is gone.
+    await render(dialog(true, [b]));
+    expect(switchInput()?.checked).toBe(false);
+    expect(container.querySelector('[data-upload="a.3mf"]')).toBeNull();
+    expect(container.querySelector('[data-upload="b.stl"]')).not.toBeNull();
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    expect(started.map((s) => s.file.name)).toEqual(["a.3mf", "b.stl"]);
+    expect(started[1]?.target).toEqual({ kind: "new" });
+  });
+
+  test("combine on: a round that finishes while the dialog is open keeps the batch until Close", async () => {
+    const { started, start, fetchResult } = stubUploads();
+    const c = new File([new Uint8Array(300)], "c.step");
+    const dialog = (files: File[]) => (
+      <UploadDialog
+        open
+        files={files}
+        onClose={() => {}}
+        start={start}
+        fetchResult={fetchResult}
+        resultDelayMs={0}
+      />
+    );
+    await render(dialog([a]));
+    await act(async () => {
+      switchInput()?.click();
+    });
+    await act(async () => {
+      button(/^upload/i).click();
+    });
+    await act(async () => {
+      started[0]?.handlers.onSuccess("https://platehouse.test/app/uploads/u-6");
+    });
+    await settle();
+    await render(dialog([c]));
+    expect(switchInput()?.checked).toBe(true);
+    await act(async () => {
+      button(/^upload 1 file/i).click();
+    });
+    expect(started[1]?.target).toEqual(started[0]?.target);
+  });
+
+  describe("the row while the result is asked for", () => {
+    const UPLOAD = "https://platehouse.test/app/uploads/u-7";
+
+    /** A fetch that answers GET <upload>/result with these statuses in turn, then done. */
+    function resultAnswers(statuses: number[]) {
+      const queue = [...statuses];
+      const fetchStub = vi.fn(async () => {
+        const status = queue.shift();
+        if (status === undefined) {
+          return new Response(JSON.stringify({ status: "done", modelId: STL.id }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ error: "x" }), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", fetchStub);
+      return fetchStub;
+    }
+
+    async function sendOne() {
+      const { started, start } = stubUploads();
+      await render(
+        <UploadDialog open files={[a]} onClose={() => {}} start={start} resultDelayMs={0} />,
+      );
+      await act(async () => {
+        button(/^upload/i).click();
+      });
+      await act(async () => {
+        started[0]?.handlers.onSuccess(UPLOAD);
+      });
+      await settle();
+      return container.querySelector('[data-upload="a.3mf"]')?.textContent ?? "";
+    }
+
+    test("an ended session says the file was sent and to sign in, not to wait", async () => {
+      const fetchStub = resultAnswers([401]);
+      expect(await sendOne()).toContain(SENT_SESSION_ENDED_TEXT);
+      expect(fetchStub).toHaveBeenCalledTimes(1);
+    });
+
+    test("an upload the server no longer knows says it could not be confirmed, at once", async () => {
+      const fetchStub = resultAnswers([404]);
+      expect(await sendOne()).toContain(NOT_CONFIRMED_TEXT);
+      expect(fetchStub).toHaveBeenCalledTimes(1);
+    });
+
+    test("a busy server (503) is asked again until the result comes", async () => {
+      const fetchStub = resultAnswers([503, 503]);
+      expect(await sendOne()).toMatch(/added/i);
+      expect(fetchStub).toHaveBeenCalledTimes(3);
+    });
   });
 
   test("a failed upload shows its reason on its own row", async () => {

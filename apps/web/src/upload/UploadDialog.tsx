@@ -7,8 +7,12 @@
 // is made at the first Upload with the switch on and kept until the dialog
 // is closed or the switch is changed, so files added and sent while an
 // earlier round is still uploading join the same model (ingest joins every
-// later file of a batch to the model the first one made). Into an existing
-// model (modelId) there is nothing to combine, so the switch is not shown.
+// later file of a batch to the model the first one made). Hiding the dialog
+// while files are sending is closing it too: when that round finishes while
+// it is hidden, the batch ends, the switch goes off and the settled rows are
+// cleared, so a file added later is never joined to the earlier model. Into
+// an existing model (modelId) there is nothing to combine, so the switch is
+// not shown.
 //
 // It is a themed dialog in the page (role dialog, aria-modal), never a
 // native browser dialog: focus moves into it when it opens, Tab stays inside
@@ -134,11 +138,23 @@ export function UploadDialog({
   const [combine, setCombine] = useState(false);
   /** The combined batch's id, from its first Upload until close or a switch change. */
   const batch = useRef<string | null>(null);
+  /** Whether the dialog is open, for a round that finishes while it is hidden. */
+  const isOpen = useRef(open);
+  isOpen.current = open;
   const upload = useTusUpload({
     ...(start === undefined ? {} : { start }),
     ...(fetchResult === undefined ? {} : { fetchResult }),
     ...(resultDelayMs === undefined ? {} : { resultDelayMs }),
-    onFinished: () => onUploaded?.(),
+    onFinished: () => {
+      // Hidden while it was sending: the user has closed it, so the round
+      // ends here, as close() would have ended it.
+      if (!isOpen.current) {
+        upload.clearSettled();
+        setCombine(false);
+        batch.current = null;
+      }
+      onUploaded?.();
+    },
   });
   const { addFiles, items, busy } = upload;
 

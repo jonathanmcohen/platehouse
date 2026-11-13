@@ -15,7 +15,10 @@
 //   HEAD on an ingested upload as finished, so resuming it would store
 //   nothing (uploads/tus.ts).
 // - When the last byte is accepted, GET <upload>/result is polled until the
-//   ingest is done or failed.
+//   ingest is done or failed. Only a 503 (the server cannot read the result
+//   now) or a lost connection is asked again; a 401 says the file was sent
+//   but the session ended, and any other refusal (a 404 for an upload the
+//   server no longer knows) says the upload could not be confirmed.
 // - A file over the server's 512 MiB limit (MAX_UPLOAD_BYTES in
 //   apps/server/src/uploads/tus.ts) is listed with the reason and never
 //   sent, like a type Platehouse does not take. A refused or failed upload
@@ -127,6 +130,14 @@ export const RESULT_POLL_MS = 1_000;
 
 /** How long a result is waited for before the row says it could not be confirmed. */
 export const RESULT_TIMEOUT_MS = 10 * 60 * 1_000;
+
+/** Shown when a sent file's ingest outcome cannot be known. */
+export const NOT_CONFIRMED_TEXT =
+  "The upload could not be confirmed; check the library before sending it again.";
+
+/** Shown when the session ended after the last byte, while the ingest ran. */
+export const SENT_SESSION_ENDED_TEXT =
+  "The file was sent, but your session has ended. Sign in again, then check the library before adding it again.";
 
 export type UploadTarget =
   | { kind: "new" }
@@ -252,10 +263,19 @@ export interface UploadResult {
 
 export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
 
-/** GET <upload>/result: Task 9's answer for a finished upload. */
+/**
+ * GET <upload>/result: Task 9's answer for a finished upload. A 503 is the
+ * server saying it cannot read the result now, so it stays pending and is
+ * asked again (as a lost connection is, by waitForResult). A 401 is a session
+ * that ended while the ingest ran: the file was sent, so the row says to sign
+ * in and check the library. Any other refusal, such as the 404 for an upload
+ * the server no longer knows, will not change by asking again.
+ */
 export const fetchUploadResult: FetchResult = async (uploadUrl) => {
   const res = await fetch(`${uploadUrl}/result`, { headers: { accept: "application/json" } });
-  if (!res.ok) return { status: "pending" };
+  if (res.status === 503) return { status: "pending" };
+  if (res.status === 401) return { status: "failed", error: SENT_SESSION_ENDED_TEXT };
+  if (!res.ok) return { status: "failed", error: NOT_CONFIRMED_TEXT };
   return (await res.json()) as UploadResult;
 };
 
@@ -380,10 +400,7 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
         return;
       }
       if (Date.now() > until) {
-        update(key, {
-          status: "failed",
-          message: "The upload could not be confirmed; check the library before sending it again.",
-        });
+        update(key, { status: "failed", message: NOT_CONFIRMED_TEXT });
         return;
       }
       await sleep(delay);

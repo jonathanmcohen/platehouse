@@ -9,7 +9,9 @@
 // - The whole page is a drop zone: files dropped on it go to onFiles, which
 //   opens the upload dialog. refreshKey reloads the grid (after an upload).
 // - Loading, an empty library, no results and a failed load each say so in
-//   words, and a failed load can be tried again.
+//   words, and a failed load can be tried again. A failed Load more keeps
+//   the cards already shown and says so beside its button, which then tries
+//   the same next page again.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { DropZone } from "../upload/DropZone";
@@ -50,6 +52,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [tags, setTags] = useState<string[]>([]);
   const [more, setMore] = useState(false);
+  /** The last Load more failed; the loaded cards and the cursor are kept. */
+  const [moreFailed, setMoreFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const generation = useRef(0);
 
@@ -71,6 +75,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     const controller = new AbortController();
     const mine = ++generation.current;
     setLoad({ state: "loading" });
+    setMoreFailed(false);
     getJson<LibraryAnswer>(query(), controller.signal)
       .then((answer) => {
         if (mine === generation.current) setLoad({ state: "ready", ...answer });
@@ -96,6 +101,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     if (load.state !== "ready" || load.nextCursor === null) return;
     const mine = generation.current;
     setMore(true);
+    setMoreFailed(false);
     try {
       const answer = await getJson<LibraryAnswer>(query(load.nextCursor));
       if (mine !== generation.current) return;
@@ -106,7 +112,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         nextCursor: answer.nextCursor,
       });
     } catch {
-      if (mine === generation.current) setLoad({ state: "failed" });
+      if (mine === generation.current) setMoreFailed(true);
     } finally {
       setMore(false);
     }
@@ -154,8 +160,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           </ul>
           {load.nextCursor === null ? null : (
             <div className="studio-pager">
+              {moreFailed ? (
+                <p className="studio-muted" role="alert">
+                  More models could not be loaded.
+                </p>
+              ) : null}
               <button type="button" className="studio-button" disabled={more} onClick={loadMore}>
-                {more ? "Loading" : "Load more"}
+                {more ? "Loading" : moreFailed ? "Try again" : "Load more"}
               </button>
             </div>
           )}
