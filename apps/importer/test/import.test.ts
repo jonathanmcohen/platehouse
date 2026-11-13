@@ -475,6 +475,14 @@ describe("exit code 2: the run could not start", () => {
     expect(seen).toHaveLength(0);
   });
 
+  it("when a credential is set to only a space, naming it in a readable line", async () => {
+    const s = setup(library());
+    const r = await s.run(["--apply"], { ...ENV, MANYFOLD_CLIENT_ID: " " });
+    expect(r.code).toBe(2);
+    expect(r.stderr[0]).toBe("MANYFOLD_CLIENT_ID not set; run it under claude-env.");
+    expect(seen).toHaveLength(0);
+  });
+
   it("on an unknown flag", async () => {
     const s = setup(library());
     const r = await s.run(["--force"]);

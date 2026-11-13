@@ -27,6 +27,31 @@ describe("createRedactor", () => {
     expect(r.redact("abcdef")).toBe(REDACTED);
   });
 
+  it("replaces a secret registered with padding when it is echoed trimmed, padded or cleaned", () => {
+    const pads = ["\n", "\r\n", "\t", " ", " \n"];
+    for (const pad of pads) {
+      for (const registered of [`tok-123456${pad}`, `${pad}tok-123456`, `${pad}tok-123456${pad}`]) {
+        const r = createRedactor([registered]);
+        for (const echoed of [
+          "tok-123456",
+          `tok-123456${pad}`,
+          `${pad}tok-123456`,
+          cleanText(registered),
+          encodeURIComponent("tok-123456"),
+        ]) {
+          expect(r.redact(`x ${echoed} y`), JSON.stringify([registered, echoed])).not.toContain(
+            "tok-123456",
+          );
+        }
+      }
+    }
+  });
+
+  it("ignores a value that is only whitespace or control characters instead of matching everything", () => {
+    const r = createRedactor([" ", "\n", "\t \r\n"]);
+    expect(r.redact("nothing secret here")).toBe("nothing secret here");
+  });
+
   it("ignores empty and missing values instead of matching everything", () => {
     const r = createRedactor(["", undefined]);
     r.add("");

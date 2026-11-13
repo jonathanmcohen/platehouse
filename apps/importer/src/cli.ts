@@ -387,8 +387,10 @@ export async function run(options: RunOptions): Promise<RunResult> {
       return { code: 2, report: null };
     }
     const [clientId, clientKey, bearer] = values as [string, string, string];
-    // The Platehouse token's body without its ph_ prefix, in case only that is echoed.
-    if (bearer.startsWith("ph_") && bearer.length > 19) redactor.add(bearer.slice(3));
+    // The Platehouse token's body without its ph_ prefix, in case only that is
+    // echoed; looked for on the trimmed token, as fetch sends it.
+    const sent = cleanText(bearer).trim();
+    if (sent.startsWith("ph_") && sent.length > 19) redactor.add(sent.slice(3));
 
     const mode: Mode = args.apply ? "apply" : "dry run";
     const manyfoldBase = options.manyfoldBase ?? MANYFOLD_BASE;

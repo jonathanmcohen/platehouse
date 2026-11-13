@@ -23,6 +23,9 @@ import { library } from "./support/library.js";
 
 useServer();
 
+const PH_VAR = ["PLATEHOUSE", "TOKEN"].join("_");
+const KEY_VAR = ["MANYFOLD", "CLIENT", "SECRET"].join("_");
+
 function forbidden(s: Setup): string[] {
   const basic = Buffer.from(`${FAKE_ID}:${FAKE_KEY}`).toString("base64");
   return [
@@ -342,6 +345,67 @@ describe("the output never shows a credential or a signed query", () => {
     expectClean(s, r.output);
     expect(r.output).not.toContain(head);
     expect(r.output).toMatch(/PATCH .*HTTP 503 busy \[redacted\]; asking where the upload stands/);
+  });
+
+  // claude-env, or whoever sets the variable, may pass a token with a
+  // newline or space before or after it. Fetch strips that from the header,
+  // so Platehouse sees, and may echo, the bare token. A 403 is used
+  // because its body is quoted; a 401's is not.
+  const PADDED = [
+    ["a trailing newline", `${FAKE_BEARER}\n`],
+    ["a trailing CRLF", `${FAKE_BEARER}\r\n`],
+    ["a trailing space", `${FAKE_BEARER} `],
+    ["a trailing tab", `${FAKE_BEARER}\t`],
+    ["a leading newline", `\n${FAKE_BEARER}`],
+    ["a leading space", ` ${FAKE_BEARER}`],
+    ["a newline on both sides", `\n${FAKE_BEARER}\n`],
+  ] as const;
+
+  for (const [what, padded] of PADDED) {
+    it(`when Platehouse's token is set with ${what} and Platehouse echoes what it received`, async () => {
+      const s = setup(library());
+      server.use(
+        http.get(`${PLATEHOUSE}/api/v1/models`, ({ request }) =>
+          HttpResponse.json(
+            { error: "forbidden", message: `got ${request.headers.get("authorization")}` },
+            { status: 403 },
+          ),
+        ),
+      );
+      const r = await s.run(["--apply"], { ...ENV, [PH_VAR]: padded });
+      expect(r.code).toBe(2);
+      expectClean(s, r.output);
+    });
+  }
+
+  it("when Platehouse's token is set with a leading space and only its body after ph_ is echoed", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(`${PLATEHOUSE}/api/v1/models`, () =>
+        HttpResponse.json(
+          { error: "forbidden", message: `unknown token ${FAKE_BEARER.slice(3)}` },
+          { status: 403 },
+        ),
+      ),
+    );
+    const r = await s.run(["--apply"], { ...ENV, [PH_VAR]: ` ${FAKE_BEARER}` });
+    expect(r.code).toBe(2);
+    expectClean(s, r.output);
+  });
+
+  it("when Manyfold's client secret is set with a trailing newline and Manyfold echoes it bare", async () => {
+    // Manyfold takes the padded secret as it was sent, then echoes it trimmed.
+    const s = setup(library(), { manyfold: { clientKey: `${FAKE_KEY}\n` } });
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m1`,
+        () => new HttpResponse(`denied for client secret ${FAKE_KEY}`, { status: 403 }),
+      ),
+    );
+    const r = await s.run(["--apply"], { ...ENV, [KEY_VAR]: `${FAKE_KEY}\n` });
+    expect(r.code).toBe(1);
+    expect(r.output).toContain(`denied for client secret ${REDACTED}`);
+    expectClean(s, r.output);
   });
 
   it("when a credential variable is missing", async () => {

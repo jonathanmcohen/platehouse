@@ -15,6 +15,13 @@
 // cannot find. And redaction comes before the cut, since a value cut in two
 // is no longer one this redactor can find.
 //
+// A credential is registered with the forms it can be echoed in: as given,
+// trimmed, and with control characters taken out, each URL-encoded too. So a
+// token set with a newline or space before or after it, which fetch strips
+// from the header and a server may echo bare, is still found, as is one the
+// output path cleaned (cleanText) before redacting. A value with nothing left
+// once trimmed and cleaned is ignored, so it cannot match every space.
+//
 // Text that came from Manyfold (model and file names) is printed through
 // cleanText as well, so a name cannot move the terminal's cursor, ring it,
 // break the report's one-line-per-item shape or reorder what follows it.
@@ -23,7 +30,10 @@
 export const REDACTED = "[redacted]";
 
 export interface Redactor {
-  /** Adds a value the output must never show. Empty and undefined values are ignored. */
+  /**
+   * Adds a value the output must never show, with its trimmed and cleaned
+   * forms. Empty, blank and undefined values are ignored.
+   */
   add(secret: string | undefined): void;
   /** text with every known secret replaced by REDACTED. */
   redact(text: string): string;
@@ -35,8 +45,15 @@ export function createRedactor(secrets: Iterable<string | undefined> = []): Reda
   let ordered: string[] = [];
 
   function add(secret: string | undefined): void {
-    if (secret === undefined || secret === "") return;
-    for (const form of [secret, encodeURIComponent(secret)]) known.add(form);
+    if (secret === undefined) return;
+    const cleaned = cleanText(secret);
+    if (cleaned.trim() === "") return;
+    const forms = new Set([secret, secret.trim(), cleaned, cleaned.trim()]);
+    for (const form of forms) {
+      if (form === "") continue;
+      known.add(form);
+      known.add(encodeURIComponent(form));
+    }
     ordered = [...known].sort((a, b) => b.length - a.length);
   }
 
