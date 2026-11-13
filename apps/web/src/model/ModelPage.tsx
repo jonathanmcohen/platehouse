@@ -18,11 +18,12 @@
 //   request in flight aborted, and an answer that comes back after that is
 //   dropped, so no request is made after unmount and an earlier model's
 //   answer never replaces the one navigated to.
-// - A reload that fails while the model is on screen keeps the model shown.
-//   While a plate is estimating it is asked again in POLL_MS; otherwise (a
-//   reload after an upload or a Retry) it is not, and the page says it could
-//   not refresh, with Try again. A 401 ends the asking either way and says
-//   the user is signed out.
+// - A reload that fails while the model is on screen keeps the model shown
+//   and says it could not refresh, with Try again. While a plate is
+//   estimating it is also asked again in POLL_MS, and the next successful
+//   load clears the notice; otherwise (a reload after an upload or a Retry)
+//   it is not asked again. A 401 ends the asking either way and says the
+//   user is signed out.
 // - Retry on a failed plate posts to /app/api/estimates/:id/retry (the
 //   gate's Origin check passes a same-origin fetch) and loads the model
 //   again, which starts the polling while the plate estimates.
@@ -204,11 +205,15 @@ export function ModelPage({
         return;
       }
       // A failed poll or reload keeps the model on screen. A 401 will not
-      // change by asking again; anything else is asked again only while a
-      // plate is estimating.
-      if (status === 401) setNotice({ id, kind: "signed-out" });
-      else if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
-      else setNotice({ id, kind: "failed" });
+      // change by asking again. Anything else says the model could not be
+      // refreshed, and is asked again only while a plate is estimating; the
+      // next successful load clears the notice.
+      if (status === 401) {
+        setNotice({ id, kind: "signed-out" });
+        return;
+      }
+      setNotice({ id, kind: "failed" });
+      if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
     }
 
     async function fetchModel() {

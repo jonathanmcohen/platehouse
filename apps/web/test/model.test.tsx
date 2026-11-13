@@ -1142,22 +1142,41 @@ describe("a reload that fails while the model is on screen", () => {
     ]);
   }
 
-  test("a failed poll while a plate is estimating is asked again in 5 s", async () => {
+  test("a failed poll while a plate is estimating is asked again in 5 s, says it could not refresh, and clears that when a poll succeeds", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     models.set(MODEL_ID, estimatingModel());
     await render(pageAt(MODEL_ID));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     models.set(MODEL_ID, 503);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     await settle();
     expect(modelRequests()).toBe(2);
+    expect(text(container.querySelector('[role="alert"]'))).toMatch(/could not be refreshed/i);
     models.set(MODEL_ID, estimatingModel());
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     await settle();
     expect(modelRequests()).toBe(3);
+    expect(text(container.querySelector("h1"))).toBe("Cube set");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test("polls that keep failing while a plate is estimating keep being asked, and the notice stays", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, estimatingModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, 500);
+    for (let n = 2; n <= 4; n++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await settle();
+      expect(modelRequests()).toBe(n);
+      expect(text(container.querySelector('[role="alert"]'))).toMatch(/could not be refreshed/i);
+    }
     expect(text(container.querySelector("h1"))).toBe("Cube set");
   });
 
