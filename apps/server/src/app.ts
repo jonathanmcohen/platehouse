@@ -60,6 +60,9 @@ import Fastify, {
 import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
+import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
+import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
+import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
 import { installGate, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -132,6 +135,20 @@ export interface AppDeps {
    * build is missing.
    */
   web?: WebDeps;
+  /**
+   * The web app's own JSON API under /app/api (Task 21: settings, tokens and
+   * organising). Session-class like every route outside the listed
+   * prefixes. Left out, the routes still exist (so the route-class gate
+   * covers them) and answer 503.
+   */
+  appApi?: AppApiDeps;
+}
+
+/** What the /app/api routes of Task 21 read and change. */
+export interface AppApiDeps {
+  settings: SettingsApiDeps;
+  tokens: TokensApiDeps;
+  organise: OrganiseDeps;
 }
 
 /**
@@ -341,6 +358,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     uploads: deps.uploads,
   });
   await registerV1(app, api);
+  await registerSettingsApi(app, deps.appApi?.settings);
+  await registerTokensApi(app, deps.appApi?.tokens);
+  await registerOrganiseApi(app, deps.appApi?.organise);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
     authHook: apiUploadHook(api),
