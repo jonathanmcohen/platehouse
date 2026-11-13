@@ -98,6 +98,8 @@ export interface ModelPlate {
   objectCount: number;
   thumbnail: string | null;
   numbers: PlateNumbers;
+  /** Whether an estimate for the selected printer is queued or slicing now. */
+  estimatePending: boolean;
 }
 
 export interface ProjectFilament {
@@ -155,13 +157,17 @@ export const POLL_MS = 5000;
 
 /**
  * Whether a plate is waiting on its estimate: it is estimating, or an older
- * estimate is shown while the new one is queued or slicing (stale with no
- * failure).
+ * estimate is shown while the new one is queued or slicing (stale, with the
+ * server saying an estimate for the selected printer is pending). A stale
+ * set alone is not enough: an older estimate also stays shown when no new
+ * one was ever queued, such as when the stored printer is no longer in the
+ * slicer's menu or the menu could not be read, and then nothing is coming.
  */
-export function isEstimating(numbers: PlateNumbers): boolean {
+export function isEstimating(plate: Pick<ModelPlate, "numbers" | "estimatePending">): boolean {
+  const { numbers, estimatePending } = plate;
   const state = numbers.platehouse?.state;
   if (state === "estimating") return true;
-  return state === "stale" && numbers.failure === undefined;
+  return state === "stale" && estimatePending && numbers.failure === undefined;
 }
 
 /**
@@ -175,7 +181,7 @@ export function isDeriving(file: ModelFile): boolean {
 
 /** Whether the page should ask again: a plate is estimating or a file is being rendered. */
 export function needsPolling(model: ModelView): boolean {
-  return model.files.some((f) => isDeriving(f) || f.plates.some((p) => isEstimating(p.numbers)));
+  return model.files.some((f) => isDeriving(f) || f.plates.some((p) => isEstimating(p)));
 }
 
 type Load =

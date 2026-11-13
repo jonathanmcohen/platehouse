@@ -8,7 +8,9 @@
 //   estimate, with the slicer and its version, the printer, the process and
 //   each filament's preset (Bambu's own, Orca's Generic, or the file's own).
 //   While it runs it says Estimating; an older one shown meanwhile is marked
-//   as made for the previous printer (or Orca version) (AC-031).
+//   as made for the previous printer (or Orca version) (AC-031), and says a
+//   new one is on its way only when the server says one is queued or
+//   slicing (pending).
 // - A plate that could not be sliced: the reason in plain words, Orca's own
 //   message behind a Details button, and Retry, which queues the slice again
 //   from the stored file (no re-upload). A refused or failed retry is said
@@ -118,11 +120,12 @@ function FileNumbers({ numbers }: { numbers: Numbers }) {
 function EstimateNumbers({
   numbers,
   printer,
-  failed,
+  pending,
 }: {
   numbers: PlatehouseNumbers;
   printer: string;
-  failed: boolean;
+  /** Whether a new estimate for the selected printer is queued or slicing. */
+  pending: boolean;
 }) {
   return (
     <div className="ph-numbers">
@@ -140,7 +143,7 @@ function EstimateNumbers({
               {numbers.printerId === printer
                 ? `Made with the previous slicer version, ${numbers.staleFor ?? "unknown"}.`
                 : `Made for the previous printer, ${numbers.printerLabel}.`}
-              {failed ? null : ` A new estimate for ${printer} is on its way.`}
+              {pending ? ` A new estimate for ${printer} is on its way.` : null}
             </p>
           ) : null}
           <Facts numbers={numbers} printerWord="Printer" />
@@ -156,6 +159,8 @@ export interface PlateNumbersViewProps {
   printer: string;
   /** The file's project filament list, shown when the plate has no numbers yet. */
   projectFilaments: ProjectFilament[];
+  /** Whether an estimate for the selected printer is queued or slicing (ModelPlate.estimatePending). */
+  pending: boolean;
   /** Queues a failed estimate again; resolves true when it was queued. */
   onRetry(estimateId: string): Promise<boolean>;
 }
@@ -164,6 +169,7 @@ export function PlateNumbersView({
   numbers,
   printer,
   projectFilaments,
+  pending,
   onRetry,
 }: PlateNumbersViewProps) {
   const detailId = useId();
@@ -191,7 +197,11 @@ export function PlateNumbersView({
     <div className="ph-plate-numbers">
       {file === undefined ? null : <FileNumbers numbers={file} />}
       {platehouse === undefined ? null : (
-        <EstimateNumbers numbers={platehouse} printer={printer} failed={failure !== undefined} />
+        <EstimateNumbers
+          numbers={platehouse}
+          printer={printer}
+          pending={pending && failure === undefined}
+        />
       )}
       {failure === undefined ? null : (
         <div className="ph-numbers ph-failure">

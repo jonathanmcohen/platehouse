@@ -10,10 +10,18 @@
 // those files, and uploads keep going while it is hidden. When an upload
 // round finishes, the library reloads.
 //
-// The model page (Task 20) is at /models/:id. Files dropped on it open the
-// same dialog aimed at that model (modelId), where the Combine switch is not
-// shown (Jon, 2026-11-12); Add and a drop on the library aim it at new
-// models again. When an upload round finishes, the model page reloads too.
+// The model page (Task 20) is at /models/:id. Files dropped on it open a
+// dialog aimed at that model (modelId), where the Combine switch is not
+// shown (Jon, 2026-11-12); Add and a drop on the library open the dialog for
+// new models. There is one dialog per target, never one dialog whose target
+// changes: the dialog for new models, and one for each model files were
+// dropped on, each mounted from its first use for as long as the app runs.
+// The dialog sends every unsent row to its target when Upload is pressed
+// and keeps unsent rows while a round is still sending, so a shared dialog
+// would send files dropped on a model, and left unsent, to new models after
+// a drop on the library (and the reverse). With a dialog per target, a row
+// goes where it was added, and uploads in a hidden dialog keep going. When
+// an upload round finishes, the model page reloads too.
 import { type ReactNode, StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
@@ -39,6 +47,12 @@ function Section({ title }: { title: string }) {
   );
 }
 
+/** The upload dialog for new models (Add and a library drop), by its key. */
+const NEW_MODELS = "";
+
+/** A dialog with nothing dropped for it yet. */
+const NO_FILES: File[] = [];
+
 /** The page at each section path other than / that has one (Task 21). */
 const PAGES: Readonly<Record<string, ReactNode>> = {
   "/creators": <CreatorsPage />,
@@ -49,17 +63,23 @@ const PAGES: Readonly<Record<string, ReactNode>> = {
 };
 
 function App() {
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [dropped, setDropped] = useState<File[]>([]);
-  /** The model a model-page drop aims the dialog at; undefined for new models. */
-  const [uploadModel, setUploadModel] = useState<string | undefined>(undefined);
+  /** The open dialog's key: NEW_MODELS or a model id; null when none is open. */
+  const [openFor, setOpenFor] = useState<string | null>(null);
+  /**
+   * The files last dropped for each dialog, by its key (each new array is
+   * added to that dialog once). A model id is here from its first drop, so
+   * its dialog, with its rows and uploads, stays mounted.
+   */
+  const [dropped, setDropped] = useState<Readonly<Record<string, File[]>>>({});
   const [refreshKey, setRefreshKey] = useState(0);
 
   function openWith(files: File[], modelId?: string) {
-    setUploadModel(modelId);
-    setDropped(files);
-    setUploadOpen(true);
+    const key = modelId ?? NEW_MODELS;
+    setDropped((all) => ({ ...all, [key]: files }));
+    setOpenFor(key);
   }
+
+  const targets = [NEW_MODELS, ...Object.keys(dropped).filter((key) => key !== NEW_MODELS)];
 
   return (
     <Shell initialTheme={readTheme(document)} onAdd={() => openWith([])}>
@@ -77,13 +97,16 @@ function App() {
         ))}
         <Route path="*" element={<Section title="Page not found" />} />
       </Routes>
-      <UploadDialog
-        open={uploadOpen}
-        files={dropped}
-        {...(uploadModel === undefined ? {} : { modelId: uploadModel })}
-        onClose={() => setUploadOpen(false)}
-        onUploaded={() => setRefreshKey((n) => n + 1)}
-      />
+      {targets.map((key) => (
+        <UploadDialog
+          key={key === NEW_MODELS ? "new" : `model:${key}`}
+          open={openFor === key}
+          files={dropped[key] ?? NO_FILES}
+          {...(key === NEW_MODELS ? {} : { modelId: key })}
+          onClose={() => setOpenFor(null)}
+          onUploaded={() => setRefreshKey((n) => n + 1)}
+        />
+      ))}
     </Shell>
   );
 }

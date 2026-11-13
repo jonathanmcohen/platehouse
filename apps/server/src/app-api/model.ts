@@ -27,7 +27,9 @@
 // - Each plate's numbers are Task 12's plateNumbers, with the display
 //   context (the settings row and the printer menu, readDisplayContext)
 //   read once per page and at most PLATE_NUMBERS_CONCURRENCY lookups at a
-//   time, as the library page does (app-api/library.ts).
+//   time, as the library page does (app-api/library.ts). Beside them,
+//   estimatePending says whether an estimate for the selected printer and
+//   Orca version is queued or slicing, read for every plate in one query.
 // - Answers are JSON and never cached. Errors carry no detail from the
 //   database.
 import type { FastifyInstance } from "fastify";
@@ -52,6 +54,14 @@ export interface ModelPlate {
   /** /blobs/<id> of the plate's stored thumbnail; null when there is none. */
   thumbnail: string | null;
   numbers: PlateNumbers;
+  /**
+   * Whether a Platehouse estimate for the selected printer and the current
+   * Orca version is queued or slicing now. The page polls on this, not on a
+   * stale set alone: plateNumbers keeps an older estimate shown (stale) also
+   * when no new one was ever queued, such as when the stored printer is no
+   * longer in the slicer's menu or the menu could not be read.
+   */
+  estimatePending: boolean;
 }
 
 export interface ModelFileView {
@@ -222,13 +232,34 @@ export function createAppModel(deps: AppModelDeps): AppModel {
       const stored = (blobId: string | null, kind: BlobKind): string | null =>
         blobId !== null && kindOf.get(blobId) === kind ? blobId : null;
 
-      const numbers = new Map(
-        await mapLimit(
+      const [numberPairs, pendingRows] = await Promise.all([
+        mapLimit(
           plates,
           PLATE_NUMBERS_CONCURRENCY,
           async (p) => [p.id, await deps.plateNumbers(ctx, p.id)] as const,
         ),
-      );
+        plates.length === 0
+          ? []
+          : db
+              .selectFrom("estimates")
+              .select("plateId")
+              .where(
+                "plateId",
+                "in",
+                plates.map((p) => p.id),
+              )
+              .where("source", "=", "platehouse")
+              .where("printerId", "=", ctx.printerId)
+              .where((eb) =>
+                ctx.orcaVersion === null
+                  ? eb("slicerVersion", "is", null)
+                  : eb("slicerVersion", "=", ctx.orcaVersion),
+              )
+              .where("status", "in", ["pending", "running"])
+              .execute(),
+      ]);
+      const numbers = new Map(numberPairs);
+      const pending = new Set(pendingRows.map((r) => r.plateId));
 
       return {
         id: model.id,
@@ -279,6 +310,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                 objectCount: p.objectCount,
                 thumbnail: p.thumbnailId === null ? null : blobUrl(p.thumbnailId),
                 numbers: numbers.get(p.id) ?? {},
+                estimatePending: pending.has(p.id),
               })),
           };
         }),

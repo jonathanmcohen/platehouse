@@ -60,6 +60,7 @@ export function PlatesTab({ model, onRetry, navigateTo, platform }: PlatesTabPro
                       numbers={plate.numbers}
                       printer={model.printer}
                       projectFilaments={file.filaments}
+                      pending={plate.estimatePending}
                       onRetry={onRetry}
                     />
                   </li>

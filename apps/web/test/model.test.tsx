@@ -49,6 +49,48 @@ import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+/**
+ * For the app test at the end, which loads main.tsx itself: every React root
+ * made, so it can unmount the app's, and every tus upload started, with its
+ * metadata (the target). The stand-in Upload sends nothing; no other test
+ * here starts a real tus upload.
+ */
+const recorded = vi.hoisted(() => ({
+  roots: [] as Array<{ unmount(): void }>,
+  uploads: [] as Array<{ name: string; metadata: Record<string, string> }>,
+}));
+
+vi.mock("react-dom/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-dom/client")>();
+  return {
+    ...actual,
+    createRoot: (...args: Parameters<typeof actual.createRoot>) => {
+      const made = actual.createRoot(...args);
+      recorded.roots.push(made);
+      return made;
+    },
+  };
+});
+
+vi.mock("tus-js-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("tus-js-client")>();
+  class Upload {
+    url: string | null = null;
+    constructor(file: File, options: { metadata?: Record<string, string> }) {
+      recorded.uploads.push({ name: file.name, metadata: { ...options.metadata } });
+    }
+    findPreviousUploads() {
+      return Promise.resolve([]);
+    }
+    resumeFromPreviousUpload() {}
+    start() {}
+    abort() {
+      return Promise.resolve();
+    }
+  }
+  return { ...actual, Upload };
+});
+
 const P1S = "Bambu Lab P1S 0.4 nozzle";
 const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
 
@@ -118,7 +160,17 @@ function estimate(
   } as NonNullable<PlateNumbers["platehouse"]>;
 }
 
-function plate(index: number, name: string | null, numbers: PlateNumbers): ModelPlate {
+/**
+ * A plate. estimatePending says whether an estimate for the selected printer
+ * is queued or slicing; it defaults to true only for the estimating state,
+ * which the server gives only then.
+ */
+function plate(
+  index: number,
+  name: string | null,
+  numbers: PlateNumbers,
+  estimatePending = numbers.platehouse?.state === "estimating",
+): ModelPlate {
   return {
     id: `0198f0c4-0000-7000-8000-00000000d00${index}`,
     index,
@@ -126,6 +178,7 @@ function plate(index: number, name: string | null, numbers: PlateNumbers): Model
     objectCount: 1,
     thumbnail: thumb(index),
     numbers,
+    estimatePending,
   };
 }
 
@@ -687,21 +740,71 @@ describe("estimating state renders and is replaced when numbers arrive", () => {
   });
 
   test("isEstimating and needsPolling: estimating, or an older estimate shown while the new one runs", () => {
-    expect(isEstimating({ platehouse: estimate("estimating") })).toBe(true);
-    expect(isEstimating({ platehouse: estimate("stale", { staleFor: X1C }) })).toBe(true);
-    expect(
-      isEstimating({
-        platehouse: estimate("stale", { staleFor: X1C }),
-        failure: { estimateId: EST_FAILED, reason: "bed_too_small", words: "x", detail: null },
-      }),
-    ).toBe(false);
-    expect(isEstimating({ platehouse: estimate("current") })).toBe(false);
-    expect(isEstimating({ file: fileNumbers(1) })).toBe(false);
-    expect(isEstimating({})).toBe(false);
+    const STALE = estimate("stale", { staleFor: X1C });
+    const FAILED = { estimateId: EST_FAILED, reason: "bed_too_small", words: "x", detail: null };
+    expect(isEstimating(plate(1, null, { platehouse: estimate("estimating") }))).toBe(true);
+    expect(isEstimating(plate(1, null, { platehouse: STALE }, true))).toBe(true);
+    // An older estimate with nothing queued for the selected printer: nothing is coming.
+    expect(isEstimating(plate(1, null, { platehouse: STALE }, false))).toBe(false);
+    expect(isEstimating(plate(1, null, { platehouse: STALE, failure: FAILED }, false))).toBe(false);
+    expect(isEstimating(plate(1, null, { platehouse: estimate("current") }))).toBe(false);
+    expect(isEstimating(plate(1, null, { file: fileNumbers(1) }))).toBe(false);
+    expect(isEstimating(plate(1, null, {}))).toBe(false);
     expect(needsPolling(threePlates())).toBe(false);
     expect(
       needsPolling(model([threeMf([plate(1, null, { platehouse: estimate("estimating") })])])),
     ).toBe(true);
+  });
+
+  test("an older estimate with nothing queued for the selected printer never polls and promises nothing", async () => {
+    // The stored printer left the slicer's menu, or the menu could not be
+    // read: the older estimate stays shown, but no new one was queued.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(
+            1,
+            "Base",
+            { platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }) },
+            false,
+          ),
+        ]),
+      ]),
+    );
+    await render(pageAt(MODEL_ID));
+    const only = text(plateItems()[0]);
+    expect(only).toMatch(/previous printer/i);
+    expect(only).not.toMatch(/on its way/i);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(1);
+  });
+
+  test("an older estimate shown while the new one is queued says it is on its way and polls", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(
+            1,
+            "Base",
+            { platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }) },
+            true,
+          ),
+        ]),
+      ]),
+    );
+    await render(pageAt(MODEL_ID));
+    expect(text(plateItems()[0])).toContain(`A new estimate for ${P1S} is on its way.`);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(modelRequests()).toBe(2);
   });
 });
 
@@ -1390,5 +1493,102 @@ describe("a STEP or SCAD render that lands while the page is open", () => {
     expect(needsPolling(model([PENDING_STEP]))).toBe(true);
     expect(needsPolling(model([STL_FILE, PENDING_SCAD]))).toBe(true);
     expect(needsPolling(model([MESHED_STEP, FAILED_SCAD, STL_FILE]))).toBe(false);
+  });
+});
+
+describe("the app's upload dialog keeps each file's target from when it was added", () => {
+  function fileDrop(files: File[]): Event {
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { types: ["Files"], files } });
+    return drop;
+  }
+
+  function stl(name: string): File {
+    return new File([new Uint8Array(10)], name);
+  }
+
+  function dialog(): HTMLElement {
+    const open = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')];
+    expect(open).toHaveLength(1);
+    return open[0] as HTMLElement;
+  }
+
+  /** The file names listed in the open dialog. */
+  function listed(): string[] {
+    return [...dialog().querySelectorAll<HTMLElement>("[data-upload]")].map(
+      (row) => row.dataset.upload ?? "",
+    );
+  }
+
+  async function dropOn(el: Element | null, files: File[]) {
+    if (el === null) throw new Error("nothing to drop on");
+    await act(async () => {
+      el.dispatchEvent(fileDrop(files));
+    });
+    await settle();
+  }
+
+  function sent(): Array<[string, string]> {
+    return recorded.uploads.map(({ name, metadata }) => [name, metadata.modelId ?? "new"]);
+  }
+
+  test("files left unsent for a model never go to new models, and new-model files never join the model", async () => {
+    models.set(MODEL_ID, model([STL_FILE]));
+    recorded.uploads.length = 0;
+    window.history.pushState({}, "", `/models/${MODEL_ID}`);
+    const appRoot = document.createElement("div");
+    appRoot.id = "root";
+    document.body.append(appRoot);
+    const rootsBefore = recorded.roots.length;
+    try {
+      await act(async () => {
+        await import("../src/main");
+      });
+      await settle();
+      const page = () => appRoot.querySelector("[data-dropzone]");
+      const backdrop = () => document.querySelector(".ph-dialog-backdrop");
+
+      // On the model page: a.stl goes in and is still sending; b.stl is
+      // added to the dialog and left unsent; the dialog is hidden.
+      await dropOn(page(), [stl("a.stl")]);
+      expect(text(dialog())).toContain("The files are added to this model.");
+      await click(button(/^upload/i, dialog()));
+      await dropOn(backdrop(), [stl("b.stl")]);
+      expect(listed()).toEqual(["a.stl", "b.stl"]);
+      await click(button(/^hide$/i, dialog()));
+
+      // Add opens the dialog for new models: b.stl is not in it, and
+      // Upload sends only the file added there, as a new model. e.stl is
+      // then added and left unsent.
+      await click(button(/^\+?\s*add$/i, appRoot));
+      expect(text(dialog())).toContain("Each file becomes its own model");
+      expect(listed()).toEqual([]);
+      await dropOn(backdrop(), [stl("c.stl")]);
+      await click(button(/^upload/i, dialog()));
+      expect(sent()).toEqual([
+        ["a.stl", MODEL_ID],
+        ["c.stl", "new"],
+      ]);
+      await dropOn(backdrop(), [stl("e.stl")]);
+      await click(button(/^hide$/i, dialog()));
+
+      // Back on the model page: its dialog still has b.stl and not e.stl,
+      // and Upload sends b.stl and the new d.stl into the model.
+      await dropOn(page(), [stl("d.stl")]);
+      expect(text(dialog())).toContain("The files are added to this model.");
+      expect(listed()).toEqual(["a.stl", "b.stl", "d.stl"]);
+      await click(button(/^upload/i, dialog()));
+      expect(sent()).toEqual([
+        ["a.stl", MODEL_ID],
+        ["c.stl", "new"],
+        ["b.stl", MODEL_ID],
+        ["d.stl", MODEL_ID],
+      ]);
+    } finally {
+      const appReact = recorded.roots[rootsBefore];
+      await act(async () => appReact?.unmount());
+      appRoot.remove();
+      window.history.pushState({}, "", "/");
+    }
   });
 });

@@ -325,6 +325,7 @@ describe("a .3mf's plates (AC-030, AC-051)", () => {
     expect(one?.numbers.file?.filaments[0]).toMatchObject({ type: "PLA", color: "#00AE42" });
     expect(two?.numbers).toEqual({});
     expect(three?.numbers.file).toMatchObject({ timeSeconds: 3000 });
+    expect(file?.plates.map((p) => p.estimatePending)).toEqual([false, false, false]);
   });
 
   test("a thumbnail that is not a stored thumbnail blob of the model is never named", async () => {
@@ -389,6 +390,7 @@ describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
     expect((await modelView(modelId)).files[0]?.plates[0]?.numbers.platehouse?.state).toBe(
       "estimating",
     );
+    expect((await modelView(modelId)).files[0]?.plates[0]?.estimatePending).toBe(true);
     await env.db
       .updateTable("estimates")
       .set({ status: "ok", timeSeconds: 900, weightGrams: 7, finishedAt: new Date() })
@@ -396,6 +398,58 @@ describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
       .execute();
     const landed = (await modelView(modelId)).files[0]?.plates[0]?.numbers.platehouse;
     expect(landed).toMatchObject({ state: "current", timeSeconds: 900, weightGrams: 7 });
+  });
+
+  test("estimatePending says whether an estimate for the selected printer and Orca version is queued or slicing", async () => {
+    const { modelId, fileId } = await ingest(`Pending ${marker()}.3mf`, build3mf({ plates: 1 }));
+    const [only] = await platesOf(fileId);
+    const plateId = only?.id ?? "";
+    const plate = async () => (await modelView(modelId)).files[0]?.plates[0];
+
+    // An older finished estimate for the X1C, and nothing queued for the
+    // P1S (as when the stored printer left the menu): stale, nothing pending.
+    const older = await env.repos.estimates.upsertPending({
+      plateId,
+      printerId: X1C.id,
+      printerModelId: X1C.modelId,
+      nozzle: X1C.nozzle,
+      slicer: "OrcaSlicer",
+      slicerVersion: "2.5.0",
+    });
+    await env.db
+      .updateTable("estimates")
+      .set({ status: "ok", timeSeconds: 700, weightGrams: 6, finishedAt: new Date() })
+      .where("id", "=", older.id)
+      .execute();
+    expect((await plate())?.numbers.platehouse?.state).toBe("stale");
+    expect((await plate())?.estimatePending).toBe(false);
+
+    // A pending estimate for the P1S with an older Orca version is not the one wanted.
+    await env.repos.estimates.upsertPending({
+      plateId,
+      printerId: P1S.id,
+      printerModelId: P1S.modelId,
+      nozzle: P1S.nozzle,
+      slicer: "OrcaSlicer",
+      slicerVersion: "2.4.0",
+    });
+    expect((await plate())?.estimatePending).toBe(false);
+
+    // Queued, then slicing, for the P1S and the current version: pending.
+    const id = await platehouseEstimate(plateId, "pending");
+    expect((await plate())?.numbers.platehouse?.state).toBe("stale");
+    expect((await plate())?.estimatePending).toBe(true);
+    await env.db.updateTable("estimates").set({ status: "running" }).where("id", "=", id).execute();
+    expect((await plate())?.estimatePending).toBe(true);
+
+    // It lands: nothing pending any more.
+    await env.db
+      .updateTable("estimates")
+      .set({ status: "ok", timeSeconds: 900, weightGrams: 7, finishedAt: new Date() })
+      .where("id", "=", id)
+      .execute();
+    expect((await plate())?.numbers.platehouse?.state).toBe("current");
+    expect((await plate())?.estimatePending).toBe(false);
   });
 
   test("a failed plate shows the reason in plain words; its siblings keep their numbers", async () => {
