@@ -79,6 +79,7 @@ import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
 import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
+import { type AppModel, emptyAppModel, registerModelApi } from "./app-api/model.js";
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
@@ -161,6 +162,13 @@ export interface AppDeps {
    * test walks them.
    */
   library?: AppLibrary;
+  /**
+   * The model page's app API (Task 20): a model with its files, plates and
+   * numbers, and the retry of a failed estimate. Left out, the routes are
+   * still there (every model is 404, nothing is retried), so the
+   * route-class test walks them.
+   */
+  model?: AppModel;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged
@@ -429,6 +437,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     uploads: deps.uploads,
   });
   await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
+  await registerModelApi(app, deps.model ?? emptyAppModel);
   await registerV1(app, api);
   await registerSettingsApi(app, deps.appApi?.settings);
   await registerTokensApi(app, deps.appApi?.tokens);

@@ -188,8 +188,8 @@ describe("constants", () => {
     expect(resolveTheme(value)).toBe(theme);
   });
 
-  test("the shell pages are the sidebar's sections, each a session-class page", () => {
-    // Task 21 adds the trash and settings pages.
+  test("the shell pages are the sidebar's sections and the model page, each a session-class page", () => {
+    // Task 21 adds the trash and settings pages, Task 20 the model page.
     expect([...SHELL_PAGES]).toEqual([
       "/",
       "/creators",
@@ -197,6 +197,7 @@ describe("constants", () => {
       "/tags",
       "/trash",
       "/settings",
+      "/models/:id",
     ]);
     for (const page of SHELL_PAGES) expect(patternClass(page), page).toBe("session");
   });
