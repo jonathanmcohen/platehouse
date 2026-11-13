@@ -2,7 +2,9 @@
 // 21). Without ?name= the page lists every creator, collection or tag that
 // has live models, with how many. With ?name= it shows that one's models,
 // each ready to organise (ModelRows), and a link to the library filtered by
-// it. The name lives in the query string, so the page path stays the one
+// it. ModelRows stays on the page once the models are in, even when the
+// last one is moved to the trash, so its status line can say so and take
+// focus. The name lives in the query string, so the page path stays the one
 // shell page the server answers (SHELL_PAGES) and a reload or a shared link
 // shows the same thing.
 import { Link, useSearchParams } from "react-router";
@@ -84,15 +86,12 @@ function GroupModels({ title, filter, name }: GroupPageProps & { name: string })
         {rows.data === undefined && rows.error === undefined ? (
           <p className="studio-muted">Loading the models.</p>
         ) : null}
-        {rows.data !== undefined && models.length === 0 ? (
-          <p className="studio-empty">No models here.</p>
-        ) : null}
-        {models.length > 0 ? (
+        {rows.data === undefined ? null : (
           <ModelRows
             models={models}
             update={(change) => rows.set((prev) => ({ ...prev, models: change(prev.models) }))}
           />
-        ) : null}
+        )}
         {rows.data?.nextCursor ? (
           <p className="studio-muted">
             Only the first {models.length} models are shown here; the library shows them all.

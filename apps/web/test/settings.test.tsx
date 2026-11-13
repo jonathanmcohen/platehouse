@@ -103,6 +103,12 @@ function hold(key: string): () => Promise<void> {
 }
 
 /**
+ * Calls that fail: a call whose "METHOD path" is here answers 503, as the
+ * server does when a dependency is down, without acting on it.
+ */
+const failing = new Set<string>();
+
+/**
  * When set, Empty trash leaves the last model in the trash and answers as
  * the server does for PurgeIncomplete (apps/server/src/app-api/organise.ts).
  */
@@ -153,6 +159,9 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   calls.push({ method, path: `${path}${url.search}`, body });
   const gate = held.get(`${method} ${path}`);
   if (gate !== undefined) await gate;
+  if (failing.has(`${method} ${path}`)) {
+    return json(503, { error: "unavailable", message: "Down for a moment." });
+  }
   const seg = path.split("/").slice(3); // after /app/api
   const model = (id: string | undefined) => state.models.find((m) => m.id === id);
 
@@ -211,6 +220,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(200, { purged });
   }
   if (method === "POST" && seg[0] === "trash" && seg[2] === "restore") {
+    if (!state.trash.some((m) => m.id === seg[1])) return json(404, { error: "not_found" });
     state.trash = state.trash.filter((m) => m.id !== seg[1]);
     return json(204);
   }
@@ -273,6 +283,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(204);
   }
   if (method === "POST" && seg[0] === "models" && seg[2] === "trash") {
+    if (model(seg[1]) === undefined) return json(404, { error: "not_found" });
     state.models = state.models.filter((m) => m.id !== seg[1]);
     return json(204);
   }
@@ -340,6 +351,7 @@ beforeEach(() => {
   calls.length = 0;
   issued.length = 0;
   held.clear();
+  failing.clear();
   emptyIncomplete = false;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
@@ -1134,6 +1146,308 @@ describe("the organising pages", () => {
     await click(button("Move Hook to the trash"));
     expect(callsTo("POST", "/app/api/models/m2/trash")).toHaveLength(1);
     expect(text()).not.toContain("Hook.stl");
+  });
+});
+
+/** The focused element, as focused() reads it, checked never to be the page body. */
+function focusedNotBody(): Element {
+  const active = focused();
+  expect(active).not.toBe(document.body);
+  return active;
+}
+
+function statusLine(): HTMLElement {
+  const found = document.querySelector<HTMLElement>('[role="status"]');
+  if (found === null) throw new Error("no status line");
+  return found;
+}
+
+// Every place on these pages where a focused control is disabled, removed
+// or replaced, one category at a time: a busy control, a success that
+// removes the control, a failure, the last row of a list leaving, and a
+// dialog closing. Focus must land on a sensible element, never the body.
+describe("keyboard focus when a control is busy, removed or replaced", () => {
+  test("busy: while Move to trash runs, focus stays on it and a second press sends nothing", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("POST /app/api/models/m1/trash");
+    const trash = button("Move Cable clip to the trash");
+    trash.focus();
+    await click(trash);
+    expect(focusedNotBody()).toBe(trash);
+    expect(trash.matches(":disabled")).toBe(false);
+    expect(trash.getAttribute("aria-disabled")).toBe("true");
+    await click(trash);
+    expect(callsTo("POST", "/app/api/models/m1/trash")).toHaveLength(1);
+    await release();
+  });
+
+  test("busy: while a Restore runs, focus stays on it and a second press sends nothing", async () => {
+    await show("/trash", <TrashPage />);
+    const release = hold("POST /app/api/trash/m-trashed-1/restore");
+    const restore = button("Restore Old benchy");
+    restore.focus();
+    await click(restore);
+    expect(focusedNotBody()).toBe(restore);
+    expect(restore.matches(":disabled")).toBe(false);
+    expect(restore.getAttribute("aria-disabled")).toBe("true");
+    await click(restore);
+    expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(1);
+    await release();
+    expect(text()).not.toContain("no longer there");
+  });
+
+  test("busy and failure: Create token keeps focus while it runs and after it fails", async () => {
+    await show("/settings", <SettingsPage />);
+    failing.add("POST /app/api/tokens");
+    const release = hold("POST /app/api/tokens");
+    const input = labelled<HTMLInputElement>("Token name");
+    await type(input, "Claude Code on mini01");
+    const create = button("Create token");
+    create.focus();
+    await click(create);
+    expect(focusedNotBody()).toBe(create);
+    expect(create.matches(":disabled")).toBe(false);
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    // A second press, or Enter in the name, sends nothing while it runs.
+    await click(create);
+    await submit(input);
+    expect(callsTo("POST", "/app/api/tokens")).toHaveLength(1);
+
+    await release();
+    expect(dialog()).toBeNull();
+    expect(text()).toContain("This is unavailable right now. Try again in a moment.");
+    expect(focusedNotBody()).toBe(create);
+    expect(create.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("success: after Move to trash, focus goes to the next model's Move to trash", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const trash = button("Move Cable clip to the trash");
+    trash.focus();
+    await click(trash);
+    expect(trash.isConnected).toBe(false);
+    expect(focusedNotBody()).toBe(button("Move Hook to the trash"));
+    expect(statusLine().textContent).toContain("Moved Cable clip to the trash.");
+  });
+
+  test("success: after a Restore, focus goes to the next model's Restore", async () => {
+    await show("/trash", <TrashPage />);
+    const restore = button("Restore Old benchy");
+    restore.focus();
+    await click(restore);
+    expect(restore.isConnected).toBe(false);
+    expect(focusedNotBody()).toBe(button("Restore Broken clip"));
+  });
+
+  test("success: after a revoke, focus goes to the next token's Revoke", async () => {
+    state.tokens.push({
+      id: "t9",
+      name: "Claude Code on mini02",
+      prefix: "ph_Zy9xW",
+      createdAt: "2026-11-02T09:00:00.000Z",
+      lastUsedAt: null,
+    });
+    await show("/settings", <SettingsPage />);
+    const revoke = button("Revoke Claude Code on mba");
+    revoke.focus();
+    await click(revoke);
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(dialog()).toBeNull();
+    expect(revoke.isConnected).toBe(false);
+    expect(focusedNotBody()).toBe(button("Revoke Claude Code on mini02"));
+  });
+
+  test("success: after a chip remove, focus goes to the next chip's remove button", async () => {
+    const [clip] = state.models as [FakeModel];
+    clip.tags = ["PLA", "PETG"];
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const remove = button("Remove tag PLA from Cable clip");
+    remove.focus();
+    await click(remove);
+    expect(remove.isConnected).toBe(false);
+    expect(focusedNotBody()).toBe(button("Remove tag PETG from Cable clip"));
+  });
+
+  test("last row: trashing the bottom model moves focus to the one above", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const trash = button("Move Hook to the trash");
+    trash.focus();
+    await click(trash);
+    expect(focusedNotBody()).toBe(button("Move Cable clip to the trash"));
+  });
+
+  test("last row: trashing the only model on the page moves focus to the status line", async () => {
+    await show("/creators?name=Other", <CreatorsPage />);
+    const trash = button("Move Hook to the trash");
+    trash.focus();
+    await click(trash);
+    expect(text()).toContain("No models here.");
+    const status = statusLine();
+    expect(status.textContent).toContain("Moved Hook to the trash.");
+    expect(focusedNotBody()).toBe(status);
+  });
+
+  test("last row: restoring the last model in the trash moves focus to the status line", async () => {
+    await show("/trash", <TrashPage />);
+    const first = button("Restore Old benchy");
+    first.focus();
+    await click(first);
+    const last = button("Restore Broken clip");
+    expect(focusedNotBody()).toBe(last);
+    await click(last);
+    expect(text()).toContain("The trash is empty.");
+    const status = statusLine();
+    expect(status.textContent).toContain("Restored.");
+    expect(focusedNotBody()).toBe(status);
+  });
+
+  test("last row: revoking the only token moves focus to Create token", async () => {
+    await show("/settings", <SettingsPage />);
+    const revoke = button("Revoke Claude Code on mba");
+    revoke.focus();
+    await click(revoke);
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(text()).toContain("No API tokens yet.");
+    expect(focusedNotBody()).toBe(button("Create token"));
+  });
+
+  test("last chip: removing the tag a page is about keeps the row, and focus goes to its add input", async () => {
+    // On the PLA tag page, Cable clip stays listed after losing PLA until
+    // the page is read again, so its own controls keep focus.
+    await show("/tags?name=PLA", <TagsPage />);
+    const remove = button("Remove tag PLA from Cable clip");
+    remove.focus();
+    await click(remove);
+    expect(callsTo("DELETE", "/app/api/models/m1/tags?name=PLA")).toHaveLength(1);
+    expect(text()).toContain("Cable clip.3mf");
+    expect(focusedNotBody()).toBe(labelled<HTMLInputElement>("Add a tag to Cable clip"));
+  });
+
+  test("row leaves: a model that leaves the page while focus is on its chips moves focus to the next row", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const trashing = hold("POST /app/api/models/m1/trash");
+    const removing = hold("DELETE /app/api/models/m1/tags");
+    await click(button("Move Cable clip to the trash"));
+    const remove = button("Remove tag PLA from Cable clip");
+    remove.focus();
+    await click(remove);
+    expect(focusedNotBody()).toBe(remove);
+
+    // The trash answers first and takes the whole row, chips and all, off the page.
+    await trashing();
+    expect(remove.isConnected).toBe(false);
+    expect(focusedNotBody()).toBe(button("Move Hook to the trash"));
+    await removing();
+    expect(focusedNotBody()).toBe(button("Move Hook to the trash"));
+  });
+
+  test("row leaves: focus the user has moved out of the list is left where it is", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("POST /app/api/models/m1/trash");
+    const trash = button("Move Cable clip to the trash");
+    trash.focus();
+    await click(trash);
+    const link = [...document.querySelectorAll("a")].find(
+      (a) => a.textContent === "Show in the library",
+    ) as HTMLAnchorElement;
+    link.focus();
+    await release();
+    expect(trash.isConnected).toBe(false);
+    expect(focusedNotBody()).toBe(link);
+  });
+
+  test("failure: a Move to trash that fails leaves focus on its button", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("POST /app/api/models/m1/trash");
+    const trash = button("Move Cable clip to the trash");
+    trash.focus();
+    await click(trash);
+    // Gone on the server before the trash lands, so it fails.
+    state.models = state.models.filter((m) => m.id !== "m1");
+    await release();
+    expect(trash.isConnected).toBe(true);
+    expect(text()).toContain("That is no longer there.");
+    expect(focusedNotBody()).toBe(trash);
+    expect(trash.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("failure: a Restore that fails leaves focus on its button", async () => {
+    await show("/trash", <TrashPage />);
+    const release = hold("POST /app/api/trash/m-trashed-1/restore");
+    const restore = button("Restore Old benchy");
+    restore.focus();
+    await click(restore);
+    // Purged on the server before the restore lands, so it fails.
+    state.trash = state.trash.filter((m) => m.id !== "m-trashed-1");
+    await release();
+    expect(restore.isConnected).toBe(true);
+    expect(text()).toContain("That is no longer there.");
+    expect(focusedNotBody()).toBe(restore);
+    expect(restore.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("dialog: Cancel on a revoke puts focus back on that Revoke button", async () => {
+    await show("/settings", <SettingsPage />);
+    const revoke = button("Revoke Claude Code on mba");
+    revoke.focus();
+    await click(revoke);
+    await click(button("Cancel", dialog() as HTMLElement));
+    expect(dialog()).toBeNull();
+    expect(focusedNotBody()).toBe(revoke);
+  });
+
+  test("dialog: closing the new token dialog puts focus on Create token", async () => {
+    await show("/settings", <SettingsPage />);
+    await type(labelled<HTMLInputElement>("Token name"), "Claude Code on mini01");
+    const create = button("Create token");
+    create.focus();
+    await click(create);
+    const shown = dialog() as HTMLElement;
+    expect(shown.contains(focusedNotBody())).toBe(true);
+    await press(focused(), "Escape");
+    expect(dialog()).toBeNull();
+    expect(focusedNotBody()).toBe(create);
+  });
+
+  test("dialog: a revoke that fails keeps focus in the dialog, and Cancel returns it to Revoke", async () => {
+    await show("/settings", <SettingsPage />);
+    failing.add("DELETE /app/api/tokens/t0");
+    const revoke = button("Revoke Claude Code on mba");
+    revoke.focus();
+    await click(revoke);
+    const ask = dialog() as HTMLElement;
+    const confirm = button("Revoke", ask);
+    confirm.focus();
+    await click(confirm);
+    expect(ask.querySelector('[role="alert"]')?.textContent).toContain("unavailable right now");
+    expect(ask.contains(focusedNotBody())).toBe(true);
+    await click(button("Cancel", ask));
+    expect(focusedNotBody()).toBe(revoke);
+  });
+
+  test("an empty trash marks Empty trash aria-disabled, not disabled, and a press opens nothing", async () => {
+    state.trash = [];
+    await show("/trash", <TrashPage />);
+    const empty = button("Empty trash");
+    expect(empty.matches(":disabled")).toBe(false);
+    expect(empty.getAttribute("aria-disabled")).toBe("true");
+    empty.focus();
+    await click(empty);
+    expect(dialog()).toBeNull();
+    expect(focusedNotBody()).toBe(empty);
+  });
+
+  test("a model whose purge has begun shows Restore aria-disabled, and a press sends nothing", async () => {
+    const [first] = state.trash as [FakeState["trash"][number]];
+    first.purgeStarted = true;
+    await show("/trash", <TrashPage />);
+    const restore = button("Restore Old benchy");
+    expect(restore.matches(":disabled")).toBe(false);
+    expect(restore.getAttribute("aria-disabled")).toBe("true");
+    restore.focus();
+    await click(restore);
+    expect(callsTo("POST", "/app/api/trash/m-trashed-1/restore")).toHaveLength(0);
+    expect(focusedNotBody()).toBe(restore);
   });
 });
 

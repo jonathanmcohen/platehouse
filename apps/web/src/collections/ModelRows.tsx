@@ -9,9 +9,13 @@
 // name ignoring case, so an added chip shows the name the server answers
 // with, the one stored, which may differ in capitals from the one typed.
 // A tag or collection name goes in the query string, never the path (see
-// nameQuery in ../settings/api).
-import { useState } from "react";
+// nameQuery in ../settings/api). While Move to trash runs it is marked
+// aria-disabled and ignores a press. When a row leaves the page, focus goes
+// to the next row's Move to trash, else the previous row's, else the status
+// line saying what happened (useRowFocus in ../settings/focus).
+import { useRef, useState } from "react";
 import { appApi, errorText, nameQuery, segment } from "../settings/api";
+import { type RowFocus, useRowFocus } from "../settings/focus";
 import { ChipEditor } from "./ChipEditor";
 import { InlineRename } from "./InlineRename";
 
@@ -41,26 +45,32 @@ function ModelRow({
   model,
   update,
   onTrashed,
+  focus,
 }: {
   model: OrganiseModel;
   update: Update<OrganiseModel>;
   onTrashed(): void;
+  focus: RowFocus;
 }) {
   const [error, setError] = useState<string | undefined>(undefined);
+  const [trashing, setTrashing] = useState(false);
   const id = segment(model.id);
 
   async function trash() {
+    if (trashing) return;
+    setTrashing(true);
     setError(undefined);
     try {
       await appApi("POST", `/models/${id}/trash`);
       onTrashed();
     } catch (failure) {
       setError(errorText(failure));
+      setTrashing(false);
     }
   }
 
   return (
-    <li className="studio-list-item">
+    <li className="studio-list-item" onFocus={focus.focusIn(model.id)}>
       <div className="studio-row">
         <div className="ph-model-name">
           <InlineRename
@@ -74,9 +84,11 @@ function ModelRow({
           />
         </div>
         <button
+          ref={focus.control(model.id)}
           type="button"
           className="studio-button ph-small ph-button-danger"
           aria-label={`Move ${model.name} to the trash`}
+          aria-disabled={trashing}
           onClick={trash}
         >
           Move to trash
@@ -155,27 +167,38 @@ export interface ModelRowsProps {
 
 export function ModelRows({ models, update }: ModelRowsProps) {
   const [status, setStatus] = useState("");
+  const statusLine = useRef<HTMLParagraphElement>(null);
+  const focus = useRowFocus(
+    models.map((m) => m.id),
+    statusLine,
+  );
 
   return (
     <>
-      <p role="status">{status}</p>
-      <ul className="studio-list">
-        {models.map((model) => (
-          <ModelRow
-            key={model.id}
-            model={model}
-            update={(change) =>
-              update((list) => list.map((m) => (m.id === model.id ? change(m) : m)))
-            }
-            onTrashed={() => {
-              update((list) => list.filter((m) => m.id !== model.id));
-              setStatus(
-                `Moved ${model.name} to the trash. Restore it from the trash within 30 days.`,
-              );
-            }}
-          />
-        ))}
-      </ul>
+      <p ref={statusLine} role="status" tabIndex={-1}>
+        {status}
+      </p>
+      {models.length === 0 ? <p className="studio-empty">No models here.</p> : null}
+      {models.length === 0 ? null : (
+        <ul className="studio-list">
+          {models.map((model) => (
+            <ModelRow
+              key={model.id}
+              model={model}
+              focus={focus}
+              update={(change) =>
+                update((list) => list.map((m) => (m.id === model.id ? change(m) : m)))
+              }
+              onTrashed={() => {
+                update((list) => list.filter((m) => m.id !== model.id));
+                setStatus(
+                  `Moved ${model.name} to the trash. Restore it from the trash within 30 days.`,
+                );
+              }}
+            />
+          ))}
+        </ul>
+      )}
     </>
   );
 }

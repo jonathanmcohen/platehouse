@@ -7,9 +7,12 @@
 // ConfirmDialog and InlineRename, none takes the disabled attribute, because
 // a browser moves focus out of a focused button that becomes disabled. A
 // remove that works unmounts its chip's button, so focus then goes to the
-// add input; a remove that fails leaves focus on its button.
+// next chip's remove button, else the previous chip's, else the add input
+// (useRowFocus in ../settings/focus); a remove that fails leaves focus on
+// its button.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { errorText } from "../settings/api";
+import { useRowFocus } from "../settings/focus";
 import "../settings/organise.css";
 
 export interface ChipEditorProps {
@@ -41,6 +44,7 @@ export function ChipEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const input = useRef<HTMLInputElement>(null);
+  const focus = useRowFocus(values, input);
 
   async function run(change: () => Promise<void>) {
     if (busy) return;
@@ -72,15 +76,12 @@ export function ChipEditor({
         <span key={value} className="studio-chip ph-chip">
           <span>{value}</span>
           <button
+            ref={focus.control(value)}
+            onFocus={focus.focusIn(value)}
             type="button"
             aria-label={removeLabel(value)}
             aria-disabled={busy}
-            onClick={() =>
-              run(async () => {
-                await onRemove(value);
-                input.current?.focus();
-              })
-            }
+            onClick={() => run(() => onRemove(value))}
           >
             <span aria-hidden="true">x</span>
           </button>

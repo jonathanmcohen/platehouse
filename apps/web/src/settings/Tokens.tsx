@@ -4,10 +4,16 @@
 // again: it is held only while that dialog is open, never put in the list,
 // and the server never answers it a second time. The list shows each live
 // token's name, its first 8 characters and when it was last used. Revoking
-// asks first, in a themed dialog, since it cannot be undone.
+// asks first, in a themed dialog, since it cannot be undone. While a create
+// runs, the Create token button stays focusable: marked aria-disabled, it
+// ignores a press (and Enter in the name), and never takes the disabled
+// attribute, so a create that fails leaves focus on it. After a revoke,
+// focus goes to the next row's Revoke, else the previous row's, else the
+// Create token button (useRowFocus in ./focus).
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
 import { appApi, errorText, formatDate, segment, useAppApi } from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
+import { useRowFocus } from "./focus";
 
 /** A live token as the list shows it. */
 export interface ListedToken {
@@ -81,12 +87,16 @@ export function Tokens() {
   const [created, setCreated] = useState<{ name: string; value: string } | null>(null);
   const [revoking, setRevoking] = useState<ListedToken | null>(null);
   const createButton = useRef<HTMLButtonElement>(null);
-  const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
   const revokeReturn = useRef<HTMLElement | null>(null);
   const rows = list.data?.tokens ?? [];
+  const focus = useRowFocus(
+    rows.map((r) => r.id),
+    createButton,
+  );
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return;
     const trimmed = name.trim();
     if (trimmed === "") {
       setError("Give the token a name, such as the machine it is for.");
@@ -116,9 +126,9 @@ export function Tokens() {
 
   async function revoke(item: ListedToken) {
     await appApi("DELETE", `/tokens/${segment(item.id)}`);
+    // Its own button is gone with it; the dialog hands focus to its neighbour.
+    revokeReturn.current = focus.after(item.id);
     list.set((prev) => ({ tokens: prev.tokens.filter((r) => r.id !== item.id) }));
-    // Its own button is gone with it; focus goes to Create token.
-    revokeReturn.current = createButton.current;
     setRevoking(null);
   }
 
@@ -140,7 +150,7 @@ export function Tokens() {
           placeholder="Claude Code on mini01"
           onChange={(event) => setName(event.currentTarget.value)}
         />
-        <button ref={createButton} type="submit" className="studio-button" disabled={busy}>
+        <button ref={createButton} type="submit" className="studio-button" aria-disabled={busy}>
           Create token
         </button>
       </form>
@@ -157,19 +167,16 @@ export function Tokens() {
       {rows.length > 0 ? (
         <ul className="studio-list">
           {rows.map((item) => (
-            <li key={item.id} className="studio-list-item">
+            <li key={item.id} className="studio-list-item" onFocus={focus.focusIn(item.id)}>
               <div className="studio-row">
                 <strong>{item.name}</strong>
                 <button
-                  ref={(el) => {
-                    if (el === null) revokeButtons.current.delete(item.id);
-                    else revokeButtons.current.set(item.id, el);
-                  }}
+                  ref={focus.control(item.id)}
                   type="button"
                   className="studio-button ph-small ph-button-danger"
                   aria-label={`Revoke ${item.name}`}
                   onClick={() => {
-                    revokeReturn.current = revokeButtons.current.get(item.id) ?? null;
+                    revokeReturn.current = focus.get(item.id);
                     setRevoking(item);
                   }}
                 >

@@ -8,11 +8,18 @@
 // the list is read again, so a model deleted for good never stays on screen.
 // When only some models could be deleted, the dialog says how many were and
 // gives the server's sentence for the rest. After an Empty trash that worked,
-// the Empty trash button is disabled, so focus goes to the sentence saying
-// what was deleted rather than back to the button.
+// focus goes to the sentence saying what was deleted rather than back to the
+// button, which has nothing left to do. No button here takes the disabled
+// attribute, which would push a focused button's focus to the page body:
+// Empty trash with nothing in the trash, a Restore that is running and the
+// Restore of a model whose purge has begun are marked aria-disabled and
+// ignore a press. When a restored model leaves the list, focus goes to the
+// next model's Restore, else the previous one's, else the status line
+// (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
 import { AppApiError, appApi, errorText, formatDate, segment, useAppApi } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
+import { useRowFocus } from "../settings/focus";
 
 export interface TrashedModel {
   id: string;
@@ -53,9 +60,26 @@ export function TrashList() {
   const statusLine = useRef<HTMLParagraphElement>(null);
   /** Where focus goes when the dialog closes: the button, or the result after a success. */
   const emptyReturn = useRef<HTMLElement | null>(null);
+  /** The models whose Restore is running. */
+  const [restoring, setRestoring] = useState<ReadonlySet<string>>(new Set());
   const models = trash.data?.models ?? [];
+  const focus = useRowFocus(
+    models.map((m) => m.id),
+    statusLine,
+  );
+
+  function marking(id: string, on: boolean) {
+    setRestoring((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
 
   async function restore(model: TrashedModel) {
+    if (model.purgeStarted || restoring.has(model.id)) return;
+    marking(model.id, true);
     setError(undefined);
     setStatus("");
     try {
@@ -64,6 +88,8 @@ export function TrashList() {
       setStatus("Restored. The model is back in the library with its files, tags and collections.");
     } catch (failure) {
       setError(errorText(failure));
+    } finally {
+      marking(model.id, false);
     }
   }
 
@@ -72,7 +98,7 @@ export function TrashList() {
     try {
       const answer = await appApi<{ purged: number }>("POST", "/trash/empty");
       trash.set({ models: [] });
-      // The Empty trash button is disabled now and cannot take focus.
+      // The result goes where focus goes; Empty trash has nothing left to do.
       emptyReturn.current = statusLine.current;
       setAsking(false);
       setStatus(deletedSentence(answer.purged));
@@ -95,8 +121,9 @@ export function TrashList() {
           ref={emptyButton}
           type="button"
           className="studio-button ph-button-danger"
-          disabled={models.length === 0}
+          aria-disabled={models.length === 0}
           onClick={() => {
+            if (models.length === 0) return;
             emptyReturn.current = emptyButton.current;
             setAsking(true);
           }}
@@ -120,14 +147,15 @@ export function TrashList() {
       {models.length > 0 ? (
         <ul className="studio-list">
           {models.map((model) => (
-            <li key={model.id} className="studio-list-item">
+            <li key={model.id} className="studio-list-item" onFocus={focus.focusIn(model.id)}>
               <div className="studio-row">
                 <strong>{model.name}</strong>
                 <button
+                  ref={focus.control(model.id)}
                   type="button"
                   className="studio-button ph-small"
                   aria-label={`Restore ${model.name}`}
-                  disabled={model.purgeStarted}
+                  aria-disabled={model.purgeStarted || restoring.has(model.id)}
                   onClick={() => restore(model)}
                 >
                   Restore

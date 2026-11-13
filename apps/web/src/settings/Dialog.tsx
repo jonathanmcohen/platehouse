@@ -23,6 +23,7 @@ import {
   useState,
 } from "react";
 import { errorText } from "./api";
+import { focusFirst } from "./focus";
 import "./organise.css";
 
 const FOCUSABLE =
@@ -50,8 +51,7 @@ export function Dialog({ title, onClose, returnFocusTo, initialFocus, children }
       initialFocus?.current ?? panel.current?.querySelector<HTMLElement>(FOCUSABLE) ?? null;
     (first ?? panel.current)?.focus();
     return () => {
-      const target = returnTo.current?.current ?? opener.current;
-      if (target instanceof HTMLElement && target.isConnected) target.focus();
+      focusFirst([returnTo.current?.current ?? opener.current]);
     };
   }, [initialFocus]);
 
