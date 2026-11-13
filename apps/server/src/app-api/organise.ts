@@ -48,9 +48,15 @@
 // clock, is refused with 400.
 //
 // What a cutoff cannot tell apart: a model whose trashing began before the
-// list was read but committed after (a window of one UPDATE, about a
-// millisecond), or one trashed later in readAt's own millisecond, is purged
-// though the page did not show it. purgeExpired also finishes every model
+// list was read but committed after, or one trashed later in readAt's own
+// millisecond, is purged though the page did not show it. The first window
+// is the whole trashing UPDATE, waits included: trashed_at is now(), the
+// time the statement began, so an UPDATE that waits on the model's row lock
+// (an ingest holds it FOR UPDATE while it writes, derived and live reads
+// FOR SHARE) keeps that earlier time however long it waits, and a page that
+// reads the trash during the wait gets a later readAt. Stamping trashed_at
+// with clock_timestamp() in repos/models.ts (Task 14) would narrow it to the
+// time between the row update and the commit; that change is not made here. purgeExpired also finishes every model
 // whose purge already began, whenever it was trashed; such a model cannot be
 // restored anyway, and the daily purge would finish it.
 import type { FastifyInstance } from "fastify";
