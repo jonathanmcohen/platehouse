@@ -19,8 +19,10 @@
 // - A file over the server's 512 MiB limit (MAX_UPLOAD_BYTES in
 //   apps/server/src/uploads/tus.ts) is listed with the reason and never
 //   sent, like a type Platehouse does not take. A refused or failed upload
-//   shows plain words (failureMessage): the server's own one-line reason, or
-//   a short line for the status, never tus-js-client's diagnostic text.
+//   shows plain words (failureMessage): a line for the status (an ended
+//   session, a refusal, a server that cannot take it now), or the tus
+//   handler's own one-line plain-text reason, never tus-js-client's
+//   diagnostic text and never a JSON body such as the session gate's.
 //
 // useTusUpload holds one dialog's files and their progress; the start and
 // result calls can be replaced, which the tests do.
@@ -60,13 +62,44 @@ export const TOO_LARGE_TEXT = "The file is too large: Platehouse takes files up 
 /** Longest server reason shown as it is; a longer body gets the status line. */
 const REASON_CHARS = 300;
 
+/** Shown on a row whose upload the session gate refused with 401. */
+export const SESSION_ENDED_TEXT = "Your session has ended. Sign in again, then add the file again.";
+
+/** Whether a body parses as JSON (the session gate answers in JSON). */
+function isJson(body: string): boolean {
+  try {
+    JSON.parse(body);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The server's own reason, when the body is one: text/plain (or no
+ * Content-Type), one printable line of at most REASON_CHARS, and not JSON.
+ * The tus handler's refusals are such lines; the session gate's answers are
+ * JSON and a proxy's are HTML, and neither is shown.
+ */
+function plainReason(response: HttpResponse): string | undefined {
+  const type = response.getHeader("content-type");
+  if (type !== undefined && !/^text\/plain\b/i.test(type.trim())) return undefined;
+  const body = (response.getBody() ?? "").trim();
+  if (body.length === 0 || body.length > REASON_CHARS) return undefined;
+  if (body.startsWith("<") || !/^[\x20-\x7e]+$/.test(body)) return undefined;
+  if (isJson(body)) return undefined;
+  return body;
+}
+
 /**
  * What a failed upload's row says. tus-js-client's DetailedError carries the
  * server's answer as originalResponse, and its message is a diagnostic
- * (method, url, response text, request id) that is not for the user: the row
- * shows the server's own reason when the body is one plain line, as the tus
- * handler's refusals are, and otherwise a short line for the status. A
- * DetailedError with no answer lost the connection.
+ * (method, url, response text, request id) that is not for the user. The
+ * status decides first: 413 is too large, 401 is an ended session (sign in
+ * again), 403 a plain refusal and a 5xx a server that cannot take it now.
+ * Any other refusal shows the server's own reason when plainReason finds
+ * one, as the tus handler's 400 and 415 refusals are, and otherwise a short
+ * line for the status. A DetailedError with no answer lost the connection.
  */
 export function failureMessage(error: Error): string {
   const detailed = error as Error & {
@@ -77,16 +110,12 @@ export function failureMessage(error: Error): string {
   if (response !== null) {
     const status = response.getStatus();
     if (status === 413) return `${TOO_LARGE_TEXT}.`;
-    const body = (response.getBody() ?? "").trim();
-    const plain =
-      body.length > 0 &&
-      body.length <= REASON_CHARS &&
-      !body.startsWith("<") &&
-      /^[\x20-\x7e]+$/.test(body);
-    if (plain) return `The upload was refused: ${body}`;
+    if (status === 401) return SESSION_ENDED_TEXT;
     if (status >= 500) {
       return `The server could not take the upload right now (HTTP ${status}). Try again shortly.`;
     }
+    const reason = status === 403 ? undefined : plainReason(response);
+    if (reason !== undefined) return `The upload was refused: ${reason}`;
     return `The server refused the upload (HTTP ${status}).`;
   }
   if (detailed.originalRequest !== undefined) return "The upload failed: the connection was lost.";

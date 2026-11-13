@@ -436,20 +436,30 @@ describe("dropping files on the open upload dialog", () => {
 });
 
 /** An error as tus-js-client gives one for an answer the server refused. */
-function refusal(status: number, body: string): Error {
+/** The Content-Type the tus handler's own refusals carry. */
+const TEXT = "text/plain; charset=utf-8";
+/** The Content-Type of the session gate's answers (auth/gate.ts). */
+const JSON_TYPE = "application/json; charset=utf-8";
+
+function refusal(status: number, body: string, contentType?: string): Error {
   const error = new Error(
     `tus: unexpected response while creating upload, originated from request (method: POST, url: https://platehouse.test/app/uploads, response code: ${status}, response text: ${body}, request id: n/a)`,
   );
   return Object.assign(error, {
     originalRequest: {},
-    originalResponse: { getStatus: () => status, getBody: () => body, getHeader: () => undefined },
+    originalResponse: {
+      getStatus: () => status,
+      getBody: () => body,
+      getHeader: (name: string) =>
+        name.toLowerCase() === "content-type" ? contentType : undefined,
+    },
   });
 }
 
 describe("upload failures read as plain words", () => {
   test("a refusal shows the server's own reason, not tus-js-client's diagnostic", () => {
     const text = failureMessage(
-      refusal(415, "Not a supported file type: use .3mf, .stl, .step, .stp or .scad\n"),
+      refusal(415, "Not a supported file type: use .3mf, .stl, .step, .stp or .scad\n", TEXT),
     );
     expect(text).toBe(
       "The upload was refused: Not a supported file type: use .3mf, .stl, .step, .stp or .scad",
@@ -471,6 +481,55 @@ describe("upload failures read as plain words", () => {
       "The server could not take the upload right now (HTTP 502). Try again shortly.",
     );
     expect(failureMessage(refusal(403, ""))).toBe("The server refused the upload (HTTP 403).");
+  });
+
+  test("a plain-text reason from the tus handler is shown for any 4xx it sends", () => {
+    expect(
+      failureMessage(
+        refusal(400, "Upload-Metadata must carry the file's name as filename\n", TEXT),
+      ),
+    ).toBe("The upload was refused: Upload-Metadata must carry the file's name as filename");
+  });
+
+  test("the session gate's JSON answers never reach the row as JSON", () => {
+    // 401: the session ended, or the user signed out in another tab.
+    const ended = failureMessage(refusal(401, '{"error":"unauthorized"}', JSON_TYPE));
+    expect(ended).toBe("Your session has ended. Sign in again, then add the file again.");
+    // 403: the page's Origin is not PUBLIC_ORIGIN (opened by another address).
+    expect(failureMessage(refusal(403, '{"error":"forbidden"}', JSON_TYPE))).toBe(
+      "The server refused the upload (HTTP 403).",
+    );
+    // 503: the session store could not be read; a retry line, not a refusal.
+    expect(failureMessage(refusal(503, '{"error":"unavailable"}', JSON_TYPE))).toBe(
+      "The server could not take the upload right now (HTTP 503). Try again shortly.",
+    );
+    for (const [status, body] of [
+      [401, '{"error":"unauthorized"}'],
+      [403, '{"error":"forbidden"}'],
+      [503, '{"error":"unavailable"}'],
+    ] as const) {
+      expect(failureMessage(refusal(status, body, JSON_TYPE))).not.toContain("{");
+    }
+  });
+
+  test("a JSON body is never shown, whatever its Content-Type says", () => {
+    for (const contentType of [JSON_TYPE, TEXT, undefined]) {
+      expect(failureMessage(refusal(409, '{"error":"conflict"}', contentType))).toBe(
+        "The server refused the upload (HTTP 409).",
+      );
+    }
+  });
+
+  test("a body that is not text/plain is never shown", () => {
+    expect(failureMessage(refusal(400, "Bad request", "text/html; charset=utf-8"))).toBe(
+      "The server refused the upload (HTTP 400).",
+    );
+  });
+
+  test("a 5xx gives the retry line even when its body is a plain line", () => {
+    expect(failureMessage(refusal(500, "Something went wrong\n", TEXT))).toBe(
+      "The server could not take the upload right now (HTTP 500). Try again shortly.",
+    );
   });
 
   test("a lost connection says so, without tus-js-client's diagnostic", () => {
