@@ -59,9 +59,19 @@ export async function appApi<T = undefined>(
   return data as T;
 }
 
-/** A path segment: a tag, collection or id, encoded. */
+/**
+ * A path segment: an id, encoded. Never a tag or collection name: the URL
+ * parser treats a segment of "." or ".." (and %2E or %2e) as a dot segment
+ * and rewrites the path before the request goes out, and such names can be
+ * stored through the public API v1. Those go in nameQuery instead.
+ */
 export function segment(value: string): string {
   return encodeURIComponent(value);
+}
+
+/** A tag or collection name as the query string ?name=<name>, encoded. */
+export function nameQuery(name: string): string {
+  return `?name=${encodeURIComponent(name)}`;
 }
 
 /** The sentence to show for a failed call. */

@@ -8,8 +8,8 @@
 //                                                     {models, nextCursor}
 //   PATCH  /app/api/models/:id   {name}               rename a model
 //   PATCH  /app/api/files/:id    {name}               rename a file
-//   PUT    /app/api/models/:id/tags/:tag              tag {name} (DELETE: untag)
-//   PUT    /app/api/collections/:name/models/:id      add {name} (DELETE: take out)
+//   PUT    /app/api/models/:id/tags?name=             tag {name} (DELETE: untag)
+//   PUT    /app/api/models/:id/collections?name=      add {name} (DELETE: take out)
 //   POST   /app/api/models/:id/trash                  move to the trash
 //   GET    /app/api/trash                             {models: [... purgeAt]}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
@@ -27,7 +27,10 @@
 // Tags and collections are one per name ignoring case, and the first name
 // written is the one kept, so a PUT answers {name}: the name the tag or
 // collection is stored under, which may differ in capitals from the one
-// asked for. The page shows that name on the chip it adds.
+// asked for. The page shows that name on the chip it adds. The name goes in
+// the query string, never the path: a browser's URL parser rewrites a path
+// segment of "." or ".." (%2E too) before the request goes out, and such
+// names can be stored through the public API v1's create-model body.
 //
 // A trashed model's purge date is its trash date plus TRASH_RETENTION_DAYS:
 // the daily purge (03:30) removes it on its first run after that. A model
@@ -86,15 +89,10 @@ const NAME_BODY = {
   required: ["name"],
 } as const;
 const ID_PARAMS = { type: "object", properties: { id: ID }, required: ["id"] } as const;
-const TAG_PARAMS = {
+const NAME_QUERY = {
   type: "object",
-  properties: { id: ID, tag: LABEL },
-  required: ["id", "tag"],
-} as const;
-const COLLECTION_PARAMS = {
-  type: "object",
-  properties: { name: LABEL, id: ID },
-  required: ["name", "id"],
+  properties: { name: LABEL },
+  required: ["name"],
 } as const;
 const ROWS_QUERY = {
   type: "object",
@@ -107,8 +105,7 @@ const ROWS_QUERY = {
 } as const;
 
 type IdParams = { id: string };
-type TagParams = { id: string; tag: string };
-type CollectionParams = { name: string; id: string };
+type NameQuery = { name: string };
 type NameBody = { name: string };
 type RowsQuery = { creator?: string; collection?: string; tag?: string; cursor?: string };
 
@@ -299,43 +296,45 @@ export async function registerOrganiseApi(
       },
     );
 
-    scope.put<{ Params: TagParams }>(
-      "/models/:id/tags/:tag",
-      { schema: { params: TAG_PARAMS } },
+    scope.put<{ Params: IdParams; Querystring: NameQuery }>(
+      "/models/:id/tags",
+      { schema: { params: ID_PARAMS, querystring: NAME_QUERY } },
       async (request, reply) => {
-        const { id, tag } = request.params;
+        const { id } = request.params;
+        const tag = request.query.name;
         const done = await need(library).addTag(id, tag);
         if (!done) return refuse(reply, 404, "not_found");
         return { name: await storedName(need(deps).db, "tags", tag) };
       },
     );
 
-    scope.delete<{ Params: TagParams }>(
-      "/models/:id/tags/:tag",
-      { schema: { params: TAG_PARAMS } },
+    scope.delete<{ Params: IdParams; Querystring: NameQuery }>(
+      "/models/:id/tags",
+      { schema: { params: ID_PARAMS, querystring: NAME_QUERY } },
       async (request, reply) => {
-        const done = await need(library).removeTag(request.params.id, request.params.tag);
+        const done = await need(library).removeTag(request.params.id, request.query.name);
         return done ? reply.code(204).send() : refuse(reply, 404, "not_found");
       },
     );
 
-    scope.put<{ Params: CollectionParams }>(
-      "/collections/:name/models/:id",
-      { schema: { params: COLLECTION_PARAMS } },
+    scope.put<{ Params: IdParams; Querystring: NameQuery }>(
+      "/models/:id/collections",
+      { schema: { params: ID_PARAMS, querystring: NAME_QUERY } },
       async (request, reply) => {
-        const { id, name } = request.params;
+        const { id } = request.params;
+        const name = request.query.name;
         const done = await need(library).addToCollection(id, name);
         if (!done) return refuse(reply, 404, "not_found");
         return { name: await storedName(need(deps).db, "collections", name) };
       },
     );
 
-    scope.delete<{ Params: CollectionParams }>(
-      "/collections/:name/models/:id",
-      { schema: { params: COLLECTION_PARAMS } },
+    scope.delete<{ Params: IdParams; Querystring: NameQuery }>(
+      "/models/:id/collections",
+      { schema: { params: ID_PARAMS, querystring: NAME_QUERY } },
       async (request, reply) => {
-        const { id, name } = request.params;
-        const done = await need(library).removeFromCollection(id, name);
+        const { id } = request.params;
+        const done = await need(library).removeFromCollection(id, request.query.name);
         return done ? reply.code(204).send() : refuse(reply, 404, "not_found");
       },
     );

@@ -5,7 +5,10 @@
 // re-estimation of the whole library in the background, and the page says
 // that until a plate's new estimate lands its old numbers stay, marked as
 // for the previous printer. A change that fails puts the menu back and says
-// why.
+// why. The stored printer can be missing from the slicer's list, after an
+// OrcaSlicer update renames a profile (the server then refuses estimates
+// with UnknownPrinter): the menu then shows it as a disabled option with a
+// note, so the page shows the true state and any real choice is a change.
 import { type ChangeEvent, useId, useState } from "react";
 import { appApi, errorText } from "./api";
 import type { PrinterGroup } from "./SettingsPage";
@@ -19,6 +22,11 @@ export interface PrinterMenuProps {
 /** The nozzle choice's label, such as "0.4 mm nozzle". */
 export function nozzleLabel(nozzle: number): string {
   return `${nozzle} mm nozzle`;
+}
+
+/** The disabled option for a stored printer the slicer no longer offers. */
+export function goneLabel(printerId: string): string {
+  return `${printerId}, no longer offered by the slicer`;
 }
 
 export function PrinterMenu({ printerId, printers }: PrinterMenuProps) {
@@ -50,6 +58,9 @@ export function PrinterMenu({ printerId, printers }: PrinterMenuProps) {
     }
   }
 
+  const offered =
+    printers === null || printers.some((group) => group.printers.some((p) => p.id === selected));
+
   return (
     <div className="ph-field">
       <label htmlFor={id}>Printer</label>
@@ -60,6 +71,11 @@ export function PrinterMenu({ printerId, printers }: PrinterMenuProps) {
         </p>
       ) : (
         <select id={id} className="ph-select" value={selected} onChange={change} disabled={busy}>
+          {offered ? null : (
+            <option value={selected} disabled>
+              {goneLabel(selected)}
+            </option>
+          )}
           {printers.map((group) => (
             <optgroup key={group.model} label={group.model}>
               {group.printers.map((p) => (
@@ -70,6 +86,12 @@ export function PrinterMenu({ printerId, printers }: PrinterMenuProps) {
             </optgroup>
           ))}
         </select>
+      )}
+      {offered ? null : (
+        <p className="studio-alert studio-alert-alert">
+          The slicer no longer offers the selected printer, {selected}, so no plate can be
+          estimated. Choose a printer from the list.
+        </p>
       )}
       <p className="studio-muted">
         Platehouse estimates time, weight and filament for every plate on this printer.

@@ -8,8 +8,10 @@
 // one row or two, never undo each other. Tags and collections are one per
 // name ignoring case, so an added chip shows the name the server answers
 // with, the one stored, which may differ in capitals from the one typed.
+// A tag or collection name goes in the query string, never the path (see
+// nameQuery in ../settings/api).
 import { useState } from "react";
-import { appApi, errorText, segment } from "../settings/api";
+import { appApi, errorText, nameQuery, segment } from "../settings/api";
 import { ChipEditor } from "./ChipEditor";
 import { InlineRename } from "./InlineRename";
 
@@ -109,13 +111,13 @@ function ModelRow({
         addButton="Add tag"
         removeLabel={(tag) => `Remove tag ${tag} from ${model.name}`}
         onAdd={async (tag) => {
-          const { name } = await appApi<StoredName>("PUT", `/models/${id}/tags/${segment(tag)}`);
+          const { name } = await appApi<StoredName>("PUT", `/models/${id}/tags${nameQuery(tag)}`);
           update((m) =>
             m.tags.some((t) => sameName(t, name)) ? m : { ...m, tags: [...m.tags, name] },
           );
         }}
         onRemove={async (tag) => {
-          await appApi("DELETE", `/models/${id}/tags/${segment(tag)}`);
+          await appApi("DELETE", `/models/${id}/tags${nameQuery(tag)}`);
           update((m) => ({ ...m, tags: m.tags.filter((t) => t !== tag) }));
         }}
       />
@@ -128,7 +130,7 @@ function ModelRow({
         onAdd={async (typed) => {
           const { name } = await appApi<StoredName>(
             "PUT",
-            `/collections/${segment(typed)}/models/${id}`,
+            `/models/${id}/collections${nameQuery(typed)}`,
           );
           update((m) =>
             m.collections.some((c) => sameName(c, name))
@@ -137,7 +139,7 @@ function ModelRow({
           );
         }}
         onRemove={async (name) => {
-          await appApi("DELETE", `/collections/${segment(name)}/models/${id}`);
+          await appApi("DELETE", `/models/${id}/collections${nameQuery(name)}`);
           update((m) => ({ ...m, collections: m.collections.filter((c) => c !== name) }));
         }}
       />

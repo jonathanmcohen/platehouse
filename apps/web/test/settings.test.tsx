@@ -246,10 +246,12 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     }
     return json(204);
   }
-  if (seg[0] === "models" && seg[2] === "tags") {
+  // A tag or collection name goes in the query, never the path: the URL
+  // parser rewrites a path segment of "." or ".." (new URL above does too).
+  if (seg[0] === "models" && seg[2] === "tags" && seg.length === 3) {
     const m = model(seg[1]);
-    const tag = seg[3] as string;
-    if (m === undefined) return json(404, { error: "not_found" });
+    const tag = url.searchParams.get("name");
+    if (m === undefined || tag === null) return json(404, { error: "not_found" });
     if (method === "PUT") {
       const name = storedName("tags", tag);
       if (!m.tags.some((t) => sameName(t, name))) m.tags.push(name);
@@ -258,10 +260,10 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     if (method === "DELETE") m.tags = m.tags.filter((t) => !sameName(t, tag));
     return json(204);
   }
-  if (seg[0] === "collections" && seg[2] === "models") {
-    const m = model(seg[3]);
-    const name = seg[1] as string;
-    if (m === undefined) return json(404, { error: "not_found" });
+  if (seg[0] === "models" && seg[2] === "collections" && seg.length === 3) {
+    const m = model(seg[1]);
+    const name = url.searchParams.get("name");
+    if (m === undefined || name === null) return json(404, { error: "not_found" });
     if (method === "PUT") {
       const stored = storedName("collections", name);
       if (!m.collections.some((c) => sameName(c, stored))) m.collections.push(stored);
@@ -506,6 +508,28 @@ describe("the settings page", () => {
     expect(labelled<HTMLSelectElement>("Printer").value).toBe(X1C);
   });
 
+  test("a stored printer the slicer no longer offers shows as it is, and any real choice saves", async () => {
+    // An OrcaSlicer update can rename a profile; the server then refuses
+    // every estimate with UnknownPrinter, so the page must not show another
+    // printer as the chosen one.
+    const gone = "Bambu Lab A1 0.4 nozzle";
+    state.printerId = gone;
+    await show("/settings", <SettingsPage />);
+    const select = labelled<HTMLSelectElement>("Printer");
+    expect(select.value).toBe(gone);
+    const stale = [...select.querySelectorAll("option")].find((o) => o.value === gone);
+    expect(stale?.disabled).toBe(true);
+    expect(stale?.textContent).toBe(`${gone}, no longer offered by the slicer`);
+    expect(text()).toContain("Choose a printer from the list");
+
+    await choose(select, P1S);
+    expect(callsTo("PUT", "/app/api/settings/printer")).toEqual([
+      { method: "PUT", path: "/app/api/settings/printer", body: { printerId: P1S } },
+    ]);
+    expect(labelled<HTMLSelectElement>("Printer").value).toBe(P1S);
+    expect(text()).not.toContain("Choose a printer from the list");
+  });
+
   test("new token is shown once and never again", async () => {
     await show("/settings", <SettingsPage />);
     await type(labelled<HTMLInputElement>("Token name"), "Claude Code on mini01");
@@ -705,18 +729,60 @@ describe("the organising pages", () => {
     await show("/collections?name=Desk", <CollectionsPage />);
     await type(labelled<HTMLInputElement>("Add a tag to Hook"), "PETG");
     await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
-    expect(callsTo("PUT", "/app/api/models/m2/tags/PETG")).toHaveLength(1);
+    expect(callsTo("PUT", "/app/api/models/m2/tags?name=PETG")).toHaveLength(1);
     expect(() => button("Remove tag PETG from Hook")).not.toThrow();
 
     await click(button("Remove tag PLA from Cable clip"));
-    expect(callsTo("DELETE", "/app/api/models/m1/tags/PLA")).toHaveLength(1);
+    expect(callsTo("DELETE", "/app/api/models/m1/tags?name=PLA")).toHaveLength(1);
 
     await type(labelled<HTMLInputElement>("Add Cable clip to a collection"), "Garage");
     await submit(labelled<HTMLInputElement>("Add Cable clip to a collection"));
-    expect(callsTo("PUT", "/app/api/collections/Garage/models/m1")).toHaveLength(1);
+    expect(callsTo("PUT", "/app/api/models/m1/collections?name=Garage")).toHaveLength(1);
 
     await click(button("Remove Hook from collection Garage"));
-    expect(callsTo("DELETE", "/app/api/collections/Garage/models/m2")).toHaveLength(1);
+    expect(callsTo("DELETE", "/app/api/models/m2/collections?name=Garage")).toHaveLength(1);
+  });
+
+  test('a tag or collection named "." or ".." can be added and removed', async () => {
+    // The URL parser rewrites a path segment of "." or "..", %2E too, so
+    // DELETE /models/m1/tags/.. would go out as DELETE /models/m1. The
+    // public API v1 and the Manyfold importer can store such names.
+    const [clip] = state.models as [FakeModel];
+    clip.tags = ["PLA", ".."];
+    clip.collections = ["Desk", "."];
+    await show("/collections?name=Desk", <CollectionsPage />);
+
+    await click(button("Remove tag .. from Cable clip"));
+    expect(callsTo("DELETE", "/app/api/models/m1/tags?name=..")).toHaveLength(1);
+    expect(clip.tags).toEqual(["PLA"]);
+    expect(() => button("Remove tag .. from Cable clip")).toThrow();
+
+    await click(button("Remove Cable clip from collection ."));
+    expect(callsTo("DELETE", "/app/api/models/m1/collections?name=.")).toHaveLength(1);
+    expect(clip.collections).toEqual(["Desk"]);
+
+    await type(labelled<HTMLInputElement>("Add a tag to Hook"), ".");
+    await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
+    expect(callsTo("PUT", "/app/api/models/m2/tags?name=.")).toHaveLength(1);
+    expect(() => button("Remove tag . from Hook")).not.toThrow();
+
+    await type(labelled<HTMLInputElement>("Add Hook to a collection"), "..");
+    await submit(labelled<HTMLInputElement>("Add Hook to a collection"));
+    expect(callsTo("PUT", "/app/api/models/m2/collections?name=..")).toHaveLength(1);
+    expect(() => button("Remove Hook from collection ..")).not.toThrow();
+    expect(text()).not.toContain("no longer there");
+  });
+
+  test("a tag or collection name with ?, # or & goes to the server whole", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    await type(labelled<HTMLInputElement>("Add a tag to Hook"), "a&b?c#d e+f");
+    await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
+    const put = calls.filter(
+      (c) => c.method === "PUT" && c.path.startsWith("/app/api/models/m2/tags?"),
+    );
+    expect(put).toHaveLength(1);
+    expect(new URLSearchParams(put[0]?.path.split("?")[1]).get("name")).toBe("a&b?c#d e+f");
+    expect(() => button("Remove tag a&b?c#d e+f from Hook")).not.toThrow();
   });
 
   test.each([
@@ -735,13 +801,13 @@ describe("the organising pages", () => {
 
       await type(labelled<HTMLInputElement>("Add a tag to Hook"), "PLA");
       await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
-      expect(callsTo("PUT", "/app/api/models/m2/tags/PLA")).toHaveLength(1);
+      expect(callsTo("PUT", "/app/api/models/m2/tags?name=PLA")).toHaveLength(1);
       expect(() => button("Remove tag pla from Hook")).not.toThrow();
       expect(() => button("Remove tag PLA from Hook")).toThrow();
 
       await type(labelled<HTMLInputElement>("Add Hook to a collection"), "SHELF");
       await submit(labelled<HTMLInputElement>("Add Hook to a collection"));
-      expect(callsTo("PUT", "/app/api/collections/SHELF/models/m2")).toHaveLength(1);
+      expect(callsTo("PUT", "/app/api/models/m2/collections?name=SHELF")).toHaveLength(1);
       expect(() => button("Remove Hook from collection Shelf")).not.toThrow();
       expect(() => button("Remove Hook from collection SHELF")).toThrow();
     },
@@ -763,7 +829,7 @@ describe("the organising pages", () => {
 
   test("two chips added to one model at once both stay", async () => {
     await show("/collections?name=Desk", <CollectionsPage />);
-    const release = hold("PUT /app/api/models/m2/tags/PETG");
+    const release = hold("PUT /app/api/models/m2/tags");
     await type(labelled<HTMLInputElement>("Add a tag to Hook"), "PETG");
     await submit(labelled<HTMLInputElement>("Add a tag to Hook"));
     await type(labelled<HTMLInputElement>("Add Hook to a collection"), "Shed");

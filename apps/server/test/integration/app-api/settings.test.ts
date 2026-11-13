@@ -454,9 +454,9 @@ describe("organising", () => {
     const creator = `Maker ${marker()}`;
     const a = await seedStoredModel(env, { creator });
     const b = await seedStoredModel(env, { creator });
-    const tagPath = (id: string) => `/app/api/models/${id}/tags/${encodeURIComponent(tag)}`;
+    const tagPath = (id: string) => `/app/api/models/${id}/tags?name=${encodeURIComponent(tag)}`;
     const shelfPath = (name: string, id: string) =>
-      `/app/api/collections/${encodeURIComponent(name)}/models/${id}`;
+      `/app/api/models/${id}/collections?name=${encodeURIComponent(name)}`;
 
     for (const id of [a.model.id, b.model.id]) {
       const put = await call("PUT", tagPath(id));
@@ -514,9 +514,9 @@ describe("organising", () => {
     const a = await seedStoredModel(env);
     const b = await seedStoredModel(env);
     const tagPath = (id: string, name: string) =>
-      `/app/api/models/${id}/tags/${encodeURIComponent(name)}`;
+      `/app/api/models/${id}/tags?name=${encodeURIComponent(name)}`;
     const shelfPath = (name: string, id: string) =>
-      `/app/api/collections/${encodeURIComponent(name)}/models/${id}`;
+      `/app/api/models/${id}/collections?name=${encodeURIComponent(name)}`;
     expect((await call("PUT", tagPath(a.model.id, tag))).json()).toEqual({ name: tag });
     expect((await call("PUT", shelfPath(shelf, a.model.id))).json()).toEqual({ name: shelf });
 
@@ -530,6 +530,38 @@ describe("organising", () => {
     expect(await env.repos.collections.forModel(b.model.id)).toEqual([shelf]);
   });
 
+  test('a tag or collection named "." or ".." is added and removed through the query', async () => {
+    // The name is never a path segment: a URL parser rewrites "." and ".."
+    // (%2E too), so DELETE .../tags/.. would reach DELETE /app/api/models/:id.
+    const seeded = await seedStoredModel(env);
+    const id = seeded.model.id;
+    for (const name of [".", ".."]) {
+      const q = `?name=${encodeURIComponent(name)}`;
+      const tagged = await call("PUT", `/app/api/models/${id}/tags${q}`);
+      expect(tagged.status, tagged.text).toBe(200);
+      expect(tagged.json()).toEqual({ name });
+      const added = await call("PUT", `/app/api/models/${id}/collections${q}`);
+      expect(added.status, added.text).toBe(200);
+      expect(added.json()).toEqual({ name });
+    }
+    expect((await env.repos.tags.forModel(id)).sort()).toEqual([".", ".."]);
+    expect((await env.repos.collections.forModel(id)).sort()).toEqual([".", ".."]);
+    for (const name of [".", ".."]) {
+      const q = `?name=${encodeURIComponent(name)}`;
+      expect((await call("DELETE", `/app/api/models/${id}/tags${q}`)).status).toBe(204);
+      expect((await call("DELETE", `/app/api/models/${id}/collections${q}`)).status).toBe(204);
+    }
+    expect(await env.repos.tags.forModel(id)).toEqual([]);
+    expect(await env.repos.collections.forModel(id)).toEqual([]);
+    // No name, or a blank one, is refused before anything changes.
+    const refused = [
+      await call("PUT", `/app/api/models/${id}/tags`),
+      await call("PUT", `/app/api/models/${id}/tags?name=%20`),
+      await call("DELETE", `/app/api/models/${id}/collections`),
+    ];
+    expect(refused.map((r) => r.status)).toEqual([400, 400, 400]);
+  });
+
   test("a trashed model cannot be renamed, tagged or put in a collection", async () => {
     const seeded = await seedStoredModel(env);
     const id = seeded.model.id;
@@ -537,8 +569,8 @@ describe("organising", () => {
     const refused = [
       await call("PATCH", `/app/api/models/${id}`, { json: { name: "x" } }),
       await call("PATCH", `/app/api/files/${seeded.file.id}`, { json: { name: "x" } }),
-      await call("PUT", `/app/api/models/${id}/tags/t`),
-      await call("PUT", `/app/api/collections/c/models/${id}`),
+      await call("PUT", `/app/api/models/${id}/tags?name=t`),
+      await call("PUT", `/app/api/models/${id}/collections?name=c`),
       await call("POST", `/app/api/models/${id}/trash`),
     ];
     expect(refused.map((r) => r.status)).toEqual([404, 404, 404, 404, 404]);
@@ -549,7 +581,7 @@ describe("the trash", () => {
   test("lists each trashed model with its purge date, and restore brings it back", async () => {
     const tag = `kept-${marker()}`;
     const seeded = await seedStoredModel(env);
-    await call("PUT", `/app/api/models/${seeded.model.id}/tags/${tag}`);
+    await call("PUT", `/app/api/models/${seeded.model.id}/tags?name=${tag}`);
     expect((await call("POST", `/app/api/models/${seeded.model.id}/trash`)).status).toBe(204);
 
     const list = await call("GET", "/app/api/trash");
