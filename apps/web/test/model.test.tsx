@@ -10,7 +10,9 @@
 //   grams, time and weight
 // - estimating state renders and is replaced when numbers arrive (polling
 //   every 5 s while any plate is estimating; it stops when none is, when the
-//   page unmounts and on navigation to another model, with no request after)
+//   page unmounts and on navigation to another model, with no request after);
+//   the same poll runs while a STEP or SCAD file's mesh or render is pending,
+//   so it shows without a reload, and a failed render shows its reason
 // - failed plate shows the plain reason and a retry button
 // - open in OrcaSlicer builds orcaslicer://open?file=<encoded link>
 // - open in Bambu Studio on macOS builds bambustudioopen://<encoded link>
@@ -29,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { formatDuration, formatWeight } from "../src/library/ModelCard";
 import { AboutTab } from "../src/model/AboutTab";
 import {
+  isDeriving,
   isEstimating,
   type ModelFile,
   ModelPage,
@@ -54,6 +57,7 @@ const OTHER_MODEL_ID = "0198f0c4-0000-7000-8000-00000000a002";
 const FILE_3MF = "0198f0c4-0000-7000-8000-00000000b001";
 const FILE_STL = "0198f0c4-0000-7000-8000-00000000b002";
 const FILE_STEP = "0198f0c4-0000-7000-8000-00000000b003";
+const FILE_SCAD = "0198f0c4-0000-7000-8000-00000000b004";
 const EST_FAILED = "0198f0c4-0000-7000-8000-00000000e009";
 
 const thumb = (n: number) => `/blobs/0198f0c4-0000-7000-8000-0000000000c${n}`;
@@ -1216,5 +1220,175 @@ describe("a reload that fails while the model is on screen", () => {
     });
     expect(modelRequests()).toBe(2);
     expect(text(container.querySelector('[role="alert"]'))).toMatch(/signed out.*sign in again/i);
+  });
+});
+
+describe("a STEP or SCAD render that lands while the page is open", () => {
+  const MESH = { kind: "glb" as const, url: "/blobs/0198f0c4-0000-7000-8000-0000000000f2" };
+  const OPENSCAD_SAYS = "ERROR: Parser error in file Knob.scad, line 3: syntax error";
+
+  /** A STEP file just uploaded: its mesh is still being made. */
+  const PENDING_STEP: ModelFile = { ...STEP_FILE, derivedStatus: "pending", view: null };
+  /** The same file once its mesh is stored. */
+  const MESHED_STEP: ModelFile = { ...STEP_FILE, derivedStatus: "ok", view: MESH };
+
+  const PENDING_SCAD: ModelFile = {
+    id: FILE_SCAD,
+    name: "Knob.scad",
+    kind: "scad",
+    size: 312,
+    parseStatus: "ok",
+    derivedStatus: "pending",
+    derivedMessage: null,
+    download: `/files/${FILE_SCAD}/download`,
+    view: null,
+    preview: null,
+    filaments: [],
+    plates: [],
+  };
+  const FAILED_SCAD: ModelFile = {
+    ...PENDING_SCAD,
+    derivedStatus: "failed",
+    derivedMessage: OPENSCAD_SAYS,
+  };
+
+  function modelRequests(): number {
+    return requests.filter((r) => r === `GET /app/api/models/${MODEL_ID}`).length;
+  }
+
+  const viewer = () => container.querySelector('[aria-label="Viewer"]');
+
+  function fileRow(name: string): HTMLElement {
+    const row = [...container.querySelectorAll<HTMLElement>('[role="tabpanel"] li')].find((li) =>
+      text(li).includes(name),
+    );
+    if (row === undefined) throw new Error(`no Files tab row for ${name}`);
+    return row;
+  }
+
+  function hasView(name: string): boolean {
+    return [...fileRow(name).querySelectorAll("button")].some((b) => /^view/i.test(text(b)));
+  }
+
+  async function poll() {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+  }
+
+  test("a dropped STEP file says there is no view yet, then shows its mesh when a later poll has it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, model([]));
+    await render(pageAt(MODEL_ID, { refreshKey: 0 }));
+    // The upload finishes: the page loads again while the mesh is being made.
+    models.set(MODEL_ID, model([PENDING_STEP]));
+    await render(pageAt(MODEL_ID, { refreshKey: 1 }));
+    expect(modelRequests()).toBe(2);
+    expect(text(viewer())).toContain("No view of Housing.step yet.");
+    expect(hasView("Housing.step")).toBe(false);
+    expect(loads).toEqual([]);
+
+    // Still being made at the next poll.
+    await poll();
+    expect(modelRequests()).toBe(3);
+    expect(text(viewer())).toContain("No view of Housing.step yet.");
+
+    // The mesh lands: the next poll shows it, with no reload.
+    models.set(MODEL_ID, model([MESHED_STEP]));
+    await poll();
+    expect(modelRequests()).toBe(4);
+    expect(loads).toEqual([MESH]);
+    expect(container.querySelector(".studio-viewer [data-viewer3d]")).not.toBeNull();
+    expect(text(viewer())).not.toContain("No view of");
+    expect(hasView("Housing.step")).toBe(true);
+  });
+
+  test("polling stops once nothing is being rendered or estimating", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, model([PENDING_STEP]));
+    await render(pageAt(MODEL_ID));
+    expect(modelRequests()).toBe(1);
+    models.set(MODEL_ID, model([MESHED_STEP]));
+    await poll();
+    expect(modelRequests()).toBe(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(2);
+  });
+
+  test("a render and an estimate in flight together share one timer: one request every 5 s", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const estimating = threeMf([plate(1, "Waiting", { platehouse: estimate("estimating") })]);
+    models.set(MODEL_ID, model([estimating, PENDING_STEP]));
+    await render(pageAt(MODEL_ID));
+    for (let n = 2; n <= 4; n++) {
+      await poll();
+      expect(modelRequests()).toBe(n);
+    }
+  });
+
+  test("a failed render shows its reason in plain words and stops the polling", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, model([PENDING_SCAD]));
+    await render(pageAt(MODEL_ID));
+    expect(text(viewer())).toContain("No view of Knob.scad yet.");
+    expect(text(fileRow("Knob.scad"))).toMatch(/still being rendered/i);
+
+    models.set(MODEL_ID, model([FAILED_SCAD]));
+    await poll();
+    expect(modelRequests()).toBe(2);
+    expect(text(viewer())).toContain("Knob.scad could not be rendered.");
+    expect(text(viewer())).toContain(OPENSCAD_SAYS);
+    expect(text(fileRow("Knob.scad"))).toMatch(/could not be rendered/i);
+    expect(text(fileRow("Knob.scad"))).toContain(OPENSCAD_SAYS);
+    expect(text(fileRow("Knob.scad"))).not.toMatch(/still being rendered/i);
+    expect(hasView("Knob.scad")).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(2);
+  });
+
+  test("no request after the page unmounts while a render is pending", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, model([PENDING_STEP]));
+    await render(pageAt(MODEL_ID));
+    expect(modelRequests()).toBe(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(requests).toEqual([`GET /app/api/models/${MODEL_ID}`]);
+  });
+
+  test("a STEP render polled on one model stops when the page moves to another", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    models.set(MODEL_ID, model([PENDING_STEP]));
+    models.set(OTHER_MODEL_ID, model([STL_FILE], { id: OTHER_MODEL_ID, name: "Other" }));
+    await render(pageAt(MODEL_ID));
+    await act(async () => {
+      go(`/models/${OTHER_MODEL_ID}`);
+    });
+    await settle();
+    expect(text(container.querySelector("h1"))).toBe("Other");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(modelRequests()).toBe(1);
+  });
+
+  test("isDeriving and needsPolling: a render or mesh still pending polls; done, failed or none does not", () => {
+    expect(isDeriving(PENDING_STEP)).toBe(true);
+    expect(isDeriving(PENDING_SCAD)).toBe(true);
+    expect(isDeriving(MESHED_STEP)).toBe(false);
+    expect(isDeriving(FAILED_SCAD)).toBe(false);
+    expect(isDeriving(STL_FILE)).toBe(false);
+    expect(needsPolling(model([PENDING_STEP]))).toBe(true);
+    expect(needsPolling(model([STL_FILE, PENDING_SCAD]))).toBe(true);
+    expect(needsPolling(model([MESHED_STEP, FAILED_SCAD, STL_FILE]))).toBe(false);
   });
 });
