@@ -645,6 +645,17 @@ describe("the trash", () => {
     expect(dialogs.confirm).not.toHaveBeenCalled();
   });
 
+  test("after an Empty trash that worked, focus is on the result, not the page body", async () => {
+    await show("/trash", <TrashPage />);
+    await click(button("Empty trash"));
+    await click(button("Empty trash", dialog() as HTMLElement));
+    expect(dialog()).toBeNull();
+    const status = document.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.textContent).toContain("Deleted 2 models for good.");
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(status);
+  });
+
   test("an Empty trash in flight cannot be cancelled, so a partial result is still shown", async () => {
     emptyIncomplete = true;
     await show("/trash", <TrashPage />);

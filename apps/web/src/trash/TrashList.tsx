@@ -7,7 +7,9 @@
 // begun cannot be restored, and says so. After any Empty trash, done or not,
 // the list is read again, so a model deleted for good never stays on screen.
 // When only some models could be deleted, the dialog says how many were and
-// gives the server's sentence for the rest.
+// gives the server's sentence for the rest. After an Empty trash that worked,
+// the Empty trash button is disabled, so focus goes to the sentence saying
+// what was deleted rather than back to the button.
 import { useRef, useState } from "react";
 import { AppApiError, appApi, errorText, formatDate, segment, useAppApi } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
@@ -48,6 +50,9 @@ export function TrashList() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const emptyButton = useRef<HTMLButtonElement>(null);
+  const statusLine = useRef<HTMLParagraphElement>(null);
+  /** Where focus goes when the dialog closes: the button, or the result after a success. */
+  const emptyReturn = useRef<HTMLElement | null>(null);
   const models = trash.data?.models ?? [];
 
   async function restore(model: TrashedModel) {
@@ -67,6 +72,8 @@ export function TrashList() {
     try {
       const answer = await appApi<{ purged: number }>("POST", "/trash/empty");
       trash.set({ models: [] });
+      // The Empty trash button is disabled now and cannot take focus.
+      emptyReturn.current = statusLine.current;
       setAsking(false);
       setStatus(deletedSentence(answer.purged));
     } catch (failure) {
@@ -89,12 +96,17 @@ export function TrashList() {
           type="button"
           className="studio-button ph-button-danger"
           disabled={models.length === 0}
-          onClick={() => setAsking(true)}
+          onClick={() => {
+            emptyReturn.current = emptyButton.current;
+            setAsking(true);
+          }}
         >
           Empty trash
         </button>
       </div>
-      <p role="status">{status}</p>
+      <p ref={statusLine} role="status" tabIndex={-1}>
+        {status}
+      </p>
       {error === undefined ? null : <p className="studio-alert studio-alert-alert">{error}</p>}
       {trash.error === undefined ? null : (
         <p className="studio-alert studio-alert-alert">{trash.error}</p>
@@ -143,7 +155,7 @@ export function TrashList() {
           confirmLabel="Empty trash"
           onConfirm={emptyTrash}
           onCancel={() => setAsking(false)}
-          returnFocusTo={emptyButton}
+          returnFocusTo={emptyReturn}
         />
       ) : null}
     </div>
