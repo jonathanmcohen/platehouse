@@ -337,7 +337,9 @@ describe("tags and collections as Platehouse stores them", () => {
 
   it("finds nothing missing when an existing model holds the trimmed labels", () => {
     const plan = planModel(
-      source({ tags: ["boat ", " Calibration"], collections: ["Gifts "] }),
+      // "Gifts" ends in a no-break space, which String.trim strips as the
+      // server's does.
+      source({ tags: ["boat ", " Calibration"], collections: ["Gifts\u00a0"] }),
       existing(),
     );
     expect(plan.tags).toEqual([]);
