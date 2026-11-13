@@ -31,6 +31,17 @@
 //   written in from the ph_theme cookie, and the hashed build output is
 //   served under /assets/ (public-class). A missing build is logged at
 //   startup; it also makes /healthz 503 only when web.required is set.
+// - File delivery (delivery/download.ts, Task 17) streams a file's bytes at
+//   GET /files/:id/download and a blob's at GET /blobs/:id, both session-
+//   class, and slicer links (delivery/links.ts) are minted at POST
+//   /app/api/files/:id/slicer-link (session-class, so the gate's Origin
+//   check covers it) and served at GET /s/<token>/<name> (the route
+//   /s/:token/*), link-class: no session, the token alone. Registered only
+//   when deps.delivery is given. A path under /s/ that matches no route (no
+//   name segment, another method, or delivery not registered) is a refused
+//   link: 403 with an empty body and Cache-Control: no-store, never a 404
+//   that echoes the path. So is a /s/ path Fastify itself refuses (a bad
+//   percent escape, a segment over its maxParamLength): frameworkError.
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -43,7 +54,9 @@
 //   hook, so frameworkErrors releases the body for those.
 // - The request log records each request's path without its query
 //   (requestLogValue), so the OAuth code and state on /auth/callback never
-//   reach it, and a fixed list of its headers (LOGGED_HEADERS), with
+//   reach it, with a slicer link's token and name replaced
+//   (LOGGED_LINK_PATH), so no live link reaches it either, and a fixed list
+//   of its headers (LOGGED_HEADERS), with
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
 //   (LOG_REDACT_PATHS), so no API token or session cookie reaches the log.
@@ -65,6 +78,8 @@ import { installGate, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
+import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
+import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
 import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
 import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
@@ -121,6 +136,16 @@ export interface AppDeps {
    * request is 401.
    */
   api?: ApiDeps;
+  /**
+   * File delivery and slicer links (Task 17): GET /files/:id/download, GET
+   * /blobs/:id, POST /app/api/files/:id/slicer-link and the link route
+   * /s/:token/* (GET /s/<token>/<name>). The server always passes its own;
+   * left out, those routes are not registered, so their paths are unknown:
+   * /files/ and /blobs/ and the mint route are session-class (401 without a
+   * session, 404 with one), and any /s/ path is link-class, answered by the
+   * not-found handler as a refused link (403, empty body).
+   */
+  delivery?: DeliveryDeps;
   /**
    * The library's app API (Task 19): the cards and tag filter of the library
    * page, read from the database and Task 12's plate numbers. Left out, the
@@ -205,17 +230,36 @@ export function uploadMetadataKeys(header: string | string[] | undefined): strin
     .join(",");
 }
 
+/** A slicer link's path as the request log shows it: token and name replaced. */
+export const LOGGED_LINK_PATH = "/s/[link]/[name]";
+
 /**
- * The request log's view of a request: Fastify's default fields, with the
- * url cut at the "?". A query can carry a secret: GET /auth/callback has the
- * OAuth code and state in it.
+ * The path the request log shows: the url cut at the "?", and a slicer
+ * link's token and name segments replaced (LOGGED_LINK_PATH), since the token
+ * alone fetches the file for 10 minutes. That covers any path under /s/,
+ * live, refused or unrouted, and any path Fastify routed to the link route.
  */
-export function requestLogValue(request: FastifyRequest): RequestLogValue {
+function loggedPath(request: FastifyRequest): string {
   const url = request.url;
   const at = url.indexOf("?");
+  const path = at === -1 ? url : url.slice(0, at);
+  if (path.startsWith("/s/")) {
+    return path.indexOf("/", 3) === -1 ? "/s/[link]" : LOGGED_LINK_PATH;
+  }
+  if (request.routeOptions?.url === LINK_ROUTE) return LOGGED_LINK_PATH;
+  return path;
+}
+
+/**
+ * The request log's view of a request: Fastify's default fields, with the
+ * url cut at the "?" and a slicer link's segments replaced (loggedPath). A
+ * query can carry a secret: GET /auth/callback has the OAuth code and state
+ * in it.
+ */
+export function requestLogValue(request: FastifyRequest): RequestLogValue {
   const value: RequestLogValue = {
     method: request.method,
-    url: at === -1 ? url : url.slice(0, at),
+    url: loggedPath(request),
   };
   if (request.host !== undefined) value.host = request.host;
   if (request.ip !== undefined) value.remoteAddress = request.ip;
@@ -254,11 +298,18 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  * (FST_ERR_MAX_PARAM_LENGTH, 414) or a failed async constraint (500). Without
  * this Fastify writes the answer straight to the socket, so the gate's onSend
  * hook never releases a body the client declared and Node reads it for up to
- * REQUEST_TIMEOUT_MS. The body is Fastify's own.
+ * REQUEST_TIMEOUT_MS.
+ *
+ * Under /s/ (the raw path, as sent) it is a refused link, as the link route
+ * and the not-found handler answer one: 403, an empty body and no-store. Off
+ * /s/ the body is Fastify's own.
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
-  const status = error.statusCode ?? 500;
   releaseUnreadBody(request, reply);
+  if (request.url.startsWith("/s/")) {
+    return reply.code(403).header("cache-control", "no-store").send();
+  }
+  const status = error.statusCode ?? 500;
   return reply.code(status).send({
     error: STATUS_CODES[status] ?? "Error",
     code: error.code,
@@ -320,9 +371,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   // Fastify's own 404 answer; the gate's onSend hook releases any body. An
-  // unknown path under /api/v1 is bearer-class: no token, no 404.
+  // unknown path under /api/v1 is bearer-class: no token, no 404. An
+  // unmatched link-class path (/s/ with no name segment, a POST or OPTIONS
+  // on a link, junk) is a refused link, as the route answers one: 403 with
+  // an empty body and no-store, so the path, a token in it included, is
+  // never echoed and no cache keeps the answer.
   const apiBearer = createBearerHook(api.tokens);
   app.setNotFoundHandler(async (request, reply) => {
+    if (routeClass(request.url) === "link") {
+      return reply.code(403).header("cache-control", "no-store").send();
+    }
     if (routeClass(request.url) === "bearer") {
       await apiBearer(request, reply);
       if (reply.sent) return reply;
@@ -357,6 +415,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   // /healthz reads web, which is set here before the app can answer.
   const web = await registerWeb(app, webDeps);
+
+  if (deps.delivery !== undefined) {
+    await registerDownloads(app, deps.delivery);
+    await registerLinks(app, { ...deps.delivery, absoluteUrl: auth.absoluteUrl });
+  }
 
   return app;
 }

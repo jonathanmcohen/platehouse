@@ -28,6 +28,9 @@
 //      tokens from the api_tokens table and reads the library through the
 //      same database, store and estimates.plateNumbers; it never touches
 //      Pocket ID, so API tokens keep working while it is down (AC-081).
+//      File delivery and slicer links (Task 17) read files through that
+//      same library and blobs through the same database and store, and
+//      sign links with a key links.ts derives from LINK_SECRET.
 //      The library page's app API (Task 19) reads the same database and
 //      estimates.plateNumbers, for the printer in settings.
 //
@@ -58,6 +61,7 @@ import { createSessions, dbSessionStore } from "./auth/sessions.js";
 import { type Config, ConfigError, loadConfig } from "./config.js";
 import { createDb } from "./db/kysely.js";
 import { migrate } from "./db/migrate.js";
+import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
 import { createSlicerClient, sliceTimeoutMs } from "./estimates/client.js";
 import { createEstimates } from "./estimates/service.js";
@@ -380,6 +384,13 @@ export async function start(config: Config): Promise<Server> {
     watcher = startedWatcher;
     startedWatcher.start();
 
+    // One library for the API's content route and the file deliveries, so
+    // both find a live file and its stored blob the same way.
+    const apiLibrary = createApiLibrary({
+      db,
+      store,
+      plateNumbers: (plateId) => estimates.plateNumbers(plateId),
+    });
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -400,13 +411,11 @@ export async function start(config: Config): Promise<Server> {
         group: config.oidc.group,
         cookieSecret: loginCookieKey(config.linkSecret),
       },
-      api: {
-        tokens: createTokens({ store: dbTokenStore(db) }),
-        library: createApiLibrary({
-          db,
-          store,
-          plateNumbers: (plateId) => estimates.plateNumbers(plateId),
-        }),
+      api: { tokens: createTokens({ store: dbTokenStore(db) }), library: apiLibrary },
+      delivery: {
+        files: apiLibrary,
+        library: createDeliveryLibrary({ db, store }),
+        linkSecret: config.linkSecret,
       },
       library: createAppLibrary({
         db,
