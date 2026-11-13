@@ -26,19 +26,23 @@
 //   .3mf has no 3D view (AC-051).
 // - Each plate's numbers are Task 12's plateNumbers, with the display
 //   context (the settings row and the printer menu, readDisplayContext)
-//   read once per page and at most PLATE_NUMBERS_CONCURRENCY lookups at a
-//   time, as the library page does (app-api/library.ts). Beside them,
-//   estimatePending says whether an estimate for the selected printer and
-//   Orca version is queued or slicing, read for every plate in one query.
+//   read once per page, as the library page does (app-api/library.ts).
+//   Beside them, estimatePending says whether an estimate for the selected
+//   printer and Orca version is queued or slicing. Both are read in one
+//   read-only REPEATABLE READ transaction, so they come from one snapshot:
+//   an estimate that lands or is queued while the answer is being read can
+//   never leave a stale set beside estimatePending false, which would stop
+//   the page's polling with the finished estimate never shown. The plates
+//   are read one after another on that transaction's connection.
 // - Answers are JSON and never cached. Errors carry no detail from the
 //   database.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
-import type { DisplayContext, PlateNumbers } from "../estimates/display.js";
+import { type DisplayContext, type PlateNumbers, plateNumbers } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
-import { BLOB_PREFIX, mapLimit, PLATE_NUMBERS_CONCURRENCY } from "./library.js";
+import { BLOB_PREFIX } from "./library.js";
 
 /** The model page's routes, every one session-class (the Route classes contract). */
 export const MODEL_API_PATHS: readonly string[] = Object.freeze([
@@ -114,8 +118,14 @@ export interface AppModelDeps {
   db: Kysely<DB>;
   /** The selected printer, the Orca version and the printer menu, read once per page. */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
-  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
+  /**
+   * Not called. The model page reads Task 12's plateNumbers (estimates/
+   * display.ts) itself, on the transaction it reads estimatePending on, so
+   * both come from one snapshot; a function given here could only read
+   * outside it. Kept optional so main.ts's wiring, which still passes one,
+   * builds; it goes when that line does.
+   */
+  plateNumbers?: (ctx: DisplayContext, plateId: string) => Promise<PlateNumbers>;
   /** Task 12's retryEstimate (estimates/service.ts). */
   retryEstimate(estimateId: string): Promise<boolean>;
 }
@@ -232,15 +242,16 @@ export function createAppModel(deps: AppModelDeps): AppModel {
       const stored = (blobId: string | null, kind: BlobKind): string | null =>
         blobId !== null && kindOf.get(blobId) === kind ? blobId : null;
 
-      const [numberPairs, pendingRows] = await Promise.all([
-        mapLimit(
-          plates,
-          PLATE_NUMBERS_CONCURRENCY,
-          async (p) => [p.id, await deps.plateNumbers(ctx, p.id)] as const,
-        ),
-        plates.length === 0
-          ? []
-          : db
+      // Every plate's numbers and estimatePending from one snapshot.
+      const numbers = new Map<string, PlateNumbers>();
+      const pending = new Set<string>();
+      if (plates.length > 0) {
+        await db
+          .transaction()
+          .setIsolationLevel("repeatable read")
+          .setAccessMode("read only")
+          .execute(async (trx) => {
+            const pendingRows = await trx
               .selectFrom("estimates")
               .select("plateId")
               .where(
@@ -256,10 +267,11 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                   : eb("slicerVersion", "=", ctx.orcaVersion),
               )
               .where("status", "in", ["pending", "running"])
-              .execute(),
-      ]);
-      const numbers = new Map(numberPairs);
-      const pending = new Set(pendingRows.map((r) => r.plateId));
+              .execute();
+            for (const r of pendingRows) pending.add(r.plateId);
+            for (const p of plates) numbers.set(p.id, await plateNumbers(trx, ctx, p.id));
+          });
+      }
 
       return {
         id: model.id,

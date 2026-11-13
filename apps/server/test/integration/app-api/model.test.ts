@@ -211,7 +211,6 @@ beforeAll(async () => {
     model: createAppModel({
       db: env.db,
       displayContext: async () => CONTEXT,
-      plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
       retryEstimate: async (estimateId) => {
         retried.push(estimateId);
         return retryAnswer;
@@ -532,7 +531,6 @@ describe("one answer reads a plate's numbers and estimatePending together", () =
     between = createAppModel({
       db,
       displayContext: async () => CONTEXT,
-      plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
       retryEstimate: async () => false,
     });
   });
