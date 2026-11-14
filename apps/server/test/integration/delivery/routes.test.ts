@@ -24,6 +24,7 @@
 // The DB and bucket tests are in delivery.test.ts. Every byte is synthetic.
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -274,6 +275,21 @@ async function linkFor(fileId: string): Promise<SlicerLink> {
 /** The path of a link URL, for inject. */
 function pathOf(url: string): string {
   return new URL(url).pathname;
+}
+
+/**
+ * The status of a GET sent to the listening app as written, request target
+ * included (an absolute-form target, which inject would rewrite to a path).
+ */
+async function rawStatus(target: string): Promise<number> {
+  const { port } = new URL(base);
+  const socket = connect(Number(port), "127.0.0.1");
+  socket.write(`GET ${target} HTTP/1.1\r\nHost: platehouse.test\r\nConnection: close\r\n\r\n`);
+  const chunks: Buffer[] = [];
+  for await (const chunk of socket) chunks.push(chunk as Buffer);
+  const status = /^HTTP\/1\.1 (\d{3}) /.exec(Buffer.concat(chunks).toString("latin1"));
+  if (status === null) throw new Error(`no status line for ${target}`);
+  return Number(status[1]);
 }
 
 /** The delivery routes, as printRoutes lists them, with their methods and class. */
@@ -569,23 +585,66 @@ describe("GET /s/<token>/<name>", () => {
     expectNoLookups(looked);
   });
 
-  test("an unmatched /s/ path with a percent escape is refused by the gate, echoing nothing", async () => {
-    // The gate (auth/gate.ts) classes an unmatched path that is not a plain
-    // route path (a percent escape, a dot segment) as session-class, so it
-    // answers 401 before the not-found handler runs. Nothing is served or
-    // echoed either way; the contract's 403 for these is a gate.ts change.
+  test("an unmatched /s/ path with a percent escape is a refused link: 403, empty, no-store", async () => {
+    // Issue #169: the gate (auth/gate.ts) classed an unmatched path that is
+    // not a plain route path (a percent escape, a dot segment) as session
+    // before the not-found handler ran, so these got 401 (or, for a page, a
+    // 302 to the login) instead of the link class's empty 403. Any raw path
+    // under /s/ is link-class now, as #140 made any /api/v1/ path bearer.
     const link = await linkFor(FILE_A);
     const [, , token = "", name = ""] = pathOf(link.url).split("/");
     const looked = { ...lookups };
-    for (const method of ["POST", "PUT", "OPTIONS"] as const) {
+    const before = opened;
+    const requests: Array<[string, string, Record<string, string>]> = [
+      ["POST", `/s/${token}/${name}`, { accept: "application/json" }],
+      ["PUT", `/s/${token}/${name}`, { accept: "application/json" }],
+      ["OPTIONS", `/s/${token}/${name}`, { accept: "application/json" }],
+      ["GET", `/s/${token}%2Fx.3mf`, { accept: "application/json" }],
+      ["GET", `/s/${token}%2Fx.3mf`, { accept: "text/html" }],
+      ["GET", `/s/%2e%2e/${token}/${name}`, { accept: "text/html" }],
+    ];
+    for (const [method, url, headers] of requests) {
+      const label = `${method} ${url} (${headers.accept})`;
+      for (const cookies of [{}, { [SESSION_COOKIE]: sessionCookie }]) {
+        const res = await app.inject({
+          method: method as "GET",
+          url,
+          headers: { ...headers, origin: TEST_ORIGIN },
+          cookies,
+        });
+        expect(res.statusCode, label).toBe(403);
+        expect(res.body, label).toBe("");
+        expect(res.headers["cache-control"], label).toBe("no-store");
+        expect(res.headers.location, label).toBeUndefined();
+      }
+    }
+    expect(opened).toBe(before);
+    expectNoLookups(looked);
+  });
+
+  test("a path that normalises to /s/ is a refused link too, even with a session (issue #169)", async () => {
+    // A doubled slash, an escaped "s" with no name segment, or a dot segment
+    // before /s/ matches no route, and as session-class a signed-in request
+    // got the not-found handler's 404, whose message repeated the path, the
+    // live token in it included.
+    const link = await linkFor(FILE_A);
+    const [, , token = "", name = ""] = pathOf(link.url).split("/");
+    const looked = { ...lookups };
+    for (const url of [
+      `//s/${token}/${name}`,
+      `/%73/${token}`,
+      `/x/../s/${token}`,
+      `/s\\${token}\\${name}`,
+    ]) {
       const res = await app.inject({
-        method,
-        url: `/s/${token}/${name}`,
-        headers: { accept: "application/json", origin: TEST_ORIGIN },
+        method: "GET",
+        url,
+        headers: { accept: "application/json" },
+        cookies: { [SESSION_COOKIE]: sessionCookie },
       });
-      expect(res.statusCode, method).toBe(401);
-      expect(res.body, method).not.toContain(token);
-      expect(res.body, method).not.toContain("Cube");
+      expect(res.statusCode, url).toBe(403);
+      expect(res.body, url).toBe("");
+      expect(res.headers["cache-control"], url).toBe("no-store");
     }
     expectNoLookups(looked);
   });
@@ -626,14 +685,17 @@ describe("GET /s/<token>/<name>", () => {
     expectNoLookups(looked);
   });
 
-  test("Fastify's own 400 and 414 off /s/ keep Fastify's own body", async () => {
-    // Only a /s/ path is a refused link. The same framework answers on any
-    // other path stay as they were before Task 17: status, code and
-    // Fastify's own message. Dropping that message elsewhere is its own
-    // change, outside Task 17.
+  test("Fastify's own 400 and 414 off /s/ never repeat the path (issue #177)", async () => {
+    // Only a /s/ path is a refused link. On any other path the framework
+    // answer keeps its status and code, but not Fastify's message, which
+    // repeated the request path (Jon, 2026-11-14, plan item 11).
+    const marker = "Secretish-Path-Part";
     const cases: Array<[string, number, string]> = [
-      [`/files/x%zz${FILE_A}/download`, 400, "FST_ERR_BAD_URL"],
-      [`/files/${"9".repeat(101)}/download`, 414, "FST_ERR_MAX_PARAM_LENGTH"],
+      [`/files/x%zz${marker}${FILE_A}/download`, 400, "FST_ERR_BAD_URL"],
+      [`/files/${marker}${"9".repeat(101)}/download`, 414, "FST_ERR_MAX_PARAM_LENGTH"],
+      [`/app/api/x%zz${marker}`, 400, "FST_ERR_BAD_URL"],
+      [`/api/v1/models/x%zz${marker}`, 400, "FST_ERR_BAD_URL"],
+      [`/x%zz${marker}`, 400, "FST_ERR_BAD_URL"],
     ];
     for (const [url, status, code] of cases) {
       const res = await app.inject({
@@ -645,10 +707,10 @@ describe("GET /s/<token>/<name>", () => {
       expect(res.json(), url).toEqual({
         error: status === 400 ? "Bad Request" : "URI Too Long",
         code,
-        message: expect.any(String),
         statusCode: status,
       });
-      expect(res.json().message, url).not.toBe("");
+      expect(res.body, url).not.toContain(marker);
+      expect(res.body, url).not.toContain("/files/");
     }
   });
 
@@ -767,6 +829,20 @@ describe("the request log and slicer links", () => {
     for (const [url, status] of requests) {
       const res = await app.inject({ method: "GET", url });
       expect(res.statusCode, url).toBe(status);
+    }
+    // Issue #169: paths that normalise to /s/ but do not start with it put
+    // the live token in the log: a doubled slash, an escaped "s" with no
+    // name segment, and absolute-form request targets (sent on a raw socket,
+    // since inject rewrites the target to a path).
+    for (const url of [`//s/${token}/${name}`, `/%73/${token}`]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode, url).toBe(403);
+    }
+    for (const target of [
+      `http://platehouse.test/s/${token}`,
+      `http://platehouse.test/s/${token}/a/b`,
+    ]) {
+      expect(await rawStatus(target), target).toBe(403);
     }
     const log = logLines.slice(from).join("");
     // Each request is logged, with the link's segments replaced.
@@ -1132,5 +1208,29 @@ describe("a stream that fails before its first byte is answered with no attachme
       expect(res.headers["content-disposition"], url).toBeUndefined();
       expect(res.headers["cache-control"], url).toBe("no-store");
     }
+  });
+});
+
+describe("contentDisposition (issue #164)", () => {
+  // One header writer for every route that names a file: the download, the
+  // slicer link and the public API's file content. The ASCII fallback has /
+  // and \ replaced by _ as a link's name segment does, so no client that
+  // reads only filename= sees a directory part. filename* keeps the stored
+  // name, except that invisible format characters (\p{Cf}, such as U+202E
+  // RIGHT-TO-LEFT OVERRIDE) are replaced by _ there too, so a browser never
+  // shows a reordered name.
+  const rlo = String.fromCodePoint(0x202e);
+  const zwsp = String.fromCodePoint(0x200b);
+  test.each([
+    ["slashes", "../../etc/passwd.3mf", ".._.._etc_passwd.3mf", "..%2F..%2Fetc%2Fpasswd.3mf"],
+    ["backslashes", "..\\..\\boot.ini.3mf", ".._.._boot.ini.3mf", "..%5C..%5Cboot.ini.3mf"],
+    ["a right-to-left override", `rlo${rlo}exe.3mf`, "rlo_exe.3mf", "rlo_exe.3mf"],
+    ["a zero-width space", `zero${zwsp}width.stl`, "zero_width.stl", "zero_width.stl"],
+    ["quotes", 'say "hi".3mf', "say _hi_.3mf", "say%20%22hi%22.3mf"],
+    ["a plain name", "Cube A.3mf", "Cube A.3mf", "Cube%20A.3mf"],
+  ])("a name with %s", (_label, name, fallback, encoded) => {
+    expect(contentDisposition(name)).toBe(
+      `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`,
+    );
   });
 });

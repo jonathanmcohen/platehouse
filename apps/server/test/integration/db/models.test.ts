@@ -205,6 +205,68 @@ describe("trash and restore", () => {
     expect(after.purgeStartedAt).toBeInstanceOf(Date);
   });
 
+  // Issue #193: Empty trash empties only what the page listed, by purging
+  // models trashed at or before readAt, the database's time when the page
+  // read the trash. trashed_at was now(), the time the trashing statement
+  // began, so a trash that waited on the model's row lock (an ingest holds
+  // it FOR UPDATE while it writes) kept that earlier time, and a readAt
+  // taken during the wait, before the trash committed and so without the
+  // model in its list, still covered it. trashed_at is now the time the row
+  // is written (clock_timestamp()), after the wait.
+  test("a model trashed while another transaction holds its row lock is not emptied by a readAt taken during the wait", async () => {
+    const made = await repos.models.create({ name: unique("Locked while trashed") });
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked: () => void = () => {};
+    const lockTaken = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = t.db.transaction().execute(async (trx) => {
+      await trx.selectFrom("models").select("id").where("id", "=", made.id).forUpdate().execute();
+      locked();
+      await released;
+    });
+    await lockTaken;
+    const trashing = repos.models.trash(made.id);
+    try {
+      // Wait until the trashing UPDATE is blocked on the row lock.
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const { rows } = await sql<{ waiting: number }>`
+          select count(*)::int as waiting from pg_stat_activity
+           where wait_event_type = 'Lock' and query ilike 'update "models"%'
+        `.execute(t.db);
+        if ((rows[0]?.waiting ?? 0) > 0) break;
+        if (Date.now() > deadline) throw new Error("the trash never waited on the row lock");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const { rows } = await sql<{ readAt: Date }>`select now() as "readAt"`.execute(t.db);
+      const readAt = rows[0]?.readAt;
+      if (readAt === undefined) throw new Error("no readAt");
+      // The page's list, read during the wait, does not hold the model.
+      expect((await repos.models.get(made.id))?.trashedAt).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await holder;
+      expect(await trashing).toBe(true);
+
+      const trashedAt = (await repos.models.get(made.id, { includeTrashed: true }))?.trashedAt;
+      expect(trashedAt).toBeInstanceOf(Date);
+      expect(trashedAt?.getTime()).toBeGreaterThan(readAt.getTime());
+      // Empty trash's cutoff: trashed before readAt + 1 ms (organise.ts).
+      const emptied = (await repos.models.purgeable(new Date(readAt.getTime() + 1))).map(
+        (m) => m.id,
+      );
+      expect(emptied).not.toContain(made.id);
+    } finally {
+      release();
+      await holder.catch(() => {});
+      await trashing.catch(() => false);
+    }
+  });
+
   test("purgeable lists models trashed before the given time, oldest first", async () => {
     const old = await repos.models.create({ name: "Old" });
     const recent = await repos.models.create({ name: "Recent" });

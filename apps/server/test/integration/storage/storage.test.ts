@@ -173,7 +173,7 @@ describe("getBlobStream", () => {
 });
 
 describe("headBlob", () => {
-  it("resolves for a stored object, and a missing key is a 404 StoreError, not an outage", async () => {
+  it("resolves to a stored object's size, and a missing key is a 404 StoreError, not an outage", async () => {
     const store = storeFor(await newBucket());
     const key = blobKey(randomUUIDv7(), randomUUIDv7());
     await store.putBlob(streamOf(Buffer.from("synthetic")), {
@@ -181,7 +181,7 @@ describe("headBlob", () => {
       size: 9,
       contentType: "model/stl",
     });
-    await expect(store.headBlob(key)).resolves.toBeUndefined();
+    await expect(store.headBlob(key)).resolves.toBe(9);
     await store.deleteBlobs([key]);
     const err = await errorOf(store.headBlob(key));
     expect(err).toBeInstanceOf(StoreError);

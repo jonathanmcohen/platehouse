@@ -518,6 +518,68 @@ describe("the operations", () => {
     expect(await headAndGet(down.fileId ?? "")).toEqual({ head: 200, get: 200, body: ASCII_STL });
   });
 
+  // Issue #164: the file content route named the download with the raw
+  // stored name, so a file renamed without its extension downloaded with
+  // none, the ASCII fallback kept / and \, and filename* kept invisible
+  // format characters. It now names the file as the download and the slicer
+  // link do (linkFileName, through one contentDisposition).
+  test("a file's content is named as the download names it: real extension, safe fallback", async () => {
+    const outcome = await upload(`Named ${marker()}.stl`, ASCII_STL);
+    expect(outcome.status, outcome.error).toBe("done");
+    const rlo = String.fromCodePoint(0x202e);
+    await env.db
+      .updateTable("files")
+      .set({ name: `a/b\\c rlo${rlo}x` })
+      .where("id", "=", outcome.fileId ?? "")
+      .execute();
+    for (const method of ["GET", "HEAD"]) {
+      const res = await fetch(`${base}/api/v1/files/${outcome.fileId}/content`, {
+        method,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      await res.arrayBuffer();
+      expect(res.status, method).toBe(200);
+      expect(res.headers.get("content-disposition"), method).toBe(
+        `attachment; filename="a_b_c rlo_x.stl"; filename*=UTF-8''a%2Fb%5Cc%20rlo_x.stl`,
+      );
+    }
+  });
+
+  // Issue #164: Content-Length comes from the database, so an object whose
+  // size is not the record's (a restored older version, a write behind the
+  // app's back) put extra bytes on a reused connection or left the client
+  // waiting. The route now checks the size before any header, as the
+  // download does, and a HEAD compares the HeadObject's size too.
+  test.each([
+    ["longer", 7],
+    ["shorter", -5],
+  ])(
+    "an object %s than its record is 503 on GET and HEAD, before any header",
+    async (_label, delta) => {
+      const outcome = await upload(`Resized ${marker()}.stl`, ASCII_STL);
+      expect(outcome.status, outcome.error).toBe("done");
+      const file = await env.repos.files.get(outcome.fileId ?? "");
+      const blob = await env.repos.blobs.get(file?.blobId ?? "");
+      const size = Buffer.byteLength(ASCII_STL);
+      await env.putRaw(blob?.key ?? "", Buffer.alloc(size + delta, 0x61));
+      const url = `${base}/api/v1/files/${outcome.fileId}/content`;
+      const headers = { authorization: `Bearer ${token}` };
+      const head = await fetch(url, { method: "HEAD", headers });
+      await head.arrayBuffer();
+      expect(head.status).toBe(503);
+      expect(head.headers.get("content-disposition")).toBeNull();
+      const get = await call("GET", `/api/v1/files/${outcome.fileId}/content`);
+      expect(get.status).toBe(503);
+      expect(get.json()).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
+      expect(get.headers.get("content-disposition")).toBeNull();
+      // Put back at its recorded size, it is served whole again.
+      await env.putRaw(blob?.key ?? "", Buffer.from(ASCII_STL));
+      const back = await call("GET", `/api/v1/files/${outcome.fileId}/content`);
+      expect(back.status).toBe(200);
+      expect(back.text).toBe(ASCII_STL);
+    },
+  );
+
   test("add and remove tag", async () => {
     const model = await createModel({ name: `Tagged ${marker()}` });
     const tag = "Big things/Shelf 2";

@@ -248,7 +248,9 @@ describe("failures that are not an outage", () => {
 // PR #116 review: a HEAD on a file's content asks the store whether the
 // object is there (HeadObject, no body), so it answers what the GET would.
 describe("headBlob", () => {
-  it("resolves when the object is there, with one HeadObject and no GetObject", async () => {
+  // Issue #164: it resolves to the object's size as the store reports it,
+  // so a HEAD on a file can compare it with the record as the GET does.
+  it("resolves to the object's size when it is there, with one HeadObject and no GetObject", async () => {
     const fake = await startFakeS3(() => ({
       status: 200,
       headers: { "content-type": "application/octet-stream", "content-length": "22" },
@@ -256,7 +258,7 @@ describe("headBlob", () => {
     cleanups.push(() => fake.close());
     const store = createBlobStore(settings(fake.endpoint), { maxAttempts: 1 });
     cleanups.push(() => store.destroy());
-    await expect(store.headBlob(KEY)).resolves.toBeUndefined();
+    await expect(store.headBlob(KEY)).resolves.toBe(22);
     expect(fake.requests.map((r) => r.method)).toEqual(["HEAD"]);
     expect(fake.requests[0]?.path).toBe(`/platehouse-test/${KEY}`);
   });

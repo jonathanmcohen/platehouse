@@ -398,6 +398,30 @@ describe("tag filter narrows the grid", () => {
     const active = container.querySelector('a.studio-chip[aria-current="true"]');
     expect(active?.textContent).toBe("PLA");
   });
+
+  // Issue #194: after Show in the library from a creator or collection, a
+  // tag chip dropped ?creator= and ?collection=, so "this creator's PLA
+  // models" became every PLA model. A chip keeps both, and All drops only
+  // the tag.
+  test("a tag link keeps an active creator and collection", async () => {
+    const at = new URLSearchParams({ q: "box", creator: "Maker One", collection: "Desk & Shelf" });
+    await render(
+      <MemoryRouter initialEntries={[`/?${at}&tag=PLA`]}>
+        <Filters tags={["Gridfinity", "PLA"]} />
+      </MemoryRouter>,
+    );
+    const queries = [...container.querySelectorAll("a.studio-chip")].map(
+      (a) => new URL(a.getAttribute("href") ?? "", "https://platehouse.test").searchParams,
+    );
+    expect(queries.map((q) => q.get("creator"))).toEqual(["Maker One", "Maker One", "Maker One"]);
+    expect(queries.map((q) => q.get("collection"))).toEqual([
+      "Desk & Shelf",
+      "Desk & Shelf",
+      "Desk & Shelf",
+    ]);
+    expect(queries.map((q) => q.get("q"))).toEqual(["box", "box", "box"]);
+    expect(queries.map((q) => q.get("tag"))).toEqual([null, "Gridfinity", "PLA"]);
+  });
 });
 
 /** The query of the last request for the library's cards. */
@@ -644,6 +668,41 @@ describe("search", () => {
     await settle();
     expect(requests).toContain("/app/api/library?q=box");
     expect(cardNames()).toEqual(["Plated box"]);
+  });
+
+  // Issue #194: a search from the top bar on a library filtered by creator
+  // or collection dropped the filter. It keeps both; a search from any
+  // other page starts a library search of its own.
+  test("a search from a library filtered by creator and collection keeps both", async () => {
+    stubServer([PLATED, PARTIAL, STL, STEP]);
+    await render(
+      <MemoryRouter
+        initialEntries={[`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk" })}`]}
+      >
+        <Shell>
+          <Routes>
+            <Route path="/" element={<LibraryPage />} />
+          </Routes>
+        </Shell>
+      </MemoryRouter>,
+    );
+    const form = container.querySelector("search form") as HTMLFormElement;
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setValue?.call(input, "box");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      form.requestSubmit();
+    });
+    await settle();
+    const query = lastLibraryQuery();
+    expect([query.get("q"), query.get("creator"), query.get("collection")]).toEqual([
+      "box",
+      "Maker One",
+      "Desk",
+    ]);
   });
 });
 

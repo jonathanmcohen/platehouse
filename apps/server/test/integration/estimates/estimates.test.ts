@@ -270,6 +270,21 @@ describe("estimates", () => {
     ]);
   });
 
+  // Issue #198: with no menu printer for the file's printer, Bambu's numbers
+  // were labelled with its raw code ("Sliced for Q9"). The printer id stays
+  // the file's own; only the label is plain words.
+  test("file numbers for a printer the menu does not have are labelled in plain words", async () => {
+    const { plates } = await upload({ plates: 1, sliced: [1], printerModelId: "Q9" });
+    await drain();
+    const numbers = await estimates.plateNumbers(plateId(plates, 1));
+    expect(numbers.file).toMatchObject({
+      source: "file",
+      printerId: "Q9",
+      printerLabel: "another printer",
+      timeSeconds: 1000,
+    });
+  });
+
   test("each filament's preset and its source are stored with the Platehouse numbers", async () => {
     const { plates } = await upload({ plates: 1 });
     await drain();

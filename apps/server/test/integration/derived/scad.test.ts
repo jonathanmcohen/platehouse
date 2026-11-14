@@ -1087,8 +1087,21 @@ describe("replacing a .scad (AC-053)", () => {
     });
     expect(after?.sha256).toEqual(before.sha256);
     // No staged source and no half render left behind, in rows or objects.
-    expect((await blobsOf(env, modelId)).map((b) => b.id)).toEqual(oldBlobs.map((b) => b.id));
-    expect(await keysOf(env, modelId)).toEqual(oldKeys);
+    // The job marks the file failed first and removes the staged source
+    // after, so the removal is waited for, with a limit, rather than read
+    // the moment the file shows failed (issue #158: that read raced the
+    // removal and failed once in CI).
+    const wanted = JSON.stringify({ blobs: oldBlobs.map((b) => b.id), keys: oldKeys });
+    const left = await until(
+      async () =>
+        JSON.stringify({
+          blobs: (await blobsOf(env, modelId)).map((b) => b.id),
+          keys: await keysOf(env, modelId),
+        }),
+      (seen) => seen === wanted,
+      10_000,
+    );
+    expect(left).toBe(wanted);
   });
 
   test("a replacement that OpenSCAD rejects becomes the file's source with OpenSCAD's message, and the previous STL and preview stay, marked as the previous version's", async () => {

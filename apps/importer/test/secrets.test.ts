@@ -122,6 +122,39 @@ describe("the output never shows a credential or a signed query", () => {
     expectClean(s, r.output);
   });
 
+  // Issue #168: the redactor knew a signed query only as a whole, so a
+  // server that echoed one of its parameters on its own (the signature, the
+  // credential or the session token) printed it. Here Manyfold, whose error
+  // bodies are quoted, echoes one parameter of the signed URL it handed out
+  // for the file before. Each sensitive value is registered on its own too.
+  it.each(["X-Amz-Signature", "X-Amz-Credential", "X-Amz-Security-Token"])(
+    "when Manyfold echoes only the %s of a signed URL back in an error body",
+    async (param) => {
+      const s = setup(library());
+      const echoed: string[] = [];
+      server.use(
+        http.get(`${MANYFOLD}/models/m1/model_files/f2.stl`, () => {
+          const query = s.manyfold.signedQueries[0] ?? "";
+          const raw = query.split("&").find((p) => p.startsWith(`${param}=`)) ?? "";
+          const value = new URLSearchParams(query).get(param) ?? "";
+          echoed.push(value, raw.slice(param.length + 1));
+          return new HttpResponse(`denied: ${value} (${raw.slice(param.length + 1)})`, {
+            status: 403,
+          });
+        }),
+      );
+      const r = await s.run(["--apply"]);
+      expect(r.code).toBe(1);
+      expect(echoed.length).toBeGreaterThan(0);
+      for (const value of echoed) {
+        expect(value.length).toBeGreaterThan(8);
+        expect(r.output).not.toContain(value);
+      }
+      expectClean(s, r.output);
+      expect(r.output).toContain(`denied: ${REDACTED}`);
+    },
+  );
+
   it("when Platehouse refuses its token and echoes it back", async () => {
     const s = setup(library());
     server.use(

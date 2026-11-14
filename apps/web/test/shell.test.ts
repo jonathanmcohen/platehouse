@@ -267,3 +267,23 @@ test("no source file opens a native browser dialog", () => {
     expect(source, file).not.toMatch(/\b(?:alert|confirm|prompt)\s*\(/);
   }
 });
+
+// Issue #161: the web app's component tests run under jsdom (the vitest
+// environment comment at the top of each such file), but apps/web did not
+// declare it; it resolved only because packages/makerworld does. The web
+// app declares every test environment it uses, pinned exactly. The marker
+// is joined from parts: vitest reads that comment anywhere in a file, and
+// would run this file under jsdom if it were written out here.
+const JSDOM_MARKER = ["// @vitest", "environment jsdom"].join("-");
+
+test("apps/web declares jsdom, pinned exactly, since its tests run under it", () => {
+  const dir = fileURLToPath(new URL(".", import.meta.url));
+  const jsdomTests = readdirSync(dir).filter((name) =>
+    readFileSync(join(dir, name), "utf8").startsWith(JSDOM_MARKER),
+  );
+  expect(jsdomTests.length).toBeGreaterThan(0);
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    devDependencies?: Record<string, string>;
+  };
+  expect(pkg.devDependencies?.jsdom).toMatch(/^\d+\.\d+\.\d+$/);
+});

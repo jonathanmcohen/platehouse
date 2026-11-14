@@ -116,6 +116,25 @@ describe("a model Platehouse does not have", () => {
     expect(plan.files[0]).toMatchObject({ reason: expect.stringMatching(/png/) });
   });
 
+  // Issue #168: a file over Platehouse's single-upload cap (536870912
+  // bytes, 512 MiB) was downloaded in full and only then refused. It is
+  // skipped with the reason, from Manyfold's contentSize, and never
+  // downloaded; one at the cap is still imported.
+  it("skips a file over Platehouse's 512 MiB upload limit, with the reason", () => {
+    const plan = planModel(
+      source({
+        files: [
+          { url: "u1", filename: "huge.3mf", contentUrl: "c1", contentSize: 536870913 },
+          { url: "u2", filename: "edge.3mf", contentUrl: "c2", contentSize: 536870912 },
+        ],
+      }),
+      undefined,
+    );
+    expect(plan.files.map((f) => f.action)).toEqual(["skip", "import"]);
+    expect(plan.files[0]).toMatchObject({ reason: expect.stringMatching(/512 MiB/) });
+    expect(plan.files[0]).toMatchObject({ reason: expect.stringMatching(/536870913/) });
+  });
+
   it("fails a file Manyfold gives no contentSize for, since its size cannot be checked", () => {
     const plan = planModel(
       source({ files: [{ url: "u", filename: "a.3mf", contentUrl: "c", contentSize: null }] }),

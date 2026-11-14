@@ -383,19 +383,22 @@ for (const [name, file] of DOCKERFILES) {
 
   // Issue #150: apt-get update only warns on an index it could not fetch
   // and exits 0, so an outage that outlasts the retries failed the build a
-  // command later with a misleading "Unable to locate package". The update
-  // against the snapshot runs with --error-on=any, so it fails there, with
-  // the server's error.
-  test(`${name}: every apt-get update after the snapshot is switched on runs with --error-on=any`, () => {
-    let checked = 0;
+  // command later with a misleading "Unable to locate package". Every update
+  // runs with --error-on=any, so it fails there, with the server's error:
+  // the one against the snapshot, and (issue #158) the first one, against
+  // the live archive before the snapshot is switched on.
+  test(`${name}: every apt-get update runs with --error-on=any, before and after the snapshot is switched on`, () => {
+    let before = 0;
+    let after = 0;
     for (const run of runsOf(file)) {
       const at = run.indexOf("APT::Snapshot");
-      if (at === -1) continue;
-      for (const m of run.slice(at).matchAll(/\bapt-get update\b[^&]*/g)) {
+      for (const m of run.matchAll(/\bapt-get update\b[^&]*/g)) {
         assert.match(m[0], /\s--error-on=any\b/, `in ${name}: ${m[0].trim()}`);
-        checked++;
+        if (at !== -1 && m.index > at) after++;
+        else before++;
       }
     }
-    assert.ok(checked >= 2, `${name}: snapshot updates checked: ${checked}`);
+    assert.ok(before >= 2, `${name}: live-archive updates checked: ${before}`);
+    assert.ok(after >= 2, `${name}: snapshot updates checked: ${after}`);
   });
 }
