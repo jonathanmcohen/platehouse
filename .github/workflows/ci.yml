@@ -3,8 +3,15 @@
 # The workspace jobs run on every pull request and on every push to main and
 # the release branches, whatever the change touches (issue #16: a paths filter
 # on the triggers meant no CI ran on product PRs). They run in a chain:
-# lint -> typecheck -> unit -> integration. Each test job fails when no test
-# actually ran (AC-094), and logs how many did.
+# lint -> typecheck -> unit -> integration -> e2e (Lint (Biome), Typecheck,
+# Unit tests, Integration tests, End-to-end tests; e2e is build plan Task 22).
+# Each test job fails when no test actually ran (AC-094), and logs how many
+# did.
+#
+# The jobs in this file, in order: changes (Decide which path-scoped jobs
+# run), the chain above, gate-image (Slicing gate tests and image build),
+# slicer-image (Slicer image and container tests) and app-image (App image
+# (amd64) and App image (arm64), build plan Task 24).
 #
 # The slicing gate job builds a large image, so it keeps its own path scoping:
 # the changes job decides whether tools/slicing-gate, this file or .node-version
