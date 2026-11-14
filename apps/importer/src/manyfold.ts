@@ -36,8 +36,9 @@
 // - A download's byte count is checked against Manyfold's contentSize while
 //   it streams; a mismatch is a SizeMismatch and nothing is returned.
 // - Log lines and errors name the path on Manyfold, and only the host and
-//   path anywhere else. A download hop's name the path without its query
-//   even on Manyfold, since a redirect may have signed it. An error answer's body is quoted (200 characters at
+//   path anywhere else. A download hop's log lines and errors name the path
+//   without its query, even on Manyfold, since a redirect may have signed it
+//   (downloadPath). An error answer's body is quoted (200 characters at
 //   most, control characters taken out and then redacted before it is cut)
 //   only when it came from Manyfold; the token request quotes only
 //   Doorkeeper's error code.

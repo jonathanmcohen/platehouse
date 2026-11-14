@@ -759,8 +759,9 @@ const UNSAFE_IN_FILENAME_STAR = /[/\\\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
  * zero-width characters) and the line and paragraph separators (\p{Zl},
  * \p{Zp}) replaced by _, so a browser or slicer never shows a name reordered
  * to read as another extension or broken across lines (issue #164; PR #211
- * security review). A slicer link's name segment replaces / and \ and the
- * control and format characters too (links.ts).
+ * security review). A slicer link's name segment replaces that same set (/,
+ * \, \p{Cc}, \p{Cf}, \p{Zl}, \p{Zp}) and also % ? # and ;, which only a URL
+ * needs (links.ts UNSAFE_IN_SEGMENT).
  */
 export function contentDisposition(name: string): string {
   const fallback = name.replace(/[^\x20-\x7e]|["\\/]/g, "_");
