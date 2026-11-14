@@ -29,8 +29,9 @@
 //   always one segment, holds nothing a proxy might decode, refuse or split
 //   on, and never displays as a name with another extension. OrcaSlicer
 //   names its download after it. That segment is never used for lookup;
-//   the answer's Content-Disposition carries the real stored name with its
-//   extension (download.ts), so a slicer that prefers it gets that.
+//   the answer's Content-Disposition carries the stored name with its real
+//   extension (linkFileName, set where api/v1.ts reads the file), so a
+//   slicer that prefers it gets that.
 // - The route is registered as /s/:token/* rather than /s/:token/:name:
 //   the router refuses a :param over its maxParamLength (100 characters)
 //   with 414, which would break the link of any file whose name is longer.
@@ -53,8 +54,8 @@ import {
   unavailable,
 } from "./download.js";
 
-// linkFileName lives in download.ts, which this module imports, so the
-// download route can use it without an import cycle; links still export it.
+// linkFileName lives in api/v1.ts, which reads every file the delivery
+// routes send (issue #164); links still export it.
 export { linkFileName };
 
 /** How long a slicer link works (Q14). */
@@ -212,8 +213,8 @@ export async function registerLinks(
       if (token === undefined) return refuseLink(reply);
       const fileId = readLinkToken(key, token, now());
       if (fileId === undefined) return refuseLink(reply);
-      // The file's kind and original name give the Content-Disposition name
-      // its extension (linkFileName); the database only, the store not yet.
+      // The file must be live; the database only, the store not yet. Its
+      // Content-Disposition name comes with its content (linkFileName).
       const file = await deps.library.linkFile(fileId);
       if (file === undefined) return refuseLink(reply);
       const head = request.method === "HEAD";
@@ -227,7 +228,7 @@ export async function registerLinks(
         throw error;
       }
       if (content === undefined) return refuseLink(reply);
-      return sendContent(reply, content, { attachment: true, fileName: linkFileName(file) });
+      return sendContent(reply, content, { attachment: true });
     });
   });
 }

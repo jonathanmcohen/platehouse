@@ -12,6 +12,7 @@ import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createSlicerClient, type SlicerClient } from "../../../src/estimates/client.js";
+import { OTHER_PRINTER_LABEL } from "../../../src/estimates/display.js";
 import {
   createEstimates,
   type Estimates,
@@ -280,7 +281,7 @@ describe("estimates", () => {
     expect(numbers.file).toMatchObject({
       source: "file",
       printerId: "Q9",
-      printerLabel: "another printer",
+      printerLabel: OTHER_PRINTER_LABEL,
       timeSeconds: 1000,
     });
   });

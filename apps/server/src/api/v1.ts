@@ -37,7 +37,16 @@
 //   the store.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
-import { Readable } from "node:stream";
+// - A file's content is named and sized here once for every route that
+//   delivers it (issue #164): this route, the download and the slicer link
+//   (delivery/download.ts and links.ts) all read a file through
+//   createApiLibrary. Its name is linkFileName's (the stored name, with the
+//   file's real extension added when a rename left it without one), written
+//   by contentDisposition. Its object must be the recorded size: a GET
+//   checks the size the store reported before any header (checkObjectSize)
+//   and counts the bytes as they go (exactSize), and a HEAD compares the
+//   HeadObject's size (fileHead), so a HEAD answers 503 where the GET would.
+import { pipeline, Readable, Transform } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
@@ -49,7 +58,13 @@ import { createSearch, InvalidCursor, type LibrarySearch } from "../library/sear
 import { createTags } from "../library/tags.js";
 import { createRepos } from "../repos/index.js";
 import type { Model } from "../repos/models.js";
-import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
+import {
+  BlobNotFound,
+  type BlobStore,
+  objectSize,
+  StoreError,
+  StoreUnavailable,
+} from "../storage/s3.js";
 import type { AuthHook } from "../uploads/tus.js";
 import { UNAUTHORIZED_DOC } from "./openapi.js";
 import { createBearerHook, type Tokens } from "./tokens.js";
@@ -136,6 +151,123 @@ export interface FileContent extends FileHead {
   stream: Readable;
 }
 
+/** The extensions each file kind is stored under, the first the default. */
+const EXTENSIONS: Record<FileKind, readonly string[]> = {
+  "3mf": [".3mf"],
+  stl: [".stl"],
+  step: [".step", ".stp"],
+  scad: [".scad"],
+};
+
+/**
+ * The name a file is delivered under, in a slicer link's last segment and
+ * in Content-Disposition on every route that names a file: the stored
+ * (display) name, which a rename may have left without its extension, with
+ * the file's real extension added when it does not already end in one for
+ * its kind (case ignored). The real extension is the original name's, when
+ * that is one for the kind, else the kind's first, in lower case.
+ */
+export function linkFileName(file: { name: string; originalName: string; kind: FileKind }): string {
+  const exts = EXTENSIONS[file.kind];
+  const lower = file.name.toLowerCase();
+  if (exts.some((ext) => lower.endsWith(ext))) return file.name;
+  const original = file.originalName.toLowerCase();
+  const ext = exts.find((e) => original.endsWith(e)) ?? exts[0] ?? "";
+  return `${file.name}${ext}`;
+}
+
+/**
+ * Throws StoreError (HeadObject, SizeMismatch) when the store reported a
+ * size for the object that is not the recorded one, so a HEAD answers 503
+ * where the GET would. No reported size passes.
+ */
+export function checkHeadSize(reported: number | undefined, recorded: number): void {
+  if (reported !== undefined && reported !== recorded) {
+    throw new StoreError("HeadObject", "SizeMismatch");
+  }
+}
+
+/**
+ * Throws StoreError (GetObject, SizeMismatch), after closing the stream,
+ * when the store reported an object size for the content's stream that is
+ * not its recorded size, so the route answers 503 before any header. A
+ * stream with no reported size passes; exactSize still counts its bytes.
+ */
+export function checkObjectSize(content: FileHead | FileContent): void {
+  if (!("stream" in content)) return;
+  const reported = objectSize(content.stream);
+  if (reported === undefined || reported === content.size) return;
+  content.stream.destroy();
+  throw new StoreError("GetObject", "SizeMismatch");
+}
+
+/**
+ * The stream, passed through only while it holds exactly size bytes. A
+ * chunk that would take it past size errors the stream before any of that
+ * chunk is sent, and an end short of size errors it too; Fastify then
+ * destroys the response (or, before any header, answers through the scope's
+ * error handler, 503 with the file's content headers taken off by
+ * dropContentHeaders). The last byte is held until the source ends, so a
+ * client never receives the whole Content-Length from an object that turns
+ * out longer. Destroying the result destroys the source.
+ */
+export function exactSize(source: Readable, size: number): Readable {
+  let seen = 0;
+  let held: Buffer | undefined;
+  const counted = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      seen += chunk.length;
+      if (seen > size) {
+        done(new StoreError("GetObject", "SizeMismatch"));
+        return;
+      }
+      if (seen === size && chunk.length > 0) {
+        held = chunk.subarray(chunk.length - 1);
+        done(null, chunk.length > 1 ? chunk.subarray(0, chunk.length - 1) : undefined);
+        return;
+      }
+      done(null, chunk);
+    },
+    flush(done) {
+      if (seen !== size) {
+        done(new StoreError("GetObject", "SizeMismatch"));
+        return;
+      }
+      done(null, held);
+    },
+  });
+  pipeline(source, counted, () => {
+    // An error reaches Fastify through counted, which pipeline destroys
+    // with it; this callback only keeps pipeline from throwing.
+  });
+  return counted;
+}
+
+/** True for content that carries its bytes (a GET), false for headers only (a HEAD). */
+function isContent(content: FileHead | FileContent): content is FileContent {
+  return "stream" in content;
+}
+
+/** The headers a file's answer sets that describe the bytes, not the answer. */
+const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition"] as const;
+
+/**
+ * Takes a file's content headers off an error answer. A stream that fails
+ * before its first byte is answered through the scope's error handler, but
+ * Fastify has already copied the reply's headers onto the raw response
+ * (res.setHeader) and removes only its own copy of content-type and
+ * content-length; reply.getHeader falls back to the raw response. Left
+ * there, the file's content-type makes the JSON error an invalid payload
+ * (Fastify's own 500 instead of the 503), and its Content-Disposition would
+ * make a client save the error under the model's file name (PR #156 review).
+ */
+export function dropContentHeaders(reply: FastifyReply): void {
+  for (const name of CONTENT_HEADERS) {
+    reply.removeHeader(name);
+    if (!reply.raw.headersSent) reply.raw.removeHeader(name);
+  }
+}
+
 /** What the API reads and changes; createApiLibrary over the database and store. */
 export interface ApiLibrary {
   listModels(query: LibrarySearch & { externalRef?: string | undefined }): Promise<ApiModelPage>;
@@ -144,9 +276,11 @@ export interface ApiLibrary {
   getFile(id: string): Promise<ApiFile | undefined>;
   /**
    * What a HEAD on the file's content answers: the headers from the database,
-   * once a HeadObject (no body) confirms the object is in the bucket, so a
-   * HEAD fails where the GET would. BlobNotFound when its blob is not stored;
-   * StoreUnavailable or StoreError when the store cannot confirm the object.
+   * once a HeadObject (no body) confirms the object is in the bucket at its
+   * recorded size, so a HEAD fails where the GET would. The name is
+   * linkFileName's. BlobNotFound when its blob is not stored; StoreUnavailable
+   * or StoreError when the store cannot confirm the object, or reports
+   * another size (StoreError, SizeMismatch).
    */
   fileHead(id: string): Promise<FileHead | undefined>;
   /** The file's bytes; StoreUnavailable, BlobNotFound or StoreError when the store cannot give them. */
@@ -292,7 +426,7 @@ export function createApiLibrary(deps: {
     const blob = await repos.blobs.get(file.blobId);
     if (blob === undefined || blob.state !== "stored") throw new BlobNotFound("GetObject");
     return {
-      head: { name: file.name, contentType: blob.contentType, size: Number(file.size) },
+      head: { name: linkFileName(file), contentType: blob.contentType, size: Number(file.size) },
       key: blob.key,
     };
   }
@@ -373,7 +507,7 @@ export function createApiLibrary(deps: {
     async fileHead(id) {
       const found = await storedFile(id);
       if (found === undefined) return undefined;
-      await store.headBlob(found.key);
+      checkHeadSize(await store.headBlob(found.key), found.head.size);
       return found.head;
     },
 
@@ -611,10 +745,19 @@ type TagParams = { id: string; tag: string };
 type CollectionParams = { name: string; id: string };
 type SearchQuery = LibrarySearch & { externalRef?: string };
 
-/** A file name for Content-Disposition: an ASCII fallback and the UTF-8 name. */
+/**
+ * A file name for Content-Disposition, the one writer every route that names
+ * a file uses: an ASCII fallback, with anything outside printable ASCII,
+ * quotes, / and \ replaced by _ (so a client that reads only filename= sees
+ * no directory part), and the UTF-8 name in filename*, with invisible format
+ * characters (\p{Cf}: bidi overrides and isolates, zero-width characters)
+ * replaced by _, so a browser never shows a name reordered to read as
+ * another extension (issue #164). A slicer link's name segment replaces the
+ * same format characters (links.ts).
+ */
 export function contentDisposition(name: string): string {
-  const fallback = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
-  const encoded = encodeURIComponent(name).replace(
+  const fallback = name.replace(/[^\x20-\x7e]|["\\/]/g, "_");
+  const encoded = encodeURIComponent(name.replace(/\p{Cf}/gu, "_")).replace(
     /['()*]/g,
     (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
   );
@@ -650,10 +793,17 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         if (status !== undefined && status >= 400 && status < 500) {
           return reply.code(status).send({ error: "bad_request", message: err.message });
         }
-        // The cause (a database host, a bucket) goes to the log only.
+        // The cause (a database host, a bucket) goes to the log only. A
+        // file's stream that fails before its first byte lands here with
+        // the file's content headers already set; they come off, so the
+        // error is not saved under the file's name.
         request.log.error({ err: error }, "api: the request failed");
+        dropContentHeaders(reply);
         if (error instanceof StoreUnavailable) {
           return reply.code(503).send({ error: "unavailable" });
+        }
+        if (error instanceof StoreError || error instanceof BlobNotFound) {
+          return reply.code(503).send({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
         }
         return reply.code(500).send({ error: "internal" });
       });
@@ -802,15 +952,18 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
           // stream a HEAD sends, so a HEAD never opens a GetObject: it reads
           // the file and its blob from the database, confirms the object with
           // a HeadObject (no body, so no bytes leave the bucket, and a store
-          // outage or a missing object is the same 503 the GET answers), and
-          // sends an empty stream, which keeps the file's Content-Length (an
-          // empty body would make Fastify answer 0).
+          // outage, a missing object or an object of another size is the
+          // same 503 the GET answers), and sends an empty stream, which keeps
+          // the file's Content-Length (an empty body would make Fastify
+          // answer 0). A GET's object must be its recorded size: checked
+          // before any header, then counted as it streams (issue #164).
           const head = request.method === "HEAD";
           let content: FileHead | FileContent | undefined;
           try {
             content = head
               ? await library.fileHead(request.params.id)
               : await library.openFile(request.params.id);
+            if (content !== undefined) checkObjectSize(content);
           } catch (error) {
             if (
               error instanceof StoreUnavailable ||
@@ -825,13 +978,14 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
             throw error;
           }
           if (content === undefined) return reply.code(404).send(NOT_FOUND);
+          const found = content;
           return reply
-            .header("content-type", content.contentType)
-            .header("content-length", String(content.size))
-            .header("content-disposition", contentDisposition(content.name))
+            .header("content-type", found.contentType)
+            .header("content-length", String(found.size))
+            .header("content-disposition", contentDisposition(found.name))
             .header("x-content-type-options", "nosniff")
             .header("cache-control", "private, no-store")
-            .send("stream" in content ? content.stream : Readable.from([]));
+            .send(isContent(found) ? exactSize(found.stream, found.size) : Readable.from([]));
         },
       );
 

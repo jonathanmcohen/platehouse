@@ -26,49 +26,51 @@
 //   sees an aborted answer, never a clean end. res.strictContentLength is
 //   not used: on a short stream it throws from res.end() and ends the
 //   process. A HEAD never opens a GetObject: it confirms the object exists
-//   with a HeadObject (no body) and sends the headers, so it fails where the
-//   GET would for an unknown, trashed or missing object or a store outage.
-//   It does not compare the object's size with the record (headBlob returns
-//   no size), so for an object whose size differs (a restored older
-//   version, a write behind the app's back) the GET answers 503 while the
-//   HEAD answers 200 with a Content-Length the GET will never deliver.
-//   Closing that gap needs HeadObject's size in fileHead (api/v1.ts) and
-//   blobHead, compared as checkObjectSize does; it is not in this change.
+//   with a HeadObject (no body), compares the size the HeadObject reports
+//   with the record (fileHead in api/v1.ts, blobHead here; issue #164), and
+//   sends the headers, so it fails where the GET would for an unknown,
+//   trashed or missing object, an object of another size or a store outage.
+//   checkObjectSize, exactSize and the HEAD size check live in api/v1.ts,
+//   so the public API's file content route uses the same code.
 // - A file or blob that is unknown, malformed or in the trash is 404. When
 //   the store cannot give the bytes (an outage, a missing object, a refusal)
 //   the answer is 503 "This file is unavailable right now", and nothing is
 //   written anywhere: no row, no status, so an outage never marks a file
 //   missing or damaged (AC-012). Any other failure is logged and answered
 //   500 with no detail.
-// - A file goes out as an attachment with the stored name in an ASCII
-//   fallback and in filename*=UTF-8'' (api/v1.ts contentDisposition), so a
-//   name with spaces, accents, slashes, quotes or line breaks never breaks
-//   the header. The name is linkFileName's: a rename may have left the
-//   stored name without its extension, and a browser saves the download
-//   under this name, so the file's real extension is added when it is
-//   missing. A slicer link's answer (links.ts) carries the same
-//   Content-Disposition; only its URL's name segment has unsafe characters
+// - A file goes out as an attachment with its name in an ASCII fallback and
+//   in filename*=UTF-8'' (api/v1.ts contentDisposition), so a name with
+//   spaces, accents, slashes, quotes or line breaks never breaks the header.
+//   The name is linkFileName's (api/v1.ts), set where the file is read
+//   (createApiLibrary), so the download, the slicer link and the API's own
+//   content route all name it the same way (issue #164): a rename may have
+//   left the stored name without its extension, and a browser saves the
+//   download under this name, so the file's real extension is added when it
+//   is missing. Only a slicer link's URL name segment has unsafe characters
 //   replaced (linkSegment). Every answer carries X-Content-Type-Options:
 //   nosniff.
-import { pipeline, Readable, Transform } from "node:stream";
+import { Readable } from "node:stream";
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import {
   type ApiLibrary,
+  checkHeadSize,
+  checkObjectSize,
   contentDisposition,
+  dropContentHeaders,
+  exactSize,
   FILE_UNAVAILABLE_MESSAGE,
   type FileContent,
   type FileHead,
+  linkFileName,
 } from "../api/v1.js";
 import type { DB, FileKind } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
-import {
-  BlobNotFound,
-  type BlobStore,
-  objectSize,
-  StoreError,
-  StoreUnavailable,
-} from "../storage/s3.js";
+import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
+
+// linkFileName and checkObjectSize live in api/v1.ts, which reads every
+// file the delivery routes send; they are exported here as before.
+export { checkObjectSize, linkFileName };
 
 /** What GET /blobs/:id answers in Cache-Control: a blob's bytes never change. */
 export const BLOB_CACHE_CONTROL = "private, max-age=31536000, immutable";
@@ -84,39 +86,16 @@ export interface LinkFile {
   kind: FileKind;
 }
 
-/** The extensions each file kind is stored under, the first the default. */
-const EXTENSIONS: Record<FileKind, readonly string[]> = {
-  "3mf": [".3mf"],
-  stl: [".stl"],
-  step: [".step", ".stp"],
-  scad: [".scad"],
-};
-
-/**
- * The name a file is delivered under, in a slicer link's last segment and
- * in Content-Disposition: the stored (display) name, which a rename may
- * have left without its extension, with the file's real extension added
- * when it does not already end in one for its kind (case ignored). The real
- * extension is the original name's, when that is one for the kind, else
- * the kind's first, in lower case.
- */
-export function linkFileName(file: Pick<LinkFile, "name" | "originalName" | "kind">): string {
-  const exts = EXTENSIONS[file.kind];
-  const lower = file.name.toLowerCase();
-  if (exts.some((ext) => lower.endsWith(ext))) return file.name;
-  const original = file.originalName.toLowerCase();
-  const ext = exts.find((e) => original.endsWith(e)) ?? exts[0] ?? "";
-  return `${file.name}${ext}`;
-}
-
 /** What delivery reads beyond Task 16's file content: blobs, and a file for its link. */
 export interface DeliveryLibrary {
   /** A live file; undefined when unknown, malformed or its model is trashed. */
   linkFile(id: string): Promise<LinkFile | undefined>;
   /**
-   * A stored blob of a live model, confirmed with a HeadObject; undefined
-   * when unknown, malformed or its model is trashed. BlobNotFound when the
-   * row is not stored; StoreUnavailable or StoreError from the store.
+   * A stored blob of a live model, confirmed with a HeadObject at its
+   * recorded size; undefined when unknown, malformed or its model is
+   * trashed. BlobNotFound when the row is not stored; StoreUnavailable or
+   * StoreError from the store, or StoreError (SizeMismatch) when the store
+   * reports another size.
    */
   blobHead(id: string): Promise<FileHead | undefined>;
   /** A stored blob of a live model and its bytes; errors as blobHead. */
@@ -165,7 +144,7 @@ export function createDeliveryLibrary(deps: {
     async blobHead(id) {
       const found = await storedBlob(id);
       if (found === undefined) return undefined;
-      await store.headBlob(found.key);
+      checkHeadSize(await store.headBlob(found.key), found.head.size);
       return found.head;
     },
 
@@ -178,71 +157,15 @@ export function createDeliveryLibrary(deps: {
 }
 
 /**
- * Throws StoreError (GetObject, SizeMismatch), after closing the stream,
- * when the store reported an object size for the content's stream that is
- * not its recorded size, so the route answers 503 before any header. A
- * stream with no reported size passes; exactSize still counts its bytes.
- */
-export function checkObjectSize(content: FileHead | FileContent): void {
-  if (!("stream" in content)) return;
-  const reported = objectSize(content.stream);
-  if (reported === undefined || reported === content.size) return;
-  content.stream.destroy();
-  throw new StoreError("GetObject", "SizeMismatch");
-}
-
-/**
- * The stream, passed through only while it holds exactly size bytes. A
- * chunk that would take it past size errors the stream before any of that
- * chunk is sent, and an end short of size errors it too; Fastify then
- * destroys the response (or, before any header, answers through the scope's
- * error handler, 503 with the file's content headers taken off by
- * dropContentHeaders). The last byte is held until the source ends, so a
- * client never receives the whole Content-Length from an object that turns
- * out longer. Destroying the result destroys the source.
- */
-function exactSize(source: Readable, size: number): Readable {
-  let seen = 0;
-  let held: Buffer | undefined;
-  const counted = new Transform({
-    transform(chunk: Buffer, _encoding, done) {
-      seen += chunk.length;
-      if (seen > size) {
-        done(new StoreError("GetObject", "SizeMismatch"));
-        return;
-      }
-      if (seen === size && chunk.length > 0) {
-        held = chunk.subarray(chunk.length - 1);
-        done(null, chunk.length > 1 ? chunk.subarray(0, chunk.length - 1) : undefined);
-        return;
-      }
-      done(null, chunk);
-    },
-    flush(done) {
-      if (seen !== size) {
-        done(new StoreError("GetObject", "SizeMismatch"));
-        return;
-      }
-      done(null, held);
-    },
-  });
-  pipeline(source, counted, () => {
-    // An error reaches Fastify through counted, which pipeline destroys
-    // with it; this callback only keeps pipeline from throwing.
-  });
-  return counted;
-}
-
-/**
  * Sends a file's or blob's headers and, for a GET, its stream, held to the
  * recorded size (exactSize). A HEAD gets an empty stream, which keeps the
  * Content-Length (an empty body would make Fastify answer 0). An attachment
- * is named fileName (a file's linkFileName), else the content's own name.
+ * is named with the content's name, a file's linkFileName (api/v1.ts).
  */
 export function sendContent(
   reply: FastifyReply,
   content: FileHead | FileContent,
-  opts: { attachment: boolean; cacheControl?: string; fileName?: string },
+  opts: { attachment: boolean; cacheControl?: string },
 ) {
   reply
     .header("content-type", content.contentType)
@@ -250,31 +173,11 @@ export function sendContent(
     .header("x-content-type-options", "nosniff")
     .header("cache-control", opts.cacheControl ?? FILE_CACHE_CONTROL);
   if (opts.attachment) {
-    reply.header("content-disposition", contentDisposition(opts.fileName ?? content.name));
+    reply.header("content-disposition", contentDisposition(content.name));
   }
   return reply.send(
     "stream" in content ? exactSize(content.stream, content.size) : Readable.from([]),
   );
-}
-
-/** The headers sendContent sets that describe the bytes, not the answer. */
-const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition"] as const;
-
-/**
- * Takes the content headers sendContent set off an error answer. A stream
- * that fails before its first byte is answered through the scope's error
- * handler, but Fastify has already copied the reply's headers onto the raw
- * response (res.setHeader) and removes only its own copy of content-type
- * and content-length; reply.getHeader falls back to the raw response. Left
- * there, the file's content-type makes the JSON error an invalid payload
- * (Fastify's own 500 instead of the 503), and its Content-Disposition would
- * make a client save the error under the model's file name (PR #156 review).
- */
-function dropContentHeaders(reply: FastifyReply): void {
-  for (const name of CONTENT_HEADERS) {
-    reply.removeHeader(name);
-    if (!reply.raw.headersSent) reply.raw.removeHeader(name);
-  }
 }
 
 /**
@@ -326,7 +229,7 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
       request: FastifyRequest,
       reply: FastifyReply,
       read: (head: boolean) => Promise<FileHead | FileContent | undefined>,
-      opts: { attachment: boolean; cacheControl: string; fileName?: string },
+      opts: { attachment: boolean; cacheControl: string },
     ) {
       let content: FileHead | FileContent | undefined;
       try {
@@ -347,15 +250,13 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
 
     scope.get<IdParams>("/files/:id/download", async (request, reply) => {
       const { id } = request.params;
-      // The file's kind and original name give the extension its
-      // Content-Disposition name needs (linkFileName); the database only.
-      const file = await deps.library.linkFile(id);
-      if (file === undefined) return notFound(reply);
+      // The file's name, with its real extension, comes with its content
+      // (linkFileName in api/v1.ts createApiLibrary).
       return serve(
         request,
         reply,
         (head) => (head ? deps.files.fileHead(id) : deps.files.openFile(id)),
-        { attachment: true, cacheControl: FILE_CACHE_CONTROL, fileName: linkFileName(file) },
+        { attachment: true, cacheControl: FILE_CACHE_CONTROL },
       );
     });
 

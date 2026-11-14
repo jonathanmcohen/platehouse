@@ -11,10 +11,13 @@
 // registered pattern by its prefix alone, so a regex-constrained param
 // (written with backslashes) keeps its route's class. routeClass classes the
 // raw path of a request that matched no route: any path under /api/v1/ is
-// bearer, since an unmatched one serves only the 404 (issue #140), and any
-// other path that is not a plain route path (a dot segment, a percent
-// escape, a doubled slash or a backslash) is session, whatever it starts
-// with.
+// bearer, since an unmatched one serves only the 404 (issue #140); any path
+// under /s/, or one that normalises to /s/ (isLinkPath: a doubled slash, a
+// percent-escaped letter, a backslash, a dot segment or an absolute-form
+// target), is link, since an unmatched one is answered only as a refused
+// link (issue #169); and any other path that is not a plain route path (a
+// dot segment, a percent escape, a doubled slash or a backslash) is
+// session, whatever it starts with.
 //
 // installGate puts three things on the root app, so they cover every route
 // registered after it, a 404 included:
@@ -98,10 +101,52 @@ export function patternClass(pattern: string): RouteClass {
   return "session";
 }
 
+/** How many rounds of percent-decoding normalisedPath applies, so %2573 reads as s. */
+const DECODE_ROUNDS = 3;
+
+/**
+ * The path a raw request target could be read as, for classing only, never
+ * for routing: an absolute-form target's scheme and authority dropped, each
+ * valid percent escape decoded (repeated, so a double-encoded letter reads
+ * as itself; an escape that is not valid is left as it is), backslashes
+ * made slashes, runs of slashes made one, and dot segments resolved.
+ */
+function normalisedPath(target: string): string {
+  let p = pathPart(target).replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]*/, "");
+  for (let i = 0; i < DECODE_ROUNDS && p.includes("%"); i++) {
+    p = p.replace(/%([0-9A-Fa-f]{2})/g, (_m, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+  }
+  p = p.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  const out: string[] = [];
+  for (const segment of p.split("/")) {
+    if (segment === ".") continue;
+    if (segment === "..") out.pop();
+    else out.push(segment);
+  }
+  const joined = out.join("/");
+  return joined.startsWith("/") ? joined : `/${joined}`;
+}
+
+/**
+ * True for a raw request target under /s/, as sent or as it normalises
+ * (normalisedPath): a doubled slash, a percent-escaped letter, a backslash,
+ * a dot segment or an absolute-form target that reads as a /s/ path. Such a
+ * path is link-class when it matched no route, so it is answered as a
+ * refused link and its segments are kept out of the request log (issue
+ * #169). It can only ever be refused: the link route itself is matched by
+ * the router and classed by its pattern.
+ */
+export function isLinkPath(target: string): boolean {
+  return pathPart(target).startsWith("/s/") || normalisedPath(target).startsWith("/s/");
+}
+
 /**
  * The class of a raw request path that matched no route (the Route classes
- * table): any /api/v1/ path is bearer; anything else unlisted, or not a
- * plain route path, is session.
+ * table): any /api/v1/ path is bearer; any path under /s/, or that
+ * normalises to it, is link; anything else unlisted, or not a plain route
+ * path, is session.
  */
 export function routeClass(path: string): RouteClass {
   const p = pathPart(path);
@@ -110,6 +155,12 @@ export function routeClass(path: string): RouteClass {
   // /api/v1/model/Big%20thing was sent to the login or refused for Origin,
   // and a valid token never got its 404 (issue #140).
   if (p.startsWith("/api/v1/")) return "bearer";
+  // An unmatched link path is answered only as a refused link (app.ts), so
+  // it is link even when it is not a plain path: as session, a link name
+  // with a space got 401 or a redirect to the login instead of the empty
+  // 403, and a signed-in request got a 404 that repeated the path, the
+  // token in it included (issue #169).
+  if (isLinkPath(path)) return "link";
   if (!isPlainPath(p)) return "session";
   return patternClass(p);
 }

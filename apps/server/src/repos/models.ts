@@ -313,12 +313,19 @@ export function modelsRepo(db: Kysely<DB>) {
      */
     searchRanked,
 
-    /** Moves a live model to the trash; false when it is unknown or already there. */
+    /**
+     * Moves a live model to the trash; false when it is unknown or already
+     * there. trashed_at is the time the row is written (clock_timestamp()),
+     * not the time the statement began (now()): an UPDATE that waits on the
+     * model's row lock (an ingest holds it FOR UPDATE while it writes) is
+     * stamped after the wait, so Empty trash's cutoff, the time the page read
+     * the trash, never covers a model trashed after that read (issue #193).
+     */
     async trash(id: string): Promise<boolean> {
       if (!isUuid(id)) return false;
       const result = await db
         .updateTable("models")
-        .set({ trashedAt: sql`now()` })
+        .set({ trashedAt: sql`clock_timestamp()` })
         .where("id", "=", id)
         .where("trashedAt", "is", null)
         .executeTakeFirst();

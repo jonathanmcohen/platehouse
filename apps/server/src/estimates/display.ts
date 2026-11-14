@@ -55,6 +55,7 @@ export interface Numbers {
   estimateId: string;
   /** The printer these numbers are for: a menu printer id, or the file's bare model id. */
   printerId: string;
+  /** What the page names that printer: the menu printer id, or OTHER_PRINTER_LABEL for a file's printer the menu lacks. */
   printerLabel: string;
   slicer: string | null;
   slicerVersion: string | null;
@@ -113,6 +114,19 @@ export function printerForFile(
   return printers.find(
     (p) => p.modelId === printerModelId && Math.abs(p.nozzle - nozzle) < NOZZLE_TOLERANCE,
   );
+}
+
+/**
+ * What Bambu's own numbers are labelled with when no printer in the slicer's
+ * menu matches the file's printer and nozzle, or the menu is empty because
+ * the slicer could not be reached (issue #198): plain words, never the
+ * file's bare printer code (C12, BL-P001), which means nothing to a reader.
+ */
+export const OTHER_PRINTER_LABEL = "another printer";
+
+/** The label of a file's own numbers: the matching menu printer's name, else OTHER_PRINTER_LABEL. */
+export function filePrinterLabel(printer: Printer | undefined): string {
+  return printer?.id ?? OTHER_PRINTER_LABEL;
 }
 
 interface EstimateRow {
@@ -184,12 +198,11 @@ export async function plateNumbers(
     .orderBy("slot")
     .execute();
 
-  const label = (id: string) => id;
-  const numbers = (row: EstimateRow, printerId: string): Numbers => ({
+  const numbers = (row: EstimateRow, printerId: string, printerLabel = printerId): Numbers => ({
     source: row.source,
     estimateId: row.id,
     printerId,
-    printerLabel: label(printerId),
+    printerLabel,
     slicer: row.slicer,
     slicerVersion: row.slicerVersion,
     processProfile: row.processProfile,
@@ -218,7 +231,11 @@ export async function plateNumbers(
   const fileRow = rows.find((r) => r.source === "file" && r.status === "ok");
   if (fileRow) {
     const printer = printerForFile(fileRow, ctx.printers);
-    out.file = numbers(fileRow, printer?.id ?? fileRow.printerModelId ?? fileRow.printerId);
+    out.file = numbers(
+      fileRow,
+      printer?.id ?? fileRow.printerModelId ?? fileRow.printerId,
+      filePrinterLabel(printer),
+    );
   }
   if (fileRow && fileIsFor(fileRow, selected)) return out;
 
