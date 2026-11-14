@@ -503,3 +503,68 @@ describe("a credential set with padding around it is sent bare", () => {
     });
   }
 });
+
+// The PR #211 security review: a download redirect back to Manyfold's own
+// host followed the new URL without registering its query, and log lines and
+// errors on Manyfold print the path with its query. So if Manyfold ever
+// redirects a download on its own host with a signed query, that query
+// reached stdout, stderr and the report. Every redirect hop's query is
+// registered now, and a download hop's log lines and errors name the path
+// only.
+describe("a download redirect to Manyfold's own host with a signed query", () => {
+  const signature = ["same", "host", "signature", "0123456789abcdef"].join("-");
+  const credential = ["same", "host", "credential", "fedcba9876543210"].join("-");
+  const query = `X-Amz-Signature=${signature}&X-Amz-Credential=${credential}`;
+  const raw = `${MANYFOLD}/models/m3/raw/air-dry.3mf`;
+
+  function redirectToRaw() {
+    return http.get(
+      `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+      () => new HttpResponse(null, { status: 302, headers: { location: `${raw}?${query}` } }),
+    );
+  }
+
+  function expectNoQuery(r: { output: string; report: unknown }) {
+    const report = JSON.stringify(r.report);
+    for (const value of [query, signature, credential]) {
+      expect(r.output).not.toContain(value);
+      expect(report).not.toContain(value);
+    }
+    expect(r.output).not.toContain("X-Amz");
+    expect(report).not.toContain("X-Amz");
+  }
+
+  it("never prints it while the hop is retried and then fails", async () => {
+    const s = setup(library());
+    server.use(
+      redirectToRaw(),
+      http.get(raw, () => new HttpResponse(null, { status: 503 })),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    // The retries and the failure were reported, by path only.
+    expect(r.output).toContain("GET /models/m3/raw/air-dry.3mf: HTTP 503, retry 1");
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.reason).toBe("GET /models/m3/raw/air-dry.3mf: HTTP 503");
+    expectNoQuery(r);
+  });
+
+  it("never prints it when Manyfold echoes it back in an error body", async () => {
+    const s = setup(library());
+    server.use(
+      redirectToRaw(),
+      http.get(
+        raw,
+        ({ request }) =>
+          new HttpResponse(`denied ${new URL(request.url).search} sig ${signature}`, {
+            status: 403,
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.reason).toContain(`sig ${REDACTED}`);
+    expectNoQuery(r);
+  });
+});

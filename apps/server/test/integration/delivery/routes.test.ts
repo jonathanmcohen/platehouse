@@ -714,6 +714,57 @@ describe("GET /s/<token>/<name>", () => {
     }
   });
 
+  test("the app's own 404 never repeats the method, path or query (issue #177)", async () => {
+    // The not-found handler answered "Route <method>:<url> not found", url
+    // and query included. Reachable with no session through a missing file
+    // under /assets/ (@fastify/static hands it to the handler) and an
+    // unknown /auth/ path, and with a session on any unknown session path.
+    const marker = "Secretish-Path-Part";
+    const query = "Secretish-Query-Part";
+    const cases: Array<[string, Record<string, string>]> = [
+      [`/assets/${marker}.js?${query}=1`, {}],
+      [`/assets/${marker}?q=${query}`, {}],
+      [`/auth/${marker}?q=${query}`, {}],
+      [`/app/api/${marker}?q=${query}`, { [SESSION_COOKIE]: sessionCookie }],
+    ];
+    for (const [url, cookies] of cases) {
+      const res = await app.inject({
+        method: "GET",
+        url,
+        headers: { accept: "application/json" },
+        cookies,
+      });
+      expect(res.statusCode, url).toBe(404);
+      expect(res.json(), url).toEqual({ error: "Not Found", statusCode: 404 });
+      expect(res.body, url).not.toContain(marker);
+      expect(res.body, url).not.toContain(query);
+      expect(res.body, url).not.toContain("GET");
+    }
+  });
+
+  test("a signed-in 404 for a /s/ shape the link class misses never repeats the token (issue #177)", async () => {
+    // The security review of PR #211 found four path shapes isLinkPath does
+    // not read as /s/: an upper-case S, an escaped upper-case S, an "s"
+    // encoded four times and a path parameter after the s. As session-class
+    // paths a signed-in request reached the not-found handler, whose message
+    // repeated the path, the live token in it included.
+    const link = await linkFor(FILE_A);
+    const [, , token = ""] = pathOf(link.url).split("/");
+    expect(token).not.toBe("");
+    for (const url of [`/S/${token}/x`, `/%53/${token}`, `/%25252573/${token}`, `/s;x/${token}`]) {
+      const res = await app.inject({
+        method: "GET",
+        url,
+        headers: { accept: "application/json" },
+        cookies: { [SESSION_COOKIE]: sessionCookie },
+      });
+      expect(res.statusCode, url).toBe(404);
+      expect(res.json(), url).toEqual({ error: "Not Found", statusCode: 404 });
+      expect(res.body, url).not.toContain(token);
+      expect(res.body, url).not.toContain(token.slice(0, 16));
+    }
+  });
+
   test("a link for file A cannot fetch file B", async () => {
     const a = await linkFor(FILE_A);
     const b = await linkFor(FILE_B);
@@ -853,6 +904,26 @@ describe("the request log and slicer links", () => {
     expect(log).not.toContain(token.slice(0, 16));
     expect(log).not.toContain(name);
     expect(log).not.toContain("Cube A");
+  });
+
+  test("never holds a token from a /s/ shape the link class misses (issue #177)", async () => {
+    // The four shapes the PR #211 security review found: an upper-case S, an
+    // escaped upper-case S, an "s" encoded four times and a path parameter
+    // after the s. Signed in or not, the token never reaches the log.
+    const link = await linkFor(FILE_A);
+    const [, , token = ""] = pathOf(link.url).split("/");
+    expect(token).not.toBe("");
+    const from = logLines.length;
+    for (const url of [`/S/${token}/x`, `/%53/${token}`, `/%25252573/${token}`, `/s;x/${token}`]) {
+      for (const cookies of [{}, { [SESSION_COOKIE]: sessionCookie }]) {
+        await app.inject({ method: "GET", url, headers: { accept: "application/json" }, cookies });
+      }
+    }
+    const log = logLines.slice(from).join("");
+    // Every request was logged; only the token is kept out.
+    expect(log.match(/"msg":"incoming request"/g)?.length).toBe(8);
+    expect(log).not.toContain(token);
+    expect(log).not.toContain(token.slice(0, 16));
   });
 });
 
@@ -1216,16 +1287,29 @@ describe("contentDisposition (issue #164)", () => {
   // slicer link and the public API's file content. The ASCII fallback has /
   // and \ replaced by _ as a link's name segment does, so no client that
   // reads only filename= sees a directory part. filename* keeps the stored
-  // name, except that invisible format characters (\p{Cf}, such as U+202E
-  // RIGHT-TO-LEFT OVERRIDE) are replaced by _ there too, so a browser never
-  // shows a reordered name.
+  // name, except that control characters (\p{Cc}: TAB, CR, LF, NEL),
+  // invisible format characters (\p{Cf}, such as U+202E RIGHT-TO-LEFT
+  // OVERRIDE) and the line and paragraph separators (\p{Zl}, \p{Zp}) are
+  // replaced by _ there too, so a browser or slicer never shows a reordered
+  // or broken name (PR #211 security review).
   const rlo = String.fromCodePoint(0x202e);
   const zwsp = String.fromCodePoint(0x200b);
+  const tab = String.fromCodePoint(0x09);
+  const cr = String.fromCodePoint(0x0d);
+  const lf = String.fromCodePoint(0x0a);
+  const nel = String.fromCodePoint(0x85);
+  const lsep = String.fromCodePoint(0x2028);
+  const psep = String.fromCodePoint(0x2029);
   test.each([
     ["slashes", "../../etc/passwd.3mf", ".._.._etc_passwd.3mf", "..%2F..%2Fetc%2Fpasswd.3mf"],
     ["backslashes", "..\\..\\boot.ini.3mf", ".._.._boot.ini.3mf", "..%5C..%5Cboot.ini.3mf"],
     ["a right-to-left override", `rlo${rlo}exe.3mf`, "rlo_exe.3mf", "rlo_exe.3mf"],
     ["a zero-width space", `zero${zwsp}width.stl`, "zero_width.stl", "zero_width.stl"],
+    ["a tab", `tab${tab}name.3mf`, "tab_name.3mf", "tab_name.3mf"],
+    ["CR and LF", `cr${cr}${lf}lf.3mf`, "cr__lf.3mf", "cr__lf.3mf"],
+    ["a next line (U+0085)", `next${nel}line.3mf`, "next_line.3mf", "next_line.3mf"],
+    ["a line separator (U+2028)", `line${lsep}sep.3mf`, "line_sep.3mf", "line_sep.3mf"],
+    ["a paragraph separator (U+2029)", `para${psep}sep.3mf`, "para_sep.3mf", "para_sep.3mf"],
     ["quotes", 'say "hi".3mf', "say _hi_.3mf", "say%20%22hi%22.3mf"],
     ["a plain name", "Cube A.3mf", "Cube A.3mf", "Cube%20A.3mf"],
   ])("a name with %s", (_label, name, fallback, encoded) => {
