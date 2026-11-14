@@ -17,6 +17,14 @@ allowBuilds:
 # tldts-core 7.4.20 npm marks deprecated: a partial release, with upstream
 # asking for 7.4.22 or later (issue #176). Both are pinned to 7.4.22, the
 # oldest release at or above it that passes pnpm's minimum release age.
+#
+# testcontainers 12.2.1 (the latest, a server devDependency) takes archiver
+# 7.0.1, whose archiver-utils 5.0.2 asks for glob ^10; npm marks every glob
+# 10 deprecated (issue #212). archiver-utils only calls glob.sync, in its
+# file.expand, which neither archiver nor zip-stream uses, and glob 14 still
+# exports sync. Scoped to archiver-utils so @fastify/static's glob, the one
+# the app image ships, is left alone.
 overrides:
   tldts: 7.4.22
   tldts-core: 7.4.22
+  archiver-utils>glob: 14.0.6
