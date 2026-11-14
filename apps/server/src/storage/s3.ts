@@ -68,12 +68,15 @@ export interface BlobStore {
   getBlobStream(key: string): Promise<Readable>;
   /**
    * Resolves when the object is in the bucket, asking with a HeadObject, which
-   * sends no body. A HEAD reply carries no error code, so S3 answers a missing
+   * sends no body, to the object's size as the store's Content-Length gave it
+   * (undefined when it gave none), so a reader can refuse an object that is
+   * not the size it recorded, as it does for getBlobStream with objectSize
+   * (issue #164). A HEAD reply carries no error code, so S3 answers a missing
    * key and a missing bucket with the same bare 404: that is a StoreError
    * (HeadObject, NotFound, 404), never BlobNotFound, so a broken storage setup
    * is never reported as a missing file. An outage is StoreUnavailable.
    */
-  headBlob(key: string): Promise<void>;
+  headBlob(key: string): Promise<number | undefined>;
   /** Deletes the keys; a key already gone is not an error, so a purge can be retried. */
   deleteBlobs(keys: readonly string[]): Promise<void>;
   /** Every object under prefix, following continuation tokens to the end. */
@@ -291,7 +294,8 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
 
     async headBlob(key) {
       try {
-        await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        const head = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        return head.ContentLength;
       } catch (err) {
         throw toStoreError(err, "HeadObject");
       }

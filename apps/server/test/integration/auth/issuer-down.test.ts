@@ -5,9 +5,10 @@
 // session keeps working. Login works again once the issuer is back, since a
 // failed discovery is not remembered.
 //
-// API tokens arrive in Task 16; the "API tokens still work" half of AC-081 is
-// proved by Task 16's tests. Here the bearer route is /api/v1/uploads, which
-// refuses every request until then.
+// The "API tokens still work" half of AC-081 is proved by Task 16's tests
+// (api/api.test.ts). Here the bearer route is /api/v1/uploads, behind Task
+// 16's bearer check: with no token it gives its own 401, whatever the issuer
+// is doing (issue #158).
 //
 // No container: the issuer is the local mock, or a port nothing listens on,
 // or a socket that never answers.

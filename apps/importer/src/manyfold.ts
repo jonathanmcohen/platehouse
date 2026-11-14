@@ -18,7 +18,10 @@
 //   Authorization header, since the presigned URL's signature is its
 //   credential, and that query string is handed to the sensitive callback and
 //   never logged), or to anything that is not https, its own host included
-//   (refused, not upgraded). At most 3 redirects.
+//   (refused, not upgraded). At most 3 redirects. Each sensitive value of
+//   such a query (a signature, a credential, a session token) is handed to
+//   the callback on its own too, raw and decoded, so a server that echoes
+//   one parameter alone is still redacted (signedQueryValues; issue #168).
 // - Every request has a timeout. GETs retry network errors and 5xx with
 //   backoff (2, 4, 8 s) and wait out a 429 for its Retry-After (at most 300
 //   s; 60 s when there is none; the normal backoff when it is not a positive
@@ -163,6 +166,47 @@ function why(error: unknown, timeout: number): string {
   if (e.name === "TimeoutError") return `timed out after ${Math.round(timeout / 1000)} s`;
   const code = e.cause?.code;
   return `${e.message ?? String(error)}${code === undefined ? "" : ` (${code})`}`;
+}
+
+/**
+ * The query parameters of an object-store link whose values are credentials:
+ * a signature (X-Amz-Signature, Signature, sig), a credential or access key
+ * id (X-Amz-Credential, AWSAccessKeyId, X-Goog-Credential) or a session
+ * token (X-Amz-Security-Token).
+ */
+const SENSITIVE_PARAM = /signature|credential|security-token|token|accesskeyid|^sig$/i;
+
+/** A value this short is not a credential, and redacting it would mangle ordinary output. */
+const MIN_SENSITIVE_LENGTH = 8;
+
+/**
+ * Every value the output must never show for a signed link's query: the
+ * whole query, and each sensitive parameter's value on its own, as sent and
+ * decoded (issue #168).
+ */
+export function signedQueryValues(search: string): string[] {
+  const query = search.startsWith("?") ? search.slice(1) : search;
+  if (query === "") return [];
+  const out = [query];
+  for (const pair of query.split("&")) {
+    const at = pair.indexOf("=");
+    if (at === -1) continue;
+    const name = pair.slice(0, at);
+    const raw = pair.slice(at + 1);
+    let decodedName = name;
+    let decoded = raw;
+    try {
+      decodedName = decodeURIComponent(name.replaceAll("+", " "));
+      decoded = decodeURIComponent(raw.replaceAll("+", " "));
+    } catch {
+      // A malformed escape: the raw value is still registered.
+    }
+    if (!SENSITIVE_PARAM.test(decodedName)) continue;
+    for (const value of new Set([raw, decoded])) {
+      if (value.length >= MIN_SENSITIVE_LENGTH) out.push(value);
+    }
+  }
+  return out;
 }
 
 export function createManyfold(options: ManyfoldOptions): Manyfold {
@@ -454,7 +498,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           if (next.protocol !== "https:") {
             // Refused on Manyfold's own host too, not upgraded: the plan
             // says a non-https redirect is refused.
-            if (next.search.length > 1) sensitive(next.search.slice(1));
+            for (const value of signedQueryValues(next.search)) sensitive(value);
             throw new ManyfoldError(
               `GET ${shortPath(url)}: refusing a redirect that is not https, to ${next.host}`,
             );
@@ -462,7 +506,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           if (next.hostname === hostname) {
             url = safeUrl(next.toString());
           } else {
-            if (next.search.length > 1) sensitive(next.search.slice(1));
+            for (const value of signedQueryValues(next.search)) sensitive(value);
             url = next;
           }
           continue;

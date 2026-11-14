@@ -38,10 +38,11 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # has no CA bundle), then turns the snapshot on. Before any of that, each
 # stage writes /etc/apt/apt.conf.d/80retries so apt retries a failed download
 # 10 times, not its default 3: snapshot.ubuntu.com often answers 502 or 503
-# for longer than 3 retries last, and that failed CI builds. The update
-# against the snapshot runs with --error-on=any, so an index it could not
-# fetch fails the build there, with the server's error, instead of a command
-# later as "Unable to locate package" (issue #150).
+# for longer than 3 retries last, and that failed CI builds. Every apt-get
+# update runs with --error-on=any, the first one against the live archive
+# (issue #158) and the one against the snapshot (issue #150), so an index it
+# could not fetch fails the build there, with the server's error, instead of
+# a command later as "Unable to locate package".
 ARG APT_SNAPSHOT=20261107T000000Z
 
 # The versions the server reports in /v1/health (AC-036). The Orca and
@@ -54,7 +55,7 @@ ARG APT_SNAPSHOT
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
- && apt-get update \
+ && apt-get update --error-on=any \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update --error-on=any \
@@ -212,7 +213,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # PID 1 (see ENTRYPOINT). No X server and no Xvfb: gate item (f) rendered
 # OpenSCAD headless with EGL.
 RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
- && apt-get update \
+ && apt-get update --error-on=any \
  && apt-get install -y --no-install-recommends ca-certificates=20240203 openssl=3.0.13-0ubuntu3 \
  && echo "APT::Snapshot \"${APT_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update --error-on=any \

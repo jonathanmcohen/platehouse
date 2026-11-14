@@ -21,7 +21,10 @@
 //   re-run never makes a duplicate. A file with no contentSize fails, since
 //   its size cannot be checked (AC-004). A file type Platehouse does not take
 //   (Task 8: .3mf, .stl, .step, .stp, .scad) is skipped with the reason,
-//   and is never downloaded.
+//   and is never downloaded. So is a file whose contentSize is over
+//   Platehouse's single-upload cap (MAX_UPLOAD_BYTES, 512 MiB, the server's
+//   apps/server/src/uploads/tus.ts), which the upload would refuse only
+//   after the whole file had been downloaded (issue #168).
 // - Values are checked against the limits POST /api/v1/models and the tag and
 //   collection PUTs enforce (apps/server/src/api/v1.ts NEW_MODEL and LABEL),
 //   counted in code points as the server's validator counts them. One value
@@ -94,6 +97,12 @@ function extensionOf(name: string): string {
   const dot = base.lastIndexOf(".");
   return dot <= 0 ? "" : base.slice(dot + 1).toLowerCase();
 }
+
+/**
+ * The largest file Platehouse takes in one upload: 536870912 bytes (512 MiB),
+ * MAX_UPLOAD_BYTES in apps/server/src/uploads/tus.ts.
+ */
+export const MAX_UPLOAD_BYTES = 536_870_912;
 
 /** The externalRef a Manyfold model is matched by. */
 export function externalRefFor(manyfoldId: string): string {
@@ -258,6 +267,15 @@ function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
         action: "fail",
         file,
         reason: "Manyfold reports no contentSize for it, so its size cannot be checked",
+      };
+    }
+    if (file.contentSize > MAX_UPLOAD_BYTES) {
+      return {
+        action: "skip",
+        file,
+        reason:
+          `Manyfold says it is ${file.contentSize} bytes, over Platehouse's upload limit ` +
+          `of ${MAX_UPLOAD_BYTES} bytes (512 MiB); not downloaded`,
       };
     }
     const at = unmatched.findIndex(

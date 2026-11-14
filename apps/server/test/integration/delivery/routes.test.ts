@@ -44,6 +44,7 @@ import {
   type DeliveryDeps,
   FILE_CACHE_CONTROL,
   type LinkFile,
+  linkFileName,
 } from "../../../src/delivery/download.js";
 import { LINK_LIFETIME_SECONDS, type SlicerLink } from "../../../src/delivery/links.js";
 import { reportObjectSize, StoreUnavailable } from "../../../src/storage/s3.js";
@@ -134,6 +135,9 @@ function stored(bytes: Buffer): Readable {
   return stream;
 }
 
+// The stub names a file as Task 16's library does since issue #164: with
+// linkFileName, the stored name with its real extension, so every route
+// that delivers it gets the same name from the content it reads.
 const deliveryFiles: DeliveryDeps["files"] = {
   async fileHead(id) {
     lookups.fileHead += 1;
@@ -141,7 +145,7 @@ const deliveryFiles: DeliveryDeps["files"] = {
     const item = files.get(id);
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
-    return head(item, item.name);
+    return head(item, linkFileName(item));
   },
   async openFile(id): Promise<FileContent | undefined> {
     lookups.openFile += 1;
@@ -157,7 +161,7 @@ const deliveryFiles: DeliveryDeps["files"] = {
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
     opened += 1;
-    return { ...head(item, item.name), stream: stored(item.bytes) };
+    return { ...head(item, linkFileName(item)), stream: stored(item.bytes) };
   },
 };
 
@@ -601,7 +605,6 @@ describe("GET /s/<token>/<name>", () => {
       ["OPTIONS", `/s/${token}/${name}`, { accept: "application/json" }],
       ["GET", `/s/${token}%2Fx.3mf`, { accept: "application/json" }],
       ["GET", `/s/${token}%2Fx.3mf`, { accept: "text/html" }],
-      ["GET", `/s/%2e%2e/${token}/${name}`, { accept: "text/html" }],
     ];
     for (const [method, url, headers] of requests) {
       const label = `${method} ${url} (${headers.accept})`;
@@ -630,12 +633,9 @@ describe("GET /s/<token>/<name>", () => {
     const link = await linkFor(FILE_A);
     const [, , token = "", name = ""] = pathOf(link.url).split("/");
     const looked = { ...lookups };
-    for (const url of [
-      `//s/${token}/${name}`,
-      `/%73/${token}`,
-      `/x/../s/${token}`,
-      `/s\\${token}\\${name}`,
-    ]) {
+    // inject resolves dot segments and backslashes in its URL before the
+    // app sees it, so those forms are pinned in routeClass's own cases.
+    for (const url of [`//s/${token}/${name}`, `//s/${token}`, `/%73/${token}`]) {
       const res = await app.inject({
         method: "GET",
         url,

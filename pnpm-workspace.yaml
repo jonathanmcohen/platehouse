@@ -12,3 +12,11 @@ allowBuilds:
   cpu-features: false
   protobufjs: false
   ssh2: false
+
+# tough-cookie 6.1.0 (through msw and jsdom) takes tldts 7.4.19, whose
+# tldts-core 7.4.20 npm marks deprecated: a partial release, with upstream
+# asking for 7.4.22 or later (issue #176). Both are pinned to 7.4.22, the
+# oldest release at or above it that passes pnpm's minimum release age.
+overrides:
+  tldts: 7.4.22
+  tldts-core: 7.4.22
