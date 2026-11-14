@@ -76,8 +76,10 @@ export const LINK_ROUTE = "/s/:token/*";
  * a slicer that decodes the segment never shows a name reordered to read as
  * another extension; \p{Zl} and \p{Zp} the line and paragraph separators
  * (U+2028, U+2029), so it never shows a name broken across lines. The same
- * characters are replaced in the public API's filename* (api/v1.ts
- * UNSAFE_IN_FILENAME_STAR), so both names follow one rule.
+ * characters, / and \ among them, are replaced in the public API's filename*
+ * (api/v1.ts UNSAFE_IN_FILENAME_STAR), so both names follow one rule on
+ * every character that matters for a path; the segment alone also replaces
+ * % ? # and ;, which only a URL needs.
  */
 const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 

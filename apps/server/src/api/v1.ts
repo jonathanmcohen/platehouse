@@ -746,20 +746,21 @@ type CollectionParams = { name: string; id: string };
 type SearchQuery = LibrarySearch & { externalRef?: string };
 
 /** What filename* never carries: each is replaced by "_" before encoding. */
-const UNSAFE_IN_FILENAME_STAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const UNSAFE_IN_FILENAME_STAR = /[/\\\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /**
  * A file name for Content-Disposition, the one writer every route that names
  * a file uses: an ASCII fallback, with anything outside printable ASCII,
- * quotes, / and \ replaced by _ (so a client that reads only filename= sees
- * no directory part), and the UTF-8 name in filename*, with control
- * characters (\p{Cc}: TAB, CR, LF, NUL, the C1 controls), invisible format
- * characters (\p{Cf}: bidi overrides and isolates, zero-width characters)
- * and the line and paragraph separators (\p{Zl}, \p{Zp}) replaced by _, so
- * a browser or slicer never shows a name reordered to read as another
- * extension or broken across lines (issue #164; PR #211 security review). A
- * slicer link's name segment replaces the control and format characters too
- * (links.ts).
+ * quotes, / and \ replaced by _, and the UTF-8 name in filename*, with / and
+ * \ replaced by _ there too, so no client sees a directory part, whether it
+ * reads filename= or, as RFC 6266 has it prefer, filename* (PR #211 review),
+ * and with control characters (\p{Cc}: TAB, CR, LF, NUL, the C1 controls),
+ * invisible format characters (\p{Cf}: bidi overrides and isolates,
+ * zero-width characters) and the line and paragraph separators (\p{Zl},
+ * \p{Zp}) replaced by _, so a browser or slicer never shows a name reordered
+ * to read as another extension or broken across lines (issue #164; PR #211
+ * security review). A slicer link's name segment replaces / and \ and the
+ * control and format characters too (links.ts).
  */
 export function contentDisposition(name: string): string {
   const fallback = name.replace(/[^\x20-\x7e]|["\\/]/g, "_");

@@ -522,7 +522,8 @@ describe("the operations", () => {
   // stored name, so a file renamed without its extension downloaded with
   // none, the ASCII fallback kept / and \, and filename* kept invisible
   // format characters. It now names the file as the download and the slicer
-  // link do (linkFileName, through one contentDisposition).
+  // link do (linkFileName, through one contentDisposition), with / and \
+  // replaced in filename* too (PR #211 review).
   test("a file's content is named as the download names it: real extension, safe fallback", async () => {
     const outcome = await upload(`Named ${marker()}.stl`, ASCII_STL);
     expect(outcome.status, outcome.error).toBe("done");
@@ -540,7 +541,7 @@ describe("the operations", () => {
       await res.arrayBuffer();
       expect(res.status, method).toBe(200);
       expect(res.headers.get("content-disposition"), method).toBe(
-        `attachment; filename="a_b_c rlo_x.stl"; filename*=UTF-8''a%2Fb%5Cc%20rlo_x.stl`,
+        `attachment; filename="a_b_c rlo_x.stl"; filename*=UTF-8''a_b_c%20rlo_x.stl`,
       );
     }
   });

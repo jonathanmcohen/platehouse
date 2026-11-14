@@ -1284,10 +1284,11 @@ describe("a stream that fails before its first byte is answered with no attachme
 
 describe("contentDisposition (issue #164)", () => {
   // One header writer for every route that names a file: the download, the
-  // slicer link and the public API's file content. The ASCII fallback has /
-  // and \ replaced by _ as a link's name segment does, so no client that
-  // reads only filename= sees a directory part. filename* keeps the stored
-  // name, except that control characters (\p{Cc}: TAB, CR, LF, NEL),
+  // slicer link and the public API's file content. Both names have / and \
+  // replaced by _ as a link's name segment does, so no client sees a
+  // directory part, whether it reads filename= or, as RFC 6266 has it
+  // prefer, filename* (PR #211 review). filename* keeps the rest of the
+  // stored name, except that control characters (\p{Cc}: TAB, CR, LF, NEL),
   // invisible format characters (\p{Cf}, such as U+202E RIGHT-TO-LEFT
   // OVERRIDE) and the line and paragraph separators (\p{Zl}, \p{Zp}) are
   // replaced by _ there too, so a browser or slicer never shows a reordered
@@ -1301,8 +1302,9 @@ describe("contentDisposition (issue #164)", () => {
   const lsep = String.fromCodePoint(0x2028);
   const psep = String.fromCodePoint(0x2029);
   test.each([
-    ["slashes", "../../etc/passwd.3mf", ".._.._etc_passwd.3mf", "..%2F..%2Fetc%2Fpasswd.3mf"],
-    ["backslashes", "..\\..\\boot.ini.3mf", ".._.._boot.ini.3mf", "..%5C..%5Cboot.ini.3mf"],
+    ["slashes", "../../etc/passwd.3mf", ".._.._etc_passwd.3mf", ".._.._etc_passwd.3mf"],
+    ["backslashes", "..\\..\\boot.ini.3mf", ".._.._boot.ini.3mf", ".._.._boot.ini.3mf"],
+    ["an accent and a slash", "caf\u00e9/menu.3mf", "caf__menu.3mf", "caf%C3%A9_menu.3mf"],
     ["a right-to-left override", `rlo${rlo}exe.3mf`, "rlo_exe.3mf", "rlo_exe.3mf"],
     ["a zero-width space", `zero${zwsp}width.stl`, "zero_width.stl", "zero_width.stl"],
     ["a tab", `tab${tab}name.3mf`, "tab_name.3mf", "tab_name.3mf"],
