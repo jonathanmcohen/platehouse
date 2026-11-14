@@ -266,6 +266,88 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The end-to-end suite (build plan Task 22): e2e/compose.yml runs Traefik
+  # v3, the app from this checkout, the slicer stub, Postgres, the S3 test
+  # server and a mock OIDC issuer, and Playwright drives Chromium through
+  # Traefik at https://platehouse.e2e.test (e2e/README.md). It runs on every
+  # pull request and push, after the integration job, since it reaches every
+  # part of the app. e2e/up.sh makes the run's TLS CA and every secret with
+  # openssl and masks the secrets before anything can print them. Nothing is
+  # pulled from or pushed to ghcr.io/jonathanmcohen. The guard fails the job
+  # when no spec ran: Playwright's JSON report counts the specs that ran
+  # (expected, unexpected and flaky; skipped ones are left out), and the
+  # global setup that signs in is not a spec, so it is never counted.
+  e2e:
+    name: End-to-end tests
+    needs: integration
+    if: ${{ !cancelled() && needs.integration.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck the e2e suite
+        run: pnpm exec tsc -p e2e/tsconfig.json
+      - name: Build the web app
+        run: pnpm --filter @platehouse/web build
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Map the e2e host names to Traefik
+        run: echo "127.0.0.1 platehouse.e2e.test id.e2e.test" | sudo tee -a /etc/hosts
+      - name: Start the e2e stack
+        run: bash e2e/up.sh
+      - name: End-to-end tests
+        run: |
+          status=0
+          pnpm exec playwright test -c e2e || status=$?
+          report=e2e/report.json
+          if [ -s "$report" ]; then
+            ran="$(jq '.stats.expected + .stats.unexpected + .stats.flaky' "$report")"
+            skipped="$(jq '.stats.skipped' "$report")"
+            failed="$(jq '.stats.unexpected' "$report")"
+            echo "e2e: ${ran} specs ran, ${failed} failed, ${skipped} skipped"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Playwright failed (exit ${status}); its output above names the failing specs"
+            exit "$status"
+          fi
+          if [ ! -s "$report" ]; then
+            echo "::error::No specs ran (Playwright wrote no report)"
+            exit 1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No specs ran"
+            exit 1
+          fi
+      - name: Show the stack's logs
+        if: ${{ failure() && env.E2E_ENV_FILE != '' }}
+        run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" logs --no-color --tail 300
+      - name: Upload the Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            e2e/report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Stop the e2e stack
+        if: ${{ always() && env.E2E_ENV_FILE != '' }}
+        run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" down -v
+
   # The slicing gate's tests and a build of the gate image, so an image build
   # failure is found here and not on Hades (the second Hades run, 2026-11-08,
   # failed while building the image). Runs only when the changes job says the

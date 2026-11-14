@@ -91,11 +91,19 @@
   background: var(--raised);
 }
 
-.ph-plate-head h3,
+.ph-plate-title,
 .ph-file-title {
   margin: 0;
   font-size: 1rem;
   overflow-wrap: anywhere;
+}
+
+/* Plate names and the Files tab's file names take the level the outline
+   needs (h2 or h3), so their weight is set here: they keep the bold they had
+   as h3s whatever their level. The Plates tab's file name keeps h2's 600. */
+.studio-list-item .ph-plate-title,
+.studio-list-item .ph-file-title {
+  font-weight: 700;
 }
 
 .ph-file-plates {

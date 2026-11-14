@@ -446,6 +446,30 @@ function plateItems(): HTMLElement[] {
   return [...panel().querySelectorAll<HTMLElement>("[data-plate]")];
 }
 
+/** A plate's name heading, at whatever level the page outline gives it. */
+function plateTitle(li: Element): Element | null {
+  return li.querySelector(".ph-plate-title");
+}
+
+/** Every heading a person can reach, in order, as [level, text]; hidden tab panels left out. */
+function outline(): Array<[number, string]> {
+  return [...container.querySelectorAll("h1, h2, h3, h4, h5, h6")]
+    .filter((h) => h.closest("[hidden]") === null)
+    .map((h) => [Number(h.tagName.slice(1)), text(h)]);
+}
+
+/** Each heading is at most one level below the one before it, starting from the h1. */
+function expectNoSkippedLevel(found: Array<[number, string]>) {
+  expect(found[0]?.[0], "the outline does not start at the h1").toBe(1);
+  for (let i = 1; i < found.length; i++) {
+    const [level, name] = found[i] as [number, string];
+    const before = (found[i - 1] as [number, string])[0];
+    expect(level, `"${name}" (h${level}) skips a level after an h${before}`).toBeLessThanOrEqual(
+      before + 1,
+    );
+  }
+}
+
 beforeEach(() => {
   requests = [];
   navigations = [];
@@ -538,7 +562,7 @@ describe("plates tab lists every plate in order with name or Plate N, swatches, 
     await render(pageAt(MODEL_ID));
     const items = plateItems();
     expect(items).toHaveLength(3);
-    expect(items.map((li) => text(li.querySelector("h3")))).toEqual(["Base", "Plate 2", "Lid"]);
+    expect(items.map((li) => text(plateTitle(li)))).toEqual(["Base", "Plate 2", "Lid"]);
     expect(items.map((li) => li.querySelector("img")?.getAttribute("src"))).toEqual([
       thumb(1),
       thumb(2),
@@ -570,13 +594,116 @@ describe("plates tab lists every plate in order with name or Plate N, swatches, 
     );
     models.set(MODEL_ID, model([threeMf([plate(1, "Only", { file: fileNumbers(1) })]), second]));
     await render(pageAt(MODEL_ID));
-    expect(plateItems().map((li) => text(li.querySelector("h3")))).toEqual(["Only", "One", "Two"]);
+    expect(plateItems().map((li) => text(plateTitle(li)))).toEqual(["Only", "One", "Two"]);
   });
 
   test("a .3mf with no plate data says so in plain words", async () => {
     models.set(MODEL_ID, model([threeMf([], { parseStatus: "no_plate_data" })]));
     await render(pageAt(MODEL_ID));
     expect(text(panel())).toContain("No Bambu plate data in this file");
+  });
+});
+
+// Issue #206: with one .3mf the page went from the h1 straight to the plate
+// h3s, because the file's h2 shows only when there are several files, so
+// axe's heading-order rule failed. The outline now follows the structure:
+// with one file the plates are the panel's top headings (h2); with several,
+// each file is an h2 and its plates h3. The Files tab's file names are h2.
+describe("the heading outline never skips a level (issue #206)", () => {
+  test("with one .3mf, the plate names are h2 under the model's h1", async () => {
+    await render(pageAt(MODEL_ID));
+    expect(outline()).toEqual([
+      [1, "Cube set"],
+      [2, "Base"],
+      [2, "Plate 2"],
+      [2, "Lid"],
+    ]);
+    expectNoSkippedLevel(outline());
+  });
+
+  test("with two .3mf files, each file name is an h2 and its plate names h3", async () => {
+    const second = threeMf([plate(1, "One", { file: fileNumbers(1) })], {
+      id: "0198f0c4-0000-7000-8000-00000000b009",
+      name: "Second.3mf",
+    });
+    models.set(MODEL_ID, model([threeMf([plate(1, "Only", { file: fileNumbers(1) })]), second]));
+    await render(pageAt(MODEL_ID));
+    expect(outline()).toEqual([
+      [1, "Cube set"],
+      [2, "Cube set.3mf"],
+      [3, "Only"],
+      [2, "Second.3mf"],
+      [3, "One"],
+    ]);
+    expectNoSkippedLevel(outline());
+  });
+
+  test("on the Files tab, each file name is an h2 under the model's h1", async () => {
+    models.set(MODEL_ID, model([threeMf([plate(1, "Only", { file: fileNumbers(1) })]), STL_FILE]));
+    await render(pageAt(MODEL_ID));
+    await click(tab("Files"));
+    expect(outline()).toEqual([
+      [1, "Cube set"],
+      [2, "Cube set.3mf"],
+      [2, "Bracket.stl"],
+    ]);
+    expectNoSkippedLevel(outline());
+  });
+
+  test("a model with no .3mf opens on the Files tab with its file names as h2", async () => {
+    models.set(MODEL_ID, model([STL_FILE, STEP_FILE]));
+    await render(pageAt(MODEL_ID));
+    expect(outline()).toEqual([
+      [1, "Cube set"],
+      [2, "Bracket.stl"],
+      [2, "Housing.step"],
+    ]);
+    expectNoSkippedLevel(outline());
+  });
+
+  test("the level change does not change the look: plate and file names keep their size and weight", async () => {
+    // Before the fix the plate names and the Files tab's file names were h3
+    // (the browser's bold) and the Plates tab's file names h2 (studio.css's
+    // 600), all at 1rem, which jsdom reports as 15px (studio.css sets the
+    // html font size to 15px). jsdom applies loaded style sheets to
+    // getComputedStyle, so this reads what a browser would draw.
+    const read = (rel: string) =>
+      readFileSync(fileURLToPath(new URL(rel, import.meta.url).href), "utf8");
+    const sheets = ["../src/styles/studio.css", "../src/model/model.css"].map((rel) => {
+      const style = document.createElement("style");
+      style.textContent = read(rel);
+      document.head.append(style);
+      return style;
+    });
+    const look = (el: Element | null) => {
+      if (el === null) throw new Error("no heading");
+      const style = getComputedStyle(el);
+      return [style.fontSize, style.fontWeight];
+    };
+    try {
+      await render(pageAt(MODEL_ID));
+      for (const li of plateItems()) expect(look(plateTitle(li))).toEqual(["15px", "700"]);
+
+      const second = threeMf([plate(1, "One", { file: fileNumbers(1) })], {
+        id: "0198f0c4-0000-7000-8000-00000000b009",
+        name: "Second.3mf",
+      });
+      models.set(MODEL_ID, model([threeMf([plate(1, "Only", { file: fileNumbers(1) })]), second]));
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await render(pageAt(MODEL_ID));
+      for (const li of plateItems()) expect(look(plateTitle(li))).toEqual(["15px", "700"]);
+      for (const h of panel().querySelectorAll(".ph-file-title")) {
+        expect(look(h)).toEqual(["15px", "600"]);
+      }
+
+      await click(tab("Files"));
+      const names = [...panel().querySelectorAll(".ph-file-title")];
+      expect(names).toHaveLength(2);
+      for (const h of names) expect(look(h)).toEqual(["15px", "700"]);
+    } finally {
+      for (const style of sheets) style.remove();
+    }
   });
 });
 
