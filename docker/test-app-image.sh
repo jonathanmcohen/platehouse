@@ -145,6 +145,9 @@ while :; do
   if [ "$want" = healthy ] && [ "$status" = unhealthy ]; then
     fail "the HEALTHCHECK reported unhealthy"
   fi
+  if [ "$want" = unhealthy ] && [ "$status" = healthy ]; then
+    fail "the HEALTHCHECK reported healthy without the web build"
+  fi
   [ "$SECONDS" -lt "$end" ] || fail "timed out waiting for the HEALTHCHECK to report ${want} (last: ${status})"
   sleep 2
 done
