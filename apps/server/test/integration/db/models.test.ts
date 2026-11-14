@@ -211,8 +211,10 @@ describe("trash and restore", () => {
   // began, so a trash that waited on the model's row lock (an ingest holds
   // it FOR UPDATE while it writes) kept that earlier time, and a readAt
   // taken during the wait, before the trash committed and so without the
-  // model in its list, still covered it. trashed_at is now the time the row
-  // is written (clock_timestamp()), after the wait.
+  // model in its list, still covered it. trashed_at is now taken once the
+  // row lock is held, after the wait. The lock holder here changes nothing,
+  // which is the case clock_timestamp() alone did not cover: Postgres built
+  // the new row before the wait (CI run 43609766671).
   test("a model trashed while another transaction holds its row lock is not emptied by a readAt taken during the wait", async () => {
     const made = await repos.models.create({ name: unique("Locked while trashed") });
     let release: () => void = () => {};

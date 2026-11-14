@@ -315,18 +315,30 @@ export function modelsRepo(db: Kysely<DB>) {
 
     /**
      * Moves a live model to the trash; false when it is unknown or already
-     * there. trashed_at is the time the row is written (clock_timestamp()),
-     * not the time the statement began (now()): an UPDATE that waits on the
-     * model's row lock (an ingest holds it FOR UPDATE while it writes) is
-     * stamped after the wait, so Empty trash's cutoff, the time the page read
-     * the trash, never covers a model trashed after that read (issue #193).
+     * there. trashed_at is the time the row is written once its lock is held
+     * (issue #193), so Empty trash's cutoff, the time the page read the
+     * trash, never covers a model trashed after that read. now() is the time
+     * the statement began, so an UPDATE that waited on the model's row lock
+     * (an ingest holds it FOR UPDATE while it writes) kept that earlier time.
+     * clock_timestamp() alone is not enough either: when the holder changes
+     * nothing, Postgres builds the new row, clock_timestamp() included, before
+     * it waits and writes it as built. So the sub-select takes the row lock
+     * first (FOR UPDATE, re-reading trashed_at after any wait), and the stamp
+     * is taken after that.
      */
     async trash(id: string): Promise<boolean> {
       if (!isUuid(id)) return false;
       const result = await db
         .updateTable("models")
         .set({ trashedAt: sql`clock_timestamp()` })
-        .where("id", "=", id)
+        .where("id", "=", (eb) =>
+          eb
+            .selectFrom("models as locked")
+            .select("locked.id")
+            .where("locked.id", "=", id)
+            .where("locked.trashedAt", "is", null)
+            .forUpdate(),
+        )
         .where("trashedAt", "is", null)
         .executeTakeFirst();
       return result.numUpdatedRows > 0n;

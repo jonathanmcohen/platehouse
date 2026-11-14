@@ -50,8 +50,8 @@
 // What a cutoff cannot tell apart: a model whose trashing wrote its row
 // before the list was read but committed after, or one trashed later in
 // readAt's own millisecond, is purged though the page did not show it.
-// trashed_at is clock_timestamp(), the time the row is written
-// (repos/models.ts; issue #193), so an UPDATE that waits on the model's row
+// trashed_at is the time the row is written once its lock is held
+// (repos/models.ts; issue #193), so a trash that waits on the model's row
 // lock (an ingest holds it FOR UPDATE while it writes, derived and live
 // reads FOR SHARE) is stamped after the wait, and the first window is only
 // the time between the row update and the commit. purgeExpired also finishes every model
