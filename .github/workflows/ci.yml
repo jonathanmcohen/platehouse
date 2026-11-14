@@ -445,8 +445,8 @@ jobs:
   # report healthy, /healthz answer 200, and every migration the image ships
   # beside the built migrate.js be applied (#31). Then the same image with
   # apps/web/dist removed must keep running with /healthz 503 and its
-  # HEALTHCHECK reporting unhealthy (#162). Nothing is pushed and no registry
-  # is logged in to: the images stay on the runner. Nothing depends on this
+  # HEALTHCHECK reporting unhealthy (#162). Nothing is pushed and there is no
+  # login anywhere: the images stay on the runner. Nothing depends on this
   # job.
   app-image:
     name: App image (${{ matrix.arch }})
@@ -486,7 +486,7 @@ jobs:
         run: docker/test-app-image.sh "$IMAGE" healthy
       # The image above with only apps/web/dist taken out. It is built with
       # Docker's own builder (the default one), which sees the image just
-      # loaded; the Buildx builder above would look for it in a registry.
+      # loaded; the Buildx builder above would try to pull it instead.
       - name: Build the same image without the web app
         run: |
           docker buildx build --builder default --load -t "$NO_WEB_IMAGE" --build-arg "IMAGE=$IMAGE" - <<'DOCKERFILE'

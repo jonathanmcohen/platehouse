@@ -74,11 +74,17 @@ COPY apps/server/src apps/server/src
 COPY apps/web/tsconfig.json apps/web/index.html apps/web/vite.config.ts apps/web/
 COPY apps/web/src apps/web/src
 
-# RED-FIRST: no migrations copy yet, to show the image check fail on #31.
+# The server and the packages it imports, with tsc (no test folder is in the
+# context, so none is compiled), then the web app with vite build. tsc copies
+# no .sql files, so the migrations are copied next to the built migrate.js,
+# where MIGRATIONS_DIR resolves (#31), and checked file for file.
 RUN node_modules/.bin/tsc -b apps/server \
  && pnpm --filter @platehouse/web run build \
+ && cp -R apps/server/src/db/migrations apps/server/dist/src/db/migrations \
+ && diff -r apps/server/src/db/migrations apps/server/dist/src/db/migrations \
  && test -f apps/server/dist/src/main.js \
  && test -f apps/server/dist/src/db/migrate.js \
+ && test -f apps/server/dist/src/db/migrations/0001_init.sql \
  && test -f apps/web/dist/index.html \
  && test -d apps/web/dist/assets
 
@@ -116,6 +122,7 @@ USER node
 # and the web build, and write the data folders.
 RUN test "$(id -u)" != 0 \
  && test -r /app/apps/server/dist/src/main.js \
+ && test -r /app/apps/server/dist/src/db/migrations/0001_init.sql \
  && test -r /app/apps/web/dist/index.html \
  && test -w /data/inbox \
  && test -w /data/tmp
