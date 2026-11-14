@@ -1,13 +1,22 @@
 // Build plan Task 30: the real process. src/main.ts is started with node,
 // from source (test/support/ts-hooks.ts), with only its environment, the way
-// the app image starts it. Once /healthz is 200 it gets SIGTERM, and it must
+// the app image starts it. Once /healthz answers it gets SIGTERM, and it must
 // exit 0 within 30 s with nothing left running: the port is closed and the
 // server holds no connection to its database.
+//
+// The process requires the web build (Task 24, issue #162), so /healthz is
+// 200 only when apps/web/dist/index.html is there, beside the server package
+// (defaultWebDir), and 503 while it is not. The integration job does not
+// build the web app, so in CI this checks the 503: the process itself, not
+// only start() with processWeb(), fails its health check without the build.
 import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { SHUTDOWN_DEADLINE_MS } from "../../../src/main.js";
+import { defaultWebDir } from "../../../src/web/shell.js";
 import { healthStatus, type ServerEnv, startServerEnv, until } from "../support/server.js";
 
 const MAIN = fileURLToPath(new URL("../../../src/main.ts", import.meta.url));
@@ -57,16 +66,23 @@ describe("the server process", () => {
       proc.once("exit", (code, signal) => resolve({ code, signal })),
     );
 
+    // What /healthz answers once the server is up: it listens only after the
+    // database and pg-boss are started, so before that nothing answers.
+    const webBuilt = existsSync(join(defaultWebDir(), "index.html"));
+    const upStatus = webBuilt ? 200 : 503;
     try {
       await until(
         async () => (proc.exitCode === null ? healthStatus(env) : "exited"),
-        (status) => status === 200 || status === "exited",
+        (status) => status === upStatus || status === "exited",
         120_000,
       );
     } catch (error) {
-      throw new Error(`the server did not come up: ${String(error)}\n${output.slice(-4000)}`);
+      throw new Error(
+        `the server did not come up answering ${upStatus}: ${String(error)}\n${output.slice(-4000)}`,
+      );
     }
     expect(proc.exitCode, output.slice(-4000)).toBeNull();
+    expect(await healthStatus(env), output.slice(-4000)).toBe(upStatus);
     expect(await otherConnections()).toBeGreaterThan(0);
 
     const sent = Date.now();

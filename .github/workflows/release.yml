@@ -1,0 +1,270 @@
+# Release workflow for the app image (build plan Task 24; AC-093, AC-094).
+#
+# A pushed tag vX.Y.Z builds docker/app.Dockerfile natively for linux/amd64
+# (ubuntu-latest) and linux/arm64 (ubuntu-24.04-arm, no QEMU) and publishes
+# ghcr.io/jonathanmcohen/platehouse. It follows pgvector's
+# build-and-publish.yml at ce60a37 without its cosign, SBOM or attest steps:
+#
+#   gate -> per arch: build (load) -> smoke test -> Trivy gate -> push by digest
+#        -> merge: one manifest list from both digests, then the tags
+#
+# Nothing gets a tag unless both arches pass. Each arch pushes its image by
+# digest only, after its smoke test (docker/test-app-image.sh: the image's
+# HEALTHCHECK healthy against Postgres and the S3 test server, /healthz 200,
+# every shipped migration applied) and its Trivy gate pass; a failure there
+# pushes nothing for that arch. The merge job runs only when both arches
+# succeeded, joins the two digests with docker buildx imagetools create,
+# applies the tags, and reads the result back from the registry. If one arch
+# fails after the other pushed, that pushed digest stays untagged in the
+# package; nothing points at it, and it can be deleted by hand.
+#
+# Tags come from docker/metadata-action with type=semver,pattern={{version}}
+# alone: v0.1.0 gives 0.1.0 and latest, and a prerelease such as v0.0.0-test
+# gives 0.0.0-test and no latest, so latest moves only on a stable tag. There
+# is no hand-written latest entry (Engineering Lessons: it would publish only
+# latest for a tag that is not valid semver).
+#
+# workflow_dispatch is for the plan's first release step: dispatching this
+# workflow against a throwaway tag (gh workflow run release.yml --ref
+# v0.0.0-test). The gate job refuses any run whose ref is not a semver tag
+# before anything is built, so a dispatch from a branch pushes nothing.
+#
+# Every job after the gate carries if: !cancelled() && needs.<dep>.result ==
+# 'success', so a skipped or failed job stops the chain explicitly (Engineering
+# Lessons: skips propagate). Buildx's own provenance attestation is turned off
+# (AC-094: no build attestation), so each arch digest is a plain image.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a publish part way; a second run for the same tag waits.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/jonathanmcohen/platehouse
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The ref is a semver tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          re='^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$REF" =~ $re ]]; then
+            echo "::error::${REF} is not a semver tag vMAJOR.MINOR.PATCH[-prerelease]; nothing is built"
+            exit 1
+          fi
+          echo "Releasing ${REF#refs/tags/}"
+
+  build:
+    name: Build, check and push (${{ matrix.arch }})
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.result == 'success' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    env:
+      LOCAL: platehouse:release-${{ matrix.arch }}
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      # 1) This arch, loaded into the runner's Docker so it can be run.
+      - name: Build (load, this arch only)
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          provenance: false
+          tags: ${{ env.LOCAL }}
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+
+      # 2) The smoke test. A failure ends the job: no push, no tag.
+      - name: Smoke test
+        run: docker/test-app-image.sh "$LOCAL" healthy
+
+      # 3) The Trivy gate, as on pgvector: fixable HIGH or CRITICAL findings in
+      #    the OS (Debian) packages fail the job before the push. Its cache is
+      #    kept in the runner's temp folder, outside the checkout, so it never
+      #    reaches a build context (a Trivy cache in the context once left
+      #    root-owned files that failed an arm64 push).
+      - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+
+      - name: Trivy full report (informational, does not fail the job)
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL }}
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 4) The same build again (all cache hits), pushed by digest with no tag.
+      - name: Push by digest
+        id: push
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::the push returned no digest (${DIGEST:-none})"
+            exit 1
+          fi
+          mkdir -p digests
+          echo "$DIGEST" > "digests/${{ matrix.arch }}"
+          echo "${{ matrix.platform }} pushed as ${IMAGE}@${DIGEST}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Tag the multi-arch image
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Tags for this ref
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The manifest list from exactly the two arch digests, with the tags
+      # metadata-action gave; then read back from the registry: the version
+      # tag must list both platforms at those digests, and latest, when this
+      # is a stable tag, must be the same manifest list.
+      - name: Create the manifest list and check it
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(digests/*)
+          [ "${#files[@]}" -eq 2 ] && [ -s digests/amd64 ] && [ -s digests/arm64 ] ||
+            { echo "::error::expected the amd64 and arm64 digests only, got: ${files[*]}"; exit 1; }
+          amd64="$(cat digests/amd64)"
+          arm64="$(cat digests/arm64)"
+          mapfile -t tags < <(printf '%s\n' "$TAGS" | sed '/^$/d')
+          [ "${#tags[@]}" -ge 1 ] || { echo "::error::metadata-action gave no tags for ${GITHUB_REF}"; exit 1; }
+          [ -n "$VERSION" ] || { echo "::error::metadata-action gave no version for ${GITHUB_REF}"; exit 1; }
+          targs=()
+          for t in "${tags[@]}"; do targs+=(-t "$t"); done
+          echo "Tagging ${tags[*]}"
+          docker buildx imagetools create "${targs[@]}" "${IMAGE}@${amd64}" "${IMAGE}@${arm64}"
+
+          raw="$(docker buildx imagetools inspect --raw "${IMAGE}:${VERSION}")"
+          lists() {
+            local got
+            got="$(jq -r --arg a "$1" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest' <<<"$raw")"
+            [ "$got" = "$2" ] || { echo "::error::${IMAGE}:${VERSION} lists linux/$1 as '${got}', not $2"; exit 1; }
+          }
+          lists amd64 "$amd64"
+          lists arm64 "$arm64"
+          index="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          for t in "${tags[@]}"; do
+            d="$(docker buildx imagetools inspect "$t" --format '{{.Manifest.Digest}}')"
+            [ "$d" = "$index" ] || { echo "::error::$t is ${d}, not ${index}"; exit 1; }
+          done
+          {
+            echo "### Published ${IMAGE}:${VERSION}"
+            echo ""
+            echo "- manifest list: \`${index}\`"
+            echo "- linux/amd64: \`${amd64}\`"
+            echo "- linux/arm64: \`${arm64}\`"
+            echo "- tags: ${tags[*]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Published ${tags[*]} at ${index} (amd64 ${amd64}, arm64 ${arm64})"

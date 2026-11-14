@@ -41,6 +41,12 @@
 //      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
 //      settings page's warning (AC-013).
+//      The built web app (Task 18) is served from options.web, by default
+//      apps/web/dist beside the server package and optional, so a test
+//      server without a web build reports healthy. The process (main())
+//      passes processWeb(): the same folder, required, so /healthz answers
+//      503 while index.html is missing and the app image's HEALTHCHECK fails
+//      instead of passing in front of 503 pages (Task 24, issue #162).
 //
 // stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
@@ -86,6 +92,7 @@ import { createTrash } from "./library/trash.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
 import { bossUploadQueue, createUploads } from "./uploads/tus.js";
+import { defaultWebDir, type WebDeps } from "./web/shell.js";
 
 /** The longest a shutdown may take before the process exits anyway. */
 export const SHUTDOWN_DEADLINE_MS = 30_000;
@@ -283,7 +290,25 @@ async function closeHttp(app: FastifyInstance, graceMs: number): Promise<void> {
   }
 }
 
-export async function start(config: Config): Promise<Server> {
+/** What start() takes besides the configuration. */
+export interface StartOptions {
+  /**
+   * The built web app. Left out, apps/web/dist beside the server package,
+   * not required (app.ts's default). The process passes processWeb().
+   */
+  web?: WebDeps;
+}
+
+/**
+ * The web build as the process serves it (Task 24, issue #162): apps/web/dist
+ * beside the server package, required, so a server started without it fails
+ * its health check. dir is for the tests.
+ */
+export function processWeb(dir: string = defaultWebDir()): WebDeps {
+  return { dir, required: true };
+}
+
+export async function start(config: Config, options: StartOptions = {}): Promise<Server> {
   const db = createDb(config.databaseUrl);
   const store = createBlobStore(config.s3);
   let boss: PgBoss | undefined;
@@ -460,6 +485,7 @@ export async function start(config: Config): Promise<Server> {
         tokens: { tokens, list: dbTokenList(db) },
         organise: { db, trash },
       },
+      ...(options.web === undefined ? {} : { web: options.web }),
       logger: true,
     });
     app = startedApp;
@@ -530,7 +556,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     }
     throw error;
   }
-  const server = await start(config);
+  const server = await start(config, { web: processWeb() });
   installSignalHandlers(server.stop);
 }
 
