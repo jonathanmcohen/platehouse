@@ -1,0 +1,5 @@
+# What an end-to-end run writes: the signed-in state and seed (holds a
+# throwaway API token), Playwright's results and its HTML report.
+.run/
+test-results/
+playwright-report/

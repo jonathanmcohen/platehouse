@@ -196,6 +196,43 @@ describe("the page frame", () => {
       html.indexOf(main as string),
     );
   });
+
+  // Issue #205: the top bar was a plain div, so the theme switch sat outside
+  // every landmark and axe's region rule failed on every page. A header that
+  // is not inside main, nav, aside, section or article is the banner
+  // landmark, and the page keeps exactly one banner and one main.
+  test("the top bar is the page's one banner: a header outside every other landmark, holding the menu, search, Add and the theme switch", () => {
+    const html = render("/");
+    const headers = tags(html, "header");
+    expect(headers, "the top bar is not a header").toHaveLength(1);
+    const header = headers[0] as string;
+    expect(attr(header, "class")).toBe("studio-topbar");
+    expect(html).not.toMatch(/\srole="banner"/);
+    expect(tags(html, "main")).toHaveLength(1);
+
+    // Not nested in another landmark or sectioning element, where a header
+    // stops being the banner.
+    const before = html.slice(0, html.indexOf(header));
+    for (const name of ["main", "nav", "aside", "section", "article"]) {
+      const opened = tags(before, name).length;
+      const closed = before.split(`</${name}>`).length - 1;
+      expect(opened - closed, `the header is inside a ${name}`).toBe(0);
+    }
+
+    const start = html.indexOf(header);
+    const inside = html.slice(start, html.indexOf("</header>", start));
+    expect(
+      tags(inside, "fieldset").some((t) => attr(t, "class")?.includes("studio-theme-switch")),
+    ).toBe(true);
+    expect(tags(inside, "search")).toHaveLength(1);
+    expect(tags(inside, "button").some((t) => attr(t, "aria-controls") !== undefined)).toBe(true);
+    expect(
+      tags(inside, "button").some((t) => attr(t, "class")?.includes("studio-button-primary")),
+    ).toBe(true);
+    // Same order as before: the top bar comes before main, so Tab still
+    // reaches the menu, search, Add and the theme switch before the page.
+    expect(start).toBeLessThan(html.indexOf(tags(html, "main")[0] as string));
+  });
 });
 
 describe("index.html", () => {

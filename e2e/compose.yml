@@ -1,0 +1,191 @@
+# The end-to-end stack (build plan Task 22; AC-074, AC-075, AC-082, lessons 1
+# and 6). Traefik v3 terminates TLS for two hosts and routes them with its
+# file provider: platehouse.e2e.test to the app and id.e2e.test to the mock
+# OIDC issuer. The Platehouse router carries no middleware at all, so no
+# proxy login (oidc-auth) can cover /api/v1/ or /s/, which is what Hades will
+# run (Task 26). The specs reach the app only through Traefik.
+#
+# The app is the real server from this checkout, started the way the
+# integration tests start it (apps/server/test/integration/app/shutdown.test.ts):
+# node with --conditions=source and the test resolve hook, from the
+# TypeScript source. There is no app image yet (Task 24), so the checkout,
+# after pnpm install and the web build, is mounted read-only. The slicer is
+# the contract-faithful stub the integration tests use
+# (apps/server/test/support/slicer-stub.ts), and the issuer is e2e/stubs/oidc-issuer.ts.
+#
+# Every secret, the TLS CA and the certificate are made per run by e2e/up.sh
+# and passed in through its env file; nothing here is a real credential.
+# Start it with: bash e2e/up.sh (see e2e/README.md).
+name: platehouse-e2e
+
+x-node: &node
+  image: node:26.13.0-trixie-slim
+  working_dir: /repo
+  volumes:
+    - ..:/repo:ro
+  networks:
+    - e2e
+  restart: "no"
+
+services:
+  traefik:
+    image: traefik:v3.7.19
+    command:
+      - --entrypoints.websecure.address=:443
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --providers.file.watch=false
+      - --log.level=INFO
+    ports:
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ${E2E_CERTS_DIR:?run e2e/up.sh}:/certs:ro
+    networks:
+      e2e:
+        # The app reaches the issuer at https://id.e2e.test through Traefik,
+        # the way the Hades app reaches Pocket ID through its proxy.
+        aliases:
+          - platehouse.e2e.test
+          - id.e2e.test
+
+  app:
+    <<: *node
+    command:
+      - node
+      - --conditions=source
+      - --import
+      - ./apps/server/test/support/ts-hooks.ts
+      - apps/server/src/main.ts
+    environment:
+      PUBLIC_ORIGIN: https://platehouse.e2e.test
+      DATABASE_URL: postgres://platehouse:${E2E_DB_PASSWORD:?run e2e/up.sh}@db:5432/platehouse
+      PORT: "3000"
+      S3_ENDPOINT: http://s3:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: platehouse-e2e
+      S3_ACCESS_KEY_ID: ${E2E_S3_ACCESS_KEY_ID:?run e2e/up.sh}
+      S3_SECRET_ACCESS_KEY: ${E2E_S3_SECRET_ACCESS_KEY:?run e2e/up.sh}
+      S3_FORCE_PATH_STYLE: "true"
+      OIDC_ISSUER: https://id.e2e.test
+      OIDC_CLIENT_ID: platehouse-e2e
+      OIDC_CLIENT_SECRET: ${E2E_OIDC_CLIENT_SECRET:?run e2e/up.sh}
+      OIDC_GROUP: platehouse
+      LINK_SECRET: ${E2E_LINK_SECRET:?run e2e/up.sh}
+      SLICER_URL: http://slicer:8080
+      INBOX_DIR: /data/inbox
+      TMP_DIR: /data/tmp
+      INBOX_SETTLE_SECONDS: "1"
+      # The app trusts the run's own CA for its requests to the issuer.
+      NODE_EXTRA_CA_CERTS: /certs/ca.pem
+    volumes:
+      - ..:/repo:ro
+      - ${E2E_CERTS_DIR:?run e2e/up.sh}/ca.pem:/certs/ca.pem:ro
+    tmpfs:
+      - /data/inbox:mode=1777
+      - /data/tmp:mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
+      bucket:
+        condition: service_completed_successfully
+      slicer:
+        condition: service_healthy
+      oidc:
+        condition: service_healthy
+
+  slicer:
+    <<: *node
+    command:
+      - node
+      - --conditions=source
+      - --import
+      - ./apps/server/test/support/ts-hooks.ts
+      - e2e/stubs/slicer.ts
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/v1/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  oidc:
+    <<: *node
+    command:
+      - node
+      - e2e/stubs/oidc-issuer.ts
+    environment:
+      ISSUER: https://id.e2e.test
+      CLIENT_ID: platehouse-e2e
+      CLIENT_SECRET: ${E2E_OIDC_CLIENT_SECRET:?run e2e/up.sh}
+      REDIRECT_URI: https://platehouse.e2e.test/auth/callback
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/.well-known/openid-configuration').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  db:
+    # The database image the plan pins (Global Constraints, Q7), the same one
+    # the integration tests use (apps/server/test/integration/support/containers.ts).
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: platehouse
+      POSTGRES_DB: platehouse
+      POSTGRES_PASSWORD: ${E2E_DB_PASSWORD:?run e2e/up.sh}
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks:
+      - e2e
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "platehouse", "-d", "platehouse"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  s3:
+    # The test-only S3 server the plan pins (Tech Stack).
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${E2E_S3_ACCESS_KEY_ID:?run e2e/up.sh}
+      MINIO_ROOT_PASSWORD: ${E2E_S3_SECRET_ACCESS_KEY:?run e2e/up.sh}
+    tmpfs:
+      - /data
+    networks:
+      - e2e
+
+  # Makes the app's bucket once the S3 server answers, then exits 0. The app
+  # starts only after it has.
+  bucket:
+    <<: *node
+    command:
+      - node
+      - e2e/stubs/make-bucket.ts
+    environment:
+      S3_ENDPOINT: http://s3:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: platehouse-e2e
+      S3_ACCESS_KEY_ID: ${E2E_S3_ACCESS_KEY_ID:?run e2e/up.sh}
+      S3_SECRET_ACCESS_KEY: ${E2E_S3_SECRET_ACCESS_KEY:?run e2e/up.sh}
+    depends_on:
+      - s3
+
+networks:
+  e2e: {}
