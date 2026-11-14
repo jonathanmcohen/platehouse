@@ -123,13 +123,17 @@ docker run --rm --network "$net" "${s3_env[@]}" -w /app/apps/server --entrypoint
     client.destroy();
     console.log('bucket made');"
 
-health_args=()
+# One argument list that is never empty: bash before 4.4 (macOS /bin/bash is
+# 3.2) treats an empty array expanded under set -u as unbound, and there the
+# abort even exits 0, so a separate, empty array of health options (healthy
+# mode) would pass a run that checked nothing.
+app_args=(-d --name "$app" --network "$net" -p 127.0.0.1::3000)
 if [ "$mode" = unhealthy ]; then
-  health_args=(--health-start-period=10s --health-interval=3s --health-retries=3)
+  app_args+=(--health-start-period=10s --health-interval=3s --health-retries=3)
 fi
-docker run -d --name "$app" --network "$net" -p 127.0.0.1::3000 "${health_args[@]}" \
-  -e DATABASE_URL -e PUBLIC_ORIGIN "${s3_env[@]}" -e S3_FORCE_PATH_STYLE \
-  -e OIDC_CLIENT_ID -e OIDC_CLIENT_SECRET -e LINK_SECRET "$image" >/dev/null
+app_args+=(-e DATABASE_URL -e PUBLIC_ORIGIN "${s3_env[@]}" -e S3_FORCE_PATH_STYLE
+  -e OIDC_CLIENT_ID -e OIDC_CLIENT_SECRET -e LINK_SECRET "$image")
+docker run "${app_args[@]}" >/dev/null
 app_port="$(docker port "$app" 3000/tcp | head -n 1 | sed 's/.*://')"
 
 health() { docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$app"; }
