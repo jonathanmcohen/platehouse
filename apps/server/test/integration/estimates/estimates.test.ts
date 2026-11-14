@@ -12,6 +12,7 @@ import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createSlicerClient, type SlicerClient } from "../../../src/estimates/client.js";
+import { OTHER_PRINTER_LABEL } from "../../../src/estimates/display.js";
 import {
   createEstimates,
   type Estimates,
@@ -268,6 +269,21 @@ describe("estimates", () => {
         profileSource: "generic",
       }),
     ]);
+  });
+
+  // Issue #198: with no menu printer for the file's printer, Bambu's numbers
+  // were labelled with its raw code ("Sliced for Q9"). The printer id stays
+  // the file's own; only the label is plain words.
+  test("file numbers for a printer the menu does not have are labelled in plain words", async () => {
+    const { plates } = await upload({ plates: 1, sliced: [1], printerModelId: "Q9" });
+    await drain();
+    const numbers = await estimates.plateNumbers(plateId(plates, 1));
+    expect(numbers.file).toMatchObject({
+      source: "file",
+      printerId: "Q9",
+      printerLabel: OTHER_PRINTER_LABEL,
+      timeSeconds: 1000,
+    });
   });
 
   test("each filament's preset and its source are stored with the Platehouse numbers", async () => {

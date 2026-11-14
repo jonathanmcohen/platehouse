@@ -5,7 +5,12 @@
 // slicer's own rule (apps/slicer/src/profiles.ts pickFilament): it only ever
 // picks a "Bambu ..." preset or a "Generic ..." one.
 import { describe, expect, test } from "vitest";
-import { printerForFile, profileSourceOf } from "../../src/estimates/display.js";
+import {
+  filePrinterLabel,
+  OTHER_PRINTER_LABEL,
+  printerForFile,
+  profileSourceOf,
+} from "../../src/estimates/display.js";
 import { STUB_PRINTERS } from "../support/slicer-stub.js";
 
 describe("profileSourceOf", () => {
@@ -52,5 +57,32 @@ describe("printerForFile", () => {
     expect(printerForFile({ printerModelId: "C12", nozzle: 0.4000000001 }, STUB_PRINTERS)?.id).toBe(
       "Bambu Lab P1S 0.4 nozzle",
     );
+  });
+});
+
+// Issue #198: Bambu's own numbers were labelled with the file's raw printer
+// code ("Sliced for C12", "Sliced for BL-P001") when no printer in the
+// slicer's menu matched the file's printer and nozzle, or the menu was empty
+// because the slicer could not be reached. The label is the menu printer's
+// name when one matches, else plain words.
+describe("filePrinterLabel", () => {
+  test("a menu printer that matches the file's printer gives its name", () => {
+    const printer = printerForFile({ printerModelId: "BL-P001", nozzle: 0.4 }, STUB_PRINTERS);
+    expect(filePrinterLabel(printer)).toBe("Bambu Lab X1 Carbon 0.4 nozzle");
+  });
+
+  test("no menu printer, or an empty menu, gives plain words, never the raw code", () => {
+    expect(OTHER_PRINTER_LABEL).toBe("another printer");
+    const cases: Array<
+      [{ printerModelId: string | null; nozzle: number | null }, typeof STUB_PRINTERS]
+    > = [
+      [{ printerModelId: "C12", nozzle: 0.2 }, STUB_PRINTERS],
+      [{ printerModelId: "Q9", nozzle: 0.4 }, STUB_PRINTERS],
+      [{ printerModelId: "C12", nozzle: 0.4 }, []],
+      [{ printerModelId: null, nozzle: null }, STUB_PRINTERS],
+    ];
+    for (const [file, menu] of cases) {
+      expect(filePrinterLabel(printerForFile(file, menu))).toBe(OTHER_PRINTER_LABEL);
+    }
   });
 });

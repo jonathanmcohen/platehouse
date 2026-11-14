@@ -77,6 +77,28 @@ describe("routeClass", () => {
     ["/api/v1/./models", "bearer"],
     ["/api/v1/../app/api/models", "bearer"],
     ["/api/v1/models\\x", "bearer"],
+    // an unmatched path under /s/, or one that normalises to /s/ (a doubled
+    // slash, an escaped letter, a backslash, a dot segment, an absolute-form
+    // target), is link: it can serve nothing, and as session a signed-in
+    // request got a 404 that repeated the path, the token in it included,
+    // and the request log kept it (issue #169)
+    ["/s/abc/a%20b.3mf", "link"],
+    ["/s/abc%2Fx.3mf", "link"],
+    ["/s/%2e%2e/abc/x.3mf", "link"],
+    ["/s/abc//x.3mf", "link"],
+    ["//s/abc/x.3mf", "link"],
+    ["///s/abc", "link"],
+    ["/%73/abc", "link"],
+    ["/%73/abc/x.3mf", "link"],
+    ["/%2573/abc", "link"],
+    ["/s\\abc\\x.3mf", "link"],
+    ["/x/../s/abc", "link"],
+    ["/./s/abc", "link"],
+    ["http://platehouse.test/s/abc/x.3mf", "link"],
+    ["HTTPS://platehouse.test/s/abc", "link"],
+    ["/%73", "session"],
+    ["/sx/abc", "session"],
+    ["/%73x/abc", "session"],
     ["/auth\\..\\files", "session"],
     ["auth/login", "session"],
     ["", "session"],

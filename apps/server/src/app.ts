@@ -43,11 +43,14 @@
 //   /app/api/files/:id/slicer-link (session-class, so the gate's Origin
 //   check covers it) and served at GET /s/<token>/<name> (the route
 //   /s/:token/*), link-class: no session, the token alone. Registered only
-//   when deps.delivery is given. A path under /s/ that matches no route (no
-//   name segment, another method, or delivery not registered) is a refused
-//   link: 403 with an empty body and Cache-Control: no-store, never a 404
-//   that echoes the path. So is a /s/ path Fastify itself refuses (a bad
-//   percent escape, a segment over its maxParamLength): frameworkError.
+//   when deps.delivery is given. A path under /s/, or one that normalises to
+//   /s/ (auth/gate.ts isLinkPath), that matches no route (no name segment,
+//   another method, a doubled slash, or delivery not registered) is a
+//   refused link: 403 with an empty body and Cache-Control: no-store, never
+//   a 404 that echoes the path. So is such a path Fastify itself refuses (a
+//   bad percent escape, a segment over its maxParamLength): frameworkError.
+//   Off /s/ Fastify's own answers keep their status and code but not its
+//   message, which repeated the path (issue #177).
 // - The request timeout lets a whole 512 MiB upload through as one PATCH on
 //   a slow link (SLOW_LINK_BYTES_PER_SECOND), as curl sends it.
 // - Because that timeout is so long, an answer given before the request's
@@ -61,7 +64,10 @@
 // - The request log records each request's path without its query
 //   (requestLogValue), so the OAuth code and state on /auth/callback never
 //   reach it, with a slicer link's token and name replaced
-//   (LOGGED_LINK_PATH), so no live link reaches it either, and a fixed list
+//   (LOGGED_LINK_PATH) on any path that is or normalises to a /s/ path, so
+//   no live link reaches it either (issue #169), as on any path whose first
+//   segment reads loosely as "s" (/S/, /%53/, /s;x/; PR #211 security
+//   review), and a fixed list
 //   of its headers (LOGGED_HEADERS), with
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
@@ -84,7 +90,7 @@ import { type AppModel, emptyAppModel, registerModelApi } from "./app-api/model.
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
-import { installGate, patternClass, routeClass } from "./auth/gate.js";
+import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
@@ -268,7 +274,11 @@ export const LOGGED_LINK_PATH = "/s/[link]/[name]";
  * The path the request log shows: the url cut at the "?", and a slicer
  * link's token and name segments replaced (LOGGED_LINK_PATH), since the token
  * alone fetches the file for 10 minutes. That covers any path under /s/,
- * live, refused or unrouted, and any path Fastify routed to the link route.
+ * live, refused or unrouted, any path that normalises to one (a doubled
+ * slash, an escaped letter, a dot segment or an absolute-form target;
+ * isLinkPath, issue #169), any path Fastify routed to the link route, and
+ * any path whose first segment reads loosely as "s" (readsAsLinkPrefix). A
+ * /s/ path with no name segment after the token is "/s/[link]".
  */
 function loggedPath(request: FastifyRequest): string {
   const url = request.url;
@@ -277,8 +287,33 @@ function loggedPath(request: FastifyRequest): string {
   if (path.startsWith("/s/")) {
     return path.indexOf("/", 3) === -1 ? "/s/[link]" : LOGGED_LINK_PATH;
   }
-  if (request.routeOptions?.url === LINK_ROUTE) return LOGGED_LINK_PATH;
+  if (request.routeOptions?.url === LINK_ROUTE || isLinkPath(path)) return LOGGED_LINK_PATH;
+  if (readsAsLinkPrefix(path)) return LOGGED_LINK_PATH;
   return path;
+}
+
+/** How many rounds of percent-decoding readsAsLinkPrefix applies at most. */
+const LOG_DECODE_ROUNDS = 8;
+
+/**
+ * For the request log only, never for classing or routing: true when the
+ * path's first segment, with every valid percent escape decoded (repeated
+ * until none is left, at most LOG_DECODE_ROUNDS rounds), backslashes made
+ * slashes, cut at the first ";" and lower-cased, is "s". Such a path may
+ * carry a link token though neither the router nor the link class reads it
+ * as /s/: /S/<token>, /%53/<token>, an "s" encoded four times, /s;x/<token>
+ * (PR #211 security review). No route's first segment is "s" but the link
+ * route's, so this hides nothing else.
+ */
+function readsAsLinkPrefix(path: string): boolean {
+  let p = path;
+  for (let i = 0; i < LOG_DECODE_ROUNDS && /%[0-9A-Fa-f]{2}/.test(p); i++) {
+    p = p.replace(/%([0-9A-Fa-f]{2})/g, (_m, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+  }
+  const first = p.replace(/\\/g, "/").replace(/^\/+/, "").split("/")[0] ?? "";
+  return (first.split(";")[0] ?? "").toLowerCase() === "s";
 }
 
 /**
@@ -331,20 +366,21 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  * hook never releases a body the client declared and Node reads it for up to
  * REQUEST_TIMEOUT_MS.
  *
- * Under /s/ (the raw path, as sent) it is a refused link, as the link route
- * and the not-found handler answer one: 403, an empty body and no-store. Off
- * /s/ the body is Fastify's own.
+ * Under /s/, or on a path that normalises to /s/ (routeClass link), it is a
+ * refused link, as the link route and the not-found handler answer one:
+ * 403, an empty body and no-store. Off /s/ the body is Fastify's status
+ * and code without its message, which repeated the request path (issue
+ * #177; Jon, 2026-11-14, plan item 11).
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   releaseUnreadBody(request, reply);
-  if (request.url.startsWith("/s/")) {
+  if (routeClass(request.url) === "link") {
     return reply.code(403).header("cache-control", "no-store").send();
   }
   const status = error.statusCode ?? 500;
   return reply.code(status).send({
     error: STATUS_CODES[status] ?? "Error",
     code: error.code,
-    message: error.message,
     statusCode: status,
   });
 }
@@ -401,12 +437,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return reply.code(up ? 200 : 503).send({ status: up ? "ok" : "unavailable" });
   });
 
-  // Fastify's own 404 answer; the gate's onSend hook releases any body. An
+  // The app's 404 answer; the gate's onSend hook releases any body. An
   // unknown path under /api/v1 is bearer-class: no token, no 404. An
   // unmatched link-class path (/s/ with no name segment, a POST or OPTIONS
   // on a link, junk) is a refused link, as the route answers one: 403 with
   // an empty body and no-store, so the path, a token in it included, is
-  // never echoed and no cache keeps the answer.
+  // never echoed and no cache keeps the answer. Any other 404 is Fastify's
+  // status and error without its message, which repeated the method, path
+  // and query (issue #177; PR #211 security review).
   const apiBearer = createBearerHook(api.tokens);
   app.setNotFoundHandler(async (request, reply) => {
     if (routeClass(request.url) === "link") {
@@ -416,11 +454,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await apiBearer(request, reply);
       if (reply.sent) return reply;
     }
-    return reply.code(404).send({
-      message: `Route ${request.method}:${request.url} not found`,
-      error: "Not Found",
-      statusCode: 404,
-    });
+    return reply.code(404).send({ error: "Not Found", statusCode: 404 });
   });
 
   await registerAuthRoutes(app, {

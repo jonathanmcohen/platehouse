@@ -1,7 +1,10 @@
 // The bar above every page (build plan Task 18, AC-071 and AC-064): the
 // narrow-screen menu button, the search box, Add and the theme switch.
 // A search goes to the library with ?q=, which the library page (Task 19)
-// reads. Add opens the upload dialog, which Task 19 passes in as onAdd;
+// reads. From a library filtered by creator or collection (?creator=,
+// ?collection=, Task 21's Show in the library) the search keeps those
+// filters (issue #194); from any other page it starts a search of its own.
+// Add opens the upload dialog, which Task 19 passes in as onAdd;
 // until then the button is shown disabled.
 // The box follows the URL: the shell stays mounted across routes, so on every
 // navigation (a search, Back, Forward, a sidebar link) the box is reset to
@@ -44,7 +47,16 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
   function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const q = String(new FormData(event.currentTarget).get("q") ?? "").trim();
-    navigate(q === "" ? "/" : `/?${new URLSearchParams({ q })}`);
+    const next = new URLSearchParams();
+    if (q !== "") next.set("q", q);
+    if (location.pathname === "/") {
+      for (const key of ["creator", "collection"]) {
+        const value = params.get(key);
+        if (value !== null && value !== "") next.set(key, value);
+      }
+    }
+    const text = next.toString();
+    navigate(text === "" ? "/" : `/?${text}`);
   }
 
   return (

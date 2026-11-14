@@ -122,6 +122,39 @@ describe("the output never shows a credential or a signed query", () => {
     expectClean(s, r.output);
   });
 
+  // Issue #168: the redactor knew a signed query only as a whole, so a
+  // server that echoed one of its parameters on its own (the signature, the
+  // credential or the session token) printed it. Here Manyfold, whose error
+  // bodies are quoted, echoes one parameter of the signed URL it handed out
+  // for the file before. Each sensitive value is registered on its own too.
+  it.each(["X-Amz-Signature", "X-Amz-Credential", "X-Amz-Security-Token"])(
+    "when Manyfold echoes only the %s of a signed URL back in an error body",
+    async (param) => {
+      const s = setup(library());
+      const echoed: string[] = [];
+      server.use(
+        http.get(`${MANYFOLD}/models/m1/model_files/f2.stl`, () => {
+          const query = s.manyfold.signedQueries[0] ?? "";
+          const raw = query.split("&").find((p) => p.startsWith(`${param}=`)) ?? "";
+          const value = new URLSearchParams(query).get(param) ?? "";
+          echoed.push(value, raw.slice(param.length + 1));
+          return new HttpResponse(`denied: ${value} (${raw.slice(param.length + 1)})`, {
+            status: 403,
+          });
+        }),
+      );
+      const r = await s.run(["--apply"]);
+      expect(r.code).toBe(1);
+      expect(echoed.length).toBeGreaterThan(0);
+      for (const value of echoed) {
+        expect(value.length).toBeGreaterThan(8);
+        expect(r.output).not.toContain(value);
+      }
+      expectClean(s, r.output);
+      expect(r.output).toContain(`denied: ${REDACTED}`);
+    },
+  );
+
   it("when Platehouse refuses its token and echoes it back", async () => {
     const s = setup(library());
     server.use(
@@ -469,4 +502,97 @@ describe("a credential set with padding around it is sent bare", () => {
       expectClean(s, r.output);
     });
   }
+});
+
+// The PR #211 security review: a download redirect back to Manyfold's own
+// host followed the new URL without registering its query, and log lines and
+// errors on Manyfold print the path with its query. So if Manyfold ever
+// redirects a download on its own host with a signed query, that query
+// reached stdout, stderr and the report. Every redirect hop's query is
+// registered now, and a download hop's log lines and errors name the path
+// only.
+describe("a download redirect to Manyfold's own host with a signed query", () => {
+  const signature = ["same", "host", "signature", "0123456789abcdef"].join("-");
+  const credential = ["same", "host", "credential", "fedcba9876543210"].join("-");
+  const query = `X-Amz-Signature=${signature}&X-Amz-Credential=${credential}`;
+  const raw = `${MANYFOLD}/models/m3/raw/air-dry.3mf`;
+
+  function redirectToRaw() {
+    return http.get(
+      `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+      () => new HttpResponse(null, { status: 302, headers: { location: `${raw}?${query}` } }),
+    );
+  }
+
+  function expectNoQuery(r: { output: string; report: unknown }) {
+    const report = JSON.stringify(r.report);
+    for (const value of [query, signature, credential]) {
+      expect(r.output).not.toContain(value);
+      expect(report).not.toContain(value);
+    }
+    expect(r.output).not.toContain("X-Amz");
+    expect(report).not.toContain("X-Amz");
+  }
+
+  it("never prints it while the hop is retried and then fails", async () => {
+    const s = setup(library());
+    server.use(
+      redirectToRaw(),
+      http.get(raw, () => new HttpResponse(null, { status: 503 })),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    // The retries and the failure were reported, by path only.
+    expect(r.output).toContain("GET /models/m3/raw/air-dry.3mf: HTTP 503, retry 1");
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.reason).toBe("GET /models/m3/raw/air-dry.3mf: HTTP 503");
+    expectNoQuery(r);
+  });
+
+  it("never prints it when Manyfold echoes it back in an error body", async () => {
+    const s = setup(library());
+    server.use(
+      redirectToRaw(),
+      http.get(
+        raw,
+        ({ request }) =>
+          new HttpResponse(`denied ${new URL(request.url).search} sig ${signature}`, {
+            status: 403,
+          }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.reason).toContain(`sig ${REDACTED}`);
+    expectNoQuery(r);
+  });
+});
+
+// PR #211 review: every hop's whole query was registered with the redactor,
+// with no length floor, Manyfold's own host included. So a redirect there
+// with an ordinary query such as "?download" made "download" a secret, and
+// every later line that held the word had it replaced. A hop on Manyfold's
+// own host has its query registered only when it holds a sensitive
+// parameter, and no whole query under 8 characters is registered anywhere.
+describe("a download redirect to Manyfold's own host with an ordinary query", () => {
+  const raw = `${MANYFOLD}/models/m3/download/air-dry.3mf`;
+
+  it("leaves the output as it is: the query is not a secret", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+        () => new HttpResponse(null, { status: 302, headers: { location: `${raw}?download` } }),
+      ),
+      http.get(raw, () => new HttpResponse(null, { status: 503 })),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("GET /models/m3/download/air-dry.3mf: HTTP 503, retry 1");
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.reason).toBe("GET /models/m3/download/air-dry.3mf: HTTP 503");
+    expect(r.output).not.toContain(REDACTED);
+    expect(JSON.stringify(r.report)).not.toContain(REDACTED);
+  });
 });

@@ -38,20 +38,23 @@ describe("apps/slicer/Dockerfile apt stages", () => {
 
   // Issue #150: apt-get update only warns on an index it could not fetch and
   // exits 0, so an outage that outlasts the retries failed the build a
-  // command later with a misleading "Unable to locate package". The update
-  // against the snapshot runs with --error-on=any, so it fails there, with
-  // the server's error.
-  test("every apt-get update after the snapshot is switched on runs with --error-on=any", () => {
-    let checked = 0;
+  // command later with a misleading "Unable to locate package". Every
+  // update runs with --error-on=any, so it fails there, with the server's
+  // error: the one against the snapshot, and (issue #158) the first one, the
+  // one against the live archive before the snapshot is switched on.
+  test("every apt-get update runs with --error-on=any, before and after the snapshot is switched on", () => {
+    let before = 0;
+    let after = 0;
     for (const run of runs()) {
       const at = run.indexOf("APT::Snapshot");
-      if (at === -1) continue;
-      for (const m of run.slice(at).matchAll(/\bapt-get update\b[^&]*/g)) {
+      for (const m of run.matchAll(/\bapt-get update\b[^&]*/g)) {
         expect(m[0]).toMatch(/\s--error-on=any\b/);
-        checked++;
+        if (at !== -1 && (m.index ?? 0) > at) after++;
+        else before++;
       }
     }
-    expect(checked, "snapshot updates checked").toBeGreaterThanOrEqual(2);
+    expect(before, "live-archive updates checked").toBeGreaterThanOrEqual(2);
+    expect(after, "snapshot updates checked").toBeGreaterThanOrEqual(2);
   });
 });
 

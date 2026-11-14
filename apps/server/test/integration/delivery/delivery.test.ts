@@ -428,6 +428,12 @@ describe("an object whose size differs from the record (PR #156 security review)
       });
       expect(res.headers.get("content-disposition"), path).toBeNull();
       expect(res.headers.get("cache-control"), path).toBe("no-store");
+      // A HEAD answers what the GET does: the HeadObject's size is compared
+      // with the record too, so it is not 200 with a Content-Length the GET
+      // will never deliver (issue #164).
+      const head = await call("HEAD", path, { session });
+      expect(head.status, `HEAD ${path}`).toBe(503);
+      expect(head.headers.get("content-disposition"), `HEAD ${path}`).toBeNull();
     }
     // The object put back at its recorded size is served whole again.
     await env.putRaw(seeded.source.key, seeded.bytes);
@@ -472,8 +478,17 @@ describe("hostile file names (Review Focus 1)", () => {
     const seeded = await seedStoredModel(env);
     for (const name of hostile) {
       const { file, bytes } = await seedNamedFile(seeded.model.id, name, "orig.3mf");
-      // The stored name, with the real extension added when it lacks one.
-      const expected = linkFileName({ name, originalName: "orig.3mf", kind: "3mf" });
+      // The stored name, with the real extension added when it lacks one,
+      // and in Content-Disposition with / and \, control characters
+      // (\p{Cc}), invisible format characters (\p{Cf}) and line and
+      // paragraph separators (\p{Zl}, \p{Zp}) replaced by _, so no browser
+      // shows a reordered or broken name and no client that honours
+      // filename* sees a directory part (issue #164; PR #211 security review
+      // and review).
+      const expected = linkFileName({ name, originalName: "orig.3mf", kind: "3mf" }).replace(
+        /[/\\\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+        "_",
+      );
 
       const download = await call("GET", `/files/${file.id}/download`, { session: true });
       expect(download.status, name).toBe(200);
@@ -491,7 +506,8 @@ describe("hostile file names (Review Focus 1)", () => {
       const last = segments[3] ?? "";
       // The segment has / \ % ? # ;, control characters and invisible
       // format characters (\p{Cf}) replaced by _ (Jon, 2026-11-12);
-      // Content-Disposition keeps the stored name.
+      // Content-Disposition keeps the rest of the stored name, its / and \
+      // replaced as well.
       expect(last, name).toBe(encodeURIComponent(expected.replace(UNSAFE_IN_SEGMENT, "_")));
       expect(decodeURIComponent(last), name).not.toMatch(UNSAFE_CHAR);
       expect(last.endsWith(".3mf"), name).toBe(true);

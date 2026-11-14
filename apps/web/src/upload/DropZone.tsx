@@ -3,8 +3,10 @@
 // hands them to onFiles, which opens the upload dialog. While files are
 // dragged over it, it is outlined in the accent colour. Text or links
 // dragged over it are left alone, so the browser's own handling stays.
-// Dropping is a pointer gesture; the dialog's Choose files button and the
-// top bar's Add are the keyboard routes to the same dialog.
+// Dropping is a pointer gesture. The keyboard routes to the same dialogs
+// are the top bar's Add, for new models, and the model page's Add files,
+// for that model (Task 20), each with the dialog's Choose files button
+// (issue #202).
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
 
 export interface DropZoneProps {
@@ -23,7 +25,7 @@ export function DropZone({ onFiles, children }: DropZoneProps) {
   const depth = useRef(0);
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: a drop target is a pointer gesture only; Add and the dialog's Choose files are the keyboard routes.
+    // biome-ignore lint/a11y/noStaticElementInteractions: a drop target is a pointer gesture only; Add, the model page's Add files and the dialog's Choose files are the keyboard routes.
     <div
       className={active ? "ph-dropzone ph-dropzone-active" : "ph-dropzone"}
       data-dropzone=""

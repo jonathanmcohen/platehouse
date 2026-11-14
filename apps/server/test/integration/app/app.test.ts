@@ -475,7 +475,7 @@ describe("a request answered before its body is read", () => {
     expect(await uploadFiles()).toEqual([]);
   });
 
-  test("a 404 keeps Fastify's own answer", async () => {
+  test("a 404 answers Not Found and never repeats the method or path (issue #177)", async () => {
     const a = await appWith();
     await a.listen({ host: "127.0.0.1", port: 0 });
     const base = `http://127.0.0.1:${(a.server.address() as AddressInfo).port}`;
@@ -484,11 +484,9 @@ describe("a request answered before its body is read", () => {
       body: Buffer.alloc(10, 1),
     });
     expect(res.status).toBe(404);
-    expect(JSON.parse(res.body)).toEqual({
-      message: "Route POST:/auth/no-such-route not found",
-      error: "Not Found",
-      statusCode: 404,
-    });
+    expect(JSON.parse(res.body)).toEqual({ error: "Not Found", statusCode: 404 });
+    expect(res.body).not.toContain("no-such-route");
+    expect(res.body).not.toContain("POST");
   });
 
   test("a refused, unknown or health request with no body keeps its connection", async () => {

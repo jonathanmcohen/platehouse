@@ -204,7 +204,10 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
       if (dot !== -1) {
         // The contentUrl: a redirect to a presigned object-store URL.
         const signature = randomBytes(16).toString("hex");
-        const query = `X-Amz-Credential=stub-credential%2F20261112&X-Amz-Signature=${signature}`;
+        const securityToken = `stub-session-${randomBytes(12).toString("hex")}`;
+        const query =
+          "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=stub-credential%2F20261112" +
+          `&X-Amz-Expires=300&X-Amz-Security-Token=${securityToken}&X-Amz-Signature=${signature}`;
         signedQueries.push(query);
         return new HttpResponse(null, {
           status: 302,

@@ -23,14 +23,17 @@
 // - The URL is absoluteUrl(...) on PUBLIC_ORIGIN, never built from the
 //   request's Host (AC-091), and has no query string. Its last segment is
 //   linkSegment: the file's name with its real extension (linkFileName),
-//   with / \ % ? # ; NUL, control characters and invisible format
+//   with / \ % ? # ; NUL, control characters, invisible format
 //   characters (\p{Cf}: bidi overrides and isolates, zero-width characters)
-//   replaced by _, then percent-encoded (Jon, 2026-11-12, PR #156), so it is
-//   always one segment, holds nothing a proxy might decode, refuse or split
-//   on, and never displays as a name with another extension. OrcaSlicer
+//   and the line and paragraph separators (\p{Zl}, \p{Zp}, as the public
+//   API's filename* does, PR #211) replaced by _, then percent-encoded
+//   (Jon, 2026-11-12, PR #156), so it is always one segment, holds nothing
+//   a proxy might decode, refuse or split on, and never displays as a name
+//   with another extension or broken across lines. OrcaSlicer
 //   names its download after it. That segment is never used for lookup;
-//   the answer's Content-Disposition carries the real stored name with its
-//   extension (download.ts), so a slicer that prefers it gets that.
+//   the answer's Content-Disposition carries the stored name with its real
+//   extension (linkFileName, set where api/v1.ts reads the file), so a
+//   slicer that prefers it gets that.
 // - The route is registered as /s/:token/* rather than /s/:token/:name:
 //   the router refuses a :param over its maxParamLength (100 characters)
 //   with 414, which would break the link of any file whose name is longer.
@@ -53,8 +56,8 @@ import {
   unavailable,
 } from "./download.js";
 
-// linkFileName lives in download.ts, which this module imports, so the
-// download route can use it without an import cycle; links still export it.
+// linkFileName lives in api/v1.ts, which reads every file the delivery
+// routes send (issue #164); links still export it.
 export { linkFileName };
 
 /** How long a slicer link works (Q14). */
@@ -71,9 +74,14 @@ export const LINK_ROUTE = "/s/:token/*";
  * encoding. \p{Cc} is NUL and the control characters; \p{Cf} the invisible
  * format characters (bidi overrides and isolates, zero-width characters), so
  * a slicer that decodes the segment never shows a name reordered to read as
- * another extension.
+ * another extension; \p{Zl} and \p{Zp} the line and paragraph separators
+ * (U+2028, U+2029), so it never shows a name broken across lines. The same
+ * characters, / and \ among them, are replaced in the public API's filename*
+ * (api/v1.ts UNSAFE_IN_FILENAME_STAR), so both names follow one rule on
+ * every character that matters for a path; the segment alone also replaces
+ * % ? # and ;, which only a URL needs.
  */
-const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}]/gu;
+const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /** The HKDF label of the link key; the login cookie's is "platehouse login cookie v1". */
 const LINK_KEY_LABEL = "platehouse slicer link v1";
@@ -136,9 +144,10 @@ export function readLinkToken(key: Buffer, token: string, now: Date): string | u
 
 /**
  * A link's last segment: linkFileName with / \ % ? # ; NUL, control
- * characters and invisible format characters (UNSAFE_IN_SEGMENT) replaced by
- * "_", then encodeURIComponent. It ends in the file's real extension, which
- * none of those characters is part of.
+ * characters, invisible format characters and the line and paragraph
+ * separators (UNSAFE_IN_SEGMENT) replaced by "_", then encodeURIComponent.
+ * It ends in the file's real extension, which none of those characters is
+ * part of.
  */
 export function linkSegment(file: Pick<LinkFile, "name" | "originalName" | "kind">): string {
   return encodeURIComponent(linkFileName(file).replace(UNSAFE_IN_SEGMENT, "_"));
@@ -212,8 +221,8 @@ export async function registerLinks(
       if (token === undefined) return refuseLink(reply);
       const fileId = readLinkToken(key, token, now());
       if (fileId === undefined) return refuseLink(reply);
-      // The file's kind and original name give the Content-Disposition name
-      // its extension (linkFileName); the database only, the store not yet.
+      // The file must be live; the database only, the store not yet. Its
+      // Content-Disposition name comes with its content (linkFileName).
       const file = await deps.library.linkFile(fileId);
       if (file === undefined) return refuseLink(reply);
       const head = request.method === "HEAD";
@@ -227,7 +236,7 @@ export async function registerLinks(
         throw error;
       }
       if (content === undefined) return refuseLink(reply);
-      return sendContent(reply, content, { attachment: true, fileName: linkFileName(file) });
+      return sendContent(reply, content, { attachment: true });
     });
   });
 }

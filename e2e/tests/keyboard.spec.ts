@@ -10,7 +10,8 @@
 // list) are out of the tab order on purpose and are not counted.
 import { expect, type Page, test } from "@playwright/test";
 import { ORIGIN } from "../support/env.js";
-import { ALL_PAGES, openPage } from "../support/pages.js";
+import { ALL_PAGES, openPage, settle } from "../support/pages.js";
+import { readSeed } from "../support/seed.js";
 
 interface Stop {
   /** The control's index from markControls, or null for an unmarked element or the body. */
@@ -135,3 +136,27 @@ for (const theme of ["dark", "light"] as const) {
     });
   }
 }
+
+// Issue #187: following an in-app link that changes page left keyboard focus
+// on the page body, so the next Tab started again from the top of the
+// document. After a page change by keyboard, focus is on the main landmark,
+// and the next Tab goes to the first control inside it.
+test("keyboard: following a card's link puts focus on the new page's main area", async ({
+  page,
+}) => {
+  const library = ALL_PAGES.find((p) => p.name === "library");
+  const model = ALL_PAGES.find((p) => p.name === "model");
+  if (library === undefined || model === undefined) throw new Error("no library or model page");
+  await openPage(page, library);
+  const card = page.locator(`main a[href="/models/${readSeed().calibration.modelId}"]`);
+  await card.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForURL(/\/models\//);
+  await settle(page, model);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe("ph-content");
+  await page.keyboard.press("Tab");
+  expect(
+    await page.evaluate(() => document.activeElement?.closest("main")?.id ?? null),
+    "the next Tab stays in the main area",
+  ).toBe("ph-content");
+});
