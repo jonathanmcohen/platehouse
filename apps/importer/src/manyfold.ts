@@ -24,7 +24,11 @@
 //   such a query (a signature, a credential, a session token) is handed to
 //   the callback on its own too, raw and decoded, so a server that echoes
 //   one parameter alone is still redacted (signedQueryValues; issue #168;
-//   PR #211 security review).
+//   PR #211 security review). Nothing under 8 characters is handed over,
+//   the whole query included, and a query on Manyfold's own host is handed
+//   over only when it holds a sensitive parameter, so an ordinary query such
+//   as "?download" never becomes a secret that mangles the output (PR #211
+//   review).
 // - Every request has a timeout. GETs retry network errors and 5xx with
 //   backoff (2, 4, 8 s) and wait out a 429 for its Retry-After (at most 300
 //   s; 60 s when there is none; the normal backoff when it is not a positive
@@ -186,12 +190,21 @@ const MIN_SENSITIVE_LENGTH = 8;
 /**
  * Every value the output must never show for a signed link's query: the
  * whole query, and each sensitive parameter's value on its own, as sent and
- * decoded (issue #168).
+ * decoded (issue #168). Nothing under MIN_SENSITIVE_LENGTH is registered,
+ * the whole query included, so a short ordinary query such as "v=1" never
+ * mangles the output. With requireSigned (a hop on Manyfold's own host,
+ * whose queries are ordinary unless signed), nothing at all is registered
+ * unless the query holds a sensitive parameter, so "?download" there never
+ * makes the word "download" a secret (PR #211 review).
  */
-export function signedQueryValues(search: string): string[] {
+export function signedQueryValues(
+  search: string,
+  options: { requireSigned?: boolean } = {},
+): string[] {
   const query = search.startsWith("?") ? search.slice(1) : search;
   if (query === "") return [];
-  const out = [query];
+  let signed = false;
+  const values: string[] = [];
   for (const pair of query.split("&")) {
     const at = pair.indexOf("=");
     if (at === -1) continue;
@@ -206,11 +219,13 @@ export function signedQueryValues(search: string): string[] {
       // A malformed escape: the raw value is still registered.
     }
     if (!SENSITIVE_PARAM.test(decodedName)) continue;
+    signed = true;
     for (const value of new Set([raw, decoded])) {
-      if (value.length >= MIN_SENSITIVE_LENGTH) out.push(value);
+      if (value.length >= MIN_SENSITIVE_LENGTH) values.push(value);
     }
   }
-  return out;
+  if (options.requireSigned === true && !signed) return [];
+  return query.length >= MIN_SENSITIVE_LENGTH ? [query, ...values] : values;
 }
 
 export function createManyfold(options: ManyfoldOptions): Manyfold {
@@ -518,8 +533,13 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           }
           const next = new URL(location, url);
           // Every hop's query is registered before anything else, Manyfold's
-          // own host included: a redirect there may be signed too.
-          for (const value of signedQueryValues(next.search)) sensitive(value);
+          // own host included: a redirect there may be signed too. On that
+          // host only a query holding a sensitive parameter is registered,
+          // so an ordinary one such as "?download" never mangles the output.
+          const sameHost = next.hostname === hostname;
+          for (const value of signedQueryValues(next.search, { requireSigned: sameHost })) {
+            sensitive(value);
+          }
           if (next.protocol !== "https:") {
             // Refused on Manyfold's own host too, not upgraded: the plan
             // says a non-https redirect is refused.
@@ -527,7 +547,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
               `GET ${downloadPath(url)}: refusing a redirect that is not https, to ${next.host}`,
             );
           }
-          url = next.hostname === hostname ? safeUrl(next.toString()) : next;
+          url = sameHost ? safeUrl(next.toString()) : next;
           continue;
         }
         if (res.status !== 200) throw await failure(url, res, downloadPath);

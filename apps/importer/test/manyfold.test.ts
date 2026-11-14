@@ -3,6 +3,7 @@
 // all against the stub built from Manyfold 0.154.1's recorded OpenAPI.
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { signedQueryValues } from "../src/manyfold.js";
 import {
   MANYFOLD,
   manyfoldCalls,
@@ -441,4 +442,46 @@ describe("the model list", () => {
     expect(r.stderr.join("\n")).toMatch(/2 of 3/);
     expect(s.platehouse.models.size).toBe(0);
   });
+});
+
+// What a redirect hop's query registers with the redactor (issue #168; PR
+// #211 review). A whole query under 8 characters is never registered, as no
+// single value under 8 is, and with requireSigned (a hop on Manyfold's own
+// host) a query is registered only when it holds a sensitive parameter.
+describe("signedQueryValues", () => {
+  const signature = ["sig", "0123456789abcdef"].join("-");
+
+  it("registers a signed query whole and its sensitive value on its own", () => {
+    expect(signedQueryValues(`?X-Amz-Signature=${signature}&X-Amz-Expires=300`)).toEqual([
+      `X-Amz-Signature=${signature}&X-Amz-Expires=300`,
+      signature,
+    ]);
+  });
+
+  it("registers a signed query on Manyfold's own host as well", () => {
+    expect(signedQueryValues(`?sig=${signature}`, { requireSigned: true })).toEqual([
+      `sig=${signature}`,
+      signature,
+    ]);
+  });
+
+  it.each([["?download"], ["?v=1"], ["?download=1&v=2"], ["?format=3mf&inline=false"]])(
+    "registers nothing for %j on Manyfold's own host, which holds no sensitive parameter",
+    (search) => {
+      expect(signedQueryValues(search, { requireSigned: true })).toEqual([]);
+    },
+  );
+
+  it("still registers a long unsigned query whole off Manyfold's host", () => {
+    expect(signedQueryValues("?Expires=1700000000&Policy=abcdefgh")).toEqual([
+      "Expires=1700000000&Policy=abcdefgh",
+    ]);
+  });
+
+  it.each([["?v=1"], ["?a=b&c=d"], ["?dl"], [""], ["?"]])(
+    "registers no whole query under 8 characters: %j",
+    (search) => {
+      expect(signedQueryValues(search)).toEqual([]);
+    },
+  );
 });

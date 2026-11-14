@@ -568,3 +568,31 @@ describe("a download redirect to Manyfold's own host with a signed query", () =>
     expectNoQuery(r);
   });
 });
+
+// PR #211 review: every hop's whole query was registered with the redactor,
+// with no length floor, Manyfold's own host included. So a redirect there
+// with an ordinary query such as "?download" made "download" a secret, and
+// every later line that held the word had it replaced. A hop on Manyfold's
+// own host has its query registered only when it holds a sensitive
+// parameter, and no whole query under 8 characters is registered anywhere.
+describe("a download redirect to Manyfold's own host with an ordinary query", () => {
+  const raw = `${MANYFOLD}/models/m3/download/air-dry.3mf`;
+
+  it("leaves the output as it is: the query is not a secret", async () => {
+    const s = setup(library());
+    server.use(
+      http.get(
+        `${MANYFOLD}/models/m3/model_files/f5.3mf`,
+        () => new HttpResponse(null, { status: 302, headers: { location: `${raw}?download` } }),
+      ),
+      http.get(raw, () => new HttpResponse(null, { status: 503 })),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("GET /models/m3/download/air-dry.3mf: HTTP 503, retry 1");
+    const m3 = r.report?.models.find((m) => m.manyfoldId === "m3");
+    expect(m3?.files[0]?.reason).toBe("GET /models/m3/download/air-dry.3mf: HTTP 503");
+    expect(r.output).not.toContain(REDACTED);
+    expect(JSON.stringify(r.report)).not.toContain(REDACTED);
+  });
+});
