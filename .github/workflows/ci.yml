@@ -437,3 +437,64 @@ jobs:
           path: report.json
           if-no-files-found: ignore
           retention-days: 14
+
+  # The app image (build plan Task 24; this job approved by Jon 2026-11-13):
+  # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
+  # then run by docker/test-app-image.sh against Postgres 17 and the S3 test
+  # server on a private Docker network. The container's own HEALTHCHECK must
+  # report healthy, /healthz answer 200, and every migration the image ships
+  # beside the built migrate.js be applied (#31). Then the same image with
+  # apps/web/dist removed must keep running with /healthz 503 and its
+  # HEALTHCHECK reporting unhealthy (#162). Nothing is pushed and no registry
+  # is logged in to: the images stay on the runner. Nothing depends on this
+  # job.
+  app-image:
+    name: App image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      IMAGE: platehouse:ci
+      NO_WEB_IMAGE: platehouse:ci-no-web
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+      - name: Build the app image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=app-image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=app-image-${{ matrix.arch }}
+      - name: Run the image and check it reports healthy
+        run: docker/test-app-image.sh "$IMAGE" healthy
+      # The image above with only apps/web/dist taken out. It is built with
+      # Docker's own builder (the default one), which sees the image just
+      # loaded; the Buildx builder above would look for it in a registry.
+      - name: Build the same image without the web app
+        run: |
+          docker buildx build --builder default --load -t "$NO_WEB_IMAGE" --build-arg "IMAGE=$IMAGE" - <<'DOCKERFILE'
+          ARG IMAGE
+          FROM ${IMAGE}
+          USER root
+          RUN rm -rf /app/apps/web/dist && test ! -e /app/apps/web/dist
+          USER node
+          DOCKERFILE
+      - name: Run it and check it reports unhealthy
+        run: docker/test-app-image.sh "$NO_WEB_IMAGE" unhealthy
