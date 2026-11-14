@@ -100,7 +100,8 @@ function extensionOf(name: string): string {
 
 /**
  * The largest file Platehouse takes in one upload: 536870912 bytes (512 MiB),
- * MAX_UPLOAD_BYTES in apps/server/src/uploads/tus.ts.
+ * MAX_UPLOAD_BYTES in apps/server/src/uploads/tus.ts. plan.test.ts reads
+ * that file and fails if the two ever differ (PR #211 review).
  */
 export const MAX_UPLOAD_BYTES = 536_870_912;
 

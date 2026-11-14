@@ -1,6 +1,13 @@
 // planModel: what one Manyfold model needs in Platehouse (AC-001, AC-002).
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { externalRefFor, importable, planModel, type SourceModel } from "../src/plan.js";
+import {
+  externalRefFor,
+  importable,
+  MAX_UPLOAD_BYTES,
+  planModel,
+  type SourceModel,
+} from "../src/plan.js";
 import type { PlatehouseFile, PlatehouseModel } from "../src/platehouse.js";
 
 const source = (over: Partial<SourceModel> = {}): SourceModel => ({
@@ -133,6 +140,21 @@ describe("a model Platehouse does not have", () => {
     expect(plan.files.map((f) => f.action)).toEqual(["skip", "import"]);
     expect(plan.files[0]).toMatchObject({ reason: expect.stringMatching(/512 MiB/) });
     expect(plan.files[0]).toMatchObject({ reason: expect.stringMatching(/536870913/) });
+  });
+
+  // PR #211 review: the importer keeps its own copy of the server's upload
+  // cap, so a change to the server's value alone would leave every importer
+  // test green while the importer skips (cap raised) or downloads in vain
+  // (cap lowered) the files in between. The server's source is read here, as
+  // apps/web/test/shell.test.ts reads another app's source, and the two must
+  // be the same number.
+  it("uses the server's upload cap, MAX_UPLOAD_BYTES in apps/server/src/uploads/tus.ts", () => {
+    const tus = readFileSync(new URL("../../server/src/uploads/tus.ts", import.meta.url), "utf8");
+    const found = [...tus.matchAll(/^export const MAX_UPLOAD_BYTES = ([0-9_]+);$/gm)];
+    expect(found).toHaveLength(1);
+    const server = Number((found[0]?.[1] ?? "").replaceAll("_", ""));
+    expect(Number.isSafeInteger(server) && server > 0).toBe(true);
+    expect(MAX_UPLOAD_BYTES).toBe(server);
   });
 
   it("fails a file Manyfold gives no contentSize for, since its size cannot be checked", () => {
