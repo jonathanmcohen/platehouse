@@ -20,8 +20,9 @@ import type { DB } from "./types.js";
 // src/db/migrations. tsc -b compiles this file to dist/src/db/migrate.js and
 // copies no .sql files, so a built server looks in dist/src/db/migrations and
 // migrate() fails with ENOENT unless the build copies src/db/migrations there.
-// No build step does that yet; the app image (build plan Task 24) must, and
-// issue #31 tracks it.
+// The app image does: docker/app.Dockerfile copies src/db/migrations next to
+// the built migrate.js, as dist/src/db/migrations, and checks the copy file for
+// file (issue #31). A plain tsc -b still copies nothing.
 export const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations/", import.meta.url));
 
 const NAME = /^([0-9]{4})_[a-z0-9_]+\.sql$/;

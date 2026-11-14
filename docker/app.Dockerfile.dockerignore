@@ -1,0 +1,29 @@
+# Build context filter for docker/app.Dockerfile (BuildKit reads
+# <Dockerfile>.dockerignore beside the Dockerfile, so the slicer's and the
+# gate's builds are not affected). The context is the repo root; only what
+# the Dockerfile copies goes in. apps/importer is never in it (its test
+# folder holds Manyfold's AGPL OpenAPI fixture), no test folder is, and
+# neither is anything a CI step writes into the checkout, such as a
+# scanner's cache.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!packages/threemf/package.json
+!packages/threemf/tsconfig.json
+!packages/threemf/src
+!packages/makerworld/package.json
+!packages/makerworld/tsconfig.json
+!packages/makerworld/src
+!packages/slicer-contract/package.json
+!packages/slicer-contract/tsconfig.json
+!packages/slicer-contract/src
+!apps/server/package.json
+!apps/server/tsconfig.json
+!apps/server/src
+!apps/web/package.json
+!apps/web/tsconfig.json
+!apps/web/index.html
+!apps/web/vite.config.ts
+!apps/web/src

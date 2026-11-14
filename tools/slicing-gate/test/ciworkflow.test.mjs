@@ -38,13 +38,23 @@ test("the workflow reads the repo only, holds no secrets and pushes nothing", ()
   assert.match(t, /persist-credentials: false/, "checkout keeps no token on disk");
 });
 
-test("every job runs on ubuntu-24.04 with a timeout", () => {
+// The one exception is the app image job (build plan Task 24, approved by Jon
+// 2026-11-13): it builds and runs the image for amd64 and arm64 natively, so
+// its runs-on is its matrix's runner, and that matrix lists exactly
+// ubuntu-24.04 and ubuntu-24.04-arm.
+test("every job runs on ubuntu-24.04 with a timeout, the app image's arm64 leg on ubuntu-24.04-arm", () => {
   const t = text();
   const jobs = t.slice(t.indexOf("\njobs:\n"));
   const runsOn = [...jobs.matchAll(/runs-on: (.+)/g)].map((m) => m[1].trim());
   const timeouts = [...jobs.matchAll(/timeout-minutes: (\d+)/g)].map((m) => Number(m[1]));
   assert.ok(runsOn.length >= 1);
-  for (const r of runsOn) assert.equal(r, "ubuntu-24.04");
+  const fromMatrix = "${{ matrix.runner }}";
+  for (const r of runsOn) if (r !== fromMatrix) assert.equal(r, "ubuntu-24.04");
+  assert.equal(runsOn.filter((r) => r === fromMatrix).length, 1, "one job takes its runner from a matrix");
+  const app = jobBlock(t, "app-image");
+  assert.ok(app.includes(`\n    runs-on: ${fromMatrix}\n`), "that job is the app image job");
+  const runners = [...app.matchAll(/\n {12}runner: (.+)/g)].map((m) => m[1].trim());
+  assert.deepEqual(runners, ["ubuntu-24.04", "ubuntu-24.04-arm"]);
   assert.equal(timeouts.length, runsOn.length, "one timeout per job");
   for (const m of timeouts) assert.ok(m > 0 && m <= 90, `timeout ${m}`);
 });
