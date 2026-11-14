@@ -409,12 +409,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return reply.code(up ? 200 : 503).send({ status: up ? "ok" : "unavailable" });
   });
 
-  // Fastify's own 404 answer; the gate's onSend hook releases any body. An
+  // The app's 404 answer; the gate's onSend hook releases any body. An
   // unknown path under /api/v1 is bearer-class: no token, no 404. An
   // unmatched link-class path (/s/ with no name segment, a POST or OPTIONS
   // on a link, junk) is a refused link, as the route answers one: 403 with
   // an empty body and no-store, so the path, a token in it included, is
-  // never echoed and no cache keeps the answer.
+  // never echoed and no cache keeps the answer. Any other 404 is Fastify's
+  // status and error without its message, which repeated the method, path
+  // and query (issue #177; PR #211 security review).
   const apiBearer = createBearerHook(api.tokens);
   app.setNotFoundHandler(async (request, reply) => {
     if (routeClass(request.url) === "link") {
@@ -424,11 +426,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await apiBearer(request, reply);
       if (reply.sent) return reply;
     }
-    return reply.code(404).send({
-      message: `Route ${request.method}:${request.url} not found`,
-      error: "Not Found",
-      statusCode: 404,
-    });
+    return reply.code(404).send({ error: "Not Found", statusCode: 404 });
   });
 
   await registerAuthRoutes(app, {
