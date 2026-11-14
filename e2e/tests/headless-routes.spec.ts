@@ -8,6 +8,10 @@ import { type APIRequestContext, expect, request, test } from "@playwright/test"
 import { ISSUER, ORIGIN } from "../support/env.js";
 import { HOSTILE_NAME, readSeed, type Seed, sha256 } from "../support/seed.js";
 
+/** The Accept header Chromium sends when it navigates to a page. */
+const BROWSER_ACCEPT =
+  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+
 let seed: Seed;
 /** No storage state, no cookie, no token. */
 let bare: APIRequestContext;
@@ -113,8 +117,10 @@ test.describe("slicer links through Traefik", () => {
 
 test.describe("UI routes through Traefik", () => {
   test("a page with no cookie redirects to /auth/login", async () => {
+    // A page request is a browser navigation, which accepts HTML; the gate
+    // answers anything that does not accept HTML with 401 JSON instead.
     for (const path of ["/", "/settings", `/models/${seed.calibration.modelId}`]) {
-      const res = await bare.get(path, { maxRedirects: 0 });
+      const res = await bare.get(path, { maxRedirects: 0, headers: { accept: BROWSER_ACCEPT } });
       expect(res.status(), path).toBe(302);
       const location = new URL(res.headers().location ?? "", ORIGIN);
       expect(location.origin, path).toBe(ORIGIN);
