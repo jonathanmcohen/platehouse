@@ -84,6 +84,10 @@ const BIDI = String.fromCodePoint(
 const ZERO_WIDTH = String.fromCodePoint(0x200b, 0x200c, 0x200d, 0x2060, 0xfeff);
 /** More of \p{Cf}: soft hyphen, Arabic letter mark, LRM, RLM and a tag character. */
 const OTHER_FORMAT = String.fromCodePoint(0xad, 0x61c, 0x200e, 0x200f, 0xe0041);
+/** U+2028 LINE SEPARATOR, the one \p{Zl} character. */
+const LSEP = String.fromCodePoint(0x2028);
+/** U+2029 PARAGRAPH SEPARATOR, the one \p{Zp} character. */
+const PSEP = String.fromCodePoint(0x2029);
 
 const RUN_SECRET = randomBytes(32).toString("hex");
 /** The link key for RUN_SECRET. */
@@ -308,7 +312,9 @@ describe("the link's name segment (Review Focus 1)", () => {
   // by _, then percent-encoded, so a link never depends on how a proxy
   // treats an encoded slash, backslash or percent sign, and a slicer that
   // decodes the segment never shows a name reordered to read as another
-  // extension. [stored name, segment]
+  // extension. The line and paragraph separators (\p{Zl}, \p{Zp}) are
+  // replaced too, the same rule as the public API's filename* (PR #211).
+  // [stored name, segment]
   const hostile: Array<[string, string]> = [
     ["a b  c.3mf", "a%20b%20%20c.3mf"],
     [`${ACCENTED}.3mf`, encodeURIComponent(`${ACCENTED}.3mf`)],
@@ -329,6 +335,10 @@ describe("the link's name segment (Review Focus 1)", () => {
     [`bidi${BIDI}.3mf`, `bidi${"_".repeat(9)}.3mf`],
     [`zero${ZERO_WIDTH}width.3mf`, `zero${"_".repeat(5)}width.3mf`],
     [`other${OTHER_FORMAT}.3mf`, `other${"_".repeat(5)}.3mf`],
+    [`line${LSEP}sep.3mf`, "line_sep.3mf"],
+    [`para${PSEP}sep.3mf`, "para_sep.3mf"],
+    [`x.3mf${LSEP}`, "x.3mf_.3mf"],
+    [`x.3mf${PSEP}`, "x.3mf_.3mf"],
     ["a/b", "a_b.3mf"],
     ["..", "...3mf"],
     [`${"x".repeat(230)}.3mf`, `${"x".repeat(230)}.3mf`],
@@ -348,7 +358,7 @@ describe("the link's name segment (Review Focus 1)", () => {
       const last = parts[3] ?? "";
       expect(last).toBe(segment);
       expect(linkSegment(file({ name }))).toBe(segment);
-      expect(decodeURIComponent(last)).not.toMatch(/[/\\%?#;\p{Cc}\p{Cf}]/u);
+      expect(decodeURIComponent(last)).not.toMatch(/[/\\%?#;\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
       expect(last.endsWith(".3mf")).toBe(true);
       expect(l.url).toMatch(/^[\x21-\x7e]+$/);
     },
