@@ -1,0 +1,35 @@
+# Traefik's file provider for the end-to-end stack (build plan Task 22).
+# platehouse.e2e.test goes to the app with no middleware: no oidc-auth, no
+# compress, no buffering, so the cookieless routes (/api/v1/ and /s/) reach
+# the app as they will on Hades. id.e2e.test goes to the mock OIDC issuer.
+# The certificate is made per run by e2e/up.sh and covers both names.
+http:
+  routers:
+    platehouse:
+      rule: Host(`platehouse.e2e.test`)
+      entryPoints:
+        - websecure
+      service: platehouse
+      tls: {}
+    issuer:
+      rule: Host(`id.e2e.test`)
+      entryPoints:
+        - websecure
+      service: issuer
+      tls: {}
+  services:
+    platehouse:
+      loadBalancer:
+        servers:
+          - url: http://app:3000
+    issuer:
+      loadBalancer:
+        servers:
+          - url: http://oidc:8080
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/server.pem
+        keyFile: /certs/server-key.pem

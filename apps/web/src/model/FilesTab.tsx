@@ -61,7 +61,7 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
         return (
           <li key={file.id} className="studio-list-item">
             <div className="studio-row">
-              <h3 className="ph-file-title">{file.name}</h3>
+              <h2 className="ph-file-title">{file.name}</h2>
               <span className="studio-muted">
                 {KIND_LABEL[file.kind]}, {formatSize(file.size)}
               </span>

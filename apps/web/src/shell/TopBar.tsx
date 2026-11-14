@@ -8,6 +8,8 @@
 // the new ?q=, and typing between navigations is kept as a draft. It is a
 // controlled input rather than one keyed on ?q=, because a new key would
 // remount it and drop focus out of the box after a search.
+// The bar is a header outside main, so it is the page's banner landmark and
+// everything in it, the theme switch included, is inside a landmark (#205).
 import { type FormEvent, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { MenuButton } from "./MenuButton";
@@ -46,7 +48,7 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
   }
 
   return (
-    <div className="studio-topbar">
+    <header className="studio-topbar">
       <MenuButton {...(onMenuNavigate === undefined ? {} : { onNavigate: onMenuNavigate })} />
       <search className="studio-search">
         <form action="/" method="get" onSubmit={search}>
@@ -74,6 +76,6 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
         <span aria-hidden="true">+</span> Add
       </button>
       <ThemeSwitch theme={theme} onChange={onThemeChange} />
-    </div>
+    </header>
   );
 }

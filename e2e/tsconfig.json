@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "lib": ["es2024", "dom"],
+    "customConditions": ["source"]
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "test-results", "playwright-report", ".run"]
+}
