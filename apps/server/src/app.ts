@@ -65,7 +65,9 @@
 //   (requestLogValue), so the OAuth code and state on /auth/callback never
 //   reach it, with a slicer link's token and name replaced
 //   (LOGGED_LINK_PATH) on any path that is or normalises to a /s/ path, so
-//   no live link reaches it either (issue #169), and a fixed list
+//   no live link reaches it either (issue #169), as on any path whose first
+//   segment reads loosely as "s" (/S/, /%53/, /s;x/; PR #211 security
+//   review), and a fixed list
 //   of its headers (LOGGED_HEADERS), with
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
@@ -274,7 +276,8 @@ export const LOGGED_LINK_PATH = "/s/[link]/[name]";
  * alone fetches the file for 10 minutes. That covers any path under /s/,
  * live, refused or unrouted, any path that normalises to one (a doubled
  * slash, an escaped letter, a dot segment or an absolute-form target;
- * isLinkPath, issue #169), and any path Fastify routed to the link route. A
+ * isLinkPath, issue #169), any path Fastify routed to the link route, and
+ * any path whose first segment reads loosely as "s" (readsAsLinkPrefix). A
  * /s/ path with no name segment after the token is "/s/[link]".
  */
 function loggedPath(request: FastifyRequest): string {
@@ -285,7 +288,32 @@ function loggedPath(request: FastifyRequest): string {
     return path.indexOf("/", 3) === -1 ? "/s/[link]" : LOGGED_LINK_PATH;
   }
   if (request.routeOptions?.url === LINK_ROUTE || isLinkPath(path)) return LOGGED_LINK_PATH;
+  if (readsAsLinkPrefix(path)) return LOGGED_LINK_PATH;
   return path;
+}
+
+/** How many rounds of percent-decoding readsAsLinkPrefix applies at most. */
+const LOG_DECODE_ROUNDS = 8;
+
+/**
+ * For the request log only, never for classing or routing: true when the
+ * path's first segment, with every valid percent escape decoded (repeated
+ * until none is left, at most LOG_DECODE_ROUNDS rounds), backslashes made
+ * slashes, cut at the first ";" and lower-cased, is "s". Such a path may
+ * carry a link token though neither the router nor the link class reads it
+ * as /s/: /S/<token>, /%53/<token>, an "s" encoded four times, /s;x/<token>
+ * (PR #211 security review). No route's first segment is "s" but the link
+ * route's, so this hides nothing else.
+ */
+function readsAsLinkPrefix(path: string): boolean {
+  let p = path;
+  for (let i = 0; i < LOG_DECODE_ROUNDS && /%[0-9A-Fa-f]{2}/.test(p); i++) {
+    p = p.replace(/%([0-9A-Fa-f]{2})/g, (_m, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+  }
+  const first = p.replace(/\\/g, "/").replace(/^\/+/, "").split("/")[0] ?? "";
+  return (first.split(";")[0] ?? "").toLowerCase() === "s";
 }
 
 /**
