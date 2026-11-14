@@ -18,10 +18,13 @@
 //   Authorization header, since the presigned URL's signature is its
 //   credential, and that query string is handed to the sensitive callback and
 //   never logged), or to anything that is not https, its own host included
-//   (refused, not upgraded). At most 3 redirects. Each sensitive value of
+//   (refused, not upgraded). At most 3 redirects. Every redirect's query,
+//   one back to Manyfold's own host included, goes to the sensitive callback
+//   before the redirect is followed or refused, and each sensitive value of
 //   such a query (a signature, a credential, a session token) is handed to
 //   the callback on its own too, raw and decoded, so a server that echoes
-//   one parameter alone is still redacted (signedQueryValues; issue #168).
+//   one parameter alone is still redacted (signedQueryValues; issue #168;
+//   PR #211 security review).
 // - Every request has a timeout. GETs retry network errors and 5xx with
 //   backoff (2, 4, 8 s) and wait out a 429 for its Retry-After (at most 300
 //   s; 60 s when there is none; the normal backoff when it is not a positive
@@ -29,7 +32,8 @@
 // - A download's byte count is checked against Manyfold's contentSize while
 //   it streams; a mismatch is a SizeMismatch and nothing is returned.
 // - Log lines and errors name the path on Manyfold, and only the host and
-//   path anywhere else. An error answer's body is quoted (200 characters at
+//   path anywhere else. A download hop's name the path without its query
+//   even on Manyfold, since a redirect may have signed it. An error answer's body is quoted (200 characters at
 //   most, control characters taken out and then redacted before it is cut)
 //   only when it came from Manyfold; the token request quotes only
 //   Doorkeeper's error code.
@@ -241,7 +245,19 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   const shortPath = (url: URL) =>
     url.origin === origin ? url.pathname + url.search : url.host + url.pathname;
 
-  async function request(url: URL, accept: string, timeout: number): Promise<Response> {
+  /**
+   * For a download hop's log lines and errors: the path on Manyfold and host
+   * and path elsewhere, never the query, which a redirect may have signed.
+   */
+  const downloadPath = (url: URL) =>
+    url.origin === origin ? url.pathname : url.host + url.pathname;
+
+  async function request(
+    url: URL,
+    accept: string,
+    timeout: number,
+    named: (url: URL) => string = shortPath,
+  ): Promise<Response> {
     const onManyfold = url.origin === origin;
     for (let attempt = 1; ; attempt++) {
       const headers: Record<string, string> = { Accept: accept };
@@ -260,21 +276,21 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
       } catch (error) {
         const reason = why(error, timeout);
         if (attempt < attempts) {
-          log(`  GET ${shortPath(url)}: ${reason}, retry ${attempt}`);
+          log(`  GET ${named(url)}: ${reason}, retry ${attempt}`);
           await sleep(backoff(attempt));
           continue;
         }
-        throw new ManyfoldError(`GET ${shortPath(url)}: ${reason}`);
+        throw new ManyfoldError(`GET ${named(url)}: ${reason}`);
       }
       if (res.status === 429 && attempt < attempts) {
         const wait = retryAfter(res.headers.get("retry-after"), attempt);
-        log(`  GET ${shortPath(url)}: HTTP 429, waiting ${wait / 1000} s`);
+        log(`  GET ${named(url)}: HTTP 429, waiting ${wait / 1000} s`);
         await res.body?.cancel();
         await sleep(wait);
         continue;
       }
       if (res.status >= 500 && attempt < attempts) {
-        log(`  GET ${shortPath(url)}: HTTP ${res.status}, retry ${attempt}`);
+        log(`  GET ${named(url)}: HTTP ${res.status}, retry ${attempt}`);
         await res.body?.cancel();
         await sleep(backoff(attempt));
         continue;
@@ -283,7 +299,11 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     }
   }
 
-  async function failure(url: URL, res: Response): Promise<ManyfoldError> {
+  async function failure(
+    url: URL,
+    res: Response,
+    named: (url: URL) => string = shortPath,
+  ): Promise<ManyfoldError> {
     let quote = "";
     if (url.origin === origin) {
       const text = await res.text().catch(() => "");
@@ -292,7 +312,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
       await res.body?.cancel();
     }
     return new ManyfoldError(
-      `GET ${shortPath(url)}: HTTP ${res.status}${quote === "" ? "" : ` ${quote}`}`,
+      `GET ${named(url)}: HTTP ${res.status}${quote === "" ? "" : ` ${quote}`}`,
       res.status,
     );
   }
@@ -487,31 +507,30 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     async download(link, expectedSize) {
       let url = safeUrl(link);
       for (let hop = 0; ; hop++) {
-        const res = await request(url, "*/*", downloadTimeoutMs);
+        const res = await request(url, "*/*", downloadTimeoutMs, downloadPath);
         const location = res.headers.get("location");
         if (res.status >= 300 && res.status < 400 && location !== null) {
           await res.body?.cancel();
           if (hop >= MAX_REDIRECTS) {
-            throw new ManyfoldError(`GET ${shortPath(url)}: more than ${MAX_REDIRECTS} redirects`);
+            throw new ManyfoldError(
+              `GET ${downloadPath(url)}: more than ${MAX_REDIRECTS} redirects`,
+            );
           }
           const next = new URL(location, url);
+          // Every hop's query is registered before anything else, Manyfold's
+          // own host included: a redirect there may be signed too.
+          for (const value of signedQueryValues(next.search)) sensitive(value);
           if (next.protocol !== "https:") {
             // Refused on Manyfold's own host too, not upgraded: the plan
             // says a non-https redirect is refused.
-            for (const value of signedQueryValues(next.search)) sensitive(value);
             throw new ManyfoldError(
-              `GET ${shortPath(url)}: refusing a redirect that is not https, to ${next.host}`,
+              `GET ${downloadPath(url)}: refusing a redirect that is not https, to ${next.host}`,
             );
           }
-          if (next.hostname === hostname) {
-            url = safeUrl(next.toString());
-          } else {
-            for (const value of signedQueryValues(next.search)) sensitive(value);
-            url = next;
-          }
+          url = next.hostname === hostname ? safeUrl(next.toString()) : next;
           continue;
         }
-        if (res.status !== 200) throw await failure(url, res);
+        if (res.status !== 200) throw await failure(url, res, downloadPath);
         const chunks: Buffer[] = [];
         let got = 0;
         try {
@@ -531,7 +550,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           }
         } catch (error) {
           if (error instanceof SizeMismatch) throw error;
-          throw new ManyfoldError(`GET ${shortPath(url)}: ${why(error, downloadTimeoutMs)}`);
+          throw new ManyfoldError(`GET ${downloadPath(url)}: ${why(error, downloadTimeoutMs)}`);
         }
         if (got !== expectedSize) {
           throw new SizeMismatch(
