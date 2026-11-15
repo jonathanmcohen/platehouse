@@ -449,10 +449,12 @@ test("both release builds pass a per-run OS_UPDATES_STAMP, the same in each", ()
 // config digest and its imageid falls back to the manifest digest, while the
 // push's imageid is the config digest, so identical images never matched
 // (release run 43724090714, amd64).
-// This test pins the wiring only: both sides read outputs.digest and nothing
-// reads imageid, so a revert fails it. It does not model what each exporter
-// reports; that is proven only by a live release run, where both arches must
-// pass this step.
+// The first test below pins the wiring: both sides read outputs.digest and
+// nothing reads imageid, so a revert fails it. The second feeds the step the
+// build metadata that run 43724090714 reported from both exporters, so it
+// shows the digest output agrees where imageid does not. Neither runs the
+// exporters themselves; a live release run, where both arches must pass this
+// step, is still the final proof.
 const RELEASE_SAME_IMAGE = "Check the pushed image is the one tested";
 
 test("the release build job fails when the pushed image is not the one it tested", () => {
@@ -489,6 +491,118 @@ test("the release build job fails when the pushed image is not the one it tested
     assert.notEqual(r.status, 0, `${why} fails the job`);
     assert.match(r.stdout + r.stderr, /::error::/, `${why} prints an error annotation`);
   }
+});
+
+// The build metadata the four docker/build-push-action@v7.4.0 steps printed in
+// release run 43724090714, trimmed to the keys the outputs come from, with the
+// ImageID and Digest each step logged. amd64's load build went through the OCI
+// exporter ("exporting to oci image format", Docker 29.4.2 with the containerd
+// snapshotter), which reports no containerimage.config.digest. arm64's went
+// through the docker exporter ("exporting to docker image format", Docker
+// 28.0.4 on overlay2). Both pushes ran the image exporter. Every build of an
+// arch exported the same manifest and config.
+const MIXED_EXPORTER_RUN = {
+  amd64: {
+    load: {
+      metadata: {
+        "containerimage.digest": "sha256:6985fd73e73972ea6d05feb740e7649d7fbdaa3260d5af3d6be2784acd1dc0ba",
+      },
+      logged: {
+        imageid: "sha256:6985fd73e73972ea6d05feb740e7649d7fbdaa3260d5af3d6be2784acd1dc0ba",
+        digest: "sha256:6985fd73e73972ea6d05feb740e7649d7fbdaa3260d5af3d6be2784acd1dc0ba",
+      },
+    },
+    push: {
+      metadata: {
+        "containerimage.config.digest": "sha256:adb0fe29105efd2ebe7463cf7ce9a012a920c1d9c0652fe9a39d0abe315da0ad",
+        "containerimage.digest": "sha256:6985fd73e73972ea6d05feb740e7649d7fbdaa3260d5af3d6be2784acd1dc0ba",
+      },
+      logged: {
+        imageid: "sha256:adb0fe29105efd2ebe7463cf7ce9a012a920c1d9c0652fe9a39d0abe315da0ad",
+        digest: "sha256:6985fd73e73972ea6d05feb740e7649d7fbdaa3260d5af3d6be2784acd1dc0ba",
+      },
+    },
+  },
+  arm64: {
+    load: {
+      metadata: {
+        "containerimage.config.digest": "sha256:5cf4fce122e4c35f1582d6b2cb8f696744eca8e7234689f65a56a9fae3fff3f1",
+        "containerimage.digest": "sha256:d6bdd8291c0a8572aea4231464f9f66e900557c20f29ccaf4899f7a7d929bf92",
+      },
+      logged: {
+        imageid: "sha256:5cf4fce122e4c35f1582d6b2cb8f696744eca8e7234689f65a56a9fae3fff3f1",
+        digest: "sha256:d6bdd8291c0a8572aea4231464f9f66e900557c20f29ccaf4899f7a7d929bf92",
+      },
+    },
+    push: {
+      metadata: {
+        "containerimage.config.digest": "sha256:5cf4fce122e4c35f1582d6b2cb8f696744eca8e7234689f65a56a9fae3fff3f1",
+        "containerimage.digest": "sha256:d6bdd8291c0a8572aea4231464f9f66e900557c20f29ccaf4899f7a7d929bf92",
+      },
+      logged: {
+        imageid: "sha256:5cf4fce122e4c35f1582d6b2cb8f696744eca8e7234689f65a56a9fae3fff3f1",
+        digest: "sha256:d6bdd8291c0a8572aea4231464f9f66e900557c20f29ccaf4899f7a7d929bf92",
+      },
+    },
+  },
+};
+
+// The two outputs as build-push-action v7.4.0 derives them from a build's
+// metadata. digest is containerimage.digest (actions-toolkit 0.100.0,
+// resolveDigest). imageid is the --iidfile that buildx writes from the same
+// exporter response: the config digest, falling back to the manifest digest
+// when the exporter reports no config digest (buildx commands/build.go,
+// getImageID).
+const buildOutputs = (metadata) => ({
+  digest: metadata["containerimage.digest"],
+  imageid: metadata["containerimage.config.digest"] ?? metadata["containerimage.digest"],
+});
+
+test("the pushed-image check passes one image built through the OCI and docker exporters (run 43724090714)", () => {
+  const check = stepBlock(jobBlock(readFileSync(RELEASE, "utf8"), "build"), RELEASE_SAME_IMAGE);
+  const wired = (side) => {
+    const m = check.match(new RegExp(`\\n {10}${side}: \\$\\{\\{ steps\\.(\\w+)\\.outputs\\.(\\w+) \\}\\}\\n`));
+    assert.ok(m, `${side} reads a step output in\n${check}`);
+    return { step: m[1], output: m[2] };
+  };
+  const tested = wired("TESTED");
+  const pushed = wired("PUSHED");
+  assert.equal(tested.step, "load", "TESTED comes from the load build");
+  assert.equal(pushed.step, "push", "PUSHED comes from the push build");
+  const script = check.match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
+  assert.ok(script, `a run: | script in\n${check}`);
+  const run = (env) =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", script], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+
+  const outputs = {};
+  for (const [arch, builds] of Object.entries(MIXED_EXPORTER_RUN)) {
+    outputs[arch] = {};
+    for (const [build, { metadata, logged }] of Object.entries(builds)) {
+      outputs[arch][build] = buildOutputs(metadata);
+      assert.deepEqual(outputs[arch][build], logged, `the derived outputs are the ones ${arch} ${build} logged`);
+    }
+  }
+
+  // The premise: the OCI exporter's load reports no config digest, so on amd64
+  // imageid names the manifest on one side and the config on the other, while
+  // the digest output names the manifest on both arches.
+  assert.ok(!("containerimage.config.digest" in MIXED_EXPORTER_RUN.amd64.load.metadata), "the OCI load has no config digest");
+  assert.notEqual(outputs.amd64.load.imageid, outputs.amd64.push.imageid, "imageid differs on amd64 for one image");
+  assert.equal(outputs.arm64.load.imageid, outputs.arm64.push.imageid, "imageid agrees on arm64");
+  for (const arch of ["amd64", "arm64"]) {
+    assert.equal(outputs[arch].load.digest, outputs[arch].push.digest, `digest agrees on ${arch}`);
+  }
+
+  // The step as wired passes both arches. Wired to imageid it fails amd64,
+  // which is how run 43724090714 failed.
+  for (const arch of ["amd64", "arm64"]) {
+    const env = { TESTED: outputs[arch].load[tested.output], PUSHED: outputs[arch].push[pushed.output] };
+    const r = run(env);
+    assert.equal(r.status, 0, `${arch} passes as wired (${tested.output}, ${pushed.output}):\n${r.stdout}${r.stderr}`);
+  }
+  const reverted = run({ TESTED: outputs.amd64.load.imageid, PUSHED: outputs.amd64.push.imageid });
+  assert.notEqual(reverted.status, 0, "amd64 fails when the check reads imageid");
+  assert.match(reverted.stdout + reverted.stderr, /::error::/, "with an error annotation");
 });
 
 // Runs the changes job's script in bash with git stubbed, and returns the gate
