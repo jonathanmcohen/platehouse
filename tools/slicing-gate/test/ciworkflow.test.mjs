@@ -279,6 +279,209 @@ test("the gate job runs only when the changes job says so", () => {
   assert.doesNotMatch(t, /needs: \[?[^\n]*gate-image/);
 });
 
+// The release workflow's Trivy gate failed run 43661472697 (the v0.0.0-test
+// tag) on a fixable zlib1g HIGH that no pull request had shown. The app image
+// job now runs that same gate step on the image it builds, so a pull request
+// fails on it before a tag does: the same action at the same tag, and the same
+// inputs, read from release.yml, except image-ref, which is this job's image.
+// It is the job's last step, so a Trivy failure never hides the image checks.
+const RELEASE = join(ROOT, ".github", "workflows", "release.yml");
+const TRIVY_GATE = "Trivy gate (fail on fixable OS HIGH/CRITICAL)";
+
+// The step named name in a job (or workflow) block, from its "- name:" line up
+// to the next step at the same indent.
+function stepBlock(block, name) {
+  const steps = block.split(/\n(?= {6}- )/).filter((s) => s.startsWith(`      - name: ${name}\n`));
+  assert.equal(steps.length, 1, `one step named ${name}`);
+  return steps[0];
+}
+
+// A step's uses: line and its with: inputs as a key -> value map.
+function stepInputs(step) {
+  const uses = step.match(/\n {8}uses: (\S+)\n/)?.[1];
+  const withAt = step.indexOf("\n        with:\n");
+  assert.ok(withAt !== -1, `with: in\n${step}`);
+  const inputs = {};
+  for (const line of step.slice(withAt + "\n        with:\n".length).split("\n")) {
+    const m = line.match(/^ {10}([\w-]+): (.+)$/);
+    if (!m) break;
+    inputs[m[1]] = m[2];
+  }
+  return { uses, inputs };
+}
+
+test("the app image job runs the release workflow's Trivy gate on the image it built, last", () => {
+  const app = jobBlock(text(), "app-image");
+  const release = readFileSync(RELEASE, "utf8");
+  const ours = stepInputs(stepBlock(app, TRIVY_GATE));
+  const theirs = stepInputs(stepBlock(release, TRIVY_GATE));
+  assert.match(theirs.uses, /^aquasecurity\/trivy-action@v\d+\.\d+\.\d+$/, "release.yml's gate step");
+  assert.equal(ours.uses, theirs.uses, "the same action at the same tag as release.yml");
+  assert.equal(ours.inputs["image-ref"], "${{ env.IMAGE }}", "it scans the image this job built");
+  const { "image-ref": _ours, ...oursRest } = ours.inputs;
+  const { "image-ref": _theirs, ...theirsRest } = theirs.inputs;
+  assert.deepEqual(oursRest, theirsRest, "every other input as release.yml has it");
+  // The inputs that make it the gate, pinned here too, so a change to
+  // release.yml that weakened both would still fail this test.
+  for (const [k, v] of Object.entries({
+    severity: "HIGH,CRITICAL",
+    "ignore-unfixed": "true",
+    "vuln-type": "os",
+    "exit-code": '"1"',
+    "cache-dir": "${{ runner.temp }}/trivy-cache",
+  })) {
+    assert.equal(ours.inputs[k], v, `${k}: ${v}`);
+  }
+  assert.doesNotMatch(stepBlock(app, TRIVY_GATE), /\n {8}(if|continue-on-error):/, "nothing softens the gate");
+  // After both image checks, and the job's last step.
+  const steps = app.split(/\n(?= {6}- )/).slice(1);
+  assert.ok(steps.at(-1).startsWith(`      - name: ${TRIVY_GATE}\n`), "the gate is the last step");
+  assert.ok(app.indexOf("test-app-image.sh \"$NO_WEB_IMAGE\" unhealthy") < app.indexOf(`name: ${TRIVY_GATE}`));
+  assert.ok(app.indexOf("test-app-image.sh \"$IMAGE\" healthy") < app.indexOf(`name: ${TRIVY_GATE}`));
+});
+
+// Every Trivy step in both workflows (the gates and release.yml's full report)
+// installs one exact Trivy version, the same in all of them, rather than the
+// action's default, which lags (v0.36.0 of the action installs v0.70.0).
+test("every Trivy step in ci.yml and release.yml sets the same exact Trivy version", () => {
+  const steps = [text(), readFileSync(RELEASE, "utf8")].flatMap((t) =>
+    t.split(/\n(?= {6}- )/).filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)),
+  );
+  assert.equal(steps.length, 3, "the CI gate, the release gate and the release full report");
+  const versions = steps.map((s) => stepInputs(s).inputs.version);
+  for (const v of versions) assert.match(v ?? "", /^v\d+\.\d+\.\d+$/, `an exact version: ${v}`);
+  assert.equal(new Set(versions).size, 1, `one version in all of them: ${versions.join(", ")}`);
+});
+
+// The build cache would otherwise keep the runtime stage's apt-get upgrade
+// layer for as long as the base digest and that line stay the same, so later
+// Debian fixes would never reach the image. OS_UPDATES_STAMP is used in that
+// RUN, and a new value rebuilds it: release.yml passes one unique to the run
+// (run id and attempt), so every release takes Debian's current fixes, and
+// the CI App image job passes the UTC date plus the run attempt, so PR builds
+// refresh daily, stay cached within a day, and a re-run of a failed job
+// refreshes too.
+const DOCKERFILE = join(ROOT, "docker", "app.Dockerfile");
+const STAMP_CI = "OS_UPDATES_STAMP=${{ steps.os-updates.outputs.stamp }}";
+const STAMP_RELEASE = "OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}";
+
+// The steps of a job (or workflow) block that build docker/app.Dockerfile.
+const appBuilds = (block) =>
+  block
+    .split(/\n(?= {6}- )/)
+    .filter((s) => /\n {8}uses: docker\/build-push-action@/.test(s) && /\n {10}file: docker\/app\.Dockerfile\n/.test(s));
+
+test("the runtime stage's apt-get upgrade uses OS_UPDATES_STAMP, so a new value rebuilds it", () => {
+  const d = readFileSync(DOCKERFILE, "utf8");
+  const runtimeAt = d.lastIndexOf("\nFROM ${BASE}\n");
+  assert.ok(runtimeAt !== -1, "the runtime stage");
+  const build = d.slice(0, runtimeAt);
+  const runtime = d.slice(runtimeAt);
+  assert.doesNotMatch(build, /\nARG OS_UPDATES_STAMP/, "the build stage does not take it");
+  const argAt = runtime.search(/\nARG OS_UPDATES_STAMP(=\S*)?\n/);
+  const upgradeAt = runtime.indexOf("apt-get -y upgrade");
+  assert.ok(argAt !== -1 && upgradeAt !== -1 && argAt < upgradeAt, "declared in the runtime stage before the upgrade");
+  // The RUN instruction holding the upgrade, joined across its continuations.
+  const runAt = runtime.lastIndexOf("\nRUN ", upgradeAt);
+  const run = runtime.slice(runAt, runtime.indexOf("\n\n", upgradeAt));
+  assert.match(run, /\$\{?OS_UPDATES_STAMP\}?/, `the upgrade RUN uses it:\n${run}`);
+});
+
+test("the CI App image build passes the UTC date and run attempt as OS_UPDATES_STAMP, from a step run before it", () => {
+  const app = jobBlock(text(), "app-image");
+  const builds = appBuilds(app);
+  assert.equal(builds.length, 1, "one app image build in the job");
+  assert.equal(stepInputs(builds[0]).inputs["build-args"], STAMP_CI);
+  const stamp = app.split(/\n(?= {6}- )/).filter((s) => /\n {8}id: os-updates\n/.test(s));
+  assert.equal(stamp.length, 1, "one step with id os-updates");
+  assert.ok(app.indexOf(stamp[0]) < app.indexOf(builds[0]), "it runs before the build");
+  // Run its script and read what it wrote: today's UTC date and the run
+  // attempt, YYYY-MM-DD-N. The attempt is what lets a re-run of a failed job
+  // take Debian's current fixes instead of the day's cached upgrade layer (#216).
+  const script = stamp[0].match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
+  assert.ok(script, `a run: | script in\n${stamp[0]}`);
+  const dir = mkdtempSync(join(tmpdir(), "ci-stamp-"));
+  const run = (attempt) => {
+    const out = join(dir, "github-output");
+    writeFileSync(out, "");
+    const env = { ...process.env, GITHUB_OUTPUT: out };
+    delete env.GITHUB_RUN_ATTEMPT;
+    if (attempt !== undefined) env.GITHUB_RUN_ATTEMPT = attempt;
+    const r = spawnSync("bash", ["-eo", "pipefail", "-c", script], { env, encoding: "utf8" });
+    return { r, written: readFileSync(out, "utf8").match(/^stamp=(.*)$/m)?.[1] };
+  };
+  try {
+    for (const attempt of ["1", "3"]) {
+      const before = new Date().toISOString().slice(0, 10);
+      const { r, written } = run(attempt);
+      const after = new Date().toISOString().slice(0, 10);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(written ?? "", /^\d{4}-\d{2}-\d{2}-\d+$/, `stamp=YYYY-MM-DD-N, got ${written}`);
+      assert.ok(
+        written === `${before}-${attempt}` || written === `${after}-${attempt}`,
+        `today's UTC date and attempt ${attempt}, got ${written}`,
+      );
+    }
+    // Without the attempt the step fails rather than writing a stamp that a
+    // re-run would repeat.
+    const { r, written } = run(undefined);
+    assert.notEqual(r.status, 0, "fails when GITHUB_RUN_ATTEMPT is unset");
+    assert.equal(written, undefined, "and writes no stamp");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("both release builds pass a per-run OS_UPDATES_STAMP, the same in each", () => {
+  const builds = appBuilds(readFileSync(RELEASE, "utf8"));
+  assert.equal(builds.length, 2, "the load build and the push by digest");
+  for (const b of builds) assert.equal(stepInputs(b).inputs["build-args"], STAMP_RELEASE, b);
+});
+
+// The smoke test and the Trivy gate run on the load build, and the push by
+// digest builds the image a second time. The apt-get upgrade layer talks to
+// the network, so if it missed the cache in the second build, the pushed
+// image would hold packages neither check saw. A step after the push compares
+// the two builds' image IDs (config digests, which name every layer's
+// content) and fails the job, before the digest is recorded or uploaded, when
+// they differ or either is missing.
+const RELEASE_SAME_IMAGE = "Check the pushed image is the one tested";
+
+test("the release build job fails when the pushed image is not the one it tested", () => {
+  const job = jobBlock(readFileSync(RELEASE, "utf8"), "build");
+  const steps = job.split(/\n(?= {6}- )/);
+  const [load, push] = appBuilds(job);
+  assert.match(load, /\n {8}id: load\n/, "the load build has id load");
+  assert.match(stepInputs(load).inputs.load ?? "", /^true$/, "the step with id load is the load build");
+  assert.match(push, /\n {8}id: push\n/, "the push build has id push");
+  const check = stepBlock(job, RELEASE_SAME_IMAGE);
+  assert.doesNotMatch(check, /\n {8}(if|continue-on-error):/, "nothing softens the check");
+  const at = (s) => steps.indexOf(s);
+  assert.ok(at(push) < at(check), "after the push");
+  assert.ok(at(check) < at(stepBlock(job, "Record the digest")), "before the digest is recorded");
+  assert.ok(at(check) < at(stepBlock(job, "Upload the digest")), "before the digest is uploaded");
+  assert.match(check, /\n {10}TESTED: \$\{\{ steps\.load\.outputs\.imageid \}\}\n/, "TESTED is the load build's image ID");
+  assert.match(check, /\n {10}PUSHED: \$\{\{ steps\.push\.outputs\.imageid \}\}\n/, "PUSHED is the push build's image ID");
+  const script = check.match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
+  assert.ok(script, `a run: | script in\n${check}`);
+  const a = `sha256:${"a".repeat(64)}`;
+  const b = `sha256:${"b".repeat(64)}`;
+  const run = (env) =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", script], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+  assert.equal(run({ TESTED: a, PUSHED: a }).status, 0, "the same image ID passes");
+  for (const [why, env] of [
+    ["a different image ID", { TESTED: a, PUSHED: b }],
+    ["no pushed image ID", { TESTED: a, PUSHED: "" }],
+    ["no tested image ID", { TESTED: "", PUSHED: a }],
+    ["neither image ID", { TESTED: "", PUSHED: "" }],
+    ["image IDs that are not sha256 digests", { TESTED: "x", PUSHED: "x" }],
+  ]) {
+    const r = run(env);
+    assert.notEqual(r.status, 0, `${why} fails the job`);
+    assert.match(r.stdout + r.stderr, /::error::/, `${why} prints an error annotation`);
+  }
+});
+
 // Runs the changes job's script in bash with git stubbed, and returns the gate
 // output it wrote. The git diff stub behaves as real git does with renames
 // detected (diff.renames defaults to true): each moved [from, to] pair prints

@@ -6,13 +6,16 @@
 # build-and-publish.yml at ce60a37 without its cosign, SBOM or attest steps:
 #
 #   gate -> per arch: build (load) -> smoke test -> Trivy gate -> push by digest
+#        -> check the pushed image is the tested one
 #        -> merge: one manifest list from both digests, then the tags
 #
 # Nothing gets a tag unless both arches pass. Each arch pushes its image by
 # digest only, after its smoke test (docker/test-app-image.sh: the image's
 # HEALTHCHECK healthy against Postgres and the S3 test server, /healthz 200,
 # every shipped migration applied) and its Trivy gate pass; a failure there
-# pushes nothing for that arch. The merge job runs only when both arches
+# pushes nothing for that arch. The push builds the image a second time, so
+# its image ID must equal the tested build's, or the arch fails and its digest
+# is never handed to the merge job. The merge job runs only when both arches
 # succeeded, joins the two digests with docker buildx imagetools create,
 # applies the tags, and reads the result back from the registry. If one arch
 # fails after the other pushed, that pushed digest stays untagged in the
@@ -105,7 +108,12 @@ jobs:
         uses: docker/setup-buildx-action@v4.4.1
 
       # 1) This arch, loaded into the runner's Docker so it can be run.
+      #    OS_UPDATES_STAMP is unique to this run (id and attempt), so the
+      #    runtime stage's apt-get upgrade (docker/app.Dockerfile) is never a
+      #    cache hit and every release takes Debian's current fixes; the push
+      #    below passes the same value, so it reuses this build's layers.
       - name: Build (load, this arch only)
+        id: load
         uses: docker/build-push-action@v7.4.0
         with:
           context: .
@@ -114,6 +122,7 @@ jobs:
           load: true
           provenance: false
           tags: ${{ env.LOCAL }}
+          build-args: OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=release-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
 
@@ -125,7 +134,9 @@ jobs:
       #    the OS (Debian) packages fail the job before the push. Its cache is
       #    kept in the runner's temp folder, outside the checkout, so it never
       #    reaches a build context (a Trivy cache in the context once left
-      #    root-owned files that failed an arm64 push).
+      #    root-owned files that failed an arm64 push). Both Trivy steps set
+      #    the Trivy version, the same as ci.yml's gate, rather than the
+      #    action's default (v0.70.0 for the action's v0.36.0).
       - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -136,6 +147,7 @@ jobs:
           exit-code: "1"
           format: table
           cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
 
       - name: Trivy full report (informational, does not fail the job)
         if: ${{ !cancelled() }}
@@ -146,6 +158,7 @@ jobs:
           exit-code: "0"
           format: table
           cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
 
       - name: Log in to GHCR
         uses: docker/login-action@v4.8.0
@@ -154,7 +167,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4) The same build again (all cache hits), pushed by digest with no tag.
+      # 4) The same build again, pushed by digest with no tag. Every step should
+      #    be a cache hit; step 5 checks that it was.
       - name: Push by digest
         id: push
         uses: docker/build-push-action@v7.4.0
@@ -164,8 +178,34 @@ jobs:
           platforms: ${{ matrix.platform }}
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=release-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+
+      # 5) The pushed image must be the one the smoke test and Trivy checked.
+      #    The apt-get upgrade layer talks to the network, so if it missed the
+      #    cache in step 4 (BuildKit pruned it, or the gha cache was evicted),
+      #    apt would have run again and the push would hold packages neither
+      #    check saw. Both builds report their image ID (the config digest,
+      #    which names every layer's content), so a rebuilt layer shows up as
+      #    a different ID. On a mismatch the job fails here, before the digest
+      #    is recorded, so the merge job never tags it; the pushed digest stays
+      #    untagged in the package, and re-running the release builds afresh.
+      - name: Check the pushed image is the one tested
+        env:
+          TESTED: ${{ steps.load.outputs.imageid }}
+          PUSHED: ${{ steps.push.outputs.imageid }}
+        run: |
+          re='^sha256:[0-9a-f]{64}$'
+          if [[ ! "$TESTED" =~ $re || ! "$PUSHED" =~ $re ]]; then
+            echo "::error::a build returned no image ID (tested ${TESTED:-none}, pushed ${PUSHED:-none})"
+            exit 1
+          fi
+          if [[ "$PUSHED" != "$TESTED" ]]; then
+            echo "::error::the pushed image ${PUSHED} is not the tested image ${TESTED}: a layer was rebuilt in the push, so it was never smoke-tested or scanned. Re-run the release."
+            exit 1
+          fi
+          echo "The pushed image is the tested image ${TESTED}"
 
       - name: Record the digest
         env:

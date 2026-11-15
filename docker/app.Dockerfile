@@ -109,6 +109,31 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/platehouse" \
       org.opencontainers.image.description="Platehouse: a self-hosted library for 3D print files"
 
+# Debian's pending updates, applied here because the base image can lag
+# Debian's security fixes: the release workflow's Trivy gate fails on any
+# fixable OS HIGH or CRITICAL, and run 43661472697 failed on a zlib1g fix the
+# base did not have yet. Upgrades only (no new package, no recommends), with
+# apt retrying a failed download 10 times as the other images do (#147), and
+# the package lists removed afterwards. Only this stage needs it: nothing from
+# the build stage's OS reaches the image, only /src.
+#
+# OS_UPDATES_STAMP is used in this RUN so that a new value rebuilds it: the
+# build cache would otherwise keep this layer for as long as the base digest
+# and this line stay the same, and later Debian fixes would never reach the
+# image. release.yml passes a value unique to the run (run id and attempt), so
+# every release takes Debian's current fixes; the CI App image job passes the
+# UTC date and the run attempt, so pull request builds refresh daily, stay
+# cached within a day, and a re-run of a failed job refreshes too.
+# A plain docker build with no value uses "local".
+ARG OS_UPDATES_STAMP=local
+RUN echo "Debian updates, stamp ${OS_UPDATES_STAMP}" \
+ && printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+ && apt-get update --error-on=any \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends \
+      -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /src /app
 
 # The inbox and the temp folder the configuration defaults to, writable by
