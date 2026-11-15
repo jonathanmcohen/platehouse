@@ -279,6 +279,67 @@ test("the gate job runs only when the changes job says so", () => {
   assert.doesNotMatch(t, /needs: \[?[^\n]*gate-image/);
 });
 
+// The release workflow's Trivy gate failed run 43661472697 (the v0.0.0-test
+// tag) on a fixable zlib1g HIGH that no pull request had shown. The app image
+// job now runs that same gate step on the image it builds, so a pull request
+// fails on it before a tag does: the same action at the same tag, and the same
+// inputs, read from release.yml, except image-ref, which is this job's image.
+// It is the job's last step, so a Trivy failure never hides the image checks.
+const RELEASE = join(ROOT, ".github", "workflows", "release.yml");
+const TRIVY_GATE = "Trivy gate (fail on fixable OS HIGH/CRITICAL)";
+
+// The step named name in a job (or workflow) block, from its "- name:" line up
+// to the next step at the same indent.
+function stepBlock(block, name) {
+  const steps = block.split(/\n(?= {6}- )/).filter((s) => s.startsWith(`      - name: ${name}\n`));
+  assert.equal(steps.length, 1, `one step named ${name}`);
+  return steps[0];
+}
+
+// A step's uses: line and its with: inputs as a key -> value map.
+function stepInputs(step) {
+  const uses = step.match(/\n {8}uses: (\S+)\n/)?.[1];
+  const withAt = step.indexOf("\n        with:\n");
+  assert.ok(withAt !== -1, `with: in\n${step}`);
+  const inputs = {};
+  for (const line of step.slice(withAt + "\n        with:\n".length).split("\n")) {
+    const m = line.match(/^ {10}([\w-]+): (.+)$/);
+    if (!m) break;
+    inputs[m[1]] = m[2];
+  }
+  return { uses, inputs };
+}
+
+test("the app image job runs the release workflow's Trivy gate on the image it built, last", () => {
+  const app = jobBlock(text(), "app-image");
+  const release = readFileSync(RELEASE, "utf8");
+  const ours = stepInputs(stepBlock(app, TRIVY_GATE));
+  const theirs = stepInputs(stepBlock(release, TRIVY_GATE));
+  assert.match(theirs.uses, /^aquasecurity\/trivy-action@v\d+\.\d+\.\d+$/, "release.yml's gate step");
+  assert.equal(ours.uses, theirs.uses, "the same action at the same tag as release.yml");
+  assert.equal(ours.inputs["image-ref"], "${{ env.IMAGE }}", "it scans the image this job built");
+  const { "image-ref": _ours, ...oursRest } = ours.inputs;
+  const { "image-ref": _theirs, ...theirsRest } = theirs.inputs;
+  assert.deepEqual(oursRest, theirsRest, "every other input as release.yml has it");
+  // The inputs that make it the gate, pinned here too, so a change to
+  // release.yml that weakened both would still fail this test.
+  for (const [k, v] of Object.entries({
+    severity: "HIGH,CRITICAL",
+    "ignore-unfixed": "true",
+    "vuln-type": "os",
+    "exit-code": '"1"',
+    "cache-dir": "${{ runner.temp }}/trivy-cache",
+  })) {
+    assert.equal(ours.inputs[k], v, `${k}: ${v}`);
+  }
+  assert.doesNotMatch(stepBlock(app, TRIVY_GATE), /\n {8}(if|continue-on-error):/, "nothing softens the gate");
+  // After both image checks, and the job's last step.
+  const steps = app.split(/\n(?= {6}- )/).slice(1);
+  assert.ok(steps.at(-1).startsWith(`      - name: ${TRIVY_GATE}\n`), "the gate is the last step");
+  assert.ok(app.indexOf("test-app-image.sh \"$NO_WEB_IMAGE\" unhealthy") < app.indexOf(`name: ${TRIVY_GATE}`));
+  assert.ok(app.indexOf("test-app-image.sh \"$IMAGE\" healthy") < app.indexOf(`name: ${TRIVY_GATE}`));
+});
+
 // Runs the changes job's script in bash with git stubbed, and returns the gate
 // output it wrote. The git diff stub behaves as real git does with renames
 // detected (diff.renames defaults to true): each moved [from, to] pair prints
