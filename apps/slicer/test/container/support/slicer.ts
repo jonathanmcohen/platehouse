@@ -7,7 +7,11 @@
 // tests can reach the HTTP contract.
 //
 // SLICER_IMAGE names the image (default platehouse-slicer:test). The image is
-// built here, once per run: later files hit Docker's cache.
+// built here, once per run: later files hit Docker's cache. With
+// SLICER_IMAGE_PREBUILT=1 nothing is built: SLICER_IMAGE must already be in
+// Docker. .github/workflows/slicer-image.yml sets it, because it builds the
+// image itself with an Orca version's build args, and a build here would
+// replace that image with one at the Dockerfile's pinned version.
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,9 +38,20 @@ function docker(args: string[], opts: { inherit?: boolean } = {}): Run {
 
 let built = false;
 
-/** docker build of apps/slicer/Dockerfile with the repo root as context. */
+/**
+ * docker build of apps/slicer/Dockerfile with the repo root as context, or,
+ * with SLICER_IMAGE_PREBUILT=1, a check that SLICER_IMAGE is already there.
+ */
 export function ensureImage(): void {
   if (built) return;
+  if (process.env.SLICER_IMAGE_PREBUILT === "1") {
+    const found = docker(["image", "inspect", "--format", "{{.Id}}", IMAGE]);
+    if (found.code !== 0) {
+      throw new Error(`SLICER_IMAGE_PREBUILT=1, but ${IMAGE} is not in Docker: ${found.stderr}`);
+    }
+    built = true;
+    return;
+  }
   const r = docker(
     ["build", "--platform", "linux/amd64", "-f", "apps/slicer/Dockerfile", "-t", IMAGE, "."],
     { inherit: true },

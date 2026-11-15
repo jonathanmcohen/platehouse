@@ -1453,6 +1453,15 @@ test("slicer-image smoke: the step runs the smoke test file against the image th
   );
   assert.match(r.calls, /^SLICER_IMAGE=platehouse-slicer:smoke SLICER_IMAGE_PREBUILT=1$/m);
   assert.match(r.log, /smoke: 5 tests ran, 0 skipped, 5 collected/);
+  // The file the step names exists and slices both fixtures, and the harness
+  // honours the switch that stops it building its own image.
+  const smokeFile = join(ROOT, "apps", "slicer", "test", "container", "smoke.test.ts");
+  assert.ok(existsSync(smokeFile), "apps/slicer/test/container/smoke.test.ts exists");
+  const smokeTest = readFileSync(smokeFile, "utf8");
+  assert.ok(smokeTest.includes("{ plates: 2, filaments: 2 }"), "the 2-plate, 2-filament fixture");
+  assert.ok(smokeTest.includes("{ plates: 3, filaments: 4 }"), "the 3-plate, 4-filament fixture");
+  const harness = readFileSync(join(ROOT, "apps", "slicer", "test", "container", "support", "slicer.ts"), "utf8");
+  assert.ok(harness.includes('process.env.SLICER_IMAGE_PREBUILT === "1"'), "the harness reads SLICER_IMAGE_PREBUILT");
   assert.match(r.logs["smoke.log"] ?? "", /The smoke slice passed for OrcaSlicer 2\.5\.1/);
 });
 
