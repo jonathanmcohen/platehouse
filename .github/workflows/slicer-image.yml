@@ -1,0 +1,618 @@
+# Slicer image workflow (build plan Task 25; AC-037, AC-036 image side).
+#
+# Keeps ghcr.io/jonathanmcohen/platehouse-slicer current with OrcaSlicer:
+#
+#   detect: pick the Orca version -> resolve its pins -> check the registry
+#   build:  build (load) -> smoke slice -> push by digest
+#           -> check the pushed image is the one tested
+#           -> tag orca-X.Y.Z and orca-X.Y.Z-r<run number> -> move stable
+#   report-failure: when detect or build failed, open an issue (or comment on
+#           the open one with the same title)
+#
+# When it runs:
+# - daily at 05:00 UTC. It reads OrcaSlicer's latest release (the API leaves
+#   out drafts and prereleases) and needs its tag to be vX.Y.Z. When
+#   platehouse-slicer:orca-X.Y.Z already exists the run stops there: the
+#   registry is the state, so there is no bot PR and nothing to commit.
+# - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
+#   the slicer wrapper ships with the release. It always builds.
+# - by hand (workflow_dispatch), at orca_version when given, else the latest
+#   release. It always builds. force_fail fails the smoke slice on purpose
+#   after it ran, to test the failure path.
+#   GitHub runs a schedule or a dispatch only for a workflow file on the
+#   default branch, so neither works until this file reaches main.
+#
+# The pins. apps/slicer/Dockerfile pins Orca 2.5.0 by the AppImage's sha256
+# (ORCA_SHA256) and the commit its tag points to (ORCA_SRC_SHA, for the
+# profile JSON). For the version picked here both are resolved again: the
+# sha256 from the release asset's digest in GitHub's API, the commit from git
+# ls-remote (the peeled commit of an annotated tag, else the tag's own), and
+# both are passed as build args with ORCA_VERSION. If either cannot be
+# resolved the run fails before anything is built. For the version the
+# Dockerfile pins, the resolved values must equal the Dockerfile's, so a
+# re-uploaded asset or a moved tag fails the run instead of replacing a
+# reviewed pin.
+#
+# The smoke slice runs the built image the way Hades does (read-only root,
+# noexec tmpfs at /work, every capability dropped, no-new-privileges) through
+# the container test harness, and slices every plate of
+# buildSliceable({plates: 2, filaments: 2}) and buildSliceable({plates: 3,
+# filaments: 4}) on the P1S 0.4. It passes only when every plate is status ok
+# with a time and a weight above zero. The fixtures are generated in the job,
+# so no designer file is ever used.
+#
+# Publishing. Nothing is pushed until the smoke slice passed. The push builds
+# the image a second time, by digest and with no tag, and its manifest digest
+# (docker/build-push-action's digest output, never imageid; PR #217) must
+# equal the tested build's, or the job fails before any tag. Then orca-X.Y.Z
+# and orca-X.Y.Z-r<run number> are pointed at that digest and read back, and
+# only then stable. imagetools create runs with --prefer-index=false so each
+# tag is a carbon copy of the pushed manifest (by default a single source is
+# wrapped in a new index, whose digest would not be the tested one). A failed
+# digest check leaves the pushed digest untagged in the package; nothing points
+# at it and it can be deleted by hand. On any failure stable is not touched.
+#
+# Rollback: README.md, "Slicer image". Point stable back at the previous
+# orca-X.Y.Z with the same imagetools command.
+#
+# The image is amd64 only (the plan: OpenSCAD has no current arm64 build).
+# Actions are pinned to the exact tags release.yml uses. Every job after detect
+# carries an explicit !cancelled() condition, because a skip propagates down a
+# needs chain (Engineering Lessons). Buildx provenance is off (AC-094: no build
+# attestation). Each job gets only the permissions it uses; together they are
+# the plan's contents: read, packages: write and issues: write.
+name: slicer-image
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      orca_version:
+        description: "OrcaSlicer version to build, X.Y.Z. Empty builds the latest stable release."
+        required: false
+        default: ""
+        type: string
+      force_fail:
+        description: "Fail the smoke slice on purpose, to test that nothing is pushed and an issue opens."
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+# Never cancel a publish part way; a second run waits for the first, so two
+# runs never move stable at the same time.
+concurrency:
+  group: slicer-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/jonathanmcohen/platehouse-slicer
+  ORCA_REPO: OrcaSlicer/OrcaSlicer
+  ORCA_GIT: https://github.com/OrcaSlicer/OrcaSlicer.git
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  detect:
+    name: Find the OrcaSlicer release to build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}
+      orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}
+      build: ${{ steps.registry.outputs.build }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # The version: orca_version on a dispatch that gives one, else the
+      # latest release. Either way the release must be published (not a
+      # draft, not a prerelease) and its tag vX.Y.Z. A tag push must be a
+      # semver tag, as release.yml's gate requires.
+      - name: Pick the version
+        id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_VERSION: ${{ inputs.orca_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            if [ "$EVENT" = "push" ]; then
+              re='^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+              if [[ ! "$REF" =~ $re ]]; then
+                echo "::error::${REF} is not a semver tag vMAJOR.MINOR.PATCH[-prerelease]; nothing is built"
+                exit 1
+              fi
+            fi
+            if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
+              if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::orca_version '${INPUT_VERSION}' is not X.Y.Z"
+                exit 1
+              fi
+              release="$(gh api "repos/${ORCA_REPO}/releases/tags/v${INPUT_VERSION}")"
+            else
+              release="$(gh api "repos/${ORCA_REPO}/releases/latest")"
+            fi
+            tag="$(jq -r '.tag_name // ""' <<<"$release")"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::OrcaSlicer's release tag '${tag}' is not vX.Y.Z (betas and release candidates are skipped)"
+              exit 1
+            fi
+            if [ -n "$INPUT_VERSION" ] && [ "$EVENT" = "workflow_dispatch" ] && [ "$tag" != "v${INPUT_VERSION}" ]; then
+              echo "::error::asked for v${INPUT_VERSION}, GitHub returned the release ${tag}"
+              exit 1
+            fi
+            # Written before the last check, so a failure issue can name it.
+            version="${tag#v}"
+            echo "version=${version}" >>"$GITHUB_OUTPUT"
+            if [ "$(jq -r '.draft' <<<"$release")" != "false" ] || [ "$(jq -r '.prerelease' <<<"$release")" != "false" ]; then
+              echo "::error::OrcaSlicer ${tag} is a draft or a prerelease; only stable releases are built"
+              exit 1
+            fi
+            echo "OrcaSlicer ${version} (${EVENT})"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/pick.log"
+
+      # ORCA_SHA256: the digest GitHub records for the exact asset the
+      # Dockerfile downloads. ORCA_SRC_SHA: the commit the tag points to.
+      - name: Resolve the Orca pins
+        id: pins
+        env:
+          VERSION: ${{ steps.pick.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            asset="OrcaSlicer_Linux_AppImage_Ubuntu2404_V${VERSION}.AppImage"
+            assets="$(gh api "repos/${ORCA_REPO}/releases/tags/v${VERSION}" | jq -c --arg n "$asset" '[.assets[] | select(.name == $n)]')"
+            if [ "$(jq 'length' <<<"$assets")" != "1" ]; then
+              echo "::error::OrcaSlicer v${VERSION} has no single asset named ${asset}"
+              exit 1
+            fi
+            if [ "$(jq -r '.[0].state' <<<"$assets")" != "uploaded" ]; then
+              echo "::error::${asset} is not fully uploaded"
+              exit 1
+            fi
+            digest="$(jq -r '.[0].digest // ""' <<<"$assets")"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::GitHub records no sha256 digest for ${asset} (got '${digest}')"
+              exit 1
+            fi
+            orca_sha256="${digest#sha256:}"
+
+            refs="$(git ls-remote "$ORCA_GIT" "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}")"
+            peeled="$(awk -v r="refs/tags/v${VERSION}^{}" '$2 == r { print $1 }' <<<"$refs")"
+            plain="$(awk -v r="refs/tags/v${VERSION}" '$2 == r { print $1 }' <<<"$refs")"
+            orca_src_sha="${peeled:-$plain}"
+            if [[ ! "$orca_src_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::git ls-remote found no commit for refs/tags/v${VERSION} (got '${orca_src_sha}')"
+              exit 1
+            fi
+
+            # For the version the Dockerfile pins, its reviewed values win.
+            dockerfile=apps/slicer/Dockerfile
+            pinned="$(sed -n 's/^ARG ORCA_VERSION=//p' "$dockerfile")"
+            if [ "$VERSION" = "$pinned" ]; then
+              want_sha256="$(sed -n 's/^ARG ORCA_SHA256=//p' "$dockerfile")"
+              want_src="$(sed -n 's/^ARG ORCA_SRC_SHA=//p' "$dockerfile")"
+              if [ "$orca_sha256" != "$want_sha256" ] || [ "$orca_src_sha" != "$want_src" ]; then
+                echo "::error::OrcaSlicer ${VERSION} resolved to sha256 ${orca_sha256} and commit ${orca_src_sha}, but ${dockerfile} pins ${want_sha256} and ${want_src}; nothing is built"
+                exit 1
+              fi
+              echo "OrcaSlicer ${VERSION} is the version ${dockerfile} pins, and its pins match"
+            fi
+
+            echo "orca_sha256=${orca_sha256}" >>"$GITHUB_OUTPUT"
+            echo "orca_src_sha=${orca_src_sha}" >>"$GITHUB_OUTPUT"
+            echo "${asset}: sha256 ${orca_sha256}"
+            echo "refs/tags/v${VERSION}: commit ${orca_src_sha}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/pins.log"
+
+      - name: Log in to GHCR
+        id: login
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # "not found" from the registry is the only answer that means the tag
+      # does not exist; any other error stops the run rather than guessing.
+      - name: Check the registry
+        id: registry
+        env:
+          EVENT: ${{ github.event_name }}
+          VERSION: ${{ steps.pick.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            ref="${IMAGE}:orca-${VERSION}"
+            status=0
+            out="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
+            if [ "$status" -eq 0 ]; then
+              exists=true
+              echo "${ref} exists at ${out}"
+            elif grep -q ': not found' <<<"$out"; then
+              exists=false
+              echo "${ref} does not exist yet"
+            else
+              echo "$out"
+              echo "::error::could not tell whether ${ref} exists (exit ${status}); nothing is built"
+              exit 1
+            fi
+            if [ "$EVENT" = "schedule" ] && [ "$exists" = "true" ]; then
+              build=false
+              echo "Up to date: ${ref} is already published"
+              echo "Up to date: \`${ref}\` is already published." >>"$GITHUB_STEP_SUMMARY"
+            else
+              build=true
+            fi
+            echo "build=${build}" >>"$GITHUB_OUTPUT"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/registry.log"
+
+      - name: Keep the failing step's log tail
+        if: ${{ failure() }}
+        env:
+          JOB: detect
+          OUTCOMES: >-
+            pick=${{ steps.pick.outcome }}
+            pins=${{ steps.pins.outcome }}
+            login=${{ steps.login.outcome }}
+            registry=${{ steps.registry.outcome }}
+        run: |
+          failed=""
+          for pair in $OUTCOMES; do
+            if [ "${pair#*=}" = "failure" ]; then
+              failed="${pair%%=*}"
+              break
+            fi
+          done
+          case "$failed" in
+            pick) name="Pick the version" ;;
+            pins) name="Resolve the Orca pins" ;;
+            login) name="Log in to GHCR" ;;
+            registry) name="Check the registry" ;;
+            *) name="an unnamed step of the detect job" ;;
+          esac
+          mkdir -p failure
+          {
+            echo "step: ${name}"
+            log="$RUNNER_TEMP/logs/${failed}.log"
+            if [ -n "$failed" ] && [ -s "$log" ]; then
+              tail -n 80 "$log"
+            else
+              echo "(no log was kept for this step; see the run's log)"
+            fi
+          } >"failure/${JOB}.txt"
+          cat "failure/${JOB}.txt"
+
+      - name: Upload the log tail
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: failure-detect
+          path: failure/detect.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  build:
+    name: Build, smoke-slice and publish
+    needs: detect
+    if: ${{ !cancelled() && needs.detect.result == 'success' && needs.detect.outputs.build == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+      LOCAL: platehouse-slicer:smoke
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      # 1) The image for this Orca version, loaded into the runner's Docker so
+      #    the smoke slice can run it.
+      - name: Build (load)
+        id: load
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: apps/slicer/Dockerfile
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          tags: ${{ env.LOCAL }}
+          build-args: |
+            ORCA_VERSION=${{ needs.detect.outputs.version }}
+            ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}
+            ORCA_SRC_SHA=${{ needs.detect.outputs.orca_src_sha }}
+          cache-from: type=gha,scope=slicer-image
+          cache-to: type=gha,mode=max,scope=slicer-image
+
+      # 2) The smoke slice, through the container test harness against the
+      #    image built above (SLICER_IMAGE names it; SLICER_IMAGE_PREBUILT
+      #    tells the harness not to build its own). The same zero-test guard
+      #    as ci.yml's test jobs. A failure ends the job: no push, no tag.
+      - name: Smoke slice
+        id: smoke
+        env:
+          SLICER_IMAGE: ${{ env.LOCAL }}
+          SLICER_IMAGE_PREBUILT: "1"
+          FORCE_FAIL: ${{ inputs.force_fail }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            status=0
+            pnpm exec vitest run --project container apps/slicer/test/container/smoke.test.ts --reporter=default --reporter=json --outputFile=smoke-report.json || status=$?
+            if [ -s smoke-report.json ]; then
+              total="$(jq '.numTotalTests' smoke-report.json)"
+              skipped="$(jq '.numPendingTests + .numTodoTests' smoke-report.json)"
+              ran=$((total - skipped))
+              echo "smoke: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+            fi
+            if [ "$status" -ne 0 ]; then
+              echo "::error::the smoke slice failed (vitest exit ${status}); its output above names the plate"
+              exit "$status"
+            fi
+            if [ ! -s smoke-report.json ]; then
+              echo "::error::No tests ran (vitest wrote no report)"
+              exit 1
+            fi
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::No tests ran"
+              exit 1
+            fi
+            if [ "$FORCE_FAIL" = "true" ]; then
+              echo "::error::force_fail is set: the smoke slice passed, and fails on purpose; nothing is pushed"
+              exit 1
+            fi
+            echo "The smoke slice passed for OrcaSlicer ${VERSION}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/smoke.log"
+
+      - name: Log in to GHCR
+        id: login
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3) The same build again, pushed by digest with no tag. Every step
+      #    should be a cache hit; step 4 checks that it was.
+      - name: Push by digest
+        id: push
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: apps/slicer/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            ORCA_VERSION=${{ needs.detect.outputs.version }}
+            ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}
+            ORCA_SRC_SHA=${{ needs.detect.outputs.orca_src_sha }}
+          cache-from: type=gha,scope=slicer-image
+          cache-to: type=gha,mode=max,scope=slicer-image
+
+      # 4) The pushed image must be the one the smoke slice ran. The apt
+      #    layers talk to the network, so if one missed the cache in step 3 the
+      #    push would hold packages the smoke slice never saw. Both builds
+      #    report their manifest digest (the digest output, which names the
+      #    config and every layer). Not imageid: depending on the runner's
+      #    exporter it is a config digest on one build and a manifest digest on
+      #    the other (release run 43724090714, PR #217). On a mismatch the job
+      #    fails here, before any tag.
+      - name: Check the pushed image is the one tested
+        id: check
+        env:
+          TESTED: ${{ steps.load.outputs.digest }}
+          PUSHED: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            re='^sha256:[0-9a-f]{64}$'
+            if [[ ! "$TESTED" =~ $re || ! "$PUSHED" =~ $re ]]; then
+              echo "::error::a build returned no manifest digest (tested ${TESTED:-none}, pushed ${PUSHED:-none})"
+              exit 1
+            fi
+            if [[ "$PUSHED" != "$TESTED" ]]; then
+              echo "::error::the pushed manifest ${PUSHED} is not the tested manifest ${TESTED}, so the pushed image is not proven to be the one smoke-sliced. Compare the exporting manifest and exporting config lines of both builds in this job log: if the configs and layers match, the exporters disagree on format and a re-run will fail the same way; otherwise re-run the workflow."
+              exit 1
+            fi
+            echo "The pushed image is the tested image, manifest ${TESTED}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/check.log"
+
+      # 5) The version tags, read back; then stable, read back. A carbon copy
+      #    each (--prefer-index=false), so every tag is the tested digest.
+      - name: Tag the image and move stable
+        id: tag
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::the push returned no digest (${DIGEST:-none})"
+              exit 1
+            fi
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$RUN_NUMBER" =~ ^[0-9]+$ ]]; then
+              echo "::error::version '${VERSION}' or run number '${RUN_NUMBER}' is malformed"
+              exit 1
+            fi
+            src="${IMAGE}@${DIGEST}"
+            readback() {
+              local got
+              got="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')"
+              if [ "$got" != "$DIGEST" ]; then
+                echo "::error::$1 is ${got}, not ${DIGEST}"
+                exit 1
+              fi
+            }
+            docker buildx imagetools create --prefer-index=false \
+              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}" "$src"
+            readback "${IMAGE}:orca-${VERSION}"
+            readback "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}"
+            docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
+            readback "${IMAGE}:stable"
+            {
+              echo "### Published ${IMAGE} for OrcaSlicer ${VERSION}"
+              echo ""
+              echo "- digest: \`${DIGEST}\`"
+              echo "- tags: orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER}, stable"
+            } >>"$GITHUB_STEP_SUMMARY"
+            echo "Published orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER} and stable at ${DIGEST}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/tag.log"
+
+      # For a failed build step there is no kept log, so its tail comes from
+      # buildx's own record of the most recent build.
+      - name: Keep the failing step's log tail
+        if: ${{ failure() }}
+        env:
+          JOB: build
+          OUTCOMES: >-
+            load=${{ steps.load.outcome }}
+            smoke=${{ steps.smoke.outcome }}
+            login=${{ steps.login.outcome }}
+            push=${{ steps.push.outcome }}
+            check=${{ steps.check.outcome }}
+            tag=${{ steps.tag.outcome }}
+        run: |
+          failed=""
+          for pair in $OUTCOMES; do
+            if [ "${pair#*=}" = "failure" ]; then
+              failed="${pair%%=*}"
+              break
+            fi
+          done
+          case "$failed" in
+            load) name="Build (load)" ;;
+            smoke) name="Smoke slice" ;;
+            login) name="Log in to GHCR" ;;
+            push) name="Push by digest" ;;
+            check) name="Check the pushed image is the one tested" ;;
+            tag) name="Tag the image and move stable" ;;
+            *) name="an unnamed step of the build job (checkout, setup or install)" ;;
+          esac
+          mkdir -p failure
+          {
+            echo "step: ${name}"
+            log="$RUNNER_TEMP/logs/${failed}.log"
+            if [ -n "$failed" ] && [ -s "$log" ]; then
+              tail -n 80 "$log"
+            elif [ "$failed" = "load" ] || [ "$failed" = "push" ]; then
+              timeout 60 docker buildx history logs 2>&1 | tail -n 80 || echo "(buildx kept no log of the build; see the run's log)"
+            else
+              echo "(no log was kept for this step; see the run's log)"
+            fi
+          } >"failure/${JOB}.txt"
+          cat "failure/${JOB}.txt"
+
+      - name: Upload the log tail
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: failure-build
+          path: failure/build.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  report-failure:
+    name: Open an issue on failure
+    needs: [detect, build]
+    if: ${{ !cancelled() && (needs.detect.result == 'failure' || needs.build.result == 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      # A job that timed out or lost its runner kept no tail; the issue then
+      # says so and links the run.
+      - name: Download the log tail
+        continue-on-error: true
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: failure-*
+          path: failure
+          merge-multiple: true
+
+      # One open issue per version: a daily run that fails again comments on
+      # the open issue with the same title instead of opening another.
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          INPUT_VERSION: ${{ inputs.orca_version }}
+          EVENT: ${{ github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          version="$VERSION"
+          if [ -z "$version" ] && [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then version="$INPUT_VERSION"; fi
+          if [ -z "$version" ]; then version="(version not found)"; fi
+          title="Slicer image failed for OrcaSlicer ${version}"
+          tail=""
+          for f in failure/detect.txt failure/build.txt; do
+            if [ -s "$f" ]; then tail="$(cat "$f")"; fi
+          done
+          if [ -z "$tail" ]; then
+            tail="(no log tail was kept: the job may have timed out or lost its runner)"
+          fi
+          # Keep the code block intact and the body under GitHub's limit.
+          tail="$(printf '%s\n' "$tail" | sed 's/```/'"'''"'/g' | tail -c 50000)"
+          {
+            echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run). No tag was created or moved, so stable still points at the last image that passed; nothing needs rolling back."
+            echo ""
+            echo "Run: ${RUN_URL}"
+            echo ""
+            echo "Last lines of the failing step's log:"
+            echo ""
+            echo '```text'
+            printf '%s\n' "$tail"
+            echo '```'
+            echo ""
+            echo "To fix: read the run's log, fix the cause, then run the workflow again (Actions, slicer-image, Run workflow) or let the next daily run retry it."
+          } >body.md
+          existing="$(gh issue list --repo "$REPO" --state open --limit 200 --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+            echo "Commented on issue #${existing}: ${title}"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body-file body.md
+            echo "Opened an issue: ${title}"
+          fi
