@@ -18,7 +18,9 @@
 # - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
 #   the slicer wrapper ships with the release. It always builds. A prerelease
 #   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and orca-X.Y.Z-r<run number> but
-#   leaves stable alone (Jon, 2026-11-15); a plain vX.Y.Z tag moves it.
+#   leaves stable alone (Jon, 2026-11-15); a plain vX.Y.Z tag moves it. The
+#   daily run never promotes such a version, as its orca-X.Y.Z exists; the
+#   run's summary says so.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
 #   release. It always builds and moves stable. force_fail fails the smoke
 #   slice on purpose after it ran, to test the failure path.
@@ -55,7 +57,11 @@
 # tag is a carbon copy of the pushed manifest (by default a single source is
 # wrapped in a new index, whose digest would not be the tested one). A failed
 # digest check leaves the pushed digest untagged in the package; nothing points
-# at it and it can be deleted by hand. On any failure stable is not touched.
+# at it and it can be deleted by hand. A failure before the tag step touches no
+# tag. A failure inside it (a readback, or a passing GHCR error) can leave
+# orca-X.Y.Z, and stable if it had got that far, at the new digest; the step
+# records the tags it reached and the failure issue lists them. The daily run
+# then sees orca-X.Y.Z and never retries, so the issue says to run by hand.
 #
 # Rollback: README.md, "Slicer image". Point stable back at the previous
 # orca-X.Y.Z with the same imagetools command.
@@ -343,6 +349,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Read by the failure issue: a job's outputs are kept when it fails, so a
+    # failed tag step still says which tags it had pointed at the digest.
+    outputs:
+      tagged: ${{ steps.tag.outputs.tagged }}
+      digest: ${{ steps.push.outputs.digest }}
     env:
       VERSION: ${{ needs.detect.outputs.version }}
       LOCAL: platehouse-slicer:smoke
@@ -525,6 +536,11 @@ jobs:
               exit 1
             fi
             src="${IMAGE}@${DIGEST}"
+            # tagged: the tags this step has pointed, or is pointing, at the
+            # digest, for the failure issue. Written before each create, so a
+            # create or readback that fails part way still names its tags.
+            tags="orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER}"
+            echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
             readback() {
               local got
               got="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')"
@@ -537,11 +553,11 @@ jobs:
               -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}" "$src"
             readback "${IMAGE}:orca-${VERSION}"
             readback "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}"
-            tags="orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER}"
             if [ "$MOVE_STABLE" = "true" ]; then
+              tags="${tags}, stable"
+              echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
               docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
               readback "${IMAGE}:stable"
-              tags="${tags}, stable"
             else
               echo "A prerelease tag's run: stable is left where it was"
             fi
@@ -550,7 +566,9 @@ jobs:
               echo ""
               echo "- digest: \`${DIGEST}\`"
               echo "- tags: ${tags}"
-              if [ "$MOVE_STABLE" != "true" ]; then echo "- stable not moved (prerelease tag)"; fi
+              if [ "$MOVE_STABLE" != "true" ]; then
+                echo "- stable not moved (prerelease tag). The daily run will not move it either: it sees orca-${VERSION} and builds nothing. stable reaches this version on a plain release tag or a run by hand."
+              fi
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Published ${tags} at ${DIGEST}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/tag.log"
@@ -636,6 +654,9 @@ jobs:
           VERSION: ${{ needs.detect.outputs.version }}
           INPUT_VERSION: ${{ inputs.orca_version }}
           EVENT: ${{ github.event_name }}
+          TAGGED: ${{ needs.build.outputs.tagged }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          STABLE: ${{ needs.detect.outputs.stable }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           version="$VERSION"
@@ -651,8 +672,21 @@ jobs:
           fi
           # Keep the code block intact and the body under GitHub's limit.
           tail="$(printf '%s\n' "$tail" | sed 's/```/'"'''"'/g' | tail -c 50000)"
+          # TAGGED is empty unless the tag step began. Once it has, orca-X.Y.Z
+          # may exist, and the daily run then reports Up to date for this
+          # version and never builds it again, so it cannot be the retry.
           {
-            echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run). No tag was created or moved, so stable still points at the last image that passed; nothing needs rolling back."
+            if [ -z "$TAGGED" ]; then
+              echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run). No tag was created or moved, so stable still points at the last image that passed; nothing needs rolling back."
+            else
+              echo "The slicer image workflow failed for OrcaSlicer ${version} (${EVENT} run) while tagging. These tags had been pointed, or were being pointed, at ${DIGEST:-the pushed digest}: ${TAGGED}. Check each with docker buildx imagetools inspect before relying on it."
+              echo ""
+              if [[ ", ${TAGGED}," == *", stable,"* ]]; then
+                echo "stable may now point at that digest. If it should not, roll it back (README.md, Rolling the slicer back)."
+              else
+                echo "stable was not touched and still points at the last image that passed."
+              fi
+            fi
             echo ""
             echo "Run: ${RUN_URL}"
             echo ""
@@ -662,7 +696,17 @@ jobs:
             printf '%s\n' "$tail"
             echo '```'
             echo ""
-            echo "To fix: read the run's log, fix the cause, then run the workflow again (Actions, slicer-image, Run workflow) or let the next daily run retry it."
+            if [ -n "$TAGGED" ] && [ "$STABLE" = "false" ]; then
+              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run all jobs), which leaves stable alone; a run by hand would move stable. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+            elif [ -n "$TAGGED" ]; then
+              echo "To fix: read the run's log, fix the cause, then run the workflow by hand (Actions, slicer-image, Run workflow, orca_version ${version}). The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date and never moves stable to this version."
+            elif [ "$EVENT" = "schedule" ]; then
+              echo "To fix: read the run's log, fix the cause, then run the workflow again (Actions, slicer-image, Run workflow) or let the next daily run retry it."
+            else
+              orca_tag="orca-${version}"
+              if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then orca_tag="its orca-X.Y.Z tag"; fi
+              echo "To fix: read the run's log, fix the cause, then run the workflow again (Actions, slicer-image, Run workflow). The next daily run retries this version only if ${orca_tag} is not in the registry yet."
+            fi
           } >body.md
           existing="$(gh issue list --repo "$REPO" --state open --limit 200 --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
           if [ -n "$existing" ]; then

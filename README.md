@@ -75,8 +75,15 @@ ships with the release, and it can be run by hand from the Actions tab (a versio
 failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the two
 `orca-` tags but leaves `stable` alone; a plain `vX.Y.Z` tag moves it. Before anything is pushed,
 a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a report and never
-fails the run. When a run fails, no tag is created or moved, `stable` stays where it was, and
-the workflow opens an issue titled "Slicer image failed for OrcaSlicer X.Y.Z".
+fails the run. A version first published by a prerelease tag stays off `stable` until a plain
+release tag or a run by hand: the daily run sees its `orca-X.Y.Z` tag and builds nothing.
+
+When a run fails, the workflow opens an issue titled "Slicer image failed for OrcaSlicer X.Y.Z".
+A failure before tagging creates or moves no tag, and `stable` stays where it was. A failure
+while tagging (a readback that does not match, or a passing GHCR error) can leave `orca-X.Y.Z`,
+and `stable` if it had got that far, at the new digest; the issue then
+lists the tags it had already pointed at the new digest. Once `orca-X.Y.Z` exists the daily run
+will not retry that version, so the issue says to run the workflow by hand.
 
 ### Rolling the slicer back
 

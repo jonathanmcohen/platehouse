@@ -1401,6 +1401,38 @@ test("slicer-image tag: a prerelease tag's run pushes the version tags and leave
   ]);
   assert.doesNotMatch(r.calls, /:stable/, "stable is neither moved nor read");
   assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\n- stable not moved \(prerelease tag\)/);
+  // The daily run will not promote it either, so the summary says what will.
+  assert.match(r.summary, /daily run will not move it/);
+  assert.match(r.summary, /plain release tag or a run by hand/);
+});
+
+// The tags the step pointed (or was pointing) at the digest, as the output the
+// failure issue reads. Each is recorded before its imagetools create, so a
+// create that fails part way still counts.
+for (const [name, env, want] of [
+  ["a full run records every tag", {}, "orca-2.5.1, orca-2.5.1-r42, stable"],
+  ["a prerelease run records the two version tags", { MOVE_STABLE: "false" }, "orca-2.5.1, orca-2.5.1-r42"],
+  ["a version tag read back wrong records the two version tags", { D_ORCA: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42"],
+  ["stable read back wrong records stable too", { D_STABLE: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42, stable"],
+  ["no digest records nothing", { DIGEST: "" }, undefined],
+  ["no stable decision records nothing", { MOVE_STABLE: "" }, undefined],
+]) {
+  test(`slicer-image tag records what it tagged: ${name}`, () => {
+    const r = tagRun(env);
+    assert.equal(r.outputs.tagged, want, r.log);
+  });
+}
+
+test("slicer-image: the build job hands the tags and digest to the failure issue", () => {
+  const t = slicerText();
+  const build = jobBlock(t, "build");
+  assert.match(build, /\n {4}outputs:\n/);
+  assert.ok(build.includes("\n      tagged: ${{ steps.tag.outputs.tagged }}\n"), "build outputs tagged");
+  assert.ok(build.includes("\n      digest: ${{ steps.push.outputs.digest }}\n"), "build outputs digest");
+  const issue = stepBlock(jobBlock(t, "report-failure"), "Open or update the issue");
+  assert.match(issue, /\n {10}TAGGED: \$\{\{ needs\.build\.outputs\.tagged \}\}\n/);
+  assert.match(issue, /\n {10}DIGEST: \$\{\{ needs\.build\.outputs\.digest \}\}\n/);
+  assert.match(issue, /\n {10}STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
 });
 
 for (const [name, env, want] of [
@@ -1586,9 +1618,54 @@ test("slicer-image issue: opens 'Slicer image failed for OrcaSlicer X.Y.Z' with 
     /^gh issue create --repo jonathanmcohen\/platehouse --title Slicer image failed for OrcaSlicer 2\.5\.1 --body-file body\.md$/m,
   );
   const body = r.files["posted.md"];
-  assert.match(body, /stable still points at the last image that passed/);
+  assert.match(body, /No tag was created or moved, so stable still points at the last image that passed/);
   assert.match(body, /Run: https:\/\/github\.com\/jonathanmcohen\/platehouse\/actions\/runs\/1/);
   assert.match(body, /```text\nstep: Smoke slice\n::error::the smoke slice failed \(vitest exit 1\)\n```/);
+  // A daily run that tagged nothing found no orca-X.Y.Z, so the next one retries.
+  assert.match(body, /or let the next daily run retry it\./);
+});
+
+// A failure after the tag step began: the orca tags may already point at the
+// new digest, and the daily run will then see orca-X.Y.Z and never retry.
+const TAG_FAIL = { "build.txt": "step: Tag the image and move stable\n::error::x\n" };
+test("slicer-image issue: a failure after the version tags lists them and says the daily run will not retry", () => {
+  const r = reportRun({ TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL);
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.doesNotMatch(body, /No tag was created/);
+  assert.doesNotMatch(body, /let the next daily run retry/);
+  assert.match(body, new RegExp(`orca-2\\.5\\.1, orca-2\\.5\\.1-r42`));
+  assert.match(body, new RegExp(`sha256:${sha("d")}`));
+  assert.match(body, /stable was not touched/);
+  assert.match(body, /run the workflow by hand \(Actions, slicer-image, Run workflow, orca_version 2\.5\.1\)/);
+  assert.match(body, /daily run will not retry it once orca-2\.5\.1 is in the registry, as this run may have left it/);
+});
+
+test("slicer-image issue: a failure after stable was tagged says stable may have moved", () => {
+  const r = reportRun({ TAGGED: "orca-2.5.1, orca-2.5.1-r42, stable", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL);
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.doesNotMatch(body, /stable was not touched/);
+  assert.match(body, /stable may now point at that digest/);
+  assert.match(body, /Rolling the slicer back/);
+});
+
+test("slicer-image issue: a prerelease tag's failure after tagging says a re-run leaves stable alone", () => {
+  const r = reportRun({ EVENT: "push", TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "false" }, TAG_FAIL);
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.match(body, /Re-run all jobs/);
+  assert.match(body, /a run by hand would move stable/);
+  assert.doesNotMatch(body, /let the next daily run retry/);
+});
+
+test("slicer-image issue: a failed run that was not daily does not promise a daily retry", () => {
+  const r = reportRun({ EVENT: "workflow_dispatch" }, { "build.txt": "step: Smoke slice\nx\n" });
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.match(body, /No tag was created or moved/);
+  assert.doesNotMatch(body, /let the next daily run retry/);
+  assert.match(body, /retries this version only if orca-2\.5\.1 is not in the registry yet/);
 });
 
 test("slicer-image issue: a repeat failure comments on the open issue with the same title", () => {
@@ -1649,4 +1726,20 @@ test("slicer-image: the README holds the rollback command, and the workflow poin
   );
   assert.match(slicerText(), /^# Rollback: README\.md, "Slicer image"\./m);
   assert.match(readme, /^## Slicer image$/m);
+});
+
+// A failure in the tag step can leave the orca tags in place, and the daily run
+// never builds a version whose orca-X.Y.Z exists, prerelease-published ones
+// included. The README, the CHANGELOG and the workflow header must not say
+// otherwise.
+test("slicer-image: the docs do not claim a failure never tags, and say what the daily run will not do", () => {
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+  assert.doesNotMatch(readme, /When a run fails, no tag is created or moved/);
+  assert.doesNotMatch(changelog, /A failure tags nothing/);
+  assert.doesNotMatch(slicerText(), /On any failure stable is not touched/);
+  const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
+  assert.match(section, /lists the tags it had already pointed at the new digest/);
+  assert.match(section, /first published by a prerelease tag/);
+  assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
 });
