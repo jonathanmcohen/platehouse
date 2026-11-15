@@ -109,6 +109,20 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/platehouse" \
       org.opencontainers.image.description="Platehouse: a self-hosted library for 3D print files"
 
+# Debian's pending updates, applied here because the base image can lag
+# Debian's security fixes: the release workflow's Trivy gate fails on any
+# fixable OS HIGH or CRITICAL, and run 43661472697 failed on a zlib1g fix the
+# base did not have yet. Upgrades only (no new package, no recommends), with
+# apt retrying a failed download 10 times as the other images do (#147), and
+# the package lists removed afterwards. Only this stage needs it: nothing from
+# the build stage's OS reaches the image, only /src.
+RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+ && apt-get update --error-on=any \
+ && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends \
+      -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /src /app
 
 # The inbox and the temp folder the configuration defaults to, writable by

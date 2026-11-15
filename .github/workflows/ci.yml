@@ -11,7 +11,8 @@
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
 # run), the chain above, gate-image (Slicing gate tests and image build),
 # slicer-image (Slicer image and container tests) and app-image (App image
-# (amd64) and App image (arm64), build plan Task 24).
+# (amd64) and App image (arm64), build plan Task 24: the image build, its
+# healthy and unhealthy checks, then the release workflow's Trivy gate).
 #
 # The slicing gate job builds a large image, so it keeps its own path scoping:
 # the changes job decides whether tools/slicing-gate, this file or .node-version
@@ -534,9 +535,10 @@ jobs:
   # report healthy, /healthz answer 200, and every migration the image ships
   # beside the built migrate.js be applied (#31). Then the same image with
   # apps/web/dist removed must keep running with /healthz 503 and its
-  # HEALTHCHECK reporting unhealthy (#162). Nothing is pushed and there is no
-  # login anywhere: the images stay on the runner. Nothing depends on this
-  # job.
+  # HEALTHCHECK reporting unhealthy (#162). Last, the release workflow's Trivy
+  # gate scans the image for fixable OS HIGH or CRITICAL findings. Nothing is
+  # pushed and there is no login anywhere: the images stay on the runner.
+  # Nothing depends on this job.
   app-image:
     name: App image (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -587,3 +589,19 @@ jobs:
           DOCKERFILE
       - name: Run it and check it reports unhealthy
         run: docker/test-app-image.sh "$NO_WEB_IMAGE" unhealthy
+      # The release workflow's Trivy gate, the same step with the same inputs,
+      # on the image built above: fixable HIGH or CRITICAL findings in the OS
+      # (Debian) packages fail the job, so a pull request fails on them before
+      # a tag does (release run 43661472697 failed on zlib1g). Its cache stays
+      # in the runner's temp folder, outside the checkout, as in release.yml.
+      # It is the last step, so a finding never hides the image checks above.
+      - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
