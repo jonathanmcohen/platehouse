@@ -442,9 +442,13 @@ test("both release builds pass a per-run OS_UPDATES_STAMP, the same in each", ()
 // digest builds the image a second time. The apt-get upgrade layer talks to
 // the network, so if it missed the cache in the second build, the pushed
 // image would hold packages neither check saw. A step after the push compares
-// the two builds' image IDs (config digests, which name every layer's
-// content) and fails the job, before the digest is recorded or uploaded, when
-// they differ or either is missing.
+// the two builds' manifest digests (the digest output, which names the config
+// and every layer) and fails the job, before the digest is recorded or
+// uploaded, when they differ or either is missing. Not imageid: on a runner
+// whose Docker loads through the OCI exporter, the load build reports no
+// config digest and its imageid falls back to the manifest digest, while the
+// push's imageid is the config digest, so identical images never matched
+// (release run 43724090714, amd64).
 const RELEASE_SAME_IMAGE = "Check the pushed image is the one tested";
 
 test("the release build job fails when the pushed image is not the one it tested", () => {
@@ -460,8 +464,9 @@ test("the release build job fails when the pushed image is not the one it tested
   assert.ok(at(push) < at(check), "after the push");
   assert.ok(at(check) < at(stepBlock(job, "Record the digest")), "before the digest is recorded");
   assert.ok(at(check) < at(stepBlock(job, "Upload the digest")), "before the digest is uploaded");
-  assert.match(check, /\n {10}TESTED: \$\{\{ steps\.load\.outputs\.imageid \}\}\n/, "TESTED is the load build's image ID");
-  assert.match(check, /\n {10}PUSHED: \$\{\{ steps\.push\.outputs\.imageid \}\}\n/, "PUSHED is the push build's image ID");
+  assert.match(check, /\n {10}TESTED: \$\{\{ steps\.load\.outputs\.digest \}\}\n/, "TESTED is the load build's manifest digest");
+  assert.match(check, /\n {10}PUSHED: \$\{\{ steps\.push\.outputs\.digest \}\}\n/, "PUSHED is the push build's manifest digest");
+  assert.doesNotMatch(check, /outputs\.imageid/, "imageid is a config or a manifest digest depending on the exporter");
   const script = check.match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
   assert.ok(script, `a run: | script in\n${check}`);
   const a = `sha256:${"a".repeat(64)}`;
