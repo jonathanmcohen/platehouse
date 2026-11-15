@@ -473,13 +473,13 @@ test("the release build job fails when the pushed image is not the one it tested
   const b = `sha256:${"b".repeat(64)}`;
   const run = (env) =>
     spawnSync("bash", ["-eo", "pipefail", "-c", script], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
-  assert.equal(run({ TESTED: a, PUSHED: a }).status, 0, "the same image ID passes");
+  assert.equal(run({ TESTED: a, PUSHED: a }).status, 0, "the same manifest digest passes");
   for (const [why, env] of [
-    ["a different image ID", { TESTED: a, PUSHED: b }],
-    ["no pushed image ID", { TESTED: a, PUSHED: "" }],
-    ["no tested image ID", { TESTED: "", PUSHED: a }],
-    ["neither image ID", { TESTED: "", PUSHED: "" }],
-    ["image IDs that are not sha256 digests", { TESTED: "x", PUSHED: "x" }],
+    ["a different manifest digest", { TESTED: a, PUSHED: b }],
+    ["no pushed manifest digest", { TESTED: a, PUSHED: "" }],
+    ["no tested manifest digest", { TESTED: "", PUSHED: a }],
+    ["neither manifest digest", { TESTED: "", PUSHED: "" }],
+    ["manifest digests that are not sha256 digests", { TESTED: "x", PUSHED: "x" }],
   ]) {
     const r = run(env);
     assert.notEqual(r.status, 0, `${why} fails the job`);
