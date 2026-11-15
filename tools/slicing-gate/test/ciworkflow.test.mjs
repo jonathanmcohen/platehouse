@@ -340,6 +340,88 @@ test("the app image job runs the release workflow's Trivy gate on the image it b
   assert.ok(app.indexOf("test-app-image.sh \"$IMAGE\" healthy") < app.indexOf(`name: ${TRIVY_GATE}`));
 });
 
+// Every Trivy step in both workflows (the gates and release.yml's full report)
+// installs one exact Trivy version, the same in all of them, rather than the
+// action's default, which lags (v0.36.0 of the action installs v0.70.0).
+test("every Trivy step in ci.yml and release.yml sets the same exact Trivy version", () => {
+  const steps = [text(), readFileSync(RELEASE, "utf8")].flatMap((t) =>
+    t.split(/\n(?= {6}- )/).filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)),
+  );
+  assert.equal(steps.length, 3, "the CI gate, the release gate and the release full report");
+  const versions = steps.map((s) => stepInputs(s).inputs.version);
+  for (const v of versions) assert.match(v ?? "", /^v\d+\.\d+\.\d+$/, `an exact version: ${v}`);
+  assert.equal(new Set(versions).size, 1, `one version in all of them: ${versions.join(", ")}`);
+});
+
+// The build cache would otherwise keep the runtime stage's apt-get upgrade
+// layer for as long as the base digest and that line stay the same, so later
+// Debian fixes would never reach the image. OS_UPDATES_STAMP is used in that
+// RUN, and a new value rebuilds it: release.yml passes one unique to the run
+// (run id and attempt), so every release takes Debian's current fixes, and
+// the CI App image job passes the UTC date, so PR builds refresh daily and
+// stay cached within a day.
+const DOCKERFILE = join(ROOT, "docker", "app.Dockerfile");
+const STAMP_CI = "OS_UPDATES_STAMP=${{ steps.os-updates.outputs.stamp }}";
+const STAMP_RELEASE = "OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}";
+
+// The steps of a job (or workflow) block that build docker/app.Dockerfile.
+const appBuilds = (block) =>
+  block
+    .split(/\n(?= {6}- )/)
+    .filter((s) => /\n {8}uses: docker\/build-push-action@/.test(s) && /\n {10}file: docker\/app\.Dockerfile\n/.test(s));
+
+test("the runtime stage's apt-get upgrade uses OS_UPDATES_STAMP, so a new value rebuilds it", () => {
+  const d = readFileSync(DOCKERFILE, "utf8");
+  const runtimeAt = d.lastIndexOf("\nFROM ${BASE}\n");
+  assert.ok(runtimeAt !== -1, "the runtime stage");
+  const build = d.slice(0, runtimeAt);
+  const runtime = d.slice(runtimeAt);
+  assert.doesNotMatch(build, /\nARG OS_UPDATES_STAMP/, "the build stage does not take it");
+  const argAt = runtime.search(/\nARG OS_UPDATES_STAMP(=\S*)?\n/);
+  const upgradeAt = runtime.indexOf("apt-get -y upgrade");
+  assert.ok(argAt !== -1 && upgradeAt !== -1 && argAt < upgradeAt, "declared in the runtime stage before the upgrade");
+  // The RUN instruction holding the upgrade, joined across its continuations.
+  const runAt = runtime.lastIndexOf("\nRUN ", upgradeAt);
+  const run = runtime.slice(runAt, runtime.indexOf("\n\n", upgradeAt));
+  assert.match(run, /\$\{?OS_UPDATES_STAMP\}?/, `the upgrade RUN uses it:\n${run}`);
+});
+
+test("the CI App image build passes the UTC date as OS_UPDATES_STAMP, from a step run before it", () => {
+  const app = jobBlock(text(), "app-image");
+  const builds = appBuilds(app);
+  assert.equal(builds.length, 1, "one app image build in the job");
+  assert.equal(stepInputs(builds[0]).inputs["build-args"], STAMP_CI);
+  const stamp = app.split(/\n(?= {6}- )/).filter((s) => /\n {8}id: os-updates\n/.test(s));
+  assert.equal(stamp.length, 1, "one step with id os-updates");
+  assert.ok(app.indexOf(stamp[0]) < app.indexOf(builds[0]), "it runs before the build");
+  // Run its script and read what it wrote: today's UTC date, YYYY-MM-DD.
+  const script = stamp[0].match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
+  assert.ok(script, `a run: | script in\n${stamp[0]}`);
+  const dir = mkdtempSync(join(tmpdir(), "ci-stamp-"));
+  try {
+    const out = join(dir, "github-output");
+    writeFileSync(out, "");
+    const before = new Date().toISOString().slice(0, 10);
+    const r = spawnSync("bash", ["-eo", "pipefail", "-c", script], {
+      env: { ...process.env, GITHUB_OUTPUT: out },
+      encoding: "utf8",
+    });
+    const after = new Date().toISOString().slice(0, 10);
+    assert.equal(r.status, 0, r.stderr);
+    const written = readFileSync(out, "utf8").match(/^stamp=(.*)$/m)?.[1];
+    assert.match(written ?? "", /^\d{4}-\d{2}-\d{2}$/, `stamp=YYYY-MM-DD in ${readFileSync(out, "utf8")}`);
+    assert.ok(written === before || written === after, `today's UTC date, got ${written}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("both release builds pass a per-run OS_UPDATES_STAMP, the same in each", () => {
+  const builds = appBuilds(readFileSync(RELEASE, "utf8"));
+  assert.equal(builds.length, 2, "the load build and the push by digest");
+  for (const b of builds) assert.equal(stepInputs(b).inputs["build-args"], STAMP_RELEASE, b);
+});
+
 // Runs the changes job's script in bash with git stubbed, and returns the gate
 // output it wrote. The git diff stub behaves as real git does with renames
 // detected (diff.renames defaults to true): each moved [from, to] pair prints
