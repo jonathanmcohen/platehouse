@@ -1010,11 +1010,12 @@ const GH_RELEASES_STUB = [
 const release = (tag, extra = {}) => JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets: [], ...extra });
 
 for (const [name, env, want] of [
-  ["a schedule builds the latest release", { EVENT: "schedule", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest" }],
-  ["a tag push builds the latest release", { EVENT: "push", REF: "refs/tags/v0.1.0", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest" }],
-  ["a prerelease tag push builds too", { EVENT: "push", REF: "refs/tags/v0.0.0-test", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest" }],
-  ["a dispatch with no version builds the latest release", { EVENT: "workflow_dispatch", INPUT_VERSION: "", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest" }],
-  ["a dispatch with orca_version builds that release", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5.0", BYTAG: release("v2.5.0") }, { version: "2.5.0", call: "releases/tags/v2.5.0" }],
+  ["a schedule builds the latest release", { EVENT: "schedule", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a plain tag push builds the latest release and moves stable", { EVENT: "push", REF: "refs/tags/v0.1.0", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a prerelease tag push builds but leaves stable alone", { EVENT: "push", REF: "refs/tags/v0.1.0-rc.1", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "false" }],
+  ["a prerelease tag with a hyphenated label leaves stable alone", { EVENT: "push", REF: "refs/tags/v0.0.0-test", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "false" }],
+  ["a dispatch with no version builds the latest release", { EVENT: "workflow_dispatch", INPUT_VERSION: "", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a dispatch with orca_version builds that release", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5.0", BYTAG: release("v2.5.0") }, { version: "2.5.0", call: "releases/tags/v2.5.0", stable: "true" }],
   ["a beta tag is refused", { EVENT: "schedule", LATEST: release("v2.6.0-beta1") }, { fail: /is not vX\.Y\.Z/ }],
   ["a release candidate tag is refused", { EVENT: "schedule", LATEST: release("v2.6.0-rc.1") }, { fail: /is not vX\.Y\.Z/ }],
   ["a tag without the v is refused", { EVENT: "schedule", LATEST: release("2.6.0") }, { fail: /is not vX\.Y\.Z/ }],
@@ -1039,6 +1040,7 @@ for (const [name, env, want] of [
     } else {
       assert.equal(r.status, 0, r.log);
       assert.equal(r.outputs.version, want.version);
+      assert.equal(r.outputs.stable, want.stable, "whether stable moves");
       assert.match(r.calls, new RegExp(`^gh api repos/OrcaSlicer/OrcaSlicer/${want.call.replace(/\./g, "\\.")}$`, "m"));
     }
   });
@@ -1178,7 +1180,9 @@ for (const [name, version, env, want] of [
 }
 
 // The registry is the state: a schedule stops when orca-X.Y.Z exists; a tag
-// push or a dispatch always builds. Only "not found" means it does not exist.
+// push or a dispatch always builds and never asks the registry, so GHCR's
+// answer for a package that does not exist yet cannot block it (Jon,
+// 2026-11-15). Only "not found" means the tag does not exist.
 const DOCKER_INSPECT_STUB = [
   "docker() {",
   '  echo "docker $*" >> "$CALLS"',
@@ -1191,14 +1195,16 @@ const NOT_FOUND = "ERROR: ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1: n
 for (const [name, env, want] of [
   ["a schedule stops when orca-X.Y.Z exists", { EVENT: "schedule", INSPECT_STATUS: "0" }, { build: "false", upToDate: true }],
   ["a schedule builds when orca-X.Y.Z is not found", { EVENT: "schedule", INSPECT_STATUS: "1", INSPECT_ERR: NOT_FOUND }, { build: "true" }],
-  ["a tag push builds when orca-X.Y.Z exists", { EVENT: "push", INSPECT_STATUS: "0" }, { build: "true" }],
-  ["a dispatch builds when orca-X.Y.Z exists", { EVENT: "workflow_dispatch", INSPECT_STATUS: "0" }, { build: "true" }],
-  ["any other registry error fails the run", { EVENT: "schedule", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: denied: denied" }, { fail: /could not tell whether/ }],
-  ["an error on a tag push fails it too", { EVENT: "push", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: unexpected status 500" }, { fail: /could not tell whether/ }],
+  ["a tag push builds without asking the registry", { EVENT: "push", INSPECT_STATUS: "0" }, { build: "true", noCall: true }],
+  ["a dispatch builds without asking the registry", { EVENT: "workflow_dispatch", INSPECT_STATUS: "0" }, { build: "true", noCall: true }],
+  ["any other registry error fails a daily run", { EVENT: "schedule", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: denied: denied" }, { fail: /could not tell whether/ }],
+  ["a registry that would deny does not block a tag push", { EVENT: "push", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: denied: denied" }, { build: "true", noCall: true }],
+  ["a registry that would deny does not block a dispatch", { EVENT: "workflow_dispatch", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: unexpected status 500" }, { build: "true", noCall: true }],
 ]) {
   test(`slicer-image registry check: ${name}`, () => {
     const r = runSlicerStep("detect", "Check the registry", { stubs: DOCKER_INSPECT_STUB, env: { VERSION: "2.5.1", ...env } });
-    assert.match(r.calls, /^docker buildx imagetools inspect ghcr\.io\/jonathanmcohen\/platehouse-slicer:orca-2\.5\.1 /m);
+    if (want.noCall) assert.equal(r.calls, "", "the registry is not asked");
+    else assert.match(r.calls, /^docker buildx imagetools inspect ghcr\.io\/jonathanmcohen\/platehouse-slicer:orca-2\.5\.1 /m);
     if (want.fail) {
       assert.notEqual(r.status, 0, r.log);
       assert.match(r.log, want.fail);
@@ -1210,6 +1216,49 @@ for (const [name, env, want] of [
     }
   });
 }
+
+test("slicer-image: detect logs in to GHCR on daily runs only, and hands its stable decision to the tag step", () => {
+  const detect = jobBlock(slicerText(), "detect");
+  const login = stepBlock(detect, "Log in to GHCR");
+  assert.match(login, /\n {8}if: \$\{\{ github\.event_name == 'schedule' \}\}\n/);
+  assert.ok(detect.includes("\n      stable: ${{ steps.pick.outputs.stable }}\n"), "detect outputs stable");
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  assert.match(tag, /\n {10}MOVE_STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
+});
+
+// Jon, 2026-11-15: a report-only Trivy scan of the built image before any
+// push, at release.yml's action and Trivy version; it can never fail the job.
+const SLICER_TRIVY = "Trivy report (informational, does not fail the job)";
+
+test("slicer-image: the Trivy report runs before any push and cannot fail the job", () => {
+  const job = jobBlock(slicerText(), "build");
+  const step = stepBlock(job, SLICER_TRIVY);
+  const ours = stepInputs(step);
+  const gate = stepInputs(stepBlock(readFileSync(RELEASE, "utf8"), TRIVY_GATE));
+  assert.equal(ours.uses, gate.uses, "the same action at the same tag as release.yml");
+  assert.equal(ours.inputs.version, gate.inputs.version, "the same Trivy version as release.yml");
+  assert.deepEqual(ours.inputs, {
+    "image-ref": "${{ env.LOCAL }}",
+    severity: "HIGH,CRITICAL",
+    "ignore-unfixed": "true",
+    "exit-code": '"0"',
+    format: "table",
+    "cache-dir": "${{ runner.temp }}/trivy-cache",
+    version: gate.inputs.version,
+  });
+  // Two guards: findings never set a failing exit code, and an error in the
+  // action itself (a database download) does not fail the job either.
+  assert.match(step, /\n {8}continue-on-error: true\n/);
+  assert.doesNotMatch(step, /\n {8}if:/, "it runs whenever the smoke slice passed");
+  // No id: its outcome must never be taken for the step that failed the job.
+  assert.doesNotMatch(step, /\n {8}id:/);
+  const steps = jobSteps(job);
+  const at = (name) => steps.findIndex((s) => s.startsWith(`      - name: ${name}\n`));
+  assert.ok(at("Smoke slice") < at(SLICER_TRIVY), "after the smoke slice");
+  assert.ok(at(SLICER_TRIVY) < at("Log in to GHCR"), "before the login");
+  assert.ok(at(SLICER_TRIVY) < at("Push by digest"), "before the push");
+  assert.equal(steps.filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)).length, 1, "one Trivy step, and no gate");
+});
 
 // Both builds take the version and the two resolved pins from detect; the load
 // build is tagged locally, the push goes by digest with no tag.
@@ -1325,7 +1374,7 @@ const DIGEST = `sha256:${sha("d")}`;
 const tagRun = (env) =>
   runSlicerStep("build", "Tag the image and move stable", {
     stubs: DOCKER_TAG_STUB,
-    env: { VERSION: "2.5.1", RUN_NUMBER: "42", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", MOVE_STABLE: "true", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
   });
 
 test("slicer-image tag: version tags, then stable, every one a carbon copy of the tested digest", () => {
@@ -1342,12 +1391,26 @@ test("slicer-image tag: version tags, then stable, every one a carbon copy of th
   assert.match(r.summary, new RegExp(`orca-2\\.5\\.1, orca-2\\.5\\.1-r42, stable`));
 });
 
+test("slicer-image tag: a prerelease tag's run pushes the version tags and leaves stable alone", () => {
+  const r = tagRun({ MOVE_STABLE: "false" });
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n"), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+  ]);
+  assert.doesNotMatch(r.calls, /:stable/, "stable is neither moved nor read");
+  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\n- stable not moved \(prerelease tag\)/);
+});
+
 for (const [name, env, want] of [
   ["a version tag read back at another digest leaves stable alone", { D_ORCA: `sha256:${sha("e")}` }, { stable: false }],
   ["a run tag read back at another digest leaves stable alone", { D_RUN: `sha256:${sha("e")}` }, { stable: false }],
   ["stable read back at another digest fails", { D_STABLE: `sha256:${sha("e")}` }, { stable: true }],
   ["no digest fails before any tag", { DIGEST: "" }, { stable: false, noCall: true }],
   ["a malformed version fails before any tag", { VERSION: "2.5.1-beta" }, { stable: false, noCall: true }],
+  ["no stable decision from detect fails before any tag", { MOVE_STABLE: "" }, { stable: false, noCall: true }],
+  ["a stable decision that is not true or false fails before any tag", { MOVE_STABLE: "yes" }, { stable: false, noCall: true }],
 ]) {
   test(`slicer-image tag: ${name}`, () => {
     const r = tagRun(env);

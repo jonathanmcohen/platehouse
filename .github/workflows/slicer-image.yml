@@ -3,8 +3,8 @@
 # Keeps ghcr.io/jonathanmcohen/platehouse-slicer current with OrcaSlicer:
 #
 #   detect: pick the Orca version -> resolve its pins -> check the registry
-#   build:  build (load) -> smoke slice -> push by digest
-#           -> check the pushed image is the one tested
+#   build:  build (load) -> smoke slice -> Trivy report (never fails)
+#           -> push by digest -> check the pushed image is the one tested
 #           -> tag orca-X.Y.Z and orca-X.Y.Z-r<run number> -> move stable
 #   report-failure: when detect or build failed, open an issue (or comment on
 #           the open one with the same title)
@@ -13,12 +13,15 @@
 # - daily at 05:00 UTC. It reads OrcaSlicer's latest release (the API leaves
 #   out drafts and prereleases) and needs its tag to be vX.Y.Z. When
 #   platehouse-slicer:orca-X.Y.Z already exists the run stops there: the
-#   registry is the state, so there is no bot PR and nothing to commit.
+#   registry is the state, so there is no bot PR and nothing to commit. Only
+#   the daily run asks the registry.
 # - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
-#   the slicer wrapper ships with the release. It always builds.
+#   the slicer wrapper ships with the release. It always builds. A prerelease
+#   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and orca-X.Y.Z-r<run number> but
+#   leaves stable alone (Jon, 2026-11-15); a plain vX.Y.Z tag moves it.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
-#   release. It always builds. force_fail fails the smoke slice on purpose
-#   after it ran, to test the failure path.
+#   release. It always builds and moves stable. force_fail fails the smoke
+#   slice on purpose after it ran, to test the failure path.
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
 #
@@ -46,7 +49,9 @@
 # (docker/build-push-action's digest output, never imageid; PR #217) must
 # equal the tested build's, or the job fails before any tag. Then orca-X.Y.Z
 # and orca-X.Y.Z-r<run number> are pointed at that digest and read back, and
-# only then stable. imagetools create runs with --prefer-index=false so each
+# only then stable (not on a prerelease tag). Before any push a Trivy scan
+# reports fixable HIGH and CRITICAL findings in the job log; it is a report
+# and never fails the job. imagetools create runs with --prefer-index=false so each
 # tag is a carbon copy of the pushed manifest (by default a single source is
 # wrapped in a new index, whose digest would not be the tested one). A failed
 # digest check leaves the pushed digest untagged in the package; nothing points
@@ -110,6 +115,7 @@ jobs:
       packages: read
     outputs:
       version: ${{ steps.pick.outputs.version }}
+      stable: ${{ steps.pick.outputs.stable }}
       orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}
       orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}
       build: ${{ steps.registry.outputs.build }}
@@ -133,13 +139,21 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
+            # stable moves on daily and manual runs and on a plain vX.Y.Z tag;
+            # a prerelease tag publishes the orca tags and leaves stable alone.
+            stable=true
             if [ "$EVENT" = "push" ]; then
               re='^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
               if [[ ! "$REF" =~ $re ]]; then
                 echo "::error::${REF} is not a semver tag vMAJOR.MINOR.PATCH[-prerelease]; nothing is built"
                 exit 1
               fi
+              if [[ ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                stable=false
+                echo "${REF#refs/tags/} is a prerelease tag: stable will not move"
+              fi
             fi
+            echo "stable=${stable}" >>"$GITHUB_OUTPUT"
             if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
               if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 echo "::error::orca_version '${INPUT_VERSION}' is not X.Y.Z"
@@ -223,8 +237,12 @@ jobs:
             echo "refs/tags/v${VERSION}: commit ${orca_src_sha}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/pins.log"
 
+      # Only a daily run asks the registry. A tag push or a manual run always
+      # builds, so GHCR's answer for a package that does not exist yet can
+      # never block it.
       - name: Log in to GHCR
         id: login
+        if: ${{ github.event_name == 'schedule' }}
         uses: docker/login-action@v4.8.0
         with:
           registry: ghcr.io
@@ -232,7 +250,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # "not found" from the registry is the only answer that means the tag
-      # does not exist; any other error stops the run rather than guessing.
+      # does not exist; any other error stops the daily run rather than
+      # guessing.
       - name: Check the registry
         id: registry
         env:
@@ -241,6 +260,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
+            if [ "$EVENT" != "schedule" ]; then
+              echo "A ${EVENT} run always builds; the registry is not asked"
+              echo "build=true" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
             ref="${IMAGE}:orca-${VERSION}"
             status=0
             out="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
@@ -255,7 +279,7 @@ jobs:
               echo "::error::could not tell whether ${ref} exists (exit ${status}); nothing is built"
               exit 1
             fi
-            if [ "$EVENT" = "schedule" ] && [ "$exists" = "true" ]; then
+            if [ "$exists" = "true" ]; then
               build=false
               echo "Up to date: ${ref} is already published"
               echo "Up to date: \`${ref}\` is already published." >>"$GITHUB_STEP_SUMMARY"
@@ -403,6 +427,25 @@ jobs:
             echo "The smoke slice passed for OrcaSlicer ${VERSION}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/smoke.log"
 
+      # A report only (Jon, 2026-11-15): fixable HIGH and CRITICAL findings in
+      # the built image, as a table in this log, before anything is pushed.
+      # It never fails the job: exit-code 0, and continue-on-error covers the
+      # action itself failing (a Trivy database download, say). Same action
+      # and Trivy version as release.yml. The cache stays in the runner's temp
+      # folder, outside the checkout, so it never reaches the push build's
+      # context.
+      - name: Trivy report (informational, does not fail the job)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
+
       - name: Log in to GHCR
         id: login
         uses: docker/login-action@v4.8.0
@@ -457,13 +500,15 @@ jobs:
             echo "The pushed image is the tested image, manifest ${TESTED}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/check.log"
 
-      # 5) The version tags, read back; then stable, read back. A carbon copy
-      #    each (--prefer-index=false), so every tag is the tested digest.
+      # 5) The version tags, read back; then stable, read back, unless this is
+      #    a prerelease tag's run (MOVE_STABLE false). A carbon copy each
+      #    (--prefer-index=false), so every tag is the tested digest.
       - name: Tag the image and move stable
         id: tag
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
           RUN_NUMBER: ${{ github.run_number }}
+          MOVE_STABLE: ${{ needs.detect.outputs.stable }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
@@ -473,6 +518,10 @@ jobs:
             fi
             if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$RUN_NUMBER" =~ ^[0-9]+$ ]]; then
               echo "::error::version '${VERSION}' or run number '${RUN_NUMBER}' is malformed"
+              exit 1
+            fi
+            if [ "$MOVE_STABLE" != "true" ] && [ "$MOVE_STABLE" != "false" ]; then
+              echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
               exit 1
             fi
             src="${IMAGE}@${DIGEST}"
@@ -488,15 +537,22 @@ jobs:
               -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}" "$src"
             readback "${IMAGE}:orca-${VERSION}"
             readback "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}"
-            docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
-            readback "${IMAGE}:stable"
+            tags="orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER}"
+            if [ "$MOVE_STABLE" = "true" ]; then
+              docker buildx imagetools create --prefer-index=false -t "${IMAGE}:stable" "$src"
+              readback "${IMAGE}:stable"
+              tags="${tags}, stable"
+            else
+              echo "A prerelease tag's run: stable is left where it was"
+            fi
             {
               echo "### Published ${IMAGE} for OrcaSlicer ${VERSION}"
               echo ""
               echo "- digest: \`${DIGEST}\`"
-              echo "- tags: orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER}, stable"
+              echo "- tags: ${tags}"
+              if [ "$MOVE_STABLE" != "true" ]; then echo "- stable not moved (prerelease tag)"; fi
             } >>"$GITHUB_STEP_SUMMARY"
-            echo "Published orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER} and stable at ${DIGEST}"
+            echo "Published ${tags} at ${DIGEST}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/tag.log"
 
       # For a failed build step there is no kept log, so its tail comes from

@@ -72,8 +72,11 @@ for that version and smoke-slices generated plates in the built image. Only when
 slices does it push `orca-X.Y.Z` and `orca-X.Y.Z-r<run number>` and move `stable` to the same
 digest. It also runs on every release tag, at the latest Orca release, so a change to the slicer
 ships with the release, and it can be run by hand from the Actions tab (a version, or a forced
-failure to test the failure path). When a run fails, no tag is created or moved, `stable` stays
-where it was, and the workflow opens an issue titled "Slicer image failed for OrcaSlicer X.Y.Z".
+failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the two
+`orca-` tags but leaves `stable` alone; a plain `vX.Y.Z` tag moves it. Before anything is pushed,
+a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a report and never
+fails the run. When a run fails, no tag is created or moved, `stable` stays where it was, and
+the workflow opens an issue titled "Slicer image failed for OrcaSlicer X.Y.Z".
 
 ### Rolling the slicer back
 
@@ -99,8 +102,8 @@ Watchtower on Hades then pulls the image `stable` now names. Every build also ke
 point `stable` at the previous `-r` tag of that version instead.
 
 The daily run leaves a rollback alone: it builds only when an Orca release has no `orca-X.Y.Z`
-tag yet. A release tag or a run by hand always builds, and moves `stable` again when its smoke
-slice passes.
+tag yet. A plain release tag or a run by hand always builds, and moves `stable` again when its
+smoke slice passes.
 
 ## Layout
 
