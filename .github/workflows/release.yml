@@ -207,7 +207,7 @@ jobs:
             exit 1
           fi
           if [[ "$PUSHED" != "$TESTED" ]]; then
-            echo "::error::the pushed manifest ${PUSHED} is not the tested manifest ${TESTED}: the config or a layer differs between the two builds, so the pushed image was never smoke-tested or scanned. Re-run the release."
+            echo "::error::the pushed manifest ${PUSHED} is not the tested manifest ${TESTED}, so the pushed image is not proven to be the one smoke-tested and scanned. The manifests differ in the config, a layer, or only the manifest media type or layer compression. Compare the exporting manifest and exporting config lines of both builds in this job log: if the configs and layers match, the exporters disagree on format and a re-run will fail the same way; otherwise re-run the release."
             exit 1
           fi
           echo "The pushed image is the tested image, manifest ${TESTED}"

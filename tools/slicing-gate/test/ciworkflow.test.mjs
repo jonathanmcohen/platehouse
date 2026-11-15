@@ -449,6 +449,10 @@ test("both release builds pass a per-run OS_UPDATES_STAMP, the same in each", ()
 // config digest and its imageid falls back to the manifest digest, while the
 // push's imageid is the config digest, so identical images never matched
 // (release run 43724090714, amd64).
+// This test pins the wiring only: both sides read outputs.digest and nothing
+// reads imageid, so a revert fails it. It does not model what each exporter
+// reports; that is proven only by a live release run, where both arches must
+// pass this step.
 const RELEASE_SAME_IMAGE = "Check the pushed image is the one tested";
 
 test("the release build job fails when the pushed image is not the one it tested", () => {
