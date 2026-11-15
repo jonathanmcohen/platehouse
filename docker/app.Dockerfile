@@ -116,7 +116,17 @@ LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/plateho
 # apt retrying a failed download 10 times as the other images do (#147), and
 # the package lists removed afterwards. Only this stage needs it: nothing from
 # the build stage's OS reaches the image, only /src.
-RUN printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
+#
+# OS_UPDATES_STAMP is used in this RUN so that a new value rebuilds it: the
+# build cache would otherwise keep this layer for as long as the base digest
+# and this line stay the same, and later Debian fixes would never reach the
+# image. release.yml passes a value unique to the run (run id and attempt), so
+# every release takes Debian's current fixes; the CI App image job passes the
+# UTC date, so pull request builds refresh daily and stay cached within a day.
+# A plain docker build with no value uses "local".
+ARG OS_UPDATES_STAMP=local
+RUN echo "Debian updates, stamp ${OS_UPDATES_STAMP}" \
+ && printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' > /etc/apt/apt.conf.d/80retries \
  && apt-get update --error-on=any \
  && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade --no-install-recommends \
       -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
