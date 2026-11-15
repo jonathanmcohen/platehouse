@@ -358,8 +358,9 @@ test("every Trivy step in ci.yml and release.yml sets the same exact Trivy versi
 // Debian fixes would never reach the image. OS_UPDATES_STAMP is used in that
 // RUN, and a new value rebuilds it: release.yml passes one unique to the run
 // (run id and attempt), so every release takes Debian's current fixes, and
-// the CI App image job passes the UTC date, so PR builds refresh daily and
-// stay cached within a day.
+// the CI App image job passes the UTC date plus the run attempt, so PR builds
+// refresh daily, stay cached within a day, and a re-run of a failed job
+// refreshes too.
 const DOCKERFILE = join(ROOT, "docker", "app.Dockerfile");
 const STAMP_CI = "OS_UPDATES_STAMP=${{ steps.os-updates.outputs.stamp }}";
 const STAMP_RELEASE = "OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}";
@@ -386,7 +387,7 @@ test("the runtime stage's apt-get upgrade uses OS_UPDATES_STAMP, so a new value 
   assert.match(run, /\$\{?OS_UPDATES_STAMP\}?/, `the upgrade RUN uses it:\n${run}`);
 });
 
-test("the CI App image build passes the UTC date as OS_UPDATES_STAMP, from a step run before it", () => {
+test("the CI App image build passes the UTC date and run attempt as OS_UPDATES_STAMP, from a step run before it", () => {
   const app = jobBlock(text(), "app-image");
   const builds = appBuilds(app);
   assert.equal(builds.length, 1, "one app image build in the job");
@@ -394,23 +395,38 @@ test("the CI App image build passes the UTC date as OS_UPDATES_STAMP, from a ste
   const stamp = app.split(/\n(?= {6}- )/).filter((s) => /\n {8}id: os-updates\n/.test(s));
   assert.equal(stamp.length, 1, "one step with id os-updates");
   assert.ok(app.indexOf(stamp[0]) < app.indexOf(builds[0]), "it runs before the build");
-  // Run its script and read what it wrote: today's UTC date, YYYY-MM-DD.
+  // Run its script and read what it wrote: today's UTC date and the run
+  // attempt, YYYY-MM-DD-N. The attempt is what lets a re-run of a failed job
+  // take Debian's current fixes instead of the day's cached upgrade layer (#216).
   const script = stamp[0].match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
   assert.ok(script, `a run: | script in\n${stamp[0]}`);
   const dir = mkdtempSync(join(tmpdir(), "ci-stamp-"));
-  try {
+  const run = (attempt) => {
     const out = join(dir, "github-output");
     writeFileSync(out, "");
-    const before = new Date().toISOString().slice(0, 10);
-    const r = spawnSync("bash", ["-eo", "pipefail", "-c", script], {
-      env: { ...process.env, GITHUB_OUTPUT: out },
-      encoding: "utf8",
-    });
-    const after = new Date().toISOString().slice(0, 10);
-    assert.equal(r.status, 0, r.stderr);
-    const written = readFileSync(out, "utf8").match(/^stamp=(.*)$/m)?.[1];
-    assert.match(written ?? "", /^\d{4}-\d{2}-\d{2}$/, `stamp=YYYY-MM-DD in ${readFileSync(out, "utf8")}`);
-    assert.ok(written === before || written === after, `today's UTC date, got ${written}`);
+    const env = { ...process.env, GITHUB_OUTPUT: out };
+    delete env.GITHUB_RUN_ATTEMPT;
+    if (attempt !== undefined) env.GITHUB_RUN_ATTEMPT = attempt;
+    const r = spawnSync("bash", ["-eo", "pipefail", "-c", script], { env, encoding: "utf8" });
+    return { r, written: readFileSync(out, "utf8").match(/^stamp=(.*)$/m)?.[1] };
+  };
+  try {
+    for (const attempt of ["1", "3"]) {
+      const before = new Date().toISOString().slice(0, 10);
+      const { r, written } = run(attempt);
+      const after = new Date().toISOString().slice(0, 10);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(written ?? "", /^\d{4}-\d{2}-\d{2}-\d+$/, `stamp=YYYY-MM-DD-N, got ${written}`);
+      assert.ok(
+        written === `${before}-${attempt}` || written === `${after}-${attempt}`,
+        `today's UTC date and attempt ${attempt}, got ${written}`,
+      );
+    }
+    // Without the attempt the step fails rather than writing a stamp that a
+    // re-run would repeat.
+    const { r, written } = run(undefined);
+    assert.notEqual(r.status, 0, "fails when GITHUB_RUN_ATTEMPT is unset");
+    assert.equal(written, undefined, "and writes no stamp");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

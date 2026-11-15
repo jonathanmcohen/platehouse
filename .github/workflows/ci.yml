@@ -565,11 +565,14 @@ jobs:
       # The runtime stage's apt-get upgrade is rebuilt whenever
       # OS_UPDATES_STAMP changes (docker/app.Dockerfile). Today's UTC date
       # makes pull request builds take Debian's fixes once a day and stay
-      # cached within the day; release.yml passes a value unique to each run.
+      # cached within the day. The run attempt is added so that re-running a
+      # job whose Trivy gate failed on the day's cached layer (Debian shipped a
+      # fix after the first build) rebuilds it with Debian's current fixes.
+      # release.yml passes a value unique to each run.
       - name: Date the Debian updates
         id: os-updates
         run: |
-          echo "stamp=$(date -u +%Y-%m-%d)" >>"$GITHUB_OUTPUT"
+          echo "stamp=$(date -u +%Y-%m-%d)-${GITHUB_RUN_ATTEMPT:?}" >>"$GITHUB_OUTPUT"
       - name: Build the app image
         uses: docker/build-push-action@v7.4.0
         with:

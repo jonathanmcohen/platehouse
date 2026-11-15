@@ -122,7 +122,8 @@ LABEL org.opencontainers.image.source="https://github.com/jonathanmcohen/plateho
 # and this line stay the same, and later Debian fixes would never reach the
 # image. release.yml passes a value unique to the run (run id and attempt), so
 # every release takes Debian's current fixes; the CI App image job passes the
-# UTC date, so pull request builds refresh daily and stay cached within a day.
+# UTC date and the run attempt, so pull request builds refresh daily, stay
+# cached within a day, and a re-run of a failed job refreshes too.
 # A plain docker build with no value uses "local".
 ARG OS_UPDATES_STAMP=local
 RUN echo "Debian updates, stamp ${OS_UPDATES_STAMP}" \
