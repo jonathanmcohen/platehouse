@@ -422,6 +422,50 @@ test("both release builds pass a per-run OS_UPDATES_STAMP, the same in each", ()
   for (const b of builds) assert.equal(stepInputs(b).inputs["build-args"], STAMP_RELEASE, b);
 });
 
+// The smoke test and the Trivy gate run on the load build, and the push by
+// digest builds the image a second time. The apt-get upgrade layer talks to
+// the network, so if it missed the cache in the second build, the pushed
+// image would hold packages neither check saw. A step after the push compares
+// the two builds' image IDs (config digests, which name every layer's
+// content) and fails the job, before the digest is recorded or uploaded, when
+// they differ or either is missing.
+const RELEASE_SAME_IMAGE = "Check the pushed image is the one tested";
+
+test("the release build job fails when the pushed image is not the one it tested", () => {
+  const job = jobBlock(readFileSync(RELEASE, "utf8"), "build");
+  const steps = job.split(/\n(?= {6}- )/);
+  const [load, push] = appBuilds(job);
+  assert.match(load, /\n {8}id: load\n/, "the load build has id load");
+  assert.match(stepInputs(load).inputs.load ?? "", /^true$/, "the step with id load is the load build");
+  assert.match(push, /\n {8}id: push\n/, "the push build has id push");
+  const check = stepBlock(job, RELEASE_SAME_IMAGE);
+  assert.doesNotMatch(check, /\n {8}(if|continue-on-error):/, "nothing softens the check");
+  const at = (s) => steps.indexOf(s);
+  assert.ok(at(push) < at(check), "after the push");
+  assert.ok(at(check) < at(stepBlock(job, "Record the digest")), "before the digest is recorded");
+  assert.ok(at(check) < at(stepBlock(job, "Upload the digest")), "before the digest is uploaded");
+  assert.match(check, /\n {10}TESTED: \$\{\{ steps\.load\.outputs\.imageid \}\}\n/, "TESTED is the load build's image ID");
+  assert.match(check, /\n {10}PUSHED: \$\{\{ steps\.push\.outputs\.imageid \}\}\n/, "PUSHED is the push build's image ID");
+  const script = check.match(/\n {8}run: \|\n((?: {10}.*\n?)+)/)?.[1]?.replace(/^ {10}/gm, "");
+  assert.ok(script, `a run: | script in\n${check}`);
+  const a = `sha256:${"a".repeat(64)}`;
+  const b = `sha256:${"b".repeat(64)}`;
+  const run = (env) =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", script], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+  assert.equal(run({ TESTED: a, PUSHED: a }).status, 0, "the same image ID passes");
+  for (const [why, env] of [
+    ["a different image ID", { TESTED: a, PUSHED: b }],
+    ["no pushed image ID", { TESTED: a, PUSHED: "" }],
+    ["no tested image ID", { TESTED: "", PUSHED: a }],
+    ["neither image ID", { TESTED: "", PUSHED: "" }],
+    ["image IDs that are not sha256 digests", { TESTED: "x", PUSHED: "x" }],
+  ]) {
+    const r = run(env);
+    assert.notEqual(r.status, 0, `${why} fails the job`);
+    assert.match(r.stdout + r.stderr, /::error::/, `${why} prints an error annotation`);
+  }
+});
+
 // Runs the changes job's script in bash with git stubbed, and returns the gate
 // output it wrote. The git diff stub behaves as real git does with renames
 // detected (diff.renames defaults to true): each moved [from, to] pair prints
