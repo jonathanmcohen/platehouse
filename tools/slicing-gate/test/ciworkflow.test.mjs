@@ -3,10 +3,12 @@
 // failed at the fetch stage's first Node call), the changes job that decides
 // when that job runs, and the workspace jobs with their zero-test guard (build
 // plan Task 3). Read as text: the gate has no YAML parser and needs no install
-// step. Shell steps are run in bash with their tools stubbed.
+// step. Shell steps are run in bash with their tools stubbed. The tests at the
+// end pin release.yml's pushed-image check and slicer-image.yml (build plan
+// Task 25) the same way.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -804,3 +806,940 @@ for (const [stepName, label] of [
     assert.doesNotMatch(r.stdout, /No tests ran/);
   });
 }
+
+// ---------------------------------------------------------------------------
+// slicer-image.yml (build plan Task 25; AC-037). Watches OrcaSlicer's releases,
+// builds apps/slicer/Dockerfile for a version, smoke-slices generated plates in
+// the built image and, only on a pass, pushes orca-X.Y.Z, orca-X.Y.Z-r<run> and
+// moves stable to that digest; on a failure it opens an issue. Each shell step
+// is run in bash with gh, git, docker and pnpm stubbed. None of this runs the
+// workflow on GitHub: a dispatch or a schedule needs the file on main, and the
+// plan's Steps 1 and 2 are the live proof.
+const SLICER = join(ROOT, ".github", "workflows", "slicer-image.yml");
+const slicerText = () => readFileSync(SLICER, "utf8");
+const SLICER_DOCKERFILE = readFileSync(join(ROOT, "apps", "slicer", "Dockerfile"), "utf8");
+const dockerfilePin = (name) => SLICER_DOCKERFILE.match(new RegExp(`^ARG ${name}=(\\S+)$`, "m"))?.[1];
+const ORCA_ASSET = (v) => `OrcaSlicer_Linux_AppImage_Ubuntu2404_V${v}.AppImage`;
+const sha = (c) => c.repeat(64);
+const commit = (c) => c.repeat(40);
+
+// The workflow's top-level env: block as a map.
+function workflowEnv(t) {
+  const m = t.match(/\nenv:\n((?: {2}\S.*\n)+)/);
+  assert.ok(m, "a top-level env: block");
+  return Object.fromEntries(
+    m[1]
+      .trimEnd()
+      .split("\n")
+      .map((l) => {
+        const [, k, v] = l.match(/^ {2}([\w]+): (.+)$/);
+        return [k, v];
+      }),
+  );
+}
+
+// Runs one step of slicer-image.yml in bash, after the given stub functions,
+// with the workflow's env, a scratch RUNNER_TEMP, GITHUB_OUTPUT and
+// GITHUB_STEP_SUMMARY, and CALLS, a file the stubs append to. Returns the exit
+// status, the output, the step outputs, the summary, the stub calls, the logs
+// the step kept in $RUNNER_TEMP/logs and the named files from its directory.
+function runSlicerStep(job, stepName, { env = {}, stubs = [], cwd, setup, files = [] } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "slicer-image-"));
+  try {
+    const work = cwd ?? join(dir, "work");
+    if (!cwd) mkdirSync(work);
+    setup?.(work, dir);
+    const out = join(dir, "github-output");
+    const summary = join(dir, "step-summary");
+    const calls = join(dir, "calls");
+    for (const f of [out, summary, calls]) writeFileSync(f, "");
+    const t = slicerText();
+    const script = ["set -eo pipefail", ...stubs, stepScript(jobBlock(t, job), stepName)].join("\n");
+    const r = spawnSync("bash", ["-c", script], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        ...workflowEnv(t),
+        RUNNER_TEMP: dir,
+        GITHUB_OUTPUT: out,
+        GITHUB_STEP_SUMMARY: summary,
+        CALLS: calls,
+        ...env,
+      },
+    });
+    const outputs = {};
+    for (const line of readFileSync(out, "utf8").split("\n")) {
+      const i = line.indexOf("=");
+      if (i > 0) outputs[line.slice(0, i)] = line.slice(i + 1);
+    }
+    const logsDir = join(dir, "logs");
+    const logs = existsSync(logsDir)
+      ? Object.fromEntries(readdirSync(logsDir).map((f) => [f, readFileSync(join(logsDir, f), "utf8")]))
+      : {};
+    const read = Object.fromEntries(
+      files.map((f) => [f, existsSync(join(work, f)) ? readFileSync(join(work, f), "utf8") : null]),
+    );
+    return {
+      status: r.status,
+      log: `${r.stdout}${r.stderr}`,
+      outputs,
+      summary: readFileSync(summary, "utf8"),
+      calls: readFileSync(calls, "utf8"),
+      logs,
+      files: read,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// The steps of a job block, each from its "- name:" line.
+const jobSteps = (block) => block.split(/\n(?= {6}- )/).slice(1);
+const stepIds = (block) => [...block.matchAll(/\n {8}id: ([\w-]+)\n/g)].map((m) => m[1]);
+
+// A step's multi-line build-args: | block as a list of lines.
+function buildArgs(step) {
+  const m = step.match(/\n {10}build-args: \|\n((?: {12}.+\n)+)/);
+  assert.ok(m, `build-args: | in\n${step}`);
+  return m[1].trimEnd().split("\n").map((l) => l.trim());
+}
+
+test("slicer-image: runs daily at 05:00 UTC, by hand with orca_version and force_fail, and on release tags", () => {
+  const on = onBlock(slicerText());
+  assert.match(on, /^ {2}schedule:\n {4}- cron: "0 5 \* \* \*"\n/m, `daily at 05:00 UTC:\n${on}`);
+  assert.match(on, /^ {2}workflow_dispatch:\n/m);
+  assert.match(
+    on,
+    /\n {6}orca_version:\n {8}description: .+\n {8}required: false\n {8}default: ""\n {8}type: string\n/,
+    "orca_version is an optional string",
+  );
+  assert.match(
+    on,
+    /\n {6}force_fail:\n {8}description: .+\n {8}required: false\n {8}default: false\n {8}type: boolean\n/,
+    "force_fail is a boolean, off by default",
+  );
+  assert.match(on, /^ {2}push:\n {4}tags:\n {6}- "v\*\.\*\.\*"\n(?! {6}- )/m, "push of a v*.*.* tag only");
+  assert.doesNotMatch(on, /branches:|pull_request/, "no branch pushes and no pull requests");
+});
+
+// The plan's permissions are contents: read, packages: write and issues: write.
+// Each job takes only what it uses: the registry check reads packages, only
+// the build job writes them, and only the failure report writes issues.
+test("slicer-image: each job holds only the permissions it uses, within the plan's three", () => {
+  const t = slicerText();
+  assert.match(t, /^permissions:\n {2}contents: read\n(?! {2}\S)/m, "top-level permissions are contents: read alone");
+  const perms = (id) => {
+    const m = jobBlock(t, id).match(/\n {4}permissions:\n((?: {6}\S.*\n)+)/);
+    assert.ok(m, `${id} sets its own permissions`);
+    return Object.fromEntries(m[1].trimEnd().split("\n").map((l) => l.trim().split(": ")));
+  };
+  assert.deepEqual(perms("detect"), { contents: "read", packages: "read" });
+  assert.deepEqual(perms("build"), { contents: "read", packages: "write" });
+  assert.deepEqual(perms("report-failure"), { issues: "write" });
+  const jobs = [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
+  assert.deepEqual(jobs, ["detect", "build", "report-failure"]);
+  assert.doesNotMatch(t, /\bactions: (read|write)|\bwrite-all|\bread-all/, "nothing else is granted");
+  for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
+});
+
+// Exact release tags (Jon's locked rule), and the same tag as release.yml for
+// every action release.yml also uses, else the same as ci.yml.
+test("slicer-image: every action is pinned to the exact tag release.yml or ci.yml uses", () => {
+  const pins = (t) => {
+    const out = {};
+    for (const [, u] of t.matchAll(/uses: (\S+)/g)) {
+      const [name, tag] = u.split("@");
+      (out[name] ??= new Set()).add(tag);
+    }
+    return out;
+  };
+  const ours = pins(slicerText());
+  const release = pins(readFileSync(RELEASE, "utf8"));
+  const ci = pins(text());
+  assert.ok(Object.keys(ours).length >= 7, Object.keys(ours).join(", "));
+  for (const [name, tags] of Object.entries(ours)) {
+    assert.equal(tags.size, 1, `${name} at one tag: ${[...tags].join(", ")}`);
+    const [tag] = tags;
+    assert.match(tag, /^v\d+\.\d+\.\d+$/, `${name}@${tag} is not an exact release tag`);
+    const theirs = release[name] ?? ci[name];
+    assert.ok(theirs, `${name} is used by release.yml or ci.yml`);
+    assert.deepEqual([...theirs], [tag], `${name} at the tag ${release[name] ? "release.yml" : "ci.yml"} uses`);
+  }
+});
+
+test("slicer-image: jobs run on ubuntu-24.04 with timeouts, chained with !cancelled()", () => {
+  const t = slicerText();
+  for (const id of ["detect", "build", "report-failure"]) {
+    const b = jobBlock(t, id);
+    assert.match(b, /\n {4}runs-on: ubuntu-24\.04\n/, `${id} runs on ubuntu-24.04`);
+    const m = b.match(/\n {4}timeout-minutes: (\d+)\n/);
+    assert.ok(m && Number(m[1]) > 0 && Number(m[1]) <= 90, `${id} has a timeout`);
+  }
+  const build = jobBlock(t, "build");
+  assert.match(build, /\n {4}needs: detect\n/);
+  assert.ok(
+    build.includes(
+      "if: ${{ !cancelled() && needs.detect.result == 'success' && needs.detect.outputs.build == 'true' }}",
+    ),
+    "build runs only after detect succeeded and said to build",
+  );
+  const report = jobBlock(t, "report-failure");
+  assert.match(report, /\n {4}needs: \[detect, build\]\n/);
+  assert.ok(
+    report.includes("if: ${{ !cancelled() && (needs.detect.result == 'failure' || needs.build.result == 'failure') }}"),
+    "the report runs when either job failed",
+  );
+  assert.match(t, /\nconcurrency:\n {2}group: slicer-image\n {2}cancel-in-progress: false\n/, "no publish is cancelled part way");
+  assert.doesNotMatch(t, /[^\x00-\x7F]/, "ASCII only");
+});
+
+// Pick the version: the latest release, or orca_version on a dispatch; the tag
+// must be vX.Y.Z and the release published. A tag push must be semver.
+const GH_RELEASES_STUB = [
+  "gh() {",
+  '  echo "gh $*" >> "$CALLS"',
+  '  if [ "${GH_STATUS:-0}" != 0 ]; then echo "gh: Not Found (HTTP 404)" >&2; return "$GH_STATUS"; fi',
+  '  case "$2" in',
+  '    repos/OrcaSlicer/OrcaSlicer/releases/latest) printf "%s" "$LATEST" ;;',
+  '    repos/OrcaSlicer/OrcaSlicer/releases/tags/*) printf "%s" "$BYTAG" ;;',
+  "    *) return 99 ;;",
+  "  esac",
+  "}",
+];
+const release = (tag, extra = {}) => JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets: [], ...extra });
+
+for (const [name, env, want] of [
+  ["a schedule builds the latest release", { EVENT: "schedule", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a plain tag push builds the latest release and moves stable", { EVENT: "push", REF: "refs/tags/v0.1.0", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a prerelease tag push builds but leaves stable alone", { EVENT: "push", REF: "refs/tags/v0.1.0-rc.1", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "false" }],
+  ["a prerelease tag with a hyphenated label leaves stable alone", { EVENT: "push", REF: "refs/tags/v0.0.0-test", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "false" }],
+  ["a dispatch with no version builds the latest release", { EVENT: "workflow_dispatch", INPUT_VERSION: "", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a dispatch with orca_version builds that release", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5.0", BYTAG: release("v2.5.0") }, { version: "2.5.0", call: "releases/tags/v2.5.0", stable: "true" }],
+  ["a beta tag is refused", { EVENT: "schedule", LATEST: release("v2.6.0-beta1") }, { fail: /is not vX\.Y\.Z/ }],
+  ["a release candidate tag is refused", { EVENT: "schedule", LATEST: release("v2.6.0-rc.1") }, { fail: /is not vX\.Y\.Z/ }],
+  ["a tag without the v is refused", { EVENT: "schedule", LATEST: release("2.6.0") }, { fail: /is not vX\.Y\.Z/ }],
+  ["a nightly tag is refused", { EVENT: "schedule", LATEST: release("nightly-builds") }, { fail: /is not vX\.Y\.Z/ }],
+  ["a release marked prerelease is refused", { EVENT: "schedule", LATEST: release("v2.6.0", { prerelease: true }) }, { fail: /draft or a prerelease/ }],
+  ["a draft is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.6.0", BYTAG: release("v2.6.0", { draft: true }) }, { fail: /draft or a prerelease/ }],
+  ["a malformed orca_version is refused before any lookup", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5" }, { fail: /orca_version '2\.5' is not X\.Y\.Z/, noCall: true }],
+  ["an orca_version with shell in it is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5.0;id" }, { fail: /is not X\.Y\.Z/, noCall: true }],
+  ["a release whose tag is not the one asked for is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5.0", BYTAG: release("v2.5.1") }, { fail: /asked for v2\.5\.0/ }],
+  ["a tag push that is not semver is refused", { EVENT: "push", REF: "refs/tags/v1.2.3.4" }, { fail: /is not a semver tag/, noCall: true }],
+  ["a tag push of vtest.x.y is refused", { EVENT: "push", REF: "refs/tags/vtest.x.y" }, { fail: /is not a semver tag/, noCall: true }],
+  ["a failed API call fails the step", { EVENT: "schedule", GH_STATUS: "1" }, { fail: /HTTP 404/ }],
+]) {
+  test(`slicer-image version pick: ${name}`, () => {
+    const r = runSlicerStep("detect", "Pick the version", { stubs: GH_RELEASES_STUB, env: { REF: "refs/heads/main", ...env } });
+    if (want.fail) {
+      assert.notEqual(r.status, 0, r.log);
+      assert.match(r.log, want.fail);
+      if (want.noCall) assert.equal(r.calls, "", "no API call");
+      // The step's own log is kept for the failure issue.
+      assert.match(r.logs["pick.log"] ?? "", want.fail);
+    } else {
+      assert.equal(r.status, 0, r.log);
+      assert.equal(r.outputs.version, want.version);
+      assert.equal(r.outputs.stable, want.stable, "whether stable moves");
+      assert.match(r.calls, new RegExp(`^gh api repos/OrcaSlicer/OrcaSlicer/${want.call.replace(/\./g, "\\.")}$`, "m"));
+    }
+  });
+}
+
+// Resolve the Orca pins: the asset's sha256 from GitHub's API, the tag's commit
+// from git ls-remote, peeled when the tag is annotated; fail closed on
+// anything else. For the Dockerfile's own version they must equal its pins.
+const GIT_LSREMOTE_STUB = [
+  "git() {",
+  '  echo "git $*" >> "$CALLS"',
+  '  [ "$1" = ls-remote ] || return 99',
+  '  printf "%s" "$REFS"',
+  "}",
+];
+const asset = (name, extra = {}) => ({ name, state: "uploaded", digest: `sha256:${sha("a")}`, ...extra });
+const withAssets = (v, assets) => release(`v${v}`, { assets });
+
+for (const [name, version, env, want] of [
+  [
+    "a lightweight tag gives the tag's commit",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"))]), REFS: `${commit("c")}\trefs/tags/v2.5.1\n` },
+    { sha256: sha("a"), src: commit("c") },
+  ],
+  [
+    "an annotated tag gives the peeled commit",
+    "2.5.1",
+    {
+      BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"))]),
+      REFS: `${commit("d")}\trefs/tags/v2.5.1\n${commit("e")}\trefs/tags/v2.5.1^{}\n`,
+    },
+    { sha256: sha("a"), src: commit("e") },
+  ],
+  [
+    "only the amd64 Ubuntu 24.04 asset is taken, never the aarch64 one",
+    "2.5.1",
+    {
+      BYTAG: withAssets("2.5.1", [
+        asset("OrcaSlicer_Linux_AppImage_Ubuntu2404_aarch64_V2.5.1.AppImage", { digest: `sha256:${sha("b")}` }),
+        asset(ORCA_ASSET("2.5.1")),
+      ]),
+      REFS: `${commit("c")}\trefs/tags/v2.5.1\n`,
+    },
+    { sha256: sha("a"), src: commit("c") },
+  ],
+  [
+    "no matching asset fails",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset("OrcaSlicer_Linux_AppImage_Ubuntu2404_aarch64_V2.5.1.AppImage")]), REFS: `${commit("c")}\trefs/tags/v2.5.1\n` },
+    { fail: /no single asset named OrcaSlicer_Linux_AppImage_Ubuntu2404_V2\.5\.1\.AppImage/ },
+  ],
+  [
+    "an asset still uploading fails",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"), { state: "starter" })]), REFS: `${commit("c")}\trefs/tags/v2.5.1\n` },
+    { fail: /is not fully uploaded/ },
+  ],
+  [
+    "an asset with no digest fails",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"), { digest: null })]), REFS: `${commit("c")}\trefs/tags/v2.5.1\n` },
+    { fail: /records no sha256 digest/ },
+  ],
+  [
+    "an asset digest that is not sha256 fails",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"), { digest: `sha512:${sha("a")}` })]), REFS: `${commit("c")}\trefs/tags/v2.5.1\n` },
+    { fail: /records no sha256 digest/ },
+  ],
+  [
+    "a tag git cannot find fails",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"))]), REFS: "" },
+    { fail: /found no commit for refs\/tags\/v2\.5\.1/ },
+  ],
+  [
+    "a look-alike ref does not count",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"))]), REFS: `${commit("c")}\trefs/tags/x/refs/tags/v2.5.1\n` },
+    { fail: /found no commit/ },
+  ],
+  [
+    "a malformed commit fails",
+    "2.5.1",
+    { BYTAG: withAssets("2.5.1", [asset(ORCA_ASSET("2.5.1"))]), REFS: `${commit("c").slice(0, 12)}\trefs/tags/v2.5.1\n` },
+    { fail: /found no commit/ },
+  ],
+  [
+    "the Dockerfile's version passes when both pins match it",
+    dockerfilePin("ORCA_VERSION"),
+    {
+      BYTAG: withAssets(dockerfilePin("ORCA_VERSION"), [asset(ORCA_ASSET(dockerfilePin("ORCA_VERSION")), { digest: `sha256:${dockerfilePin("ORCA_SHA256")}` })]),
+      REFS: `${dockerfilePin("ORCA_SRC_SHA")}\trefs/tags/v${dockerfilePin("ORCA_VERSION")}\n`,
+    },
+    { sha256: dockerfilePin("ORCA_SHA256"), src: dockerfilePin("ORCA_SRC_SHA") },
+  ],
+  [
+    "the Dockerfile's version fails when the asset digest differs from its pin",
+    dockerfilePin("ORCA_VERSION"),
+    {
+      BYTAG: withAssets(dockerfilePin("ORCA_VERSION"), [asset(ORCA_ASSET(dockerfilePin("ORCA_VERSION")), { digest: `sha256:${sha("f")}` })]),
+      REFS: `${dockerfilePin("ORCA_SRC_SHA")}\trefs/tags/v${dockerfilePin("ORCA_VERSION")}\n`,
+    },
+    { fail: /apps\/slicer\/Dockerfile pins/ },
+  ],
+  [
+    "the Dockerfile's version fails when the tag moved off its pinned commit",
+    dockerfilePin("ORCA_VERSION"),
+    {
+      BYTAG: withAssets(dockerfilePin("ORCA_VERSION"), [asset(ORCA_ASSET(dockerfilePin("ORCA_VERSION")), { digest: `sha256:${dockerfilePin("ORCA_SHA256")}` })]),
+      REFS: `${commit("9")}\trefs/tags/v${dockerfilePin("ORCA_VERSION")}\n`,
+    },
+    { fail: /apps\/slicer\/Dockerfile pins/ },
+  ],
+]) {
+  test(`slicer-image pins: ${name}`, () => {
+    assert.match(version ?? "", /^\d+\.\d+\.\d+$/, "the Dockerfile pins a version");
+    const r = runSlicerStep("detect", "Resolve the Orca pins", {
+      cwd: ROOT,
+      stubs: [...GH_RELEASES_STUB, ...GIT_LSREMOTE_STUB],
+      env: { VERSION: version, ...env },
+    });
+    if (want.fail) {
+      assert.notEqual(r.status, 0, r.log);
+      assert.match(r.log, want.fail);
+      assert.equal(r.outputs.orca_sha256, undefined, "no pin is written");
+      assert.equal(r.outputs.orca_src_sha, undefined, "no pin is written");
+    } else {
+      assert.equal(r.status, 0, r.log);
+      assert.equal(r.outputs.orca_sha256, want.sha256);
+      assert.equal(r.outputs.orca_src_sha, want.src);
+      assert.match(r.calls, new RegExp(`^gh api repos/OrcaSlicer/OrcaSlicer/releases/tags/v${version.replace(/\./g, "\\.")}$`, "m"));
+      assert.match(r.calls, /^git ls-remote https:\/\/github\.com\/OrcaSlicer\/OrcaSlicer\.git /m);
+    }
+  });
+}
+
+// The registry is the state: a schedule stops when orca-X.Y.Z exists; a tag
+// push or a dispatch always builds and never asks the registry, so GHCR's
+// answer for a package that does not exist yet cannot block it (Jon,
+// 2026-11-15). Only "not found" means the tag does not exist.
+const DOCKER_INSPECT_STUB = [
+  "docker() {",
+  '  echo "docker $*" >> "$CALLS"',
+  '  if [ "$INSPECT_STATUS" = 0 ]; then echo "sha256:1111111111111111111111111111111111111111111111111111111111111111"; return 0; fi',
+  '  echo "$INSPECT_ERR" >&2',
+  '  return "$INSPECT_STATUS"',
+  "}",
+];
+const NOT_FOUND = "ERROR: ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1: not found";
+for (const [name, env, want] of [
+  ["a schedule stops when orca-X.Y.Z exists", { EVENT: "schedule", INSPECT_STATUS: "0" }, { build: "false", upToDate: true }],
+  ["a schedule builds when orca-X.Y.Z is not found", { EVENT: "schedule", INSPECT_STATUS: "1", INSPECT_ERR: NOT_FOUND }, { build: "true" }],
+  ["a tag push builds without asking the registry", { EVENT: "push", INSPECT_STATUS: "0" }, { build: "true", noCall: true }],
+  ["a dispatch builds without asking the registry", { EVENT: "workflow_dispatch", INSPECT_STATUS: "0" }, { build: "true", noCall: true }],
+  ["any other registry error fails a daily run", { EVENT: "schedule", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: denied: denied" }, { fail: /could not tell whether/ }],
+  ["a registry that would deny does not block a tag push", { EVENT: "push", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: denied: denied" }, { build: "true", noCall: true }],
+  ["a registry that would deny does not block a dispatch", { EVENT: "workflow_dispatch", INSPECT_STATUS: "1", INSPECT_ERR: "ERROR: unexpected status 500" }, { build: "true", noCall: true }],
+]) {
+  test(`slicer-image registry check: ${name}`, () => {
+    const r = runSlicerStep("detect", "Check the registry", { stubs: DOCKER_INSPECT_STUB, env: { VERSION: "2.5.1", ...env } });
+    if (want.noCall) assert.equal(r.calls, "", "the registry is not asked");
+    else assert.match(r.calls, /^docker buildx imagetools inspect ghcr\.io\/jonathanmcohen\/platehouse-slicer:orca-2\.5\.1 /m);
+    if (want.fail) {
+      assert.notEqual(r.status, 0, r.log);
+      assert.match(r.log, want.fail);
+      assert.equal(r.outputs.build, undefined);
+    } else {
+      assert.equal(r.status, 0, r.log);
+      assert.equal(r.outputs.build, want.build);
+      if (want.upToDate) assert.match(r.summary, /Up to date/);
+    }
+  });
+}
+
+test("slicer-image: detect logs in to GHCR on daily runs only, and hands its stable decision to the tag step", () => {
+  const detect = jobBlock(slicerText(), "detect");
+  const login = stepBlock(detect, "Log in to GHCR");
+  assert.match(login, /\n {8}if: \$\{\{ github\.event_name == 'schedule' \}\}\n/);
+  assert.ok(detect.includes("\n      stable: ${{ steps.pick.outputs.stable }}\n"), "detect outputs stable");
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  assert.match(tag, /\n {10}MOVE_STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
+});
+
+// Jon, 2026-11-15: a report-only Trivy scan of the built image before any
+// push, at release.yml's action and Trivy version; it can never fail the job.
+const SLICER_TRIVY = "Trivy report (informational, does not fail the job)";
+
+test("slicer-image: the Trivy report runs before any push and cannot fail the job", () => {
+  const job = jobBlock(slicerText(), "build");
+  const step = stepBlock(job, SLICER_TRIVY);
+  const ours = stepInputs(step);
+  const gate = stepInputs(stepBlock(readFileSync(RELEASE, "utf8"), TRIVY_GATE));
+  assert.equal(ours.uses, gate.uses, "the same action at the same tag as release.yml");
+  assert.equal(ours.inputs.version, gate.inputs.version, "the same Trivy version as release.yml");
+  assert.deepEqual(ours.inputs, {
+    "image-ref": "${{ env.LOCAL }}",
+    severity: "HIGH,CRITICAL",
+    "ignore-unfixed": "true",
+    "exit-code": '"0"',
+    format: "table",
+    "cache-dir": "${{ runner.temp }}/trivy-cache",
+    version: gate.inputs.version,
+  });
+  // Two guards: findings never set a failing exit code, and an error in the
+  // action itself (a database download) does not fail the job either.
+  assert.match(step, /\n {8}continue-on-error: true\n/);
+  assert.doesNotMatch(step, /\n {8}if:/, "it runs whenever the smoke slice passed");
+  // No id: its outcome must never be taken for the step that failed the job.
+  assert.doesNotMatch(step, /\n {8}id:/);
+  const steps = jobSteps(job);
+  const at = (name) => steps.findIndex((s) => s.startsWith(`      - name: ${name}\n`));
+  assert.ok(at("Smoke slice") < at(SLICER_TRIVY), "after the smoke slice");
+  assert.ok(at(SLICER_TRIVY) < at("Log in to GHCR"), "before the login");
+  assert.ok(at(SLICER_TRIVY) < at("Push by digest"), "before the push");
+  assert.equal(steps.filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)).length, 1, "one Trivy step, and no gate");
+});
+
+// Both builds take the version and the two resolved pins from detect; the load
+// build is tagged locally, the push goes by digest with no tag.
+test("slicer-image: both builds pass ORCA_VERSION, ORCA_SHA256 and ORCA_SRC_SHA from detect", () => {
+  const job = jobBlock(slicerText(), "build");
+  const builds = jobSteps(job).filter((s) => /\n {8}uses: docker\/build-push-action@/.test(s));
+  assert.equal(builds.length, 2, "the load build and the push by digest");
+  const [load, push] = builds;
+  const want = [
+    "ORCA_VERSION=${{ needs.detect.outputs.version }}",
+    "ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}",
+    "ORCA_SRC_SHA=${{ needs.detect.outputs.orca_src_sha }}",
+  ];
+  for (const b of builds) {
+    assert.deepEqual(buildArgs(b), want);
+    const { inputs } = stepInputs(b);
+    assert.equal(inputs.file, "apps/slicer/Dockerfile");
+    assert.equal(inputs.context, ".");
+    assert.equal(inputs.platforms, "linux/amd64", "amd64 only");
+    assert.equal(inputs.provenance, "false", "no build attestation (AC-094)");
+    // stepInputs stops at the multi-line build-args, so the cache lines are
+    // read directly.
+    assert.match(b, /\n {10}cache-from: type=gha,scope=slicer-image\n/);
+    assert.match(b, /\n {10}cache-to: type=gha,mode=max,scope=slicer-image\n/);
+  }
+  assert.match(load, /\n {8}id: load\n/);
+  assert.equal(stepInputs(load).inputs.load, "true");
+  assert.equal(stepInputs(load).inputs.tags, "${{ env.LOCAL }}");
+  assert.match(push, /\n {8}id: push\n/);
+  assert.equal(
+    stepInputs(push).inputs.outputs,
+    "type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true",
+  );
+  assert.equal(stepInputs(push).inputs.tags, undefined, "the push carries no tag");
+  for (const [k, v] of [
+    ["detect", "version: ${{ steps.pick.outputs.version }}"],
+    ["detect", "orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}"],
+    ["detect", "orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}"],
+    ["detect", "build: ${{ steps.registry.outputs.build }}"],
+  ]) {
+    assert.ok(jobBlock(slicerText(), k).includes(`\n      ${v}\n`), `${k} outputs ${v}`);
+  }
+});
+
+// Nothing reaches the registry before the smoke slice passed, test code never
+// runs with registry credentials on disk, and no tag exists before the
+// pushed-image check passed.
+test("slicer-image: build, smoke slice, login, push, check, then tag, in that order", () => {
+  const job = jobBlock(slicerText(), "build");
+  const ids = stepIds(job);
+  const order = ["load", "smoke", "login", "push", "check", "tag"];
+  assert.deepEqual(
+    ids.filter((i) => order.includes(i)),
+    order,
+  );
+  const at = (id) => job.indexOf(`\n        id: ${id}\n`);
+  for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} before ${order[i]}`);
+  assert.equal((slicerText().match(/docker buildx imagetools create/g) ?? []).length, 2, "the tag step alone creates tags");
+  const tag = stepBlock(job, "Tag the image and move stable");
+  assert.equal((tag.match(/docker buildx imagetools create/g) ?? []).length, 2);
+  for (const id of ["smoke", "check", "tag"]) {
+    const s = jobSteps(job).find((x) => x.includes(`\n        id: ${id}\n`));
+    assert.doesNotMatch(s, /\n {8}(if|continue-on-error):/, `nothing softens ${id}`);
+  }
+});
+
+// The pushed-image check, as in release.yml: manifest digests from the digest
+// output of both builds, never imageid (PR #217).
+test("slicer-image: the push fails unless its manifest digest is the smoke-sliced build's", () => {
+  const check = stepBlock(jobBlock(slicerText(), "build"), "Check the pushed image is the one tested");
+  assert.match(check, /\n {10}TESTED: \$\{\{ steps\.load\.outputs\.digest \}\}\n/);
+  assert.match(check, /\n {10}PUSHED: \$\{\{ steps\.push\.outputs\.digest \}\}\n/);
+  assert.doesNotMatch(slicerText(), /outputs\.imageid/, "imageid is never read");
+  const run = (env) => runSlicerStep("build", "Check the pushed image is the one tested", { env });
+  const a = `sha256:${sha("a")}`;
+  const b = `sha256:${sha("b")}`;
+  assert.equal(run({ TESTED: a, PUSHED: a }).status, 0, "the same manifest digest passes");
+  for (const [why, env] of [
+    ["a different manifest digest", { TESTED: a, PUSHED: b }],
+    ["no pushed manifest digest", { TESTED: a, PUSHED: "" }],
+    ["no tested manifest digest", { TESTED: "", PUSHED: a }],
+    ["manifest digests that are not sha256 digests", { TESTED: "x", PUSHED: "x" }],
+  ]) {
+    const r = run(env);
+    assert.notEqual(r.status, 0, `${why} fails the job`);
+    assert.match(r.log, /::error::/, `${why} prints an error annotation`);
+  }
+  // The digests release run 43724090714 logged for one image through the OCI
+  // and docker exporters (amd64): the digest output agrees, imageid does not.
+  const amd64 = MIXED_EXPORTER_RUN.amd64;
+  assert.equal(
+    run({ TESTED: buildOutputs(amd64.load.metadata).digest, PUSHED: buildOutputs(amd64.push.metadata).digest }).status,
+    0,
+  );
+});
+
+// Tagging: orca-X.Y.Z and orca-X.Y.Z-r<run> first, read back, then stable, read
+// back; each a carbon copy of the pushed digest.
+const DOCKER_TAG_STUB = [
+  "docker() {",
+  '  echo "docker $*" >> "$CALLS"',
+  '  if [ "$1 $2 $3" = "buildx imagetools inspect" ]; then',
+  '    case "$4" in',
+  '      *:stable) echo "$D_STABLE" ;;',
+  '      *-r[0-9]*) echo "$D_RUN" ;;',
+  '      *) echo "$D_ORCA" ;;',
+  "    esac",
+  "  fi",
+  "}",
+];
+const IMG = "ghcr.io/jonathanmcohen/platehouse-slicer";
+const DIGEST = `sha256:${sha("d")}`;
+const tagRun = (env) =>
+  runSlicerStep("build", "Tag the image and move stable", {
+    stubs: DOCKER_TAG_STUB,
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", MOVE_STABLE: "true", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
+  });
+
+test("slicer-image tag: version tags, then stable, every one a carbon copy of the tested digest", () => {
+  const r = tagRun({});
+  assert.equal(r.status, 0, r.log);
+  const calls = r.calls.trim().split("\n");
+  assert.deepEqual(calls, [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:stable ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:stable --format {{.Manifest.Digest}}`,
+  ]);
+  assert.match(r.summary, new RegExp(`orca-2\\.5\\.1, orca-2\\.5\\.1-r42, stable`));
+});
+
+test("slicer-image tag: a prerelease tag's run pushes the version tags and leaves stable alone", () => {
+  const r = tagRun({ MOVE_STABLE: "false" });
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n"), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+  ]);
+  assert.doesNotMatch(r.calls, /:stable/, "stable is neither moved nor read");
+  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\n- stable not moved \(prerelease tag\)/);
+  // The daily run will not promote it either, so the summary says what will.
+  assert.match(r.summary, /daily run will not move it/);
+  assert.match(r.summary, /plain release tag or a run by hand/);
+});
+
+// The tags the step pointed (or was pointing) at the digest, as the output the
+// failure issue reads. Each is recorded before its imagetools create, so a
+// create that fails part way still counts.
+for (const [name, env, want] of [
+  ["a full run records every tag", {}, "orca-2.5.1, orca-2.5.1-r42, stable"],
+  ["a prerelease run records the two version tags", { MOVE_STABLE: "false" }, "orca-2.5.1, orca-2.5.1-r42"],
+  ["a version tag read back wrong records the two version tags", { D_ORCA: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42"],
+  ["stable read back wrong records stable too", { D_STABLE: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42, stable"],
+  ["no digest records nothing", { DIGEST: "" }, undefined],
+  ["no stable decision records nothing", { MOVE_STABLE: "" }, undefined],
+]) {
+  test(`slicer-image tag records what it tagged: ${name}`, () => {
+    const r = tagRun(env);
+    assert.equal(r.outputs.tagged, want, r.log);
+  });
+}
+
+test("slicer-image: the build job hands the tags and digest to the failure issue", () => {
+  const t = slicerText();
+  const build = jobBlock(t, "build");
+  assert.match(build, /\n {4}outputs:\n/);
+  assert.ok(build.includes("\n      tagged: ${{ steps.tag.outputs.tagged }}\n"), "build outputs tagged");
+  assert.ok(build.includes("\n      digest: ${{ steps.push.outputs.digest }}\n"), "build outputs digest");
+  const issue = stepBlock(jobBlock(t, "report-failure"), "Open or update the issue");
+  assert.match(issue, /\n {10}TAGGED: \$\{\{ needs\.build\.outputs\.tagged \}\}\n/);
+  assert.match(issue, /\n {10}DIGEST: \$\{\{ needs\.build\.outputs\.digest \}\}\n/);
+  assert.match(issue, /\n {10}STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
+});
+
+for (const [name, env, want] of [
+  ["a version tag read back at another digest leaves stable alone", { D_ORCA: `sha256:${sha("e")}` }, { stable: false }],
+  ["a run tag read back at another digest leaves stable alone", { D_RUN: `sha256:${sha("e")}` }, { stable: false }],
+  ["stable read back at another digest fails", { D_STABLE: `sha256:${sha("e")}` }, { stable: true }],
+  ["no digest fails before any tag", { DIGEST: "" }, { stable: false, noCall: true }],
+  ["a malformed version fails before any tag", { VERSION: "2.5.1-beta" }, { stable: false, noCall: true }],
+  ["no stable decision from detect fails before any tag", { MOVE_STABLE: "" }, { stable: false, noCall: true }],
+  ["a stable decision that is not true or false fails before any tag", { MOVE_STABLE: "yes" }, { stable: false, noCall: true }],
+]) {
+  test(`slicer-image tag: ${name}`, () => {
+    const r = tagRun(env);
+    assert.notEqual(r.status, 0, r.log);
+    assert.match(r.log, /::error::/);
+    assert.equal(r.calls.includes(`-t ${IMG}:stable`), want.stable, "whether stable was moved");
+    if (want.noCall) assert.equal(r.calls, "", "no docker call");
+  });
+}
+
+// The smoke slice: the container harness against the image the load build
+// made, every plate of both generated fixtures; the same zero-test guard as
+// ci.yml; force_fail fails it on purpose after it ran.
+const PNPM_STUB = [
+  "pnpm() {",
+  '  echo "pnpm $*" >> "$CALLS"',
+  '  echo "SLICER_IMAGE=$SLICER_IMAGE SLICER_IMAGE_PREBUILT=$SLICER_IMAGE_PREBUILT" >> "$CALLS"',
+  '  if [ -n "$REPORT" ]; then printf "%s" "$REPORT" > smoke-report.json; fi',
+  '  return "$VITEST_STATUS"',
+  "}",
+];
+const smokeRun = (env) =>
+  runSlicerStep("build", "Smoke slice", {
+    stubs: PNPM_STUB,
+    env: { VERSION: "2.5.1", SLICER_IMAGE: "platehouse-slicer:smoke", SLICER_IMAGE_PREBUILT: "1", FORCE_FAIL: "", VITEST_STATUS: "0", ...env },
+  });
+
+test("slicer-image smoke: the step runs the smoke test file against the image the load build made", () => {
+  const job = jobBlock(slicerText(), "build");
+  const smoke = stepBlock(job, "Smoke slice");
+  assert.match(smoke, /\n {10}SLICER_IMAGE: \$\{\{ env\.LOCAL \}\}\n/);
+  assert.match(smoke, /\n {10}SLICER_IMAGE_PREBUILT: "1"\n/);
+  assert.match(smoke, /\n {10}FORCE_FAIL: \$\{\{ inputs\.force_fail \}\}\n/);
+  assert.equal(stepInputs(stepBlock(job, "Build (load)")).inputs.tags, "${{ env.LOCAL }}", "the image the load build tagged");
+  const r = smokeRun({ REPORT: JSON.stringify(vitestReport(5, 5, 0, 0)) });
+  assert.equal(r.status, 0, r.log);
+  assert.match(
+    r.calls,
+    /^pnpm exec vitest run --project container apps\/slicer\/test\/container\/smoke\.test\.ts --reporter=default --reporter=json --outputFile=smoke-report\.json$/m,
+  );
+  assert.match(r.calls, /^SLICER_IMAGE=platehouse-slicer:smoke SLICER_IMAGE_PREBUILT=1$/m);
+  assert.match(r.log, /smoke: 5 tests ran, 0 skipped, 5 collected/);
+  // The file the step names exists and slices both fixtures, and the harness
+  // honours the switch that stops it building its own image.
+  const smokeFile = join(ROOT, "apps", "slicer", "test", "container", "smoke.test.ts");
+  assert.ok(existsSync(smokeFile), "apps/slicer/test/container/smoke.test.ts exists");
+  const smokeTest = readFileSync(smokeFile, "utf8");
+  assert.ok(smokeTest.includes("{ plates: 2, filaments: 2 }"), "the 2-plate, 2-filament fixture");
+  assert.ok(smokeTest.includes("{ plates: 3, filaments: 4 }"), "the 3-plate, 4-filament fixture");
+  const harness = readFileSync(join(ROOT, "apps", "slicer", "test", "container", "support", "slicer.ts"), "utf8");
+  assert.ok(harness.includes('process.env.SLICER_IMAGE_PREBUILT === "1"'), "the harness reads SLICER_IMAGE_PREBUILT");
+  assert.match(r.logs["smoke.log"] ?? "", /The smoke slice passed for OrcaSlicer 2\.5\.1/);
+});
+
+for (const [name, env, want] of [
+  ["force_fail fails a passing smoke slice", { FORCE_FAIL: "true", REPORT: JSON.stringify(vitestReport(5, 5, 0, 0)) }, { status: 1, msg: /force_fail is set/ }],
+  ["a failed plate fails with vitest's exit code", { VITEST_STATUS: "7", REPORT: JSON.stringify(vitestReport(5, 4, 1, 0)) }, { status: 7, msg: /the smoke slice failed \(vitest exit 7\)/ }],
+  ["every test skipped fails with No tests ran", { REPORT: JSON.stringify(vitestReport(5, 0, 0, 5)) }, { status: 1, msg: /::error::No tests ran\n/ }],
+  ["no report fails with No tests ran", { REPORT: "" }, { status: 1, msg: /No tests ran \(vitest wrote no report\)/ }],
+  ["force_fail false passes", { FORCE_FAIL: "false", REPORT: JSON.stringify(vitestReport(5, 5, 0, 0)) }, { status: 0 }],
+]) {
+  test(`slicer-image smoke: ${name}`, () => {
+    const r = smokeRun(env);
+    assert.equal(r.status, want.status, r.log);
+    if (want.msg) {
+      assert.match(r.log, want.msg);
+      assert.match(r.logs["smoke.log"] ?? "", want.msg, "the kept log has the error for the issue");
+    }
+  });
+}
+
+// The log tail for the issue: each job's failure step lists every step with an
+// id, in order, and keeps the first failed one's tail.
+for (const [job, failStep] of [
+  ["detect", "Keep the failing step's log tail"],
+  ["build", "Keep the failing step's log tail"],
+]) {
+  test(`slicer-image ${job}: the failure step covers every step with an id, in order`, () => {
+    const b = jobBlock(slicerText(), job);
+    const fail = stepBlock(b, failStep);
+    assert.match(fail, /\n {8}if: \$\{\{ failure\(\) \}\}\n/);
+    const listed = [...fail.matchAll(/\n {12}([\w-]+)=\$\{\{ steps\.([\w-]+)\.outcome \}\}/g)];
+    for (const [, k, id] of listed) assert.equal(k, id);
+    const before = b.slice(0, b.indexOf(`- name: ${failStep}\n`));
+    assert.deepEqual(
+      listed.map((m) => m[1]),
+      stepIds(before),
+    );
+    const upload = stepBlock(b, "Upload the log tail");
+    assert.match(upload, /\n {8}if: \$\{\{ failure\(\) \}\}\n/);
+    assert.equal(stepInputs(upload).inputs.name, `failure-${job}`);
+    assert.equal(stepInputs(upload).inputs.path, `failure/${job}.txt`);
+  });
+}
+
+const tailRun = (job, outcomes, { logs = {}, stubs = [] } = {}) =>
+  runSlicerStep(job, "Keep the failing step's log tail", {
+    stubs,
+    env: { JOB: job, OUTCOMES: outcomes },
+    files: [`failure/${job}.txt`],
+    setup: (_work, dir) => {
+      mkdirSync(join(dir, "logs"));
+      for (const [f, body] of Object.entries(logs)) writeFileSync(join(dir, "logs", f), body);
+    },
+  });
+
+test("slicer-image failure tail: the first failed step's kept log, last 80 lines", () => {
+  const lines = Array.from({ length: 120 }, (_, i) => `line ${i + 1}`).join("\n");
+  const r = tailRun("build", "load=success smoke=failure login=skipped push=skipped check=skipped tag=skipped", {
+    logs: { "smoke.log": `${lines}\n` },
+  });
+  assert.equal(r.status, 0, r.log);
+  const out = r.files["failure/build.txt"];
+  assert.match(out, /^step: Smoke slice\n/);
+  assert.match(out, /\nline 41\n/);
+  assert.doesNotMatch(out, /\nline 40\n/);
+  assert.match(out, /\nline 120\n$/);
+});
+
+test("slicer-image failure tail: a failed build step's tail comes from buildx history", () => {
+  const stubs = [
+    "timeout() { shift; \"$@\"; }",
+    'docker() { echo "docker $*" >> "$CALLS"; echo "#14 ERROR: process did not complete successfully"; }',
+  ];
+  const r = tailRun("build", "load=failure smoke=skipped login=skipped push=skipped check=skipped tag=skipped", { stubs });
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.calls, /^docker buildx history logs$/m);
+  assert.match(r.files["failure/build.txt"], /^step: Build \(load\)\n#14 ERROR/);
+});
+
+test("slicer-image failure tail: a detect step with no kept log says so", () => {
+  const r = tailRun("detect", "pick=success pins=success login=failure registry=skipped");
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.files["failure/detect.txt"], /^step: Log in to GHCR\n\(no log was kept for this step; see the run's log\)\n$/);
+});
+
+// The issue: titled for the version, the tail in a code block, one open issue
+// per title (a repeat failure comments on it).
+const GH_ISSUE_STUB = [
+  "gh() {",
+  '  echo "gh $*" >> "$CALLS"',
+  '  case "$1 $2" in',
+  '    "issue list") printf "%s" "$ISSUES" ;;',
+  '    "issue create"|"issue comment") cp body.md posted.md ;;',
+  "    *) return 99 ;;",
+  "  esac",
+  "}",
+];
+const reportRun = (env, tails = {}) =>
+  runSlicerStep("report-failure", "Open or update the issue", {
+    stubs: GH_ISSUE_STUB,
+    env: {
+      REPO: "jonathanmcohen/platehouse",
+      VERSION: "2.5.1",
+      INPUT_VERSION: "",
+      EVENT: "schedule",
+      RUN_URL: "https://github.com/jonathanmcohen/platehouse/actions/runs/1",
+      ISSUES: "[]",
+      ...env,
+    },
+    files: ["posted.md"],
+    setup: (work) => {
+      if (Object.keys(tails).length) mkdirSync(join(work, "failure"));
+      for (const [f, body] of Object.entries(tails)) writeFileSync(join(work, "failure", f), body);
+    },
+  });
+
+test("slicer-image issue: opens 'Slicer image failed for OrcaSlicer X.Y.Z' with the failing step's tail", () => {
+  const r = reportRun({}, { "build.txt": "step: Smoke slice\n::error::the smoke slice failed (vitest exit 1)\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.match(
+    r.calls,
+    /^gh issue create --repo jonathanmcohen\/platehouse --title Slicer image failed for OrcaSlicer 2\.5\.1 --body-file body\.md$/m,
+  );
+  const body = r.files["posted.md"];
+  assert.match(body, /No tag was created or moved, so stable still points at the last image that passed/);
+  assert.match(body, /Run: https:\/\/github\.com\/jonathanmcohen\/platehouse\/actions\/runs\/1/);
+  assert.match(body, /```text\nstep: Smoke slice\n::error::the smoke slice failed \(vitest exit 1\)\n```/);
+  // A daily run that tagged nothing found no orca-X.Y.Z, so the next one retries.
+  assert.match(body, /or let the next daily run retry it\./);
+});
+
+// A failure after the tag step began: the orca tags may already point at the
+// new digest, and the daily run will then see orca-X.Y.Z and never retry.
+const TAG_FAIL = { "build.txt": "step: Tag the image and move stable\n::error::x\n" };
+test("slicer-image issue: a failure after the version tags lists them and says the daily run will not retry", () => {
+  const r = reportRun({ TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL);
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.doesNotMatch(body, /No tag was created/);
+  assert.doesNotMatch(body, /let the next daily run retry/);
+  assert.match(body, new RegExp(`orca-2\\.5\\.1, orca-2\\.5\\.1-r42`));
+  assert.match(body, new RegExp(`sha256:${sha("d")}`));
+  assert.match(body, /stable was not touched/);
+  assert.match(body, /run the workflow by hand \(Actions, slicer-image, Run workflow, orca_version 2\.5\.1\)/);
+  assert.match(body, /daily run will not retry it once orca-2\.5\.1 is in the registry, as this run may have left it/);
+});
+
+test("slicer-image issue: a failure after stable was tagged says stable may have moved", () => {
+  const r = reportRun({ TAGGED: "orca-2.5.1, orca-2.5.1-r42, stable", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL);
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.doesNotMatch(body, /stable was not touched/);
+  assert.match(body, /stable may now point at that digest/);
+  assert.match(body, /Rolling the slicer back/);
+});
+
+test("slicer-image issue: a prerelease tag's failure after tagging says a re-run leaves stable alone", () => {
+  const r = reportRun({ EVENT: "push", TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "false" }, TAG_FAIL);
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.match(body, /Re-run all jobs/);
+  assert.match(body, /a run by hand would move stable/);
+  assert.doesNotMatch(body, /let the next daily run retry/);
+});
+
+test("slicer-image issue: a failed run that was not daily does not promise a daily retry", () => {
+  const r = reportRun({ EVENT: "workflow_dispatch" }, { "build.txt": "step: Smoke slice\nx\n" });
+  assert.equal(r.status, 0, r.log);
+  const body = r.files["posted.md"];
+  assert.match(body, /No tag was created or moved/);
+  assert.doesNotMatch(body, /let the next daily run retry/);
+  assert.match(body, /retries this version only if orca-2\.5\.1 is not in the registry yet/);
+});
+
+test("slicer-image issue: a repeat failure comments on the open issue with the same title", () => {
+  const issues = JSON.stringify([
+    { number: 3, title: "Slicer image failed for OrcaSlicer 2.5.0" },
+    { number: 9, title: "Slicer image failed for OrcaSlicer 2.5.1" },
+  ]);
+  const r = reportRun({ ISSUES: issues }, { "build.txt": "step: Push by digest\nboom\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.calls, /^gh issue comment 9 --repo jonathanmcohen\/platehouse --body-file body\.md$/m);
+  assert.doesNotMatch(r.calls, /issue create/);
+});
+
+test("slicer-image issue: an open issue for another version does not count", () => {
+  const issues = JSON.stringify([{ number: 3, title: "Slicer image failed for OrcaSlicer 2.5.0" }]);
+  const r = reportRun({ ISSUES: issues }, { "detect.txt": "step: Check the registry\nx\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.calls, /^gh issue create /m);
+});
+
+for (const [name, env, title] of [
+  ["a detect failure before the version names the requested one", { VERSION: "", INPUT_VERSION: "2.6.0" }, "Slicer image failed for OrcaSlicer 2.6.0"],
+  ["a malformed requested version is not put in the title", { VERSION: "", INPUT_VERSION: "2.6;x" }, "Slicer image failed for OrcaSlicer (version not found)"],
+  ["no version at all says so", { VERSION: "", INPUT_VERSION: "" }, "Slicer image failed for OrcaSlicer (version not found)"],
+]) {
+  test(`slicer-image issue: ${name}`, () => {
+    const r = reportRun(env, { "detect.txt": "step: Pick the version\nx\n" });
+    assert.equal(r.status, 0, r.log);
+    assert.ok(r.calls.includes(`--title ${title} --body-file`), r.calls);
+  });
+}
+
+test("slicer-image issue: with no kept tail it says so, and a tail cannot break out of its code block", () => {
+  const none = reportRun({});
+  assert.equal(none.status, 0, none.log);
+  assert.match(none.files["posted.md"], /no log tail was kept/);
+  const fenced = reportRun({}, { "build.txt": "step: Smoke slice\n```\n# not a heading\n```\n" });
+  assert.equal(fenced.status, 0, fenced.log);
+  assert.equal((fenced.files["posted.md"].match(/```/g) ?? []).length, 2, "only the issue's own fence");
+  const report = jobBlock(slicerText(), "report-failure");
+  assert.match(stepBlock(report, "Download the log tail"), /\n {8}continue-on-error: true\n/);
+  assert.doesNotMatch(stepBlock(report, "Open or update the issue"), /\n {8}(if|continue-on-error):/);
+});
+
+// The rollback the plan puts in the README, as a carbon copy so stable's
+// digest is the old version's.
+test("slicer-image: the README holds the rollback command, and the workflow points to it", () => {
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  assert.ok(
+    readme.includes(
+      [
+        "docker buildx imagetools create --prefer-index=false \\",
+        "  -t ghcr.io/jonathanmcohen/platehouse-slicer:stable \\",
+        "  ghcr.io/jonathanmcohen/platehouse-slicer:orca-<previous>",
+      ].join("\n"),
+    ),
+    "the rollback command",
+  );
+  assert.match(slicerText(), /^# Rollback: README\.md, "Slicer image"\./m);
+  assert.match(readme, /^## Slicer image$/m);
+});
+
+// A failure in the tag step can leave the orca tags in place, and the daily run
+// never builds a version whose orca-X.Y.Z exists, prerelease-published ones
+// included. The README, the CHANGELOG and the workflow header must not say
+// otherwise.
+test("slicer-image: the docs do not claim a failure never tags, and say what the daily run will not do", () => {
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+  assert.doesNotMatch(readme, /When a run fails, no tag is created or moved/);
+  assert.doesNotMatch(changelog, /A failure tags nothing/);
+  assert.doesNotMatch(slicerText(), /On any failure stable is not touched/);
+  const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
+  assert.match(section, /lists the tags it had already pointed at the new digest/);
+  assert.match(section, /first published by a prerelease tag/);
+  assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
+});
