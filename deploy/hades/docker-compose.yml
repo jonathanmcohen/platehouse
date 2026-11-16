@@ -2,9 +2,15 @@
 # AC-093). This is the reviewed reference copy. platform-sre applies it, after
 # Jon's approval, as /opt/projects/docker/apps/platehouse/docker-compose.yml,
 # with a .env made from .env.example beside it. It follows Docker Compose
-# Conventions: three external networks, bind mounts under ${APPDATA}, no named
+# Conventions: external networks only, bind mounts under ${APPDATA}, no named
 # volumes, no host ports, map-style Traefik labels on the app only, and the
 # Watchtower label on every service.
+#
+# Networks. The app is on proxy (Traefik, and its way out to Pocket ID and
+# the bucket), internal-db and platehouse-slicer. It is not on Hades' shared
+# internal network, which holds Traefik and the Docker socket proxies (Jon,
+# 2026-11-16, after the PR #223 security review), and neither is the slicer.
+# The db is on internal-db only, the slicer on platehouse-slicer only.
 #
 # Three services:
 #   app     ${NAME}         the Platehouse server and web app, behind Traefik
@@ -14,10 +20,9 @@
 #
 # Before the first start (platform-sre, on Hades):
 #   1. The slicer's network. It is a dedicated internal network that holds the
-#      app and the slicer and nothing else. The slicer is not on Hades'
-#      shared internal network, which also holds Traefik and the Docker socket
-#      proxies (Jon, 2026-11-08, after the PR #36 security review). Like every
-#      network here it is external, so compose never creates it:
+#      app and the slicer and nothing else (Jon, 2026-11-08, after the PR #36
+#      security review). Like every network here it is external, so compose
+#      never creates it:
 #        docker network create --internal platehouse-slicer
 #   2. The app's bind-mount folders, owned by the app image's node user
 #      (uid 1000, gid 1000). If Docker creates them on first start they are
@@ -25,6 +30,9 @@
 #        mkdir -p /opt/projects/docker/appdata/platehouse/inbox /opt/projects/docker/appdata/platehouse/tmp
 #        chown 1000:1000 /opt/projects/docker/appdata/platehouse/inbox /opt/projects/docker/appdata/platehouse/tmp
 #      The Postgres entrypoint makes and owns platehouse-db itself.
+#   3. docker compose config, in the project folder with the real .env, exits
+#      0. mini01 has no docker, so this file has not been through compose
+#      before Hades.
 #
 # Deploys after the first start: docker compose up -d --no-deps app (Homelab
 # Lessons, "docker compose up -d reconciles more than you asked for"). A plain
@@ -34,15 +42,36 @@
 # Task 29 switches to the untagged app image and platehouse-slicer:stable
 # (Jon, 2026-11-15).
 #
-# Traefik settings this file cannot set, checked on Hades at apply time (PR
-# #156 security reviews): sanitizePath stays on and Traefik sends origin-form
-# request targets to the app (an absolute-form target would put a live link
-# token in a log); the https entrypoint's respondingTimeouts are long enough
-# for big uploads and downloads (Traefik v3's readTimeout defaults to 60s); a
-# slicer link whose file name had a / in it gets through Traefik. The router
-# below names its middleware chain in MIDDLEWARES, which must never carry
-# oidc-auth, compress or buffering: /api/v1/ and /s/ are cookieless (AC-082),
-# and /s/, /files/ and /blobs/ stream large files.
+# The router's middleware chain is written out below: the allowlist and the
+# headers, and never oidc-auth, compress or buffering, because /api/v1/ and
+# /s/ are cookieless (AC-082) and /s/, /files/ and /blobs/ stream large files.
+#
+# Checked on Hades at apply time, because this file cannot set or prove them
+# (platform-sre):
+#   - Traefik keeps sanitizePath on and sends origin-form request targets to
+#     the app (an absolute-form target would put a live link token in a log;
+#     PR #156 security reviews).
+#   - The https entrypoint has no entrypoint-level middlewares, so nothing is
+#     added in front of the chain above, and its respondingTimeouts are long
+#     enough for big uploads and downloads (Traefik v3's readTimeout defaults
+#     to 60s).
+#   - A slicer link whose file name had a / in it gets through Traefik.
+#   - docker network inspect platehouse-slicer shows Internal=true and exactly
+#     two containers, platehouse and platehouse-slicer; docker network
+#     inspect internal lists neither.
+#   - From the slicer, a TCP connect to a bare IP such as 1.1.1.1:443 fails,
+#     and TCP and UDP to the platehouse-slicer gateway address fail on every
+#     port the Hades host listens on (ss -ltnu).
+#   - The slicer's /proc/mounts shows /work with size=1g, noexec, nosuid and
+#     nodev; no other container runs as uid 10001; the first render logs
+#     "sandbox self-test: ok: Landlock ABI N" with N at 6 or above.
+#   - After the first import, slice, render and STEP convert, record the
+#     memory and pids peaks of the app and the slicer against their limits
+#     below: docker exec <container> cat /sys/fs/cgroup/memory.peak
+#     /sys/fs/cgroup/pids.peak /sys/fs/cgroup/pids.events (or docker stats
+#     during a large job, if a peak file is missing). pids.events should read
+#     max 0. A normal job near a limit means the limit is raised, not lived
+#     with.
 
 services:
   app:
@@ -57,16 +86,42 @@ services:
         condition: service_healthy
     networks:
       - proxy
-      - internal
       - internal-db
       - platehouse-slicer
+    # Locked down and limited (Jon, 2026-11-16, after the PR #223 security
+    # review). The app needs no capability: it listens on 3000 (above 1024)
+    # as the image's node user, uid 1000, starts no child process, and never
+    # changes a file's owner or its own user (apps/server/src read for
+    # listen, child_process, chown and setuid/setgid; its dependencies have
+    # no native module).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Starting limits, not measured; the header says how platform-sre records
+    # the peaks. The app parses untrusted 3MF zips and their images in its
+    # own process, and AC-035 says one bad file cannot starve Hades (8 CPUs,
+    # 22 GiB free at the gate). One worker per queue, so at worst an ingest
+    # and a render overlap: the 3MF ceilings let one ingest hold up to
+    # 128 MiB of thumbnails plus 5 MiB config entries and what they parse
+    # into; a render answer is read whole (an STL or GLB of up to 256 MiB,
+    # copied once into a Buffer); uploads and S3 transfers stream. With a
+    # Node baseline of a few hundred MiB that comes to roughly 1.1 GiB at
+    # worst (inferred from the code, not measured), so 2g leaves headroom and
+    # no swap. Node runs on one main thread, a 4-thread libuv pool and V8's
+    # helper threads, about 20 in all and no child processes, so 256 is far
+    # above normal and stops a runaway. cpus 2 keeps a hostile file's inflate
+    # and parse to a quarter of the host, beside the slicer's 4.
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
     # The Configuration contract (build plan part 1), read by
     # apps/server/src/config.ts. The server refuses to start, naming the key,
     # when a required value is missing or invalid. The database and the
-    # slicer are addressed by container name, not by service name: db and
-    # slicer are common service names on the shared internal-db and internal
-    # networks, and a service name there could resolve to another project's
-    # container.
+    # slicer are addressed by container name, not by service name: db is a
+    # common service name on the shared internal-db network, and a service
+    # name there could resolve to another project's container.
     environment:
       TZ: ${TZ:?set TZ in .env}
       PUBLIC_ORIGIN: https://${SUB:?set SUB in .env}.${DOMAIN:?set DOMAIN in .env}
@@ -105,12 +160,14 @@ services:
       start_period: 60s
     labels:
       traefik.enable: true
-      # The app is on four networks; Traefik reaches it on proxy.
+      # The app is on three networks; Traefik reaches it on proxy.
       traefik.docker.network: proxy
       traefik.http.routers.platehouse.entrypoints: https
       traefik.http.routers.platehouse.rule: Host(`${SUB}.${DOMAIN}`)
       traefik.http.routers.platehouse.tls: true
-      traefik.http.routers.platehouse.middlewares: ${MIDDLEWARES:?set MIDDLEWARES in .env}
+      # Written out, not a variable (Jon, 2026-11-16): the allowlist and the
+      # headers, both defined below, and nothing else.
+      traefik.http.routers.platehouse.middlewares: platehouse-allowlist@docker,platehouse-headers@docker
       traefik.http.routers.platehouse.service: platehouse
       traefik.http.services.platehouse.loadbalancer.server.port: ${PORT}
       # LAN and tailnet only (AC-082). With no ipStrategy, Traefik matches the
@@ -214,8 +271,6 @@ services:
 
 networks:
   proxy:
-    external: true
-  internal:
     external: true
   internal-db:
     external: true

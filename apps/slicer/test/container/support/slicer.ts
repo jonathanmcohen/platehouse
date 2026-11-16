@@ -1,8 +1,8 @@
 // Builds the slicer image and runs it the way Hades will (AC-035): read-only
 // root, a 1 GB tmpfs at /work mounted noexec, nosuid and nodev (nothing in a
 // job folder is ever run; Task 26 copies these options into compose), 4 CPUs
-// (fewer if the host has fewer), 4 GB of memory, no capabilities and
-// no-new-privileges. Uses the docker CLI rather than testcontainers, which has
+// (fewer if the host has fewer), 4 GB of memory, a 1024 process and thread
+// cap, no capabilities and no-new-privileges. Uses the docker CLI rather than testcontainers, which has
 // no read-only-root option. The port is published on 127.0.0.1 only so the
 // tests can reach the HTTP contract.
 //
@@ -99,6 +99,10 @@ export async function startSlicer(): Promise<RunningSlicer> {
     cpuLimit(hostCpus),
     "--memory",
     "4g",
+    // deploy/hades/docker-compose.yml's pids_limit, so every container test
+    // runs under the cap Hades sets.
+    "--pids-limit",
+    "1024",
     "--cap-drop",
     "ALL",
     "--security-opt",
