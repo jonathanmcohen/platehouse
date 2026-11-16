@@ -62,6 +62,20 @@
 #   - From the slicer, a TCP connect to a bare IP such as 1.1.1.1:443 fails,
 #     and TCP and UDP to the platehouse-slicer gateway address fail on every
 #     port the Hades host listens on (ss -ltnu).
+#   - docker exec platehouse-slicer getent hosts github.com fails. The TCP
+#     checks above do not show that the slicer cannot resolve outside names
+#     through Docker's embedded DNS, and a lookup that is forwarded out is a
+#     way to leak data from an internal network (build plan Task 26 Step 4).
+#   - ls /opt/projects/docker/appdata/platehouse shows only platehouse-db,
+#     inbox and tmp (Task 26 Step 4, corrected by issue 224).
+#   - Hades' Watchtower stop timeout is at least 40s: its --stop-timeout flag
+#     or WATCHTOWER_TIMEOUT variable (docker inspect on the Watchtower
+#     container; read only that key, the environment can hold notification
+#     secrets). Watchtower stops a container itself, waits its own timeout,
+#     10s by default, then kills it; it ignores stop_grace_period below. If
+#     it is unset or under 40s, raise it on Hades before Task 29 moves the
+#     app to the untagged image, or record with Jon that every automatic
+#     update may kill the server partway through stopping pg-boss.
 #   - The slicer's /proc/mounts shows /work with size=1g, noexec, nosuid and
 #     nodev; no other container runs as uid 10001; the first render logs
 #     "sandbox self-test: ok: Landlock ABI N" with N at 6 or above.
@@ -79,7 +93,9 @@ services:
     image: ghcr.io/jonathanmcohen/platehouse:0.1.0-rc.1
     restart: unless-stopped
     # The server stops itself within 30 s of SIGTERM (main.ts). Docker's
-    # default 10 s would kill it partway through stopping pg-boss.
+    # default 10 s would kill it partway through stopping pg-boss. This
+    # covers Docker and compose stops only; Watchtower uses its own timeout,
+    # which the header has platform-sre check.
     stop_grace_period: 40s
     depends_on:
       db:
