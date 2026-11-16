@@ -1,0 +1,224 @@
+# Platehouse on Hades (build plan Task 26; AC-010, AC-035, AC-082, AC-090,
+# AC-093). This is the reviewed reference copy. platform-sre applies it, after
+# Jon's approval, as /opt/projects/docker/apps/platehouse/docker-compose.yml,
+# with a .env made from .env.example beside it. It follows Docker Compose
+# Conventions: three external networks, bind mounts under ${APPDATA}, no named
+# volumes, no host ports, map-style Traefik labels on the app only, and the
+# Watchtower label on every service.
+#
+# Three services:
+#   app     ${NAME}         the Platehouse server and web app, behind Traefik
+#   slicer  ${NAME}-slicer  OrcaSlicer, OpenSCAD and the STEP converter; it
+#                           opens untrusted files, so it is locked down below
+#   db      ${NAME}-db      Postgres 17, the conventions block verbatim
+#
+# Before the first start (platform-sre, on Hades):
+#   1. The slicer's network. It is a dedicated internal network that holds the
+#      app and the slicer and nothing else. The slicer is not on Hades'
+#      shared internal network, which also holds Traefik and the Docker socket
+#      proxies (Jon, 2026-11-08, after the PR #36 security review). Like every
+#      network here it is external, so compose never creates it:
+#        docker network create --internal platehouse-slicer
+#   2. The app's bind-mount folders, owned by the app image's node user
+#      (uid 1000, gid 1000). If Docker creates them on first start they are
+#      root-owned, and the app cannot write its inbox:
+#        mkdir -p /opt/projects/docker/appdata/platehouse/inbox /opt/projects/docker/appdata/platehouse/tmp
+#        chown 1000:1000 /opt/projects/docker/appdata/platehouse/inbox /opt/projects/docker/appdata/platehouse/tmp
+#      The Postgres entrypoint makes and owns platehouse-db itself.
+#
+# Deploys after the first start: docker compose up -d --no-deps app (Homelab
+# Lessons, "docker compose up -d reconciles more than you asked for"). A plain
+# up -d also reconciles the database, which needs its own change and backup.
+#
+# Images: Tasks 26 to 28 run the images the v0.1.0-rc.1 tag published, and
+# Task 29 switches to the untagged app image and platehouse-slicer:stable
+# (Jon, 2026-11-15).
+#
+# Traefik settings this file cannot set, checked on Hades at apply time (PR
+# #156 security reviews): sanitizePath stays on and Traefik sends origin-form
+# request targets to the app (an absolute-form target would put a live link
+# token in a log); the https entrypoint's respondingTimeouts are long enough
+# for big uploads and downloads (Traefik v3's readTimeout defaults to 60s); a
+# slicer link whose file name had a / in it gets through Traefik. The router
+# below names its middleware chain in MIDDLEWARES, which must never carry
+# oidc-auth, compress or buffering: /api/v1/ and /s/ are cookieless (AC-082),
+# and /s/, /files/ and /blobs/ stream large files.
+
+services:
+  app:
+    container_name: ${NAME:?set NAME in .env}
+    image: ghcr.io/jonathanmcohen/platehouse:0.1.0-rc.1
+    restart: unless-stopped
+    # The server stops itself within 30 s of SIGTERM (main.ts). Docker's
+    # default 10 s would kill it partway through stopping pg-boss.
+    stop_grace_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - proxy
+      - internal
+      - internal-db
+      - platehouse-slicer
+    # The Configuration contract (build plan part 1), read by
+    # apps/server/src/config.ts. The server refuses to start, naming the key,
+    # when a required value is missing or invalid. The database and the
+    # slicer are addressed by container name, not by service name: db and
+    # slicer are common service names on the shared internal-db and internal
+    # networks, and a service name there could resolve to another project's
+    # container.
+    environment:
+      TZ: ${TZ:?set TZ in .env}
+      PUBLIC_ORIGIN: https://${SUB:?set SUB in .env}.${DOMAIN:?set DOMAIN in .env}
+      DATABASE_URL: postgres://${DB_USER:?set DB_USER in .env}:${DB_PASS:?set DB_PASS in .env}@${NAME}-db:5432/${DB_NAME:?set DB_NAME in .env}
+      PORT: ${PORT:?set PORT in .env}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_GROUP: ${OIDC_GROUP}
+      LINK_SECRET: ${LINK_SECRET}
+      SLICER_URL: http://${NAME}-slicer:8080
+      SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:?set SLICE_PLATE_SECONDS in .env}
+      INBOX_DIR: /data/inbox
+      TMP_DIR: /data/tmp
+      INBOX_SETTLE_SECONDS: ${INBOX_SETTLE_SECONDS}
+    volumes:
+      - ${APPDATA:?set APPDATA in .env}/${NAME}/inbox:/data/inbox
+      - ${APPDATA}/${NAME}/tmp:/data/tmp
+    # The image's own check (docker/app.Dockerfile): /healthz answers 200
+    # only while the database, pg-boss and the web build are all up (AC-093).
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    labels:
+      traefik.enable: true
+      # The app is on four networks; Traefik reaches it on proxy.
+      traefik.docker.network: proxy
+      traefik.http.routers.platehouse.entrypoints: https
+      traefik.http.routers.platehouse.rule: Host(`${SUB}.${DOMAIN}`)
+      traefik.http.routers.platehouse.tls: true
+      traefik.http.routers.platehouse.middlewares: ${MIDDLEWARES:?set MIDDLEWARES in .env}
+      traefik.http.routers.platehouse.service: platehouse
+      traefik.http.services.platehouse.loadbalancer.server.port: ${PORT}
+      # LAN and tailnet only (AC-082). With no ipStrategy, Traefik matches the
+      # connection's own address, not a header a client can set.
+      traefik.http.middlewares.platehouse-allowlist.ipallowlist.sourcerange: ${IP_ALLOWLIST:?set IP_ALLOWLIST in .env}
+      # The response headers the PR #156 security review asked for. The app
+      # sets none of them itself.
+      traefik.http.middlewares.platehouse-headers.headers.referrerPolicy: no-referrer
+      traefik.http.middlewares.platehouse-headers.headers.contentSecurityPolicy: "frame-ancestors 'none'"
+      traefik.http.middlewares.platehouse-headers.headers.stsSeconds: 31536000
+      com.centurylinklabs.watchtower.enable: true
+
+  # The slicer opens untrusted internet files (AC-035), so everything here is
+  # a sandbox decision: the PR #123 security review's carry-over (Jon,
+  # 2026-11-12). It holds no credential: its environment is the one setting
+  # below, no secret. No volume and no bind mount besides the /work tmpfs, so
+  # no docker.sock or any other UNIX socket reaches it (OpenSCAD's sandbox
+  # relies on that; apps/slicer/src/sandbox.ts). No privileged, no cap_add,
+  # and no seccomp or apparmor override, so Docker's default seccomp profile
+  # stays on.
+  slicer:
+    container_name: ${NAME}-slicer
+    image: ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1
+    restart: unless-stopped
+    # The image's slicer user. Never root, and no other container on Hades may
+    # run as 10001: RLIMIT_NPROC counts every process of a UID across the
+    # whole host (sandbox.ts, OPENSCAD_PROCESS_LIMIT).
+    user: "10001"
+    networks:
+      - platehouse-slicer
+    environment:
+      # The same per-plate cap the app uses, so the two cannot drift apart:
+      # the app waits for the slicer's own kill plus 30 s.
+      SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS}
+    read_only: true
+    # The gate's sizing (Hades run 4: worst plate 2568 MiB RSS, 55.31 s,
+    # 171 MiB scratch). cpus and mem_limit match the 4 CPUs and 4 GiB that
+    # apps/slicer/src/sandbox.ts hard-codes (SLICER_CPUS and
+    # OPENSCAD_ADDRESS_SPACE_BYTES): change them together. memswap_limit
+    # equals mem_limit, so the slicer gets no swap.
+    tmpfs:
+      - /work:size=1g,mode=1777,noexec,nosuid,nodev
+    cpus: 4
+    mem_limit: 4g
+    memswap_limit: 4g
+    # pids_limit is the hard cap on processes and threads in the container.
+    # It sits above the 512 per-UID process limit sandbox.ts puts on OpenSCAD
+    # (RLIMIT_NPROC), so that limit stops a runaway OpenSCAD first and the
+    # server keeps room to work. Every task here runs as 10001, so OpenSCAD
+    # cannot start a process or thread once the container holds 512. The
+    # rest of the 1024 is headroom for what that limit does not cover, since
+    # only OpenSCAD runs under it: Orca's threads (a thread pool may size
+    # itself from the host's 8 CPUs, not the 4-CPU quota), the Node server
+    # and the STEP worker, and orphans waiting for tini. The slicer runs one
+    # job at a time, so Orca and OpenSCAD never run together. No measurement
+    # exists yet. On the first slice, render and STEP convert, Task 26 Step 4
+    # reads the peak from the container's pids cgroup.
+    pids_limit: 1024
+    ulimits:
+      core: 0
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The image's own check (apps/slicer/Dockerfile): GET /v1/health (AC-093).
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      traefik.enable: false
+      com.centurylinklabs.watchtower.enable: true
+
+  db:
+    container_name: ${NAME}-db
+    image: postgres:17-alpine
+    restart: unless-stopped
+    healthcheck:
+      interval: 10s
+      retries: 10
+      test: pg_isready -U ${DB_USER} -d ${DB_NAME}
+      timeout: 2s
+    networks:
+      - internal-db
+    environment:
+      TZ: ${TZ}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes:
+      - ${APPDATA}/${NAME}/${NAME}-db:/var/lib/postgresql/data
+    labels:
+      traefik.enable: false
+      com.centurylinklabs.watchtower.enable: true
+
+networks:
+  proxy:
+    external: true
+  internal:
+    external: true
+  internal-db:
+    external: true
+  # Created by platform-sre with --internal (see the header), not by compose.
+  platehouse-slicer:
+    external: true
