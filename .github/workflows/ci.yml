@@ -15,8 +15,9 @@
 # healthy and unhealthy checks, then the release workflow's Trivy gate).
 #
 # The slicing gate job builds a large image, so it keeps its own path scoping:
-# the changes job decides whether tools/slicing-gate, this file or .node-version
-# (the gate job's Node version) changed, and the gate job runs only then. Nothing depends on the gate job, so its skip
+# the changes job decides whether tools/slicing-gate or a file its tests read
+# (this file, .node-version, which sets the gate job's Node version, and the
+# others listed at that step) changed, and the gate job runs only then. Nothing depends on the gate job, so its skip
 # reaches no other job. The slicer job (build plan Task 11) is scoped the same
 # way, by the same changes job: it builds the slicer image and runs the
 # container tests against it, and nothing depends on it either. Nothing is
@@ -67,6 +68,14 @@ jobs:
       # --no-renames lists both paths of a move: with rename detection on (git's
       # default) only the new path is listed, so a file moved out of the gate
       # would leave no gate path in the list and skip the job.
+      # Besides tools/slicing-gate, the list holds every file the gate tests
+      # read from outside it (issue #222), all in
+      # tools/slicing-gate/test/ciworkflow.test.mjs: this workflow,
+      # .node-version, release.yml, slicer-image.yml, docker/app.Dockerfile,
+      # apps/slicer/Dockerfile, two slicer container test files, README.md and
+      # CHANGELOG.md. A gate test that starts reading another file outside
+      # tools/slicing-gate adds it here, or a PR changing only that file skips
+      # the test and still goes green.
       - name: Decide whether the gate job runs
         id: diff
         env:
@@ -82,11 +91,11 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
-              echo "The slicing gate, this workflow or .node-version changed; the gate job runs."
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image)\.yml$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+              echo "The slicing gate or a file its tests read changed; the gate job runs."
             else
               gate=false
-              echo "Neither the slicing gate, this workflow nor .node-version changed; the gate job is skipped."
+              echo "Neither the slicing gate nor any file its tests read changed; the gate job is skipped."
             fi
           fi
           echo "gate=${gate}" >>"$GITHUB_OUTPUT"
@@ -359,7 +368,7 @@ jobs:
   # The slicing gate's tests and a build of the gate image, so an image build
   # failure is found here and not on Hades (the second Hades run, 2026-11-08,
   # failed while building the image). Runs only when the changes job says the
-  # gate, this workflow or .node-version changed.
+  # gate or a file its tests read changed.
   gate-image:
     name: Slicing gate tests and image build
     needs: changes
