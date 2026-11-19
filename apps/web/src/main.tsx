@@ -31,7 +31,7 @@ import type { Messages } from "@platehouse/i18n";
 import { ActivityPage } from "./activity/ActivityPage";
 import { CollectionsPage } from "./collections/CollectionsPage";
 import { CreatorsPage } from "./creators/CreatorsPage";
-import { ENGLISH, loadMessages } from "./i18n/catalogs";
+import { ENGLISH, loadInitialMessages } from "./i18n/catalogs";
 import { I18nProvider, useI18n } from "./i18n/I18n";
 import { readLanguage } from "./i18n/language";
 import { LibraryPage } from "./library/LibraryPage";
@@ -127,18 +127,21 @@ const rootElement = root;
 // The language is the one the server wrote into the html element's lang (the
 // ph_lang cookie, else the browser's languages; apps/server/src/web/shell.ts).
 // Its messages load before the first render, so no English flashes first; a
-// language that cannot be loaded is shown in English.
+// language that cannot be loaded is shown in English. A built-in language
+// renders from its bundled chunk without waiting on the server's language
+// list, and a self-hoster's LOCALES_DIR changes to it are merged in when
+// they arrive (PR 287 review).
 const wanted = readLanguage(document);
-loadMessages(wanted).then(
-  (messages) => start(wanted, messages),
+loadInitialMessages(wanted).then(
+  ({ messages, later }) => start(wanted, messages, later),
   () => start("en", ENGLISH),
 );
 
-function start(locale: string, messages: Messages) {
+function start(locale: string, messages: Messages, later?: Promise<Messages | undefined>) {
   document.documentElement.setAttribute("lang", locale);
   createRoot(rootElement).render(
     <StrictMode>
-      <I18nProvider locale={locale} messages={messages}>
+      <I18nProvider locale={locale} messages={messages} {...(later === undefined ? {} : { later })}>
         <BrowserRouter>
           <App />
         </BrowserRouter>

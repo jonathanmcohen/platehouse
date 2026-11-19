@@ -87,25 +87,61 @@ async function hasOverlay(code: string, fetcher: typeof fetch): Promise<boolean>
   }
 }
 
-/**
- * A language's messages: English at once; a built-in one from its chunk,
- * with a self-hoster's LOCALES_DIR changes merged over it when the server
- * lists them (the chunk alone if that cannot be read); anything else from
- * the server. Rejects when a language cannot be had at all; the caller then
- * stays in English.
- */
-export async function loadMessages(code: string, fetcher: typeof fetch = fetch): Promise<Messages> {
-  if (code === SOURCE_LOCALE) return ENGLISH;
-  const builtin = builtinLoaders.get(code);
-  if (builtin === undefined) return fetchMessages(code, fetcher);
-  const [bundled, overlay] = await Promise.all([
-    builtin().then(messagesOf),
-    hasOverlay(code, fetcher),
-  ]);
-  if (!overlay) return bundled;
+/** The bundled messages with the server's LOCALES_DIR changes over them; undefined when there are none or they cannot be read. */
+async function withOverlay(
+  code: string,
+  bundled: Messages,
+  listed: Promise<boolean>,
+  fetcher: typeof fetch,
+): Promise<Messages | undefined> {
+  if (!(await listed)) return undefined;
   try {
     return { ...bundled, ...(await fetchMessages(code, fetcher)) };
   } catch {
-    return bundled;
+    return undefined;
   }
+}
+
+/** What the first paint has: messages to render now, and any to swap in when they arrive. */
+export interface InitialMessages {
+  messages: Messages;
+  /**
+   * A built-in language's messages with a self-hoster's LOCALES_DIR changes
+   * merged over them, when the server lists some; undefined when it lists
+   * none or cannot be read. Never rejects.
+   */
+  later?: Promise<Messages | undefined>;
+}
+
+/**
+ * A language's messages for the first paint (PR 287 review): English at
+ * once; a built-in one from its chunk alone, with the server's list asked
+ * beside it and any overlay handed back as later, so a slow or hanging
+ * GET /app/api/locales never holds the page blank; anything else from the
+ * server. Rejects when a language cannot be had at all; the caller then
+ * stays in English.
+ */
+export async function loadInitialMessages(
+  code: string,
+  fetcher: typeof fetch = fetch,
+): Promise<InitialMessages> {
+  if (code === SOURCE_LOCALE) return { messages: ENGLISH };
+  const builtin = builtinLoaders.get(code);
+  if (builtin === undefined) return { messages: await fetchMessages(code, fetcher) };
+  // Asked at once, beside the chunk; hasOverlay never rejects.
+  const listed = hasOverlay(code, fetcher);
+  const bundled = messagesOf(await builtin());
+  return { messages: bundled, later: withOverlay(code, bundled, listed, fetcher) };
+}
+
+/**
+ * A language's messages, whole: English at once; a built-in one from its
+ * chunk, with a self-hoster's LOCALES_DIR changes merged over it when the
+ * server lists them (the chunk alone if that cannot be read); anything else
+ * from the server. The language menu waits for this. Rejects when a
+ * language cannot be had at all; the caller then stays in English.
+ */
+export async function loadMessages(code: string, fetcher: typeof fetch = fetch): Promise<Messages> {
+  const { messages, later } = await loadInitialMessages(code, fetcher);
+  return (await later) ?? messages;
 }

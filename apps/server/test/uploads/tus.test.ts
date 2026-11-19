@@ -498,6 +498,20 @@ describe("tus routes", () => {
     });
   });
 
+  test("the /api/v1 result sends code duplicate only with the duplicates it matched (PR 287 review)", async () => {
+    // An older or malformed job: an IngestError with code duplicate and no
+    // list. The OpenAPI document promises the matches with that code, so the
+    // public answer is a plain failure.
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body);
+    const error = "Already there; nothing was saved";
+    queue.results.set(id, { status: "failed", error, code: "duplicate" });
+    expect(await resultOf(id)).toEqual({ status: 200, body: { status: "failed", error } });
+    queue.results.set(id, { status: "failed", error, code: "duplicate", duplicates: [] });
+    expect(await resultOf(id)).toEqual({ status: 200, body: { status: "failed", error } });
+  });
+
   test("the /app result carries a failure's ingest code, for the page to say in its language", async () => {
     const both = await startApp(async (app) => {
       await registerTus(app, {

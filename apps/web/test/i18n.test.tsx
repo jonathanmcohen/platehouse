@@ -14,7 +14,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { scheduleIn } from "../src/activity/ActivityPage";
 import { formatCount } from "../src/activity/format";
-import { loadMessages } from "../src/i18n/catalogs";
+import { loadInitialMessages, loadMessages } from "../src/i18n/catalogs";
 import { I18nProvider, useI18n } from "../src/i18n/I18n";
 import { LanguagePicker, type ListedLocale } from "../src/i18n/LanguagePicker";
 import { languageCookie, readLanguage, savedLanguage } from "../src/i18n/language";
@@ -102,6 +102,12 @@ function DateAndCount({ iso }: { iso: string }) {
       {i18n.fmt.date(iso, true)} | {formatCount(1200, i18n)}
     </span>
   );
+}
+
+/** Hands the provider's I18n to a test, as a component sees it. */
+function GrabI18n({ into }: { into: (i18n: ReturnType<typeof useI18n>) => void }) {
+  into(useI18n());
+  return null;
 }
 
 /** A printer name in the shown language. */
@@ -392,6 +398,110 @@ describe("a self-hoster's changes to a built-in language", () => {
     await loadMessages("es", fetcher as unknown as typeof fetch);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher).toHaveBeenCalledWith("/app/api/locales", expect.anything());
+  });
+
+  // The first paint (PR 287 review): a built-in language renders from its
+  // bundled chunk at once, and the overlay is merged when the server's list
+  // answers, so a slow or hanging list never leaves the page blank.
+  test("the first paint has the bundled language while the server's list still hangs", async () => {
+    const fetcher = vi.fn(() => new Promise<Response>(() => {}));
+    const first = await loadInitialMessages("es", fetcher as unknown as typeof fetch);
+    expect(first.messages["shell.nav.library"]).toBe(
+      (CATALOGS.es as Messages)["shell.nav.library"],
+    );
+    expect(first.later).toBeInstanceOf(Promise);
+  });
+
+  test("the overlay arrives later, merged over the bundled language", async () => {
+    const merged = { ...(CATALOGS.es as Messages), "shell.nav.library": "Mi biblioteca" };
+    const fetcher = vi.fn(async (url: string) =>
+      url === "/app/api/locales"
+        ? new Response(JSON.stringify({ locales: [{ code: "es", overlay: true }] }))
+        : new Response(JSON.stringify({ code: "es", messages: merged })),
+    );
+    const first = await loadInitialMessages("es", fetcher as unknown as typeof fetch);
+    expect(first.messages["shell.nav.library"]).toBe(
+      (CATALOGS.es as Messages)["shell.nav.library"],
+    );
+    expect((await first.later)?.["shell.nav.library"]).toBe("Mi biblioteca");
+  });
+
+  test("nothing arrives later when the server lists no overlay or cannot be read", async () => {
+    const none = vi.fn(
+      async () => new Response(JSON.stringify({ locales: [{ code: "es", overlay: false }] })),
+    );
+    expect(await (await loadInitialMessages("es", none as unknown as typeof fetch)).later).toBe(
+      undefined,
+    );
+    const down = vi.fn(async () => new Response("", { status: 503 }));
+    expect(await (await loadInitialMessages("es", down as unknown as typeof fetch)).later).toBe(
+      undefined,
+    );
+    // English and a self-hoster's language have nothing to merge later.
+    expect((await loadInitialMessages("en", down as unknown as typeof fetch)).later).toBe(
+      undefined,
+    );
+  });
+
+  test("the provider shows the bundled language first and the overlay when it arrives", async () => {
+    let arrive: (messages: Messages) => void = () => {};
+    const later = new Promise<Messages | undefined>((resolve) => {
+      arrive = resolve;
+    });
+    act(() => {
+      root.render(
+        <I18nProvider locale="es" messages={CATALOGS.es as Messages} later={later}>
+          <MemoryRouter>
+            <Sidebar />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    const links = () => [...container.querySelectorAll("nav a")].map((a) => a.textContent);
+    expect(links()).toContain((CATALOGS.es as Messages)["shell.nav.library"]);
+    await act(async () => {
+      arrive({ ...(CATALOGS.es as Messages), "shell.nav.library": "Mi biblioteca" });
+      await later;
+    });
+    expect(links()).toContain("Mi biblioteca");
+  });
+
+  test("an overlay that arrives after a switch to another language is not applied", async () => {
+    let arrive: (messages: Messages) => void = () => {};
+    const later = new Promise<Messages | undefined>((resolve) => {
+      arrive = resolve;
+    });
+    let i18n: ReturnType<typeof useI18n> | undefined;
+    act(() => {
+      root.render(
+        <I18nProvider
+          locale="es"
+          messages={CATALOGS.es as Messages}
+          later={later}
+          load={async (code) => CATALOGS[code] as Messages}
+        >
+          <MemoryRouter>
+            <GrabI18n
+              into={(value) => {
+                i18n = value;
+              }}
+            />
+            <Sidebar />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      await i18n?.setLanguage("fr", "fr");
+    });
+    await act(async () => {
+      arrive({ ...(CATALOGS.es as Messages), "shell.nav.library": "Mi biblioteca" });
+      await later;
+    });
+    const links = [...container.querySelectorAll("nav a")].map((a) => a.textContent);
+    expect(i18n?.locale).toBe("fr");
+    expect(links).toContain((CATALOGS.fr as Messages)["shell.nav.library"]);
+    expect(links).not.toContain("Mi biblioteca");
   });
 });
 

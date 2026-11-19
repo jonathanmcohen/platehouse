@@ -26,6 +26,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -169,6 +170,13 @@ export interface I18nProviderProps {
   locale: string;
   /** Its messages, already loaded (main.tsx loads them before the first render). */
   messages: Messages;
+  /**
+   * The same language's messages with a self-hoster's LOCALES_DIR changes
+   * merged over them, when they arrive after the first paint
+   * (loadInitialMessages). Shown only while that language is still shown;
+   * undefined, or a promise that resolves to undefined, changes nothing.
+   */
+  later?: Promise<Messages | undefined>;
   children?: ReactNode;
   /** Loads a language's messages; loadMessages when left out. */
   load?: (code: string) => Promise<Messages>;
@@ -177,10 +185,26 @@ export interface I18nProviderProps {
 export function I18nProvider({
   locale,
   messages,
+  later,
   children,
   load = loadMessages,
 }: I18nProviderProps) {
   const [translator, setTranslator] = useState(() => createTranslator(locale, messages, ENGLISH));
+
+  useEffect(() => {
+    if (later === undefined) return;
+    let live = true;
+    void later.then((next) => {
+      if (!live || next === undefined) return;
+      // A language chosen meanwhile stays; the overlay is the first one's.
+      setTranslator((shown) =>
+        shown.locale === locale ? createTranslator(locale, next, ENGLISH) : shown,
+      );
+    });
+    return () => {
+      live = false;
+    };
+  }, [later, locale]);
 
   const setLanguage = useCallback(
     async (choice: string | null, shown: string) => {

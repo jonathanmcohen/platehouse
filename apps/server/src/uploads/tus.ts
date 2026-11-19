@@ -173,11 +173,14 @@ export type UploadResult =
 
 /**
  * A result as the Public API v1 answers it: a failed upload keeps its code
- * only when it is "duplicate", exactly as the published OpenAPI document
- * says; every other code, which only the web app's mount sends, is removed.
+ * only when it is "duplicate" and carries the duplicates it matched, exactly
+ * as the published OpenAPI document says; every other code, which only the
+ * web app's mount sends, is removed, and so is a duplicate code with no
+ * matches (an older or malformed job, PR 287 review).
  */
 export function publicResult(result: UploadResult): UploadResult {
-  if (result.status !== "failed" || !("code" in result) || result.code === "duplicate") {
+  if (result.status !== "failed" || !("code" in result)) return result;
+  if (result.code === "duplicate" && "duplicates" in result && result.duplicates.length > 0) {
     return result;
   }
   return { status: "failed", error: result.error };
