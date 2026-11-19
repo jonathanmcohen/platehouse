@@ -108,6 +108,12 @@ The upload routes follow the tus protocol, and tus's own errors answer plain tex
 JSON, for example `409` with `Upload-Offset conflict`. Each upload operation in the reference
 lists its answers.
 
+Two answers come from the server itself rather than from an API operation, and use its own
+shape: a path under `/api/v1` that the API does not have answers `404` with
+`{"error": "Not Found", "statusCode": 404}` (and `401` first, without a token), and an id or
+other path parameter over 100 characters answers `414` with `error`, `code` and `statusCode`
+before the token is read.
+
 Taking off a tag a model does not have, or taking a model out of a collection it is not in,
 is not an error: it answers `204` like any other success.
 
