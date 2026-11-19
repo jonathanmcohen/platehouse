@@ -467,6 +467,51 @@ describe("a model's name from its file", () => {
     });
   });
 
+  test("a model named after its file that already has a caption keeps its name when a .3mf with another title joins", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Lamp Arm | Clamp" },
+        }),
+      ),
+      originalName: "Lamp_arm.3mf",
+      target: "new",
+    });
+    // As a model ingested before titles were used: named from the file's
+    // raw stem, its caption the file's title (migration 0006 leaves it 'file').
+    await env.db
+      .updateTable("models")
+      .set({ name: "Lamp_arm", nameSource: "file" })
+      .where("id", "=", first.modelId)
+      .execute();
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Lamp Arm Spring Kit" },
+        }),
+      ),
+      originalName: "Lamp_arm_spring.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Lamp_arm",
+      nameSource: "file",
+      caption: "Lamp Arm | Clamp",
+    });
+    // Use file titles names it from that same caption.
+    expect((await env.repos.models.titleNamePlan()).renames).toContainEqual({
+      id: first.modelId,
+      from: "Lamp_arm",
+      to: "Lamp Arm | Clamp",
+    });
+  });
+
   test("a name the user set is never overwritten by a title", async () => {
     const first = await env.ingest.ingestFile({
       tmpPath: await writeUpload(env, `${ASCII_STL}\n${marker()}`),

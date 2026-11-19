@@ -476,7 +476,11 @@ export function modelsRepo(db: Kysely<DB>) {
      * 'user', which migration 0006 also gave every model a person named
      * before name_source existed) or a name none of its files has, is never
      * overwritten (AC-022), and a model already named from a title
-     * keeps that one. True when the name changed. Runs in the caller's
+     * keeps that one. Only while the caption is empty, too, so this title is
+     * the one fillMetadata then stores as the caption: a model whose caption
+     * an earlier .3mf already filled keeps its name, so its name and caption
+     * never disagree and Use file titles (which names it from that caption)
+     * picks the same title. True when the name changed. Runs in the caller's
      * transaction when there is one, with the model's row locked.
      */
     async nameFromTitle(id: string, title: string | null | undefined): Promise<boolean> {
@@ -485,12 +489,14 @@ export function modelsRepo(db: Kysely<DB>) {
       return inTransaction(db, async (trx) => {
         const row = await trx
           .selectFrom("models")
-          .select(["name", "nameSource"])
+          .select(["name", "nameSource", "caption"])
           .where("id", "=", id)
           .where("trashedAt", "is", null)
           .forUpdate()
           .executeTakeFirst();
         if (row === undefined || row.nameSource !== "file" || row.name === name) return false;
+        // fillMetadata's test for an empty caption.
+        if (row.caption !== null && row.caption !== "") return false;
         const files = await trx
           .selectFrom("files")
           .select("originalName")

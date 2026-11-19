@@ -287,6 +287,38 @@ describe("models.nameFromTitle", () => {
     expect((await repos.models.get(model.id))?.name).toBe("First title");
   });
 
+  test("leaves a model that already has a caption, so its name and caption never disagree", async () => {
+    const { repos } = await freshRepos();
+    // Named from its first .3mf's file name before titles were used, with
+    // that file's title already in the caption.
+    const model = await modelWithFile(repos, {
+      name: "Desk_hook",
+      caption: "Desk Hook | Screwless",
+      file: "Desk_hook.3mf",
+    });
+    expect(await repos.models.nameFromTitle(model.id, "Another Title")).toBe(false);
+    expect(await repos.models.get(model.id)).toMatchObject({
+      name: "Desk_hook",
+      nameSource: "file",
+      caption: "Desk Hook | Screwless",
+    });
+    // Use file titles still picks the caption for it.
+    expect((await repos.models.titleNamePlan()).renames).toEqual([
+      { id: model.id, from: "Desk_hook", to: "Desk Hook | Screwless" },
+    ]);
+  });
+
+  test("an empty caption counts as none", async () => {
+    const { repos } = await freshRepos();
+    const model = await modelWithFile(repos, {
+      name: "Desk clip",
+      caption: "",
+      file: "Desk_clip.3mf",
+    });
+    expect(await repos.models.nameFromTitle(model.id, "Desk Clip | Snap Fit")).toBe(true);
+    expect((await repos.models.get(model.id))?.name).toBe("Desk Clip | Snap Fit");
+  });
+
   test("cuts a very long title at the API's 500-character limit", async () => {
     const { repos } = await freshRepos();
     const model = await modelWithFile(repos, { name: "Long", file: "Long.3mf" });

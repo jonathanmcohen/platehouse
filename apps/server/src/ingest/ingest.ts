@@ -528,8 +528,10 @@ export function createIngest(deps: IngestDeps) {
           await createModel();
         }
         // A model joined rather than made takes this file's title only while
-        // nobody has named it (names.ts; models.nameFromTitle). Before this
-        // file's row, so its name must already be one of the earlier files'.
+        // nobody has named it and its caption is empty (names.ts;
+        // models.nameFromTitle). Before this file's row, so its name must
+        // already be one of the earlier files', and before fillMetadata, so
+        // the caption it reads is the earlier files'.
         if (!created) await repos.models.nameFromTitle(modelId, found.caption);
         // One fill rule for a new model and an existing one (AC-022).
         await repos.models.fillMetadata(modelId, found);
