@@ -130,14 +130,24 @@ describe("ties never repeat or skip a model across pages", () => {
     }
   });
 
-  test("a model added between two pages moves the rest along but no page lists one twice", async () => {
+  test("a model added before the page boundary between two pages makes page 2 repeat page 1's last", async () => {
+    // Numbered pages are offsets into the order, so a model added ahead of
+    // the boundary while the library is paged moves every later one along by
+    // one: page 2 then starts with the model page 1 ended on. View all drops
+    // that repeat (LibraryPage's loadRest; library-sort-select.test.tsx). The
+    // names are single letters after a common word, so they sort the same in
+    // any collation, and "a" sorts before all four.
     const word = marker();
-    for (let i = 0; i < 4; i += 1) await env.repos.models.create({ name: `Moving ${i} ${word}` });
+    const made: Record<string, string> = {};
+    for (const letter of ["b", "d", "f", "h"]) {
+      made[letter] = (await env.repos.models.create({ name: `Moving ${letter} ${word}` })).id;
+    }
     const first = await page({ q: word, sort: "name-asc", page: 1, limit: 2 });
-    await env.repos.models.create({ name: `Moving 9 ${word}` });
+    expect(first.models.map((m) => m.id)).toEqual([made.b, made.d]);
+    await env.repos.models.create({ name: `Moving a ${word}` });
     const second = await page({ q: word, sort: "name-asc", page: 2, limit: 2 });
-    const seen = [...first.models, ...second.models].map((m) => m.id);
-    expect(new Set(seen).size).toBe(seen.length);
+    expect(second.models.map((m) => m.id)).toEqual([made.d, made.f]);
+    expect(second.models[0]?.id).toBe(first.models.at(-1)?.id);
   });
 });
 

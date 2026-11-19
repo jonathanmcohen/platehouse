@@ -882,6 +882,54 @@ describe("bulk actions", () => {
   });
 });
 
+describe("View all while the library changes (issue #283)", () => {
+  test("a model added ahead of the chunk boundary makes chunk 2 repeat chunk 1's last; it is shown once", async () => {
+    // The server pages by offset (library-sort.test.ts pins it): with a model
+    // added before the boundary between two requests, chunk 2 starts with the
+    // model chunk 1 ended on. View all must not show it twice.
+    const before = cards(250);
+    const added = { ...before[0], id: id(999), name: "Model 000" } as LibraryCard;
+    const after = [added, ...before];
+    let asked = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        requests.push(`GET ${url.pathname}${url.search}`);
+        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+        if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
+        const page = Number(url.searchParams.get("page"));
+        const size = Number(url.searchParams.get("limit"));
+        // The first chunk is read before the model is added, the second after.
+        const all = asked++ === 0 ? before : after;
+        return json({
+          printer: PRINTER,
+          printerName: PRINTER_NAME,
+          printers: MY_PRINTERS,
+          models: all.slice((page - 1) * size, page * size),
+          nextCursor: null,
+          page,
+          pageSize: size,
+          pageCount: Math.ceil(all.length / size),
+          total: all.length,
+          totalCapped: false,
+          libraryTotal: all.length,
+          sort: "newest",
+        });
+      }),
+    );
+    await render("/?view=all");
+    const names = [...container.querySelectorAll(".studio-grid .studio-card-title")].map(
+      (el) => el.textContent,
+    );
+    expect(libraryQueries().map((p) => p.get("page"))).toEqual(["1", "2"]);
+    // Chunk 2 began with Model 200, which chunk 1 already showed.
+    expect(names.filter((n) => n === "Model 200")).toHaveLength(1);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toHaveLength(250);
+  });
+});
+
 describe("describeBulk", () => {
   const names = new Map([
     [id(1), "Hook"],
