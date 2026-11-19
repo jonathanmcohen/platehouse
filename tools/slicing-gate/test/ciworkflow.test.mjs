@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { test } from "node:test";
@@ -798,10 +799,21 @@ for (const [file, want] of [
 // tests list, would skip on a PR changing only that file and still go green
 // (issue #222 again). This scan finds every repo path the gate tests and their
 // support files build from import.meta.url, through const X = join(Y, ...)
-// chains, join(X, ...) calls and new URL("...", import.meta.url), and every
+// chains, join(X, ...) calls and new URL("...", import.meta.url); every
 // slicer-image.yml step a test runs with cwd: at the repo root, with the repo
-// files that step names. Each path outside tools/slicing-gate must make the
+// files that step names; and every module outside tools/slicing-gate the tests
+// load, through the gate scripts they import and on through what that module
+// imports (moduleImports). Each path outside tools/slicing-gate must make the
 // Decide step run the gate tests.
+// Known limits (PR #227 review, round 2): the scan does not see, and does not
+// throw on, a read built with resolve(ROOT, ...), a template string such as
+// `${ROOT}/x` or string concatenation; a join whose arguments hold a call, such
+// as join(ROOT, "apps", pick(x)); require or createRequire; a repo-root file
+// named with no slash in a cwd: step script (package.json, .node-version,
+// pnpm-lock.yaml); or a read other than an import in a gate script outside
+// test/, as only the tests are scanned for reads and the scripts only for
+// their imports. A gate test or script that reads a file outside the gate in
+// one of these forms must add it to the tests list in ci.yml by hand.
 const GATE_DIR = join(ROOT, "tools", "slicing-gate");
 const GATE_TEST_DIR = join(GATE_DIR, "test");
 const insideGate = (p) => p === GATE_DIR || p.startsWith(`${GATE_DIR}/`);
@@ -816,6 +828,108 @@ function gateTestFiles(dir = GATE_TEST_DIR) {
   );
 }
 
+// The paths one source file builds from import.meta.url: bases maps each
+// const X = dirname(fileURLToPath(import.meta.url)) or const X = join(Y, "a",
+// ...) to its absolute path; at gives the file:line of an index in src; and
+// resolveJoin resolves join(<base>, "a", "b", ...) to an absolute path, or null
+// when the base is not one tracked here. resolveJoin throws when a non-literal
+// argument follows a base outside the gate, as its file cannot be known.
+function sourcePaths(file, src) {
+  const at = (index) => `${repoPath(file)}:${src.slice(0, index).split("\n").length}`;
+  const bases = new Map();
+  const baseOf = (expr) =>
+    /^dirname\(fileURLToPath\(import\.meta\.url\)\)$/.test(expr.trim()) ? dirname(file) : bases.get(expr.trim());
+  const resolveJoin = (args, index) => {
+    const parts = args.split(/,(?![^(]*\))/).map((a) => a.trim());
+    const base = baseOf(parts[0]);
+    if (base === undefined) return null;
+    let p = base;
+    for (const a of parts.slice(1)) {
+      const lit = a.match(/^"([^"]*)"$/);
+      if (!lit) {
+        if (!insideGate(p)) throw new Error(`${at(index)}: join(${args}) builds a path outside tools/slicing-gate the scan cannot resolve`);
+        return null;
+      }
+      p = resolve(p, lit[1]);
+    }
+    return p;
+  };
+  for (const m of src.matchAll(/\bconst (\w+) = (dirname\(fileURLToPath\(import\.meta\.url\)\))|\bconst (\w+) = join\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *"[^"]*")*)\);/g)) {
+    if (m[1]) bases.set(m[1], dirname(file));
+    else {
+      const p = resolveJoin(m[4], m.index);
+      if (p !== null) bases.set(m[3], p);
+    }
+  }
+  return { at, bases, resolveJoin };
+}
+
+// Every module the gate tests load, followed from the test files through
+// static imports, export ... from and dynamic imports into the gate scripts,
+// and on into any module outside tools/slicing-gate and the modules it loads.
+// Returns visited, every module reached, and outside, each one outside the
+// gate as a repo-relative path with every place it is imported from. A .js
+// import with no .js file but a .ts one is taken as the .ts file. Throws on an
+// import it cannot follow: a package (a bare name that is not a Node builtin),
+// a dynamic import whose argument is neither a string literal nor a path
+// sourcePaths tracks, and a file that does not exist. readSource gives a
+// file's text, or null when there is no such file.
+const SOURCE_EXT = /\.(?:mjs|cjs|js|mts|cts|ts)$/;
+const readIfExists = (f) => (existsSync(f) ? readFileSync(f, "utf8") : null);
+function moduleImports(entries, readSource = readIfExists) {
+  const outside = new Map();
+  const visited = new Set();
+  const queue = [...entries];
+  while (queue.length > 0) {
+    const file = queue.shift();
+    if (visited.has(file)) continue;
+    visited.add(file);
+    if (!SOURCE_EXT.test(file)) continue;
+    const src = readSource(file) ?? "";
+    const { at, bases } = sourcePaths(file, src);
+    const loadPath = (abs, index) => {
+      let target = abs;
+      if (readSource(target) === null && target.endsWith(".js") && readSource(target.replace(/\.js$/, ".ts")) !== null) {
+        target = target.replace(/\.js$/, ".ts");
+      }
+      if (readSource(target) === null) throw new Error(`${at(index)}: imports ${repoPath(target)}, which does not exist`);
+      if (!insideGate(target)) {
+        const rel = repoPath(target);
+        outside.set(rel, [...(outside.get(rel) ?? []), at(index)]);
+      }
+      queue.push(target);
+    };
+    const load = (spec, index) => {
+      if (spec.startsWith("node:") || builtinModules.includes(spec)) return;
+      if (!/^\.{0,2}\//.test(spec)) {
+        throw new Error(`${at(index)}: imports "${spec}", a package the scan cannot follow; teach moduleImports where it resolves`);
+      }
+      loadPath(resolve(dirname(file), spec), index);
+    };
+    // Static imports and re-exports start a line, so a string or a comment
+    // naming one is not taken for one.
+    for (const m of src.matchAll(/^[ \t]*(?:import|export)\b(?:[^"';]*?\bfrom)?\s*["']([^"']+)["']/gm)) load(m[1], m.index);
+    // A dynamic import directly after a quote is text in a string (gate.mjs
+    // writes OpenSCAD import calls), and one on a comment line is skipped.
+    for (const m of src.matchAll(/(?<![\w$.'"`])import\(/g)) {
+      const line = src.slice(src.lastIndexOf("\n", m.index) + 1, m.index);
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;
+      // The argument runs to the parenthesis that closes this one.
+      let end = m.index + m[0].length;
+      for (let depth = 1; end < src.length; end++) {
+        if (src[end] === "(") depth++;
+        else if (src[end] === ")" && --depth === 0) break;
+      }
+      const arg = src.slice(m.index + m[0].length, end).trim();
+      const lit = arg.match(/^(["'])([^"'`\\]*)\1$/);
+      if (lit) load(lit[2], m.index);
+      else if (bases.has(arg)) loadPath(bases.get(arg), m.index);
+      else throw new Error(`${at(m.index)}: a dynamic import of ${arg}, which the scan cannot resolve`);
+    }
+  }
+  return { visited, outside };
+}
+
 // Every path outside tools/slicing-gate the gate tests read, as repo-relative
 // paths, each with every place it was found. Throws on a read it cannot
 // resolve.
@@ -826,37 +940,10 @@ function gateTestReads() {
     const rel = repoPath(abs);
     reads.set(rel, [...(reads.get(rel) ?? []), where]);
   };
+  for (const [rel, where] of moduleImports(gateTestFiles()).outside) reads.set(rel, [...(reads.get(rel) ?? []), ...where]);
   for (const file of gateTestFiles()) {
     const src = readFileSync(file, "utf8");
-    const at = (index) => `${repoPath(file)}:${src.slice(0, index).split("\n").length}`;
-    const bases = new Map();
-    const baseOf = (expr) =>
-      /^dirname\(fileURLToPath\(import\.meta\.url\)\)$/.test(expr.trim()) ? dirname(file) : bases.get(expr.trim());
-    // Resolves join(<base>, "a", "b", ...) to an absolute path, or null when
-    // the base is not one tracked here. Throws when a non-literal argument
-    // follows a base outside the gate, as its file cannot be known.
-    const resolveJoin = (args, index) => {
-      const parts = args.split(/,(?![^(]*\))/).map((a) => a.trim());
-      const base = baseOf(parts[0]);
-      if (base === undefined) return null;
-      let p = base;
-      for (const a of parts.slice(1)) {
-        const lit = a.match(/^"([^"]*)"$/);
-        if (!lit) {
-          if (!insideGate(p)) throw new Error(`${at(index)}: join(${args}) builds a path outside tools/slicing-gate the scan cannot resolve`);
-          return null;
-        }
-        p = resolve(p, lit[1]);
-      }
-      return p;
-    };
-    for (const m of src.matchAll(/\bconst (\w+) = (dirname\(fileURLToPath\(import\.meta\.url\)\))|\bconst (\w+) = join\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *"[^"]*")*)\);/g)) {
-      if (m[1]) bases.set(m[1], dirname(file));
-      else {
-        const p = resolveJoin(m[4], m.index);
-        if (p !== null) bases.set(m[3], p);
-      }
-    }
+    const { at, bases, resolveJoin } = sourcePaths(file, src);
     for (const m of src.matchAll(/\bjoin\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *[^()]+?)*)\)/g)) {
       const p = resolveJoin(m[1], m.index);
       if (p !== null && p !== ROOT) add(p, at(m.index));
@@ -905,6 +992,62 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
       "true",
       `${where.join(", ")} reads ${file}, but a PR changing only it skips the gate tests: add it to the tests list in ci.yml`,
     );
+  }
+});
+
+// PR #227 review, round 2: an import from outside tools/slicing-gate is a read
+// too, and the likeliest one, as gate modules are due to move to
+// packages/threemf (Task 6). The sources below are fakes handed to the scan.
+// Each is one line with \n escapes, and the dynamic import is built by
+// dynImport, so that the scan, reading this file, does not take them for real
+// imports of its own.
+const dynImport = (arg) => `${"import"}(${arg})`;
+const fakeSources = (sources) => (f) => sources[repoPath(f)] ?? null;
+
+test("gate jobs decision: the import scan follows imports out of tools/slicing-gate (PR #227 review)", () => {
+  const entry = join(GATE_TEST_DIR, "fake.test.mjs");
+  const { outside } = moduleImports(
+    [entry],
+    fakeSources({
+      "tools/slicing-gate/test/fake.test.mjs": [
+        'import {\n  openZip,\n} from "../../../packages/threemf/src/zip.mjs";',
+        'import "node:fs";\nimport { join } from "path";',
+        `const m = await ${dynImport('"../../../apps/server/src/load.mjs"')};`,
+        'import { gate } from "../lib/fake.mjs";',
+      ].join("\n"),
+      // Followed on from a module outside the gate, its .js import naming a .ts file.
+      "packages/threemf/src/zip.mjs": 'export { parse } from "./parse.js";\n',
+      "packages/threemf/src/parse.ts": "export const parse = 1;\n",
+      "apps/server/src/load.mjs": "",
+      // A gate script outside test/ that imports from outside the gate.
+      "tools/slicing-gate/lib/fake.mjs": "import { x } from '../../../packages/other/x.mjs';\n",
+      "packages/other/x.mjs": "",
+    }),
+  );
+  assert.deepEqual([...outside.keys()].sort(), [
+    "apps/server/src/load.mjs",
+    "packages/other/x.mjs",
+    "packages/threemf/src/parse.ts",
+    "packages/threemf/src/zip.mjs",
+  ]);
+  assert.deepEqual(outside.get("packages/threemf/src/zip.mjs"), ["tools/slicing-gate/test/fake.test.mjs:1"]);
+});
+
+test("gate jobs decision: the import scan throws on an import it cannot follow (PR #227 review)", () => {
+  const entry = join(GATE_TEST_DIR, "fake.test.mjs");
+  const scan = (src) => () => moduleImports([entry], fakeSources({ "tools/slicing-gate/test/fake.test.mjs": src }));
+  assert.throws(scan('import { unzip } from "fflate";\n'), /fake\.test\.mjs:1: imports "fflate", a package/);
+  assert.throws(scan(`const m = await ${dynImport("pick(x)")};\n`), /cannot resolve/);
+  assert.throws(scan(`const m = await ${dynImport("`${ROOT}/x.mjs`")};\n`), /cannot resolve/);
+  assert.throws(scan('import { x } from "../../../packages/gone.mjs";\n'), /packages\/gone\.mjs, which does not exist/);
+});
+
+test("gate jobs decision: the import scan reaches the gate scripts the tests load", () => {
+  const visited = new Set([...moduleImports(gateTestFiles()).visited].map(repoPath));
+  // smoke-gate.mjs is loaded only through a dynamic import of a joined path,
+  // and lib/zip.mjs only through lib/threemf.mjs.
+  for (const f of ["tools/slicing-gate/smoke-gate.mjs", "tools/slicing-gate/lib/zip.mjs", "tools/slicing-gate/gate.mjs"]) {
+    assert.ok(visited.has(f), `the import scan reaches ${f}`);
   }
 });
 
