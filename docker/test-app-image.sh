@@ -100,13 +100,15 @@ s3_port="$(docker port "$s3" 9000/tcp | head -n 1 | sed 's/.*://')"
 until_ok 90 "the S3 test server" curl -fsS "http://127.0.0.1:${s3_port}/minio/health/live"
 
 export DATABASE_URL PUBLIC_ORIGIN S3_ENDPOINT S3_REGION S3_BUCKET S3_FORCE_PATH_STYLE \
-  OIDC_CLIENT_ID OIDC_CLIENT_SECRET LINK_SECRET
+  OIDC_ISSUER OIDC_CLIENT_ID OIDC_CLIENT_SECRET LINK_SECRET
 DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@db:5432/platehouse"
 PUBLIC_ORIGIN=https://platehouse.test
 S3_ENDPOINT=http://s3:9000
 S3_REGION=us-east-1
 S3_BUCKET=platehouse-image-check
 S3_FORCE_PATH_STYLE=true
+# Required, with no default; a .test name never resolves.
+OIDC_ISSUER=https://id.platehouse.test
 OIDC_CLIENT_ID=platehouse-image-check
 OIDC_CLIENT_SECRET="$(secret 16)"
 LINK_SECRET="$(secret 32)"
@@ -133,7 +135,7 @@ if [ "$mode" = unhealthy ]; then
   app_args+=(--health-start-period=10s --health-interval=3s --health-retries=3)
 fi
 app_args+=(-e DATABASE_URL -e PUBLIC_ORIGIN "${s3_env[@]}" -e S3_FORCE_PATH_STYLE
-  -e OIDC_CLIENT_ID -e OIDC_CLIENT_SECRET -e LINK_SECRET "$image")
+  -e OIDC_ISSUER -e OIDC_CLIENT_ID -e OIDC_CLIENT_SECRET -e LINK_SECRET "$image")
 docker run "${app_args[@]}" >/dev/null
 app_port="$(docker port "$app" 3000/tcp | head -n 1 | sed 's/.*://')"
 
