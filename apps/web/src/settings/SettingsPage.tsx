@@ -1,8 +1,9 @@
 // The Settings page, /settings (build plan Task 21; AC-013 warning, AC-031
 // menu UI, AC-083 UI, AC-063 UI). It holds, in order: the red banner when
-// bucket versioning is not on, the printer menu, the API tokens, and the
-// trash. Everything comes from the session-class app API under /app/api
-// (apps/server/src/app-api); every dialog is the app's own themed one.
+// bucket versioning is not on, the printer menu, the API tokens, Model names
+// (the one-off "Use file titles", TitleNames.tsx), and the trash. Everything
+// comes from the session-class app API under /app/api (apps/server/src/
+// app-api); every dialog is the app's own themed one.
 // The Accent colour picker (Jon, 2026-11-19) comes first: it is this
 // browser's choice, kept in a cookie, and needs nothing from the API.
 //
@@ -19,6 +20,7 @@ import { TrashList } from "../trash/TrashList";
 import { AccentPicker } from "./AccentPicker";
 import { useAppApi } from "./api";
 import { PrinterMenu } from "./PrinterMenu";
+import { TitleNames } from "./TitleNames";
 import { Tokens } from "./Tokens";
 import { VersioningBanner } from "./VersioningBanner";
 import "./organise.css";
@@ -92,6 +94,7 @@ function SettingsMain({ focusHeading }: { focusHeading: boolean }) {
         </>
       )}
       <Tokens />
+      <TitleNames />
       <div className="ph-section">
         <h2>Trash</h2>
         <TrashList />
