@@ -56,8 +56,5 @@ test("an unknown ph_accent gets the default scheme", async ({ page, context }) =
   const res = await page.goto(`${ORIGIN}/`, { waitUntil: "load" });
   expect(res?.status()).toBe(200);
   expect(await res?.text()).toContain('data-accent="bambu-green"');
-  await expect(page.locator(".studio-brand-dot")).toHaveCSS(
-    "background-color",
-    "rgb(0, 174, 66)",
-  );
+  await expect(page.locator(".studio-brand-dot")).toHaveCSS("background-color", "rgb(0, 174, 66)");
 });
