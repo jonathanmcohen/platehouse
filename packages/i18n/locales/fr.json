@@ -122,6 +122,7 @@
   "apiDocs.openapi": "<code>{request}</code>, avec un jeton. Version de l'API {version}.",
   "apiDocs.sections": "Sections de l'API",
   "apiDocs.title": "R\u00e9f\u00e9rence de l'API",
+  "apiDocs.token": "Jeton",
   "apiDocs.tokenHow": "Cr\u00e9ez-en un dans les <link>Param\u00e8tres</link>, sous Jetons d'API, et envoyez-le avec chaque requ\u00eate sous la forme <code>{header}</code>.",
   "common.cancel": "Annuler",
   "common.list.and": "{first} et {last}",
