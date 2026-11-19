@@ -14,7 +14,10 @@
 #   apps/web/dist/                         the web build; the server finds it
 #                                          beside its own package (PR #155),
 #                                          and requires it (#162): /healthz
-#                                          is 503 while index.html is missing
+#                                          is 503 while index.html is missing.
+#                                          It holds apps/web/public's icons
+#                                          and manifest at its root, which
+#                                          the server answers at / (ROOT_FILES)
 #   packages/*/dist/                       the workspace packages the server
 #                                          imports, built
 #   node_modules, */node_modules           production dependencies only
@@ -73,6 +76,9 @@ COPY apps/server/tsconfig.json apps/server/
 COPY apps/server/src apps/server/src
 COPY apps/web/tsconfig.json apps/web/index.html apps/web/vite.config.ts apps/web/
 COPY apps/web/src apps/web/src
+# The favicons, app icons and manifest: vite build copies public/ to the root
+# of apps/web/dist, and writes none of them when it is missing.
+COPY apps/web/public apps/web/public
 
 # The server and the packages it imports, with tsc (no test folder is in the
 # context, so none is compiled), then the web app with vite build. tsc copies
@@ -86,15 +92,23 @@ RUN node_modules/.bin/tsc -b apps/server \
  && test -f apps/server/dist/src/db/migrate.js \
  && test -f apps/server/dist/src/db/migrations/0001_init.sql \
  && test -f apps/web/dist/index.html \
- && test -d apps/web/dist/assets
+ && test -d apps/web/dist/assets \
+ && test -f apps/web/dist/favicon.ico \
+ && test -f apps/web/dist/favicon.svg \
+ && test -f apps/web/dist/apple-touch-icon.png \
+ && test -f apps/web/dist/icon-192.png \
+ && test -f apps/web/dist/icon-512.png \
+ && test -f apps/web/dist/icon-maskable-512.png \
+ && test -f apps/web/dist/site.webmanifest
 
 # Production dependencies only, from the store the first install filled; then
-# everything but the build output goes: sources, the web app's sources and
-# config, source maps (their sources are gone) and tsc's build info.
+# everything but the build output goes: sources, the web app's sources,
+# public/ (vite build copied it into apps/web/dist) and config, source maps
+# (their sources are gone) and tsc's build info.
 RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
  && pnpm install --frozen-lockfile --prod --offline --filter "@platehouse/server..." \
  && rm -rf packages/*/src apps/server/src \
-      apps/web/src apps/web/index.html apps/web/vite.config.ts apps/web/tsconfig.json \
+      apps/web/src apps/web/public apps/web/index.html apps/web/vite.config.ts apps/web/tsconfig.json \
  && find . -path ./node_modules -prune -o \( -name '*.tsbuildinfo' -o -name '*.js.map' \) -print0 \
       | xargs -0 rm -f \
  && test ! -e apps/importer \
@@ -144,11 +158,18 @@ RUN mkdir -p /data/inbox /data/tmp \
 USER node
 
 # The same checks as the node user: it can read the server, the migrations
-# and the web build, and write the data folders.
+# and the web build with its icons and manifest, and write the data folders.
 RUN test "$(id -u)" != 0 \
  && test -r /app/apps/server/dist/src/main.js \
  && test -r /app/apps/server/dist/src/db/migrations/0001_init.sql \
  && test -r /app/apps/web/dist/index.html \
+ && test -r /app/apps/web/dist/favicon.ico \
+ && test -r /app/apps/web/dist/favicon.svg \
+ && test -r /app/apps/web/dist/apple-touch-icon.png \
+ && test -r /app/apps/web/dist/icon-192.png \
+ && test -r /app/apps/web/dist/icon-512.png \
+ && test -r /app/apps/web/dist/icon-maskable-512.png \
+ && test -r /app/apps/web/dist/site.webmanifest \
  && test -w /data/inbox \
  && test -w /data/tmp
 
