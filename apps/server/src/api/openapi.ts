@@ -45,8 +45,11 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       "Creates a resumable upload of a known size, at most 536870912 bytes. Upload-Metadata " +
       "must carry filename (.3mf, .stl, .step, .stp or .scad), and may carry modelId to add " +
       "the file to an existing model, or batch with combine to group files into one model. " +
-      "Without either the file becomes a model of its own. Send the bytes with PATCH to the " +
-      "Location answered, then read GET /uploads/{id}/result.",
+      "Without either the file becomes a model of its own. duplicates says what happens when " +
+      "a live model already holds a file with the same SHA-256: allow (the default) stores it " +
+      "anyway and the result lists the copies; skip stores nothing and the result is failed " +
+      "with code duplicate. A file in the trash never counts. Send the bytes with PATCH to " +
+      "the Location answered, then read GET /uploads/{id}/result.",
     headers: {
       type: "object",
       properties: {
@@ -56,14 +59,19 @@ const TUS_DOCS: Record<string, FastifySchema> = {
           type: "string",
           description:
             "tus Upload-Metadata: comma-separated keys, each followed by a space and its " +
-            "base64 value: filename (required), modelId, batch, combine (1, 0, true or false)",
+            "base64 value: filename (required), modelId, batch, combine (1, 0, true or false), " +
+            "duplicates (skip or allow; allow when left out)",
         },
       },
       required: ["tus-resumable", "upload-length", "upload-metadata"],
     },
     response: {
       201: { description: "Created; Location is /api/v1/uploads/{id}", type: "null" },
-      400: { description: "Missing length, filename or bad metadata", type: "string" },
+      400: {
+        description:
+          "Missing length, filename or bad metadata (a duplicates other than skip or allow)",
+        type: "string",
+      },
       401: UNAUTHORIZED_DOC,
       404: { description: "modelId names no live model (unknown or in the trash)", ...ERROR_DOC },
       413: { description: "Over 536870912 bytes", type: "string" },
@@ -116,14 +124,32 @@ const TUS_DOCS: Record<string, FastifySchema> = {
     response: {
       200: {
         description:
-          "pending while uploading or importing; done with the model and file; " +
-          "or failed with a message",
+          "pending while uploading or importing; done with the model and file, and duplicates: " +
+          "the files of live models that already held the same bytes (empty when none did); or " +
+          "failed with a message. A duplicate refused under duplicates skip is failed with code " +
+          "duplicate and the duplicates it matched, so the client can point at the model or " +
+          "send the file again with duplicates allow. Other failures carry no code.",
         type: "object",
         properties: {
           status: { type: "string", enum: ["pending", "done", "failed"] },
           modelId: { type: "string" },
           fileId: { type: "string" },
           error: { type: "string" },
+          code: { type: "string", enum: ["duplicate"] },
+          duplicates: {
+            type: "array",
+            description: "Oldest first, at most 10. A file in a trashed model is never listed.",
+            items: {
+              type: "object",
+              properties: {
+                modelId: { type: "string" },
+                modelName: { type: "string" },
+                fileId: { type: "string" },
+                fileName: { type: "string" },
+              },
+              required: ["modelId", "modelName", "fileId", "fileName"],
+            },
+          },
         },
         required: ["status"],
       },
