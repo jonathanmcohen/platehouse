@@ -19,8 +19,11 @@
 // - creator and collection filters: the library reads ?creator= and
 //   ?collection= (the Creators and Collections pages' Show in the library
 //   link, Task 21), asks the API for them with the search, the tag and every
-//   Load more, shows each one with a link that clears it, and keeps a name
-//   with spaces, an ampersand and non-ASCII characters intact.
+//   page, shows each one with a link that clears it (and goes back to page
+//   1), and keeps a name with spaces, an ampersand and non-ASCII characters
+//   intact.
+// - The numbered pages, View all and their URL state are in
+//   library-pages.test.tsx.
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
@@ -121,7 +124,7 @@ let requests: string[];
  * A fetch that answers the library's two routes from these cards. collections
  * names the collections each card (by id) is in, as a card does not carry
  * them. As the server does, the creator filter is the exact name and the tag
- * and collection filters ignore case.
+ * and collection filters ignore case, and ?page= answers a numbered page.
  */
 function stubServer(
   cards: LibraryCard[],
@@ -150,12 +153,30 @@ function stubServer(
           (collection === null ||
             (collections[c.id] ?? []).some((n) => n.toLowerCase() === collection.toLowerCase())),
       );
-      return json({ printer: PRINTER, models, nextCursor: null });
+      return json(numberedPage(url, models, cards.length));
     }
     return new Response("not found", { status: 404 });
   });
   vi.stubGlobal("fetch", fetchStub);
   return fetchStub;
+}
+
+/** The server's numbered page of these matches for ?page= and ?limit=. */
+function numberedPage(url: URL, matches: LibraryCard[], libraryTotal: number) {
+  const pageSize = Number(url.searchParams.get("limit") ?? 48);
+  const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
+  const page = Math.min(Math.max(Number(url.searchParams.get("page") ?? 1), 1), pageCount);
+  return {
+    printer: PRINTER,
+    models: matches.slice((page - 1) * pageSize, page * pageSize),
+    nextCursor: null,
+    page,
+    pageSize,
+    pageCount,
+    total: matches.length,
+    totalCapped: false,
+    libraryTotal,
+  };
 }
 
 async function render(node: ReactNode) {
@@ -245,53 +266,36 @@ describe("library render requests no model file", () => {
     expect(retry, "no Try again button").toBeDefined();
   });
 
-  test("a failed Load more keeps the loaded cards and offers a retry beside the button", async () => {
-    let nextFails = true;
+  test("a failed page says so in words, and Try again asks for the same page", async () => {
+    let fails = true;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = new URL(String(input), "https://platehouse.test");
         requests.push(`${url.pathname}${url.search}`);
-        const json = (body: unknown) =>
-          new Response(JSON.stringify(body), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
-        if (url.searchParams.get("cursor") === "c-1") {
-          if (nextFails) return new Response("busy", { status: 503 });
-          return json({ printer: PRINTER, models: [STL], nextCursor: null });
+        if (url.pathname === "/app/api/library/tags") {
+          return new Response(JSON.stringify({ tags: [] }), { status: 200 });
         }
-        return json({ printer: PRINTER, models: [PLATED, PARTIAL], nextCursor: "c-1" });
+        if (fails) return new Response("busy", { status: 503 });
+        return new Response(JSON.stringify(numberedPage(url, [PLATED, PARTIAL, STL], 3)), {
+          status: 200,
+        });
       }),
     );
-    await render(libraryAt("/"));
-    expect(cardNames()).toEqual(["Plated box", "Half known"]);
-    const pagerButton = () => container.querySelector<HTMLButtonElement>(".studio-pager button");
-    expect(pagerButton()?.textContent).toBe("Load more");
+    await render(libraryAt("/?page=2"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/could not be loaded/i);
+    expect(cardNames()).toEqual([]);
 
-    await act(async () => {
-      pagerButton()?.click();
-    });
-    await settle();
-    // The cards already loaded stay, and the page-wide failure is not shown.
-    expect(cardNames()).toEqual(["Plated box", "Half known"]);
-    expect(container.textContent).not.toMatch(/the library could not be loaded/i);
-    const alert = container.querySelector('.studio-pager [role="alert"]');
-    expect(alert?.textContent).toMatch(/more models could not be loaded/i);
-    expect(pagerButton()?.textContent).toBe("Try again");
-
-    // The retry asks for the same next page, not page 1.
-    nextFails = false;
+    fails = false;
     const before = requests.length;
-    await act(async () => {
-      pagerButton()?.click();
-    });
+    const retry = [...container.querySelectorAll("button")].find((b) =>
+      /try again/i.test(b.textContent ?? ""),
+    );
+    await act(async () => retry?.click());
     await settle();
-    expect(requests.slice(before)).toEqual(["/app/api/library?cursor=c-1"]);
+    expect(requests.slice(before)).toEqual(["/app/api/library?page=2&limit=48"]);
     expect(cardNames()).toEqual(["Plated box", "Half known", "Bracket"]);
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(pagerButton()).toBeNull();
   });
 });
 
@@ -526,38 +530,31 @@ describe("creator and collection filters", () => {
     expect(cardNames()).toEqual(["Plated box"]);
   });
 
-  test("Load more keeps the creator and collection", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = new URL(String(input), "https://platehouse.test");
-        requests.push(`${url.pathname}${url.search}`);
-        const json = (body: unknown) =>
-          new Response(JSON.stringify(body), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
-        if (url.searchParams.get("cursor") === "c-1") {
-          return json({ printer: PRINTER, models: [CLIP], nextCursor: null });
-        }
-        return json({ printer: PRINTER, models: [PLATED], nextCursor: "c-1" });
+  test("every page asks for the creator and collection, and their Clear links go back to page 1", async () => {
+    const many = Array.from({ length: 60 }, (_, i) =>
+      makeCard({
+        id: `0198f0c4-0000-7000-8000-${String(1000 + i).padStart(12, "0")}`,
+        name: `Clip ${i}`,
+        creator: "Maker One",
       }),
     );
+    stubServer(many, [], Object.fromEntries(many.map((c) => [c.id, ["Desk"]])));
     await render(
-      libraryAt(`/?${new URLSearchParams({ creator: "Maker One", collection: "Desk" })}`),
+      libraryAt(
+        `/?${new URLSearchParams({ creator: "Maker One", collection: "Desk", page: "2" })}`,
+      ),
     );
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>(".studio-pager button")?.click();
-    });
-    await settle();
     const query = lastLibraryQuery();
-    expect([query.get("cursor"), query.get("creator"), query.get("collection")]).toEqual([
-      "c-1",
+    expect([query.get("page"), query.get("creator"), query.get("collection")]).toEqual([
+      "2",
       "Maker One",
       "Desk",
     ]);
-    expect(cardNames()).toEqual(["Plated box", "Cable clip"]);
+    expect(cardNames()).toHaveLength(12);
+    for (const name of ["Clear creator filter", "Clear collection filter"]) {
+      const href = linkNamed(name)?.getAttribute("href") ?? "";
+      expect(new URL(href, "https://platehouse.test").searchParams.has("page"), name).toBe(false);
+    }
   });
 
   test("the active creator is shown, and its themed Clear link returns to the library it came from", async () => {
@@ -603,7 +600,7 @@ describe("creator and collection filters", () => {
 
     await act(async () => linkNamed("Clear collection filter")?.click());
     await settle();
-    expect([...lastLibraryQuery().keys()]).toEqual([]);
+    expect([...lastLibraryQuery().keys()]).toEqual(["page", "limit"]);
     expect(cardNames()).toEqual(["Plated box", "Cable clip", "Bracket"]);
   });
 
@@ -648,7 +645,7 @@ describe("search", () => {
         </Shell>
       </MemoryRouter>,
     );
-    expect(requests).toContain("/app/api/library?q=bracket");
+    expect(requests).toContain("/app/api/library?q=bracket&page=1&limit=48");
     expect(cardNames()).toEqual(["Bracket"]);
     expect(container.querySelector<HTMLInputElement>('input[type="search"]')?.value).toBe(
       "bracket",
@@ -666,7 +663,7 @@ describe("search", () => {
       form.requestSubmit();
     });
     await settle();
-    expect(requests).toContain("/app/api/library?q=box");
+    expect(requests).toContain("/app/api/library?q=box&page=1&limit=48");
     expect(cardNames()).toEqual(["Plated box"]);
   });
 
