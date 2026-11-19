@@ -32,7 +32,9 @@
 // - The Plates tab's printer switch (PrinterSwitch) picks which of My
 //   printers' numbers the plates show: the page asks for the model again
 //   with ?printer=, and only reads; no slicing starts. The choice is kept
-//   per browser, shared with the library.
+//   per browser, shared with the library. While the new answer loads (or
+//   after it failed), the switch shows the new choice, not the printer the
+//   numbers on screen are for (PlatesTab's switchPrinter, #255).
 // - Retry on a failed plate posts to /app/api/estimates/:id/retry (the
 //   gate's Origin check passes a same-origin fetch) and loads the model
 //   again, which starts the polling while the plate estimates.
@@ -360,6 +362,7 @@ export function ModelPage({
         model={model}
         onRetry={retry}
         onChoosePrinter={printer.choose}
+        chosenPrinter={choice}
         loadThree={loadThree}
         navigateTo={navigateTo}
         platform={platform}
@@ -374,6 +377,8 @@ interface ModelDetailProps {
   onRetry(estimateId: string): Promise<boolean>;
   /** The printer switch: shows another printer's numbers. */
   onChoosePrinter(printerId: string): void;
+  /** The switch's stored choice, which may still be loading. */
+  chosenPrinter: string | null;
   loadThree?: ThreeLoader | undefined;
   navigateTo?: ((url: string) => void) | undefined;
   platform?: Platform | undefined;
@@ -392,6 +397,7 @@ function ModelDetail({
   model,
   onRetry,
   onChoosePrinter,
+  chosenPrinter,
   loadThree,
   navigateTo,
   platform,
@@ -509,6 +515,7 @@ function ModelDetail({
                   model={model}
                   onRetry={onRetry}
                   onChoosePrinter={onChoosePrinter}
+                  chosenPrinter={chosenPrinter}
                   navigateTo={navigateTo}
                   platform={platform}
                 />

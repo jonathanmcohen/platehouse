@@ -90,8 +90,15 @@ export interface Loaded<T> {
    * loaded.
    */
   set(next: T | ((prev: T) => T)): void;
-  /** GETs path again and shows the answer, keeping the current data meanwhile. */
-  reload(): void;
+  /**
+   * GETs path again and shows the answer, keeping the current data meanwhile.
+   * Resolves true once that answer, or a newer one, is shown, and false when
+   * the read failed or the path changed; it never rejects. An answer older
+   * than the one on screen is dropped (#254): two reads of one path can
+   * answer out of order, such as a poll sent before a save answering after
+   * the read that follows the save.
+   */
+  reload(): Promise<boolean>;
 }
 
 /** GETs path when the component mounts (and when path changes). */
@@ -100,16 +107,23 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
   const [error, setError] = useState<string | undefined>(undefined);
   /** The path now shown, so a reload's answer for an earlier path is dropped. */
   const current = useRef(path);
+  /** Each GET's number, in the order sent. */
+  const sent = useRef(0);
+  /** The number of the GET whose answer is on screen. */
+  const shown = useRef(0);
 
   useEffect(() => {
     current.current = path;
     if (path === null) return;
     let live = true;
+    const mine = ++sent.current;
     setData(undefined);
     setError(undefined);
     appApi<T>("GET", path).then(
       (value) => {
-        if (live) setData(value);
+        if (!live || mine < shown.current) return;
+        shown.current = mine;
+        setData(value);
       },
       (failure: unknown) => {
         if (live) setError(errorText(failure));
@@ -129,18 +143,22 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
     setData((prev) => (prev === undefined ? prev : update(prev)));
   }, []);
 
-  const reload = useCallback(() => {
-    if (path === null) return;
-    appApi<T>("GET", path).then(
-      (value) => {
-        if (current.current !== path) return;
-        setData(value);
-        setError(undefined);
-      },
-      (failure: unknown) => {
-        if (current.current === path) setError(errorText(failure));
-      },
-    );
+  const reload = useCallback(async (): Promise<boolean> => {
+    if (path === null) return false;
+    const mine = ++sent.current;
+    try {
+      const value = await appApi<T>("GET", path);
+      if (current.current !== path) return false;
+      // A newer answer is already on screen: it holds at least what this one would.
+      if (mine < shown.current) return true;
+      shown.current = mine;
+      setData(value);
+      setError(undefined);
+      return true;
+    } catch (failure) {
+      if (current.current === path) setError(errorText(failure));
+      return false;
+    }
   }, [path]);
 
   return { data, error, set, reload };

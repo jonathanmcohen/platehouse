@@ -138,6 +138,11 @@ let emptyIncomplete = false;
  * when the slicer is unreachable, busy or refuses (apps/server/src/app-api/settings.ts).
  */
 let slicerDown = false;
+/**
+ * When set, each GET /app/api/settings answer is built when asked and then
+ * waits here, in request order, until the test calls it.
+ */
+let parked: Array<() => void> | null = null;
 /** Every token value the fake handed out. */
 const issued: string[] = [];
 
@@ -191,7 +196,10 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   const model = (id: string | undefined) => state.models.find((m) => m.id === id);
 
   if (method === "GET" && path === "/app/api/settings") {
-    return json(200, {
+    // The answer is built now, from the state as it is when asked; a parked
+    // answer is sent when the test releases it, so two reads can answer in
+    // any order (#254).
+    const answer = json(200, {
       printerId: state.printerId,
       myPrinters: state.myPrinters.map((id) => ({
         id,
@@ -217,6 +225,9 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
             },
           ],
     });
+    if (parked === null) return answer;
+    const queue = parked;
+    return new Promise<Response>((resolve) => queue.push(() => resolve(answer)));
   }
   // The whole list at once, as the server's PUT /settings/printers: each
   // added printer has state.addQueued plates queued, a removed one's work stops.
@@ -456,6 +467,7 @@ beforeEach(() => {
   failing.clear();
   emptyIncomplete = false;
   slicerDown = false;
+  parked = null;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
     confirm: vi.spyOn(window, "confirm").mockImplementation(() => true),
@@ -762,6 +774,89 @@ describe("the settings page", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Issue #254: every change sends the whole list, so a change made from a
+  // list that does not have a just-added printer yet removes it (and cancels
+  // its slices) with no confirm. The controls must wait for the list read
+  // after a save, and an older read must not put the old list back.
+  test("after a save the controls wait for the new list, so a click in between sends nothing", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    parked = [];
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C, P1S_06], defaultId: P1S }]);
+    // The PUT has answered; the list read after it has not.
+    expect(parked).toHaveLength(1);
+    const makeDefault = button(`Make ${NAMES[X1C]} the default`);
+    expect(makeDefault.getAttribute("aria-disabled")).toBe("true");
+    await click(makeDefault);
+    await click(button(`Move ${NAMES[X1C]} up`));
+    expect(putBodies()).toHaveLength(1);
+
+    await act(async () => parked?.[0]?.());
+    await settle();
+    expect(myPrinters()).toEqual([
+      "Bambu Lab P1S, 0.4 mm nozzle",
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      "Bambu Lab P1S, 0.6 mm nozzle",
+    ]);
+    expect(button(`Make ${NAMES[X1C]} the default`).getAttribute("aria-disabled")).toBe("false");
+    await click(button(`Make ${NAMES[X1C]} the default`));
+    expect(putBodies().at(-1)).toEqual({ printers: [P1S, X1C, P1S_06], defaultId: X1C });
+  });
+
+  test("a waiting-count read sent before a save that answers after the save's own read is dropped", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      parked = [];
+      // The poll asks while the list is still P1S and X1C...
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+      });
+      expect(parked).toHaveLength(1);
+      // ...then a printer is added, and the read after the save goes out.
+      await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+      await click(button("Add printer"));
+      expect(parked).toHaveLength(2);
+      // The newer read answers first, then the older poll.
+      await act(async () => parked?.[1]?.());
+      await settle();
+      await act(async () => parked?.[0]?.());
+      await settle();
+      expect(myPrinters()).toHaveLength(3);
+      expect(myPrinters()[2]).toBe("Bambu Lab P1S, 0.6 mm nozzle");
+      await click(button(`Move ${NAMES[X1C]} up`));
+      expect(putBodies().at(-1)).toEqual({ printers: [X1C, P1S, P1S_06], defaultId: P1S });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("when the list cannot be read after a save, the controls stay locked until it is read again", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    failing.add("GET /app/api/settings");
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies()).toHaveLength(1);
+    expect(text()).toContain(
+      "The change was saved, but the list could not be read again, so the buttons wait until it is.",
+    );
+    const makeDefault = button(`Make ${NAMES[X1C]} the default`);
+    expect(makeDefault.getAttribute("aria-disabled")).toBe("true");
+    await click(makeDefault);
+    expect(putBodies()).toHaveLength(1);
+
+    failing.delete("GET /app/api/settings");
+    await click(button("Read the list again"));
+    expect(myPrinters()).toHaveLength(3);
+    expect(button(`Make ${NAMES[X1C]} the default`).getAttribute("aria-disabled")).toBe("false");
+    expect(text()).not.toContain("the list could not be read again");
   });
 
   test("how long a printer takes to estimate is said in plain words", () => {

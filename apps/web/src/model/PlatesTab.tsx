@@ -34,24 +34,47 @@ export interface PlatesTabProps {
   onRetry(estimateId: string): Promise<boolean>;
   /** The printer switch: shows another of My printers' numbers. */
   onChoosePrinter(printerId: string): void;
+  /** The switch's stored choice, which may still be loading; null for the default. */
+  chosenPrinter?: string | null | undefined;
   navigateTo?: ((url: string) => void) | undefined;
   platform?: Platform | undefined;
+}
+
+/**
+ * The printer the switch shows: a choice still loading (one of the model's
+ * printers, other than the one its numbers are for), else the model's
+ * printer. The select is controlled, so drawing it from model.printer alone
+ * would put it back to the old printer until the new answer lands, and
+ * arrow keys could not step past the next printer (#255). A choice the
+ * server answered with another printer (removed from My printers) is
+ * forgotten by the page, so it is not shown here for long.
+ */
+export function switchPrinter(
+  model: Pick<ModelView, "printer" | "printerName" | "printers">,
+  chosen: string | null | undefined,
+): { printer: string; printerName: string } {
+  const pending = model.printers.find((p) => p.id === chosen && p.id !== model.printer);
+  return pending === undefined
+    ? { printer: model.printer, printerName: model.printerName }
+    : { printer: pending.id, printerName: pending.name };
 }
 
 export function PlatesTab({
   model,
   onRetry,
   onChoosePrinter,
+  chosenPrinter,
   navigateTo,
   platform,
 }: PlatesTabProps) {
   const files = model.files.filter((f) => f.kind === "3mf");
   const PlateHeading = files.length > 1 ? "h3" : "h2";
+  const shown = switchPrinter(model, chosenPrinter);
   return (
     <>
       <PrinterSwitch
-        printer={model.printer}
-        printerName={model.printerName}
+        printer={shown.printer}
+        printerName={shown.printerName}
         printers={model.printers}
         onChoose={onChoosePrinter}
       />

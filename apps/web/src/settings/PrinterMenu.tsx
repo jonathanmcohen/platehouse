@@ -28,6 +28,14 @@
 //   out of a focused control that becomes disabled. A save that fails leaves
 //   the list as it was and says why. After a move, focus stays on the moved
 //   printer's button, so a keyboard user keeps their place.
+// - A save is not over until the list read after it is on screen (#254).
+//   Every change sends the whole list, and the server treats a printer
+//   missing from it as removed, so a click made from the list as it was
+//   before a save would drop a printer just added, with no confirm, and
+//   cancel its slices. The controls stay busy until that read lands, and an
+//   older read (a waiting-count poll sent before the save) never replaces it
+//   (useAppApi's reload). If the read fails, the controls stay locked, the
+//   page says why, and Read the list again unlocks them once the list is in.
 // - A listed printer the slicer no longer offers (an OrcaSlicer update
 //   renamed its preset) stays listed, and says nothing can be estimated for
 //   it. While the slicer cannot be reached the list still shows, and the
@@ -73,8 +81,11 @@ export function addedMessage(name: string, queued: number, perMinute: number): s
 
 export interface PrinterMenuProps {
   view: SettingsView;
-  /** Reads the settings again, after a save or to refresh the waiting counts. */
-  reload(): void;
+  /**
+   * Reads the settings again, after a save or to refresh the waiting counts;
+   * resolves true once a list read after the call is on screen (useAppApi).
+   */
+  reload(): Promise<boolean>;
 }
 
 type Move = "up" | "down";
@@ -84,6 +95,10 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   const listRef = useRef<HTMLOListElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const [busy, setBusy] = useState(false);
+  /** A save went through but the list could not be read after it: the list on screen may be old. */
+  const [unread, setUnread] = useState(false);
+  /** Every control ignores input: a change is running, or the list on screen may be old. */
+  const locked = busy || unread;
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [removing, setRemoving] = useState<MyPrinterView | null>(null);
@@ -130,19 +145,34 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
     };
   }
 
-  /** Saves a new list and default; resolves what the server did, or throws. */
+  /**
+   * Saves a new list and default, then waits for the list read after it;
+   * resolves what the server did, or throws. When that read fails the
+   * controls stay locked (unread) rather than act on the old list.
+   */
   async function save(printers: string[], defaultId: string): Promise<SavedPrinters> {
     const saved = await appApi<SavedPrinters>("PUT", "/settings/printers", {
       printers,
       defaultId,
     });
-    reload();
+    if (!(await reload())) setUnread(true);
     return saved;
+  }
+
+  /** Reads the list again after a failed read; the controls come back once it is in. */
+  async function readAgain(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (await reload()) setUnread(false);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** Runs one change with the controls busy; a failure is said and the list stays. */
   async function run(change: () => Promise<string>): Promise<void> {
-    if (busy) return;
+    if (locked) return;
     setBusy(true);
     setError(undefined);
     setStatus("");
@@ -176,7 +206,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   function move(printer: MyPrinterView, direction: Move) {
     const at = listed.indexOf(printer.id);
     const to = direction === "up" ? at - 1 : at + 1;
-    if (busy || at < 0 || to < 0 || to >= listed.length) return;
+    if (locked || at < 0 || to < 0 || to >= listed.length) return;
     const next = [...listed];
     next.splice(at, 1);
     next.splice(to, 0, printer.id);
@@ -188,7 +218,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   }
 
   function askRemove(printer: MyPrinterView) {
-    if (busy) return;
+    if (locked) return;
     if (printer.id === view.printerId) {
       setError(undefined);
       setStatus("Make another printer the default before removing this one.");
@@ -245,7 +275,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                     type="button"
                     className="studio-button"
                     aria-label={`Make ${printer.name} the default`}
-                    aria-disabled={busy}
+                    aria-disabled={locked}
                     onClick={() => makeDefault(printer)}
                   >
                     Make default
@@ -256,7 +286,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                   type="button"
                   className="studio-button"
                   aria-label={`Move ${printer.name} up`}
-                  aria-disabled={busy || at === 0}
+                  aria-disabled={locked || at === 0}
                   onClick={() => move(printer, "up")}
                 >
                   Up
@@ -266,7 +296,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                   type="button"
                   className="studio-button"
                   aria-label={`Move ${printer.name} down`}
-                  aria-disabled={busy || at === view.myPrinters.length - 1}
+                  aria-disabled={locked || at === view.myPrinters.length - 1}
                   onClick={() => move(printer, "down")}
                 >
                   Down
@@ -275,7 +305,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                   type="button"
                   className="studio-button"
                   aria-label={`Remove ${printer.name}`}
-                  aria-disabled={busy || isDefault}
+                  aria-disabled={locked || isDefault}
                   onClick={() => askRemove(printer)}
                 >
                   Remove
@@ -298,9 +328,9 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
               className="ph-select"
               value={toAdd}
               onChange={(event) => {
-                if (!busy) setChosen(event.currentTarget.value);
+                if (!locked) setChosen(event.currentTarget.value);
               }}
-              aria-disabled={busy}
+              aria-disabled={locked}
             >
               {view.printers.map((group) => (
                 <optgroup key={group.model} label={group.model}>
@@ -316,7 +346,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
               type="button"
               className="studio-button"
               onClick={add}
-              aria-disabled={busy || toAdd === ""}
+              aria-disabled={locked || toAdd === ""}
             >
               Add printer
             </button>
@@ -324,6 +354,22 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
         </>
       )}
       <p role="status">{status}</p>
+      {unread ? (
+        <div role="alert" className="studio-alert studio-alert-alert">
+          <p>
+            The change was saved, but the list could not be read again, so the buttons wait until
+            it is.
+          </p>
+          <button
+            type="button"
+            className="studio-button"
+            aria-disabled={busy}
+            onClick={() => void readAgain()}
+          >
+            Read the list again
+          </button>
+        </div>
+      ) : null}
       {error === undefined ? null : (
         <p role="alert" className="studio-alert studio-alert-alert">
           {error}

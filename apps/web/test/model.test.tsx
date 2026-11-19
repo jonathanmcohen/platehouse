@@ -869,6 +869,102 @@ describe("the model page's printer switch", () => {
     expect(printerSwitch().value).toBe(X1C);
     expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(X1C);
   });
+
+  // Issue #255: the select is drawn from the model on screen, which still
+  // names the old printer until the new answer lands. It must show the new
+  // choice meanwhile, or React puts it back and arrow keys cannot get past
+  // the next printer (on Windows each arrow press on a closed select chooses).
+  const A1 = "Bambu Lab A1 0.4 nozzle";
+  const A1_NAME = "Bambu Lab A1, 0.4 mm nozzle";
+
+  function threePrinters(shown: string): ModelView {
+    const names: Record<string, string> = { [P1S]: P1S_NAME, [X1C]: X1C_NAME, [A1]: A1_NAME };
+    return model([threeMf([plate(1, "Base", { file: fileNumbers(1) })])], {
+      printer: shown,
+      printerName: names[shown] ?? shown,
+      printers: [
+        { id: P1S, name: P1S_NAME },
+        { id: X1C, name: X1C_NAME },
+        { id: A1, name: A1_NAME },
+      ],
+    });
+  }
+
+  /** A server whose ?printer= answers wait until the test releases them. */
+  function holdChoices() {
+    const answers = new Map<string, (r: Response) => void>();
+    const fast = stubServer();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        const asked = url.searchParams.get("printer");
+        if (asked === null) return fast(input, init);
+        requests.push(`GET ${url.pathname}${url.search}`);
+        return new Promise<Response>((resolve) => answers.set(asked, resolve));
+      }),
+    );
+    return answers;
+  }
+
+  async function step(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+  }
+
+  test("while the new printer's numbers load, the switch shows the new choice and keeps focus", async () => {
+    models.set(MODEL_ID, threePrinters(P1S));
+    await render(pageAt(MODEL_ID));
+    const answers = holdChoices();
+    const select = printerSwitch();
+    select.focus();
+
+    // Two arrow presses before any answer: X1C, then A1.
+    await step(select, X1C);
+    expect(printerSwitch().value).toBe(X1C);
+    expect(document.activeElement).toBe(printerSwitch());
+    await step(printerSwitch(), A1);
+    expect(printerSwitch().value).toBe(A1);
+    expect(requests).toContain(`GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(A1)}`);
+
+    // The X1C answer, overtaken, never lands; the A1 one does.
+    await act(async () => {
+      answers.get(X1C)?.(json(threePrinters(X1C)));
+      answers.get(A1)?.(json(threePrinters(A1)));
+    });
+    await settle();
+    expect(printerSwitch().value).toBe(A1);
+    expect(text(panel())).not.toContain(`Times and weights for ${X1C_NAME}`);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(A1);
+  });
+
+  test("a load that fails keeps the new choice shown, matching what is stored, and Try again asks again", async () => {
+    models.set(MODEL_ID, threePrinters(P1S));
+    await render(pageAt(MODEL_ID));
+    const answers = holdChoices();
+    await step(printerSwitch(), X1C);
+    await act(async () => {
+      answers.get(X1C)?.(json({ error: "x" }, 503));
+    });
+    await settle();
+    expect(container.textContent).toContain("The model could not be refreshed right now.");
+    expect(printerSwitch().value).toBe(X1C);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(X1C);
+
+    const before = requests.length;
+    const retry = [...container.querySelectorAll("button")].find(
+      (b) => text(b) === "Try again",
+    );
+    await act(async () => retry?.click());
+    await settle();
+    expect(requests.slice(before)).toEqual([
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+    ]);
+  });
 });
 
 describe("estimating state renders and is replaced when numbers arrive", () => {
