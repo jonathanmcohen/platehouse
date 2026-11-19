@@ -13,7 +13,8 @@
 // - Built only from what the database, pg-boss and the inbox's failed/
 //   folder already record (repos/activity.ts); no log line is read or
 //   shown. Error text the app stored (Orca's detail, OpenSCAD's message, an
-//   inbox reason) goes through scrubText first, so no file system path,
+//   inbox reason) goes through scrubText (src/scrub.ts, shared with the
+//   model page and the Public API v1) first, so no file system path,
 //   address, host name, signed URL or token reaches the page.
 // - The database is read in one read-only REPEATABLE READ transaction, one
 //   query after another on its one connection, so the numbers come from one
@@ -34,6 +35,7 @@ import { FAILED_DIR, REASON_SUFFIX } from "../inbox/watch.js";
 import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
 import { activityRepo, type QueueCount } from "../repos/activity.js";
 import { settingsRepo } from "../repos/settings.js";
+import { scrubDetail, scrubText } from "../scrub.js";
 import { appApiScope, need } from "./settings.js";
 
 /** The Activity page's route, session-class (the Route classes contract). */
@@ -53,9 +55,6 @@ export const SLICER_HEALTH_TIMEOUT_MS = 3_000;
 
 /** How long one read of the inbox's failed/ folder is reused. */
 export const INBOX_CACHE_MS = 15_000;
-
-/** Longest scrubbed text sent to the page, before "...". */
-const MAX_TEXT = 1_000;
 
 /** How much of a reason file is read. */
 const REASON_BYTES = 4_096;
@@ -167,38 +166,6 @@ export interface ActivityView {
 }
 
 // ---- Pure parts, tested without a database ----
-
-/**
- * Takes out of stored error text everything the page must not show: tokens
- * and credentials, URLs (signed ones included), file system paths, IP
- * addresses, host:port pairs and internal host names. The words around
- * them stay, so the message still reads. Cut at MAX_TEXT characters.
- */
-export function scrubText(text: string): string {
-  let out = text;
-  out = out.replace(/\bBearer\s+\S+/gi, "Bearer [redacted]");
-  out = out.replace(/\bph_[A-Za-z0-9_-]{16,}/g, "[redacted]");
-  out = out.replace(
-    /\b(passwords?|passwd|secrets?|tokens?|api[_-]?keys?|access[_-]?keys?|credentials?)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi,
-    (_m, key: string, sep: string) => `${key}${sep}[redacted]`,
-  );
-  out = out.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi, "[address]");
-  out = out.replace(/\b[A-Za-z]:\\[^\s"'<>)\]]*/g, "[path]");
-  out = out.replace(/(^|[\s"'(=,[])~\/[^\s"'<>)\],]*/g, "$1[path]");
-  out = out.replace(/(^|[\s"'(=,[])\/[^\s"'<>)\],]+/g, "$1[path]");
-  out = out.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[address]");
-  out = out.replace(
-    /\b(?=[A-Za-z0-9.-]*[A-Za-z])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*:\d{2,5}\b/g,
-    "[address]",
-  );
-  out = out.replace(
-    /\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|internal|home|arpa|localdomain|jonco\.dev)\b/gi,
-    "[address]",
-  );
-  out = out.replace(/\blocalhost\b/gi, "[address]");
-  out = out.trim();
-  return out.length > MAX_TEXT ? `${out.slice(0, MAX_TEXT)}...` : out;
-}
 
 /** A cron expression the app schedules, in plain words; any other is shown as it is. */
 export function scheduleText(cron: string): string {
@@ -486,7 +453,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         plate: { index: e.plateIndex, name: e.plateName },
         code: e.failureCode,
         reason: reasonWords(e.failureReason),
-        detail: e.failureDetail === null ? null : scrubText(e.failureDetail) || null,
+        detail: scrubDetail(e.failureDetail),
       }));
       const renderEvents: ActivityEvent[] = derived
         .filter((d) => d.kind === "scad" || d.kind === "step")
@@ -496,7 +463,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           kind: d.kind === "scad" ? "scad" : "step",
           model: { id: d.modelId, name: d.modelName },
           file: { id: d.fileId, name: d.fileName },
-          message: d.message === null ? null : scrubText(d.message) || null,
+          message: scrubDetail(d.message),
         }));
 
       const working =
