@@ -36,6 +36,11 @@ export function MenuButton({ onNavigate }: MenuButtonProps) {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // Marked as used, as UploadDialog does, so a page's own Escape listener
+      // (Select mode's) leaves it alone in either listener order: when this
+      // one runs first, the menu is already shown closed by the time that one
+      // runs, so menuIsOpen alone cannot tell (issue #285).
+      event.preventDefault();
       setOpen(false);
       button.current?.focus();
     };

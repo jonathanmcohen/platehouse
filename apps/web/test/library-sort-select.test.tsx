@@ -560,6 +560,31 @@ describe("Select mode", () => {
       await key(checkbox("Model 002"), "Escape");
       expect(button("Select").getAttribute("aria-pressed")).toBe("false");
     });
+
+    test("with the menu opened before Select mode, Escape closes the menu and keeps the selection (issue #285)", async () => {
+      // The menu's document listener is added first, so it runs before Select
+      // mode's. In a browser the menu's close is rendered in the microtask
+      // checkpoint between the two listeners, so Select mode then finds no
+      // menu open (menuIsOpen) and would clear the selection; a test's
+      // dispatchEvent runs no checkpoint there, so jsdom still shows the menu
+      // open. What holds in both is that the menu marks the Escape it used
+      // (preventDefault), which Select mode's guard reads whatever the order.
+      // jsdom's click() sends no pointerdown, so the menu stays open through
+      // the clicks below, as it does for a keyboard user.
+      stubServer(cards(3));
+      await renderWithOverlays();
+      await click(button("Menu"));
+      expect(button("Menu").getAttribute("aria-expanded")).toBe("true");
+      await selectMode();
+      await click(checkbox("Model 003"));
+      expect(button("Menu").getAttribute("aria-expanded")).toBe("true");
+      const pressed = await key(checkbox("Model 003"), "Escape");
+      expect(pressed.defaultPrevented).toBe(true);
+      expect(button("Menu").getAttribute("aria-expanded")).toBe("false");
+      expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+      expect(statusText()).toBe("1 model selected");
+      expect(checkbox("Model 003").checked).toBe(true);
+    });
   });
 
   test("Select all on this page, then Clear selection", async () => {
