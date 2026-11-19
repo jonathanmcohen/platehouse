@@ -18,7 +18,10 @@
 //   does one plate at a time, so the page says how many plates were queued
 //   and about how long they take at the slicer's rate (slicesPerMinute), and
 //   each printer's line shows the plates it still has waiting, read again
-//   every WAITING_POLL_MS while any are.
+//   every WAITING_POLL_MS while any are. There is one slicer queue for every
+//   printer, so both times count the plates queued ahead for other printers
+//   (the server's through: slices up to and including the printer's last
+//   one), not just the printer's own.
 // - Removing asks first in the app's own dialog, because the printer's
 //   waiting work is dropped (numbers already made for it are kept). The
 //   default printer cannot be removed: another one is made the default
@@ -50,7 +53,8 @@ export const WAITING_POLL_MS = 15_000;
 
 /** What PUT /app/api/settings/printers answers. */
 interface SavedPrinters {
-  added: Array<{ printerId: string; queued: number }>;
+  /** through: slices that run up to its last plate, other printers' queued work counted. */
+  added: Array<{ printerId: string; queued: number; through: number }>;
   removed: string[];
 }
 
@@ -68,15 +72,45 @@ export function howLong(plates: number, perMinute: number): string {
   return `about ${plural(hours, "hour", "hours")} and ${plural(rest, "minute", "minutes")}`;
 }
 
-/** What the page says once a printer is added. */
-export function addedMessage(name: string, queued: number, perMinute: number): string {
+/**
+ * What the page says once a printer is added. through is how many slices
+ * run up to and including its last plate: the slicer is one queue for every
+ * printer, so plates already queued for other printers come first and the
+ * time counts them.
+ */
+export function addedMessage(
+  name: string,
+  queued: number,
+  perMinute: number,
+  through = queued,
+): string {
   if (queued === 0) return `Added ${name}. Every plate already has numbers for it.`;
-  return (
+  const start =
     `Added ${name}. Platehouse is now estimating ${plural(queued, "plate", "plates")} for it, ` +
-    `one at a time, at about ${plural(perMinute, "plate", "plates")} a minute, so this takes ` +
-    `${howLong(queued, perMinute)}. Its numbers show on each plate as they land, and the ` +
-    "other printers' numbers stay as they are."
-  );
+    `one at a time, at about ${plural(perMinute, "plate", "plates")} a minute`;
+  const ahead = through - queued;
+  const wait =
+    ahead > 0
+      ? `. The slicer has ${plural(ahead, "plate", "plates")} for other printers queued ahead ` +
+        `of them, so this takes ${howLong(through, perMinute)}.`
+      : `, so this takes ${howLong(queued, perMinute)}.`;
+  return `${start}${wait} Its numbers show on each plate as they land, and the other printers' numbers stay as they are.`;
+}
+
+/**
+ * A printer's waiting line: its plates, and about how long until its last
+ * one lands, counting the plates for other printers the one slicer does
+ * ahead of them (through).
+ */
+export function waitingLine(waiting: number, through: number, perMinute: number): string {
+  const head = `${plural(waiting, "plate", "plates")} waiting to be estimated, ${howLong(
+    Math.max(through, waiting),
+    perMinute,
+  )} left`;
+  const ahead = through - waiting;
+  return ahead > 0
+    ? `${head}, counting ${plural(ahead, "plate", "plates")} for other printers queued ahead of them.`
+    : `${head}.`;
 }
 
 export interface PrinterMenuProps {
@@ -191,8 +225,9 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
     void run(async () => {
       const name = offered.find((p) => p.id === printerId)?.name ?? printerId;
       const saved = await save([...listed, printerId], view.printerId);
-      const queued = saved.added.find((a) => a.printerId === printerId)?.queued ?? 0;
-      return addedMessage(name, queued, view.slicesPerMinute);
+      const mine = saved.added.find((a) => a.printerId === printerId);
+      const queued = mine?.queued ?? 0;
+      return addedMessage(name, queued, view.slicesPerMinute, mine?.through ?? queued);
     });
   }
 
@@ -260,8 +295,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
               </div>
               {printer.waiting > 0 ? (
                 <p className="studio-muted">
-                  {plural(printer.waiting, "plate", "plates")} waiting to be estimated,{" "}
-                  {howLong(printer.waiting, view.slicesPerMinute)} left.
+                  {waitingLine(printer.waiting, printer.through, view.slicesPerMinute)}
                 </p>
               ) : null}
               {printer.offered === false ? (

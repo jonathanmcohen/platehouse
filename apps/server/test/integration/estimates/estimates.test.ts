@@ -882,7 +882,10 @@ describe("My printers", () => {
     const before = stub.calls.length;
     try {
       const saved = await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
-      expect(saved).toEqual({ added: [{ printerId: A1, queued: expected }], removed: [] });
+      expect(saved).toEqual({
+        added: [{ printerId: A1, queued: expected, through: expected }],
+        removed: [],
+      });
       expect(await env.repos.settings.get()).toMatchObject({
         printerId: P1S,
         myPrinters: [P1S, A1],
@@ -892,8 +895,11 @@ describe("My printers", () => {
         () => stub.calls.length,
         (n) => n > before,
       );
-      expect((await estimates.waitingByPrinter()).get(A1)).toBe(expected);
-      expect((await estimates.waitingByPrinter()).has(P1S)).toBe(false);
+      expect((await estimates.queueByPrinter()).get(A1)).toEqual({
+        waiting: expected,
+        through: expected,
+      });
+      expect((await estimates.queueByPrinter()).has(P1S)).toBe(false);
       // Library-wide work goes behind anything a person is waiting on.
       expect(
         (await queuedJobs()).every(
@@ -919,6 +925,57 @@ describe("My printers", () => {
         printerName: "Bambu Lab A1, 0.4 mm nozzle",
       });
     }
+  });
+
+  // PR #240 review, eta-ignores-shared-queue: the slicer is one queue, so a
+  // printer whose plates are queued behind another printer's waits for them.
+  test("with two printers' work queued, the second's last plate is behind all of the first's", async () => {
+    await upload({ plates: 1 });
+    await upload({ plates: 1 });
+    await drain();
+    const forA1 = await unestimated(A1);
+    const forX1C = await unestimated(X1C);
+    expect(forA1).toBeGreaterThanOrEqual(2);
+    expect(forX1C).toBeGreaterThanOrEqual(2);
+    const held = stub.hold();
+    const before = stub.calls.length;
+    try {
+      const saved = await estimates.savePrinters({ printers: [P1S, A1, X1C], defaultId: P1S });
+      expect(saved.added.map((a) => [a.printerId, a.queued])).toEqual([
+        [A1, forA1],
+        [X1C, forX1C],
+      ]);
+      // A1's work was queued first, so it is through after its own plates;
+      // X1C's plates wait behind all of A1's. (The figure can be one short
+      // in the moment a slice has started but not yet marked itself running.)
+      expect(saved.added[0]?.through).toBe(forA1);
+      expect(saved.added[1]?.through).toBeGreaterThanOrEqual(forA1 + forX1C - 1);
+      expect(saved.added[1]?.through).toBeLessThanOrEqual(forA1 + forX1C);
+
+      // Once the first A1 slice is running in the slicer, the figures are exact.
+      await until(
+        () => stub.calls.length,
+        (n) => n > before,
+      );
+      await until(
+        async () =>
+          (
+            await env.db
+              .selectFrom("estimates")
+              .select("id")
+              .where("status", "=", "running")
+              .execute()
+          ).length,
+        (n) => n === 1,
+      );
+      const queue = await estimates.queueByPrinter();
+      expect(queue.get(A1)).toEqual({ waiting: forA1, through: forA1 });
+      expect(queue.get(X1C)).toEqual({ waiting: forX1C, through: forA1 + forX1C });
+    } finally {
+      held.release();
+    }
+    await drain();
+    expect((await estimates.queueByPrinter()).size).toBe(0);
   });
 
   test("a new plate queues a slice for every printer, the default first, ahead of library work", async () => {
@@ -1007,7 +1064,7 @@ describe("My printers", () => {
       expect(saved).toEqual({ added: [], removed: [A1] });
       // Its queued slices are cancelled and its waiting estimates gone.
       expect((await queuedJobs()).filter((j) => j.data.printerId === A1)).toEqual([]);
-      expect((await estimates.waitingByPrinter()).has(A1)).toBe(false);
+      expect((await estimates.queueByPrinter()).has(A1)).toBe(false);
     } finally {
       held.release();
     }

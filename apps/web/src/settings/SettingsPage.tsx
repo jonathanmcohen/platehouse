@@ -30,6 +30,11 @@ export interface MyPrinterView {
   offered: boolean | null;
   /** Plate estimates still waiting for it. */
   waiting: number;
+  /**
+   * Slices that run up to and including its last waiting one, other
+   * printers' queued work counted (the slicer is one queue); 0 with none.
+   */
+  through: number;
 }
 
 /** What GET /app/api/settings answers. */

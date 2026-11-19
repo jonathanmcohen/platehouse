@@ -180,6 +180,23 @@ function counts(key: "tags" | "collections" | "creator") {
   return [...byName].map(([name, models]) => ({ name, models }));
 }
 
+/**
+ * As the server's queueByPrinter: the slicer is one queue, and each
+ * printer's work was queued after the work of the printers before it in
+ * state.waiting (insertion order: what was there first, then each printer
+ * added), so a printer is through after its own waiting plates and every
+ * plate queued before them. 0 with nothing waiting.
+ */
+function throughOf(id: string): number {
+  if ((state.waiting[id] ?? 0) === 0) return 0;
+  let total = 0;
+  for (const [printer, waiting] of Object.entries(state.waiting)) {
+    total += waiting;
+    if (printer === id) return total;
+  }
+  return 0;
+}
+
 /** The fake /app/api: the routes the pages call, answering as the server does. */
 async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const url = new URL(String(input), "https://platehouse.test");
@@ -206,6 +223,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
         name: NAMES[id] ?? id,
         offered: slicerDown ? null : MENU_IDS.includes(id),
         waiting: state.waiting[id] ?? 0,
+        through: throughOf(id),
       })),
       slicesPerMinute: 3,
       bucketVersioning: state.bucketVersioning,
@@ -246,7 +264,11 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     for (const id of added) state.waiting[id] = state.addQueued;
     for (const id of removed) delete state.waiting[id];
     return json(200, {
-      added: added.map((printerId) => ({ printerId, queued: state.addQueued })),
+      added: added.map((printerId) => ({
+        printerId,
+        queued: state.addQueued,
+        through: throughOf(printerId),
+      })),
       removed,
     });
   }
@@ -857,6 +879,36 @@ describe("the settings page", () => {
     expect(myPrinters()).toHaveLength(3);
     expect(button(`Make ${NAMES[X1C]} the default`).getAttribute("aria-disabled")).toBe("false");
     expect(text()).not.toContain("the list could not be read again");
+  });
+
+  // PR #240 review, eta-ignores-shared-queue: one slicer does every
+  // printer's plates one at a time, so a printer behind another's work
+  // waits for it too. 463 + 463 plates at 3 a minute is 308.7 minutes.
+  test("with two printers' work waiting, the second printer's time counts the plates ahead of it", async () => {
+    state.myPrinters = [P1S, X1C, P1S_06];
+    state.waiting = { [X1C]: 463, [P1S_06]: 463 };
+    await show("/settings", <SettingsPage />);
+    const lines = [...document.querySelectorAll("[data-my-printer]")].map((li) => li.textContent);
+    expect(lines[1]).toContain(
+      "463 plates waiting to be estimated, about 2 hours and 35 minutes left.",
+    );
+    expect(lines[2]).toContain(
+      "463 plates waiting to be estimated, about 5 hours and 9 minutes left, counting 463 plates for other printers queued ahead of them.",
+    );
+  });
+
+  test("a printer added behind another's queued work is told the whole wait", async () => {
+    state.myPrinters = [P1S, X1C];
+    state.waiting = { [X1C]: 463 };
+    await show("/settings", <SettingsPage />);
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+      "Added Bambu Lab P1S, 0.6 mm nozzle. Platehouse is now estimating 463 plates for it, " +
+        "one at a time, at about 3 plates a minute. The slicer has 463 plates for other " +
+        "printers queued ahead of them, so this takes about 5 hours and 9 minutes. Its numbers " +
+        "show on each plate as they land, and the other printers' numbers stay as they are.",
+    );
   });
 
   test("how long a printer takes to estimate is said in plain words", () => {

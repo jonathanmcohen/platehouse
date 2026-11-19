@@ -147,10 +147,51 @@ export class PrinterListRefused extends Error {
  */
 export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: 0 });
 
+/**
+ * For each printer with slices queued, how many slices run up to and
+ * including its last one: the slices already running (ahead of everything),
+ * then the queued slices in the order pg-boss starts them, highest priority
+ * first, then oldest. There is one slicer queue and it runs one slice at a
+ * time for every printer, so this, not a printer's own count, is what its
+ * waiting plates take. Jobs waiting out a retry delay are counted where
+ * they sit; a page's figure is "about".
+ */
+export function slicesThrough(
+  jobs: ReadonlyArray<{ id: string; printerId: string; priority: number; createdOn: Date }>,
+  running: number,
+): Map<string, number> {
+  const order = [...jobs].sort(
+    (a, b) =>
+      b.priority - a.priority ||
+      a.createdOn.getTime() - b.createdOn.getTime() ||
+      a.id.localeCompare(b.id),
+  );
+  const through = new Map<string, number>();
+  order.forEach((job, i) => {
+    through.set(job.printerId, running + i + 1);
+  });
+  return through;
+}
+
+/** One of My printers' place in the slicer queue. */
+export interface PrinterQueue {
+  /** Its plate estimates still queued or slicing, at the current Orca version. */
+  waiting: number;
+  /**
+   * Slices that run up to and including its last waiting one, across every
+   * printer (slicesThrough); at least waiting.
+   */
+  through: number;
+}
+
 /** What saving a new My printers list did. */
 export interface SavedPrinters {
-  /** The printers added, each with how many plate estimates were queued for it. */
-  added: Array<{ printerId: string; queued: number }>;
+  /**
+   * The printers added, each with how many plate estimates were queued for
+   * it and how many slices run up to and including its last one (through),
+   * the work already queued for other printers included.
+   */
+  added: Array<{ printerId: string; queued: number; through: number }>;
   /** The printers removed; their queued and waiting estimates were dropped. */
   removed: string[];
 }
@@ -228,10 +269,13 @@ export interface Estimates {
   /** The Orca-version poll (startup and every 10 minutes). */
   pollOrca(): Promise<{ orca: string; changed: boolean }>;
   /**
-   * How many plate estimates each of My printers still has queued or
-   * slicing for the current Orca version; a printer with none is left out.
+   * Each of My printers' place in the slicer queue: its plate estimates
+   * still queued or slicing for the current Orca version, and how many
+   * slices run up to and including its last one, every printer's work
+   * counted (one queue, one slice at a time). A printer with nothing
+   * waiting is left out.
    */
-  waitingByPrinter(): Promise<Map<string, number>>;
+  queueByPrinter(): Promise<Map<string, PrinterQueue>>;
   /**
    * A plate's numbers for printerId, or for the default printer when it is
    * left out. Reading numbers never queues a slice.
@@ -596,10 +640,17 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     const out: SavedPrinters = { added: [], removed };
     if (added.length > 0) {
       const orca = await currentOrca();
+      const queuedFor: Array<{ printerId: string; queued: number }> = [];
       for (const printer of added) {
         const queued = await queueLibraryFor(printer, orca);
         log(`added ${printer.id} to My printers; queued ${queued} estimate(s)`);
-        out.added.push({ printerId: printer.id, queued });
+        queuedFor.push({ printerId: printer.id, queued });
+      }
+      // Read once all of it is queued: an added printer's plates wait behind
+      // whatever was queued before them, other printers' and earlier added ones.
+      const queue = await queueByPrinter();
+      for (const { printerId, queued } of queuedFor) {
+        out.added.push({ printerId, queued, through: queue.get(printerId)?.through ?? queued });
       }
     }
     return out;
@@ -953,8 +1004,10 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * read a page at a time. Only queued jobs are read, so the finished jobs
    * pg-boss keeps never crowd out a live one.
    */
-  async function queuedSlices(): Promise<Array<{ id: string; data: SliceJobData }>> {
-    const jobs: Array<{ id: string; data: SliceJobData }> = [];
+  async function queuedSlices(): Promise<
+    Array<{ id: string; data: SliceJobData; priority: number; createdOn: Date }>
+  > {
+    const jobs: Array<{ id: string; data: SliceJobData; priority: number; createdOn: Date }> = [];
     let after: string | undefined;
     for (;;) {
       const page = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
@@ -963,7 +1016,14 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         limit: JOB_PAGE,
         ...(after === undefined ? {} : { after }),
       });
-      for (const job of page) jobs.push({ id: job.id, data: job.data });
+      for (const job of page) {
+        jobs.push({
+          id: job.id,
+          data: job.data,
+          priority: job.priority,
+          createdOn: new Date(job.createdOn),
+        });
+      }
       const last = page.at(-1);
       if (page.length < JOB_PAGE || last === undefined) return jobs;
       after = last.id;
@@ -1043,22 +1103,49 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     return { orca, changed };
   }
 
-  async function waitingByPrinter(): Promise<Map<string, number>> {
+  async function queueByPrinter(): Promise<Map<string, PrinterQueue>> {
     const { myPrinters, lastOrcaVersion } = await repos.settings.get();
-    const rows = await db
-      .selectFrom("estimates")
-      .select(["printerId", sql<number>`count(*)::int`.as("n")])
-      .where("source", "=", "platehouse")
-      .where("status", "in", ["pending", "running"])
-      .where("printerId", "in", myPrinters)
-      .where((eb) =>
-        lastOrcaVersion === null
-          ? eb("slicerVersion", "is", null)
-          : eb("slicerVersion", "=", lastOrcaVersion),
-      )
-      .groupBy("printerId")
-      .execute();
-    return new Map(rows.map((r) => [r.printerId, r.n]));
+    const [rows, running, jobs] = await Promise.all([
+      db
+        .selectFrom("estimates")
+        .select(["printerId", sql<number>`count(*)::int`.as("n")])
+        .where("source", "=", "platehouse")
+        .where("status", "in", ["pending", "running"])
+        .where("printerId", "in", myPrinters)
+        .where((eb) =>
+          lastOrcaVersion === null
+            ? eb("slicerVersion", "is", null)
+            : eb("slicerVersion", "=", lastOrcaVersion),
+        )
+        .groupBy("printerId")
+        .execute(),
+      // A slice running now, for any printer, runs before anything queued.
+      db
+        .selectFrom("estimates")
+        .select(sql<number>`count(*)::int`.as("n"))
+        .where("source", "=", "platehouse")
+        .where("status", "=", "running")
+        .executeTakeFirstOrThrow(),
+      queuedSlices(),
+    ]);
+    const through = slicesThrough(
+      jobs.map((j) => ({
+        id: j.id,
+        printerId: j.data.printerId,
+        priority: j.priority,
+        createdOn: j.createdOn,
+      })),
+      running.n,
+    );
+    return new Map(
+      rows.map((r) => [
+        r.printerId,
+        // A printer whose only work is the slice running now is through at
+        // the running count; an estimate whose job was lost (the poll queues
+        // it again) still counts as its own waiting plate.
+        { waiting: r.n, through: Math.max(through.get(r.printerId) ?? running.n, r.n) },
+      ]),
+    );
   }
 
   /** The display context for printerId, or for the default printer when it is left out. */
@@ -1088,7 +1175,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     reestimateAll,
     retryEstimate: (estimateId) => retryEstimate(estimateId),
     pollOrca,
-    waitingByPrinter,
+    queueByPrinter,
     plateNumbers: async (plateId, printerId) =>
       plateNumbers(db, await displayContext(printerId), plateId),
     platesWithoutNumbers: async (printerId) =>

@@ -324,7 +324,15 @@ describe("the settings page", () => {
     const res = await call("GET", "/app/api/settings");
     expect(res.json()).toMatchObject({
       printerId: P1S,
-      myPrinters: [{ id: P1S, name: "Bambu Lab P1S, 0.4 mm nozzle", offered: true, waiting: 0 }],
+      myPrinters: [
+        {
+          id: P1S,
+          name: "Bambu Lab P1S, 0.4 mm nozzle",
+          offered: true,
+          waiting: 0,
+          through: 0,
+        },
+      ],
       slicesPerMinute: SLICES_PER_MINUTE,
     });
     expect(SLICES_PER_MINUTE).toBe(3);
@@ -340,7 +348,7 @@ describe("the settings page", () => {
       });
       expect(res.status, res.text).toBe(200);
       const answer = res.json() as {
-        added: Array<{ printerId: string; queued: number }>;
+        added: Array<{ printerId: string; queued: number; through: number }>;
         removed: string[];
       };
       expect(answer.removed).toEqual([]);
@@ -348,12 +356,20 @@ describe("the settings page", () => {
       expect(answer.added[0]?.printerId).toBe(X1C);
       const queued = answer.added[0]?.queued ?? 0;
       expect(queued).toBeGreaterThanOrEqual(1);
+      // Nothing else was queued, so its plates are through after its own.
+      expect(answer.added[0]?.through).toBe(queued);
       // The settings answer shows that work waiting for the X1C.
       expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
         printerId: P1S,
         myPrinters: [
-          { id: P1S, waiting: 0 },
-          { id: X1C, name: "Bambu Lab X1 Carbon, 0.4 mm nozzle", offered: true, waiting: queued },
+          { id: P1S, waiting: 0, through: 0 },
+          {
+            id: X1C,
+            name: "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+            offered: true,
+            waiting: queued,
+            through: queued,
+          },
         ],
       });
     } finally {
@@ -366,6 +382,51 @@ describe("the settings page", () => {
         { id: X1C, waiting: 0 },
       ],
     });
+  });
+
+  test("with two printers' work queued, the second printer's time counts the first's plates", async () => {
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    await uploadPlate();
+    await drain();
+    const held = stub.hold();
+    const before = stub.calls.length;
+    try {
+      const res = await call("PUT", "/app/api/settings/printers", {
+        json: { printers: [P1S, X1C, A1], defaultId: P1S },
+      });
+      expect(res.status, res.text).toBe(200);
+      const added = (res.json() as { added: Array<{ printerId: string; queued: number }> }).added;
+      const forX1C = added.find((a) => a.printerId === X1C)?.queued ?? 0;
+      const forA1 = added.find((a) => a.printerId === A1)?.queued ?? 0;
+      expect(forX1C).toBeGreaterThanOrEqual(1);
+      expect(forA1).toBeGreaterThanOrEqual(1);
+      // Once the first X1C slice is running, the figures are exact.
+      await until(
+        () => stub.calls.length,
+        (n) => n > before,
+      );
+      await until(
+        async () =>
+          (
+            await env.db
+              .selectFrom("estimates")
+              .select("id")
+              .where("status", "=", "running")
+              .execute()
+          ).length,
+        (n) => n === 1,
+      );
+      expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
+        myPrinters: [
+          { id: P1S, waiting: 0, through: 0 },
+          { id: X1C, waiting: forX1C, through: forX1C },
+          { id: A1, waiting: forA1, through: forX1C + forA1 },
+        ],
+      });
+    } finally {
+      held.release();
+    }
+    await drain();
   });
 
   test("a new order or a new default is saved and queues nothing; a removal drops its work", async () => {

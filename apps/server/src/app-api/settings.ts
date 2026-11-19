@@ -21,7 +21,10 @@
 //   printer has every live plate queued for it, which takes hours on a big
 //   library (SLICES_PER_MINUTE), and a removed one has its waiting work
 //   dropped. Each listed printer says how many plate estimates it still has
-//   waiting, and whether the slicer still offers it.
+//   waiting, how many slices run up to and including its last one across
+//   every printer (through: one queue, one slice at a time, so a printer
+//   behind another's work waits for it too), and whether the slicer still
+//   offers it.
 // - The library's and the model page's printer switch read their choices
 //   from those pages' own answers (app-api/library.ts printerChoices), and
 //   switching reads numbers only; nothing there starts a slice.
@@ -82,6 +85,13 @@ export interface MyPrinterView {
   offered: boolean | null;
   /** Plate estimates still queued or slicing for it at the current Orca version. */
   waiting: number;
+  /**
+   * Slices that run up to and including its last waiting one, every
+   * printer's work counted: the slicer is one queue, one plate at a time.
+   * The page's "about how long" is this over SLICES_PER_MINUTE; 0 with
+   * nothing waiting.
+   */
+  through: number;
 }
 
 /** What GET /app/api/settings answers. */
@@ -99,7 +109,7 @@ export interface SettingsView {
 
 export interface SettingsApiDeps {
   settings: Pick<SettingsRepo, "get">;
-  estimates: Pick<Estimates, "listPrinters" | "savePrinters" | "waitingByPrinter">;
+  estimates: Pick<Estimates, "listPrinters" | "savePrinters" | "queueByPrinter">;
 }
 
 /** An /app/api module was given no dependencies: its routes answer 503. */
@@ -246,9 +256,9 @@ export async function registerSettingsApi(
   await appApiScope(app, (scope) => {
     scope.get("/settings", async (request): Promise<SettingsView> => {
       const { settings, estimates } = need(deps);
-      const [current, waiting, menu] = await Promise.all([
+      const [current, queue, menu] = await Promise.all([
         settings.get(),
-        estimates.waitingByPrinter(),
+        estimates.queueByPrinter(),
         menuOrNull(estimates, (error) =>
           request.log.warn({ err: error }, "app api: the slicer's printer list is unavailable"),
         ),
@@ -259,7 +269,8 @@ export async function registerSettingsApi(
           id,
           name: printerName(id, menu ?? []),
           offered: menu === null ? null : menu.some((p) => p.id === id),
-          waiting: waiting.get(id) ?? 0,
+          waiting: queue.get(id)?.waiting ?? 0,
+          through: queue.get(id)?.through ?? 0,
         })),
         printers: menu === null ? null : groupPrinters(menu),
         slicesPerMinute: SLICES_PER_MINUTE,
