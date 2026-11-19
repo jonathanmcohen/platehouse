@@ -4,7 +4,11 @@
 //
 // A LOCALES_DIR file is read without a rebuild or a restart: the folder is
 // listed at startup and again whenever it is asked for and its modification
-// time has changed. Each file must be named <code>.json for a locale code
+// time has changed. A page never waits on the folder for long: the folder is
+// read by one refresh at a time, a request waits for it at most
+// LOCALES_DIR_WAIT_MS, and past that (a hung network mount) it is answered
+// with the languages last read, and the log says so. A folder that cannot
+// be read at all is logged once, by its error code. Each file must be named <code>.json for a locale code
 // (es, pt-BR), be a regular file (a symlink is refused, as the inbox does),
 // be at most MAX_LOCALE_BYTES, and hold a JSON object. Its messages are
 // checked against English with @platehouse/i18n's checkCatalog, lenient: a
@@ -38,6 +42,12 @@ export const MAX_LOCALE_BYTES = 256 * 1024;
 
 /** The most LOCALES_DIR files read. */
 export const MAX_LOCALE_FILES = 50;
+
+/**
+ * The longest a request waits for LOCALES_DIR to be read before it is
+ * answered with the languages last read from it.
+ */
+export const LOCALES_DIR_WAIT_MS = 1000;
 
 /** One language as GET /app/api/locales lists it. */
 export interface ListedLocale {
@@ -127,13 +137,31 @@ export interface LocalesOptions {
   /** LOCALES_DIR; only the built-in languages when left out. */
   dir?: string | undefined;
   log?: LocalesLog;
+  /** How long a request waits for LOCALES_DIR; LOCALES_DIR_WAIT_MS when left out. */
+  waitMs?: number;
+}
+
+/** Whether a promise settles within ms milliseconds. */
+function settlesWithin(done: Promise<void>, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    void done.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 export function createLocales(options: LocalesOptions = {}): Locales {
   const english = englishMessages();
   const log = options.log;
+  const waitMs = options.waitMs ?? LOCALES_DIR_WAIT_MS;
   /** The local languages and the folder's modification time when they were read. */
   let local: { signature: string; byCode: Map<string, Loaded> } | undefined;
+  /** The read of the folder in progress; slow once a request stopped waiting for it. */
+  let refreshing: { done: Promise<void>; slow: boolean } | undefined;
+  /** The error code last logged for a folder that cannot be read, until it can be again. */
+  let unreadable: string | undefined;
 
   /**
    * What the folder holds now, as one string: the folder's modification
@@ -155,8 +183,14 @@ export function createLocales(options: LocalesOptions = {}): Locales {
           parts.push(`${name}:gone`);
         }
       }
+      unreadable = undefined;
       return parts.join("|");
-    } catch {
+    } catch (error) {
+      const code = String((error as NodeJS.ErrnoException).code ?? "unknown");
+      if (unreadable !== code) {
+        unreadable = code;
+        log?.warn({ code }, "locales: LOCALES_DIR cannot be read");
+      }
       return "";
     }
   }
@@ -240,18 +274,52 @@ export function createLocales(options: LocalesOptions = {}): Locales {
     return byCode;
   }
 
-  async function all(): Promise<Map<string, Loaded>> {
-    const out = new Map(builtinLocales());
-    const dir = options.dir;
-    if (dir !== undefined) {
+  /** Reads the folder again, or joins the read already in progress. */
+  function refresh(dir: string): { done: Promise<void>; slow: boolean } {
+    if (refreshing !== undefined) return refreshing;
+    const run: { done: Promise<void>; slow: boolean } = { done: Promise.resolve(), slow: false };
+    run.done = (async () => {
       const signature = await signatureOf(dir);
       if (local === undefined || local.signature !== signature) {
         local = { signature, byCode: signature === "" ? new Map() : await readLocal(dir) };
       }
-      for (const [code, loaded] of local.byCode) out.set(code, loaded);
+    })()
+      .catch((error: unknown) => {
+        // The languages last read stay offered. Logged by error name and
+        // code only: a message could quote a file's words.
+        log?.warn(
+          { error: (error as Error).name, code: (error as NodeJS.ErrnoException).code },
+          "locales: LOCALES_DIR could not be read",
+        );
+      })
+      .finally(() => {
+        if (refreshing === run) refreshing = undefined;
+      });
+    refreshing = run;
+    return run;
+  }
+
+  async function all(): Promise<Map<string, Loaded>> {
+    const out = new Map(builtinLocales());
+    const dir = options.dir;
+    if (dir !== undefined) {
+      // A read that already outlasted one request's wait is not waited for
+      // again: the pages behind it are answered at once.
+      const run = refresh(dir);
+      if (!run.slow && !(await settlesWithin(run.done, waitMs)) && !run.slow) {
+        run.slow = true;
+        log?.warn(
+          { waitMs },
+          "locales: LOCALES_DIR is slow to read, so the languages last read from it are offered",
+        );
+      }
+      for (const [code, loaded] of local?.byCode ?? []) out.set(code, loaded);
     }
     return out;
   }
+
+  // The first read starts now, so the first page finds it done.
+  if (options.dir !== undefined) refresh(options.dir);
 
   return {
     english,

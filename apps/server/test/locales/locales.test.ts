@@ -5,9 +5,48 @@ import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { registerLocalesApi } from "../../src/app-api/locales.js";
 import { createLocales, MAX_LOCALE_BYTES } from "../../src/locales/locales.js";
+
+/**
+ * A stat that can be held, as a hung network mount holds it. beforeStat runs
+ * before every stat the server makes, and may return a promise that does
+ * not settle until the test releases it.
+ */
+const fsHooks = vi.hoisted(() => ({
+  beforeStat: undefined as ((path: string) => Promise<void> | undefined) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const stat = async (...args: Parameters<typeof actual.stat>) => {
+    await fsHooks.beforeStat?.(String(args[0]));
+    return actual.stat(...args);
+  };
+  return { ...actual, stat: stat as typeof actual.stat };
+});
+
+/** Holds every stat of a folder until release() is called, counting them. */
+function hold(path: string): { calls: () => number; release: () => void } {
+  let calls = 0;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fsHooks.beforeStat = (p) => {
+    if (p !== path) return undefined;
+    calls += 1;
+    return held;
+  };
+  return {
+    calls: () => calls,
+    release: () => {
+      fsHooks.beforeStat = undefined;
+      release();
+    },
+  };
+}
 
 let dir: string;
 /** A second folder, outside LOCALES_DIR, for what a symlink points at; removed after each test. */
@@ -24,6 +63,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  fsHooks.beforeStat = undefined;
   await rm(dir, { recursive: true, force: true });
   await rm(outsideDir, { recursive: true, force: true });
 });
@@ -156,9 +196,75 @@ describe("LOCALES_DIR", () => {
     expect((await locales.translator("de")).t("shell.nav.library")).toBe("Meine Bibliothek");
   });
 
-  test("a missing folder offers the built-in languages only", async () => {
-    const locales = createLocales({ dir: join(dir, "nowhere"), log });
+  test("a missing folder offers the built-in languages only, and says so in the log once", async () => {
+    const missing = join(dir, "nowhere");
+    const locales = createLocales({ dir: missing, log });
     expect((await locales.list()).every((l) => l.source === "built-in")).toBe(true);
+    expect(await locales.available()).not.toContain("de");
+    const cannotRead = () =>
+      warnings.filter((w) => w.message === "locales: LOCALES_DIR cannot be read");
+    expect(cannotRead()).toEqual([
+      { details: { code: "ENOENT" }, message: "locales: LOCALES_DIR cannot be read" },
+    ]);
+    // Mounted later, it is read; gone again, it is logged again.
+    await mkdir(missing);
+    await writeFile(join(missing, "de.json"), JSON.stringify({ "shell.nav.library": "B" }));
+    expect(await locales.available()).toContain("de");
+    await rm(missing, { recursive: true });
+    expect(await locales.available()).not.toContain("de");
+    expect(cannotRead()).toHaveLength(2);
+  });
+
+  test("a LOCALES_DIR that is a file, not a folder, is logged by its error code", async () => {
+    await file("not-a-folder", "{}");
+    const locales = createLocales({ dir: join(dir, "not-a-folder"), log });
+    expect((await locales.list()).every((l) => l.source === "built-in")).toBe(true);
+    expect(warnings).toContainEqual({
+      details: { code: "ENOTDIR" },
+      message: "locales: LOCALES_DIR cannot be read",
+    });
+  });
+
+  test("a folder that hangs holds a page no longer than the wait, and the languages last read are offered", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const locales = createLocales({ dir, log, waitMs: 50 });
+    expect(await locales.available()).toContain("de");
+
+    const held = hold(dir);
+    const started = Date.now();
+    expect(await locales.resolve("de", undefined)).toBe("de");
+    expect(await locales.resolve("de", undefined)).toBe("de");
+    expect((await locales.translator("de")).t("shell.nav.library")).toBe("Bibliothek");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // One read of the hung folder, not one per page, so the pages do not
+    // fill Node's file threads with stat calls that never return.
+    expect(held.calls()).toBe(1);
+    const slow = warnings.filter(
+      (w) =>
+        w.message ===
+        "locales: LOCALES_DIR is slow to read, so the languages last read from it are offered",
+    );
+    expect(slow).toEqual([{ details: { waitMs: 50 }, message: slow[0]?.message }]);
+
+    // The mount answers again: a file added meanwhile is offered.
+    await file("it.json", { "shell.nav.library": "Libreria" });
+    const later = new Date(Date.now() + 5_000);
+    await utimes(dir, later, later);
+    held.release();
+    await vi.waitFor(async () => expect(await locales.available()).toContain("it"));
+  });
+
+  test("a folder that hangs from the start offers the built-in languages without holding a page", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const held = hold(dir);
+    const locales = createLocales({ dir, log, waitMs: 50 });
+    const started = Date.now();
+    expect((await locales.list()).every((l) => l.source === "built-in")).toBe(true);
+    expect(await locales.resolve(undefined, "es")).toBe("es");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(held.calls()).toBe(1);
+    held.release();
+    await vi.waitFor(async () => expect(await locales.available()).toContain("de"));
   });
 });
 

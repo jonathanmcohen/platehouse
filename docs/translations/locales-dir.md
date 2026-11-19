@@ -45,6 +45,17 @@ themselves, for example:
 platehouse: locales: messages in a LOCALES_DIR file were dropped {"file":"de.json","unknownKeys":["shell.nav.libary"],"refusedKeys":[]}
 ```
 
+If the folder cannot be read at all, for example a typo in the path or a volume that was never
+mounted, Platehouse offers its built-in languages only and writes the error code to the log once:
+
+```
+platehouse: locales: LOCALES_DIR cannot be read {"code":"ENOENT"}
+```
+
+If the folder is slow to answer, such as a network mount that hangs, a page waits for it at most
+one second and is then shown with the languages last read from the folder. The log says
+`locales: LOCALES_DIR is slow to read, so the languages last read from it are offered`.
+
 ## Fixing words in a built-in language
 
 A file named for a built-in language, such as `es.json`, replaces the built-in messages it has and
