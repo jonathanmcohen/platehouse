@@ -265,8 +265,8 @@
   }
 
   /* White text on the fill: hover darkens, as in light, so it never loses
-     contrast. */
-  [data-theme="system"] .studio-button-primary:hover {
+     contrast. Enabled buttons only, as in light. */
+  [data-theme="system"] .studio-button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
     filter: brightness(0.92);
   }
 }
@@ -524,8 +524,10 @@ img {
 
 /* In light the fill is behind white text, so hover darkens it rather than
    lightening it, and never loses contrast. (System's copy is in its
-   prefers-color-scheme block.) */
-[data-theme="light"] .studio-button-primary:hover {
+   prefers-color-scheme block.) Enabled buttons only: this selector outranks
+   .studio-button:disabled and .studio-button[aria-disabled="true"], so
+   without the :not()s a disabled button would darken on hover in light. */
+[data-theme="light"] .studio-button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
   filter: brightness(0.92);
 }
 

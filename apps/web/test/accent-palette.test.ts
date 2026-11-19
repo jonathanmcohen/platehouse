@@ -93,6 +93,9 @@ function rule(css: string, selectors: string[]): Decls {
   return (found[0] as Rule).decls;
 }
 
+/** A hover that only an enabled button gets. */
+const ENABLED_HOVER = ':hover:not(:disabled):not([aria-disabled="true"])';
+
 const TOP = topLevel(CSS);
 const LIGHT_MEDIA = mediaBody(CSS, "(prefers-color-scheme: light)");
 
@@ -333,8 +336,26 @@ describe("the palettes map the scheme onto the tokens", () => {
       new RegExp(
         `${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{[^}]*filter:\\s*brightness\\(0\\.\\d+\\)`,
       );
-    expect(TOP).toMatch(darkens('[data-theme="light"] .studio-button-primary:hover'));
-    expect(LIGHT_MEDIA).toMatch(darkens('[data-theme="system"] .studio-button-primary:hover'));
+    expect(TOP).toMatch(darkens(`[data-theme="light"] .studio-button-primary${ENABLED_HOVER}`));
+    expect(LIGHT_MEDIA).toMatch(
+      darkens(`[data-theme="system"] .studio-button-primary${ENABLED_HOVER}`),
+    );
+  });
+
+  test("a disabled primary button keeps its fill on hover in light, as in dark", () => {
+    // [data-theme] .studio-button-primary:hover is (0,3,0), more specific than
+    // .studio-button:disabled and organise.css's
+    // .studio-button[aria-disabled="true"] (both (0,2,0)), so their
+    // filter: none would lose to it. Every themed hover filter on the primary
+    // button is limited to enabled buttons instead.
+    const themed = [TOP, LIGHT_MEDIA].flatMap((css) =>
+      [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter((m) => /(^|;)\s*filter\s*:/.test(m[2] as string))
+        .flatMap((m) => (m[1] as string).split(",").map((s) => s.replace(/\s+/g, " ").trim()))
+        .filter((s) => s.includes("[data-theme=") && s.includes(".studio-button-primary:hover")),
+    );
+    expect(themed.length, "themed primary hover rules").toBeGreaterThanOrEqual(2);
+    for (const selector of themed) expect(selector).toContain(ENABLED_HOVER);
   });
 
   test("the logo is drawn with --brand", () => {
