@@ -324,17 +324,20 @@ export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
  * in and check the library. Any other refusal, such as the 404 for an upload
  * the server no longer knows, will not change by asking again.
  */
-export function makeFetchUploadResult(i18n: Words = ENGLISH_I18N): FetchResult {
+export function makeFetchUploadResult(): FetchResult {
   return async (uploadUrl) => {
     const res = await fetch(`${uploadUrl}/result`, { headers: { accept: "application/json" } });
     if (res.status === 503) return { status: "pending" };
-    if (res.status === 401) return { status: "failed", error: i18n.t("upload.sentSessionEnded") };
-    if (!res.ok) return { status: "failed", error: i18n.t("upload.notConfirmed") };
+    // These two are the page's own outcomes, not the server's words, so they
+    // carry a code and no error: resultMessage then says them in the shown
+    // language every time, never as server English (issue 295).
+    if (res.status === 401) return { status: "failed", code: "sent_session_ended" };
+    if (!res.ok) return { status: "failed", code: "not_confirmed" };
     return (await res.json()) as UploadResult;
   };
 }
 
-/** GET <upload>/result, with its own sentences in English. */
+/** GET <upload>/result. */
 export const fetchUploadResult: FetchResult = makeFetchUploadResult();
 
 /** The words for each code a failed upload's result carries (uploads/tus.ts). */
@@ -345,6 +348,9 @@ const RESULT_KEYS: Readonly<Record<string, MessageKey>> = {
   ingest_failed: "upload.result.ingestFailed",
   upload_failed: "upload.result.uploadFailed",
   queue_failed: "upload.result.queueFailed",
+  // The page's own codes (makeFetchUploadResult), which carry no server sentence.
+  sent_session_ended: "upload.sentSessionEnded",
+  not_confirmed: "upload.notConfirmed",
 };
 
 /**
@@ -430,7 +436,7 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
   const i18n = useI18n();
   const words = useRef(i18n);
   words.current = i18n;
-  const fetchResult = opts.fetchResult ?? makeFetchUploadResult(i18n);
+  const fetchResult = opts.fetchResult ?? fetchUploadResult;
   const delay = opts.resultDelayMs ?? RESULT_POLL_MS;
   const [items, setItems] = useState<UploadItem[]>([]);
   const handles = useRef(new Map<string, UploadHandle>());

@@ -30,7 +30,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { ENGLISH, loadMessages, type MessageKey } from "./catalogs";
+import { ENGLISH, type InitialMessages, loadInitialMessages, type MessageKey } from "./catalogs";
 import { applyLanguage } from "./language";
 
 export type { MessageKey } from "./catalogs";
@@ -178,8 +178,12 @@ export interface I18nProviderProps {
    */
   later?: Promise<Messages | undefined>;
   children?: ReactNode;
-  /** Loads a language's messages; loadMessages when left out. */
-  load?: (code: string) => Promise<Messages>;
+  /**
+   * Loads a language for the language menu: messages to show now and any
+   * that arrive later (loadInitialMessages when left out), so a pick never
+   * waits on the server's language list (issue 296).
+   */
+  load?: (code: string) => Promise<InitialMessages>;
 }
 
 export function I18nProvider({
@@ -187,7 +191,7 @@ export function I18nProvider({
   messages,
   later,
   children,
-  load = loadMessages,
+  load = loadInitialMessages,
 }: I18nProviderProps) {
   const [translator, setTranslator] = useState(() => createTranslator(locale, messages, ENGLISH));
 
@@ -208,9 +212,17 @@ export function I18nProvider({
 
   const setLanguage = useCallback(
     async (choice: string | null, shown: string) => {
-      const next = await load(shown);
+      const { messages: next, later: overlay } = await load(shown);
       applyLanguage(choice, shown, document);
       setTranslator(createTranslator(shown, next, ENGLISH));
+      // A self-hoster's changes arrive when the list answers, as at startup;
+      // a language chosen meanwhile stays.
+      void overlay?.then((merged) => {
+        if (merged === undefined) return;
+        setTranslator((current) =>
+          current.locale === shown ? createTranslator(shown, merged, ENGLISH) : current,
+        );
+      });
     },
     [load],
   );

@@ -14,7 +14,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { scheduleIn } from "../src/activity/ActivityPage";
 import { formatCount } from "../src/activity/format";
-import { loadInitialMessages, loadMessages } from "../src/i18n/catalogs";
+import { loadInitialMessages, loadMessages, OVERLAY_LIST_TIMEOUT_MS } from "../src/i18n/catalogs";
 import { I18nProvider, useI18n } from "../src/i18n/I18n";
 import { LanguagePicker, type ListedLocale } from "../src/i18n/LanguagePicker";
 import { languageCookie, readLanguage, savedLanguage } from "../src/i18n/language";
@@ -29,7 +29,7 @@ import { Shell } from "../src/shell/Shell";
 import { Sidebar } from "../src/shell/Sidebar";
 import { TrashList } from "../src/trash/TrashList";
 import { UploadDialog } from "../src/upload/UploadDialog";
-import { resultMessage } from "../src/upload/useTusUpload";
+import { resultMessage, type StartUpload, type UploadHandlers } from "../src/upload/useTusUpload";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -66,7 +66,7 @@ function render(locale: string, node: ReactNode) {
       <I18nProvider
         locale={locale}
         messages={CATALOGS[locale] as Messages}
-        load={async (code) => CATALOGS[code] as Messages}
+        load={async (code) => ({ messages: CATALOGS[code] as Messages })}
       >
         <MemoryRouter>{node}</MemoryRouter>
       </I18nProvider>,
@@ -198,7 +198,7 @@ describe("the sort note under the library's Sort menu", () => {
         <I18nProvider
           locale={locale}
           messages={CATALOGS[locale] as Messages}
-          load={async (code) => CATALOGS[code] as Messages}
+          load={async (code) => ({ messages: CATALOGS[code] as Messages })}
         >
           <MemoryRouter initialEntries={[`/?sort=${sort}`]}>
             <SortControl q="" printer={SERVER_NAME} />
@@ -478,7 +478,7 @@ describe("a self-hoster's changes to a built-in language", () => {
           locale="es"
           messages={CATALOGS.es as Messages}
           later={later}
-          load={async (code) => CATALOGS[code] as Messages}
+          load={async (code) => ({ messages: CATALOGS[code] as Messages })}
         >
           <MemoryRouter>
             <GrabI18n
@@ -629,5 +629,122 @@ describe("every other place that shows server text follows the same rule", () =>
     expect(sentenceFor(500, { error: "internal", message: SAID }, translator("en"))).toBe(
       translator("en").t("api.failed"),
     );
+  });
+});
+
+describe("an upload's own outcomes on a Spanish page (issue 295)", () => {
+  const UPLOAD = "https://platehouse.test/app/uploads/u-9";
+  const es = createTranslator("es", CATALOGS.es as Messages, CATALOGS.en as Messages);
+
+  /** Sends one file through the dialog on an es page; GET <upload>/result answers status. */
+  async function sendWithResult(status: number): Promise<string> {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "x" }), { status })),
+    );
+    const handlers: UploadHandlers[] = [];
+    const start: StartUpload = (_file, _target, h) => {
+      handlers.push(h);
+      return { abort() {} };
+    };
+    const file = new File(["solid a\nendsolid a\n"], "a.stl");
+    render(
+      "es",
+      <UploadDialog open files={[file]} onClose={() => {}} start={start} resultDelayMs={0} />,
+    );
+    const send = container.querySelector<HTMLButtonElement>(".studio-button-primary");
+    await act(async () => {
+      send?.click();
+    });
+    await act(async () => {
+      handlers[0]?.onSuccess(UPLOAD);
+    });
+    for (let i = 0; i < 5; i += 1) await act(async () => {});
+    return container.querySelector('[data-upload="a.stl"]')?.textContent ?? "";
+  }
+
+  test("a 401 says, in Spanish, that the file was sent and to check the library", async () => {
+    const row = await sendWithResult(401);
+    expect(row).toContain(es.t("upload.sentSessionEnded"));
+    expect(row).not.toContain(es.t("upload.failed"));
+  });
+
+  test("a 404 says, in Spanish, that it could not be confirmed and to check the library", async () => {
+    const row = await sendWithResult(404);
+    expect(row).toContain(es.t("upload.notConfirmed"));
+    expect(row).not.toContain(es.t("upload.failed"));
+  });
+
+  test("resultMessage says the page's own codes in the shown language, never as server English", () => {
+    expect(resultMessage({ status: "failed", code: "sent_session_ended" }, es)).toBe(
+      es.t("upload.sentSessionEnded"),
+    );
+    expect(resultMessage({ status: "failed", code: "not_confirmed" }, es)).toBe(
+      es.t("upload.notConfirmed"),
+    );
+  });
+});
+
+describe("a language pick while the language list hangs (issue 296)", () => {
+  /** A fetch that never answers, and gives up only when its signal is aborted. */
+  function hanging(): typeof fetch {
+    return ((_url: unknown, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as typeof fetch;
+  }
+
+  test("still applies the bundled language at once", async () => {
+    vi.stubGlobal("fetch", hanging());
+    act(() => {
+      root.render(
+        <I18nProvider locale="en" messages={CATALOGS.en as Messages}>
+          <LanguagePicker
+            list={async () => [
+              {
+                code: "en",
+                name: "English",
+                source: "built-in",
+                machineDraft: false,
+                complete: true,
+              },
+              {
+                code: "es",
+                name: "Espanol",
+                source: "built-in",
+                machineDraft: true,
+                complete: true,
+              },
+            ]}
+          />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {});
+    const option = [...container.querySelectorAll("label")].find((l) =>
+      l.textContent?.startsWith("Espanol"),
+    );
+    const idioma = createTranslator("es", CATALOGS.es as Messages, CATALOGS.en as Messages).t(
+      "language.heading",
+    );
+    const picked = Date.now();
+    await act(async () => {
+      option?.querySelector("input")?.click();
+    });
+    // The real Spanish chunk loads by dynamic import; wait for it, well under
+    // the list's own timeout, which this pick must not wait for.
+    for (let i = 0; i < 200 && container.querySelector("h2")?.textContent !== idioma; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(container.querySelector("h2")?.textContent).toBe(idioma);
+    expect(Date.now() - picked).toBeLessThan(OVERLAY_LIST_TIMEOUT_MS);
+    expect(document.documentElement.getAttribute("lang")).toBe("es");
+  });
+
+  test("a list that hangs past the timeout counts as no changes", async () => {
+    const messages = await loadMessages("es", hanging(), 20);
+    expect(messages).toEqual(CATALOGS.es);
   });
 });

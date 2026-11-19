@@ -73,10 +73,24 @@ async function fetchMessages(code: string, fetcher: typeof fetch): Promise<Messa
   return messagesOf(((await res.json()) as LocaleAnswer).messages);
 }
 
+/**
+ * How long the language list may take before a built-in language is used
+ * without a self-hoster's changes (issue 296): a list that hangs, such as a
+ * LOCALES_DIR on a hung network mount, counts as no changes.
+ */
+export const OVERLAY_LIST_TIMEOUT_MS = 4000;
+
 /** Whether the server's language list marks a built-in language as changed by a LOCALES_DIR file. */
-async function hasOverlay(code: string, fetcher: typeof fetch): Promise<boolean> {
+async function hasOverlay(
+  code: string,
+  fetcher: typeof fetch,
+  timeoutMs: number,
+): Promise<boolean> {
   try {
-    const res = await fetcher("/app/api/locales", JSON_GET);
+    const res = await fetcher("/app/api/locales", {
+      ...JSON_GET,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!res.ok) return false;
     const { locales } = (await res.json()) as {
       locales: Array<{ code: string; overlay?: boolean }>;
@@ -124,12 +138,13 @@ export interface InitialMessages {
 export async function loadInitialMessages(
   code: string,
   fetcher: typeof fetch = fetch,
+  listTimeoutMs: number = OVERLAY_LIST_TIMEOUT_MS,
 ): Promise<InitialMessages> {
   if (code === SOURCE_LOCALE) return { messages: ENGLISH };
   const builtin = builtinLoaders.get(code);
   if (builtin === undefined) return { messages: await fetchMessages(code, fetcher) };
   // Asked at once, beside the chunk; hasOverlay never rejects.
-  const listed = hasOverlay(code, fetcher);
+  const listed = hasOverlay(code, fetcher, listTimeoutMs);
   const bundled = messagesOf(await builtin());
   return { messages: bundled, later: withOverlay(code, bundled, listed, fetcher) };
 }
@@ -137,11 +152,15 @@ export async function loadInitialMessages(
 /**
  * A language's messages, whole: English at once; a built-in one from its
  * chunk, with a self-hoster's LOCALES_DIR changes merged over it when the
- * server lists them (the chunk alone if that cannot be read); anything else
- * from the server. The language menu waits for this. Rejects when a
+ * server lists them in time (the chunk alone if the list cannot be read or
+ * hangs past listTimeoutMs); anything else from the server. Rejects when a
  * language cannot be had at all; the caller then stays in English.
  */
-export async function loadMessages(code: string, fetcher: typeof fetch = fetch): Promise<Messages> {
-  const { messages, later } = await loadInitialMessages(code, fetcher);
+export async function loadMessages(
+  code: string,
+  fetcher: typeof fetch = fetch,
+  listTimeoutMs: number = OVERLAY_LIST_TIMEOUT_MS,
+): Promise<Messages> {
+  const { messages, later } = await loadInitialMessages(code, fetcher, listTimeoutMs);
   return (await later) ?? messages;
 }
