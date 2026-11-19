@@ -290,7 +290,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       ) : (
         <>
           <label htmlFor={id}>Add a printer</label>
-          <div className="ph-inline-form">
+          <div className="ph-inline-form ph-printer-add">
             <select
               id={id}
               className="ph-select"

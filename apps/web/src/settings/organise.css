@@ -69,9 +69,19 @@
   overflow-wrap: anywhere;
 }
 
+/* 20rem fits the longest full name, "Bambu Lab X1 Carbon, 0.4 mm nozzle";
+   in a narrower row the menu goes under its label rather than cut it off. */
 .ph-printer-switch .ph-select {
-  flex: 1 1 14rem;
+  flex: 1 1 20rem;
   width: auto;
+}
+
+/* On a phone the add menu takes the whole row, so the closed menu shows the
+   printer's full name, and Add printer goes under it. */
+@media (max-width: 480px) {
+  .ph-printer-add .ph-select {
+    flex-basis: 100%;
+  }
 }
 
 /* A button, chip button or select that ignores input while a change runs
