@@ -1,7 +1,8 @@
 import { type Kysely, sql } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
-import type { DB } from "../db/types.js";
+import type { DB, NameSource } from "../db/types.js";
+import { cutName, fileStems } from "../ingest/names.js";
 
 export interface Model {
   id: string;
@@ -14,6 +15,10 @@ export interface Model {
   licenseSpdx: string | null;
   licenseNote: string | null;
   externalRef: string | null;
+  /** Who named the model: its file, its .3mf's title, or a person (0005). */
+  nameSource: NameSource;
+  /** The MakerWorld design ID its .3mf carries, digits only; null when none. */
+  makerworldDesignId: string | null;
   trashedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -29,6 +34,12 @@ export interface NewModel {
   licenseSpdx?: string | null;
   licenseNote?: string | null;
   externalRef?: string | null;
+  /**
+   * Where the name came from. Ingest says "file" or "title"; any other caller
+   * (the public API's create-model, the importer through it) gave the name
+   * itself, so it is "user" when left out and nothing renames the model.
+   */
+  nameSource?: NameSource;
 }
 
 /** Metadata a parse or an import found; fillMetadata writes only into empty fields. */
@@ -47,6 +58,35 @@ export interface FoundMetadata {
    * 2026-11-08). The model page shows license_note (Task 20).
    */
   licenseNote?: string | null;
+  /** The MakerWorld design ID, digits only (packages/threemf makerWorldDesignId). */
+  makerworldDesignId?: string | null;
+}
+
+/** A model the "Use file titles" backfill would rename. */
+export interface TitleRename {
+  id: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * What the "Use file titles" backfill would do to the live models: the
+ * renames, by current name, and how many models it leaves alone, by reason.
+ */
+export interface TitleNamePlan {
+  renames: TitleRename[];
+  skipped: {
+    /** Renamed by a person (name_source 'user'). */
+    renamedByUser: number;
+    /** Already named from a title. */
+    namedFromTitle: number;
+    /** No title recorded (no caption). */
+    noTitle: number;
+    /** The title is the name it already has. */
+    sameName: number;
+    /** Its name is none of its files' names, so a person chose it. */
+    nameNotFromFile: number;
+  };
 }
 
 export interface SearchQuery {
@@ -106,6 +146,8 @@ const MODEL_COLUMNS = [
   "models.licenseSpdx",
   "models.licenseNote",
   "models.externalRef",
+  "models.nameSource",
+  "models.makerworldDesignId",
   "models.trashedAt",
   "models.createdAt",
   "models.updatedAt",
@@ -237,6 +279,42 @@ export function modelsRepo(db: Kysely<DB>) {
       .execute();
   }
 
+  async function titleNamePlan(): Promise<TitleNamePlan> {
+    const models = await db
+      .selectFrom("models")
+      .select(["id", "name", "nameSource", "caption"])
+      .where("trashedAt", "is", null)
+      .orderBy("name")
+      .orderBy("id")
+      .execute();
+    const files = await db
+      .selectFrom("files")
+      .innerJoin("models", "models.id", "files.modelId")
+      .select(["files.modelId", "files.originalName"])
+      .where("models.trashedAt", "is", null)
+      .execute();
+    const namesOf = new Map<string, string[]>();
+    for (const f of files) {
+      const list = namesOf.get(f.modelId);
+      if (list === undefined) namesOf.set(f.modelId, [f.originalName]);
+      else list.push(f.originalName);
+    }
+    const plan: TitleNamePlan = {
+      renames: [],
+      skipped: { renamedByUser: 0, namedFromTitle: 0, noTitle: 0, sameName: 0, nameNotFromFile: 0 },
+    };
+    for (const m of models) {
+      const title = cutName(m.caption);
+      if (m.nameSource === "user") plan.skipped.renamedByUser += 1;
+      else if (m.nameSource === "title") plan.skipped.namedFromTitle += 1;
+      else if (title === null) plan.skipped.noTitle += 1;
+      else if (title === m.name) plan.skipped.sameName += 1;
+      else if (!fileStems(namesOf.get(m.id) ?? []).has(m.name)) plan.skipped.nameNotFromFile += 1;
+      else plan.renames.push({ id: m.id, from: m.name, to: title });
+    }
+    return plan;
+  }
+
   return {
     /**
      * Makes a model. A taken externalRef, live or trashed, fails with
@@ -257,6 +335,7 @@ export function modelsRepo(db: Kysely<DB>) {
             licenseSpdx: input.licenseSpdx ?? null,
             licenseNote: input.licenseNote ?? null,
             externalRef: input.externalRef ?? null,
+            nameSource: input.nameSource ?? "user",
           })
           .execute();
         return selectModels(trx).where("models.id", "=", id).executeTakeFirstOrThrow();
@@ -285,16 +364,35 @@ export function modelsRepo(db: Kysely<DB>) {
         // The row is locked, so the fields read here are the ones updated.
         const row = await trx
           .selectFrom("models")
-          .select(["caption", "descriptionMd", "licenseSpdx", "licenseNote", "creatorId"])
+          .select([
+            "caption",
+            "descriptionMd",
+            "licenseSpdx",
+            "licenseNote",
+            "creatorId",
+            "makerworldDesignId",
+          ])
           .where("id", "=", id)
           .forUpdate()
           .executeTakeFirst();
         if (row === undefined) return false;
         const set: Partial<
-          Record<"caption" | "descriptionMd" | "licenseSpdx" | "licenseNote" | "creatorId", string>
+          Record<
+            | "caption"
+            | "descriptionMd"
+            | "licenseSpdx"
+            | "licenseNote"
+            | "creatorId"
+            | "makerworldDesignId",
+            string
+          >
         > = {};
         const caption = value(found.caption);
         if (caption !== undefined && empty(row.caption)) set.caption = caption;
+        const designId = value(found.makerworldDesignId);
+        if (designId !== undefined && empty(row.makerworldDesignId)) {
+          set.makerworldDesignId = designId;
+        }
 
         const spdx = value(found.licenseSpdx);
         const note = value(found.licenseNote);
@@ -321,6 +419,79 @@ export function modelsRepo(db: Kysely<DB>) {
           .where("id", "=", id)
           .executeTakeFirst();
         return result.numUpdatedRows > 0n;
+      });
+    },
+
+    /**
+     * Names a live model from its .3mf's title, cut at the API's name limit,
+     * when nobody has named it: only while name_source is 'file' and the
+     * name is still one of its files' names (a raw stem or a cleaned file
+     * name; see fileStems). A name a person set, by a rename (name_source
+     * 'user') or before name_source existed (a name none of its files has),
+     * is never overwritten (AC-022), and a model already named from a title
+     * keeps that one. True when the name changed. Runs in the caller's
+     * transaction when there is one, with the model's row locked.
+     */
+    async nameFromTitle(id: string, title: string | null | undefined): Promise<boolean> {
+      const name = cutName(title);
+      if (name === null || !isUuid(id)) return false;
+      return inTransaction(db, async (trx) => {
+        const row = await trx
+          .selectFrom("models")
+          .select(["name", "nameSource"])
+          .where("id", "=", id)
+          .where("trashedAt", "is", null)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined || row.nameSource !== "file" || row.name === name) return false;
+        const files = await trx
+          .selectFrom("files")
+          .select("originalName")
+          .where("modelId", "=", id)
+          .execute();
+        if (!fileStems(files.map((f) => f.originalName)).has(row.name)) return false;
+        const result = await trx
+          .updateTable("models")
+          .set({ name, nameSource: "title", updatedAt: sql`now()` })
+          .where("id", "=", id)
+          .where("nameSource", "=", "file")
+          .where("name", "=", row.name)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
+    },
+
+    /**
+     * The "Use file titles" backfill's preview: which live models it would
+     * rename from their file's title, and which it leaves alone and why.
+     * The title is the model's caption, which ingest and the import fill from
+     * the .3mf's MakerWorld Title, so no file is read from the bucket. The
+     * rules are nameFromTitle's. Changes nothing.
+     */
+    titleNamePlan,
+
+    /**
+     * Runs the backfill: renames each model the preview lists, in one
+     * transaction, and marks it named from its title. A model renamed by a
+     * person after the preview was read is left alone, since each update
+     * requires name_source 'file' and the name the preview saw.
+     */
+    async applyTitleNames(): Promise<{ renamed: number }> {
+      return inTransaction(db, async (trx) => {
+        const plan = await modelsRepo(trx).titleNamePlan();
+        let renamed = 0;
+        for (const { id, from, to } of plan.renames) {
+          const result = await trx
+            .updateTable("models")
+            .set({ name: to, nameSource: "title", updatedAt: sql`now()` })
+            .where("id", "=", id)
+            .where("nameSource", "=", "file")
+            .where("name", "=", from)
+            .where("trashedAt", "is", null)
+            .executeTakeFirst();
+          if (result.numUpdatedRows > 0n) renamed += 1;
+        }
+        return { renamed };
       });
     },
 

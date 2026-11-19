@@ -8,10 +8,17 @@
 //                                       is queued again (Task 12's
 //                                       retryEstimate, from the stored file)
 //                                       409 {error: "not_retryable"}
+//   GET  /app/api/models/title-names    TitleNamePlan: the "Use file titles"
+//                                       preview (repos/models.ts), which
+//                                       changes nothing
+//   POST /app/api/models/title-names    {renamed}: runs it. Only the Settings
+//                                       page's button calls it, after its own
+//                                       confirmation; nothing runs it on its
+//                                       own
 //
-// - Both routes are session-class (the Route classes contract: /app/api is
+// - Every route is session-class (the Route classes contract: /app/api is
 //   unlisted, so session); the gate (auth/gate.ts) refuses a request without
-//   a session before these handlers run, and the retry, which changes state,
+//   a session before these handlers run, and each POST, which changes state,
 //   also needs Origin to be PUBLIC_ORIGIN. The Open buttons mint their link
 //   at Task 17's POST /app/api/files/:id/slicer-link, not here.
 // - A trashed, unknown or malformed model is 404, as is a malformed
@@ -36,18 +43,22 @@
 //   are read one after another on that transaction's connection.
 // - Answers are JSON and never cached. Errors carry no detail from the
 //   database.
+
+import { makerWorldUrl } from "@platehouse/threemf";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { type DisplayContext, type PlateNumbers, plateNumbers } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
+import type { TitleNamePlan } from "../repos/models.js";
 import { BLOB_PREFIX } from "./library.js";
 
 /** The model page's routes, every one session-class (the Route classes contract). */
 export const MODEL_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/models/:id",
   "/app/api/estimates/:id/retry",
+  "/app/api/models/title-names",
 ]);
 
 export interface ModelPlate {
@@ -100,6 +111,13 @@ export interface ModelView {
   license: string | null;
   /** The stored licence note, such as a MakerWorld-only licence. */
   licenseNote: string | null;
+  /**
+   * The design's MakerWorld page, https://makerworld.com/models/<id>, built
+   * from the stored design ID alone (packages/threemf makerWorldUrl); null
+   * when the model's .3mf carried no valid one. No URL text from a file is
+   * ever passed through.
+   */
+  makerWorldUrl: string | null;
   tags: string[];
   collections: string[];
   /** The selected printer the numbers are for. */
@@ -112,6 +130,10 @@ export interface AppModel {
   get(id: string): Promise<ModelView | undefined>;
   /** Queues a failed estimate again; false when it is not one that can be. */
   retry(estimateId: string): Promise<boolean>;
+  /** The "Use file titles" preview: what it would rename, and what it skips and why. */
+  titleNames(): Promise<TitleNamePlan>;
+  /** Runs "Use file titles"; only ever from the user's own action in Settings. */
+  useTitleNames(): Promise<{ renamed: number }>;
 }
 
 export interface AppModelDeps {
@@ -273,6 +295,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
         creator: model.creator,
         license: model.licenseSpdx,
         licenseNote: model.licenseNote,
+        makerWorldUrl: makerWorldUrl(model.makerworldDesignId),
         tags: tagRows.map((t) => t.name),
         collections: collectionRows.map((c) => c.name),
         printer: ctx.printerId,
@@ -322,6 +345,10 @@ export function createAppModel(deps: AppModelDeps): AppModel {
     },
 
     retry: (estimateId) => deps.retryEstimate(estimateId),
+
+    titleNames: () => repos.models.titleNamePlan(),
+
+    useTitleNames: () => repos.models.applyTitleNames(),
   };
 }
 
@@ -329,6 +356,11 @@ export function createAppModel(deps: AppModelDeps): AppModel {
 export const emptyAppModel: AppModel = Object.freeze({
   get: async () => undefined,
   retry: async () => false,
+  titleNames: async () => ({
+    renames: [],
+    skipped: { renamedByUser: 0, namedFromTitle: 0, noTitle: 0, sameName: 0, nameNotFromFile: 0 },
+  }),
+  useTitleNames: async () => ({ renamed: 0 }),
 });
 
 /** Registers the model page's routes on the root app, after the gate. */
@@ -349,6 +381,12 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
       if (found === undefined) return reply.code(404).send({ error: "not_found" });
       return found;
     });
+
+    // Registered beside /app/api/models/:id; Fastify matches the fixed
+    // segment first, so "title-names" never reaches the id route.
+    scope.get("/app/api/models/title-names", async () => model.titleNames());
+
+    scope.post("/app/api/models/title-names", async () => model.useTitleNames());
 
     scope.post<{ Params: { id: string } }>(
       "/app/api/estimates/:id/retry",
