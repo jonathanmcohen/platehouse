@@ -509,3 +509,46 @@ describe("the request timeout", () => {
     expect(a.server.requestTimeout).toBe(REQUEST_TIMEOUT_MS);
   });
 });
+
+describe("the Public API's 414 for an over-long path parameter", () => {
+  // docs/api.md and the OpenAPI document (api/openapi.ts PARAM_TOO_LONG_DOC)
+  // say every /api/v1 operation with a path parameter answers 414 in this
+  // shape when a parameter is over 100 characters once percent-decoded,
+  // before the token is read, so no token is sent here.
+  const long = "a".repeat(101);
+  const someId = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e9f";
+  const TOO_LONG = { error: "URI Too Long", code: "FST_ERR_MAX_PARAM_LENGTH", statusCode: 414 };
+
+  test.each([
+    ["GET", `/api/v1/models/${long}`],
+    ["GET", `/api/v1/files/${long}`],
+    ["GET", `/api/v1/files/${long}/content`],
+    ["PUT", `/api/v1/models/${someId}/tags/${long}`],
+    ["DELETE", `/api/v1/collections/${long}/models/${someId}`],
+    ["PATCH", `${UPLOAD_PREFIXES.api}/${long}`],
+    ["GET", `${UPLOAD_PREFIXES.api}/${long}/result`],
+  ] as const)("%s %s is 414 in Fastify's shape, with no token", async (method, url) => {
+    const res = await (await appWith()).inject({ method, url });
+    expect(res.statusCode).toBe(414);
+    expect(res.json()).toEqual(TOO_LONG);
+  });
+
+  test("100 characters is not over the limit: the route runs, and wants a token", async () => {
+    const res = await (await appWith()).inject({
+      method: "PUT",
+      url: `/api/v1/models/${someId}/tags/${"a".repeat(100)}`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  test("the limit is on the decoded name, not its percent-encoded form", async () => {
+    // 50 e-acute characters: 50 once decoded, 300 characters encoded.
+    const name = encodeURIComponent("\u00e9".repeat(50));
+    expect(name.length).toBeGreaterThan(100);
+    const res = await (await appWith()).inject({
+      method: "PUT",
+      url: `/api/v1/models/${someId}/tags/${name}`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});

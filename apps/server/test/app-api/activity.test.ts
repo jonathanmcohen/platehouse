@@ -14,12 +14,29 @@
 // - mergeEvents: newest first, capped.
 // - readInboxFailures: the inbox's failed/ folder, newest first, with each
 //   file's reason, never a path.
+// - createAppActivity's failed renders (issue #273): a long OpenSCAD message
+//   is shown whole, cleaned, with its ERROR line, the last line, kept. Run
+//   against a scripted database built as the server builds its own
+//   (CamelCasePlugin), which answers the settings row and the failed file
+//   and no rows for every other read. Every id here is made up for the test.
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  CamelCasePlugin,
+  type CompiledQuery,
+  type DatabaseConnection,
+  type Driver,
+  Kysely,
+  PostgresAdapter,
+  PostgresIntrospector,
+  PostgresQueryCompiler,
+  type QueryResult,
+} from "kysely";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   type ActivityEvent,
+  createAppActivity,
   EVENT_LIMIT,
   mergeEvents,
   progressOf,
@@ -27,6 +44,9 @@ import {
   readInboxFailures,
   scheduleText,
 } from "../../src/app-api/activity.js";
+import type { DB } from "../../src/db/types.js";
+import { PREVIOUS_RENDERS_SENTENCE } from "../../src/derived/client.js";
+import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
 
 describe("scheduleText", () => {
   test("says each schedule the app uses in plain words", () => {
@@ -232,5 +252,118 @@ describe("readInboxFailures", () => {
 
   test("is unreadable, not empty, when no inbox folder is set up", async () => {
     expect(await readInboxFailures(undefined, 10)).toEqual({ readable: false, items: [] });
+  });
+});
+
+describe("a failed render on the Activity page", () => {
+  const MODEL_ID = "01900000-0000-7000-8000-000000000101";
+  const FILE_ID = "01900000-0000-7000-8000-000000000102";
+  const FAILED_AT = new Date("2026-11-19T10:00:00Z");
+
+  /**
+   * A long OpenSCAD run as the slicer stores it: the last lines of its
+   * output (the slicer keeps at most 20 lines and 2000 characters), its
+   * ERROR line last, after the sentence derived.ts puts in front when the
+   * file still shows an earlier version's renders. Cleaned, it is longer
+   * than SCRUB_MAX_CHARS, so cutting it to its start loses the ERROR line.
+   */
+  const ECHO_LINES = Array.from(
+    { length: 19 },
+    (_, i) =>
+      `ECHO: "part ${i + 1} placed from /tmp/render-a7/lib/parts.scad at offset ${i * 40}, width 40, depth 25 mm"`,
+  );
+  const ERROR_LINE =
+    "ERROR: Assertion failed: gap must be positive in file /tmp/render-a7/input.scad, line 41";
+  const ERROR_SHOWN = "ERROR: Assertion failed: gap must be positive in file [path], line 41";
+  const OUTPUT = [...ECHO_LINES, ERROR_LINE].join("\n");
+  const MESSAGE = `${PREVIOUS_RENDERS_SENTENCE.scad} OpenSCAD said: ${OUTPUT}`;
+  const HIDDEN = ["/tmp/", "render-a7", "input.scad", "parts.scad"];
+
+  /** The settings row and one failed .scad file; every other read answers no rows. */
+  function scriptedDb(): Kysely<DB> {
+    const connection: DatabaseConnection = {
+      async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
+        let rows: unknown[] = [];
+        if (/\bfrom "settings"/.test(query.sql)) {
+          rows = [
+            {
+              printer_id: "P1S",
+              last_orca_version: null,
+              bucket_versioning: "unknown",
+              updated_at: FAILED_AT,
+            },
+          ];
+        } else if (/"f"\."derived_status"/.test(query.sql)) {
+          rows = [
+            {
+              file_id: FILE_ID,
+              file_name: "bracket",
+              kind: "scad",
+              model_id: MODEL_ID,
+              model_name: "Bracket",
+              message: MESSAGE,
+              at: FAILED_AT,
+            },
+          ];
+        }
+        return { rows } as QueryResult<R>;
+      },
+      streamQuery(): never {
+        throw new Error("streamQuery is not scripted");
+      },
+    };
+    const driver: Driver = {
+      async init() {},
+      async acquireConnection() {
+        return connection;
+      },
+      async beginTransaction() {},
+      async commitTransaction() {},
+      async rollbackTransaction() {},
+      async releaseConnection() {},
+      async destroy() {},
+    };
+    return new Kysely<DB>({
+      dialect: {
+        createAdapter: () => new PostgresAdapter(),
+        createDriver: () => driver,
+        createIntrospector: (db) => new PostgresIntrospector(db),
+        createQueryCompiler: () => new PostgresQueryCompiler(),
+      },
+      plugins: [new CamelCasePlugin()],
+    });
+  }
+
+  async function renderEvents() {
+    const view = await createAppActivity({
+      db: scriptedDb(),
+      boss: { getSchedules: async () => [] },
+      slicer: {
+        health: async () => {
+          throw new Error("no slicer in this test");
+        },
+      },
+      now: () => new Date("2026-11-19T12:00:00Z"),
+    }).read();
+    return view.events.items.filter((e) => e.type === "render_failed");
+  }
+
+  test("is long enough that cutting it to its start would lose the ERROR line", () => {
+    expect(OUTPUT.length).toBeLessThanOrEqual(2000);
+    expect(MESSAGE.replaceAll("/tmp/render-a7/lib/parts.scad", "[path]").length).toBeGreaterThan(
+      SCRUB_MAX_CHARS,
+    );
+  });
+
+  test("shows a long OpenSCAD message whole, its ERROR line last, with no path", async () => {
+    const events = await renderEvents();
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    expect(event).toMatchObject({ kind: "scad", file: { id: FILE_ID }, model: { id: MODEL_ID } });
+    const message = event?.type === "render_failed" ? event.message : undefined;
+    expect(message?.startsWith(`${PREVIOUS_RENDERS_SENTENCE.scad} OpenSCAD said: `)).toBe(true);
+    expect(message?.endsWith(ERROR_SHOWN)).toBe(true);
+    expect(message).not.toContain("...");
+    for (const hidden of HIDDEN) expect(JSON.stringify(event)).not.toContain(hidden);
   });
 });

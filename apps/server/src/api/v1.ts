@@ -35,6 +35,11 @@
 //   after the bearer hook, so a refused request's body is never read; the
 //   gate releases it. Errors answer JSON with no detail from the database or
 //   the store.
+// - A file's derivedMessage (files.derived_message, OpenSCAD's or the STEP
+//   converter's own text) is cleaned by scrubDerivedMessage (src/scrub.ts;
+//   issue #260) as it is read, so no slicer temp path or address is
+//   answered; the whole stored message is kept, and a longer one keeps its
+//   end, where the program's error line is. The stored row is left as it is.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
 // - A file's content is named and sized here once for every route that
@@ -58,6 +63,7 @@ import { createSearch, InvalidCursor, type LibrarySearch } from "../library/sear
 import { createTags } from "../library/tags.js";
 import { createRepos } from "../repos/index.js";
 import type { Model } from "../repos/models.js";
+import { DERIVED_MESSAGE_MAX_CHARS, scrubDerivedMessage } from "../scrub.js";
 import {
   BlobNotFound,
   type BlobStore,
@@ -66,7 +72,17 @@ import {
   StoreUnavailable,
 } from "../storage/s3.js";
 import type { AuthHook } from "../uploads/tus.js";
-import { UNAUTHORIZED_DOC } from "./openapi.js";
+import {
+  BAD_REQUEST_DOC,
+  ERROR_DOC,
+  EXAMPLE_IDS,
+  EXAMPLE_NUMBERS,
+  INTERNAL_DOC,
+  NOT_FOUND_DOC,
+  PLATE_NUMBERS,
+  UNAUTHORIZED_DOC,
+  UNAVAILABLE_DOC,
+} from "./openapi.js";
 import { createBearerHook, type Tokens } from "./tokens.js";
 
 /** Where the API is mounted. */
@@ -112,6 +128,7 @@ export interface ApiFile {
   sha256: string;
   parseStatus: ParseStatus;
   derivedStatus: string | null;
+  /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
   createdAt: string;
   updatedAt: string;
@@ -330,7 +347,7 @@ function sqlState(error: unknown): string | undefined {
 export function createApiLibrary(deps: {
   db: Kysely<DB>;
   store: Pick<BlobStore, "getBlobStream" | "headBlob">;
-  /** Task 12's plateNumbers for the selected printer (estimates.plateNumbers). */
+  /** Task 12's plateNumbers for the default printer of My printers (estimates.plateNumbers). */
   plateNumbers(plateId: string): Promise<PlateNumbers>;
 }): ApiLibrary {
   const { db, store } = deps;
@@ -397,7 +414,7 @@ export function createApiLibrary(deps: {
       sha256: file.sha256.toString("hex"),
       parseStatus: file.parseStatus,
       derivedStatus: file.derivedStatus,
-      derivedMessage: file.derivedMessage,
+      derivedMessage: scrubDerivedMessage(file.derivedMessage),
       createdAt: iso(file.createdAt),
       updatedAt: iso(file.updatedAt),
       plates: await Promise.all(
@@ -571,33 +588,78 @@ export function apiUploadHook(deps: ApiDeps): AuthHook {
 // The JSON schemas of the routes: they validate requests, shape answers and
 // are what the OpenAPI document describes. Fastify coerces scalars, so a
 // "limit" of "10" is the number 10.
+//
+// Their documentation (summary, description, tags, examples, and the
+// description of every property and answer) changes nothing a request or
+// answer does: a request schema only gains annotation keywords Ajv ignores
+// (description, examples; never default, which Ajv would apply), and a
+// response schema never changes a type, a property or what is required,
+// since Fastify serializes with it (test/api/v1-answers.test.ts pins the
+// answers byte for byte, test/api/openapi.test.ts the documentation).
 
 const nullableString = { type: "string", nullable: true } as const;
 
-const ERROR = {
-  type: "object",
-  properties: { error: { type: "string" }, message: { type: "string" } },
-  required: ["error"],
+/** A model as the examples show it. */
+const EXAMPLE_MODEL = {
+  id: EXAMPLE_IDS.model,
+  name: "Cable clip",
+  caption: "A snap-on clip for desk cables",
+  description: "Prints without supports. Use PETG for a stronger snap.",
+  creator: "Example Maker",
+  license: "CC-BY-4.0",
+  licenseNote: null,
+  externalRef: null,
+  tags: ["clips", "desk"],
+  collections: ["Office"],
+  createdAt: "2026-11-01T10:00:00.000Z",
+  updatedAt: "2026-11-02T11:30:00.000Z",
 } as const;
 
-const NOT_FOUND_DOC = {
-  description: "No such live model or file (unknown, or in the trash)",
-  ...ERROR,
+/** A file as the examples show it. */
+const EXAMPLE_FILE = {
+  id: EXAMPLE_IDS.file,
+  modelId: EXAMPLE_IDS.model,
+  name: "cable-clip.3mf",
+  originalName: "cable-clip.3mf",
+  kind: "3mf",
+  size: 1843200,
+  sha256: "9f2c4a7e1b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+  parseStatus: "ok",
+  derivedStatus: null,
+  derivedMessage: null,
+  createdAt: "2026-11-01T10:00:00.000Z",
+  updatedAt: "2026-11-01T10:00:00.000Z",
+  plates: [
+    {
+      id: EXAMPLE_IDS.plate,
+      index: 1,
+      name: "Clips x4",
+      objectCount: 4,
+      numbers: EXAMPLE_NUMBERS,
+    },
+  ],
 } as const;
 
 const MODEL = {
   type: "object",
   properties: {
-    id: { type: "string" },
+    id: { type: "string", description: "The model's id, a UUID" },
     name: { type: "string" },
-    caption: nullableString,
+    caption: { ...nullableString, description: "A one-line summary" },
     description: { ...nullableString, description: "Markdown" },
-    creator: nullableString,
-    license: { ...nullableString, description: "An SPDX licence id" },
-    licenseNote: nullableString,
-    externalRef: nullableString,
-    tags: { type: "array", items: { type: "string" } },
-    collections: { type: "array", items: { type: "string" } },
+    creator: { ...nullableString, description: "Who designed it" },
+    license: { ...nullableString, description: "An SPDX licence id, such as CC-BY-4.0" },
+    licenseNote: { ...nullableString, description: "Licence text that is not an SPDX id" },
+    externalRef: {
+      ...nullableString,
+      description: "Where the model came from, such as manyfold:<id>; unique",
+    },
+    tags: { type: "array", items: { type: "string" }, description: "Its tags, A to Z" },
+    collections: {
+      type: "array",
+      items: { type: "string" },
+      description: "The collections it is in, A to Z",
+    },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
   },
@@ -617,40 +679,65 @@ const MODEL = {
   ],
 } as const;
 
+// An open object: a plate's numbers are serialized as they are, whatever
+// sets they hold. The document shows their shape instead (the marker below;
+// openapi.ts PLATE_NUMBERS_DOC).
 const NUMBERS = {
   type: "object",
   additionalProperties: true,
+  [PLATE_NUMBERS]: true,
   description:
-    "The plate's numbers for the selected printer: file (Bambu's own, from the .3mf, " +
-    "labelled with the printer it was sliced for), platehouse (an OrcaSlicer estimate, " +
-    "with state current, estimating or stale) and failure (why the estimate failed). " +
-    "Each set has timeSeconds, weightGrams and per-filament grams.",
+    "The plate's numbers for the default printer of My printers (Settings): file " +
+    "(Bambu's own, from the .3mf, labelled with the printer it was sliced for), " +
+    "platehouse (an OrcaSlicer estimate, with state current, estimating or stale) and " +
+    "failure (why the estimate failed). Each set has timeSeconds, weightGrams and " +
+    "per-filament grams, and names its printer by printerId (the Orca preset name), " +
+    "printerLabel and printerName (the printer in full, such as " +
+    '"Bambu Lab P1S, 0.4 mm nozzle"; added with My printers).',
 } as const;
 
 const FILE = {
   type: "object",
   properties: {
-    id: { type: "string" },
-    modelId: { type: "string" },
-    name: { type: "string" },
-    originalName: { type: "string" },
+    id: { type: "string", description: "The file's id, a UUID" },
+    modelId: { type: "string", description: "The model it belongs to" },
+    name: { type: "string", description: "Its name in Platehouse, which can be renamed" },
+    originalName: { type: "string", description: "The name it was uploaded with" },
     kind: { type: "string", enum: ["3mf", "stl", "step", "scad"] },
-    size: { type: "integer" },
-    sha256: { type: "string", description: "Hex" },
-    parseStatus: { type: "string", enum: ["pending", "ok", "no_plate_data", "unavailable"] },
-    derivedStatus: nullableString,
-    derivedMessage: nullableString,
+    size: { type: "integer", description: "Bytes" },
+    sha256: { type: "string", description: "The SHA-256 of its bytes, in hex" },
+    parseStatus: {
+      type: "string",
+      enum: ["pending", "ok", "no_plate_data", "unavailable"],
+      description:
+        "Whether its plates were read: ok, or no_plate_data for a .3mf with no plates " +
+        "Platehouse can read. Files other than .3mf have no plates.",
+    },
+    derivedStatus: {
+      ...nullableString,
+      description:
+        "For .scad and STEP files, the preview render: pending, ok or failed. Null for " +
+        "other kinds.",
+    },
+    derivedMessage: {
+      ...nullableString,
+      description:
+        "The render or conversion message, such as why it failed, cleaned of work paths, " +
+        `addresses and tokens; at most ${DERIVED_MESSAGE_MAX_CHARS} characters, keeping the ` +
+        "end of a longer one, where the error line is",
+    },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
     plates: {
       type: "array",
+      description: "A .3mf file's plates, in order; empty for other kinds",
       items: {
         type: "object",
         properties: {
           id: { type: "string" },
-          index: { type: "integer" },
-          name: nullableString,
-          objectCount: { type: "integer" },
+          index: { type: "integer", description: "The plate's number in the file, from 1" },
+          name: { ...nullableString, description: "The plate's name in the file" },
+          objectCount: { type: "integer", description: "Objects on the plate" },
           numbers: NUMBERS,
         },
         required: ["id", "index", "name", "objectCount", "numbers"],
@@ -676,12 +763,23 @@ const FILE = {
 
 const MODEL_DETAIL = {
   type: "object",
-  properties: { ...MODEL.properties, files: { type: "array", items: FILE } },
+  properties: {
+    ...MODEL.properties,
+    files: { type: "array", items: FILE, description: "Its files, oldest first" },
+  },
   required: [...MODEL.required, "files"],
 } as const;
 
 const ID_PARAM = { type: "string", maxLength: 100 } as const;
 const LABEL = { type: "string", minLength: 1, maxLength: 100, pattern: "\\S" } as const;
+
+/** A path parameter's schema: ID_PARAM or LABEL, with what it names and an example. */
+function pathParam<T extends object>(schema: T, description: string, example: string) {
+  return { ...schema, description, examples: [example] };
+}
+
+const MODEL_ID_PARAM = pathParam(ID_PARAM, "The model's id", EXAMPLE_IDS.model);
+const FILE_ID_PARAM = pathParam(ID_PARAM, "The file's id", EXAMPLE_IDS.file);
 
 const NEW_MODEL_KEYS = [
   "name",
@@ -700,10 +798,22 @@ const NEW_MODEL = {
   // validator would strip silently: an unknown key is refused.
   propertyNames: { enum: NEW_MODEL_KEYS },
   properties: {
-    name: { type: "string", minLength: 1, maxLength: 500, pattern: "\\S" },
-    caption: { type: "string", maxLength: 2000 },
+    name: {
+      type: "string",
+      minLength: 1,
+      maxLength: 500,
+      pattern: "\\S",
+      description: "The model's name, 1 to 500 characters, not blank",
+    },
+    caption: { type: "string", maxLength: 2000, description: "A one-line summary" },
     description: { type: "string", maxLength: 200_000, description: "Markdown" },
-    creator: { type: "string", minLength: 1, maxLength: 300, pattern: "\\S" },
+    creator: {
+      type: "string",
+      minLength: 1,
+      maxLength: 300,
+      pattern: "\\S",
+      description: "Who designed it",
+    },
     license: { type: "string", minLength: 1, maxLength: 200, description: "An SPDX licence id" },
     externalRef: {
       type: "string",
@@ -711,10 +821,30 @@ const NEW_MODEL = {
       maxLength: 300,
       description: "Where the model came from, such as manyfold:<id>; unique",
     },
-    tags: { type: "array", maxItems: 100, items: LABEL },
-    collections: { type: "array", maxItems: 100, items: LABEL },
+    tags: {
+      type: "array",
+      maxItems: 100,
+      items: LABEL,
+      description: "Up to 100 tags, each 1 to 100 characters",
+    },
+    collections: {
+      type: "array",
+      maxItems: 100,
+      items: LABEL,
+      description: "Up to 100 collections, each 1 to 100 characters; made on first use",
+    },
   },
   required: ["name"],
+  examples: [
+    {
+      name: "Cable clip",
+      caption: "A snap-on clip for desk cables",
+      creator: "Example Maker",
+      license: "CC-BY-4.0",
+      tags: ["clips", "desk"],
+      collections: ["Office"],
+    },
+  ],
 } as const;
 
 const SEARCH_QUERY = {
@@ -723,22 +853,81 @@ const SEARCH_QUERY = {
     q: {
       type: "string",
       maxLength: 200,
-      description: "Matched in name, caption, creator and tags, ignoring case",
+      description: "Words matched in name, caption, creator and tags, ignoring case",
+      examples: ["clip"],
     },
-    tag: { type: "string", maxLength: 100 },
-    collection: { type: "string", maxLength: 100 },
-    creator: { type: "string", maxLength: 300 },
+    tag: {
+      type: "string",
+      maxLength: 100,
+      description: "Only models with this tag, ignoring case",
+      examples: ["desk"],
+    },
+    collection: {
+      type: "string",
+      maxLength: 100,
+      description: "Only models in this collection, ignoring case",
+      examples: ["Office"],
+    },
+    creator: {
+      type: "string",
+      maxLength: 300,
+      description: "Only models by this creator, exactly as written",
+      examples: ["Example Maker"],
+    },
     externalRef: {
       type: "string",
       maxLength: 300,
-      description: "The live model with this reference; not combinable with the others",
+      description:
+        "The live model with this reference (zero or one); cannot be combined with the others",
+      examples: ["manyfold:42"],
     },
-    cursor: { type: "string", maxLength: 2000, description: "nextCursor of the previous page" },
-    limit: { type: "integer", minimum: 1, maximum: 200, description: "50 when left out" },
+    cursor: {
+      type: "string",
+      maxLength: 2000,
+      description: "nextCursor from the previous page, to read the next one",
+      examples: ["WzAsIkNhYmxlIGNsaXAiLCIwMTkzYTVjMiJd"],
+    },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 200,
+      description: "Models per page, 1 to 200; 50 when left out",
+      examples: [20],
+    },
   },
 } as const;
 
 const NO_CONTENT = { description: "Done", type: "null" } as const;
+
+/** 400 for a tag or collection change. */
+const LABEL_BAD_REQUEST = {
+  ...BAD_REQUEST_DOC,
+  // Not "over 100 characters": a longer name is the router's 414 before this
+  // route runs (openapi.ts PARAM_TOO_LONG_DOC).
+  description: "The tag or collection name is blank",
+  examples: [{ error: "bad_request", message: 'params/tag must match pattern "\\S"' }],
+} as const;
+
+/** 413 for a JSON body over JSON_BODY_LIMIT. */
+const TOO_LARGE_DOC = {
+  ...ERROR_DOC,
+  description: "The JSON body is over 1 MiB",
+  examples: [{ error: "bad_request", message: "Request body is too large" }],
+} as const;
+
+/** 415 for a body that is not JSON. */
+const NOT_JSON_DOC = {
+  ...ERROR_DOC,
+  description: "The body is not sent as Content-Type: application/json",
+  examples: [{ error: "bad_request", message: "Unsupported Media Type" }],
+} as const;
+
+/** The answers every v1 route can give besides its own: no token, the database down, a bug. */
+const COMMON_ERRORS = {
+  401: UNAUTHORIZED_DOC,
+  500: INTERNAL_DOC,
+  503: UNAVAILABLE_DOC,
+} as const;
 
 type IdParams = { id: string };
 type TagParams = { id: string; tag: string };
@@ -821,10 +1010,27 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         {
           schema: {
             summary: "This API's OpenAPI description",
+            description:
+              "This document: every operation, its parameters, bodies, answers and examples, " +
+              "in OpenAPI 3.0 JSON. Load it into an OpenAPI tool to generate a client. The " +
+              "server URL in it is Platehouse's configured public address.",
+            tags: ["About the API"],
             operationId: "openapi",
             response: {
-              200: { type: "object", additionalProperties: true },
-              401: UNAUTHORIZED_DOC,
+              200: {
+                description: "The OpenAPI 3.0 document",
+                type: "object",
+                additionalProperties: true,
+                examples: [
+                  {
+                    openapi: "3.0.3",
+                    info: { title: "Platehouse API", version: "1.0.0" },
+                    servers: [{ url: "https://platehouse.example.com/api/v1" }],
+                    paths: {},
+                  },
+                ],
+              },
+              ...COMMON_ERRORS,
             },
           },
         },
@@ -837,20 +1043,44 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
           schema: {
             summary: "Search the library",
             description:
-              "Live models, best match first, a page at a time. Models in the trash never appear.",
+              "Live models, best match first and then by name, a page at a time. With no " +
+              "parameters it lists the whole library. q, tag, collection and creator can be " +
+              "combined, and each narrows the list. Models in the trash never appear.\n\n" +
+              "To read every page, pass the answer's nextCursor as cursor until nextCursor " +
+              "is null. Keep the other parameters the same from page to page.\n\n" +
+              "externalRef is a lookup rather than a filter: it answers the one live model " +
+              "with that reference, or none, and cannot be sent with any other parameter.",
+            tags: ["Models"],
             operationId: "searchModels",
             querystring: SEARCH_QUERY,
             response: {
               200: {
+                description: "One page of models",
                 type: "object",
                 properties: {
                   models: { type: "array", items: MODEL },
-                  nextCursor: { type: "string", nullable: true },
+                  nextCursor: {
+                    type: "string",
+                    nullable: true,
+                    description: "Pass as cursor for the next page; null on the last page",
+                  },
                 },
                 required: ["models", "nextCursor"],
+                examples: [
+                  { models: [EXAMPLE_MODEL], nextCursor: "WzAsIkNhYmxlIGNsaXAiLCIwMTkzYTVjMiJd" },
+                ],
               },
-              400: ERROR,
-              401: UNAUTHORIZED_DOC,
+              400: {
+                ...BAD_REQUEST_DOC,
+                description:
+                  "A parameter is outside its limits, the cursor is not one this API made, " +
+                  "or externalRef was sent with another parameter",
+                examples: [
+                  { error: "bad_request", message: "querystring/limit must be <= 200" },
+                  { error: "bad_request", message: "The cursor is not valid" },
+                ],
+              },
+              ...COMMON_ERRORS,
             },
           },
         },
@@ -877,24 +1107,55 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
           schema: {
             summary: "Make a model with no files yet",
             description:
-              "Upload files into it with modelId. A taken externalRef is 409, with trashed " +
+              "Makes an empty model with the details given, ready for files: upload them with " +
+              "its id as modelId in the upload's metadata. Only name is required. Tags and " +
+              "collections are made on first use. A field this API does not know is refused " +
+              "rather than ignored. The name given is kept: a .3mf uploaded into the model " +
+              "later never renames it from its title, though its MakerWorld details fill any " +
+              "of caption, creator, description and licence the model left empty.\n\n" +
+              "externalRef records where a model came from and is unique, so an import that " +
+              "runs twice makes each model once: a taken externalRef is 409, with trashed " +
               "saying whether that model is in the trash.",
+            tags: ["Models"],
             operationId: "createModel",
             body: NEW_MODEL,
             response: {
-              201: { type: "object", properties: { model: MODEL }, required: ["model"] },
-              400: ERROR,
-              401: UNAUTHORIZED_DOC,
+              201: {
+                description: "Made; the new model, with no files",
+                type: "object",
+                properties: { model: MODEL },
+                required: ["model"],
+                examples: [{ model: EXAMPLE_MODEL }],
+              },
+              400: {
+                ...BAD_REQUEST_DOC,
+                description:
+                  "The body is not valid JSON, has a field this API does not know, or a field " +
+                  "outside its limits",
+                examples: [
+                  {
+                    error: "bad_request",
+                    message:
+                      "body must be equal to one of the allowed values, body property name " +
+                      "must be valid",
+                  },
+                ],
+              },
               409: {
-                description: "externalRef is taken",
+                description:
+                  "externalRef is taken by another model; trashed is true when that model " +
+                  "is in the trash",
                 type: "object",
                 properties: {
                   error: { type: "string", enum: ["exists"] },
                   trashed: { type: "boolean" },
                 },
                 required: ["error", "trashed"],
+                examples: [{ error: "exists", trashed: false }],
               },
-              415: ERROR,
+              413: TOO_LARGE_DOC,
+              415: NOT_JSON_DOC,
+              ...COMMON_ERRORS,
             },
           },
         },
@@ -911,10 +1172,23 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         "/models/:id",
         {
           schema: {
-            summary: "A model with its files, plates and estimates",
+            summary: "Get a model with its files, plates and estimates",
+            description:
+              "One live model with all its details, its files oldest first, each .3mf " +
+              "file's plates, and each plate's print time, weight and filaments for the " +
+              "default printer of My printers (Settings). A model in the trash is 404.",
+            tags: ["Models"],
             operationId: "getModel",
-            params: { type: "object", properties: { id: ID_PARAM }, required: ["id"] },
-            response: { 200: MODEL_DETAIL, 401: UNAUTHORIZED_DOC, 404: NOT_FOUND_DOC },
+            params: { type: "object", properties: { id: MODEL_ID_PARAM }, required: ["id"] },
+            response: {
+              200: {
+                ...MODEL_DETAIL,
+                description: "The model",
+                examples: [{ ...EXAMPLE_MODEL, files: [EXAMPLE_FILE] }],
+              },
+              404: NOT_FOUND_DOC,
+              ...COMMON_ERRORS,
+            },
           },
         },
         async (request, reply) => {
@@ -927,10 +1201,19 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         "/files/:id",
         {
           schema: {
-            summary: "A file with its plates and estimates",
+            summary: "Get a file with its plates and estimates",
+            description:
+              "One file's details: its name, kind, size and SHA-256, whether its plates were " +
+              "read, and each plate's print time, weight and filaments. A file of a model in " +
+              "the trash is 404. GET /files/{id}/content downloads its bytes.",
+            tags: ["Files"],
             operationId: "getFile",
-            params: { type: "object", properties: { id: ID_PARAM }, required: ["id"] },
-            response: { 200: FILE, 401: UNAUTHORIZED_DOC, 404: NOT_FOUND_DOC },
+            params: { type: "object", properties: { id: FILE_ID_PARAM }, required: ["id"] },
+            response: {
+              200: { ...FILE, description: "The file", examples: [EXAMPLE_FILE] },
+              404: NOT_FOUND_DOC,
+              ...COMMON_ERRORS,
+            },
           },
         },
         async (request, reply) => {
@@ -943,15 +1226,48 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         "/files/:id/content",
         {
           schema: {
-            summary: "A file's bytes",
+            summary: "Download a file",
+            description:
+              "The file's bytes, exactly as uploaded. Content-Disposition names the file " +
+              "(with its real extension, such as .3mf) and Content-Length is its size. HEAD " +
+              "answers the same headers with no body, after checking the bytes are in " +
+              "storage. A file of a model in the trash is 404.\n\n" +
+              "This is the scripted download. The Open in Bambu Studio and Open in " +
+              "OrcaSlicer buttons on a model page use short-lived slicer links instead, made " +
+              "by the web app for a signed-in person; a token cannot make one.",
+            tags: ["Files"],
             operationId: "getFileContent",
-            produces: ["application/octet-stream"],
-            params: { type: "object", properties: { id: ID_PARAM }, required: ["id"] },
+            params: { type: "object", properties: { id: FILE_ID_PARAM }, required: ["id"] },
             response: {
-              200: { description: "The file, as uploaded", type: "string", format: "binary" },
-              401: UNAUTHORIZED_DOC,
+              // The content form names the bytes' media type for this answer
+              // alone; a stream is never serialized, so it changes no answer.
+              200: {
+                description:
+                  "The file. Content-Type is the file's own (model/3mf, model/stl, " +
+                  "model/step, or text/plain; charset=utf-8 for .scad).",
+                headers: {
+                  "Content-Disposition": {
+                    type: "string",
+                    description: "attachment, with the file's name",
+                  },
+                  "Content-Length": { type: "integer", description: "The file's size in bytes" },
+                },
+                content: {
+                  "application/octet-stream": {
+                    schema: { type: "string", format: "binary" },
+                  },
+                },
+              },
               404: NOT_FOUND_DOC,
-              503: { description: FILE_UNAVAILABLE_MESSAGE, ...ERROR },
+              500: INTERNAL_DOC,
+              503: {
+                ...ERROR_DOC,
+                description:
+                  "The bytes cannot be read from storage right now (message says so), or the " +
+                  "token could not be checked. Try again shortly.",
+                examples: [{ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE }],
+              },
+              401: UNAUTHORIZED_DOC,
             },
           },
         },
@@ -1018,19 +1334,40 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
         return reply.code(204).send();
       }
 
-      const tagSchema = (summary: string, operationId: string) => ({
+      const tagSchema = (summary: string, operationId: string, description: string) => ({
         summary,
+        description,
+        tags: ["Tags and collections"],
         operationId,
         params: {
           type: "object",
-          properties: { id: ID_PARAM, tag: LABEL },
+          properties: {
+            id: MODEL_ID_PARAM,
+            tag: pathParam(
+              LABEL,
+              "The tag, 1 to 100 characters, URL-encoded; matched ignoring case",
+              "desk",
+            ),
+          },
           required: ["id", "tag"],
         },
-        response: { 204: NO_CONTENT, 400: ERROR, 401: UNAUTHORIZED_DOC, 404: NOT_FOUND_DOC },
+        response: {
+          204: NO_CONTENT,
+          400: LABEL_BAD_REQUEST,
+          404: NOT_FOUND_DOC,
+          ...COMMON_ERRORS,
+        },
       });
       scope.put<{ Params: TagParams }>(
         "/models/:id/tags/:tag",
-        { schema: tagSchema("Tag a model", "addTag") },
+        {
+          schema: tagSchema(
+            "Tag a model",
+            "addTag",
+            "Adds the tag to the model, making the tag if it is new. A tag the model " +
+              "already has, in any case, is done all the same. A model in the trash is 404.",
+          ),
+        },
         async (request: FastifyRequest<{ Params: TagParams }>, reply) => {
           const { id, tag } = request.params;
           return change(reply, id, () => library.addTag(id, tag), false);
@@ -1038,26 +1375,58 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
       );
       scope.delete<{ Params: TagParams }>(
         "/models/:id/tags/:tag",
-        { schema: tagSchema("Untag a model", "removeTag") },
+        {
+          schema: tagSchema(
+            "Untag a model",
+            "removeTag",
+            "Takes the tag off the model; the tag itself stays. A tag the model does not " +
+              "have is done all the same. A model in the trash is 404.",
+          ),
+        },
         async (request, reply) => {
           const { id, tag } = request.params;
           return change(reply, id, () => library.removeTag(id, tag), true);
         },
       );
 
-      const collectionSchema = (summary: string, operationId: string) => ({
+      const collectionSchema = (summary: string, operationId: string, description: string) => ({
         summary,
+        description,
+        tags: ["Tags and collections"],
         operationId,
         params: {
           type: "object",
-          properties: { name: LABEL, id: ID_PARAM },
+          properties: {
+            name: pathParam(
+              LABEL,
+              "The collection, 1 to 100 characters, URL-encoded; matched ignoring case",
+              "Office",
+            ),
+            id: MODEL_ID_PARAM,
+          },
           required: ["name", "id"],
         },
-        response: { 204: NO_CONTENT, 400: ERROR, 401: UNAUTHORIZED_DOC, 404: NOT_FOUND_DOC },
+        response: {
+          204: NO_CONTENT,
+          400: {
+            ...LABEL_BAD_REQUEST,
+            examples: [{ error: "bad_request", message: 'params/name must match pattern "\\S"' }],
+          },
+          404: NOT_FOUND_DOC,
+          ...COMMON_ERRORS,
+        },
       });
       scope.put<{ Params: CollectionParams }>(
         "/collections/:name/models/:id",
-        { schema: collectionSchema("Put a model in a collection", "addToCollection") },
+        {
+          schema: collectionSchema(
+            "Put a model in a collection",
+            "addToCollection",
+            "Puts the model in the collection, making the collection if it is new. A model " +
+              "can be in many collections. Doing it twice is done all the same. A model in " +
+              "the trash is 404.",
+          ),
+        },
         async (request, reply) => {
           const { name, id } = request.params;
           return change(reply, id, () => library.addToCollection(id, name), false);
@@ -1065,7 +1434,15 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
       );
       scope.delete<{ Params: CollectionParams }>(
         "/collections/:name/models/:id",
-        { schema: collectionSchema("Take a model out of a collection", "removeFromCollection") },
+        {
+          schema: collectionSchema(
+            "Take a model out of a collection",
+            "removeFromCollection",
+            "Takes the model out of the collection; the collection itself stays, even when " +
+              "empty. A model that was not in it is done all the same. A model in the trash " +
+              "is 404.",
+          ),
+        },
         async (request, reply) => {
           const { name, id } = request.params;
           return change(reply, id, () => library.removeFromCollection(id, name), true);

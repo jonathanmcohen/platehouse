@@ -83,7 +83,9 @@ export interface ActivityView {
     lastImportAt: string | null;
   };
   estimates: {
+    /** The default printer of My printers, and its full name. */
     printerId: string;
+    printerName: string;
     orcaVersion: string | null;
     done: number;
     pending: number;
@@ -100,7 +102,9 @@ export interface ActivityView {
     busy: boolean | null;
     orca: string | null;
     openscad: string | null;
+    /** The default printer of My printers, and its full name. */
     printerId: string;
+    printerName: string;
   };
   events: { items: ActivityEvent[]; limit: number; inboxReadable: boolean };
   working: boolean;
@@ -254,7 +258,7 @@ function Estimates({ estimates }: { estimates: ActivityView["estimates"] }) {
   return (
     <Section title="Estimates">
       <p id={labelId}>
-        Estimates for {estimates.printerId}
+        Estimates for {estimates.printerName}
         {estimates.orcaVersion === null ? null : ` with OrcaSlicer ${estimates.orcaVersion}`}
       </p>
       {estimates.total === 0 ? null : (
@@ -377,8 +381,8 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
         <dd>{slicer.orca ?? "Unknown"}</dd>
         <dt>OpenSCAD</dt>
         <dd>{slicer.openscad ?? "Unknown"}</dd>
-        <dt>Selected printer</dt>
-        <dd>{slicer.printerId}</dd>
+        <dt>Default printer</dt>
+        <dd>{slicer.printerName}</dd>
       </dl>
     </Section>
   );

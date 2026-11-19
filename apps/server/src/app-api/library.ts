@@ -1,11 +1,12 @@
 // The library's app API (build plan Task 19; AC-061, AC-064, AC-073), for the
 // web app's library page:
 //
-//   GET /app/api/library?q&tag&collection&creator&cursor&limit
-//       { printer, models: LibraryCard[], nextCursor }
-//   GET /app/api/library?q&tag&collection&creator&page&limit
-//       { printer, models, nextCursor: null, page, pageSize, pageCount,
-//         total, totalCapped, libraryTotal }   numbered pages (the web app's)
+//   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
+//       { printer, printerName, printers, models: LibraryCard[], nextCursor }
+//   GET /app/api/library?q&tag&collection&creator&page&limit&printer
+//       { printer, printerName, printers, models, nextCursor: null, page,
+//         pageSize, pageCount, total, totalCapped, libraryTotal }
+//       numbered pages (the web app's)
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
@@ -21,7 +22,15 @@
 //   and only a stored blob of kind thumbnail is ever named, so rendering the
 //   library never fetches a model file (AC-073). This module is given no
 //   store at all.
-// - Time and weight are for the selected printer (settings.printer_id), from
+// - printer= is the header's printer switch: one of My printers, whose
+//   numbers the cards show instead of the default printer's. Anything else
+//   (a printer removed since the browser stored its choice) shows the
+//   default; printer and printerName say which printer the numbers are for,
+//   and printers lists the switch's choices (My printers, named in full), so
+//   the page needs no second request. Switching reads numbers only and never
+//   queues a slice.
+// - Time and weight are for that printer (settings.printer_id when no
+//   switch is given; "the selected printer" below), from
 //   Task 12's plateNumbers per plate: a plate has numbers for that printer
 //   when the file's own numbers are for it or a current Platehouse estimate
 //   is. A card has totals only when every plate does, else partial. While
@@ -61,7 +70,12 @@ import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
-import type { DisplayContext, Numbers, PlateNumbers } from "../estimates/display.js";
+import {
+  type DisplayContext,
+  type Numbers,
+  type PlateNumbers,
+  printerName,
+} from "../estimates/display.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
 import { modelsRepo } from "../repos/models.js";
 
@@ -154,8 +168,12 @@ export async function mapLimit<T, R>(
 
 /** What readDisplayContext reads; main.ts hands it the settings repo and the estimates service. */
 export interface DisplayContextSources {
-  /** The settings row (repos.settings.get). */
-  settings(): Promise<{ printerId: string; lastOrcaVersion: string | null }>;
+  /** The settings row and My printers (repos.settings.get). */
+  settings(): Promise<{
+    printerId: string;
+    myPrinters?: readonly string[];
+    lastOrcaVersion: string | null;
+  }>;
   /** The printer menu (estimates.listPrinters), the cached /v1/profiles answer. */
   listPrinters(): Promise<readonly Printer[]>;
 }
@@ -194,7 +212,48 @@ export async function readDisplayContext(
   } finally {
     clearTimeout(timer);
   }
-  return { printerId: settings.printerId, orcaVersion: settings.lastOrcaVersion, printers };
+  return {
+    printerId: settings.printerId,
+    ...(settings.myPrinters === undefined ? {} : { myPrinters: settings.myPrinters }),
+    orcaVersion: settings.lastOrcaVersion,
+    printers,
+  };
+}
+
+/**
+ * The display context for the printer a page's switch asked for: that
+ * printer when it is one of My printers, else the context as read, for the
+ * default printer. The answer names the printer it used, so a page whose
+ * stored choice was removed falls back without an error.
+ */
+export function forPrinter(ctx: DisplayContext, printerId: string | undefined): DisplayContext {
+  if (printerId === undefined || !(ctx.myPrinters ?? []).includes(printerId)) return ctx;
+  return { ...ctx, printerId };
+}
+
+/** One choice of a page's printer switch. */
+export interface PrinterChoice {
+  id: string;
+  /** The printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  name: string;
+}
+
+/**
+ * The printer switch's choices: My printers in order, each named in full;
+ * the shown printer alone when the context has no list.
+ */
+export function printerChoices(ctx: DisplayContext): PrinterChoice[] {
+  const ids = ctx.myPrinters ?? [ctx.printerId];
+  return ids.map((id) => ({ id, name: printerName(id, ctx.printers) }));
+}
+
+/** The printer fields of a library answer: the printer shown, its name and the choices. */
+function printerFields(ctx: DisplayContext) {
+  return {
+    printer: ctx.printerId,
+    printerName: printerName(ctx.printerId, ctx.printers),
+    printers: printerChoices(ctx),
+  };
 }
 
 /** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
@@ -227,8 +286,12 @@ export interface LibraryCard {
 }
 
 export interface AppLibraryPage {
-  /** The selected printer the numbers are for. */
+  /** The printer the numbers are for: the default printer, or the switch's choice. */
   printer: string;
+  /** That printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  printerName: string;
+  /** The printer switch's choices: My printers, in order. */
+  printers: PrinterChoice[];
   models: LibraryCard[];
   nextCursor: string | null;
 }
@@ -252,13 +315,16 @@ export interface AppLibraryPages extends AppLibraryPage {
 export interface AppLibraryQuery extends LibrarySearch {
   /** A numbered page, from 1, instead of a cursor. */
   page?: number | undefined;
+  /** The printer switch's choice: one of My printers, else the default is shown. */
+  printer?: string | undefined;
 }
 
 export interface AppLibrary {
   /**
-   * A page of cards: a numbered page when query.page is set, else a cursor
-   * page. InvalidCursor for a cursor search did not make, InvalidPageQuery
-   * for a page and a cursor together.
+   * A page of cards, for query.printer when it is one of My printers, else
+   * for the default printer: a numbered page when query.page is set, else a
+   * cursor page. InvalidCursor for a cursor search did not make,
+   * InvalidPageQuery for a page and a cursor together.
    */
   list(query: AppLibraryQuery): Promise<AppLibraryPage | AppLibraryPages>;
   /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
@@ -345,15 +411,16 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 
   async function numbered(query: AppLibraryQuery & { page: number }): Promise<AppLibraryPages> {
     const pageSize = pageSizeFor(query.limit);
-    const [found, ctx, libraryTotal] = await Promise.all([
+    const [found, read, libraryTotal] = await Promise.all([
       matches(query),
       deps.displayContext(),
       liveModels(),
     ]);
+    const ctx = forPrinter(read, query.printer);
     const total = found.rows.length;
     const window = pageWindow({ total, pageSize, page: query.page });
     return {
-      printer: ctx.printerId,
+      ...printerFields(ctx),
       models: await cards(found.rows.slice(window.start, window.end), ctx),
       nextCursor: null,
       page: window.page,
@@ -465,9 +532,11 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         if (query.cursor !== undefined) throw new InvalidPageQuery();
         return numbered({ ...query, page: query.page });
       }
-      const [page, ctx] = await Promise.all([search.search(query), deps.displayContext()]);
+      const { printer, page: _page, ...searchQuery } = query;
+      const [page, read] = await Promise.all([search.search(searchQuery), deps.displayContext()]);
+      const ctx = forPrinter(read, printer);
       return {
-        printer: ctx.printerId,
+        ...printerFields(ctx),
         models: await cards(page.models, ctx),
         nextCursor: page.nextCursor,
       };
@@ -498,9 +567,11 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 export const emptyAppLibrary: AppLibrary = Object.freeze({
   list: async (query: AppLibraryQuery) =>
     query.page === undefined
-      ? { printer: "", models: [], nextCursor: null }
+      ? { printer: "", printerName: "", printers: [], models: [], nextCursor: null }
       : {
           printer: "",
+          printerName: "",
+          printers: [],
           models: [],
           nextCursor: null,
           page: 1,
@@ -523,6 +594,7 @@ const SEARCH_QUERY = {
     cursor: { type: "string", maxLength: 2000 },
     limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_SIZE },
     page: { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER },
+    printer: { type: "string", maxLength: 200 },
   },
 } as const;
 

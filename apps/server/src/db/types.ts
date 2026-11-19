@@ -167,10 +167,23 @@ export interface EstimateFilamentsTable {
 
 export interface SettingsTable {
   id: Generated<boolean>;
+  /** The default printer (0007): one of My printers (userPrinters). */
   printerId: Generated<string>;
   lastOrcaVersion: string | null;
   bucketVersioning: Generated<BucketVersioning>;
+  /** Bumped by every write to My printers or the default (0007). */
+  printersVersion: Generated<number>;
   updatedAt: UpdatedAt;
+}
+
+/**
+ * My printers (0007): the printers Jon owns, in display order. The default
+ * is settings.printerId, which must be one of them.
+ */
+export interface UserPrintersTable {
+  printerId: string;
+  position: number;
+  addedAt: CreatedAt;
 }
 
 export interface ApiTokensTable {
@@ -206,6 +219,7 @@ export interface DB {
   estimates: EstimatesTable;
   estimateFilaments: EstimateFilamentsTable;
   settings: SettingsTable;
+  userPrinters: UserPrintersTable;
   apiTokens: ApiTokensTable;
   sessions: SessionsTable;
 }

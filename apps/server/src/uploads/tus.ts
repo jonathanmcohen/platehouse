@@ -94,6 +94,18 @@ import { QUEUE } from "../jobs/queues.js";
 /** The largest upload Platehouse takes, in bytes (512 MiB, the slicer contract's cap). */
 export const MAX_UPLOAD_BYTES = 536_870_912;
 
+/** The slow link a whole upload must fit through in one request: 1 Mbit/s. */
+export const SLOW_LINK_BYTES_PER_SECOND = 125_000;
+
+/**
+ * The HTTP request timeout (app.ts gives it to Fastify): a MAX_UPLOAD_BYTES
+ * single PATCH at SLOW_LINK_BYTES_PER_SECOND, about 72 minutes. Fastify's own
+ * default is no limit at all; this is the upper bound, sized for that one
+ * upload. Kept here beside the cap it is sized from, so the API description
+ * (api/openapi.ts) can state both without importing app.ts.
+ */
+export const REQUEST_TIMEOUT_MS = Math.ceil(MAX_UPLOAD_BYTES / SLOW_LINK_BYTES_PER_SECOND) * 1000;
+
 /** How long an upload may sit untouched before the hourly sweep deletes it. */
 export const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
 
@@ -590,7 +602,7 @@ function declaresBody(request: FastifyRequest): boolean {
  * request, Node no longer dumps its unread body when the response ends, so
  * the connection would stay busy for good; a body nothing has touched Node
  * does dump, but for as long as the server's request timeout allows, about
- * 72 minutes (REQUEST_TIMEOUT_MS in app.ts). And for a Connection: close
+ * 72 minutes (REQUEST_TIMEOUT_MS above). And for a Connection: close
  * answer, Node destroys the socket (socket.destroySoon, from the response's
  * finish) as soon as the answer is written, with the body still arriving.
  * So for this request that call only ends the writing side, and the socket
@@ -602,7 +614,9 @@ function declaresBody(request: FastifyRequest): boolean {
  */
 export function releaseUnreadBody(request: FastifyRequest, reply: FastifyReply): void {
   const raw = request.raw;
-  if (raw.complete || raw.destroyed || !declaresBody(request)) return;
+  // A body read to its end (complete on a real request; readableEnded also
+  // on an injected one, which has no complete flag) has nothing to drain.
+  if (raw.complete || raw.readableEnded || raw.destroyed || !declaresBody(request)) return;
   reply.header("connection", "close");
   const socket = raw.socket;
   const destroySoon = socket.destroySoon;

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { migrate } from "../../../src/db/migrate.js";
 import { createRepos, type Repos } from "../../../src/repos/index.js";
+import { PrintersChanged } from "../../../src/repos/settings.js";
 import {
   sqlState,
   startTestPostgres,
@@ -403,20 +404,114 @@ describe("settings", () => {
       bucketVersioning: "unknown",
     });
 
-    const after = await repos.settings.update({ printerId: "Bambu Lab A1 0.4 nozzle" });
+    expect(before.myPrinters).toEqual(["Bambu Lab P1S 0.4 nozzle"]);
+
+    const after = await repos.settings.update({ lastOrcaVersion: "2.5.0" });
     expect(after).toMatchObject({
-      printerId: "Bambu Lab A1 0.4 nozzle",
-      lastOrcaVersion: null,
+      printerId: "Bambu Lab P1S 0.4 nozzle",
+      myPrinters: ["Bambu Lab P1S 0.4 nozzle"],
+      lastOrcaVersion: "2.5.0",
       bucketVersioning: "unknown",
     });
     expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
 
-    await repos.settings.update({ lastOrcaVersion: "2.5.0", bucketVersioning: "off" });
+    await repos.settings.update({ bucketVersioning: "off" });
     expect(await repos.settings.get()).toMatchObject({
-      printerId: "Bambu Lab A1 0.4 nozzle",
+      printerId: "Bambu Lab P1S 0.4 nozzle",
       lastOrcaVersion: "2.5.0",
       bucketVersioning: "off",
     });
+  });
+
+  test("savePrinters stores My printers in order with the default, all or nothing", async () => {
+    const P1S = "Bambu Lab P1S 0.4 nozzle";
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    const MINI = "Bambu Lab A1 mini 0.4 nozzle";
+    try {
+      // Add two, keeping P1S the default.
+      let saved = await repos.settings.savePrinters({ printers: [P1S, A1, MINI], defaultId: P1S });
+      expect(saved).toMatchObject({ printerId: P1S, myPrinters: [P1S, A1, MINI] });
+      // Reorder and change the default: the order and the default are kept apart.
+      saved = await repos.settings.savePrinters({ printers: [MINI, P1S, A1], defaultId: A1 });
+      expect(saved).toMatchObject({ printerId: A1, myPrinters: [MINI, P1S, A1] });
+      expect(await repos.settings.get()).toMatchObject({
+        printerId: A1,
+        myPrinters: [MINI, P1S, A1],
+      });
+      // Remove one.
+      saved = await repos.settings.savePrinters({ printers: [MINI, A1], defaultId: A1 });
+      expect(saved.myPrinters).toEqual([MINI, A1]);
+      // A default outside the list is refused, and nothing changes.
+      expect(
+        await sqlState(repos.settings.savePrinters({ printers: [MINI], defaultId: P1S })),
+      ).toBe("23503");
+      expect(await repos.settings.get()).toMatchObject({ printerId: A1, myPrinters: [MINI, A1] });
+    } finally {
+      await repos.settings.savePrinters({ printers: [P1S], defaultId: P1S });
+    }
+    expect(await repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S] });
+  });
+
+  test("savePrinters bumps printersVersion and saves only from the stored version", async () => {
+    const P1S = "Bambu Lab P1S 0.4 nozzle";
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    const MINI = "Bambu Lab A1 mini 0.4 nozzle";
+    try {
+      const v0 = (await repos.settings.get()).printersVersion;
+      const added = await repos.settings.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      expect(added.printersVersion).toBe(v0 + 1);
+      // A save built from the read before A1 was added: refused, nothing changes.
+      await expect(
+        repos.settings.savePrinters({ printers: [P1S, MINI], defaultId: P1S, version: v0 }),
+      ).rejects.toBeInstanceOf(PrintersChanged);
+      expect(await repos.settings.get()).toMatchObject({
+        printerId: P1S,
+        myPrinters: [P1S, A1],
+        printersVersion: v0 + 1,
+      });
+      // A change of the default alone also bumps the version, so a save
+      // built before it cannot put the old default back (#272).
+      const defaulted = await repos.settings.savePrinters({
+        printers: [P1S, A1],
+        defaultId: A1,
+        version: v0 + 1,
+      });
+      expect(defaulted.printersVersion).toBe(v0 + 2);
+      await expect(
+        repos.settings.savePrinters({ printers: [A1, P1S], defaultId: P1S, version: v0 + 1 }),
+      ).rejects.toBeInstanceOf(PrintersChanged);
+      expect(await repos.settings.get()).toMatchObject({
+        printerId: A1,
+        myPrinters: [P1S, A1],
+      });
+      // Two saves from the same read, at once: one lands and the other is refused.
+      const both = await Promise.allSettled([
+        repos.settings.savePrinters({ printers: [P1S, A1], defaultId: P1S, version: v0 + 2 }),
+        repos.settings.savePrinters({ printers: [A1, P1S], defaultId: A1, version: v0 + 2 }),
+      ]);
+      expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const refused = both.filter((r) => r.status === "rejected");
+      expect(refused).toHaveLength(1);
+      expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(PrintersChanged);
+      // A save from the stored version goes through.
+      const now = (await repos.settings.get()).printersVersion;
+      expect(now).toBe(v0 + 3);
+      const saved = await repos.settings.savePrinters({
+        printers: [MINI, P1S],
+        defaultId: P1S,
+        version: now,
+      });
+      expect(saved).toMatchObject({
+        printerId: P1S,
+        myPrinters: [MINI, P1S],
+        printersVersion: v0 + 4,
+      });
+      // Other settings writes leave the version alone.
+      await repos.settings.update({ lastOrcaVersion: "2.5.1" });
+      expect((await repos.settings.get()).printersVersion).toBe(v0 + 4);
+    } finally {
+      await repos.settings.savePrinters({ printers: [P1S], defaultId: P1S });
+    }
   });
 
   test("an unknown versioning state is refused", async () => {

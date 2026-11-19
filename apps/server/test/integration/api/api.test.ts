@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { PLATE_NUMBERS_DOC } from "../../../src/api/openapi.js";
 import {
   createTokens,
   dbTokenStore,
@@ -33,6 +34,7 @@ import { startQueues } from "../../../src/jobs/queues.js";
 import { createRepos } from "../../../src/repos/index.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { bossUploadQueue, createUploads, type Uploads } from "../../../src/uploads/tus.js";
+import { type OpenApiDoc, problems } from "../../api/support/openapi-rules.js";
 import { meta, OCTET, TUS } from "../../uploads/support/http.js";
 import { ASCII_STL, build3mf, type IngestEnv, startIngestEnv } from "../support/ingest.js";
 import { marker } from "../support/library.js";
@@ -437,6 +439,43 @@ describe("the operations", () => {
     expect(file?.plates[0]?.numbers.file?.timeSeconds).toBeGreaterThan(0);
     expect(file?.plates[0]?.numbers.file?.weightGrams).toBeGreaterThan(0);
     expect(file?.plates[1]?.numbers.file).toBeUndefined();
+    // My printers kept the v1 shape: every field a client read before is
+    // still there with its old value, and printerName is added beside them.
+    // (This app is given no slicer menu, so the file's printer is unmatched.)
+    expect(file?.plates[0]?.numbers.file).toMatchObject({
+      source: "file",
+      printerId: "C12",
+      printerLabel: "another printer",
+      printerName: "another printer",
+      filaments: expect.any(Array),
+    });
+    expect(Object.keys(file?.plates[0]?.numbers.file ?? {}).sort()).toEqual(
+      [
+        "estimateId",
+        "filaments",
+        "printerId",
+        "printerLabel",
+        "printerName",
+        "processProfile",
+        "slicer",
+        "slicerVersion",
+        "source",
+        "timeSeconds",
+        "weightGrams",
+      ].sort(),
+    );
+    // The OpenAPI document shows the same fields for a set, and the same for
+    // each filament line, so it cannot drift from the real answer (#280).
+    const fileSet = PLATE_NUMBERS_DOC.properties.file.properties;
+    expect(Object.keys(file?.plates[0]?.numbers.file ?? {}).sort()).toEqual(
+      Object.keys(fileSet).sort(),
+    );
+    const fileNumbers = file?.plates[0]?.numbers.file as { filaments?: object[] } | undefined;
+    const filament = fileNumbers?.filaments?.[0];
+    expect(filament).toBeDefined();
+    expect(Object.keys(filament ?? {}).sort()).toEqual(
+      Object.keys(fileSet.filaments.items.properties).sort(),
+    );
 
     const meta1 = await call("GET", `/api/v1/files/${file?.id}`);
     expect(meta1.status).toBe(200);
@@ -869,6 +908,10 @@ describe("the OpenAPI document", () => {
     for (const path of Object.keys(doc.paths)) {
       expect(registered.has(path), path).toBe(true);
     }
+
+    // Every operation of the whole app is documented in full: summary,
+    // description, parameters, examples and its error answers.
+    expect(problems(doc as unknown as OpenApiDoc)).toEqual([]);
   });
 });
 

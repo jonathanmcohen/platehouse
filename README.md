@@ -4,6 +4,19 @@
 
 Self-hosted library for 3D print files: plates, OrcaSlicer estimates, S3 storage, token API
 
+## API
+
+Platehouse has an HTTP API for scripts and tools such as AI coding assistants: upload files,
+search the library, read models, plates and their estimates, download files, and add or remove
+tags and collections. It never deletes anything. Make a token in Settings, under API tokens, and
+send it as `Authorization: Bearer <token>`.
+
+- [docs/api.md](docs/api.md) is the guide: tokens, errors, limits, paging, uploads and curl
+  examples.
+- The API reference, every operation with its parameters, answers and examples, is in the app:
+  Settings, then the API reference link under API tokens.
+- The OpenAPI 3.0 document is at `GET /api/v1/openapi.json` (it needs a token too).
+
 ## Developing
 
 You need Node 26.13.0, the version in `.node-version`, and pnpm 12.18.0, the version in the

@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
 import { LibraryPage } from "../src/library/LibraryPage";
+import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
 import { TagsPage } from "../src/tags/TagsPage";
@@ -31,6 +32,18 @@ import { TrashPage } from "../src/trash/TrashPage";
 const P1S = "Bambu Lab P1S 0.4 nozzle";
 const P1S_06 = "Bambu Lab P1S 0.6 nozzle";
 const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
+/** Each printer in full, as the server names it (estimates/display.ts printerName). */
+const NAMES: Record<string, string> = {
+  [P1S]: "Bambu Lab P1S, 0.4 mm nozzle",
+  [P1S_06]: "Bambu Lab P1S, 0.6 mm nozzle",
+  [X1C]: "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+  "Bambu Lab A1 0.4 nozzle": "Bambu Lab A1, 0.4 mm nozzle",
+};
+/** The printers the slicer's menu offers. */
+const MENU_IDS = [P1S, P1S_06, X1C];
+/** The server's 409 printers_changed sentence (app-api/settings.ts). */
+const PRINTERS_CHANGED =
+  "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.";
 
 /** A fresh API token, made the way the server makes one: ph_ and 43 base64url characters. */
 function freshToken(): string {
@@ -58,7 +71,16 @@ interface FakeModel {
 }
 
 interface FakeState {
+  /** The default printer. */
   printerId: string;
+  /** The version of My printers and the default; every save bumps it. */
+  printersVersion: number;
+  /** My printers, in order. */
+  myPrinters: string[];
+  /** Plate estimates each printer still has waiting. */
+  waiting: Record<string, number>;
+  /** How many plates the fake says it queued for each printer added. */
+  addQueued: number;
   bucketVersioning: "enabled" | "suspended" | "off" | "unknown";
   tokens: Array<{
     id: string;
@@ -121,6 +143,11 @@ let emptyIncomplete = false;
  * when the slicer is unreachable, busy or refuses (apps/server/src/app-api/settings.ts).
  */
 let slicerDown = false;
+/**
+ * When set, each GET /app/api/settings answer is built when asked and then
+ * waits here, in request order, until the test calls it.
+ */
+let parked: Array<() => void> | null = null;
 /** Every token value the fake handed out. */
 const issued: string[] = [];
 
@@ -158,6 +185,23 @@ function counts(key: "tags" | "collections" | "creator") {
   return [...byName].map(([name, models]) => ({ name, models }));
 }
 
+/**
+ * As the server's queueByPrinter: the slicer is one queue, and each
+ * printer's work was queued after the work of the printers before it in
+ * state.waiting (insertion order: what was there first, then each printer
+ * added), so a printer is through after its own waiting plates and every
+ * plate queued before them. 0 with nothing waiting.
+ */
+function throughOf(id: string): number {
+  if ((state.waiting[id] ?? 0) === 0) return 0;
+  let total = 0;
+  for (const [printer, waiting] of Object.entries(state.waiting)) {
+    total += waiting;
+    if (printer === id) return total;
+  }
+  return 0;
+}
+
 /** The fake /app/api: the routes the pages call, answering as the server does. */
 async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const url = new URL(String(input), "https://platehouse.test");
@@ -174,8 +218,20 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   const model = (id: string | undefined) => state.models.find((m) => m.id === id);
 
   if (method === "GET" && path === "/app/api/settings") {
-    return json(200, {
+    // The answer is built now, from the state as it is when asked; a parked
+    // answer is sent when the test releases it, so two reads can answer in
+    // any order (#254).
+    const answer = json(200, {
       printerId: state.printerId,
+      printersVersion: state.printersVersion,
+      myPrinters: state.myPrinters.map((id) => ({
+        id,
+        name: NAMES[id] ?? id,
+        offered: slicerDown ? null : MENU_IDS.includes(id),
+        waiting: state.waiting[id] ?? 0,
+        through: throughOf(id),
+      })),
+      slicesPerMinute: 3,
       bucketVersioning: state.bucketVersioning,
       printers: slicerDown
         ? null
@@ -183,17 +239,50 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
             {
               model: "Bambu Lab P1S",
               printers: [
-                { id: P1S, nozzle: 0.4 },
-                { id: P1S_06, nozzle: 0.6 },
+                { id: P1S, nozzle: 0.4, name: NAMES[P1S] },
+                { id: P1S_06, nozzle: 0.6, name: NAMES[P1S_06] },
               ],
             },
-            { model: "Bambu Lab X1 Carbon", printers: [{ id: X1C, nozzle: 0.4 }] },
+            {
+              model: "Bambu Lab X1 Carbon",
+              printers: [{ id: X1C, nozzle: 0.4, name: NAMES[X1C] }],
+            },
           ],
     });
+    if (parked === null) return answer;
+    const queue = parked;
+    return new Promise<Response>((resolve) => queue.push(() => resolve(answer)));
   }
-  if (method === "PUT" && path === "/app/api/settings/printer") {
-    state.printerId = body.printerId;
-    return json(204);
+  // The whole list at once, as the server's PUT /settings/printers: each
+  // added printer has state.addQueued plates queued, a removed one's work stops.
+  if (method === "PUT" && path === "/app/api/settings/printers") {
+    // Saved from an older version (another window changed the list or the
+    // default): refused, and nothing changes, as the server does.
+    if (body.version !== state.printersVersion) {
+      return json(409, { error: "printers_changed", message: PRINTERS_CHANGED });
+    }
+    state.printersVersion += 1;
+    const next: string[] = body.printers;
+    const added = next.filter((id) => !state.myPrinters.includes(id));
+    if (added.some((id) => !MENU_IDS.includes(id))) {
+      return json(400, {
+        error: "unknown_printer",
+        message: "That printer is not in the slicer's printer list.",
+      });
+    }
+    const removed = state.myPrinters.filter((id) => !next.includes(id));
+    state.myPrinters = [...next];
+    state.printerId = body.defaultId;
+    for (const id of added) state.waiting[id] = state.addQueued;
+    for (const id of removed) delete state.waiting[id];
+    return json(200, {
+      added: added.map((printerId) => ({
+        printerId,
+        queued: state.addQueued,
+        through: throughOf(printerId),
+      })),
+      removed,
+    });
   }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
   if (method === "POST" && path === "/app/api/tokens") {
@@ -288,7 +377,13 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
         partial: false,
         numbersUnavailable: false,
       }));
-    return json(200, { printer: P1S, models, nextCursor: null });
+    return json(200, {
+      printer: P1S,
+      printerName: NAMES[P1S],
+      printers: [{ id: P1S, name: NAMES[P1S] }],
+      models,
+      nextCursor: null,
+    });
   }
   if (method === "PATCH" && seg[0] === "models") {
     const m = model(seg[1]);
@@ -348,6 +443,11 @@ let dialogs: {
 beforeEach(() => {
   state = {
     printerId: P1S,
+    printersVersion: 1,
+    myPrinters: [P1S],
+    waiting: {},
+    // Jon's library on 2026-11-19.
+    addQueued: 463,
     bucketVersioning: "enabled",
     tokens: [
       {
@@ -402,6 +502,7 @@ beforeEach(() => {
   failing.clear();
   emptyIncomplete = false;
   slicerDown = false;
+  parked = null;
   vi.stubGlobal("fetch", vi.fn(fakeApi));
   dialogs = {
     confirm: vi.spyOn(window, "confirm").mockImplementation(() => true),
@@ -593,9 +694,22 @@ describe("the settings page", () => {
     expect(document.querySelector('[role="alert"]')).toBeNull();
   });
 
-  test("the printer menu is grouped by model with nozzle choices", async () => {
+  /** The My printers list as it reads: each printer's name line, in order. */
+  function myPrinters(): string[] {
+    return [...document.querySelectorAll("[data-my-printer]")].map(
+      (li) => li.querySelector(".ph-printer-name")?.textContent ?? "",
+    );
+  }
+
+  function putBodies(): unknown[] {
+    return callsTo("PUT", "/app/api/settings/printers").map((c) => c.body);
+  }
+
+  // Jon, 2026-11-19: the closed menu showed only "0.4 mm nozzle", so the
+  // chosen printer could not be told apart.
+  test("the printer menu names every printer in full, closed or open, and stays grouped", async () => {
     await show("/settings", <SettingsPage />);
-    const select = labelled<HTMLSelectElement>("Printer");
+    const select = labelled<HTMLSelectElement>("Add a printer");
     const groups = [...select.querySelectorAll("optgroup")].map((g) => ({
       label: g.label,
       options: [...g.querySelectorAll("option")].map((o) => [o.value, o.textContent]),
@@ -604,121 +718,438 @@ describe("the settings page", () => {
       {
         label: "Bambu Lab P1S",
         options: [
-          [P1S, "0.4 mm nozzle"],
-          [P1S_06, "0.6 mm nozzle"],
+          [P1S, "Bambu Lab P1S, 0.4 mm nozzle"],
+          [P1S_06, "Bambu Lab P1S, 0.6 mm nozzle"],
         ],
       },
-      { label: "Bambu Lab X1 Carbon", options: [[X1C, "0.4 mm nozzle"]] },
+      { label: "Bambu Lab X1 Carbon", options: [[X1C, "Bambu Lab X1 Carbon, 0.4 mm nozzle"]] },
     ]);
-    expect(select.value).toBe(P1S);
+    // A closed select shows its chosen option's text: the printer in full.
+    await choose(select, X1C);
+    expect(select.selectedOptions[0]?.textContent).toBe("Bambu Lab X1 Carbon, 0.4 mm nozzle");
+    // A printer already in My printers is not offered twice.
+    const p1s = [...select.querySelectorAll("option")].find((o) => o.value === P1S);
+    expect(p1s?.disabled).toBe(true);
   });
 
-  test("changing printer queues re-estimation and the old numbers stay marked", async () => {
+  test("My printers lists each printer in full, in order, with the default marked", async () => {
+    state.myPrinters = [X1C, P1S];
+    state.printerId = P1S;
     await show("/settings", <SettingsPage />);
-    await choose(labelled<HTMLSelectElement>("Printer"), X1C);
-    await click(button("Save printer"));
-    expect(callsTo("PUT", "/app/api/settings/printer")).toEqual([
-      { method: "PUT", path: "/app/api/settings/printer", body: { printerId: X1C } },
+    expect(myPrinters()).toEqual([
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      "Bambu Lab P1S, 0.4 mm nozzle",
     ]);
+    const items = [...document.querySelectorAll("[data-my-printer]")];
+    expect(items[1]?.textContent).toContain("Default");
+    expect(items[0]?.textContent).not.toContain("Default");
+    expect(text()).toContain(
+      "Times and weights are estimated for every printer here. The default is shown first",
+    );
+  });
+
+  test("adding a printer saves the list, and says how many plates it queued and how long that takes", async () => {
+    await show("/settings", <SettingsPage />);
+    await choose(labelled<HTMLSelectElement>("Add a printer"), X1C);
+    await click(button("Add printer"));
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C], defaultId: P1S, version: 1 }]);
     const status = document.querySelector('[role="status"]')?.textContent ?? "";
-    expect(status).toContain(`Re-estimating the library for ${X1C}`);
-    expect(status).toContain(`marked as for ${P1S}`);
-    expect(labelled<HTMLSelectElement>("Printer").value).toBe(X1C);
-  });
-
-  test("a stored printer the slicer no longer offers shows as it is, and any real choice saves", async () => {
-    // An OrcaSlicer update can rename a profile; the server then refuses
-    // every estimate with UnknownPrinter, so the page must not show another
-    // printer as the chosen one.
-    const gone = "Bambu Lab A1 0.4 nozzle";
-    state.printerId = gone;
-    await show("/settings", <SettingsPage />);
-    const select = labelled<HTMLSelectElement>("Printer");
-    expect(select.value).toBe(gone);
-    const stale = [...select.querySelectorAll("option")].find((o) => o.value === gone);
-    expect(stale?.disabled).toBe(true);
-    expect(stale?.textContent).toBe(`${gone}, no longer offered by the slicer`);
-    expect(text()).toContain("Choose a printer from the list");
-
-    await choose(select, P1S);
-    await click(button("Save printer"));
-    expect(callsTo("PUT", "/app/api/settings/printer")).toEqual([
-      { method: "PUT", path: "/app/api/settings/printer", body: { printerId: P1S } },
+    // 463 plates at the slicer's measured 3 a minute is 154.3 minutes.
+    expect(status).toBe(
+      "Added Bambu Lab X1 Carbon, 0.4 mm nozzle. Platehouse is now estimating 463 plates " +
+        "for it, one at a time, at about 3 plates a minute, so this takes about 2 hours and " +
+        "35 minutes. Its numbers show on each plate as they land, and the other printers' " +
+        "numbers stay as they are.",
+    );
+    expect(myPrinters()).toEqual([
+      "Bambu Lab P1S, 0.4 mm nozzle",
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
     ]);
-    expect(labelled<HTMLSelectElement>("Printer").value).toBe(P1S);
-    expect(text()).not.toContain("Choose a printer from the list");
+    // The queue shows that work on the printer's own line.
+    expect(document.querySelectorAll("[data-my-printer]")[1]?.textContent).toContain(
+      "463 plates waiting to be estimated",
+    );
   });
 
-  test("moving through the printer menu saves nothing until Save printer is pressed", async () => {
-    // On Windows, an arrow key on a focused, closed select changes its value
-    // and fires change at once, so a change alone must not save a printer
-    // and queue re-estimation of the whole library.
+  test("the waiting counts are read again every WAITING_POLL_MS while any are waiting, and a failed read does not stop it", async () => {
+    // shouldAdvanceTime lets settle()'s zero-delay timers run; the poll is
+    // stepped by hand.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      const line = () => document.querySelectorAll("[data-my-printer]")[1]?.textContent ?? "";
+      const step = async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+        });
+        await settle();
+      };
+      expect(line()).toContain("463 plates waiting to be estimated");
+      for (const left of [400, 300]) {
+        state.waiting[X1C] = left;
+        await step();
+        expect(line()).toContain(`${left} plates waiting to be estimated`);
+      }
+      // A read that fails is tried again on the next tick.
+      failing.add("GET /app/api/settings");
+      await step();
+      failing.delete("GET /app/api/settings");
+      state.waiting[X1C] = 200;
+      await step();
+      expect(line()).toContain("200 plates waiting to be estimated");
+      // Once nothing is waiting the page stops asking.
+      state.waiting[X1C] = 0;
+      await step();
+      const reads = callsTo("GET", "/app/api/settings").length;
+      await step();
+      await step();
+      expect(callsTo("GET", "/app/api/settings")).toHaveLength(reads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Issue #254: every change sends the whole list, so a change made from a
+  // list that does not have a just-added printer yet removes it (and cancels
+  // its slices) with no confirm. The controls must wait for the list read
+  // after a save, and an older read must not put the old list back.
+  test("after a save the controls wait for the new list, so a click in between sends nothing", async () => {
+    state.myPrinters = [P1S, X1C];
     await show("/settings", <SettingsPage />);
-    const select = labelled<HTMLSelectElement>("Printer");
+    parked = [];
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C, P1S_06], defaultId: P1S, version: 1 }]);
+    // The PUT has answered; the list read after it has not.
+    expect(parked).toHaveLength(1);
+    const makeDefault = button(`Make ${NAMES[X1C]} the default`);
+    expect(makeDefault.getAttribute("aria-disabled")).toBe("true");
+    await click(makeDefault);
+    await click(button(`Move ${NAMES[X1C]} up`));
+    expect(putBodies()).toHaveLength(1);
+
+    await act(async () => parked?.[0]?.());
+    await settle();
+    expect(myPrinters()).toEqual([
+      "Bambu Lab P1S, 0.4 mm nozzle",
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      "Bambu Lab P1S, 0.6 mm nozzle",
+    ]);
+    expect(button(`Make ${NAMES[X1C]} the default`).getAttribute("aria-disabled")).toBe("false");
+    await click(button(`Make ${NAMES[X1C]} the default`));
+    expect(putBodies().at(-1)).toEqual({
+      printers: [P1S, X1C, P1S_06],
+      defaultId: X1C,
+      version: 2,
+    });
+  });
+
+  // PR #240 review, stale-list-put-removes-printer: the controls waiting for
+  // the read after a save only covers this page. A page open in another
+  // window still holds the list it read, and its next change would drop a
+  // printer added in the other window, cancelling its slices with no confirm.
+  test("a change made from a list another window has changed is refused, and the page reads the list again", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    // Another window adds the 0.6 mm P1S; 463 plates are queued for it.
+    state.myPrinters = [P1S, X1C, P1S_06];
+    state.waiting = { [P1S_06]: 463 };
+    state.printersVersion += 1;
+    const move = button(`Move ${NAMES[X1C]} up`);
+    move.focus();
+    await click(move);
+    expect(putBodies()).toEqual([{ printers: [X1C, P1S], defaultId: P1S, version: 1 }]);
+    // Nothing was dropped, and the page now shows the list as stored.
+    expect(state.myPrinters).toEqual([P1S, X1C, P1S_06]);
+    expect(state.waiting[P1S_06]).toBe(463);
+    expect(myPrinters()).toEqual([
+      "Bambu Lab P1S, 0.4 mm nozzle",
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      "Bambu Lab P1S, 0.6 mm nozzle",
+    ]);
+    // The list was read again, so the page says it now shows the change.
+    expect(announced()).toContain(`${PRINTERS_CHANGED} ${REREAD_SHOWS_CHANGE}`);
+    // The controls are back, and the next change is made from the new list.
+    expect(button(`Move ${NAMES[X1C]} up`).getAttribute("aria-disabled")).toBe("false");
+    await click(button(`Move ${NAMES[X1C]} up`));
+    expect(putBodies().at(-1)).toEqual({
+      printers: [X1C, P1S, P1S_06],
+      defaultId: P1S,
+      version: 2,
+    });
+    expect(state.myPrinters).toEqual([X1C, P1S, P1S_06]);
+  });
+
+  // Issue #272: the same when the other window changed only the default. A
+  // save from this page would otherwise put the old default back.
+  test("a change made after another window changed the default is refused, and the default stays", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    // Another window makes the X1C the default; the list is the same.
+    state.printerId = X1C;
+    state.printersVersion += 1;
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C, P1S_06], defaultId: P1S, version: 1 }]);
+    // Nothing changed: the X1C is still the default, and no printer was added.
+    expect(state.printerId).toBe(X1C);
+    expect(state.myPrinters).toEqual([P1S, X1C]);
+    expect(announced()).toContain(`${PRINTERS_CHANGED} ${REREAD_SHOWS_CHANGE}`);
+    // The page shows the new default, and the next save keeps it.
+    const items = [...document.querySelectorAll("[data-my-printer]")];
+    expect(items[1]?.textContent).toContain("Default");
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies().at(-1)).toEqual({
+      printers: [P1S, X1C, P1S_06],
+      defaultId: X1C,
+      version: 2,
+    });
+    expect(state.printerId).toBe(X1C);
+    expect(state.myPrinters).toEqual([P1S, X1C, P1S_06]);
+  });
+
+  test("a refused change whose list cannot be read again keeps the controls locked and says nothing was saved", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    state.myPrinters = [P1S, X1C, P1S_06];
+    state.printersVersion += 1;
+    failing.add("GET /app/api/settings");
+    await click(button(`Move ${NAMES[X1C]} up`));
+    expect(putBodies()).toHaveLength(1);
+    // One message, the page's own: the list on screen is still the old one,
+    // so nothing may claim it now shows the change (#252).
+    expect(announced()).toBe(
+      "My printers or the default printer were changed somewhere else, so nothing was saved, and the list could not be read again, so the buttons wait until it is.Read the list again",
+    );
+    expect(text()).not.toContain(REREAD_SHOWS_CHANGE);
+    expect(text()).not.toContain("The change was saved");
+    await click(button(`Make ${NAMES[X1C]} the default`));
+    expect(putBodies()).toHaveLength(1);
+
+    failing.delete("GET /app/api/settings");
+    await click(button("Read the list again"));
+    expect(myPrinters()).toHaveLength(3);
+    expect(button(`Move ${NAMES[X1C]} up`).getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("a waiting-count read sent before a save that answers after the save's own read is dropped", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      parked = [];
+      // The poll asks while the list is still P1S and X1C...
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+      });
+      expect(parked).toHaveLength(1);
+      // ...then a printer is added, and the read after the save goes out.
+      await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+      await click(button("Add printer"));
+      expect(parked).toHaveLength(2);
+      // The newer read answers first, then the older poll.
+      await act(async () => parked?.[1]?.());
+      await settle();
+      await act(async () => parked?.[0]?.());
+      await settle();
+      expect(myPrinters()).toHaveLength(3);
+      expect(myPrinters()[2]).toBe("Bambu Lab P1S, 0.6 mm nozzle");
+      await click(button(`Move ${NAMES[X1C]} up`));
+      expect(putBodies().at(-1)).toEqual({
+        printers: [X1C, P1S, P1S_06],
+        defaultId: P1S,
+        version: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("when the list cannot be read after a save, the controls stay locked until it is read again", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    failing.add("GET /app/api/settings");
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies()).toHaveLength(1);
+    expect(text()).toContain(
+      "The change was saved, but the list could not be read again, so the buttons wait until it is.",
+    );
+    const makeDefault = button(`Make ${NAMES[X1C]} the default`);
+    expect(makeDefault.getAttribute("aria-disabled")).toBe("true");
+    await click(makeDefault);
+    expect(putBodies()).toHaveLength(1);
+
+    failing.delete("GET /app/api/settings");
+    await click(button("Read the list again"));
+    expect(myPrinters()).toHaveLength(3);
+    expect(button(`Make ${NAMES[X1C]} the default`).getAttribute("aria-disabled")).toBe("false");
+    expect(text()).not.toContain("the list could not be read again");
+  });
+
+  // PR #240 review, eta-ignores-shared-queue: one slicer does every
+  // printer's plates one at a time, so a printer behind another's work
+  // waits for it too. 463 + 463 plates at 3 a minute is 308.7 minutes.
+  test("with two printers' work waiting, the second printer's time counts the plates ahead of it", async () => {
+    state.myPrinters = [P1S, X1C, P1S_06];
+    state.waiting = { [X1C]: 463, [P1S_06]: 463 };
+    await show("/settings", <SettingsPage />);
+    const lines = [...document.querySelectorAll("[data-my-printer]")].map((li) => li.textContent);
+    expect(lines[1]).toContain(
+      "463 plates waiting to be estimated, about 2 hours and 35 minutes left.",
+    );
+    expect(lines[2]).toContain(
+      "463 plates waiting to be estimated, about 5 hours and 9 minutes left, counting 463 other plates and renders queued ahead of them.",
+    );
+  });
+
+  test("a printer added behind another's queued work is told the whole wait", async () => {
+    state.myPrinters = [P1S, X1C];
+    state.waiting = { [X1C]: 463 };
+    await show("/settings", <SettingsPage />);
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+      "Added Bambu Lab P1S, 0.6 mm nozzle. Platehouse is now estimating 463 plates for it, " +
+        "one at a time, at about 3 plates a minute. The slicer has 463 other plates and " +
+        "renders queued ahead of them, so this takes about 5 hours and 9 minutes. Its numbers " +
+        "show on each plate as they land, and the other printers' numbers stay as they are.",
+    );
+  });
+
+  test("how long a printer takes to estimate is said in plain words", () => {
+    expect(howLong(463, 3)).toBe("about 2 hours and 35 minutes");
+    expect(howLong(180, 3)).toBe("about 1 hour");
+    expect(howLong(181, 3)).toBe("about 1 hour and 1 minute");
+    expect(howLong(120, 3)).toBe("about 40 minutes");
+    expect(howLong(1, 3)).toBe("about 1 minute");
+  });
+
+  test("a printer that adds no work says every plate already has its numbers", async () => {
+    state.addQueued = 0;
+    await show("/settings", <SettingsPage />);
+    await choose(labelled<HTMLSelectElement>("Add a printer"), X1C);
+    await click(button("Add printer"));
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+      "Added Bambu Lab X1 Carbon, 0.4 mm nozzle. Every plate already has numbers for it.",
+    );
+  });
+
+  test("moving through the add menu saves nothing until Add printer is pressed", async () => {
+    // On Windows, an arrow key on a focused, closed select changes its value
+    // and fires change at once, so a change alone must not add a printer and
+    // queue hours of slicing.
+    await show("/settings", <SettingsPage />);
+    const select = labelled<HTMLSelectElement>("Add a printer");
     await choose(select, P1S_06);
     await choose(select, X1C);
-    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(0);
+    expect(putBodies()).toHaveLength(0);
     expect(select.value).toBe(X1C);
-
-    // Save with no change from the stored printer sends nothing.
-    await choose(select, P1S);
-    await click(button("Save printer"));
-    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(0);
   });
 
-  test("a printer save that fails goes back to the saved printer and announces the error", async () => {
+  test("make default and moving a printer save the new order and default, and slice nothing", async () => {
+    state.myPrinters = [P1S, X1C];
     await show("/settings", <SettingsPage />);
-    failing.add("PUT /app/api/settings/printer");
-    const select = labelled<HTMLSelectElement>("Printer");
-    await choose(select, X1C);
-    const save = button("Save printer");
-    save.focus();
-    await click(save);
-    expect(select.value).toBe(P1S);
-    expect(announced()).toContain("This is unavailable right now.");
-    expect(focusedNotBody()).toBe(save);
+    await click(button(`Make ${NAMES[X1C]} the default`));
+    expect(putBodies().at(-1)).toEqual({
+      printers: [P1S, X1C],
+      defaultId: X1C,
+      version: 1,
+    });
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle is now the default printer. No slicing was started.",
+    );
+    await click(button(`Move ${NAMES[X1C]} up`));
+    expect(putBodies().at(-1)).toEqual({
+      printers: [X1C, P1S],
+      defaultId: X1C,
+      version: 2,
+    });
+    expect(myPrinters()).toEqual([
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      "Bambu Lab P1S, 0.4 mm nozzle",
+    ]);
+    // Focus follows the printer it moved, so the keyboard user keeps their place.
+    expect(focused()).toBe(button(`Move ${NAMES[X1C]} up`));
+    // The first printer cannot move up and the last cannot move down.
+    expect(button(`Move ${NAMES[X1C]} up`).getAttribute("aria-disabled")).toBe("true");
+    expect(button(`Move ${NAMES[P1S]} down`).getAttribute("aria-disabled")).toBe("true");
+    await click(button(`Move ${NAMES[P1S]} down`));
+    expect(putBodies()).toHaveLength(2);
   });
 
-  test("with the slicer unreachable, the page says so and no label points at a missing control", async () => {
+  test("remove asks first, says the printer's waiting work stops, and the default cannot be removed", async () => {
+    state.myPrinters = [P1S, X1C];
+    state.waiting = { [X1C]: 120 };
+    const confirm = vi.spyOn(window, "confirm");
+    await show("/settings", <SettingsPage />);
+    const removeDefault = button(`Remove ${NAMES[P1S]}`);
+    expect(removeDefault.getAttribute("aria-disabled")).toBe("true");
+    await click(removeDefault);
+    expect(dialog()).toBeNull();
+    expect(text()).toContain("Make another printer the default before removing this one.");
+
+    await click(button(`Remove ${NAMES[X1C]}`));
+    expect(dialog()?.textContent).toContain(
+      "The 120 plates still waiting to be estimated for it are dropped. Numbers already made for it are kept.",
+    );
+    await click(button("Remove", dialog() ?? document.body));
+    expect(putBodies()).toEqual([{ printers: [P1S], defaultId: P1S, version: 1 }]);
+    expect(myPrinters()).toEqual(["Bambu Lab P1S, 0.4 mm nozzle"]);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  test("a save that fails puts the list back and announces the error", async () => {
+    await show("/settings", <SettingsPage />);
+    failing.add("PUT /app/api/settings/printers");
+    await choose(labelled<HTMLSelectElement>("Add a printer"), X1C);
+    const add = button("Add printer");
+    add.focus();
+    await click(add);
+    expect(myPrinters()).toEqual(["Bambu Lab P1S, 0.4 mm nozzle"]);
+    expect(announced()).toContain("This is unavailable right now.");
+    expect(focusedNotBody()).toBe(add);
+  });
+
+  test("while a save runs, the controls ignore input and keep focus", async () => {
+    await show("/settings", <SettingsPage />);
+    const release = hold("PUT /app/api/settings/printers");
+    const select = labelled<HTMLSelectElement>("Add a printer");
+    await choose(select, X1C);
+    const add = button("Add printer");
+    add.focus();
+    await click(add);
+    expect(putBodies()).toHaveLength(1);
+    expect(focused()).toBe(add);
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    expect(select.matches(":disabled")).toBe(false);
+    await click(add);
+    expect(putBodies()).toHaveLength(1);
+    await release();
+    expect(add.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("with the slicer unreachable, My printers still show and adding says why", async () => {
     slicerDown = true;
     await show("/settings", <SettingsPage />);
-    expect(text()).toContain("The slicer cannot be reached");
-    expect(text()).toContain(`The selected printer is ${P1S}.`);
-    const labels = [...document.querySelectorAll("label")];
-    expect(labels.some((l) => l.textContent?.trim() === "Printer")).toBe(false);
-    for (const label of labels) {
+    expect(myPrinters()).toEqual(["Bambu Lab P1S, 0.4 mm nozzle"]);
+    expect(text()).toContain("The slicer cannot be reached, so no printer can be added right now.");
+    for (const label of document.querySelectorAll("label")) {
       const id = label.getAttribute("for");
       if (id !== null) expect(document.getElementById(id), label.textContent ?? "").not.toBeNull();
     }
   });
 
-  test("while a printer save runs, focus stays where it was and a change is ignored", async () => {
+  test("a listed printer the slicer no longer offers says so", async () => {
+    const gone = "Bambu Lab A1 0.4 nozzle";
+    state.myPrinters = [P1S, gone];
     await show("/settings", <SettingsPage />);
-    const release = hold("PUT /app/api/settings/printer");
-    const select = labelled<HTMLSelectElement>("Printer");
-    const save = button("Save printer");
-    await choose(select, X1C);
-    save.focus();
-    await click(save);
-    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(1);
-
-    // Neither control takes the disabled attribute, which would push focus
-    // to the page body; both are marked aria-disabled and ignore input.
-    expect(focused()).toBe(save);
-    expect(save.getAttribute("aria-disabled")).toBe("true");
-    expect(select.matches(":disabled")).toBe(false);
-    expect(select.getAttribute("aria-disabled")).toBe("true");
-    select.focus();
-    await choose(select, P1S_06);
-    expect(focused()).toBe(select);
-    expect(select.value).toBe(X1C);
-    await click(save);
-    expect(callsTo("PUT", "/app/api/settings/printer")).toHaveLength(1);
-
-    await release();
-    expect(select.getAttribute("aria-disabled")).toBe("false");
-    expect(document.querySelector('[role="status"]')?.textContent).toContain(
-      `Re-estimating the library for ${X1C}`,
+    expect(document.querySelectorAll("[data-my-printer]")[1]?.textContent).toContain(
+      "The slicer no longer offers this printer, so nothing can be estimated for it.",
     );
   });
 

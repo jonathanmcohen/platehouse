@@ -98,7 +98,13 @@ import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
 import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
 import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
-import { MAX_UPLOAD_BYTES, registerTus, releaseUnreadBody, type Uploads } from "./uploads/tus.js";
+import {
+  REQUEST_TIMEOUT_MS,
+  registerTus,
+  releaseUnreadBody,
+  SLOW_LINK_BYTES_PER_SECOND,
+  type Uploads,
+} from "./uploads/tus.js";
 import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
 /** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
@@ -110,15 +116,10 @@ export const UPLOAD_PREFIXES = Object.freeze({
 /** How long /healthz waits for the database before it answers 503. */
 export const HEALTH_TIMEOUT_MS = 3_000;
 
-/** The slow link a whole upload must fit through in one request: 1 Mbit/s. */
-export const SLOW_LINK_BYTES_PER_SECOND = 125_000;
-
-/**
- * The HTTP request timeout: a 512 MiB single PATCH at
- * SLOW_LINK_BYTES_PER_SECOND, about 72 minutes. Fastify's own default is no
- * limit at all; this is the upper bound, sized for that one upload.
- */
-export const REQUEST_TIMEOUT_MS = Math.ceil(MAX_UPLOAD_BYTES / SLOW_LINK_BYTES_PER_SECOND) * 1000;
+// The request timeout and the slow link it is sized for live beside the
+// upload cap in uploads/tus.ts; exported from here as well for callers that
+// read them from the app.
+export { REQUEST_TIMEOUT_MS, SLOW_LINK_BYTES_PER_SECOND };
 
 export interface AppHealth {
   /** Resolves when the database answers a query. */
