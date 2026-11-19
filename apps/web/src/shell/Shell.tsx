@@ -2,7 +2,10 @@
 // the left, the top bar (menu, search, Add, theme) above the content, and a
 // skip link to the main landmark. It holds the theme: initialTheme is what
 // the server wrote into the html element, and a change is applied to the
-// document (cookie, data-theme, color-scheme) at once, with no reload.
+// document (cookie, data-theme, color-scheme) at once, with no reload. It
+// also holds the accent scheme (Jon, 2026-11-19), started from the html
+// element's data-accent and shared with the Settings picker through
+// AccentContext; the picker applies a change the same way.
 // Following a link in the narrow-screen menu puts focus on the main
 // landmark, as the skip link does, so a keyboard user starts in the new
 // section. So does any other client-side change of page (issue #187): a
@@ -16,19 +19,33 @@
 // search leaves there on purpose (TopBar).
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigationType } from "react-router";
+import { AccentProvider, documentAccent } from "./AccentContext";
+import type { AccentId } from "./accent";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { applyTheme, DEFAULT_THEME, type Theme } from "./theme";
 
 export interface ShellProps {
   initialTheme?: Theme;
+  /**
+   * The accent scheme to start from (Jon, 2026-11-19); left out, the one the
+   * server wrote into the html element's data-accent. The Shell shares it
+   * with the Settings picker (AccentContext).
+   */
+  initialAccent?: AccentId;
   /** The upload dialog's opener (Task 19); Add is disabled without it. */
   onAdd?: () => void;
   children?: ReactNode;
 }
 
-export function Shell({ initialTheme = DEFAULT_THEME, onAdd, children }: ShellProps) {
+export function Shell({
+  initialTheme = DEFAULT_THEME,
+  initialAccent,
+  onAdd,
+  children,
+}: ShellProps) {
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [startAccent] = useState<AccentId>(() => initialAccent ?? documentAccent());
   const main = useRef<HTMLElement>(null);
   const { pathname } = useLocation();
   const navigationType = useNavigationType();
@@ -49,7 +66,7 @@ export function Shell({ initialTheme = DEFAULT_THEME, onAdd, children }: ShellPr
   }
 
   return (
-    <>
+    <AccentProvider initial={startAccent}>
       <a className="studio-skip" href="#ph-content">
         Skip to content
       </a>
@@ -67,6 +84,6 @@ export function Shell({ initialTheme = DEFAULT_THEME, onAdd, children }: ShellPr
           </main>
         </div>
       </div>
-    </>
+    </AccentProvider>
   );
 }

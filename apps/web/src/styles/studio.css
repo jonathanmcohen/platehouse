@@ -12,9 +12,18 @@
  * prefers-color-scheme. The theme switch changes the attribute and the
  * cookie together, with no reload.
  *
+ * Accent schemes (Jon, 2026-11-19): the html element also carries
+ * data-accent, one of twelve scheme ids, written by the server from the
+ * ph_accent cookie the same way. Each scheme is a [data-accent] block of
+ * --scheme-* colours below the palettes; the palettes map them onto the
+ * accent tokens (--accent, --accent-text, --accent-soft, --brand, --focus,
+ * and --chip-active-bg in dark). The picker changes the attribute and the
+ * cookie together, with no reload.
+ *
  * Every text/background pair below is checked for WCAG AA (4.5:1) by
- * test/stylesheet.test.ts. Keep the palette blocks as plain #rrggbb
- * declarations so that test can read them.
+ * test/stylesheet.test.ts, and every scheme's pairs in every theme by
+ * test/accent-palette.test.ts. Keep the palette and scheme blocks as plain
+ * #rrggbb declarations or var(--scheme-*) so those tests can read them.
  */
 
 /* Dark is the default palette, and what System uses unless the OS asks
@@ -27,18 +36,20 @@
   --border: #262a32;
   --text: #e6e7ea;
   --muted: #8f949d;
-  --accent: #00ae42;
-  --accent-text: #33d17a;
-  --accent-soft: #173027;
+  --accent: var(--scheme-dark-accent);
+  --accent-text: var(--scheme-dark-text);
+  --accent-soft: var(--scheme-dark-soft);
+  --brand: var(--scheme-dark-accent);
   --on-accent: #0b0d10;
   --chip-text: #c7cad1;
-  --chip-active-bg: #00ae42;
+  --chip-active-bg: var(--scheme-dark-accent);
   --chip-active-text: #0b0d10;
-  --focus: #33d17a;
+  --focus: var(--scheme-dark-text);
   --danger: #ff7b72;
   color-scheme: dark;
 }
 
+/* In light the accent fill sits behind white text. */
 [data-theme="light"] {
   --bg: #f6f7f9;
   --surface: #ffffff;
@@ -46,16 +57,181 @@
   --border: #eceef2;
   --text: #111111;
   --muted: #5f6570;
-  --accent: #00ae42;
-  --accent-text: #007a2f;
-  --accent-soft: #e7f7ed;
-  --on-accent: #0b0d10;
+  --accent: var(--scheme-light-accent);
+  --accent-text: var(--scheme-light-text);
+  --accent-soft: var(--scheme-light-soft);
+  --brand: var(--scheme-light-brand);
+  --on-accent: #ffffff;
   --chip-text: #3a3f47;
   --chip-active-bg: #111111;
   --chip-active-text: #ffffff;
-  --focus: #007a2f;
+  --focus: var(--scheme-light-text);
   --danger: #c62828;
   color-scheme: light;
+}
+
+/* ---- Accent schemes ----
+   Each block gives its scheme's colours for both themes; the palettes pick
+   the theme's. :root carries the default's colours too, for a page served
+   without the server (vite dev), which writes no data-accent. It is
+   :where(:root), which has no specificity, so any [data-accent] block wins
+   over it wherever the two sit in this file; a plain :root on the default's
+   block would beat every scheme listed before it. The values, and where
+   each comes from, are in src/shell/accent.ts. */
+
+/* Green */
+[data-accent="bambu-green"] {
+  --scheme-light-accent: #00873a;
+  --scheme-light-text: #007a2f;
+  --scheme-light-soft: #e7f7ed;
+  --scheme-light-brand: #00ae42;
+  --scheme-dark-accent: #00ae42;
+  --scheme-dark-text: #33d17a;
+  --scheme-dark-soft: #173027;
+}
+
+/* Workshop green */
+[data-accent="workshop-green"] {
+  --scheme-light-accent: #1f7a52;
+  --scheme-light-text: #1f7a52;
+  --scheme-light-soft: #e6f5ee;
+  --scheme-light-brand: #2f9e6e;
+  --scheme-dark-accent: #2f9e6e;
+  --scheme-dark-text: #5fd3a0;
+  --scheme-dark-soft: #1d2e2d;
+}
+
+/* Filament orange */
+[data-accent="filament-orange"] {
+  --scheme-light-accent: #c4510e;
+  --scheme-light-text: #b2490c;
+  --scheme-light-soft: #fdeee4;
+  --scheme-light-brand: #f26b1d;
+  --scheme-dark-accent: #f26b1d;
+  --scheme-dark-text: #ff8f4f;
+  --scheme-dark-soft: #362722;
+}
+
+/* Spool teal */
+[data-accent="spool-teal"] {
+  --scheme-light-accent: #0b7f7f;
+  --scheme-light-text: #0a7272;
+  --scheme-light-soft: #e3f5f5;
+  --scheme-light-brand: #11a3a3;
+  --scheme-dark-accent: #11a3a3;
+  --scheme-dark-text: #3fd0cf;
+  --scheme-dark-soft: #192e34;
+}
+
+/* Blueprint indigo, the default (Jon, 2026-11-19) */
+:where(:root),
+[data-accent="blueprint-indigo"] {
+  --scheme-light-accent: #3d47c4;
+  --scheme-light-text: #3d47c4;
+  --scheme-light-soft: #eceefe;
+  --scheme-light-brand: #5560e0;
+  --scheme-dark-accent: #596eec;
+  --scheme-dark-text: #9aa2ff;
+  --scheme-dark-soft: #22263c;
+}
+
+/* PLA violet */
+[data-accent="pla-violet"] {
+  --scheme-light-accent: #6d3fe0;
+  --scheme-light-text: #6d3fe0;
+  --scheme-light-soft: #f1ecfe;
+  --scheme-light-brand: #8b5cf6;
+  --scheme-dark-accent: #8b5cf6;
+  --scheme-dark-text: #b69cff;
+  --scheme-dark-soft: #29253e;
+}
+
+/* Coral */
+[data-accent="coral"] {
+  --scheme-light-accent: #b25b46;
+  --scheme-light-text: #973d23;
+  --scheme-light-soft: #fdebe7;
+  --scheme-light-brand: #f0644a;
+  --scheme-dark-accent: #f15b3f;
+  --scheme-dark-text: #ffa38a;
+  --scheme-dark-soft: #362628;
+}
+
+/* Amber */
+[data-accent="amber"] {
+  --scheme-light-accent: #8f6200;
+  --scheme-light-text: #875c00;
+  --scheme-light-soft: #fdf3dc;
+  --scheme-light-brand: #e6a100;
+  --scheme-dark-accent: #e6a100;
+  --scheme-dark-text: #f5c04a;
+  --scheme-dark-soft: #352e1e;
+}
+
+/* Sky blue */
+[data-accent="sky-blue"] {
+  --scheme-light-accent: #1170a8;
+  --scheme-light-text: #0f66a0;
+  --scheme-light-soft: #e4f2fb;
+  --scheme-light-brand: #1e93d6;
+  --scheme-dark-accent: #1e93d6;
+  --scheme-dark-text: #5cbcf2;
+  --scheme-dark-soft: #1b2c3a;
+}
+
+/* Magenta */
+[data-accent="magenta"] {
+  --scheme-light-accent: #b02a82;
+  --scheme-light-text: #a8287c;
+  --scheme-light-soft: #fbe8f4;
+  --scheme-light-brand: #d6409f;
+  --scheme-dark-accent: #d6409f;
+  --scheme-dark-text: #f07cc6;
+  --scheme-dark-soft: #322233;
+}
+
+/* Graphite */
+[data-accent="graphite"] {
+  --scheme-light-accent: #4b5260;
+  --scheme-light-text: #4b5260;
+  --scheme-light-soft: #eef0f3;
+  --scheme-light-brand: #6b7380;
+  --scheme-dark-accent: #747a86;
+  --scheme-dark-text: #aab1bd;
+  --scheme-dark-soft: #25282f;
+}
+
+/* Lime */
+[data-accent="lime"] {
+  --scheme-light-accent: #4a7d0c;
+  --scheme-light-text: #457509;
+  --scheme-light-soft: #eef8e0;
+  --scheme-light-brand: #7cc51a;
+  --scheme-dark-accent: #7cc51a;
+  --scheme-dark-text: #a6e255;
+  --scheme-dark-soft: #273322;
+}
+
+/* An element inside the page with its own data-accent (a swatch in the
+   picker) gets that scheme's tokens in the current theme. System's light
+   rule is in the prefers-color-scheme block below, which must come after
+   these so it wins when the OS asks for light. */
+[data-theme="dark"] [data-accent],
+[data-theme="system"] [data-accent] {
+  --accent: var(--scheme-dark-accent);
+  --accent-text: var(--scheme-dark-text);
+  --accent-soft: var(--scheme-dark-soft);
+  --brand: var(--scheme-dark-accent);
+  --chip-active-bg: var(--scheme-dark-accent);
+  --focus: var(--scheme-dark-text);
+}
+
+[data-theme="light"] [data-accent] {
+  --accent: var(--scheme-light-accent);
+  --accent-text: var(--scheme-light-text);
+  --accent-soft: var(--scheme-light-soft);
+  --brand: var(--scheme-light-brand);
+  --focus: var(--scheme-light-text);
 }
 
 /* A copy of the light palette, for System when the OS asks for light. */
@@ -67,16 +243,31 @@
     --border: #eceef2;
     --text: #111111;
     --muted: #5f6570;
-    --accent: #00ae42;
-    --accent-text: #007a2f;
-    --accent-soft: #e7f7ed;
-    --on-accent: #0b0d10;
+    --accent: var(--scheme-light-accent);
+    --accent-text: var(--scheme-light-text);
+    --accent-soft: var(--scheme-light-soft);
+    --brand: var(--scheme-light-brand);
+    --on-accent: #ffffff;
     --chip-text: #3a3f47;
     --chip-active-bg: #111111;
     --chip-active-text: #ffffff;
-    --focus: #007a2f;
+    --focus: var(--scheme-light-text);
     --danger: #c62828;
     color-scheme: light;
+  }
+
+  [data-theme="system"] [data-accent] {
+    --accent: var(--scheme-light-accent);
+    --accent-text: var(--scheme-light-text);
+    --accent-soft: var(--scheme-light-soft);
+    --brand: var(--scheme-light-brand);
+    --focus: var(--scheme-light-text);
+  }
+
+  /* White text on the fill: hover darkens, as in light, so it never loses
+     contrast. Enabled buttons only, as in light. */
+  [data-theme="system"] .studio-button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+    filter: brightness(0.92);
   }
 }
 
@@ -219,11 +410,12 @@ img {
   font-size: 1.05rem;
 }
 
+/* The logo: the scheme's own accent colour (Jon's "accent"). */
 .studio-brand-dot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--brand);
 }
 
 .studio-nav-list {
@@ -328,6 +520,15 @@ img {
 .studio-button-primary:hover {
   background: var(--accent);
   filter: brightness(1.08);
+}
+
+/* In light the fill is behind white text, so hover darkens it rather than
+   lightening it, and never loses contrast. (System's copy is in its
+   prefers-color-scheme block.) Enabled buttons only: this selector outranks
+   .studio-button:disabled and .studio-button[aria-disabled="true"], so
+   without the :not()s a disabled button would darken on hover in light. */
+[data-theme="light"] .studio-button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+  filter: brightness(0.92);
 }
 
 /* A button that cannot be used yet (Add, until the upload dialog of Task
@@ -748,6 +949,96 @@ a.studio-card:hover {
 .studio-dl dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* ---- Settings: the Accent colour picker (Jon, 2026-11-19) ----
+   Twelve radios in a grid, each a colour dot and the scheme's name. The
+   checked one has a thicker accent edge, bold name and a tick on its dot, so
+   it is told apart by more than colour. The dot carries its scheme's
+   data-accent, so it shows that scheme's fill in the current theme. Focus
+   uses the global :focus-visible ring. */
+
+.ph-accent-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.ph-accent-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ph-accent-option:hover {
+  background: var(--raised);
+}
+
+.ph-accent-option[aria-checked="true"] {
+  border-color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+  font-weight: 600;
+}
+
+.ph-accent-swatch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.ph-accent-option[aria-checked="true"] .ph-accent-swatch::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 4px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.ph-accent-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ph-accent-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.ph-accent-preview .studio-button {
+  cursor: default;
+}
+
+.ph-accent-preview-link {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+
+.ph-accent-preview-progress {
+  width: 120px;
+  accent-color: var(--accent);
 }
 
 /* ---- Narrow screens: below 900 px the sidebar folds behind the menu
