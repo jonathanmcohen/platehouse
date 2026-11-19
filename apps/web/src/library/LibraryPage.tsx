@@ -156,6 +156,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const selectButton = useRef<HTMLButtonElement>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [tags, setTags] = useState<string[]>([]);
+  /** Bumped after a bulk action, which can change which tags live models carry. */
+  const [tagsKey, setTagsKey] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const generation = useRef(0);
   /** The current load's controller, so a View all retry is cancelled with it. */
@@ -289,7 +291,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     return () => controller.abort();
   }, [query, page, viewAll, loadRest, refreshKey, attempt]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey only triggers a reload.
+  // The library's tags, again on a refresh or after a bulk action (tagsKey),
+  // since adding, removing or trashing changes which tags live models carry:
+  // the tag filter, Remove tag and Add tags all read this list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and tagsKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
     getJson<{ tags: string[] }>("/app/api/library/tags", controller.signal)
@@ -298,7 +303,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         // The filter is a convenience: without it the grid still works.
       });
     return () => controller.abort();
-  }, [refreshKey]);
+  }, [refreshKey, tagsKey]);
 
   // Focus follows a pager link to the new page's count, once it is in.
   useEffect(() => {
@@ -391,7 +396,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           matching={matching()}
           tags={tags}
           onChange={setSelected}
-          onChanged={() => setAttempt((n) => n + 1)}
+          onChanged={() => {
+            setAttempt((n) => n + 1);
+            setTagsKey((n) => n + 1);
+          }}
           onDialog={setDialogOpen}
         />
       ) : null}

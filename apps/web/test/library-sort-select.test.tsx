@@ -23,7 +23,9 @@
 // - With models selected: Add tags (type or pick), Remove tag, Add to
 //   collection (existing or new) and Move to trash (the app's own confirm
 //   dialog, with the count). Each is one request with the selected ids; the
-//   result is shown, failures name the models and why, and the grid reloads.
+//   result is shown, failures name the models and why, and the grid and the
+//   library's tags (the tag filter, Remove tag's choices and Add tags'
+//   suggestions) reload.
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -68,6 +70,8 @@ let root: Root;
 let requests: string[];
 let posted: Posted[];
 let matchCap: number;
+/** The tag names /app/api/library/tags answers with, as live models carry them. */
+let serverTags: string[];
 /** What each bulk route answers; by default every id changed. */
 let bulkAnswer: (url: string, body: Record<string, unknown>) => Response;
 let location = "";
@@ -85,7 +89,7 @@ function stubServer(all: LibraryCard[]) {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "https://platehouse.test");
       requests.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
-      if (url.pathname === "/app/api/library/tags") return json({ tags: ["Desk", "PLA"] });
+      if (url.pathname === "/app/api/library/tags") return json({ tags: serverTags });
       if (url.pathname === "/app/api/collections") {
         return json({ collections: [{ name: "Shelf", models: 3 }] });
       }
@@ -253,6 +257,7 @@ beforeEach(() => {
   requests = [];
   posted = [];
   matchCap = 1000;
+  serverTags = ["Desk", "PLA"];
   bulkAnswer = (_url, body) =>
     json({
       changed: body.ids,
@@ -533,6 +538,53 @@ describe("bulk actions", () => {
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain("Added PLA and Kitchen to 2 models.");
     expect(libraryQueries().length).toBeGreaterThan(before);
+  });
+
+  test("after Add tags the new tag is in the tag filter, Remove tag and Add tags without a reload", async () => {
+    serverTags = [];
+    await twoSelected();
+    await click(button("Remove tag"));
+    expect(dialog()?.textContent).toContain("No model has a tag yet.");
+    await click(dialogButton("Cancel"));
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "PLA");
+    await submit(input.form);
+    bulkAnswer = (_url, body) => {
+      serverTags = ["PLA"];
+      return json({ changed: body.ids, unchanged: [], failed: [], tags: body.tags });
+    };
+    await click(dialogButton("Add tags"));
+    expect(
+      [...container.querySelectorAll('nav[aria-label="Filter by tag"] a')].map(
+        (a) => a.textContent,
+      ),
+    ).toContain("PLA");
+    await click(button("Remove tag"));
+    const menu = dialog()?.querySelector("select") as HTMLSelectElement;
+    expect([...menu.options].map((o) => o.value)).toEqual(["PLA"]);
+    await click(dialogButton("Cancel"));
+    await click(button("Add tags"));
+    const again = dialog()?.querySelector("input") as HTMLInputElement;
+    const list = document.getElementById(again.getAttribute("list") ?? "");
+    expect([...(list?.querySelectorAll("option") ?? [])].map((o) => o.value)).toEqual(["PLA"]);
+  });
+
+  test("after Move to trash takes the last model with a tag, its chip goes", async () => {
+    serverTags = ["PLA"];
+    await twoSelected(5, 2);
+    const chips = () =>
+      [...container.querySelectorAll('nav[aria-label="Filter by tag"] a')].map(
+        (a) => a.textContent,
+      );
+    expect(chips()).toContain("PLA");
+    bulkAnswer = (_url, body) => {
+      serverTags = [];
+      return json({ changed: body.ids, unchanged: [], failed: [] });
+    };
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(chips()).not.toContain("PLA");
   });
 
   test("Add tags with no tag in the list sends nothing", async () => {
