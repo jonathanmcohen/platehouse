@@ -467,6 +467,10 @@ describe("fileNameFor (issue #226)", () => {
     ["photo.png", "f1.png", "photo", "photo.png"],
     [null, "photo.png", "photo", "photo.png"],
     ["photo.png", "f1", "photo", "photo.png"],
+    ["Notes.PDF", "f1.pdf", "Notes", "Notes.PDF"],
+    // contentUrl's extension is the file's real one: it wins over another.
+    ["readme.txt", "f1.pdf", "readme", "f1.pdf"],
+    ["Bracket v1.2", "f1.png", "Bracket v1.2", "f1.png"],
   ])("filename %j, contentUrl part %j, display %j: %j", (filename, part, display, name) => {
     expect(fileNameFor({ filename, contentUrl: `${BASE}${part}`, displayName: display })).toEqual({
       name,
@@ -488,6 +492,14 @@ describe("fileNameFor (issue #226)", () => {
       "Wall Mount",
       "Wall Mount",
       'the filename "Wall Mount" has none, and the last part of its contentUrl, "f1", has none',
+    ],
+    // A trailing number is not a file type: no letter in it.
+    [
+      "Bracket v1.2",
+      "f1",
+      "Bracket v1.2",
+      "Bracket v1.2",
+      'the filename "Bracket v1.2" has none, and the last part of its contentUrl, "f1", has none',
     ],
     [
       "Switch 2.5g 5 Port Mount",

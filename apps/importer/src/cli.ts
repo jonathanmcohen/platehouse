@@ -42,9 +42,9 @@
 //
 // Exit codes: 0 every model handled, 1 at least one model failed, 2 the run
 // could not start (arguments, a missing or bad address, credentials, either
-// side refusing the token or
-// unreachable, Manyfold granting more than read, Manyfold's lists
-// unreadable), or an error was raised outside run() (onFatal). The credentials come only from
+// side refusing the token or unreachable, Manyfold granting more than read,
+// Manyfold's lists unreadable), or an error was raised outside run()
+// (onFatal). The credentials come only from
 // the environment and are never printed: every line goes through one
 // redactor that knows them, the Manyfold token and each signed query (AC-003).
 import { createHash } from "node:crypto";

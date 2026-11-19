@@ -115,8 +115,12 @@ function extensionOf(name: string): string {
  */
 export const MAX_UPLOAD_BYTES = 536_870_912;
 
-/** An extension as a file type is written: letters and digits, no space. */
-const TYPE_LIKE = /^[a-z0-9]{1,10}$/;
+/**
+ * An extension as a file type is written: letters and digits, at least one
+ * letter, no space. So a dot inside a display name ("Bracket v1.2", "Flex 2.5g
+ * 5 Port") is not read as one; a short tail such as "2.5g" still is.
+ */
+const TYPE_LIKE = /^(?=[0-9]*[a-z])[a-z0-9]{1,10}$/;
 
 /**
  * The last part of a URL's path, decoded, or null when there is none or it
@@ -138,11 +142,13 @@ export function lastPathPart(link: string): string | null {
 /**
  * A Manyfold file's name (issue #226): filename when it has an extension
  * Platehouse takes; else the last part of contentUrl's path when that has
- * one; else whichever of the two has an extension written as a file type,
- * so a type Platehouse does not take is skipped with its reason as before;
- * else no name, with the reason, and the label the report shows for it.
- * Manyfold's display name is never the file name: it has no extension, and
- * a dot inside it ("Switch 2.5g") would read as one.
+ * one. Else, for a type Platehouse does not take, which the plan skips with
+ * its reason as before: contentUrl's extension when it is written as a file
+ * type (Manyfold builds contentUrl from the file's real extension), under
+ * filename when filename has the same one; else filename's. Else no name,
+ * with the reason, and the label the report shows for it. Manyfold's
+ * display name is never the file name: it has no extension, and a dot
+ * inside it ("Switch 2.5g") would read as one.
  */
 export function fileNameFor(file: {
   filename: string | null;
@@ -154,8 +160,13 @@ export function fileNameFor(file: {
   for (const name of [filename, part]) {
     if (name !== null && importable(name)) return { name, problem: null };
   }
-  for (const name of [filename, part]) {
-    if (name !== null && TYPE_LIKE.test(extensionOf(name))) return { name, problem: null };
+  const partType = part === null ? "" : extensionOf(part);
+  if (part !== null && TYPE_LIKE.test(partType)) {
+    const same = filename !== null && extensionOf(filename) === partType;
+    return { name: same ? filename : part, problem: null };
+  }
+  if (filename !== null && TYPE_LIKE.test(extensionOf(filename))) {
+    return { name: filename, problem: null };
   }
   const fromFilename =
     filename === null ? "Manyfold sends no filename" : `the filename "${shown(filename)}" has none`;
