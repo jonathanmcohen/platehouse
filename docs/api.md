@@ -239,7 +239,7 @@ on with `HEAD <address>`, whose `Upload-Offset` header is the number of bytes Pl
 send the rest from there. Nothing is imported until the last byte has arrived.
 
 Chunks can be any size. A few MiB each is a good balance between the number of requests and how
-much a cut-off costs.
+much a cut-off costs. The [upload script](#upload-a-file) below does all of this.
 
 After the import, `HEAD` answers with `Upload-Offset` equal to `Upload-Length`, so a client that
 retries never sends the file twice. If the import failed with nothing saved, `HEAD` answers `410`
@@ -295,43 +295,145 @@ time, weight and filaments for the printer chosen in Settings.
 
 ### Upload a file
 
-Save these steps as a script and run it with `sh`, so that a step that fails stops the rest.
+The script below does the three upload steps, sends the file in chunks and resumes after a
+cut-off. Save it as `platehouse-upload.sh` and run it with `sh`. It is a script rather than
+lines to paste because it ends with `exit` when it stops, which would close your terminal if
+the lines ran there. It is written for POSIX `sh` (dash, ash, ksh, or bash and zsh run as `sh`)
+and needs `curl`, `base64`, `tail`, `head` and `mktemp`.
 
 ```sh
-FILE=cable-clip.3mf
-SIZE=$(wc -c < "$FILE" | tr -d ' ')
-NAME=$(printf '%s' "$FILE" | base64 | tr -d '\n')
+#!/bin/sh
+# platehouse-upload.sh: upload one file to Platehouse with the tus protocol.
+# Written for POSIX sh (dash, ash, ksh, or bash and zsh run as sh); it needs
+# curl, base64, tail, head and mktemp.
+#
+#   sh platehouse-upload.sh cable-clip.3mf
+#
+# PLATEHOUSE and PLATEHOUSE_TOKEN come from the environment. Set MODEL_ID to
+# add the file to that model instead of making a new one, and CHUNK to
+# change how many bytes each request sends (8 MiB by default; set it to the
+# file's size to send the whole file in one request).
+set -eu
 
-# 1. Start the upload; keep the address it answers in Location.
-START=$(curl -sS -o /dev/null -D - -X POST "$PLATEHOUSE/api/v1/uploads" \
-  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
-  -H "Tus-Resumable: 1.0.0" \
-  -H "Upload-Length: $SIZE" \
-  -H "Upload-Metadata: filename $NAME" \
-  | tr -d '\r')
-LOCATION=$(printf '%s\n' "$START" | awk 'tolower($1) == "location:" { print $2 }')
-# No Location means it did not start: a bad token (401), a file type it does
-# not take (415) or a file that is too big (413). Stop and show the answer.
-if [ -z "$LOCATION" ]; then
-  echo "The upload did not start: $(printf '%s\n' "$START" | head -n 1)" >&2
+FILE=${1:?usage: sh platehouse-upload.sh FILE}
+CHUNK=${CHUNK:-8388608}
+TRIES=60
+SIZE=$(wc -c <"$FILE" | tr -d ' ')
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+FAILED=0
+
+# The last header block's status line and Location (a 100 Continue comes first).
+status_line() { tr -d '\r' <"$TMP/headers" | awk '/^HTTP\// { line = $0 } END { print line }'; }
+header() { tr -d '\r' <"$TMP/headers" | awk -v name="$1:" 'tolower($1) == name { value = $2 } END { print value }'; }
+
+# Stops the script with the answer that will not get better by asking again.
+# (Not named stop: ksh has a stop alias for kill -s STOP.)
+give_up() {
+  echo "Stopping: $(status_line)" >&2
+  location=$(header location)
+  if [ -n "$location" ]; then echo "Location: $location" >&2; fi
+  case $STATUS in
+    3??) echo "Hint: a redirect. Use the https:// address in PLATEHOUSE, or a proxy is redirecting API calls (to a login page?) and must let /api/v1/ through." >&2 ;;
+    413) echo "Hint: a proxy in front of Platehouse refused the body size. Raise its limit (for nginx, client_max_body_size) or set CHUNK smaller." >&2 ;;
+  esac
   exit 1
+}
+
+# call EXPECTED METHOD URL [curl options]: one request, with the answer's
+# headers in $TMP/headers, its body in $TMP/body and its status in STATUS.
+# Returns 0 on the EXPECTED status. On no answer, 409 or a 5xx it waits 5
+# seconds and returns 1, so the caller asks again (a PATCH asks HEAD for the
+# offset first); after TRIES of those in a row it stops. Anything else stops.
+call() {
+  expected=$1 method=$2 url=$3
+  shift 3
+  if [ "$method" = HEAD ]; then verb=--head; else verb="-X $method"; fi
+  : >"$TMP/headers"
+  : >"$TMP/body"
+  # No -L: a redirect is reported, not followed. $verb is split on purpose.
+  # shellcheck disable=SC2086
+  if STATUS=$(curl -sS $verb -o "$TMP/body" -D "$TMP/headers" -w '%{http_code}' "$url" \
+    -H "Authorization: Bearer $PLATEHOUSE_TOKEN" -H "Tus-Resumable: 1.0.0" "$@"); then
+    :
+  elif [ "$STATUS" = "$expected" ]; then
+    STATUS=000 # the answer started but was cut off: treat it as no answer
+  fi
+  # Only a 100 Continue before the connection dropped is not an answer either.
+  case ${STATUS:-000} in 1??) STATUS=000 ;; esac
+  case ${STATUS:-000} in
+    "$expected") FAILED=0; return 0 ;;
+    000 | 409 | 5??) ;;
+    *) give_up ;;
+  esac
+  FAILED=$((FAILED + 1))
+  if [ "${STATUS:-000}" = 000 ]; then why="no answer"; else why=$STATUS; fi
+  if [ "$FAILED" -gt "$TRIES" ]; then echo "Stopping: $why again after $TRIES retries." >&2; exit 1; fi
+  echo "retrying after $why ($FAILED/$TRIES)" >&2
+  sleep 5
+  return 1
+}
+
+# 1. Start the upload; its address is the answer's Location.
+METADATA="filename $(printf '%s' "${FILE##*/}" | base64 | tr -d '\n')"
+if [ -n "${MODEL_ID:-}" ]; then
+  METADATA="$METADATA,modelId $(printf '%s' "$MODEL_ID" | base64 | tr -d '\n')"
 fi
+until call 201 POST "$PLATEHOUSE/api/v1/uploads" \
+  -H "Upload-Length: $SIZE" -H "Upload-Metadata: $METADATA"; do :; done
+UPLOAD="$PLATEHOUSE$(header location)"
+echo "Started: $UPLOAD" >&2
 
-# 2. Send the whole file.
-curl -sS -X PATCH "$PLATEHOUSE$LOCATION" \
-  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
-  -H "Tus-Resumable: 1.0.0" \
-  -H "Upload-Offset: 0" \
-  -H "Content-Type: application/offset+octet-stream" \
-  --data-binary @"$FILE"
+# 2. Send the bytes, a chunk at a time, each from the offset Platehouse has.
+while :; do
+  call 200 HEAD "$UPLOAD" || continue
+  OFFSET=$(header upload-offset)
+  if [ -z "$OFFSET" ]; then echo "Stopping: $(status_line) with no Upload-Offset" >&2; exit 1; fi
+  [ "$OFFSET" -lt "$SIZE" ] || break
+  tail -c +"$((OFFSET + 1))" "$FILE" | head -c "$CHUNK" >"$TMP/chunk"
+  call 204 PATCH "$UPLOAD" -H "Upload-Offset: $OFFSET" \
+    -H "Content-Type: application/offset+octet-stream" --data-binary @"$TMP/chunk" || continue
+  echo "Sent $(header upload-offset) of $SIZE bytes" >&2
+done
 
-# 3. Ask what became of it; repeat while it says pending.
-curl -sS "$PLATEHOUSE$LOCATION/result" \
-  -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
+# 3. Wait for the import and print its result.
+while :; do
+  call 200 GET "$UPLOAD/result" || continue
+  case $(cat "$TMP/body") in
+    *'"status":"pending"'*) sleep 2 ;;
+    *'"status":"done"'*) cat "$TMP/body"; echo; exit 0 ;;
+    *) cat "$TMP/body"; echo; exit 1 ;;
+  esac
+done
 ```
 
-When it is done, the result names the model and the file, and lists any copies of the same file
-the library already held (see [Duplicates](#duplicates)):
+Run it with the two variables from [Tokens](#tokens) exported:
+
+```sh
+sh platehouse-upload.sh cable-clip.3mf
+```
+
+Every request goes through `call`, which reads the answer's status and does one of three
+things:
+
+| Answer                                                                        | What the script does                                                                                                                                                               |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The one it wants: 201 to start, 200 to HEAD, 204 to PATCH, 200 for the result | Carries on.                                                                                                                                                                        |
+| No answer, `409` or a `5xx`                                                   | Prints `retrying after 502 (1/60)` (or `no answer`), waits 5 seconds and asks again; a failed PATCH asks HEAD for the offset first. It stops after 60 of these in a row.           |
+| Anything else                                                                 | Stops and prints the status line and any `Location`: a redirect, `401`, `403`, `404` or `410` (the upload is gone), `412`, `413`, `415`. A redirect and a `413` get a hint, below. |
+
+Two of those usually come from a proxy in front of Platehouse rather than from Platehouse:
+
+- **A redirect** (`301`, `302`, `307`, `308`): `PLATEHOUSE` starts with `http://` and the proxy
+  sends it to `https://`, so use the `https://` address; or the proxy sends API calls to a login
+  page, so let `/api/v1/` through without one (see
+  [Running Platehouse behind a proxy](#running-platehouse-behind-a-proxy)). The script never
+  follows a redirect, since a login page would answer a `200` it could mistake for success.
+- **`413`**: the proxy limits the size of a request body below the chunk size. Raise its limit
+  (for nginx, `client_max_body_size`), or set `CHUNK` smaller, for example `CHUNK=1000000`.
+
+When it is done, the script prints the result, which names the model and the file and lists any
+copies of the same file the library already held (see [Duplicates](#duplicates)):
 
 ```json
 {
@@ -342,45 +444,11 @@ the library already held (see [Duplicates](#duplicates)):
 }
 ```
 
-To add the file to a model you already have, put the model's id, in base64, in the metadata of
-step 1:
+A `failed` result is printed the same way, and the script exits with 1. To add the file to a model
+you already have, give its id:
 
 ```sh
-MODEL=$(printf '%s' 0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f | base64 | tr -d '\n')
-# then, in step 1:  -H "Upload-Metadata: filename $NAME,modelId $MODEL"
-```
-
-To send the same file in 8 MiB chunks, resuming after a dropped connection or a passing error,
-replace step 2 with:
-
-```sh
-CHUNK=$((8 * 1024 * 1024))
-while :; do
-  HEAD=$(curl -sS -I "$PLATEHOUSE$LOCATION" \
-    -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
-    -H "Tus-Resumable: 1.0.0" | tr -d '\r')
-  STATUS=$(printf '%s\n' "$HEAD" | awk 'NR == 1 { print $2 }')
-  OFFSET=$(printf '%s\n' "$HEAD" | awk 'tolower($1) == "upload-offset:" { print $2 }')
-  case "$STATUS" in
-    200) ;;
-    '' | 5??) sleep 5; continue ;; # no answer, or a passing error such as 503: ask again
-    404 | 410) echo "The upload is gone; start again." >&2; exit 1 ;;
-    *) echo "Platehouse answered $STATUS; stopping." >&2; exit 1 ;; # 401, 403, 412: asking again will not help
-  esac
-  if [ -z "$OFFSET" ]; then
-    echo "Platehouse sent no Upload-Offset; stopping." >&2
-    exit 1
-  fi
-  [ "$OFFSET" -lt "$SIZE" ] || break
-  tail -c +"$((OFFSET + 1))" "$FILE" | head -c "$CHUNK" \
-    | curl -sS -f -o /dev/null -X PATCH "$PLATEHOUSE$LOCATION" \
-        -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
-        -H "Tus-Resumable: 1.0.0" \
-        -H "Upload-Offset: $OFFSET" \
-        -H "Content-Type: application/offset+octet-stream" \
-        --data-binary @- \
-    || sleep 5
-done
+MODEL_ID=0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f sh platehouse-upload.sh cable-clip.3mf
 ```
 
 ### Add a tag
