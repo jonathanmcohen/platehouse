@@ -10,6 +10,7 @@
 //
 // Every name is cut at MAX_MODEL_NAME_LENGTH, the rename route's limit, so a
 // name made here can always be saved again through the app API unchanged.
+import type { NameSource } from "../db/types.js";
 
 /**
  * The longest model name the app API takes (organise.ts NAME_BODY and the
@@ -17,9 +18,6 @@
  * code units, which is never more code points than JSON Schema counts.
  */
 export const MAX_MODEL_NAME_LENGTH = 500;
-
-/** Where a model's name came from (models.name_source). */
-export type NameSource = "file" | "title" | "user";
 
 const SUPPORTED_EXTENSION = /\.(3mf|stl|step|stp|scad)$/i;
 
