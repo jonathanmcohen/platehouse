@@ -1,7 +1,8 @@
-// The library's numbered pages and View all, as they live in the URL (Jon,
-// 2026-11-19): ?page=<n> beside ?q, ?tag, ?creator and ?collection, and
-// ?view=all for every match on one page. Page 1 has no ?page=, so the
-// library's plain address stays /.
+// The library's numbered pages, View all and sort, as they live in the URL
+// (Jon, 2026-11-19): ?page=<n> beside ?q, ?tag, ?creator and ?collection,
+// ?view=all for every match on one page, and ?sort= for the order. Page 1
+// has no ?page= and the default sort no ?sort=, so the library's plain
+// address stays /.
 
 /** Models on one numbered page; the server's LIBRARY_PAGE_SIZE. */
 export const PAGE_SIZE = 48;
@@ -47,6 +48,59 @@ export function libraryHref(
   edit(next);
   const text = next.toString();
   return text === "" ? "/" : `/?${text}`;
+}
+
+/**
+ * The library's orders (Jon, 2026-11-19), as the server names them
+ * (LIBRARY_SORTS in apps/server/src/repos/models.ts), with their labels.
+ * Best match is offered only while a search is active.
+ */
+export const SORT_OPTIONS = [
+  { value: "relevance", label: "Best match" },
+  { value: "newest", label: "Date added: newest" },
+  { value: "oldest", label: "Date added: oldest" },
+  { value: "name-asc", label: "Name: A to Z" },
+  { value: "name-desc", label: "Name: Z to A" },
+  { value: "time-asc", label: "Print time: shortest" },
+  { value: "time-desc", label: "Print time: longest" },
+  { value: "weight-asc", label: "Filament weight: lightest" },
+  { value: "weight-desc", label: "Filament weight: heaviest" },
+  { value: "plates-desc", label: "Plates: most" },
+  { value: "plates-asc", label: "Plates: fewest" },
+] as const;
+
+export type LibrarySort = (typeof SORT_OPTIONS)[number]["value"];
+
+/** The sort when the URL names none: best match while searching, else newest (the server's rule). */
+export function defaultSort(q: string): LibrarySort {
+  return q.trim() === "" ? "newest" : "relevance";
+}
+
+function isSort(value: string | null): value is LibrarySort {
+  return SORT_OPTIONS.some((o) => o.value === value);
+}
+
+/**
+ * The sort the URL asks for: ?sort= when it is one the library knows (and
+ * best match only while a search is active), else the default for q.
+ */
+export function sortFrom(params: URLSearchParams, q: string): LibrarySort {
+  const asked = params.get("sort");
+  if (!isSort(asked)) return defaultSort(q);
+  if (asked === "relevance" && q.trim() === "") return defaultSort(q);
+  return asked;
+}
+
+/**
+ * The address for a new sort: back to page 1, keeping the search, filters
+ * and View all. The default sort for q is left out of the URL.
+ */
+export function sortHref(params: URLSearchParams, sort: LibrarySort, q: string): string {
+  return libraryHref(params, (next) => {
+    next.delete("page");
+    if (sort === defaultSort(q)) next.delete("sort");
+    else next.set("sort", sort);
+  });
 }
 
 /** The address of numbered page n, keeping the search and filters. */

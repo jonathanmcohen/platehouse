@@ -1,6 +1,7 @@
 // Tag and collection chips that can be added and removed (build plan Task
 // 21; AC-061, AC-062). Each chip has its own remove button, named for what
-// it removes; a themed input with its button adds one. Adding a name the
+// it removes; a themed input with its button adds one, and may offer names
+// to pick from while typing (suggestions, a datalist). Adding a name the
 // model already has does nothing on the server and shows no second chip.
 // While a change runs, every remove button and the add button are marked
 // aria-disabled and ignore a press, and so does Enter in the input. As in
@@ -26,6 +27,8 @@ export interface ChipEditorProps {
   removeLabel(value: string): string;
   onAdd(value: string): Promise<void>;
   onRemove(value: string): Promise<void>;
+  /** Names to offer while typing (a datalist), such as the library's tags; none when left out. */
+  suggestions?: string[];
 }
 
 /** The longest tag or collection name the server takes. */
@@ -38,6 +41,7 @@ export function ChipEditor({
   removeLabel,
   onAdd,
   onRemove,
+  suggestions,
 }: ChipEditorProps) {
   const id = useId();
   const [draft, setDraft] = useState("");
@@ -98,8 +102,16 @@ export function ChipEditor({
           value={draft}
           maxLength={MAX_LABEL}
           autoComplete="off"
+          {...(suggestions === undefined ? {} : { list: `${id}-suggestions` })}
           onChange={(event) => setDraft(event.currentTarget.value)}
         />
+        {suggestions === undefined ? null : (
+          <datalist id={`${id}-suggestions`}>
+            {suggestions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        )}
         <button type="submit" className="studio-button ph-small" aria-disabled={busy}>
           {addButton}
         </button>

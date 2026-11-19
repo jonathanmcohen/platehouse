@@ -20,6 +20,17 @@
 //   keeps the models shown and says so beside a Try again that goes on from
 //   that chunk. The Pages and View all choice shows when there is more than
 //   one page, or in View all.
+// - Sort (Jon, 2026-11-19): the Sort menu (SortControl) sets ?sort=, which
+//   the request carries unless it is the default (best match while a search
+//   is active, else newest), and which the server orders by. A new sort is a
+//   new address at page 1; the pager, View all and the tag chips keep it.
+// - Select mode (Jon, 2026-11-19): the Select button (aria-pressed) turns
+//   the cards into checkboxes (ModelCard; a click or Space toggles one) and
+//   shows the selection toolbar (SelectBar) with the count, the select-all
+//   choices and the bulk actions. The selection is kept across pages and
+//   filters until it is cleared or Select mode ends; Escape or Select again
+//   ends it, clears the selection and puts focus back on Select. An action
+//   that changes models reloads the grid.
 // - The count shows the total ("171 models") or, with a search or filter,
 //   how many match of the whole library ("12 of 171 models"); with more
 //   matches than the server counts, "1000+" and a note.
@@ -40,14 +51,18 @@ import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
 import { Pager } from "./Pager";
 import {
+  defaultSort,
   isViewAll,
   libraryHref,
   PAGE_SIZE,
   pageFrom,
   pageHref,
+  sortFrom,
   VIEW_ALL_CHUNK,
   VIEW_ALL_MAX,
 } from "./paging";
+import { SelectBar } from "./SelectBar";
+import { SortControl } from "./SortControl";
 import "./library.css";
 
 export interface LibraryPageProps {
@@ -132,6 +147,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const collection = params.get("collection")?.trim() ?? "";
   const viewAll = isViewAll(params);
   const page = viewAll ? 1 : pageFrom(params.get("page"));
+  const sort = sortFrom(params, q);
+  /** The sort the server is told: none for the default, which it applies itself. */
+  const sentSort = sort === defaultSort(q) ? "" : sort;
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Map<string, string | null>>(() => new Map());
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const selectButton = useRef<HTMLButtonElement>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [tags, setTags] = useState<string[]>([]);
   const [attempt, setAttempt] = useState(0);
@@ -142,19 +164,52 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const focusCount = useRef(false);
   const count = useRef<HTMLParagraphElement>(null);
 
+  /** The search, filters and sort, as the library's app API takes them. */
+  const matching = useCallback(() => {
+    const search = new URLSearchParams();
+    if (q !== "") search.set("q", q);
+    if (tag !== "") search.set("tag", tag);
+    if (creator !== "") search.set("creator", creator);
+    if (collection !== "") search.set("collection", collection);
+    if (sentSort !== "") search.set("sort", sentSort);
+    return search;
+  }, [q, tag, creator, collection, sentSort]);
+
   const query = useCallback(
     (at: number, limit: number) => {
-      const search = new URLSearchParams();
-      if (q !== "") search.set("q", q);
-      if (tag !== "") search.set("tag", tag);
-      if (creator !== "") search.set("creator", creator);
-      if (collection !== "") search.set("collection", collection);
+      const search = matching();
       search.set("page", String(at));
       search.set("limit", String(limit));
       return `/app/api/library?${search}`;
     },
-    [q, tag, creator, collection],
+    [matching],
   );
+
+  /** Leaves Select mode, clearing the selection, with focus back on Select. */
+  const stopSelecting = useCallback(() => {
+    setSelecting(false);
+    setSelected(new Map());
+    selectButton.current?.focus();
+  }, []);
+
+  // Escape leaves Select mode, unless a dialog is open: Escape is the dialog's then.
+  useEffect(() => {
+    if (!selecting || dialogOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape" && !event.defaultPrevented) stopSelecting();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [selecting, dialogOpen, stopSelecting]);
+
+  function toggle(card: LibraryCard) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(card.id)) next.delete(card.id);
+      else next.set(card.id, card.name);
+      return next;
+    });
+  }
 
   /** The library's own address without one of its filters, at page 1. */
   function without(key: "creator" | "collection"): string {
@@ -315,6 +370,31 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         </ul>
       )}
       <Filters tags={tags} />
+      <div className="ph-library-tools">
+        <SortControl q={q} printer={ready?.printer ?? ""} />
+        <button
+          ref={selectButton}
+          type="button"
+          className="studio-button ph-small"
+          aria-pressed={selecting}
+          onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+        >
+          Select
+        </button>
+      </div>
+      {selecting ? (
+        <SelectBar
+          selected={selected}
+          shown={ready?.models ?? []}
+          total={ready?.total ?? 0}
+          totalCapped={ready?.totalCapped ?? false}
+          matching={matching()}
+          tags={tags}
+          onChange={setSelected}
+          onChanged={() => setAttempt((n) => n + 1)}
+          onDialog={setDialogOpen}
+        />
+      ) : null}
       <div aria-live="polite">
         {load.state === "loading" ? <p className="studio-muted">Loading the library</p> : null}
         {load.state === "failed" ? (
@@ -376,9 +456,17 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
             ) : null}
           </div>
           <ul className="studio-grid" aria-label="Models">
-            {ready.models.map((card) => (
-              <ModelCard key={card.id} card={card} />
-            ))}
+            {ready.models.map((card) =>
+              selecting ? (
+                <ModelCard
+                  key={card.id}
+                  card={card}
+                  selection={{ selected: selected.has(card.id), onToggle: () => toggle(card) }}
+                />
+              ) : (
+                <ModelCard key={card.id} card={card} />
+              ),
+            )}
           </ul>
           {!viewAll && ready.pageCount > 1 ? (
             <Pager

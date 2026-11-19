@@ -1,0 +1,713 @@
+// @vitest-environment jsdom
+// The library's sort control and Select mode (Jon, 2026-11-19). Rendered in
+// jsdom with React; the server is a stubbed fetch that answers the library's
+// app API the way the server does (apps/server/src/app-api/library.ts and
+// organise.ts) and records every request.
+//
+// Sort:
+// - A labelled Sort menu: best match (only while a search is active), date
+//   added, name, print time and filament weight for the selected printer
+//   (with a note that models without numbers come last), and plate count.
+//   Best match is the default while a search is active, newest otherwise.
+// - The sort is in the URL (?sort=) beside ?q, ?tag, ?creator, ?collection,
+//   ?page and ?view: a default sort leaves it out, a change goes back to page
+//   1 and keeps the rest, the pager and the tag chips keep it, and the
+//   library request carries it. An unknown sort is the default.
+//
+// Select mode:
+// - A Select button (aria-pressed) turns the cards into checkboxes named for
+//   their model; a click or Space toggles one; the count is announced in a
+//   status line. Select all on this page, Select all matching (every match's
+//   id from /app/api/library/ids, capped as View all is, and it says so) and
+//   Clear selection. Escape leaves Select mode and clears the selection.
+// - With models selected: Add tags (type or pick), Remove tag, Add to
+//   collection (existing or new) and Move to trash (the app's own confirm
+//   dialog, with the count). Each is one request with the selected ids; the
+//   result is shown, failures name the models and why, and the grid reloads.
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { LibraryPage } from "../src/library/LibraryPage";
+import type { LibraryCard } from "../src/library/ModelCard";
+import { SORT_OPTIONS, sortFrom } from "../src/library/paging";
+import { describeBulk, MAX_SELECTED } from "../src/library/selection";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const PRINTER = "Bambu Lab P1S 0.4 nozzle";
+
+function id(i: number): string {
+  return `0198f0c4-0000-7000-8000-${String(i).padStart(12, "0")}`;
+}
+
+/** n synthetic cards named Model 001, Model 002, ..., the first `tagged` tagged PLA. */
+function cards(n: number, tagged = 0): LibraryCard[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: id(i + 1),
+    name: `Model ${String(i + 1).padStart(3, "0")}`,
+    creator: null,
+    tags: i < tagged ? ["PLA"] : [],
+    plateCount: 1,
+    thumbnail: null,
+    fileKind: "3mf" as const,
+    timeSeconds: null,
+    weightGrams: null,
+    partial: false,
+    numbersUnavailable: false,
+  }));
+}
+
+interface Posted {
+  url: string;
+  body: Record<string, unknown>;
+}
+
+let container: HTMLDivElement;
+let root: Root;
+let requests: string[];
+let posted: Posted[];
+let matchCap: number;
+/** What each bulk route answers; by default every id changed. */
+let bulkAnswer: (url: string, body: Record<string, unknown>) => Response;
+let location = "";
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function stubServer(all: LibraryCard[]) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "https://platehouse.test");
+      requests.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
+      if (url.pathname === "/app/api/library/tags") return json({ tags: ["Desk", "PLA"] });
+      if (url.pathname === "/app/api/collections") {
+        return json({ collections: [{ name: "Shelf", models: 3 }] });
+      }
+      if (url.pathname.startsWith("/app/api/bulk/")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        posted.push({ url: url.pathname, body });
+        return bulkAnswer(url.pathname, body);
+      }
+      const tag = url.searchParams.get("tag");
+      const found = all.filter(
+        (c) => tag === null || c.tags.some((t) => t.toLowerCase() === tag.toLowerCase()),
+      );
+      const matches = found.slice(0, matchCap);
+      if (url.pathname === "/app/api/library/ids") {
+        return json({ ids: matches.map((c) => c.id), capped: found.length > matchCap });
+      }
+      if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
+      const asked = Number(url.searchParams.get("page"));
+      const pageSize = Number(url.searchParams.get("limit") ?? 48);
+      const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
+      const page = Math.min(Math.max(asked, 1), pageCount);
+      return json({
+        printer: PRINTER,
+        models: matches.slice((page - 1) * pageSize, page * pageSize),
+        nextCursor: null,
+        page,
+        pageSize,
+        pageCount,
+        total: matches.length,
+        totalCapped: found.length > matchCap,
+        libraryTotal: all.length,
+        sort: url.searchParams.get("sort") ?? (url.searchParams.get("q") ? "relevance" : "newest"),
+      });
+    }),
+  );
+}
+
+async function settle() {
+  for (let i = 0; i < 8; i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
+function LocationProbe() {
+  const at = useLocation();
+  location = `${at.pathname}${at.search}`;
+  return null;
+}
+
+async function render(path: string) {
+  const node: ReactNode = (
+    <MemoryRouter initialEntries={[path]}>
+      <LocationProbe />
+      <Routes>
+        <Route path="/" element={<LibraryPage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+  await act(async () => root.render(node));
+  await settle();
+}
+
+function libraryQueries(): URLSearchParams[] {
+  return requests
+    .filter((r) => /^GET \/app\/api\/library(?:\?|$)/.test(r))
+    .map((r) => new URL(r.slice(4), "https://platehouse.test").searchParams);
+}
+
+function lastLibraryQuery(): URLSearchParams {
+  const last = libraryQueries().at(-1);
+  if (last === undefined) throw new Error("the library was never asked for");
+  return last;
+}
+
+function sortMenu(): HTMLSelectElement {
+  const label = [...container.querySelectorAll("label")].find(
+    (l) => l.textContent?.trim() === "Sort",
+  );
+  const menu = label?.htmlFor ? document.getElementById(label.htmlFor) : null;
+  if (!(menu instanceof HTMLSelectElement)) throw new Error("no select labelled Sort");
+  return menu;
+}
+
+async function choose(select: HTMLSelectElement, value: string) {
+  await act(async () => {
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+}
+
+function button(name: string): HTMLButtonElement {
+  const found = [...container.querySelectorAll("button")].find(
+    (b) => (b.getAttribute("aria-label") ?? b.textContent?.trim()) === name,
+  );
+  if (found === undefined) throw new Error(`no button ${name}`);
+  return found;
+}
+
+async function click(el: HTMLElement | null | undefined) {
+  if (el === null || el === undefined) throw new Error("nothing to click");
+  await act(async () => el.click());
+  await settle();
+}
+
+async function key(el: Element, k: string) {
+  let event: KeyboardEvent | undefined;
+  await act(async () => {
+    event = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+  });
+  await settle();
+  return event as KeyboardEvent;
+}
+
+function checkboxes(): HTMLInputElement[] {
+  return [...container.querySelectorAll<HTMLInputElement>('.studio-grid input[type="checkbox"]')];
+}
+
+function checkbox(name: string): HTMLInputElement {
+  const found = checkboxes().find((c) => c.getAttribute("aria-label") === name);
+  if (found === undefined) throw new Error(`no card checkbox ${name}`);
+  return found;
+}
+
+function statusText(): string {
+  return container.querySelector("#ph-selection-count")?.textContent ?? "";
+}
+
+function dialog(): HTMLElement | null {
+  return document.querySelector('[role="dialog"]');
+}
+
+function dialogButton(name: string): HTMLButtonElement {
+  const found = [...(dialog()?.querySelectorAll("button") ?? [])].find(
+    (b) => (b.getAttribute("aria-label") ?? b.textContent?.trim()) === name,
+  );
+  if (found === undefined) throw new Error(`no dialog button ${name}`);
+  return found;
+}
+
+async function type(input: HTMLInputElement, text: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function submit(form: HTMLFormElement | null | undefined) {
+  if (!form) throw new Error("no form");
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await settle();
+}
+
+async function selectMode() {
+  await click(button("Select"));
+}
+
+beforeEach(() => {
+  requests = [];
+  posted = [];
+  matchCap = 1000;
+  bulkAnswer = (_url, body) =>
+    json({
+      changed: body.ids,
+      unchanged: [],
+      failed: [],
+      ...(typeof body.tags === "object" ? { tags: body.tags } : {}),
+      ...(typeof body.tag === "string" ? { tag: body.tag } : {}),
+      ...(typeof body.collection === "string" ? { collection: body.collection } : {}),
+    });
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+describe("the sort control", () => {
+  test("offers every order, best match only with a search", () => {
+    expect(SORT_OPTIONS.map((o) => o.value)).toEqual([
+      "relevance",
+      "newest",
+      "oldest",
+      "name-asc",
+      "name-desc",
+      "time-asc",
+      "time-desc",
+      "weight-asc",
+      "weight-desc",
+      "plates-desc",
+      "plates-asc",
+    ]);
+    expect(sortFrom(new URLSearchParams(""), "")).toBe("newest");
+    expect(sortFrom(new URLSearchParams(""), "hook")).toBe("relevance");
+    expect(sortFrom(new URLSearchParams("sort=name-desc"), "")).toBe("name-desc");
+    expect(sortFrom(new URLSearchParams("sort=price"), "")).toBe("newest");
+    expect(sortFrom(new URLSearchParams("sort=relevance"), "")).toBe("newest");
+    expect(sortFrom(new URLSearchParams("sort=relevance"), "hook")).toBe("relevance");
+  });
+
+  test("without a search: newest is chosen, best match is not offered, and no sort is sent", async () => {
+    stubServer(cards(5));
+    await render("/");
+    const menu = sortMenu();
+    expect(menu.value).toBe("newest");
+    expect([...menu.options].map((o) => o.value)).not.toContain("relevance");
+    expect(menu.selectedOptions[0]?.textContent).toBe("Date added: newest");
+    expect(lastLibraryQuery().has("sort")).toBe(false);
+  });
+
+  test("with a search: best match is first and chosen", async () => {
+    stubServer(cards(5));
+    await render("/?q=Model");
+    const menu = sortMenu();
+    expect(menu.options[0]?.value).toBe("relevance");
+    expect(menu.value).toBe("relevance");
+  });
+
+  test("a new sort goes in the URL, back to page 1, keeping the search, filters and view", async () => {
+    stubServer(cards(171, 171));
+    await render("/?tag=PLA&page=3");
+    await choose(sortMenu(), "name-asc");
+    expect(location).toBe("/?tag=PLA&sort=name-asc");
+    expect(lastLibraryQuery().get("sort")).toBe("name-asc");
+    expect(lastLibraryQuery().get("page")).toBe("1");
+    expect(lastLibraryQuery().get("tag")).toBe("PLA");
+  });
+
+  test("a new sort in View all stays in View all", async () => {
+    stubServer(cards(5));
+    await render("/?view=all&collection=Shelf");
+    await choose(sortMenu(), "plates-desc");
+    expect(location).toBe("/?view=all&collection=Shelf&sort=plates-desc");
+    expect(lastLibraryQuery().get("sort")).toBe("plates-desc");
+    expect(lastLibraryQuery().get("limit")).toBe("200");
+  });
+
+  test("choosing the default sort takes ?sort= out of the URL", async () => {
+    stubServer(cards(5));
+    await render("/?sort=oldest");
+    expect(sortMenu().value).toBe("oldest");
+    await choose(sortMenu(), "newest");
+    expect(location).toBe("/");
+    expect(lastLibraryQuery().has("sort")).toBe(false);
+  });
+
+  test("an unknown sort is the default and is not sent", async () => {
+    stubServer(cards(5));
+    await render("/?sort=price");
+    expect(sortMenu().value).toBe("newest");
+    expect(lastLibraryQuery().has("sort")).toBe(false);
+  });
+
+  test("the pager and the tag chips keep the sort", async () => {
+    stubServer(cards(171, 3));
+    await render("/?sort=name-desc");
+    const next = [...container.querySelectorAll('nav[aria-label="Library pages"] a')].find(
+      (a) => (a.getAttribute("aria-label") ?? a.textContent?.trim()) === "Next",
+    );
+    expect(next?.getAttribute("href")).toBe("/?sort=name-desc&page=2");
+    const pla = [...container.querySelectorAll('nav[aria-label="Filter by tag"] a')].find(
+      (a) => a.textContent === "PLA",
+    );
+    expect(pla?.getAttribute("href")).toBe("/?sort=name-desc&tag=PLA");
+  });
+
+  test("time and weight say that models without numbers for the printer come last", async () => {
+    stubServer(cards(5));
+    await render("/?sort=time-asc");
+    expect(container.textContent).toContain(
+      `Models without a print time for ${PRINTER} are listed last.`,
+    );
+    await choose(sortMenu(), "weight-desc");
+    expect(container.textContent).toContain(
+      `Models without a filament weight for ${PRINTER} are listed last.`,
+    );
+    await choose(sortMenu(), "name-asc");
+    expect(container.textContent).not.toContain("are listed last");
+  });
+});
+
+describe("Select mode", () => {
+  test("Select turns the cards into checkboxes named for their model; a click toggles one", async () => {
+    stubServer(cards(5));
+    await render("/");
+    expect(checkboxes()).toHaveLength(0);
+    await selectMode();
+    expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+    expect(checkboxes()).toHaveLength(5);
+    expect(container.querySelectorAll(".studio-grid a")).toHaveLength(0);
+    expect(statusText()).toBe("No models selected");
+    const first = checkbox("Model 001");
+    expect(first.checked).toBe(false);
+    await click(first);
+    expect(checkbox("Model 001").checked).toBe(true);
+    expect(statusText()).toBe("1 model selected");
+    expect(container.querySelector("#ph-selection-count")?.getAttribute("role")).toBe("status");
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+  });
+
+  test("a click anywhere on the card toggles it, and a selected card is marked", async () => {
+    stubServer(cards(3));
+    await render("/");
+    await selectMode();
+    const title = [...container.querySelectorAll<HTMLElement>(".studio-card-title")].find(
+      (t) => t.textContent === "Model 003",
+    );
+    await click(title);
+    expect(checkbox("Model 003").checked).toBe(true);
+    expect(checkbox("Model 003").closest("label")?.getAttribute("data-selected")).toBe("true");
+  });
+
+  test("Space toggles the focused card and does not scroll the page", async () => {
+    stubServer(cards(3));
+    await render("/");
+    await selectMode();
+    const card = checkbox("Model 002");
+    expect(card.tabIndex).toBe(0);
+    card.focus();
+    const event = await key(card, " ");
+    expect(event.defaultPrevented).toBe(true);
+    expect(checkbox("Model 002").checked).toBe(true);
+    await key(checkbox("Model 002"), " ");
+    expect(checkbox("Model 002").checked).toBe(false);
+  });
+
+  test("Escape leaves Select mode, clears the selection and puts focus on Select", async () => {
+    stubServer(cards(3));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await key(checkbox("Model 001"), "Escape");
+    expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    expect(checkboxes()).toHaveLength(0);
+    expect(document.activeElement).toBe(button("Select"));
+    await selectMode();
+    expect(statusText()).toBe("No models selected");
+  });
+
+  test("Select all on this page, then Clear selection", async () => {
+    stubServer(cards(171));
+    await render("/");
+    await selectMode();
+    await click(button("Select all on this page"));
+    expect(statusText()).toBe("48 models selected");
+    expect(checkboxes().every((c) => c.checked)).toBe(true);
+    await click(button("Clear selection"));
+    expect(statusText()).toBe("No models selected");
+  });
+
+  test("the selection stays across pages", async () => {
+    stubServer(cards(60));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    const next = [...container.querySelectorAll('nav[aria-label="Library pages"] a')].find(
+      (a) => (a.getAttribute("aria-label") ?? a.textContent?.trim()) === "Next",
+    );
+    await click(next as HTMLElement);
+    expect(location).toBe("/?page=2");
+    await click(checkbox("Model 049"));
+    expect(statusText()).toBe("2 models selected");
+  });
+
+  test("Select all matching names the count and selects every match for the search, filters and sort", async () => {
+    stubServer(cards(171, 120));
+    await render("/?tag=PLA&sort=name-asc");
+    await selectMode();
+    await click(button("Select all 120 matching"));
+    const asked = requests.filter((r) => r.startsWith("GET /app/api/library/ids"));
+    expect(asked).toHaveLength(1);
+    const params = new URL(asked[0]?.slice(4) ?? "", "https://platehouse.test").searchParams;
+    expect(params.get("tag")).toBe("PLA");
+    expect(params.get("sort")).toBe("name-asc");
+    expect(statusText()).toBe("120 models selected");
+  });
+
+  test("Select all matching stops at the cap and says so", async () => {
+    stubServer(cards(1100));
+    matchCap = 1000;
+    await render("/");
+    await selectMode();
+    await click(button("Select the first 1000 matching"));
+    expect(statusText()).toBe("1000 models selected");
+    expect(container.textContent).toMatch(
+      /Only the first 1000 matching models can be selected at once/,
+    );
+    expect(MAX_SELECTED).toBe(1000);
+  });
+
+  test("with nothing selected the actions do nothing", async () => {
+    stubServer(cards(3));
+    await render("/");
+    await selectMode();
+    for (const name of ["Add tags", "Remove tag", "Add to collection", "Move to trash"]) {
+      expect(button(name).getAttribute("aria-disabled"), name).toBe("true");
+      await click(button(name));
+      expect(dialog(), name).toBeNull();
+    }
+    expect(posted).toEqual([]);
+  });
+});
+
+describe("bulk actions", () => {
+  async function twoSelected(n = 5, tagged = 0) {
+    stubServer(cards(n, tagged));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 002"));
+  }
+
+  test("Add tags: type one, pick one, and add both to every selected model", async () => {
+    await twoSelected();
+    await click(button("Add tags"));
+    expect(dialog()?.getAttribute("aria-modal")).toBe("true");
+    expect(dialog()?.textContent).toContain("Add tags to 2 models");
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    // The existing tags are offered to pick from.
+    const list = document.getElementById(input.getAttribute("list") ?? "");
+    expect([...(list?.querySelectorAll("option") ?? [])].map((o) => o.value)).toEqual([
+      "Desk",
+      "PLA",
+    ]);
+    await type(input, "PLA");
+    await submit(input.form);
+    await type(input, "Kitchen");
+    await submit(input.form);
+    const before = libraryQueries().length;
+    await click(dialogButton("Add tags"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA", "Kitchen"] } },
+    ]);
+    expect(dialog()).toBeNull();
+    expect(container.textContent).toContain("Added PLA and Kitchen to 2 models.");
+    expect(libraryQueries().length).toBeGreaterThan(before);
+  });
+
+  test("Add tags with no tag in the list sends nothing", async () => {
+    await twoSelected();
+    await click(button("Add tags"));
+    expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("true");
+    await click(dialogButton("Add tags"));
+    expect(posted).toEqual([]);
+    expect(dialog()).not.toBeNull();
+  });
+
+  test("Remove tag: pick one of the library's tags", async () => {
+    await twoSelected();
+    await click(button("Remove tag"));
+    const menu = dialog()?.querySelector("select") as HTMLSelectElement;
+    expect([...menu.options].map((o) => o.value)).toEqual(["Desk", "PLA"]);
+    await choose(menu, "PLA");
+    await click(dialogButton("Remove tag"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "PLA" } },
+    ]);
+    expect(container.textContent).toContain("Removed PLA from 2 models.");
+  });
+
+  test("Add to collection: an existing one is offered, a new one can be typed", async () => {
+    await twoSelected();
+    await click(button("Add to collection"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    const list = document.getElementById(input.getAttribute("list") ?? "");
+    expect([...(list?.querySelectorAll("option") ?? [])].map((o) => o.value)).toEqual(["Shelf"]);
+    await type(input, "Garage");
+    await click(dialogButton("Add to collection"));
+    expect(posted).toEqual([
+      {
+        url: "/app/api/bulk/add-to-collection",
+        body: { ids: [id(1), id(2)], collection: "Garage" },
+      },
+    ]);
+    expect(container.textContent).toContain("Added 2 models to Garage.");
+  });
+
+  test("Move to trash asks in the app's own dialog with the count; Cancel sends nothing", async () => {
+    await twoSelected();
+    await click(button("Move to trash"));
+    expect(dialog()?.textContent).toContain("Move 2 models to the trash?");
+    expect(dialog()?.textContent).toMatch(/restored .*30 days/i);
+    // The safe choice is focused first.
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    await click(dialogButton("Cancel"));
+    expect(dialog()).toBeNull();
+    expect(posted).toEqual([]);
+    expect(statusText()).toBe("2 models selected");
+  });
+
+  test("Move to trash: confirmed, the models go and leave the selection", async () => {
+    await twoSelected();
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted).toEqual([{ url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)] } }]);
+    expect(dialog()).toBeNull();
+    expect(container.textContent).toContain(
+      "Moved 2 models to the trash. Restore them from the trash within 30 days.",
+    );
+    expect(statusText()).toBe("No models selected");
+  });
+
+  test("failures say which models failed and why", async () => {
+    await twoSelected();
+    await click(checkbox("Model 003"));
+    bulkAnswer = () =>
+      json({
+        changed: [id(1)],
+        unchanged: [],
+        failed: [
+          { id: id(2), reason: "in_trash" },
+          { id: id(3), reason: "not_found" },
+        ],
+        tag: "PLA",
+      });
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("2 models could not be changed:");
+    expect(alert?.textContent).toContain("Model 002 is in the trash");
+    expect(alert?.textContent).toContain("Model 003 no longer exists");
+    expect(container.textContent).toContain("Removed PLA from 1 model.");
+    // Failed models leave the selection; they cannot be changed.
+    expect(statusText()).toBe("1 model selected");
+  });
+
+  test("a request that fails keeps the dialog open and says so", async () => {
+    await twoSelected();
+    bulkAnswer = () => json({ error: "internal" }, 500);
+    await click(button("Add to collection"));
+    await type(dialog()?.querySelector("input") as HTMLInputElement, "Garage");
+    await click(dialogButton("Add to collection"));
+    expect(dialog()).not.toBeNull();
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Something went wrong. Try again.",
+    );
+  });
+
+  test("Escape in a dialog closes the dialog only; Select mode stays", async () => {
+    await twoSelected();
+    await click(button("Add tags"));
+    await key(dialog() as HTMLElement, "Escape");
+    expect(dialog()).toBeNull();
+    expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+    expect(statusText()).toBe("2 models selected");
+  });
+});
+
+describe("describeBulk", () => {
+  const names = new Map([
+    [id(1), "Hook"],
+    [id(2), "Clip"],
+  ]);
+
+  test("says what changed and what was already so", () => {
+    expect(
+      describeBulk(
+        { action: "add-tags", tags: ["PLA"] },
+        { changed: [id(1)], unchanged: [id(2)], failed: [], tags: ["PLA"] },
+        names,
+      ),
+    ).toEqual({ done: "Added PLA to 1 model. 1 already had it.", failed: null });
+    expect(
+      describeBulk(
+        { action: "remove-tag", tag: "pla" },
+        { changed: [], unchanged: [id(1)], failed: [], tag: null },
+        names,
+      ).done,
+    ).toBe("No model has the tag pla.");
+    expect(
+      describeBulk(
+        { action: "add-to-collection", collection: "desk" },
+        { changed: [id(1)], unchanged: [id(2)], failed: [], collection: "Desk" },
+        names,
+      ).done,
+    ).toBe("Added 1 model to Desk. 1 was already in it.");
+  });
+
+  test("names at most five failed models, then how many more", () => {
+    const failed = Array.from({ length: 7 }, (_, i) => ({
+      id: id(10 + i),
+      reason: "not_found" as const,
+    }));
+    const many = new Map(failed.map((f, i) => [f.id, `Part ${i + 1}`]));
+    const text = describeBulk(
+      { action: "trash" },
+      { changed: [], unchanged: [], failed },
+      many,
+    ).failed;
+    expect(text).toMatch(/^7 models could not be changed: Part 1 no longer exists; /);
+    expect(text).toMatch(/Part 5 no longer exists, and 2 more\.$/);
+  });
+
+  test("models it has no name for are counted, not named", () => {
+    const text = describeBulk(
+      { action: "trash" },
+      {
+        changed: [],
+        unchanged: [],
+        failed: [
+          { id: id(1), reason: "in_trash" },
+          { id: id(20), reason: "in_trash" },
+          { id: id(21), reason: "in_trash" },
+          { id: id(22), reason: "not_found" },
+        ],
+      },
+      names,
+    ).failed;
+    expect(text).toBe(
+      "4 models could not be changed: Hook is in the trash; 2 other models are in the trash; 1 other model no longer exists.",
+    );
+  });
+});

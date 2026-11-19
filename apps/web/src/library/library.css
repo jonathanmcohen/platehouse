@@ -57,6 +57,87 @@
   color: var(--muted);
 }
 
+/* The Sort menu and the Select button above the grid (Jon, 2026-11-19). */
+.ph-library-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 12px 0;
+}
+
+.ph-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.ph-sort .ph-select {
+  width: auto;
+}
+
+.ph-sort > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.ph-library-tools [aria-pressed="true"] {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-bg);
+  color: var(--chip-active-text);
+}
+
+/* The selection toolbar: the count, the select-all choices and the actions. */
+.ph-select-bar {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.ph-select-bar p {
+  margin: 0;
+}
+
+.ph-select-count {
+  font-weight: 600;
+}
+
+/* A card in Select mode: the card is the label of the checkbox in its
+   corner, so the whole card toggles; a selected one is ringed in the accent.
+   The checkbox keeps the page's own focus ring (studio.css :focus-visible). */
+.ph-card-select {
+  position: relative;
+  cursor: pointer;
+}
+
+.ph-card-select:hover {
+  border-color: var(--accent);
+}
+
+.ph-card-select[data-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.ph-card-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* Phone width: tighter chips, and Previous and Next show only their arrows.
    The words stay in the page for screen readers, as the links' names. */
 @media (max-width: 480px) {
