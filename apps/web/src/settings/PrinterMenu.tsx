@@ -158,7 +158,6 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   const listRef = useRef<HTMLOListElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const [busy, setBusy] = useState(false);
-  /** A save went through but the list could not be read after it: the list on screen may be old. */
   /**
    * The list could not be read after a save ("saved") or after a save the
    * server refused because the list changed elsewhere ("refused"): the list

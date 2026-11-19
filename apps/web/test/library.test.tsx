@@ -383,8 +383,10 @@ describe("card shows time and weight only when every plate is known", () => {
 // small menu that changes whose times and weights the cards show. It only
 // reads: it asks for the library again, never anything that slices.
 describe("the header's printer switch", () => {
-  /** A server whose My printers are the P1S (default) and the A1 mini. */
-  /** hold, when given, keeps the answer for the A1 mini until it resolves. */
+  /**
+   * A server whose My printers are the P1S (default) and the A1 mini. hold,
+   * when given, keeps the answer for the A1 mini until it resolves.
+   */
   function twoPrinters(calls: Array<{ url: string; method: string }>, hold?: Promise<void>) {
     const fetchStub = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = new URL(String(input), "https://platehouse.test");

@@ -148,7 +148,6 @@ async function drain(): Promise<void> {
   await until(inFlight, (n) => n === 0);
 }
 
-/** Uploads a synthetic one-plate .3mf through the ingest queue; returns its plate's id. */
 /** The printers version GET /app/api/settings answers, as a page reads it. */
 async function version(): Promise<number> {
   const res = await call("GET", "/app/api/settings");
@@ -158,6 +157,7 @@ async function version(): Promise<number> {
   return answer.printersVersion as number;
 }
 
+/** Uploads a synthetic one-plate .3mf through the ingest queue; returns its plate's id. */
 async function uploadPlate(): Promise<string> {
   const tmpPath = await writeUpload(env, build3mf({ plates: 1 }));
   const input: IngestInput = { tmpPath, originalName: "Synthetic.3mf", target: "new" };
