@@ -382,7 +382,9 @@ export function UploadDialog({
                 </span>
                 {item.status === "duplicate" ? (
                   <div className="ph-upload-duplicate">
-                    <DuplicateNote duplicates={item.duplicates ?? []} onFollow={onClose} />
+                    {/* close(), not onClose: following the link is a close, so the
+                        settled rows clear and the combined batch ends as on Close. */}
+                    <DuplicateNote duplicates={item.duplicates ?? []} onFollow={close} />
                     <button
                       type="button"
                       className="studio-button"

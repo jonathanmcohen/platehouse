@@ -264,6 +264,52 @@ describe("the upload dialog and duplicates", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  test("following the link closes the dialog as Close does: the rows clear and the combined batch ends", async () => {
+    const answer = (s: Started): UploadResult =>
+      s.file === benchy
+        ? duplicateUnlessAllowed(s)
+        : { status: "done", modelId: NEW_MODEL, fileId: "f-new", duplicates: [] };
+    const { started, start, fetchResult, finish } = stubUploads(answer);
+    const later = new File([new Uint8Array(30)], "Later.stl");
+    const dialog = (open: boolean, files: File[]) =>
+      inRouter(
+        <UploadDialog
+          open={open}
+          files={files}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      );
+    const round1 = [benchy, fresh];
+    await render(dialog(true, round1));
+    await act(async () => {
+      (container.querySelector('input[role="switch"]') as HTMLInputElement).click();
+    });
+    await act(async () => button(/^upload 2 files/i).click());
+    await finish(0);
+    await finish(1);
+    expect(rowOf("Benchy (2).3mf").textContent).toMatch(/Skipped/);
+    expect(started[0]?.target.kind).toBe("batch");
+
+    await act(async () => rowOf("Benchy (2).3mf").querySelector("a")?.click());
+    await render(dialog(false, round1));
+    await render(dialog(true, [later]));
+
+    // Opened again: only the new file is listed and the switch is off, so
+    // the new file is not put into the previous round's combined model.
+    expect(container.querySelector('[data-upload="Benchy (2).3mf"]')).toBeNull();
+    expect(container.querySelector('[data-upload="Fresh.stl"]')).toBeNull();
+    expect(rowOf("Later.stl")).toBeTruthy();
+    expect((container.querySelector('input[role="switch"]') as HTMLInputElement).checked).toBe(
+      false,
+    );
+    await act(async () => button(/^upload 1 file/i).click());
+    expect(started).toHaveLength(3);
+    expect(started[2]?.file).toBe(later);
+    expect(started[2]?.target).toEqual({ kind: "new" });
+  });
+
   test("more than one model holds it: the first is linked and the others counted", async () => {
     const other = { ...HOLDER, modelId: NEW_MODEL, modelName: "Other", fileId: "f-2" };
     const { start, fetchResult, finish } = stubUploads(() => ({
