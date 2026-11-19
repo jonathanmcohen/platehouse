@@ -374,7 +374,7 @@ export function ModelPage({
       <div role="alert" className="studio-alert studio-alert-alert">
         <p>{t("model.loadFailed")}</p>
         <button type="button" className="studio-button" onClick={() => setReload((n) => n + 1)}>
-          Try again
+          {t("common.tryAgain")}
         </button>
       </div>
     );
@@ -391,7 +391,7 @@ export function ModelPage({
         <div role="alert" className="studio-alert studio-alert-alert">
           <p>{t("model.refreshFailed")}</p>
           <button type="button" className="studio-button" onClick={() => setReload((n) => n + 1)}>
-            Try again
+            {t("common.tryAgain")}
           </button>
         </div>
       )}

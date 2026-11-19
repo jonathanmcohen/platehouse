@@ -39,7 +39,10 @@ import { readTheme } from "./shell/theme";
 import { TagsPage } from "./tags/TagsPage";
 import { TrashPage } from "./trash/TrashPage";
 import { UploadDialog } from "./upload/UploadDialog";
-import { useI18n } from "./i18n/I18n";
+import type { Messages } from "@platehouse/i18n";
+import { ENGLISH, loadMessages } from "./i18n/catalogs";
+import { I18nProvider, useI18n } from "./i18n/I18n";
+import { readLanguage } from "./i18n/language";
 
 function Section({ title }: { title: string }) {
   const { t } = useI18n();
@@ -119,11 +122,27 @@ function App() {
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("index.html has no #root element");
+const rootElement = root;
 
-createRoot(root).render(
-  <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </StrictMode>,
+// The language is the one the server wrote into the html element's lang (the
+// ph_lang cookie, else the browser's languages; apps/server/src/web/shell.ts).
+// Its messages load before the first render, so no English flashes first; a
+// language that cannot be loaded is shown in English.
+const wanted = readLanguage(document);
+loadMessages(wanted).then(
+  (messages) => start(wanted, messages),
+  () => start("en", ENGLISH),
 );
+
+function start(locale: string, messages: Messages) {
+  document.documentElement.setAttribute("lang", locale);
+  createRoot(rootElement).render(
+    <StrictMode>
+      <I18nProvider locale={locale} messages={messages}>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </I18nProvider>
+    </StrictMode>,
+  );
+}
