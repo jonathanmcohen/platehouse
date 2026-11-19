@@ -24,12 +24,34 @@ import { assertDocumented, documentedPaths, V0 } from "./openapi.js";
 
 export interface StubFile {
   id: string;
+  /** The file's real name, with its extension. */
   filename: string;
+  /**
+   * The record's filename field: filename when not set, left out when null,
+   * and this text when a string, such as a name without its extension
+   * (issue #226: the live record may leave it out or cut it short).
+   */
+  sentFilename?: string | null;
+  /** The record's name, Manyfold's display name: filename without its extension when not set. */
+  displayName?: string;
+  /**
+   * The last part of contentUrl's path: "<id>.<extension>" when not set, the
+   * shape of the document's example (def456.stl). Set it to carry the file's
+   * name, or to a part with no extension.
+   */
+  contentUrlName?: string;
   encodingFormat?: string;
   bytes: Buffer;
   /** What Manyfold reports as contentSize, when it should differ from bytes.length. */
   contentSize?: number;
 }
+
+/** A file's display name, as Manyfold sends it: no extension. */
+const displayOf = (f: StubFile) => f.displayName ?? f.filename.replace(/\.[^.]+$/, "");
+
+/** The last part of a file's contentUrl path. */
+const contentNameOf = (f: StubFile) =>
+  f.contentUrlName ?? `${f.id}${f.filename.slice(f.filename.lastIndexOf("."))}`;
 
 export interface StubModel {
   id: string;
@@ -132,7 +154,7 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
       hasPart: m.files.map((f) => ({
         "@id": link(`/models/${m.id}/model_files/${f.id}`),
         "@type": "3DModel",
-        name: f.filename.replace(/\.[^.]+$/, ""),
+        name: displayOf(f),
         encodingFormat: f.encodingFormat ?? "model/3mf",
       })),
       keywords: m.keywords ?? [],
@@ -199,9 +221,16 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
       const raw = String(params.id);
       const dot = raw.indexOf(".");
       const fileId = dot === -1 ? raw : raw.slice(0, dot);
-      const f = m?.files.find((x) => x.id === fileId);
+      // A contentUrl set to carry a name is matched whole, before the
+      // <id>.<extension> form.
+      const named = m?.files.find(
+        (x) =>
+          x.contentUrlName !== undefined &&
+          (x.contentUrlName === raw || x.contentUrlName === decodeURIComponent(raw)),
+      );
+      const f = named ?? m?.files.find((x) => x.id === fileId);
       if (m === undefined || f === undefined) return new HttpResponse(null, { status: 404 });
-      if (dot !== -1) {
+      if (named !== undefined || dot !== -1) {
         // The contentUrl: a redirect to a presigned object-store URL.
         const signature = randomBytes(16).toString("hex");
         const securityToken = `stub-session-${randomBytes(12).toString("hex")}`;
@@ -214,15 +243,18 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
           headers: { location: `${objectOrigin}/manyfold/${m.id}/${f.id}?${query}` },
         });
       }
-      const ext = f.filename.slice(f.filename.lastIndexOf("."));
-      return json("/models/{model_id}/model_files/{id}", {
+      const record: Record<string, unknown> = {
         "@context": ["https://schema.org/"],
         "@id": link(`/models/${m.id}/model_files/${f.id}`),
         "@type": "3DModel",
-        name: f.filename.replace(/\.[^.]+$/, ""),
-        filename: f.filename,
+        name: displayOf(f),
+      };
+      // filename is not a required field of the documented record.
+      if (f.sentFilename !== null) record.filename = f.sentFilename ?? f.filename;
+      return json("/models/{model_id}/model_files/{id}", {
+        ...record,
         encodingFormat: f.encodingFormat ?? "model/3mf",
-        contentUrl: link(`/models/${m.id}/model_files/${f.id}${ext}`),
+        contentUrl: link(`/models/${m.id}/model_files/${encodeURIComponent(contentNameOf(f))}`),
         contentSize: f.contentSize ?? f.bytes.length,
         isPartOf: { "@id": link(`/models/${m.id}`), "@type": "3DModel" },
         presupported: false,

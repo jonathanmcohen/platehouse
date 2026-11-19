@@ -11,8 +11,12 @@
 //   script: the html element's data-theme and the color-scheme meta are
 //   written in from the ph_theme cookie (dark, light or system; anything
 //   else is dark, the default). System resolves in CSS with
-//   prefers-color-scheme. The answer is never cached, since it follows the
-//   cookie. A page path no task has registered stays a 404.
+//   prefers-color-scheme. The accent colour scheme (Jon, 2026-11-19) is
+//   written the same way: the html element's data-accent comes from the
+//   ph_accent cookie (one of the twelve ACCENTS; anything else is
+//   DEFAULT_ACCENT), so the right colour is on the first paint too. The
+//   answer is never cached, since it follows the cookies. A page path no
+//   task has registered stays a 404.
 // - /assets/* serves dist/assets/ with @fastify/static. It is public-class
 //   (hashed build output), so the browser fetches the script and stylesheet
 //   for the login redirect's return without a session, and each file is
@@ -31,7 +35,9 @@
 // refused (ShellTemplateError) rather than served with the wrong theme.
 //
 // The cookie name and the color-scheme values are repeated in the web app's
-// src/shell/theme.ts, which writes the cookie; a test checks the name.
+// src/shell/theme.ts, which writes the cookie; a test checks the name. The
+// accent ids, default and cookie name are repeated in src/shell/accent.ts;
+// a test checks those too.
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,25 +93,71 @@ export function colorSchemeFor(theme: Theme): "dark" | "light" | "light dark" {
   return "light dark";
 }
 
+/**
+ * The accent colour schemes (Jon, 2026-11-19), in the order the picker shows
+ * them. The ids, the default and the cookie name are the web app's
+ * (src/shell/accent.ts); a test checks they match.
+ */
+export const ACCENTS = [
+  "bambu-green",
+  "workshop-green",
+  "filament-orange",
+  "spool-teal",
+  "blueprint-indigo",
+  "pla-violet",
+  "coral",
+  "amber",
+  "sky-blue",
+  "magenta",
+  "graphite",
+  "lime",
+] as const;
+
+export type Accent = (typeof ACCENTS)[number];
+
+/** The scheme a browser with no choice gets; keep it the web app's DEFAULT_ACCENT. */
+export const DEFAULT_ACCENT: Accent = "blueprint-indigo";
+
+/** The cookie the web app's accent picker writes. */
+export const ACCENT_COOKIE = "ph_accent";
+
+/** One of ACCENTS; DEFAULT_ACCENT for anything else, a wrong case included. */
+export function resolveAccent(value: unknown): Accent {
+  return (ACCENTS as readonly unknown[]).includes(value) ? (value as Accent) : DEFAULT_ACCENT;
+}
+
 /** index.html lacks the dark defaults the server rewrites. */
 export class ShellTemplateError extends Error {
   override name = "ShellTemplateError";
 }
 
 export interface ShellTemplate {
-  /** index.html with data-theme and color-scheme for this ph_theme cookie value. */
-  render(cookie: string | undefined): string;
+  /**
+   * index.html with data-theme and color-scheme for this ph_theme cookie
+   * value, and data-accent for this ph_accent cookie value.
+   */
+  render(themeCookie: string | undefined, accentCookie?: string | undefined): string;
 }
 
 const HTML_TAG = /<html\b[^>]*>/g;
 const THEME_ATTRIBUTE = ' data-theme="dark"';
+const ACCENT_ATTRIBUTE = /\sdata-accent="([^"]*)"/g;
 const COLOR_SCHEME_META = /<meta name="color-scheme" content="dark"(\s*\/?)>/g;
+
+/** One place render writes: length characters of the template at `at` become value. */
+interface Cut {
+  at: number;
+  length: number;
+  value(theme: Theme, accent: Accent): string;
+}
 
 /**
  * Checks index.html once and returns its renderer. The template must hold
  * exactly one html element carrying data-theme="dark" and exactly one
- * color-scheme meta reading dark, the defaults the web app ships; render
- * changes those two places and nothing else.
+ * color-scheme meta reading dark, the defaults the web app ships. The html
+ * element may carry one data-accent naming a known scheme, a placeholder
+ * render replaces; without one, render adds data-accent right after
+ * data-theme. render changes those places and nothing else.
  */
 export function parseShellTemplate(html: string): ShellTemplate {
   const htmlTags = [...html.matchAll(HTML_TAG)];
@@ -125,22 +177,57 @@ export function parseShellTemplate(html: string): ShellTemplate {
   }
   const meta = metas[0] as RegExpExecArray;
 
-  // The template cut at the two places render writes, in document order.
   const themeAt = htmlTag.index + attributeAt + ' data-theme="'.length;
   const schemeAt = meta.index + '<meta name="color-scheme" content="'.length;
-  const cuts = [
-    { at: themeAt, value: (theme: Theme) => theme },
-    { at: schemeAt, value: colorSchemeFor },
-  ].sort((a, b) => a.at - b.at);
-  const [first, second] = cuts as [(typeof cuts)[0], (typeof cuts)[0]];
-  const head = html.slice(0, first.at);
-  const middle = html.slice(first.at + "dark".length, second.at);
-  const tail = html.slice(second.at + "dark".length);
+  const cuts: Cut[] = [
+    { at: themeAt, length: "dark".length, value: (theme) => theme },
+    { at: schemeAt, length: "dark".length, value: (theme) => colorSchemeFor(theme) },
+  ];
+
+  const accentMentions = htmlTag[0].split("data-accent").length - 1;
+  const accents = [...htmlTag[0].matchAll(ACCENT_ATTRIBUTE)];
+  if (accentMentions === 0) {
+    // No placeholder: add the attribute just after data-theme's closing quote.
+    cuts.push({
+      at: themeAt + "dark".length + 1,
+      length: 0,
+      value: (_theme, accent) => ` data-accent="${accent}"`,
+    });
+  } else {
+    const placeholder = accents[0];
+    if (accentMentions !== 1 || accents.length !== 1 || placeholder === undefined) {
+      throw new ShellTemplateError("index.html's html element carries more than one data-accent");
+    }
+    const value = placeholder[1] as string;
+    if (!(ACCENTS as readonly string[]).includes(value)) {
+      throw new ShellTemplateError("index.html's data-accent is not a known accent scheme");
+    }
+    cuts.push({
+      at: htmlTag.index + placeholder.index + ' data-accent="'.length,
+      length: value.length,
+      value: (_theme, accent) => accent,
+    });
+  }
+
+  // The template cut at the places render writes, in document order.
+  cuts.sort((a, b) => a.at - b.at);
+  const pieces: string[] = [];
+  let from = 0;
+  for (const cut of cuts) {
+    pieces.push(html.slice(from, cut.at));
+    from = cut.at + cut.length;
+  }
+  pieces.push(html.slice(from));
 
   return {
-    render(cookie) {
-      const theme = resolveTheme(cookie);
-      return `${head}${first.value(theme)}${middle}${second.value(theme)}${tail}`;
+    render(themeCookie, accentCookie) {
+      const theme = resolveTheme(themeCookie);
+      const accent = resolveAccent(accentCookie);
+      let out = pieces[0] as string;
+      cuts.forEach((cut, i) => {
+        out += cut.value(theme, accent) + (pieces[i + 1] as string);
+      });
+      return out;
     },
   };
 }
@@ -207,7 +294,7 @@ export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<
     }
     return reply
       .type("text/html; charset=utf-8")
-      .send(loaded.render(request.cookies[THEME_COOKIE]));
+      .send(loaded.render(request.cookies[THEME_COOKIE], request.cookies[ACCENT_COOKIE]));
   }
 
   for (const url of SHELL_PAGES) app.get(url, shell);
