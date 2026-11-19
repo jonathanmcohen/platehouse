@@ -596,6 +596,39 @@ describe("bulk actions", () => {
     expect(dialog()).not.toBeNull();
   });
 
+  test("a tag typed but not yet added to the list is added too (issue #257)", async () => {
+    await twoSelected();
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "PLA");
+    expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("false");
+    await click(dialogButton("Add tags"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA"] } },
+    ]);
+    expect(dialog()).toBeNull();
+    expect(container.textContent).toContain("Added PLA to 2 models.");
+  });
+
+  test("a typed tag joins the list once, ignoring capitals, and blank text is not a tag", async () => {
+    await twoSelected();
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "Desk");
+    await submit(input.form);
+    // Typed again in other capitals and not added: it is already in the list.
+    await type(input, "desk");
+    await click(dialogButton("Add tags"));
+    expect(posted.at(-1)?.body.tags).toEqual(["Desk"]);
+
+    await click(button("Add tags"));
+    const again = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(again, "   ");
+    expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("true");
+    await click(dialogButton("Add tags"));
+    expect(posted).toHaveLength(1);
+  });
+
   test("Remove tag: pick one of the library's tags", async () => {
     await twoSelected();
     await click(button("Remove tag"));

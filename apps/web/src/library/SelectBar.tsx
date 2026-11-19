@@ -8,7 +8,8 @@
 //   Clear selection.
 // - The actions, each marked aria-disabled and ignoring a press while
 //   nothing is selected: Add tags (type tags or pick the library's, in a
-//   ChipEditor; a model's own tags are kept), Remove tag (one of the
+//   ChipEditor; a tag typed but not yet added to the list is sent too; a
+//   model's own tags are kept), Remove tag (one of the
 //   library's tags), Add to collection (an existing one offered, or a new
 //   name) and Move to trash (ConfirmDialog, the app's own, with the count;
 //   the trash keeps a model 30 days and it can be restored there). Each is one
@@ -129,7 +130,12 @@ function AddTagsDialog({
   onCancel(): void;
 }) {
   const [pending, setPending] = useState<string[]>([]);
+  /** Text typed in the tag input but not yet added to the list (issue #257). */
+  const [draft, setDraft] = useState("");
   const { busy, run, close, alert } = useRun(onCancel);
+  // Add tags sends the list and any tag still being typed, so typing PLA and
+  // pressing Add tags adds PLA rather than doing nothing.
+  const toSend = withTag(pending, draft);
   return (
     <Dialog title={`Add tags to ${models(count)}`} onClose={close}>
       <p>Type a tag and press Enter, or pick one of the library's. Tags they have are kept.</p>
@@ -139,25 +145,29 @@ function AddTagsDialog({
         addButton="Add to the list"
         removeLabel={(tag) => `Take ${tag} off the list`}
         suggestions={tags}
-        onAdd={async (tag) =>
-          setPending((list) =>
-            list.some((t) => t.toLowerCase() === tag.toLowerCase()) ? list : [...list, tag],
-          )
-        }
+        onDraft={setDraft}
+        onAdd={async (tag) => setPending((list) => withTag(list, tag))}
         onRemove={async (tag) => setPending((list) => list.filter((t) => t !== tag))}
       />
       {alert}
       <DialogActions
         label="Add tags"
         busy={busy}
-        blocked={pending.length === 0}
+        blocked={toSend.length === 0}
         onGo={() => {
-          if (pending.length > 0) void run(() => onSubmit(pending));
+          if (toSend.length > 0) void run(() => onSubmit(toSend));
         }}
         onCancel={close}
       />
     </Dialog>
   );
+}
+
+/** list with tag added, unless it is blank or already there ignoring capitals. */
+function withTag(list: string[], tag: string): string[] {
+  const name = tag.trim();
+  if (name === "" || list.some((t) => t.toLowerCase() === name.toLowerCase())) return list;
+  return [...list, name];
 }
 
 function RemoveTagDialog({
