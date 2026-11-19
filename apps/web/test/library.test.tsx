@@ -384,10 +384,12 @@ describe("card shows time and weight only when every plate is known", () => {
 // reads: it asks for the library again, never anything that slices.
 describe("the header's printer switch", () => {
   /** A server whose My printers are the P1S (default) and the A1 mini. */
-  function twoPrinters(calls: Array<{ url: string; method: string }>) {
+  /** hold, when given, keeps the answer for the A1 mini until it resolves. */
+  function twoPrinters(calls: Array<{ url: string; method: string }>, hold?: Promise<void>) {
     const fetchStub = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = new URL(String(input), "https://platehouse.test");
       calls.push({ url: `${url.pathname}${url.search}`, method: init.method ?? "GET" });
+      if (hold !== undefined && url.searchParams.get("printer") === A1_MINI) await hold;
       const json = (body: unknown) =>
         new Response(JSON.stringify(body), {
           status: 200,
@@ -459,6 +461,31 @@ describe("the header's printer switch", () => {
     expect(calls.every((c) => c.method === "GET" && c.url.startsWith("/app/api/library"))).toBe(
       true,
     );
+  });
+
+  test("the switch stays on the page, focused and showing the choice, while the grid reloads", async () => {
+    // On Windows an arrow key on a focused, closed select chooses at once, so
+    // a switch that left the page during the reload would drop the keyboard
+    // user's focus to the page body on the first arrow press.
+    let release: () => void = () => {};
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    twoPrinters([], hold);
+    await render(libraryAt("/"));
+    const select = printerSwitch();
+    select.focus();
+    await choose(select, A1_MINI);
+    expect(container.textContent).toContain("Loading the library");
+    expect(printerSwitch()).toBe(select);
+    expect(select.value).toBe(A1_MINI);
+    expect(document.activeElement).toBe(select);
+    release();
+    await settle();
+    expect(container.textContent).toContain("2h 30m");
+    expect(printerSwitch()).toBe(select);
+    expect(select.value).toBe(A1_MINI);
+    expect(document.activeElement).toBe(select);
   });
 
   test("the choice is kept for the next visit, and a printer since removed falls back", async () => {

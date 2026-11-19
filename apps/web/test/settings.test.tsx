@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
 import { LibraryPage } from "../src/library/LibraryPage";
-import { howLong } from "../src/settings/PrinterMenu";
+import { howLong, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
 import { TagsPage } from "../src/tags/TagsPage";
@@ -722,6 +722,46 @@ describe("the settings page", () => {
     expect(document.querySelectorAll("[data-my-printer]")[1]?.textContent).toContain(
       "463 plates waiting to be estimated",
     );
+  });
+
+  test("the waiting counts are read again every WAITING_POLL_MS while any are waiting, and a failed read does not stop it", async () => {
+    // shouldAdvanceTime lets settle()'s zero-delay timers run; the poll is
+    // stepped by hand.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      const line = () => document.querySelectorAll("[data-my-printer]")[1]?.textContent ?? "";
+      const step = async () => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+        });
+        await settle();
+      };
+      expect(line()).toContain("463 plates waiting to be estimated");
+      for (const left of [400, 300]) {
+        state.waiting[X1C] = left;
+        await step();
+        expect(line()).toContain(`${left} plates waiting to be estimated`);
+      }
+      // A read that fails is tried again on the next tick.
+      failing.add("GET /app/api/settings");
+      await step();
+      failing.delete("GET /app/api/settings");
+      state.waiting[X1C] = 200;
+      await step();
+      expect(line()).toContain("200 plates waiting to be estimated");
+      // Once nothing is waiting the page stops asking.
+      state.waiting[X1C] = 0;
+      await step();
+      const reads = callsTo("GET", "/app/api/settings").length;
+      await step();
+      await step();
+      expect(callsTo("GET", "/app/api/settings")).toHaveLength(reads);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("how long a printer takes to estimate is said in plain words", () => {

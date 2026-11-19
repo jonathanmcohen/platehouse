@@ -100,11 +100,13 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   const anyWaiting = view.myPrinters.some((p) => p.waiting > 0);
 
   // The waiting counts are the queue's progress: read them again while any
-  // printer has plates waiting.
+  // printer has plates waiting. An interval, not a one-shot timer: a reload
+  // leaves anyWaiting and reload unchanged, so the effect does not run again
+  // to set a new timer, and a failed reload changes nothing at all.
   useEffect(() => {
     if (!anyWaiting) return;
-    const timer = setTimeout(reload, WAITING_POLL_MS);
-    return () => clearTimeout(timer);
+    const timer = setInterval(reload, WAITING_POLL_MS);
+    return () => clearInterval(timer);
   }, [anyWaiting, reload]);
 
   // After a move the list is drawn in its new order; focus the moved button.
