@@ -54,4 +54,17 @@ describe("slicesThrough", () => {
   test("an empty queue gives no printer a figure", () => {
     expect(slicesThrough([], 0).size).toBe(0);
   });
+
+  test("an estimate with two jobs (an urgent copy of a library one) counts once, where it runs first", () => {
+    const jobs = [
+      { ...job(1, A1), estimateId: "e1" },
+      { ...job(2, A1), estimateId: "e2" },
+      { ...job(3, P1S, 1), estimateId: "e3" },
+      // e3's library job, sent before its urgent copy; it ends at once when it runs.
+      { ...job(0, P1S, 0, 0), estimateId: "e3" },
+    ];
+    const through = slicesThrough(jobs, 0);
+    expect(through.get(P1S)).toBe(1);
+    expect(through.get(A1)).toBe(3);
+  });
 });

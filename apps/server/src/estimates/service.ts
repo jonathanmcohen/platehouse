@@ -154,10 +154,18 @@ export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: 0 });
  * first, then oldest. There is one slicer queue and it runs one slice at a
  * time for every printer, so this, not a printer's own count, is what its
  * waiting plates take. Jobs waiting out a retry delay are counted where
- * they sit; a page's figure is "about".
+ * they sit; a page's figure is "about". An estimate with more than one job
+ * (an urgent copy of a library job, see enqueue) is sliced once, by the
+ * first of them to run, so it counts once, there.
  */
 export function slicesThrough(
-  jobs: ReadonlyArray<{ id: string; printerId: string; priority: number; createdOn: Date }>,
+  jobs: ReadonlyArray<{
+    id: string;
+    printerId: string;
+    priority: number;
+    createdOn: Date;
+    estimateId?: string;
+  }>,
   running: number,
 ): Map<string, number> {
   const order = [...jobs].sort(
@@ -167,9 +175,16 @@ export function slicesThrough(
       a.id.localeCompare(b.id),
   );
   const through = new Map<string, number>();
-  order.forEach((job, i) => {
-    through.set(job.printerId, running + i + 1);
-  });
+  const seen = new Set<string>();
+  let position = running;
+  for (const job of order) {
+    if (job.estimateId !== undefined) {
+      if (seen.has(job.estimateId)) continue;
+      seen.add(job.estimateId);
+    }
+    position += 1;
+    through.set(job.printerId, position);
+  }
   return through;
 }
 
@@ -468,6 +483,16 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       .executeTakeFirst();
   }
 
+  /** Whether the estimate has a job waiting in the queue at priority or higher. */
+  async function queuedAtLeast(estimateId: string, priority: number): Promise<boolean> {
+    const jobs = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
+      queued: true,
+      data: { kind: SLICE_JOB_KIND, estimateId },
+      limit: JOB_PAGE,
+    });
+    return jobs.some((job) => job.priority >= priority);
+  }
+
   async function enqueue(
     plateId: string,
     printer: Printer,
@@ -488,7 +513,23 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       return { estimate: null, queued: false };
     }
     const existing = await repos.estimates.current(plateId, printer.id, orcaVersion);
-    if (existing) return { estimate: existing, queued: false };
+    if (existing) {
+      // Already waiting, but perhaps only as library work: the Orca poll can
+      // queue a new file's plates in the moment between ingest storing them
+      // and the upload queueing them. A plate someone is waiting on then gets
+      // an urgent copy of its job, so it does not wait behind a backfill. The
+      // copy that runs second finds the estimate finished and ends at once,
+      // and the queue's figures count the estimate once (slicesThrough).
+      if (
+        existing.status === "pending" &&
+        priority > SLICE_PRIORITY.library &&
+        !(await queuedAtLeast(existing.id, priority))
+      ) {
+        await sendSlice(existing, priority);
+        return { estimate: existing, queued: true };
+      }
+      return { estimate: existing, queued: false };
+    }
     const estimate = await repos.estimates.upsertPending({
       plateId,
       printerId: printer.id,
@@ -1134,6 +1175,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         printerId: j.data.printerId,
         priority: j.priority,
         createdOn: j.createdOn,
+        estimateId: j.data.estimateId,
       })),
       running.n,
     );

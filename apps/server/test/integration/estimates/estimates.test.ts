@@ -982,6 +982,69 @@ describe("My printers", () => {
     expect((await estimates.queueByPrinter()).size).toBe(0);
   });
 
+  // The Orca poll can run between ingest storing a new file's plates and
+  // onIngested queueing them; it then queues them as library work. The
+  // upload's own queueing must still put them ahead of a long backfill.
+  test("a new file's plates the poll queued first still get urgent slices from the upload", async () => {
+    await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    await drain();
+    const held = stub.hold();
+    const before = stub.calls.length;
+    let ids: string[] = [];
+    try {
+      // A slice of another upload holds the slicer.
+      await upload({ plates: 1 });
+      await until(
+        () => stub.calls.length,
+        (n) => n > before,
+      );
+      // A file ingested without onIngested, as at the moment the poll runs.
+      const direct = await env.ingest.ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 2 })),
+        originalName: "Raced.3mf",
+        target: "new",
+      });
+      expect(await estimates.reestimateAll("poll")).toBe(4);
+      ids = (
+        await env.db
+          .selectFrom("estimates")
+          .innerJoin("plates", "plates.id", "estimates.plateId")
+          .select("estimates.id")
+          .where("plates.fileId", "=", direct.fileId)
+          .execute()
+      ).map((r) => r.id);
+      expect(ids).toHaveLength(4);
+      // Then the upload's own queueing.
+      await estimates.enqueueFile(direct.fileId);
+      const queued = await boss.findJobs<{ estimateId: string }>(QUEUE.slicer, { queued: true });
+      for (const id of ids) {
+        expect(
+          queued.some((j) => j.data.estimateId === id && j.priority === SLICE_PRIORITY.waiting),
+          id,
+        ).toBe(true);
+      }
+      // Each estimate counts once in the queue's figures: the slice running
+      // now, the upload's urgent A1 slice, then the raced file's four urgent
+      // copies (its library copies are not counted again).
+      expect((await estimates.queueByPrinter()).get(A1)?.through).toBe(2 + ids.length);
+    } finally {
+      held.release();
+    }
+    await drain();
+    // The leftover library copies ended without slicing anything twice.
+    const rows = await env.db
+      .selectFrom("estimates")
+      .select(["status", "attempts"])
+      .where("id", "in", ids)
+      .execute();
+    expect(rows.map((r) => [r.status, r.attempts])).toEqual([
+      ["ok", 1],
+      ["ok", 1],
+      ["ok", 1],
+      ["ok", 1],
+    ]);
+  });
+
   test("a new plate queues a slice for every printer, the default first, ahead of library work", async () => {
     await upload({ plates: 1 });
     await upload({ plates: 1 });
@@ -1004,9 +1067,9 @@ describe("My printers", () => {
       expect(stub.calls[before]).toMatchObject({ printer: A1, plate: 1 });
       // A new three-plate file arrives meanwhile.
       const { plates } = await upload({ plates: 3 });
-      await until(
-        async () => {
-          const rows = await env.db
+      const estimateIds = async () =>
+        (
+          await env.db
             .selectFrom("estimates")
             .select("id")
             .where(
@@ -1014,13 +1077,20 @@ describe("My printers", () => {
               "in",
               plates.map((p) => p.id),
             )
-            .where("status", "=", "pending")
-            .execute();
-          return rows.length;
+            .execute()
+        ).map((r) => r.id);
+      // Wait for the upload's own six urgent jobs, not just the six rows: the
+      // Orca poll may have made the rows first, as library work (see the test
+      // above), and the urgent copies follow.
+      const urgent = await until(
+        async () => {
+          const ids = await estimateIds();
+          return (await queuedJobs()).filter(
+            (j) => j.priority === SLICE_PRIORITY.waiting && ids.includes(j.data.estimateId),
+          );
         },
-        (n) => n === 6,
+        (jobs) => jobs.length === 6,
       );
-      const urgent = (await queuedJobs()).filter((j) => j.priority === SLICE_PRIORITY.waiting);
       expect(urgent).toHaveLength(6);
     } finally {
       held.release();
