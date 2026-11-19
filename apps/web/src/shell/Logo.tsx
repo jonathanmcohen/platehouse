@@ -1,6 +1,8 @@
 // The Platehouse logo in the app (icon A, logoArt.ts). It draws in
-// currentColor, and its colour is var(--accent), so it follows whichever
-// colour scheme and theme are in use with no colour of its own. Beside the
+// currentColor and carries the class studio-logo, which studio.css colours
+// with var(--brand), the scheme's own accent colour, so it follows whichever
+// of the twelve schemes and which theme are in use with no colour of its
+// own. Beside the
 // "Platehouse" name (the sidebar's brand) it is aria-hidden, since the text
 // already names it; given a label, it is an image with that name.
 import { FULL_ART, LOGO_VIEWBOX, type LogoArt, SMALL_ART } from "./logoArt";
@@ -15,7 +17,6 @@ export interface LogoProps {
 }
 
 const VIEWBOX = `0 0 ${LOGO_VIEWBOX} ${LOGO_VIEWBOX}`;
-const ACCENT_STYLE = { color: "var(--accent)" };
 
 function Art({ art }: { art: LogoArt }) {
   return (
@@ -53,7 +54,7 @@ export function Logo({ size = 20, small = false, label }: LogoProps) {
         viewBox={VIEWBOX}
         width={size}
         height={size}
-        style={ACCENT_STYLE}
+        className="studio-logo"
         aria-hidden="true"
         focusable="false"
       >
@@ -67,7 +68,7 @@ export function Logo({ size = 20, small = false, label }: LogoProps) {
       viewBox={VIEWBOX}
       width={size}
       height={size}
-      style={ACCENT_STYLE}
+      className="studio-logo"
       role="img"
       aria-label={label}
       focusable="false"

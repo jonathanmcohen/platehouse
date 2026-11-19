@@ -38,9 +38,10 @@ for (const { theme, accent, brand, fill } of CASES) {
     const res = await page.goto(`${ORIGIN}/`, { waitUntil: "load" });
     expect(res?.status()).toBe(200);
     expect(await res?.text()).toContain(`data-theme="${theme}" data-accent="${accent}"`);
-    const dot = page.locator(".studio-brand-dot");
-    await expect(dot).toBeVisible();
-    await expect(dot).toHaveCSS("background-color", brand);
+    // The sidebar logo draws in currentColor, so its color is the scheme's.
+    const logo = page.locator(".studio-brand .studio-logo");
+    await expect(logo).toBeVisible();
+    await expect(logo).toHaveCSS("color", brand);
     await expect(page.locator(".studio-topbar .studio-button-primary")).toHaveCSS(
       "background-color",
       fill,
@@ -58,8 +59,5 @@ test("an unknown ph_accent gets the default scheme", async ({ page, context }) =
   expect(res?.status()).toBe(200);
   // Blueprint indigo, the default (Jon, 2026-11-19): #596eec in dark.
   expect(await res?.text()).toContain('data-accent="blueprint-indigo"');
-  await expect(page.locator(".studio-brand-dot")).toHaveCSS(
-    "background-color",
-    "rgb(89, 110, 236)",
-  );
+  await expect(page.locator(".studio-brand .studio-logo")).toHaveCSS("color", "rgb(89, 110, 236)");
 });

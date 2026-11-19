@@ -358,8 +358,11 @@ describe("the palettes map the scheme onto the tokens", () => {
     for (const selector of themed) expect(selector).toContain(ENABLED_HOVER);
   });
 
+  // The logo (Logo.tsx, class studio-logo) draws in currentColor, so its
+  // colour is the rule's color. It replaced the brand dot, whose rule is gone.
   test("the logo is drawn with --brand", () => {
-    expect(TOP).toMatch(/\.studio-brand-dot\s*\{[^}]*background:\s*var\(--brand\)/);
+    expect(TOP).toMatch(/\.studio-logo\s*\{[^}]*(?<![-\w])color:\s*var\(--brand\)/);
+    expect(TOP).not.toContain(".studio-brand-dot");
   });
 
   test("danger is unchanged in both themes", () => {
