@@ -15,7 +15,10 @@
 //   shown. Error text the app stored (Orca's detail, OpenSCAD's message, an
 //   inbox reason) goes through scrubText (src/scrub.ts, shared with the
 //   model page and the Public API v1) first, so no file system path,
-//   address, host name, signed URL or token reaches the page.
+//   address, host name, signed URL or token reaches the page. A failed
+//   render's or conversion's message goes through scrubDerivedMessage, as
+//   on the model page, so a long one keeps its end, where OpenSCAD's ERROR
+//   line is (issue #273).
 // - The database is read in one read-only REPEATABLE READ transaction, one
 //   query after another on its one connection, so the numbers come from one
 //   snapshot and a poll never holds more than one pooled connection. The
@@ -35,7 +38,7 @@ import { FAILED_DIR, REASON_SUFFIX } from "../inbox/watch.js";
 import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
 import { activityRepo, type QueueCount } from "../repos/activity.js";
 import { settingsRepo } from "../repos/settings.js";
-import { scrubDetail, scrubText } from "../scrub.js";
+import { scrubDerivedMessage, scrubDetail, scrubText } from "../scrub.js";
 import { appApiScope, need } from "./settings.js";
 
 /** The Activity page's route, session-class (the Route classes contract). */
@@ -463,7 +466,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           kind: d.kind === "scad" ? "scad" : "step",
           model: { id: d.modelId, name: d.modelName },
           file: { id: d.fileId, name: d.fileName },
-          message: scrubDetail(d.message),
+          message: scrubDerivedMessage(d.message),
         }));
 
       const working =
