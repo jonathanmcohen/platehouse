@@ -886,7 +886,9 @@ const NO_CONTENT = { description: "Done", type: "null" } as const;
 /** 400 for a tag or collection change. */
 const LABEL_BAD_REQUEST = {
   ...BAD_REQUEST_DOC,
-  description: "The tag or collection name is blank or over 100 characters",
+  // Not "over 100 characters": a longer name is the router's 414 before this
+  // route runs (openapi.ts PARAM_TOO_LONG_DOC).
+  description: "The tag or collection name is blank",
   examples: [{ error: "bad_request", message: 'params/tag must match pattern "\\S"' }],
 } as const;
 

@@ -117,6 +117,14 @@ describe("the OpenAPI document", () => {
     ["/models", "post", "400", "takes a body or query parameters but 400 is not documented"],
     ["/models", "get", "400", "takes a body or query parameters but 400 is not documented"],
     ["/uploads/{id}", "patch", "404", "takes a path parameter but 404 is not documented"],
+    ["/models/{id}", "get", "414", "takes a path parameter but 414 is not documented"],
+    ["/uploads/{id}", "head", "414", "takes a path parameter but 414 is not documented"],
+    [
+      "/collections/{name}/models/{id}",
+      "delete",
+      "414",
+      "takes a path parameter but 414 is not documented",
+    ],
     ["/models/{id}/tags/{tag}", "put", "401", "401 is not documented"],
   ])("a %s %s that loses its %s is caught", (path, method, what, line) => {
     const broken = structuredClone(doc);
@@ -150,7 +158,58 @@ describe("the OpenAPI document", () => {
       if (get === undefined || head === undefined) continue;
       expect(head.summary, path).not.toBe(get.summary);
       expect(head.description, path).toMatch(/no body/i);
+      // Same answers, each with the GET's headers and no body (issue #261).
+      expect(Object.keys(head.responses ?? {}), path).toEqual(Object.keys(get.responses ?? {}));
+      for (const [code, answer] of Object.entries(get.responses ?? {})) {
+        const headAnswer = head.responses?.[code];
+        expect(headAnswer?.content, `HEAD ${path} ${code}`).toBeUndefined();
+        expect(headAnswer?.headers, `HEAD ${path} ${code}`).toEqual(answer.headers);
+      }
     }
+    const content = doc.paths["/files/{id}/content"]?.head?.responses;
+    expect(Object.keys(content?.["200"]?.headers ?? {})).toEqual([
+      "Content-Disposition",
+      "Content-Length",
+    ]);
+    expect(Object.keys(content?.["401"]?.headers ?? {})).toEqual(["WWW-Authenticate"]);
+  });
+
+  test("a response header written in the wrong form is caught", () => {
+    const broken = structuredClone(doc);
+    const answer = broken.paths["/uploads"]?.post?.responses?.["201"];
+    expect(answer?.headers?.Location).toBeDefined();
+    if (answer?.headers !== undefined) {
+      // What @fastify/swagger makes of a header given as {description, schema}.
+      answer.headers.Location = { description: "x", schema: { schema: { type: "string" } } };
+    }
+    expect(problems(broken)).toContain("POST /uploads 201: header Location has no typed schema");
+  });
+
+  test("every operation with a path parameter documents the router's 414, in its real shape", () => {
+    let withParams = 0;
+    for (const [path, item] of Object.entries(doc.paths)) {
+      for (const [method, op] of Object.entries(item)) {
+        const hasPath = (op.parameters ?? []).some((p) => p.in === "path");
+        const answer = op.responses?.["414"];
+        if (!hasPath) {
+          expect(answer, `${method} ${path}`).toBeUndefined();
+          continue;
+        }
+        withParams += 1;
+        expect(answer?.description, `${method} ${path}`).toMatch(/100 characters/);
+        if (method === "head") continue;
+        expect(answer?.content?.["application/json"]?.example, `${method} ${path}`).toEqual({
+          error: "URI Too Long",
+          code: "FST_ERR_MAX_PARAM_LENGTH",
+          statusCode: 414,
+        });
+      }
+    }
+    expect(withParams).toBeGreaterThan(10);
+    // A tag or collection name over 100 characters is the 414, so the 400
+    // does not claim it.
+    const tag400 = doc.paths["/models/{id}/tags/{tag}"]?.put?.responses?.["400"]?.description;
+    expect(tag400).not.toMatch(/100/);
   });
 
   test("describes the token scheme and the server from PUBLIC_ORIGIN", () => {

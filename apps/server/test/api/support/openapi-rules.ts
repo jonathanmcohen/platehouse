@@ -129,6 +129,21 @@ export function problems(doc: OpenApiDoc): string[] {
       if (params.some((p) => p.in === "path") && !codes.includes("404")) {
         found.push(`${where}: takes a path parameter but 404 is not documented`);
       }
+      // The router answers 414 for a path parameter over 100 characters,
+      // before any route or hook runs.
+      if (params.some((p) => p.in === "path") && !codes.includes("414")) {
+        found.push(`${where}: takes a path parameter but 414 is not documented`);
+      }
+      // A response header is a description and a schema with a type; a
+      // schema nested in a schema is a header written in the wrong form.
+      for (const [code, response] of responses) {
+        for (const [name, header] of Object.entries(response.headers ?? {})) {
+          const schema = header.schema as { type?: unknown; schema?: unknown } | undefined;
+          if (schema === undefined || typeof schema.type !== "string" || "schema" in schema) {
+            found.push(`${where} ${code}: header ${name} has no typed schema`);
+          }
+        }
+      }
       const takesInput = op.requestBody !== undefined || params.some((p) => p.in === "query");
       if (takesInput && !codes.includes("400")) {
         found.push(`${where}: takes a body or query parameters but 400 is not documented`);

@@ -141,7 +141,16 @@
             "description": "The OpenAPI 3.0 document"
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
@@ -569,7 +578,16 @@
             "description": "A parameter is outside its limits, the cursor is not one this API made, or externalRef was sent with another parameter"
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
@@ -1550,6 +1568,37 @@
               }
             }
           },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
             "content": {
@@ -1625,10 +1674,22 @@
             "description": "The model"
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "404": {
             "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
           },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
@@ -2120,6 +2181,37 @@
               }
             }
           },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
             "content": {
@@ -2195,10 +2287,22 @@
             "description": "The file"
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "404": {
             "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
           },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
@@ -2309,6 +2413,37 @@
               }
             }
           },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
             "content": {
@@ -2382,13 +2517,39 @@
         ],
         "responses": {
           "200": {
-            "description": "The file. Content-Type is the file's own (model/3mf, model/stl, model/step, or text/plain; charset=utf-8 for .scad)."
+            "description": "The file. Content-Type is the file's own (model/3mf, model/stl, model/step, or text/plain; charset=utf-8 for .scad).",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "attachment, with the file's name"
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "The file's size in bytes"
+              }
+            }
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "404": {
             "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
           },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
@@ -2436,7 +2597,7 @@
             "description": "Done"
           },
           "400": {
-            "description": "The tag or collection name is blank or over 100 characters",
+            "description": "The tag or collection name is blank",
             "content": {
               "application/json": {
                 "schema": {
@@ -2452,7 +2613,7 @@
                     }
                   },
                   "required": ["error"],
-                  "description": "The tag or collection name is blank or over 100 characters"
+                  "description": "The tag or collection name is blank"
                 },
                 "example": {
                   "error": "bad_request",
@@ -2512,6 +2673,37 @@
                 },
                 "example": {
                   "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
                 }
               }
             }
@@ -2604,7 +2796,7 @@
             "description": "Done"
           },
           "400": {
-            "description": "The tag or collection name is blank or over 100 characters",
+            "description": "The tag or collection name is blank",
             "content": {
               "application/json": {
                 "schema": {
@@ -2620,7 +2812,7 @@
                     }
                   },
                   "required": ["error"],
-                  "description": "The tag or collection name is blank or over 100 characters"
+                  "description": "The tag or collection name is blank"
                 },
                 "example": {
                   "error": "bad_request",
@@ -2680,6 +2872,37 @@
                 },
                 "example": {
                   "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
                 }
               }
             }
@@ -2774,7 +2997,7 @@
             "description": "Done"
           },
           "400": {
-            "description": "The tag or collection name is blank or over 100 characters",
+            "description": "The tag or collection name is blank",
             "content": {
               "application/json": {
                 "schema": {
@@ -2790,7 +3013,7 @@
                     }
                   },
                   "required": ["error"],
-                  "description": "The tag or collection name is blank or over 100 characters"
+                  "description": "The tag or collection name is blank"
                 },
                 "example": {
                   "error": "bad_request",
@@ -2850,6 +3073,37 @@
                 },
                 "example": {
                   "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
                 }
               }
             }
@@ -2942,7 +3196,7 @@
             "description": "Done"
           },
           "400": {
-            "description": "The tag or collection name is blank or over 100 characters",
+            "description": "The tag or collection name is blank",
             "content": {
               "application/json": {
                 "schema": {
@@ -2958,7 +3212,7 @@
                     }
                   },
                   "required": ["error"],
-                  "description": "The tag or collection name is blank or over 100 characters"
+                  "description": "The tag or collection name is blank"
                 },
                 "example": {
                   "error": "bad_request",
@@ -3018,6 +3272,37 @@
                 },
                 "example": {
                   "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
                 }
               }
             }
@@ -3122,26 +3407,20 @@
             "headers": {
               "Location": {
                 "schema": {
-                  "schema": {
-                    "type": "string",
-                    "example": "/api/v1/uploads/0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b"
-                  }
+                  "type": "string",
+                  "example": "/api/v1/uploads/0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b"
                 },
                 "description": "The upload's address, relative to the server"
               },
               "Tus-Resumable": {
                 "schema": {
-                  "schema": {
-                    "type": "string"
-                  }
+                  "type": "string"
                 },
                 "description": "1.0.0"
               },
               "Upload-Offset": {
                 "schema": {
-                  "schema": {
-                    "type": "integer"
-                  }
+                  "type": "integer"
                 },
                 "description": "Bytes taken so far, with creation-with-upload"
               }
@@ -3163,9 +3442,8 @@
             "headers": {
               "WWW-Authenticate": {
                 "schema": {
-                  "schema": {
-                    "type": "string"
-                  }
+                  "type": "string",
+                  "enum": ["Bearer"]
                 },
                 "description": "Always Bearer"
               }
@@ -3335,24 +3613,29 @@
             "headers": {
               "Upload-Offset": {
                 "schema": {
-                  "schema": {
-                    "type": "integer"
-                  }
+                  "type": "integer"
                 },
                 "description": "Bytes received"
               },
               "Upload-Length": {
                 "schema": {
-                  "schema": {
-                    "type": "integer"
-                  }
+                  "type": "integer"
                 },
                 "description": "The upload's size"
               }
             }
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "404": {
             "description": "No such upload"
@@ -3362,6 +3645,37 @@
           },
           "412": {
             "description": "The Tus-Resumable header is missing"
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
           },
           "500": {
             "description": "Something unexpected went wrong"
@@ -3440,9 +3754,7 @@
             "headers": {
               "Upload-Offset": {
                 "schema": {
-                  "schema": {
-                    "type": "integer"
-                  }
+                  "type": "integer"
                 },
                 "description": "Bytes received, this body included"
               }
@@ -3464,9 +3776,8 @@
             "headers": {
               "WWW-Authenticate": {
                 "schema": {
-                  "schema": {
-                    "type": "string"
-                  }
+                  "type": "string",
+                  "enum": ["Bearer"]
                 },
                 "description": "Always Bearer"
               }
@@ -3552,6 +3863,37 @@
                   "type": "string"
                 },
                 "example": "upload's size exceeded\n"
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
               }
             }
           },
@@ -3719,9 +4061,8 @@
             "headers": {
               "WWW-Authenticate": {
                 "schema": {
-                  "schema": {
-                    "type": "string"
-                  }
+                  "type": "string",
+                  "enum": ["Bearer"]
                 },
                 "description": "Always Bearer"
               }
@@ -3764,6 +4105,37 @@
                 },
                 "example": {
                   "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
                 }
               }
             }
@@ -3841,10 +4213,22 @@
             "description": "The upload's state. pending while it is arriving or being imported; done with the model and file, and duplicates: the files of live models that already held the same bytes (empty when none did); or failed with a message. A duplicate refused under duplicates skip is failed with code duplicate and the duplicates it matched, so the client can point at the model or send the file again with duplicates allow. Other failures carry no code."
           },
           "401": {
-            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
           },
           "404": {
             "description": "No such upload, or its result is more than 24 hours old"
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
           },
           "500": {
             "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."

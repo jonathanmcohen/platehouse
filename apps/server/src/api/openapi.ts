@@ -13,7 +13,9 @@
 // - HEAD routes are listed too, the tus resume check among them. A HEAD that
 //   Fastify answers for a GET route is described as headers only: the GET's
 //   summary and description, said to have no body, and its answers without
-//   their bodies (headOnly).
+//   their bodies but with their headers (headOnly).
+// - Every operation with a path parameter also lists the router's 414 for a
+//   parameter over 100 characters (withParamLimit), which no route sees.
 // - Every operation needs the bearer token (the bearer security scheme) and
 //   lists its 401, the 503 a token check gives while the database is down,
 //   and the 500 of anything unexpected.
@@ -336,7 +338,7 @@ const TUS_500 = text(
 );
 const UNAUTHORIZED_RESPONSE = {
   description: UNAUTHORIZED_DOC.description,
-  headers: { "WWW-Authenticate": { description: "Always Bearer", schema: { type: "string" } } },
+  headers: UNAUTHORIZED_DOC.headers,
   content: {
     "application/json": {
       schema: {
@@ -406,13 +408,14 @@ const TUS_DOCS: Record<string, FastifySchema> = {
           "there. With creation-with-upload, Upload-Offset says how many bytes were taken.",
         headers: {
           Location: {
+            type: "string",
             description: "The upload's address, relative to the server",
-            schema: { type: "string", example: `/api/v1/uploads/${EXAMPLE_IDS.upload}` },
+            example: `/api/v1/uploads/${EXAMPLE_IDS.upload}`,
           },
-          "Tus-Resumable": { description: "1.0.0", schema: { type: "string" } },
+          "Tus-Resumable": { type: "string", description: "1.0.0" },
           "Upload-Offset": {
+            type: "integer",
             description: "Bytes taken so far, with creation-with-upload",
-            schema: { type: "integer" },
           },
         },
         type: "null",
@@ -469,12 +472,16 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       200: {
         description: "Upload-Offset and Upload-Length; no body",
         headers: {
-          "Upload-Offset": { description: "Bytes received", schema: { type: "integer" } },
-          "Upload-Length": { description: "The upload's size", schema: { type: "integer" } },
+          "Upload-Offset": { type: "integer", description: "Bytes received" },
+          "Upload-Length": { type: "integer", description: "The upload's size" },
         },
         type: "null",
       },
-      401: { description: UNAUTHORIZED_DOC.description, type: "null" },
+      401: {
+        description: UNAUTHORIZED_DOC.description,
+        headers: UNAUTHORIZED_DOC.headers,
+        type: "null",
+      },
       404: { description: "No such upload", type: "null" },
       410: {
         description: "The upload is gone and nothing was saved; send the file again",
@@ -527,10 +534,7 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       204: {
         description: "Taken; Upload-Offset is the new offset",
         headers: {
-          "Upload-Offset": {
-            description: "Bytes received, this body included",
-            schema: { type: "integer" },
-          },
+          "Upload-Offset": { type: "integer", description: "Bytes received, this body included" },
         },
         type: "null",
       },
@@ -693,19 +697,25 @@ function withPlateNumbers(value: unknown): unknown {
 
 /**
  * A HEAD that Fastify answers for a GET route: the GET's documentation, said
- * to be headers only, with every answer's body taken off. HEAD gets its own
- * operationId from @fastify/swagger (the GET's with -head).
+ * to be headers only, with every answer's body taken off and its headers
+ * kept (Content-Length and Content-Disposition on a file's bytes,
+ * WWW-Authenticate on the 401; issue #261). HEAD gets its own operationId
+ * from @fastify/swagger (the GET's with -head).
  */
 function headOnly(get: FastifySchema): FastifySchema {
   const doc = get as FastifySchema & {
     summary?: string;
     description?: string;
-    response?: Record<string, { description?: string }>;
+    response?: Record<string, { description?: string; headers?: unknown }>;
   };
   const response = Object.fromEntries(
     Object.entries(doc.response ?? {}).map(([code, answer]) => [
       code,
-      { description: answer.description ?? "", type: "null" },
+      {
+        description: answer.description ?? "",
+        ...(answer.headers === undefined ? {} : { headers: answer.headers }),
+        type: "null",
+      },
     ]),
   );
   return {
@@ -717,8 +727,41 @@ function headOnly(get: FastifySchema): FastifySchema {
 }
 
 /**
+ * The router's answer to a path parameter over its maxParamLength (100, not
+ * changed in app.ts), measured after percent-decoding. It comes before any
+ * hook or route, so before the token is read and before a route's own
+ * validation: a tag or collection name over 100 characters is this 414,
+ * never a 400. app.ts frameworkError writes it in Fastify's own shape.
+ */
+export const PARAM_TOO_LONG_DOC = {
+  description:
+    "A path parameter is over 100 characters once percent-decoded. The server answers " +
+    "this before it reads the token, in its own error shape rather than the API's.",
+  type: "object",
+  properties: {
+    error: { type: "string", enum: ["URI Too Long"] },
+    code: { type: "string", enum: ["FST_ERR_MAX_PARAM_LENGTH"] },
+    statusCode: { type: "integer", enum: [414] },
+  },
+  required: ["error", "code", "statusCode"],
+  examples: [{ error: "URI Too Long", code: "FST_ERR_MAX_PARAM_LENGTH", statusCode: 414 }],
+} as const;
+
+/**
+ * The schema with the 414 added when the route's path has a parameter. Only
+ * the document gains it: the route's own schema, which Fastify serializes
+ * with, is never changed, and the 414 never reaches a route anyway.
+ */
+function withParamLimit(url: string, schema: FastifySchema): FastifySchema {
+  if (!/\/:[A-Za-z0-9_]+/.test(url)) return schema;
+  const doc = schema as FastifySchema & { response?: Record<string, unknown> };
+  return { ...doc, response: { ...doc.response, 414: PARAM_TOO_LONG_DOC } } as FastifySchema;
+}
+
+/**
  * What the document says of one route: hidden unless it is under /api/v1/,
- * the tus routes' own description, or the route's schema as registered.
+ * the tus routes' own description, or the route's schema as registered; with
+ * the 414 on a route with a path parameter (withParamLimit).
  */
 export function describeRoute(
   method: string,
@@ -732,13 +775,14 @@ export function describeRoute(
     TUS_DOCS[`${method} ${pattern}`] ??
     (method === "HEAD" ? TUS_DOCS[`GET ${pattern}`] : undefined);
   if (tus !== undefined) {
-    if (method !== "HEAD" || TUS_DOCS[`HEAD ${pattern}`] !== undefined) return tus;
+    const limited = withParamLimit(pattern, tus);
+    if (method !== "HEAD" || TUS_DOCS[`HEAD ${pattern}`] !== undefined) return limited;
     // The tus routes have no schema, so @fastify/swagger cannot give their
     // HEAD its -head operationId as it does a v1 route's; it is set here.
     const { operationId } = tus as { operationId?: string };
-    return { ...headOnly(tus), operationId: `${operationId}-head` } as FastifySchema;
+    return { ...headOnly(limited), operationId: `${operationId}-head` } as FastifySchema;
   }
-  const documented = withPlateNumbers(own) as FastifySchema;
+  const documented = withParamLimit(pattern, withPlateNumbers(own) as FastifySchema);
   // Fastify answers HEAD for every GET route with the GET's schema.
   return method === "HEAD" ? headOnly(documented) : documented;
 }

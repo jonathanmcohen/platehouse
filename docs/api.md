@@ -110,9 +110,16 @@ lists its answers.
 
 Two answers come from the server itself rather than from an API operation, and use its own
 shape: a path under `/api/v1` that the API does not have answers `404` with
-`{"error": "Not Found", "statusCode": 404}` (and `401` first, without a token), and an id or
-other path parameter over 100 characters answers `414` with `error`, `code` and `statusCode`
-before the token is read.
+`{"error": "Not Found", "statusCode": 404}` (and `401` first, without a token), and a path
+parameter, such as an id or a tag or collection name, over 100 characters once percent-decoded
+answers `414` before the token is read:
+
+```json
+{ "error": "URI Too Long", "code": "FST_ERR_MAX_PARAM_LENGTH", "statusCode": 414 }
+```
+
+So a tag or collection name over 100 characters is this `414`, not a `400`; the `400` on those
+routes is for a blank name.
 
 Taking off a tag a model does not have, or taking a model out of a collection it is not in,
 is not an error: it answers `204` like any other success.
@@ -128,9 +135,9 @@ is not an error: it answers `204` like any other success.
 | Models per search page                        | 1 to 200, 50 by default                                            |
 | The search text `q`                           | 200 characters                                                     |
 | A model's name                                | 1 to 500 characters, not blank                                     |
-| A tag or collection name                      | 1 to 100 characters, not blank                                     |
+| A tag or collection name                      | 1 to 100 characters, not blank; longer in a path is `414`          |
 | Tags or collections given when making a model | 100 of each                                                        |
-| One path segment, such as an id               | 100 characters; a longer one is answered `414`                     |
+| One path parameter, such as an id             | 100 characters once decoded; a longer one is answered `414`        |
 | One request                                   | about 72 minutes, enough to send 512 MiB at 1 Mbit/s               |
 | An unfinished upload                          | deleted after 24 hours without a byte                              |
 | An upload's result                            | kept for 24 hours                                                  |
@@ -334,16 +341,22 @@ MODEL=$(printf '%s' 0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f | base64 | tr -d '\n')
 # then, in step 1:  -H "Upload-Metadata: filename $NAME,modelId $MODEL"
 ```
 
-To send the same file in 8 MiB chunks, resuming after any failure, replace step 2 with:
+To send the same file in 8 MiB chunks, resuming after a dropped connection or a passing error,
+replace step 2 with:
 
 ```sh
 CHUNK=$((8 * 1024 * 1024))
 while :; do
-  OFFSET=$(curl -sS -I "$PLATEHOUSE$LOCATION" \
+  HEAD=$(curl -sS -I "$PLATEHOUSE$LOCATION" \
     -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
-    -H "Tus-Resumable: 1.0.0" \
-    | tr -d '\r' | awk 'tolower($1) == "upload-offset:" { print $2 }')
-  [ -n "$OFFSET" ] || { echo "The upload is gone; start again." >&2; break; }
+    -H "Tus-Resumable: 1.0.0" | tr -d '\r')
+  STATUS=$(printf '%s\n' "$HEAD" | awk 'NR == 1 { print $2 }')
+  OFFSET=$(printf '%s\n' "$HEAD" | awk 'tolower($1) == "upload-offset:" { print $2 }')
+  case "$STATUS" in
+    404 | 410) echo "The upload is gone; start again." >&2; break ;;
+    200) [ -n "$OFFSET" ] || { sleep 5; continue; } ;;
+    *) sleep 5; continue ;; # no answer, or a passing error such as 503: ask again
+  esac
   [ "$OFFSET" -lt "$SIZE" ] || break
   tail -c +"$((OFFSET + 1))" "$FILE" | head -c "$CHUNK" \
     | curl -sS -f -o /dev/null -X PATCH "$PLATEHOUSE$LOCATION" \
