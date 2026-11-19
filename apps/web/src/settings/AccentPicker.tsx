@@ -14,7 +14,8 @@
 import { type KeyboardEvent, useId, useRef } from "react";
 import { useAccent } from "../shell/AccentContext";
 import { ACCENTS, type AccentId } from "../shell/accent";
-import { ACCENT_LABELS, ACCENT_NAMES } from "../shell/accentLabels";
+import { useI18n } from "../i18n/I18n";
+import { ACCENT_LABEL_KEYS, ACCENT_NAME_KEYS } from "../shell/accentLabels";
 
 /** Where a key moves from index, or null for a key the group leaves alone. */
 function moveFor(key: string, index: number): number | null {
@@ -36,6 +37,7 @@ function moveFor(key: string, index: number): number | null {
 }
 
 export function AccentPicker() {
+  const { t } = useI18n();
   const { accent, setAccent } = useAccent();
   const headingId = useId();
   const introId = useId();
@@ -51,9 +53,9 @@ export function AccentPicker() {
 
   return (
     <div className="ph-section">
-      <h2 id={headingId}>{ACCENT_LABELS.heading}</h2>
+      <h2 id={headingId}>{t(ACCENT_LABEL_KEYS.heading)}</h2>
       <p id={introId} className="studio-muted">
-        {ACCENT_LABELS.intro}
+        {t(ACCENT_LABEL_KEYS.intro)}
       </p>
       <div
         className="ph-accent-picker"
@@ -79,16 +81,16 @@ export function AccentPicker() {
               onKeyDown={(event) => onKeyDown(event, index)}
             >
               <span className="ph-accent-swatch" data-accent={id} aria-hidden="true" />
-              <span className="ph-accent-name">{ACCENT_NAMES[id]}</span>
+              <span className="ph-accent-name">{t(ACCENT_NAME_KEYS[id])}</span>
             </button>
           );
         })}
       </div>
       <div className="ph-accent-preview" aria-hidden="true">
-        <span className="studio-button studio-button-primary">{ACCENT_LABELS.previewButton}</span>
-        <span className="ph-accent-preview-link">{ACCENT_LABELS.previewLink}</span>
+        <span className="studio-button studio-button-primary">{t(ACCENT_LABEL_KEYS.previewButton)}</span>
+        <span className="ph-accent-preview-link">{t(ACCENT_LABEL_KEYS.previewLink)}</span>
         <span className="studio-chip" aria-current="true">
-          {ACCENT_LABELS.previewChip}
+          {t(ACCENT_LABEL_KEYS.previewChip)}
         </span>
         <progress className="ph-accent-preview-progress" value={60} max={100} />
       </div>

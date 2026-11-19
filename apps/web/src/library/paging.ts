@@ -56,17 +56,17 @@ export function libraryHref(
  * Best match is offered only while a search is active.
  */
 export const SORT_OPTIONS = [
-  { value: "relevance", label: "Best match" },
-  { value: "newest", label: "Date added: newest" },
-  { value: "oldest", label: "Date added: oldest" },
-  { value: "name-asc", label: "Name: A to Z" },
-  { value: "name-desc", label: "Name: Z to A" },
-  { value: "time-asc", label: "Print time: shortest" },
-  { value: "time-desc", label: "Print time: longest" },
-  { value: "weight-asc", label: "Filament weight: lightest" },
-  { value: "weight-desc", label: "Filament weight: heaviest" },
-  { value: "plates-desc", label: "Plates: most" },
-  { value: "plates-asc", label: "Plates: fewest" },
+  { value: "relevance", labelKey: "library.sort.relevance" },
+  { value: "newest", labelKey: "library.sort.newest" },
+  { value: "oldest", labelKey: "library.sort.oldest" },
+  { value: "name-asc", labelKey: "library.sort.nameAsc" },
+  { value: "name-desc", labelKey: "library.sort.nameDesc" },
+  { value: "time-asc", labelKey: "library.sort.timeAsc" },
+  { value: "time-desc", labelKey: "library.sort.timeDesc" },
+  { value: "weight-asc", labelKey: "library.sort.weightAsc" },
+  { value: "weight-desc", labelKey: "library.sort.weightDesc" },
+  { value: "plates-desc", labelKey: "library.sort.platesDesc" },
+  { value: "plates-asc", labelKey: "library.sort.platesAsc" },
 ] as const;
 
 export type LibrarySort = (typeof SORT_OPTIONS)[number]["value"];

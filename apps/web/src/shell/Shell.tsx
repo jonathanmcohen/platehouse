@@ -19,6 +19,7 @@
 // search leaves there on purpose (TopBar).
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigationType } from "react-router";
+import { useI18n } from "../i18n/I18n";
 import { AccentProvider, documentAccent } from "./AccentContext";
 import type { AccentId } from "./accent";
 import { Sidebar } from "./Sidebar";
@@ -44,6 +45,7 @@ export function Shell({
   onAdd,
   children,
 }: ShellProps) {
+  const { t } = useI18n();
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [startAccent] = useState<AccentId>(() => initialAccent ?? documentAccent());
   const main = useRef<HTMLElement>(null);
@@ -68,7 +70,7 @@ export function Shell({
   return (
     <AccentProvider initial={startAccent}>
       <a className="studio-skip" href="#ph-content">
-        Skip to content
+        {t("shell.skip")}
       </a>
       <div className="studio-app">
         <Sidebar />

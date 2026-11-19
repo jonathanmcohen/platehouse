@@ -9,6 +9,7 @@
 // under the menu says.
 import { useId } from "react";
 import { useNavigate, useSearchParams } from "react-router";
+import { useI18n } from "../i18n/I18n";
 import { type LibrarySort, SORT_OPTIONS, sortFrom, sortHref } from "./paging";
 
 export interface SortControlProps {
@@ -19,20 +20,22 @@ export interface SortControlProps {
 }
 
 export function SortControl({ q, printer }: SortControlProps) {
+  const { t } = useI18n();
   const id = useId();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const sort = sortFrom(params, q);
   const options = SORT_OPTIONS.filter((o) => o.value !== "relevance" || q !== "");
-  const measure = sort.startsWith("time-")
-    ? "a print time"
-    : sort.startsWith("weight-")
-      ? "a filament weight"
-      : null;
-  const forPrinter = printer === "" ? "the selected printer" : printer;
+  const measure = sort.startsWith("time-") ? "time" : sort.startsWith("weight-") ? "weight" : null;
+  const note =
+    measure === null
+      ? null
+      : printer === ""
+        ? t(measure === "time" ? "library.sort.noteTimeSelected" : "library.sort.noteWeightSelected")
+        : t(measure === "time" ? "library.sort.noteTime" : "library.sort.noteWeight", { printer });
   return (
     <div className="ph-sort">
-      <label htmlFor={id}>Sort</label>
+      <label htmlFor={id}>{t("library.sort.label")}</label>
       <select
         id={id}
         className="ph-select ph-small"
@@ -44,13 +47,13 @@ export function SortControl({ q, printer }: SortControlProps) {
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
-            {o.label}
+            {t(o.labelKey)}
           </option>
         ))}
       </select>
-      {measure === null ? null : (
+      {note === null ? null : (
         <p id={`${id}-note`} className="studio-muted">
-          Models without {measure} for {forPrinter} are listed last.
+          {note}
         </p>
       )}
     </div>

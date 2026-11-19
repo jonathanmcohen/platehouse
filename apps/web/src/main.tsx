@@ -39,12 +39,14 @@ import { readTheme } from "./shell/theme";
 import { TagsPage } from "./tags/TagsPage";
 import { TrashPage } from "./trash/TrashPage";
 import { UploadDialog } from "./upload/UploadDialog";
+import { useI18n } from "./i18n/I18n";
 
 function Section({ title }: { title: string }) {
+  const { t } = useI18n();
   return (
     <>
       <h1>{title}</h1>
-      <p className="studio-empty">Nothing here yet.</p>
+      <p className="studio-empty">{t("shell.nothingHere")}</p>
     </>
   );
 }
@@ -66,6 +68,7 @@ const PAGES: Readonly<Record<string, ReactNode>> = {
 };
 
 function App() {
+  const { t } = useI18n();
   /** The open dialog's key: NEW_MODELS or a model id; null when none is open. */
   const [openFor, setOpenFor] = useState<string | null>(null);
   /**
@@ -95,10 +98,10 @@ function App() {
           path="/models/:id"
           element={<ModelPage onFiles={openWith} refreshKey={refreshKey} />}
         />
-        {SECTIONS.filter(({ to }) => to !== "/").map(({ label, to }) => (
-          <Route key={to} path={to} element={PAGES[to] ?? <Section title={label} />} />
+        {SECTIONS.filter(({ to }) => to !== "/").map(({ key, to }) => (
+          <Route key={to} path={to} element={PAGES[to] ?? <Section title={t(key)} />} />
         ))}
-        <Route path="*" element={<Section title="Page not found" />} />
+        <Route path="*" element={<Section title={t("shell.notFound")} />} />
       </Routes>
       {targets.map((key) => (
         <UploadDialog

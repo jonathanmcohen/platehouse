@@ -15,6 +15,7 @@
 // call it, and neither does the current page's own link, which loads nothing.
 import type { MouseEvent } from "react";
 import { Link } from "react-router";
+import { useI18n } from "../i18n/I18n";
 
 export type PagerItem = number | "gap";
 
@@ -62,6 +63,7 @@ function Chevron({ direction }: { direction: "left" | "right" }) {
 }
 
 export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
+  const { t } = useI18n();
   const followed = (event: MouseEvent<HTMLAnchorElement>) => {
     const inThisTab =
       !event.defaultPrevented &&
@@ -73,7 +75,7 @@ export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
     if (inThisTab) onNavigate?.();
   };
   return (
-    <nav className="ph-pager" aria-label="Library pages">
+    <nav className="ph-pager" aria-label={t("library.pager.label")}>
       {page > 1 ? (
         <Link
           to={hrefFor(page - 1)}
@@ -82,7 +84,7 @@ export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
           onClick={followed}
         >
           <Chevron direction="left" />
-          <span className="ph-pager-word">Previous</span>
+          <span className="ph-pager-word">{t("library.pager.previous")}</span>
         </Link>
       ) : null}
       <ul className="studio-chips ph-pager-pages">
@@ -97,7 +99,7 @@ export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
               <Link
                 to={hrefFor(item)}
                 className="studio-chip"
-                aria-label={`Page ${item}`}
+                aria-label={t("library.pager.page", { page: item })}
                 {...(item === page ? { "aria-current": "page" as const } : { onClick: followed })}
               >
                 {item}
@@ -113,7 +115,7 @@ export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
           className="studio-chip ph-pager-step"
           onClick={followed}
         >
-          <span className="ph-pager-word">Next</span>
+          <span className="ph-pager-word">{t("library.pager.next")}</span>
           <Chevron direction="right" />
         </Link>
       ) : null}

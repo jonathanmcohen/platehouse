@@ -60,6 +60,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
 import { menuIsOpen } from "../shell/MenuButton";
+import { useI18n } from "../i18n/I18n";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
@@ -160,11 +161,8 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await res.json()) as T;
 }
 
-function models(n: number): string {
-  return n === 1 ? "model" : "models";
-}
-
 export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
+  const { t, rich, fmt } = useI18n();
   const [params] = useSearchParams();
   const q = params.get("q")?.trim() ?? "";
   const tag = params.get("tag")?.trim() ?? "";
@@ -265,8 +263,18 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   }
 
   const active = [
-    { key: "creator" as const, label: "Creator", value: creator },
-    { key: "collection" as const, label: "Collection", value: collection },
+    {
+      key: "creator" as const,
+      label: t("library.filter.creator"),
+      clear: t("library.filter.clearCreator"),
+      value: creator,
+    },
+    {
+      key: "collection" as const,
+      label: t("library.filter.collection"),
+      clear: t("library.filter.clearCollection"),
+      value: collection,
+    },
   ].filter((f) => f.value !== "");
   const filtered = q !== "" || tag !== "" || active.length > 0;
 
@@ -388,24 +396,35 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     void loadRest(from, generation.current, controller.signal);
   }
 
-  const heading = q === "" ? "Library" : `Results for "${q}"`;
+  const heading = q === "" ? t("library.title") : t("library.results", { q });
   const ready = load.state === "ready" ? load : null;
-  const totalLabel = ready === null ? "" : `${ready.total}${ready.totalCapped ? "+" : ""}`;
+  const totalLabel =
+    ready === null
+      ? ""
+      : ready.totalCapped
+        ? t("library.count.atLeast", { count: ready.total })
+        : fmt.decimal(ready.total, 0);
   const whole =
     ready === null
       ? ""
       : filtered
-        ? `${totalLabel} of ${ready.libraryTotal} ${models(ready.libraryTotal)}`
-        : `${totalLabel} ${ready.totalCapped ? "models" : models(ready.total)}`;
+        ? t("library.count.matchesOf", { matches: totalLabel, total: ready.libraryTotal })
+        : ready.totalCapped
+          ? t("library.count.modelsCapped", { count: ready.total })
+          : t("library.count.models", { count: ready.total });
   let countText = whole;
   if (ready !== null && viewAll) {
     // A capped total means more matches than View all can reach, so never "all shown".
     countText =
       ready.models.length < ready.total || ready.totalCapped
-        ? `Showing ${ready.models.length} of ${totalLabel} ${models(ready.total)}`
-        : `${whole}, all shown`;
+        ? t("library.count.showing", {
+            shown: ready.models.length,
+            matches: totalLabel,
+            total: ready.total,
+          })
+        : t("library.count.allShown", { whole });
   } else if (ready !== null && ready.pageCount > 1) {
-    countText = `${whole}, page ${ready.page} of ${ready.pageCount}`;
+    countText = t("library.count.page", { whole, page: ready.page, pages: ready.pageCount });
   }
   const pastEnd = ready !== null && !viewAll && ready.total > 0 && page > ready.page;
   const viewAllFull =
@@ -416,7 +435,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     ready.total > ready.models.length;
   const capNote =
     ready !== null && (ready.totalCapped || viewAllFull)
-      ? `Only the first ${ready.totalCapped ? ready.total : VIEW_ALL_MAX} matches can be shown. Narrow the search or pick a tag to find the rest.`
+      ? t("library.cap", { count: ready.totalCapped ? ready.total : VIEW_ALL_MAX })
       : null;
   const showChoice = ready !== null && ready.total > 0 && (viewAll || ready.pageCount > 1);
   // While the grid reloads for a new choice, the switch already shows it.
@@ -442,14 +461,16 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         ) : null}
       </div>
       {active.length === 0 ? null : (
-        <ul className="studio-chips" aria-label="Library filters">
+        <ul className="studio-chips" aria-label={t("library.filters.label")}>
           {active.map((f) => (
             <li key={f.key} className="studio-row">
               <span>
-                {f.label}: <strong>{f.value}</strong>
+                {rich("library.filter.value", { label: f.label, value: f.value }, {
+                  strong: (children) => <strong>{children}</strong>,
+                })}
               </span>
               <Link to={without(f.key)} className="studio-chip">
-                Clear {f.key} filter
+                {f.clear}
               </Link>
             </li>
           ))}
@@ -465,7 +486,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           aria-pressed={selecting}
           onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
         >
-          Select
+          {t("library.selectMode")}
         </button>
       </div>
       {selecting ? (
@@ -485,29 +506,29 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         />
       ) : null}
       <div aria-live="polite">
-        {load.state === "loading" ? <p className="studio-muted">Loading the library</p> : null}
+        {load.state === "loading" ? <p className="studio-muted">{t("library.loading")}</p> : null}
         {load.state === "failed" ? (
           <div className="studio-alert studio-alert-alert" role="alert">
-            <p>The library could not be loaded.</p>
+            <p>{t("library.failed")}</p>
             <button
               type="button"
               className="studio-button"
               onClick={() => setAttempt((n) => n + 1)}
             >
-              Try again
+              {t("common.tryAgain")}
             </button>
           </div>
         ) : null}
         {ready !== null && ready.models.length === 0 ? (
           <p className="studio-empty">
             {!filtered
-              ? "No models yet. Drop files here, or use Add."
-              : "No models match. Try another search or tag."}
+              ? t("library.empty.none")
+              : t("library.empty.noMatch")}
           </p>
         ) : null}
         {pastEnd ? (
           <p className="studio-muted">
-            There is no page {page}. This is the last page, page {ready?.page}.
+            {t("library.pastEnd", { page, last: ready?.page ?? 1 })}
           </p>
         ) : null}
         {capNote === null ? null : <p className="studio-muted">{capNote}</p>}
@@ -519,14 +540,14 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
               {countText}
             </p>
             {showChoice ? (
-              <ul className="studio-chips" aria-label="Library view">
+              <ul className="studio-chips" aria-label={t("library.view.label")}>
                 <li>
                   <Link
                     to={pageHref(params, 1)}
                     className="studio-chip"
                     {...(viewAll ? {} : { "aria-current": "true" as const })}
                   >
-                    Pages
+                    {t("library.view.pages")}
                   </Link>
                 </li>
                 <li>
@@ -538,13 +559,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
                     className="studio-chip"
                     {...(viewAll ? { "aria-current": "true" as const } : {})}
                   >
-                    View all
+                    {t("library.view.all")}
                   </Link>
                 </li>
               </ul>
             ) : null}
           </div>
-          <ul className="studio-grid" aria-label="Models">
+          <ul className="studio-grid" aria-label={t("library.models.label")}>
             {ready.models.map((card) =>
               selecting ? (
                 <ModelCard
@@ -572,14 +593,14 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
               {ready.restFailed ? (
                 <>
                   <p className="studio-muted" role="alert">
-                    The rest of the library could not be loaded.
+                    {t("library.rest.failed")}
                   </p>
                   <button type="button" className="studio-button" onClick={retryRest}>
-                    Try again
+                    {t("common.tryAgain")}
                   </button>
                 </>
               ) : (
-                <p className="studio-muted">Loading the rest of the library</p>
+                <p className="studio-muted">{t("library.rest.loading")}</p>
               )}
             </div>
           ) : null}

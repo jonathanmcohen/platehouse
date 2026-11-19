@@ -10,5 +10,5 @@
     "types": ["node", "vite/client"]
   },
   "include": ["src", "test", "vite.config.ts"],
-  "references": [{ "path": "../../packages/makerworld" }]
+  "references": [{ "path": "../../packages/i18n" }, { "path": "../../packages/makerworld" }]
 }

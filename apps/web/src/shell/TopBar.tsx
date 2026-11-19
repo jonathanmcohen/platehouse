@@ -15,6 +15,7 @@
 // everything in it, the theme switch included, is inside a landmark (#205).
 import { type FormEvent, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { useI18n } from "../i18n/I18n";
 import { MenuButton } from "./MenuButton";
 import { ThemeSwitch } from "./ThemeSwitch";
 import type { Theme } from "./theme";
@@ -31,6 +32,7 @@ export interface TopBarProps {
 }
 
 export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarProps) {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const location = useLocation();
@@ -65,7 +67,7 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
       <search className="studio-search">
         <form action="/" method="get" onSubmit={search}>
           <label htmlFor="ph-q" className="studio-visually-hidden">
-            Search the library
+            {t("shell.search.label")}
           </label>
           <input
             type="search"
@@ -74,7 +76,7 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
             maxLength={MAX_QUERY}
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search names, creators and tags"
+            placeholder={t("shell.search.placeholder")}
             autoComplete="off"
           />
         </form>
@@ -85,7 +87,7 @@ export function TopBar({ theme, onThemeChange, onAdd, onMenuNavigate }: TopBarPr
         onClick={onAdd}
         disabled={onAdd === undefined}
       >
-        <span aria-hidden="true">+</span> Add
+        <span aria-hidden="true">+</span> {t("shell.add")}
       </button>
       <ThemeSwitch theme={theme} onChange={onThemeChange} />
     </header>
