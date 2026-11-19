@@ -15,11 +15,22 @@ export const VIEW_ALL_CHUNK = 200;
  */
 export const VIEW_ALL_MAX = 1000;
 
-/** ?page= as a page number: a whole number from 1, else page 1. */
+/**
+ * Highest page the server accepts: its querystring schema's maximum for page
+ * in apps/server/src/app-api/library.ts (MAX_PAGE_NUMBER), past which it
+ * answers 400. A higher ?page= asks for this one, which the server serves as
+ * its last page.
+ */
+export const PAGE_MAX = 1_000_000;
+
+/**
+ * ?page= as a page number: a whole number from 1, at most PAGE_MAX (so a
+ * page past the end, however far, shows the last page), else page 1.
+ */
 export function pageFrom(value: string | null): number {
   if (value === null || !/^[0-9]+$/.test(value)) return 1;
   const page = Number(value);
-  return Number.isSafeInteger(page) && page >= 1 ? page : 1;
+  return page >= 1 ? Math.min(page, PAGE_MAX) : 1;
 }
 
 /** True when the URL asks for View all. */

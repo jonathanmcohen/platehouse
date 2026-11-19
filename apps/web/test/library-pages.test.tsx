@@ -27,7 +27,7 @@ import { Filters } from "../src/library/Filters";
 import { LibraryPage } from "../src/library/LibraryPage";
 import type { LibraryCard } from "../src/library/ModelCard";
 import { pagerItems } from "../src/library/Pager";
-import { PAGE_SIZE, VIEW_ALL_CHUNK, VIEW_ALL_MAX } from "../src/library/paging";
+import { PAGE_MAX, PAGE_SIZE, VIEW_ALL_CHUNK, VIEW_ALL_MAX } from "../src/library/paging";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -56,8 +56,11 @@ let root: Root;
 let requests: string[];
 /** Library requests the stub fails, by their page number. */
 let failPages: Set<number>;
-/** What the stub answers for totalCapped. */
-let capped: boolean;
+/**
+ * Most matches the stub counts: the server's PAGED_MATCH_CAP. Past it the
+ * stub answers as the server does: total is the cap and totalCapped is true.
+ */
+let matchCap: number;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -76,14 +79,17 @@ function stubServer(all: LibraryCard[]) {
       if (url.pathname === "/app/api/library/tags") return json({ tags: ["PLA"] });
       if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
       const asked = Number(url.searchParams.get("page"));
+      // The server's querystring schema allows page 1 to 1,000,000 and answers 400 past it.
+      if (asked > 1_000_000) return json({ error: "bad_request" }, 400);
       if (failPages.has(asked)) return new Response("busy", { status: 503 });
       const tag = url.searchParams.get("tag");
       const q = url.searchParams.get("q");
-      const matches = all.filter(
+      const found = all.filter(
         (c) =>
           (tag === null || c.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) &&
           (q === null || c.name.toLowerCase().includes(q.toLowerCase())),
       );
+      const matches = found.slice(0, matchCap);
       const pageSize = Number(url.searchParams.get("limit") ?? 48);
       const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
       const page = Math.min(Math.max(asked, 1), pageCount);
@@ -95,7 +101,7 @@ function stubServer(all: LibraryCard[]) {
         pageSize,
         pageCount,
         total: matches.length,
-        totalCapped: capped,
+        totalCapped: found.length > matchCap,
         libraryTotal: all.length,
       });
     }),
@@ -180,7 +186,7 @@ async function click(el: HTMLElement | undefined | null) {
 beforeEach(() => {
   requests = [];
   failPages = new Set();
-  capped = false;
+  matchCap = 1000;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -273,6 +279,39 @@ describe("numbered pages", () => {
     expect(document.activeElement?.id).not.toBe("ph-library-count");
   });
 
+  test("a modifier click on a page link, for a new tab, leaves focus for a later filter change alone", async () => {
+    stubServer(cards(171, 60));
+    await render(libraryAt("/"));
+    // jsdom cannot open a new tab; stop its own link navigation after React has seen the click.
+    const stop = (event: Event) => event.preventDefault();
+    document.addEventListener("click", stop);
+    try {
+      for (const keys of [
+        { metaKey: true },
+        { ctrlKey: true },
+        { shiftKey: true },
+        { altKey: true },
+      ]) {
+        const link = pagerLink("Page 3");
+        if (link === undefined) throw new Error("no Page 3 link");
+        await act(async () => {
+          link.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...keys }),
+          );
+        });
+        await settle();
+      }
+    } finally {
+      document.removeEventListener("click", stop);
+    }
+    expect(libraryQueries().map((q) => q.get("page"))).not.toContain("3");
+    const pla = linkNamed("PLA");
+    pla?.focus();
+    await click(pla);
+    expect(lastLibraryQuery().get("tag")).toBe("PLA");
+    expect(document.activeElement?.id).not.toBe("ph-library-count");
+  });
+
   test("Next and Previous step a page, and the last page has no Next", async () => {
     stubServer(cards(171));
     await render(libraryAt("/?page=3"));
@@ -315,6 +354,17 @@ describe("numbered pages", () => {
       await act(async () => root.unmount());
       root = createRoot(container);
     }
+  });
+
+  test("a page past the server's most asks for its most and shows the last page", async () => {
+    stubServer(cards(171));
+    await render(libraryAt("/?page=2000000"));
+    expect(lastLibraryQuery().get("page")).toBe(String(PAGE_MAX));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(cardNames()[0]).toBe("Model 145");
+    expect(container.textContent).toContain(
+      `There is no page ${PAGE_MAX}. This is the last page, page 4.`,
+    );
   });
 
   test("a page past the end shows the last page and says so", async () => {
@@ -364,8 +414,8 @@ describe("numbered pages", () => {
   });
 
   test("a capped total says how far the pages reach", async () => {
-    capped = true;
-    stubServer(cards(100));
+    matchCap = 100;
+    stubServer(cards(150));
     await render(libraryAt("/"));
     expect(countText()).toBe("100+ models, page 1 of 3");
     expect(container.textContent).toMatch(/only the first 100 matches can be shown/i);
@@ -491,6 +541,8 @@ describe("View all", () => {
     await render(libraryAt("/?view=all"));
     expect(libraryQueries()).toHaveLength(5);
     expect(cardNames()).toHaveLength(1000);
+    expect(countText()).toBe("Showing 1000 of 1000+ models");
+    expect(container.textContent).not.toMatch(/all shown/);
     expect(container.textContent).toMatch(/only the first 1000 matches can be shown/i);
   });
 

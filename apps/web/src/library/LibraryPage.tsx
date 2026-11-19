@@ -271,8 +271,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         : `${totalLabel} ${ready.totalCapped ? "models" : models(ready.total)}`;
   let countText = whole;
   if (ready !== null && viewAll) {
+    // A capped total means more matches than View all can reach, so never "all shown".
     countText =
-      ready.models.length < ready.total
+      ready.models.length < ready.total || ready.totalCapped
         ? `Showing ${ready.models.length} of ${totalLabel} ${models(ready.total)}`
         : `${whole}, all shown`;
   } else if (ready !== null && ready.pageCount > 1) {

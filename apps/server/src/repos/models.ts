@@ -71,6 +71,14 @@ export interface RankedSearchQuery {
   limit: number;
 }
 
+/** A ranked match with only what a library card and a keyset cursor need. */
+export interface RankedCard {
+  id: string;
+  name: string;
+  creator: string | null;
+  rank: number;
+}
+
 /**
  * A model's search rank: the best pg_trgm similarity of q to its name,
  * caption, creator or any of its tags, scaled to a whole number from 0 to
@@ -87,24 +95,27 @@ function containsPattern(q: string): string {
   return `%${q.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
+/** A Model's columns, from models left-joined to creators. */
+const MODEL_COLUMNS = [
+  "models.id",
+  "models.name",
+  "models.caption",
+  "models.descriptionMd",
+  "models.creatorId",
+  "creators.name as creator",
+  "models.licenseSpdx",
+  "models.licenseNote",
+  "models.externalRef",
+  "models.trashedAt",
+  "models.createdAt",
+  "models.updatedAt",
+] as const;
+
 function selectModels(db: Kysely<DB>) {
   return db
     .selectFrom("models")
     .leftJoin("creators", "creators.id", "models.creatorId")
-    .select([
-      "models.id",
-      "models.name",
-      "models.caption",
-      "models.descriptionMd",
-      "models.creatorId",
-      "creators.name as creator",
-      "models.licenseSpdx",
-      "models.licenseNote",
-      "models.externalRef",
-      "models.trashedAt",
-      "models.createdAt",
-      "models.updatedAt",
-    ]);
+    .select(MODEL_COLUMNS);
 }
 
 /** The creator's id, making the creator on first use. */
@@ -130,7 +141,12 @@ export function modelsRepo(db: Kysely<DB>) {
     return query.executeTakeFirst();
   }
 
-  async function searchRanked(query: RankedSearchQuery): Promise<Array<Model & { rank: number }>> {
+  /**
+   * The ranked search's query without its columns, and its rank expression:
+   * the matches for query in the result order, at most query.limit.
+   * searchRanked and searchRankedCards each add their own columns.
+   */
+  function rankedQuery(query: RankedSearchQuery) {
     const q = query.q.trim();
     const limit = Math.trunc(query.limit);
     if (!(limit >= 1 && limit <= MAX_RANKED_LIMIT)) {
@@ -147,8 +163,9 @@ export function modelsRepo(db: Kysely<DB>) {
           where mt.model_id = models.id), 0)
       ) * ${SEARCH_RANK_MAX})::integer`;
 
-    let select = selectModels(db)
-      .select(rank.as("rank"))
+    let select = db
+      .selectFrom("models")
+      .leftJoin("creators", "creators.id", "models.creatorId")
       .where("models.trashedAt", "is", null)
       .where((eb) =>
         eb.or([
@@ -201,11 +218,22 @@ export function modelsRepo(db: Kysely<DB>) {
                    or (models.name = ${after.name} and models.id > cast(${after.id} as uuid)))))`,
       );
     }
+    return {
+      rank,
+      select: select.orderBy(rank, "desc").orderBy("models.name").orderBy("models.id").limit(limit),
+    };
+  }
+
+  async function searchRanked(query: RankedSearchQuery): Promise<Array<Model & { rank: number }>> {
+    const { rank, select } = rankedQuery(query);
+    return select.select(MODEL_COLUMNS).select(rank.as("rank")).execute();
+  }
+
+  async function searchRankedCards(query: RankedSearchQuery): Promise<RankedCard[]> {
+    const { rank, select } = rankedQuery(query);
     return select
-      .orderBy(rank, "desc")
-      .orderBy("models.name")
-      .orderBy("models.id")
-      .limit(limit)
+      .select(["models.id", "models.name", "creators.name as creator"])
+      .select(rank.as("rank"))
       .execute();
   }
 
@@ -312,6 +340,13 @@ export function modelsRepo(db: Kysely<DB>) {
      * each model's rank for the page cursor. Trashed models never appear.
      */
     searchRanked,
+
+    /**
+     * searchRanked's matches with only id, name, creator and rank, for a
+     * numbered library page, which reads up to 1000 matches to slice one page
+     * and count them, and needs no description or licence to do it.
+     */
+    searchRankedCards,
 
     /**
      * Moves a live model to the trash; false when it is unknown or already

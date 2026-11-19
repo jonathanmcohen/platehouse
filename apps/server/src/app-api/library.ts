@@ -84,6 +84,13 @@ const MAX_PAGE_SIZE = 200;
  */
 export const PAGED_MATCH_CAP = 1000;
 
+/**
+ * Highest ?page= the route accepts (its querystring schema); past it the
+ * answer is 400. The web app asks for at most this page (PAGE_MAX in
+ * apps/web/src/library/paging.ts), which pageWindow serves as the last page.
+ */
+export const MAX_PAGE_NUMBER = 1_000_000;
+
 /** A numbered page's size: LIBRARY_PAGE_SIZE when left out, else a whole 1 to 200. */
 export function pageSizeFor(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return LIBRARY_PAGE_SIZE;
@@ -323,12 +330,15 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       collection: filter(query.collection),
       creator: filter(query.creator),
     };
-    const rows = await models.searchRanked({ ...where, limit: matchCap });
+    // Only id, name, creator and rank: up to matchCap rows are read to slice
+    // one page and count it, and View all reads them once per chunk (up to
+    // five times for 1000 models), so no row carries its description.
+    const rows = await models.searchRankedCards({ ...where, limit: matchCap });
     const last = rows.at(-1);
     let capped = false;
     if (rows.length === matchCap && last !== undefined) {
       const after = { rank: last.rank, name: last.name, id: last.id };
-      capped = (await models.searchRanked({ ...where, after, limit: 1 })).length > 0;
+      capped = (await models.searchRankedCards({ ...where, after, limit: 1 })).length > 0;
     }
     return { rows, capped };
   }
@@ -512,7 +522,7 @@ const SEARCH_QUERY = {
     creator: { type: "string", maxLength: 300 },
     cursor: { type: "string", maxLength: 2000 },
     limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_SIZE },
-    page: { type: "integer", minimum: 1, maximum: 1_000_000 },
+    page: { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER },
   },
 } as const;
 

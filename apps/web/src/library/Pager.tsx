@@ -8,9 +8,12 @@
 // behind their arrows (the words stay the links' names) so it fits at 375 px.
 // The first page has no Previous and the last no Next.
 //
-// onNavigate is called when a link to another page is followed, before the
-// new page loads, so the library can move focus once it has. The current
-// page's own link loads nothing, so it does not call it.
+// onNavigate is called when a link to another page is followed in this tab,
+// before the new page loads, so the library can move focus once it has. A
+// click that opens the link elsewhere (a modifier key, another button) or
+// that something else prevented leaves this tab where it is, so it does not
+// call it, and neither does the current page's own link, which loads nothing.
+import type { MouseEvent } from "react";
 import { Link } from "react-router";
 
 export type PagerItem = number | "gap";
@@ -59,7 +62,16 @@ function Chevron({ direction }: { direction: "left" | "right" }) {
 }
 
 export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
-  const followed = () => onNavigate?.();
+  const followed = (event: MouseEvent<HTMLAnchorElement>) => {
+    const inThisTab =
+      !event.defaultPrevented &&
+      event.button === 0 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey;
+    if (inThisTab) onNavigate?.();
+  };
   return (
     <nav className="ph-pager" aria-label="Library pages">
       {page > 1 ? (
