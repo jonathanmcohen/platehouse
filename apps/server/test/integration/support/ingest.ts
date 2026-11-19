@@ -128,6 +128,12 @@ export interface ThreeMfSpec {
   /** The BBL model_id the sliced plates were sliced for; C12 (P1S) when left out. */
   printerModelId?: string;
   makerWorld?: MakerWorldSpec;
+  /**
+   * Text for an extra entry the parser ignores, so two files built from the
+   * same spec differ in their bytes (and SHA-256): a test whose files must
+   * not be duplicates of each other gives each its own.
+   */
+  nonce?: string;
 }
 
 // MakerWorld values are escaped twice in a real file (extractMakerWorld
@@ -183,6 +189,7 @@ export function build3mf(spec: ThreeMfSpec): Buffer {
       }),
     },
   ];
+  if (spec.nonce !== undefined) entries.push({ name: "Metadata/test_nonce.txt", data: spec.nonce });
   const sliced = spec.sliced ?? [];
   if (sliced.length > 0) {
     entries.push({

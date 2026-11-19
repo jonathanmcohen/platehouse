@@ -4,9 +4,9 @@ Self-hosted library for 3D print files: plates, OrcaSlicer estimates, S3 storage
 
 ## API
 
-Platehouse has an HTTP API for scripts and tools such as Claude Code: upload files, search the
-library, read models, plates and their estimates, download files, and add or remove tags and
-collections. It never deletes anything. Make a token in Settings, under API tokens, and send it
+Platehouse has an HTTP API for scripts and tools such as AI coding assistants: upload files,
+search the library, read models, plates and their estimates, download files, and add or remove
+tags and collections. It never deletes anything. Make a token in Settings, under API tokens, and send it
 as `Authorization: Bearer <token>`.
 
 - [docs/api.md](docs/api.md) is the guide: tokens, errors, limits, paging, uploads and curl

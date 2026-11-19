@@ -476,6 +476,75 @@ describe("resumable uploads", () => {
   });
 });
 
+describe("duplicates through the web dialog's mount (approved for 0.1.0, 2026-11-19)", () => {
+  /** One whole upload through /app/uploads as the dialog sends it, and its result. */
+  async function sendAsDialog(bytes: Buffer, fields: Record<string, string>) {
+    const created = await create(UI, SESSION, bytes.length, fields);
+    expect(created.status).toBe(201);
+    const id = idOf(created.headers.location);
+    await patchAll(UI, SESSION, id, bytes);
+    return { id, result: (await result(UI, SESSION, id)) as Record<string, unknown> };
+  }
+
+  test("skip: a file a live model holds is refused with code duplicate, and nothing is stored", async () => {
+    const bytes = randomBinaryStl(7);
+    const first = await sendAsDialog(bytes, { filename: "Bin.stl", duplicates: "skip" });
+    expect(first.result).toMatchObject({ status: "done", duplicates: [] });
+    const before = await footprint(env);
+
+    const again = await sendAsDialog(bytes, { filename: "Bin (2).stl", duplicates: "skip" });
+    expect(again.result).toMatchObject({
+      status: "failed",
+      code: "duplicate",
+      duplicates: [
+        {
+          modelId: first.result.modelId,
+          modelName: "Bin",
+          fileId: first.result.fileId,
+          fileName: "Bin.stl",
+        },
+      ],
+    });
+    expect(String(again.result.error)).toContain('"Bin"');
+    expect(await footprint(env)).toEqual(before);
+    // Nothing was saved, so a client resuming it is told to start over.
+    const head = await send(server.base, "HEAD", `${UI}/${again.id}`, {
+      headers: { ...TUS, ...SESSION },
+    });
+    expect(head.status).toBe(410);
+  });
+
+  test("skip: a file only a trashed model holds is stored", async () => {
+    const bytes = randomBinaryStl(8);
+    const first = await sendAsDialog(bytes, { filename: "Tray.stl", duplicates: "skip" });
+    expect(first.result.status).toBe("done");
+    expect(await env.repos.models.trash(String(first.result.modelId))).toBe(true);
+
+    const again = await sendAsDialog(bytes, { filename: "Tray.stl", duplicates: "skip" });
+    expect(again.result).toMatchObject({ status: "done", duplicates: [] });
+    expect(again.result.modelId).not.toBe(first.result.modelId);
+  });
+
+  test("Import anyway (allow) stores the duplicate and names the copy it matched", async () => {
+    const bytes = randomBinaryStl(9);
+    const first = await sendAsDialog(bytes, { filename: "Riser.stl", duplicates: "skip" });
+    const skipped = await sendAsDialog(bytes, { filename: "Riser.stl", duplicates: "skip" });
+    expect(skipped.result.status).toBe("failed");
+
+    const anyway = await sendAsDialog(bytes, { filename: "Riser.stl", duplicates: "allow" });
+    expect(anyway.result).toMatchObject({ status: "done" });
+    expect(anyway.result.modelId).not.toBe(first.result.modelId);
+    expect(anyway.result.duplicates).toEqual([
+      {
+        modelId: first.result.modelId,
+        modelName: "Riser",
+        fileId: first.result.fileId,
+        fileName: "Riser.stl",
+      },
+    ]);
+  });
+});
+
 describe("refused and oversized uploads", () => {
   test("a request the auth hook refuses stores nothing", async () => {
     const before = await footprint(env);

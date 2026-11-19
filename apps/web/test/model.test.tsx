@@ -17,6 +17,10 @@
 // - open in OrcaSlicer builds orcaslicer://open?file=<encoded link>
 // - open in Bambu Studio on macOS builds bambustudioopen://<encoded link>
 // - .3mf shows no 3D view
+// - the large plate image turns and flips on screen only (requested
+//   2026-11-19): each button applies its transform, Reset clears it, and
+//   another plate, another file or opening the model again clears it, with
+//   nothing sent to the server and nothing stored in the browser
 // Also: dropping files on the page hands them to Task 19's upload dialog with
 // this model as the target, and the dialog then hides the Combine switch;
 // the page's Add files button opens that dialog again with no files, so a
@@ -1253,6 +1257,210 @@ describe(".3mf shows no 3D view", () => {
     expect(
       container.querySelector(`.studio-viewer a[href="/files/${FILE_STL}/download"]`),
     ).not.toBeNull();
+  });
+});
+
+describe("the large plate image can be rotated and flipped, on screen only", () => {
+  const CONTROLS = [
+    /^rotate left$/i,
+    /^rotate right$/i,
+    /^flip horizontal$/i,
+    /^flip vertical$/i,
+    /^reset$/i,
+  ];
+
+  /** The group of plate image buttons, so the 3D view's Rotate buttons never match. */
+  function controls(): HTMLElement {
+    const group = container.querySelector<HTMLElement>(".studio-viewer .ph-plate-controls");
+    if (group === null) throw new Error("no plate image controls");
+    return group;
+  }
+
+  function large(): HTMLImageElement {
+    const img = container.querySelector<HTMLImageElement>(".studio-viewer img.studio-plate-large");
+    if (img === null) throw new Error("no large plate image");
+    return img;
+  }
+
+  async function press(label: RegExp) {
+    await click(button(label, controls()));
+  }
+
+  /**
+   * jsdom loads no images, so until this runs the picture has no size and a
+   * quarter turn uses the safe 3/4. This gives the large image a natural
+   * size and fires its load event, as a browser does once the picture is in.
+   */
+  async function loadPicture(width: number, height: number) {
+    const img = large();
+    Object.defineProperty(img, "naturalWidth", { configurable: true, value: width });
+    Object.defineProperty(img, "naturalHeight", { configurable: true, value: height });
+    await act(async () => {
+      img.dispatchEvent(new Event("load"));
+    });
+  }
+
+  test("five real buttons with names, in a labelled group under the image, all in the Tab order", async () => {
+    await render(pageAt(MODEL_ID));
+    const group = controls();
+    expect(group.tagName).toBe("FIELDSET");
+    expect(text(group.querySelector("legend"))).toBe("Plate image controls");
+    const buttons = [...group.querySelectorAll("button")];
+    expect(buttons.map((b) => text(b))).toEqual([
+      "Rotate left",
+      "Rotate right",
+      "Flip horizontal",
+      "Flip vertical",
+      "Reset",
+    ]);
+    for (const b of buttons) {
+      expect(b.getAttribute("type")).toBe("button");
+      expect(b.classList.contains("studio-button")).toBe(true);
+      expect(b.disabled).toBe(false);
+      expect(b.tabIndex).toBe(0);
+      b.focus();
+      expect(document.activeElement).toBe(b);
+    }
+    for (const label of CONTROLS) expect(button(label, group)).toBeDefined();
+  });
+
+  test("the image starts with no transform", async () => {
+    await render(pageAt(MODEL_ID));
+    expect(large().style.transform).toBe("");
+  });
+
+  test.each([
+    ["rotate left", /^rotate left$/i, "rotate(270deg) scale(0.75)"],
+    ["rotate right", /^rotate right$/i, "rotate(90deg) scale(0.75)"],
+    ["flip horizontal", /^flip horizontal$/i, "scaleX(-1)"],
+    ["flip vertical", /^flip vertical$/i, "scaleY(-1)"],
+  ])("%s applies its transform, and Reset clears it", async (_name, label, transform) => {
+    await render(pageAt(MODEL_ID));
+    await press(label);
+    expect(large().style.transform).toBe(transform);
+    await press(/^reset$/i);
+    expect(large().style.transform).toBe("");
+  });
+
+  test.each([
+    ["a square picture", 512, 512, "rotate(90deg)"],
+    ["a tall picture", 400, 800, "rotate(90deg)"],
+    ["a 5:4 picture", 1000, 800, "rotate(90deg) scale(0.8)"],
+    ["a 4:3 picture", 800, 600, "rotate(90deg) scale(0.75)"],
+    ["a 2:1 picture", 1024, 512, "rotate(90deg) scale(0.75)"],
+  ])(
+    "%s (%i x %i) is scaled only as much as it needs to fit after a quarter turn",
+    async (_name, width, height, transform) => {
+      await render(pageAt(MODEL_ID));
+      await loadPicture(width, height);
+      await press(/^rotate right$/i);
+      expect(large().style.transform).toBe(transform);
+      await press(/^rotate right$/i);
+      expect(large().style.transform).toBe("rotate(180deg)");
+    },
+  );
+
+  test("a picture that loads after a quarter turn takes its own scale then", async () => {
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate left$/i);
+    expect(large().style.transform).toBe("rotate(270deg) scale(0.75)");
+    await loadPicture(512, 512);
+    expect(large().style.transform).toBe("rotate(270deg)");
+  });
+
+  test("a quarter turn uses the safe 3/4 scale until the picture has loaded; a half turn needs none", async () => {
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate right$/i);
+    expect(large().style.transform).toContain("scale(0.75)");
+    await press(/^rotate right$/i);
+    expect(large().style.transform).toBe("rotate(180deg)");
+    await press(/^rotate right$/i);
+    expect(large().style.transform).toBe("rotate(270deg) scale(0.75)");
+    await press(/^rotate right$/i);
+    expect(large().style.transform).toBe("");
+  });
+
+  test("turns and flips combine as seen on screen: a flip after a turn still flips left to right", async () => {
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate right$/i);
+    await press(/^flip horizontal$/i);
+    // Flipping left to right on screen after a quarter turn right is the
+    // same picture as a mirror first, then a quarter turn left.
+    expect(large().style.transform).toBe("rotate(270deg) scaleX(-1) scale(0.75)");
+    await press(/^flip horizontal$/i);
+    expect(large().style.transform).toBe("rotate(90deg) scale(0.75)");
+    await press(/^rotate left$/i);
+    await press(/^flip vertical$/i);
+    await press(/^flip horizontal$/i);
+    expect(large().style.transform).toBe("scaleX(-1) scaleY(-1)");
+    await press(/^reset$/i);
+    expect(large().style.transform).toBe("");
+  });
+
+  test("choosing another plate in the strip clears the transform, and going back shows the plate as it was stored", async () => {
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate right$/i);
+    await press(/^flip vertical$/i);
+    expect(large().style.transform).not.toBe("");
+    const strip = [...container.querySelectorAll<HTMLButtonElement>(".studio-plate-strip button")];
+    await click(strip[1]);
+    expect(large().getAttribute("src")).toBe(thumb(2));
+    expect(large().style.transform).toBe("");
+    await press(/^flip horizontal$/i);
+    await click(strip[0]);
+    expect(large().getAttribute("src")).toBe(thumb(1));
+    expect(large().style.transform).toBe("");
+  });
+
+  test("viewing another .3mf from the Files tab clears the transform, even on the same plate number", async () => {
+    const second = threeMf([plate(1, "One", { file: fileNumbers(1) })], {
+      id: "0198f0c4-0000-7000-8000-00000000b009",
+      name: "Second.3mf",
+    });
+    models.set(MODEL_ID, model([threeMf([plate(1, "Only", { file: fileNumbers(1) })]), second]));
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate left$/i);
+    expect(large().style.transform).not.toBe("");
+    await click(tab("Files"));
+    const row = [...panel().querySelectorAll("li")].find((li) => text(li).includes("Second.3mf"));
+    await click(button(/^view/i, row as HTMLElement));
+    expect(large().style.transform).toBe("");
+  });
+
+  test("opening the model again shows the plate untransformed", async () => {
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate right$/i);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render(pageAt(MODEL_ID));
+    expect(large().style.transform).toBe("");
+  });
+
+  test("nothing is sent to the server and nothing is stored in the browser", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const before = { local: localStorage.length, session: sessionStorage.length };
+    await render(pageAt(MODEL_ID));
+    const sent = requests.length;
+    for (const label of CONTROLS) await press(label);
+    await press(/^rotate right$/i);
+    expect(requests.length).toBe(sent);
+    expect(setItem).not.toHaveBeenCalled();
+    expect({ local: localStorage.length, session: sessionStorage.length }).toEqual(before);
+    setItem.mockRestore();
+  });
+
+  test("a plate with no thumbnail has no image to turn, so no controls", async () => {
+    const bare = { ...plate(1, "Base", { file: fileNumbers(1) }), thumbnail: null };
+    models.set(MODEL_ID, model([threeMf([bare])]));
+    await render(pageAt(MODEL_ID));
+    expect(container.querySelector(".ph-plate-controls")).toBeNull();
+  });
+
+  test("the 3D view keeps its own buttons and gets none of these", async () => {
+    models.set(MODEL_ID, model([STL_FILE]));
+    await render(pageAt(MODEL_ID));
+    expect(container.querySelector(".ph-plate-controls")).toBeNull();
+    expect(container.querySelector(".ph-viewer-controls")).not.toBeNull();
   });
 });
 

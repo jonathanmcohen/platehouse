@@ -26,6 +26,13 @@
 //   session, a refusal, a server that cannot take it now), or the tus
 //   handler's own one-line plain-text reason, never tus-js-client's
 //   diagnostic text and never a JSON body such as the session gate's.
+// - Duplicates (approved for 0.1.0 by Jon, 2026-11-19): every file is sent
+//   with duplicates skip, so the server refuses a file whose SHA-256 a live
+//   model already holds, stores nothing, and answers failed with code
+//   duplicate and the files it matched. That row becomes "duplicate", not
+//   "failed": nothing went wrong. importAnyway sends that one file again,
+//   to the target it was first sent to, with duplicates allow. The policy is
+//   part of the fingerprint, so the second send never resumes the first.
 //
 // useTusUpload holds one dialog's files and their progress; the start and
 // result calls can be replaced, which the tests do.
@@ -139,6 +146,17 @@ export const NOT_CONFIRMED_TEXT =
 export const SENT_SESSION_ENDED_TEXT =
   "The file was sent, but your session has ended. Sign in again, then check the library before adding it again.";
 
+/** Whether the server skips a file already in the library or stores it anyway. */
+export type DuplicatePolicy = "skip" | "allow";
+
+/** A live file that already held the same bytes, as the server's result names it. */
+export interface DuplicateMatch {
+  modelId: string;
+  modelName: string;
+  fileId: string;
+  fileName: string;
+}
+
 export type UploadTarget =
   | { kind: "new" }
   | { kind: "model"; modelId: string }
@@ -158,20 +176,35 @@ function targetKey(target: UploadTarget): string {
 }
 
 /** The tus Upload-Metadata for a file sent to this target. */
-export function uploadMetadata(file: File, target: UploadTarget): Record<string, string> {
-  if (target.kind === "model") return { filename: file.name, modelId: target.modelId };
-  if (target.kind === "batch") return { filename: file.name, batch: target.batch, combine: "1" };
-  return { filename: file.name };
+export function uploadMetadata(
+  file: File,
+  target: UploadTarget,
+  duplicates: DuplicatePolicy = "skip",
+): Record<string, string> {
+  if (target.kind === "model") {
+    return { filename: file.name, modelId: target.modelId, duplicates };
+  }
+  if (target.kind === "batch") {
+    return { filename: file.name, batch: target.batch, combine: "1", duplicates };
+  }
+  return { filename: file.name, duplicates };
 }
 
 /**
  * The resume fingerprint: tus-js-client's own fields (name, type, size, last
- * change, endpoint) plus the target.
+ * change, endpoint) plus the target and, for Import anyway, the policy.
  */
-export function uploadFingerprint(file: File, target: UploadTarget, endpoint: string): string {
+export function uploadFingerprint(
+  file: File,
+  target: UploadTarget,
+  endpoint: string,
+  duplicates: DuplicatePolicy = "skip",
+): string {
   return [
     "platehouse",
     targetKey(target),
+    // Left out for skip, so a skip upload keeps the fingerprint it had.
+    ...(duplicates === "skip" ? [] : [`duplicates:${duplicates}`]),
     file.name,
     file.type,
     file.size,
@@ -196,13 +229,14 @@ export function uploadOptions(
   target: UploadTarget,
   handlers: UploadHandlers,
   uploadUrl: () => string | null = () => null,
+  duplicates: DuplicatePolicy = "skip",
 ): UploadOptions & { endpoint: string } {
   const endpoint = uploadEndpoint();
   return {
     endpoint,
     chunkSize: CHUNK_SIZE,
-    metadata: uploadMetadata(file, target),
-    fingerprint: async () => uploadFingerprint(file, target, endpoint),
+    metadata: uploadMetadata(file, target, duplicates),
+    fingerprint: async () => uploadFingerprint(file, target, endpoint, duplicates),
     storeFingerprintForResuming: true,
     removeFingerprintOnSuccess: true,
     retryDelays: [0, 1_000, 3_000, 5_000, 10_000],
@@ -224,14 +258,16 @@ export type StartUpload = (
   file: File,
   target: UploadTarget,
   handlers: UploadHandlers,
+  /** skip when left out. */
+  duplicates?: DuplicatePolicy,
 ) => UploadHandle;
 
 /** Starts a tus upload of the file, resuming an earlier one to the same target. */
-export const startTusUpload: StartUpload = (file, target, handlers) => {
+export const startTusUpload: StartUpload = (file, target, handlers, duplicates = "skip") => {
   let url: () => string | null = () => null;
   const upload = new Upload(
     file,
-    uploadOptions(file, target, handlers, () => url()),
+    uploadOptions(file, target, handlers, () => url(), duplicates),
   );
   url = () => upload.url;
   let stopped = false;
@@ -259,6 +295,9 @@ export interface UploadResult {
   modelId?: string;
   fileId?: string;
   error?: string;
+  /** "duplicate" on a file refused under duplicates skip. */
+  code?: string;
+  duplicates?: DuplicateMatch[];
 }
 
 export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
@@ -279,7 +318,14 @@ export const fetchUploadResult: FetchResult = async (uploadUrl) => {
   return (await res.json()) as UploadResult;
 };
 
-export type UploadStatus = "ready" | "unsupported" | "uploading" | "adding" | "done" | "failed";
+export type UploadStatus =
+  | "ready"
+  | "unsupported"
+  | "uploading"
+  | "adding"
+  | "done"
+  | "failed"
+  | "duplicate";
 
 export interface UploadItem {
   key: string;
@@ -290,6 +336,22 @@ export interface UploadItem {
   /** A failure's reason, or why a file is not sent. */
   message?: string;
   modelId?: string;
+  /** Where the file was sent, so Import anyway sends it to the same place. */
+  target?: UploadTarget;
+  /** For a duplicate: the live files that already hold it, oldest first. */
+  duplicates?: DuplicateMatch[];
+}
+
+/** The entries of a result's duplicates that are a file and its model. */
+function duplicateList(value: unknown): DuplicateMatch[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (m): m is DuplicateMatch =>
+      typeof m?.modelId === "string" &&
+      typeof m.modelName === "string" &&
+      typeof m.fileId === "string" &&
+      typeof m.fileName === "string",
+  );
 }
 
 export interface UseTusUploadOptions {
@@ -344,7 +406,9 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
     if (!running.current) return;
     const sent = items.filter((i) => i.status !== "ready" && i.status !== "unsupported");
     if (sent.length === 0) return;
-    if (sent.every((i) => i.status === "done" || i.status === "failed")) {
+    if (
+      sent.every((i) => i.status === "done" || i.status === "failed" || i.status === "duplicate")
+    ) {
       running.current = false;
       onFinished.current?.(items);
     }
@@ -401,6 +465,11 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
         return;
       }
       if (result.status === "failed") {
+        const duplicates = duplicateList(result.duplicates);
+        if (result.code === "duplicate" && duplicates.length > 0) {
+          update(key, { status: "duplicate", duplicates });
+          return;
+        }
         update(key, { status: "failed", message: result.error ?? "The upload failed." });
         return;
       }
@@ -412,16 +481,12 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
     }
   }
 
-  /** Sends every ready file to the target. */
-  const begin = (target: UploadTarget) => {
-    const ready = latest.current.filter((i) => i.status === "ready");
-    if (ready.length === 0) return;
-    running.current = true;
-    setItems((list) =>
-      list.map((i) => (i.status === "ready" ? { ...i, status: "uploading" as const } : i)),
-    );
-    for (const item of ready) {
-      const handle = start(item.file, target, {
+  /** Starts one file's upload to the target, its row already marked uploading. */
+  function send(item: UploadItem, target: UploadTarget, duplicates: DuplicatePolicy) {
+    const handle = start(
+      item.file,
+      target,
+      {
         onProgress: (sent, total) => update(item.key, { sent, total }),
         onSuccess: (uploadUrl) => {
           handles.current.delete(item.key);
@@ -432,11 +497,33 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
           handles.current.delete(item.key);
           update(item.key, { status: "failed", message: failureMessage(error) });
         },
-      });
-      handles.current.set(item.key, handle);
-    }
+      },
+      duplicates,
+    );
+    handles.current.set(item.key, handle);
+  }
+
+  /** Sends every ready file to the target, skipping any already in the library. */
+  const begin = (target: UploadTarget) => {
+    const ready = latest.current.filter((i) => i.status === "ready");
+    if (ready.length === 0) return;
+    running.current = true;
+    setItems((list) =>
+      list.map((i) => (i.status === "ready" ? { ...i, status: "uploading" as const, target } : i)),
+    );
+    for (const item of ready) send(item, target, "skip");
+  };
+
+  /** Sends a skipped duplicate again, to where it was first sent, stored anyway. */
+  const importAnyway = (key: string) => {
+    const item = latest.current.find((i) => i.key === key);
+    if (item?.status !== "duplicate" || item.target === undefined) return;
+    const { target } = item;
+    running.current = true;
+    update(key, { status: "uploading", sent: 0, duplicates: [] });
+    send(item, target, "allow");
   };
 
   const busy = items.some((i) => i.status === "uploading" || i.status === "adding");
-  return { items, addFiles, begin, clearSettled, clearDone, busy };
+  return { items, addFiles, begin, importAnyway, clearSettled, clearDone, busy };
 }

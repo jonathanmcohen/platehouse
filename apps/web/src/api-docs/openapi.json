@@ -3,7 +3,7 @@
   "info": {
     "title": "Platehouse API",
     "version": "1.0.0",
-    "description": "The Platehouse public API, for scripts and tools such as Claude Code: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence. JSON bodies are at most 1 MiB; uploads are at most 512 MiB. The guide is docs/api.md in the Platehouse repository."
+    "description": "The Platehouse public API, for scripts and tools such as AI coding assistants: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence. JSON bodies are at most 1 MiB; uploads are at most 512 MiB. The guide is docs/api.md in the Platehouse repository."
   },
   "components": {
     "securitySchemes": {
@@ -3080,7 +3080,7 @@
         "operationId": "createUpload",
         "summary": "Start an upload",
         "tags": ["Uploads"],
-        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named after the file.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives, and an upload left unfinished for 24 hours is deleted.",
+        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named after the file.\n\nduplicates says what happens when a live model already holds a file with the same SHA-256: allow (the default) stores it anyway and the result lists the copies; skip stores nothing and the result is failed with code duplicate. A file in the trash never counts.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives, and an upload left unfinished for 24 hours is deleted.",
         "parameters": [
           {
             "schema": {
@@ -3113,7 +3113,7 @@
             "in": "header",
             "name": "upload-metadata",
             "required": true,
-            "description": "tus Upload-Metadata: comma-separated pairs, each a key, a space and the value in base64. filename is required. modelId adds the file to that live model. batch (1 to 200 characters) groups the uploads that share it; with combine 1 or true they become one model, with combine 0, false or left out each is its own model. modelId cannot be sent with batch or combine. Other keys are ignored."
+            "description": "tus Upload-Metadata: comma-separated pairs, each a key, a space and the value in base64. filename is required. modelId adds the file to that live model. batch (1 to 200 characters) groups the uploads that share it; with combine 1 or true they become one model, with combine 0, false or left out each is its own model. modelId cannot be sent with batch or combine. duplicates is skip or allow, allow when left out. Other keys are ignored."
           }
         ],
         "responses": {
@@ -3148,7 +3148,7 @@
             }
           },
           "400": {
-            "description": "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, or breaks a rule above. The body says which.",
+            "description": "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, has a duplicates other than skip or allow, or breaks a rule above. The body says which.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -3619,7 +3619,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The upload's state",
+            "description": "The upload's state. pending while it is arriving or being imported; done with the model and file, and duplicates: the files of live models that already held the same bytes (empty when none did); or failed with a message. A duplicate refused under duplicates skip is failed with code duplicate and the duplicates it matched, so the client can point at the model or send the file again with duplicates allow. Other failures carry no code.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3640,6 +3640,33 @@
                     "error": {
                       "type": "string",
                       "description": "With failed: why, in a sentence"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["duplicate"],
+                      "description": "With failed: duplicate when a duplicate was skipped; else absent"
+                    },
+                    "duplicates": {
+                      "type": "array",
+                      "description": "With done, and with failed code duplicate: the live files that already held the same bytes, oldest first, at most 10. A file in a trashed model is never listed.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "modelId": {
+                            "type": "string"
+                          },
+                          "modelName": {
+                            "type": "string"
+                          },
+                          "fileId": {
+                            "type": "string"
+                          },
+                          "fileName": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["modelId", "modelName", "fileId", "fileName"]
+                      }
                     }
                   },
                   "required": ["status"]
@@ -3650,13 +3677,30 @@
                     "value": {
                       "status": "done",
                       "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
-                      "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70"
+                      "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+                      "duplicates": []
                     }
                   },
                   "pending": {
                     "summary": "Still arriving or importing",
                     "value": {
                       "status": "pending"
+                    }
+                  },
+                  "duplicate": {
+                    "summary": "Skipped: already in the library (duplicates skip)",
+                    "value": {
+                      "status": "failed",
+                      "error": "This file is already in the library, in the model \"Cable clip\" (id 0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f), so it was skipped; nothing was saved",
+                      "code": "duplicate",
+                      "duplicates": [
+                        {
+                          "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                          "modelName": "Cable clip",
+                          "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+                          "fileName": "cable-clip.3mf"
+                        }
+                      ]
                     }
                   },
                   "failed": {
@@ -3794,7 +3838,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The upload's state"
+            "description": "The upload's state. pending while it is arriving or being imported; done with the model and file, and duplicates: the files of live models that already held the same bytes (empty when none did); or failed with a message. A duplicate refused under duplicates skip is failed with code duplicate and the duplicates it matched, so the client can point at the model or send the file again with duplicates allow. Other failures carry no code."
           },
           "401": {
             "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read."

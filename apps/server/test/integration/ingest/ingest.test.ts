@@ -679,6 +679,48 @@ describe("a failed commit never deletes what may have been committed", () => {
     expect(files[0]?.originalName).toBe("Committed after all.3mf");
   });
 
+  test("a duplicate stored under allow whose commit answer is lost still lists the live copy", async () => {
+    // The rows were written, so the lookup inside the transaction already
+    // ran: the result says which live file held the same bytes, as it would
+    // had the answer arrived, rather than leaving the list out (the Public
+    // API reads a missing list as "no copy").
+    const tag = `lost-${randomBytes(8).toString("hex")}`;
+    const bytes =
+      `solid ${tag}\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n` +
+      `   vertex 0 1 0\n  endloop\n endfacet\nendsolid ${tag}\n`;
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Bracket.stl",
+      target: "new",
+    });
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+    });
+    const result = await createIngest({ db: committedThenLost, store: env.store }).ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Bracket copy.stl",
+      target: "new",
+      duplicates: "allow",
+    });
+    expect((await filesOf(result.modelId)).map((f) => f.id)).toEqual([result.fileId]);
+    expect(result.duplicates).toEqual([
+      {
+        modelId: first.modelId,
+        modelName: "Bracket",
+        fileId: first.fileId,
+        fileName: "Bracket.stl",
+      },
+    ]);
+  });
+
   test("a transaction that never started deletes its objects, with no lookup", async () => {
     // The database is unreachable at BEGIN. With no transaction id nothing
     // ran, so no COMMIT was ever sent and nothing can have committed: the

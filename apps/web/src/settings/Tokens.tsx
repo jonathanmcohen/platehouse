@@ -137,9 +137,9 @@ export function Tokens() {
     <div className="ph-section">
       <h2>API tokens</h2>
       <p className="studio-muted">
-        Each API client, such as Claude Code on one Mac, gets its own token. A token is shown once,
-        when it is made. The <Link to="/settings?view=api">API reference</Link> shows what a token
-        can do and how to use it.
+        Each app or script that uses the API gets its own token. A token is shown once, when it is
+        made. The <Link to="/settings?view=api">API reference</Link> shows what a token can do and
+        how to use it.
       </p>
       <form className="ph-inline-form" onSubmit={create}>
         <label htmlFor={nameId}>Token name</label>
@@ -149,7 +149,7 @@ export function Tokens() {
           value={name}
           maxLength={MAX_NAME}
           autoComplete="off"
-          placeholder="Claude Code on mini01"
+          placeholder="e.g. Laptop script"
           onChange={(event) => setName(event.currentTarget.value)}
         />
         <button ref={createButton} type="submit" className="studio-button" aria-disabled={busy}>

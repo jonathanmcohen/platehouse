@@ -27,11 +27,12 @@
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
 // - The web app's own JSON API under /app/api (app-api/: Task 19's library,
-//   Task 20's model page, and Task 21's settings, tokens, organising and the
-//   trash), session-class, so the gate's session and Origin checks cover
+//   Task 20's model page, Task 21's settings, tokens, organising and the
+//   trash, and the Activity page's GET /app/api/activity), session-class, so the gate's session and Origin checks cover
 //   every route. Without library the library routes answer an empty
 //   library, without model every model is 404 and nothing is retried, and
-//   without appApi Task 21's routes are still registered and answer 503.
+//   without appApi Task 21's routes are still registered and answer 503, as
+//   the Activity route does without activity.
 // - The web app (web/shell.ts, Task 18): the shell pages (session-class)
 //   answer with the built index.html, data-theme and the color-scheme meta
 //   written in from the ph_theme cookie, and the hashed build output is
@@ -85,6 +86,7 @@ import Fastify, {
 import { registerOpenApi } from "./api/openapi.js";
 import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
+import { type AppActivity, registerActivityApi } from "./app-api/activity.js";
 import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
 import { type AppModel, emptyAppModel, registerModelApi } from "./app-api/model.js";
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
@@ -195,6 +197,13 @@ export interface AppDeps {
    * covers them) and answer 503.
    */
   appApi?: AppApiDeps;
+  /**
+   * The Activity page's app API (app-api/activity.ts): library numbers, job
+   * progress, the slicer's health and recent events, read-only. Left out,
+   * GET /app/api/activity is still registered (so the route-class gate
+   * covers it) and answers 503.
+   */
+  activity?: AppActivity;
 }
 
 /** What the /app/api routes of Task 21 read and change. */
@@ -477,6 +486,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await registerSettingsApi(app, deps.appApi?.settings);
   await registerTokensApi(app, deps.appApi?.tokens);
   await registerOrganiseApi(app, deps.appApi?.organise);
+  await registerActivityApi(app, deps.activity);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
     authHook: apiUploadHook(api),

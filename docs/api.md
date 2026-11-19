@@ -7,8 +7,8 @@ Platehouse has an HTTP API for scripts and tools. With it you can:
 - download a file;
 - add and remove tags, and put models in collections or take them out.
 
-It is meant for automation: a script that files new downloads away, a tool such as Claude Code
-that adds and finds files for you, or an import from another library. It cannot delete, trash
+It is meant for automation: a script that files new downloads away, an AI coding assistant that
+adds and finds files for you, or an import from another library. It cannot delete, trash
 or purge anything, and a model in the trash is invisible to it, so a token that leaks can add
 clutter but never lose your files.
 
@@ -39,7 +39,7 @@ Every request needs an API token. Make one for each script or machine that calls
 can revoke one without breaking the others.
 
 1. Open **Settings** and find **API tokens**.
-2. Type a name that says what the token is for, such as `Claude Code on my laptop`, and press
+2. Type a name that says what the token is for, such as `Laptop script`, and press
    **Create token**.
 3. Copy the token from the dialog. It starts with `ph_`, and this is the only time it is shown:
    Platehouse keeps only a hash of it. Store it somewhere safe, such as a password manager.
@@ -185,15 +185,43 @@ most languages, such as `tus-js-client` and `tuspy`. With plain HTTP it takes th
 
 `Upload-Metadata` is a list of `key value` pairs separated by commas, each value in base64:
 
-| Key        | Meaning                                                                                                            |
-| ---------- | ------------------------------------------------------------------------------------------------------------------ |
-| `filename` | Required. The file's name; its extension says what the file is.                                                    |
-| `modelId`  | Add the file to this existing model instead of making a new one.                                                   |
-| `batch`    | Group several uploads: uploads that share a batch value (1 to 200 characters) arrive together.                     |
-| `combine`  | With `batch`: `1` or `true` makes the batch one model, `0` or `false` (the default) makes each file its own model. |
+| Key          | Meaning                                                                                                            |
+| ------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `filename`   | Required. The file's name; its extension says what the file is.                                                    |
+| `modelId`    | Add the file to this existing model instead of making a new one.                                                   |
+| `batch`      | Group several uploads: uploads that share a batch value (1 to 200 characters) arrive together.                     |
+| `combine`    | With `batch`: `1` or `true` makes the batch one model, `0` or `false` (the default) makes each file its own model. |
+| `duplicates` | `allow` (the default) or `skip`: what to do when the library already holds the same file.                          |
 
 `modelId` cannot be sent with `batch` or `combine`. Without `modelId` or `batch`, the file becomes
 a model of its own, named after the file. Every tus request carries `Tus-Resumable: 1.0.0`.
+
+### Duplicates
+
+A file is a duplicate when a live model already holds a file with the same bytes (the same
+SHA-256); a file in the trash never counts. With `duplicates` left out or `allow`, the file is
+stored anyway, and the `done` result lists the copies that were already there in `duplicates`
+(empty when there were none). With `skip`, nothing is stored and the result is `failed` with
+`code` `duplicate` and the matching files in `duplicates`, so a script can point at the model
+that has it, or send the file again with `allow`:
+
+```json
+{
+  "status": "failed",
+  "error": "This file is already in the library, in the model \"Cable clip\" (id 0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f), so it was skipped; nothing was saved",
+  "code": "duplicate",
+  "duplicates": [
+    {
+      "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+      "modelName": "Cable clip",
+      "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+      "fileName": "cable-clip.3mf"
+    }
+  ]
+}
+```
+
+`duplicates` lists at most 10 files, oldest first. Any other failure has no `code`.
 
 ### Large files and chunking
 
@@ -286,13 +314,15 @@ curl -sS "$PLATEHOUSE$LOCATION/result" \
   -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
 ```
 
-When it is done, the result names the model and the file:
+When it is done, the result names the model and the file, and lists any copies of the same file
+the library already held (see [Duplicates](#duplicates)):
 
 ```json
 {
   "status": "done",
   "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
-  "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70"
+  "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+  "duplicates": []
 }
 ```
 

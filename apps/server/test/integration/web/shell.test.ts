@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { buildApp } from "../../../src/app.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createUploads } from "../../../src/uploads/tus.js";
-import { THEME_COOKIE } from "../../../src/web/shell.js";
+import { ACCENT_COOKIE, DEFAULT_ACCENT, THEME_COOKIE } from "../../../src/web/shell.js";
 import { TEST_ORIGIN, type TestAuth, testAuth } from "../support/oidc-issuer.js";
 
 /** The sidebar's sections: Library, Creators, Collections and Tags. */
@@ -113,7 +113,10 @@ describe("a built web app", () => {
       expect(res.statusCode, url).toBe(200);
       expect(res.headers["content-type"], url).toBe("text/html; charset=utf-8");
       expect(res.headers["cache-control"], url).toBe("no-store");
-      expect(res.body, url).toBe(INDEX);
+      // This index.html carries no data-accent, so the server adds the default's.
+      expect(res.body, url).toBe(
+        INDEX.replace('data-theme="dark"', `data-theme="dark" data-accent="${DEFAULT_ACCENT}"`),
+      );
     }
   });
 
@@ -130,8 +133,38 @@ describe("a built web app", () => {
       cookies: { [SESSION_COOKIE]: t.session, [THEME_COOKIE]: cookie },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`<html lang="en" data-theme="${theme}">`);
+    expect(res.body).toContain(
+      `<html lang="en" data-theme="${theme}" data-accent="${DEFAULT_ACCENT}">`,
+    );
     expect(res.body).toContain(`<meta name="color-scheme" content="${scheme}" />`);
+  });
+
+  // Jon, 2026-11-19: the accent scheme reaches the first paint the same way.
+  test.each([
+    ["coral", "coral"],
+    ["sky-blue", "sky-blue"],
+    ["Coral", DEFAULT_ACCENT],
+    ['coral" onload="x', DEFAULT_ACCENT],
+  ])("ph_accent=%s renders data-accent %s", async (cookie, accent) => {
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/",
+      headers: { accept: HTML },
+      cookies: { [SESSION_COOKIE]: t.session, [THEME_COOKIE]: "light", [ACCENT_COOKIE]: cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`<html lang="en" data-theme="light" data-accent="${accent}">`);
+    expect(res.body).not.toContain("onload");
+  });
+
+  test("no accent cookie renders the default accent", async () => {
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/",
+      headers: { accept: HTML },
+      cookies: { [SESSION_COOKIE]: t.session },
+    });
+    expect(res.body).toContain(`data-accent="${DEFAULT_ACCENT}"`);
   });
 
   test("HEAD of a shell page with a session is 200 with no body", async () => {

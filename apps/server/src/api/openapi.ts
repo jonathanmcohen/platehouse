@@ -359,6 +359,10 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       "whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId " +
       "to put the file into an existing model, or batch (and combine) to group several " +
       "uploads; with neither, the file becomes a model of its own, named after the file.\n\n" +
+      "duplicates says what happens when a live model already holds a file with the same " +
+      "SHA-256: allow (the default) stores it anyway and the result lists the copies; skip " +
+      "stores nothing and the result is failed with code duplicate. A file in the trash " +
+      "never counts.\n\n" +
       "The answer's Location is the upload's address. Send the bytes there with PATCH, then " +
       "poll GET /uploads/{id}/result until it says done or failed. The body of this request " +
       "may already carry the first bytes, or the whole file, when it is sent with " +
@@ -385,7 +389,8 @@ const TUS_DOCS: Record<string, FastifySchema> = {
             "base64. filename is required. modelId adds the file to that live model. batch " +
             "(1 to 200 characters) groups the uploads that share it; with combine 1 or true " +
             "they become one model, with combine 0, false or left out each is its own model. " +
-            "modelId cannot be sent with batch or combine. Other keys are ignored.",
+            "modelId cannot be sent with batch or combine. duplicates is skip or allow, allow " +
+            "when left out. Other keys are ignored.",
           examples: [
             "filename Y2FibGUtY2xpcC4zbWY=,modelId " +
               "MDE5M2E1YzItN2Q0ZS03YjIxLTlmMDAtM2M1YTFlMmI0ZDZm",
@@ -413,8 +418,8 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         type: "null",
       },
       400: text(
-        "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, or " +
-          "breaks a rule above. The body says which.",
+        "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, has a " +
+          "duplicates other than skip or allow, or breaks a rule above. The body says which.",
         "Upload-Metadata must carry the file's name as filename\n",
       ),
       401: UNAUTHORIZED_RESPONSE,
@@ -572,7 +577,13 @@ const TUS_DOCS: Record<string, FastifySchema> = {
     params: UPLOAD_ID_PARAM,
     response: {
       200: {
-        description: "The upload's state",
+        description:
+          "The upload's state. pending while it is arriving or being imported; done with the " +
+          "model and file, and duplicates: the files of live models that already held the same " +
+          "bytes (empty when none did); or failed with a message. A duplicate refused under " +
+          "duplicates skip is failed with code duplicate and the duplicates it matched, so the " +
+          "client can point at the model or send the file again with duplicates allow. Other " +
+          "failures carry no code.",
         content: {
           "application/json": {
             schema: {
@@ -582,15 +593,60 @@ const TUS_DOCS: Record<string, FastifySchema> = {
                 modelId: { type: "string", description: "With done: the model" },
                 fileId: { type: "string", description: "With done: the new file" },
                 error: { type: "string", description: "With failed: why, in a sentence" },
+                code: {
+                  type: "string",
+                  enum: ["duplicate"],
+                  description: "With failed: duplicate when a duplicate was skipped; else absent",
+                },
+                duplicates: {
+                  type: "array",
+                  description:
+                    "With done, and with failed code duplicate: the live files that already " +
+                    "held the same bytes, oldest first, at most 10. A file in a trashed model " +
+                    "is never listed.",
+                  items: {
+                    type: "object",
+                    properties: {
+                      modelId: { type: "string" },
+                      modelName: { type: "string" },
+                      fileId: { type: "string" },
+                      fileName: { type: "string" },
+                    },
+                    required: ["modelId", "modelName", "fileId", "fileName"],
+                  },
+                },
               },
               required: ["status"],
             },
             examples: {
               done: {
                 summary: "Imported",
-                value: { status: "done", modelId: EXAMPLE_IDS.model, fileId: EXAMPLE_IDS.file },
+                value: {
+                  status: "done",
+                  modelId: EXAMPLE_IDS.model,
+                  fileId: EXAMPLE_IDS.file,
+                  duplicates: [],
+                },
               },
               pending: { summary: "Still arriving or importing", value: { status: "pending" } },
+              duplicate: {
+                summary: "Skipped: already in the library (duplicates skip)",
+                value: {
+                  status: "failed",
+                  error:
+                    `This file is already in the library, in the model "Cable clip" ` +
+                    `(id ${EXAMPLE_IDS.model}), so it was skipped; nothing was saved`,
+                  code: "duplicate",
+                  duplicates: [
+                    {
+                      modelId: EXAMPLE_IDS.model,
+                      modelName: "Cable clip",
+                      fileId: EXAMPLE_IDS.file,
+                      fileName: "cable-clip.3mf",
+                    },
+                  ],
+                },
+              },
               failed: {
                 summary: "Not imported",
                 value: {
@@ -699,7 +755,7 @@ export async function registerOpenApi(
         title: "Platehouse API",
         version: "1.0.0",
         description:
-          "The Platehouse public API, for scripts and tools such as Claude Code: upload " +
+          "The Platehouse public API, for scripts and tools such as AI coding assistants: upload " +
           "files, search the library, read models, files, plates and their print estimates, " +
           "and add or remove tags and collection memberships.\n\n" +
           "It never deletes, trashes or purges anything, and a model in the trash is " +
