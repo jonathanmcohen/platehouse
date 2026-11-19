@@ -16,11 +16,16 @@
 // - A link that cannot be made is said in the page (role alert), never in a
 //   browser dialog. While a link is being made the buttons stay focusable
 //   (aria-disabled) and ignore presses.
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
+import { ENGLISH_I18N, useI18n } from "../i18n/I18n";
 
-export const BAMBU_PROMPT_LINE =
-  'Bambu Studio asks "This file is not from a trusted site, do you want to open it anyway?" ' +
-  "for any file that is not from MakerWorld. Choose to open it.";
+/** A <hidden> run of a message: text for screen readers only. */
+function hiddenText(children: ReactNode): ReactNode {
+  return <span className="studio-visually-hidden">{children}</span>;
+}
+
+/** The line about Bambu Studio's own prompt, in English (the catalog's model.slicer.bambuPrompt). */
+export const BAMBU_PROMPT_LINE = ENGLISH_I18N.t("model.slicer.bambuPrompt");
 
 /** What Task 17's mint route answers. */
 export interface SlicerLink {
@@ -71,6 +76,7 @@ export interface OpenInSlicerProps {
 }
 
 export function OpenInSlicer({ fileId, fileName, navigateTo, platform }: OpenInSlicerProps) {
+  const { t, rich } = useI18n();
   const lineId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +100,7 @@ export function OpenInSlicer({ fileId, fileName, navigateTo, platform }: OpenInS
       if (target === undefined) throw new Error("the link route answered no protocol URL");
       (navigateTo ?? ((url: string) => window.location.assign(url)))(target);
     } catch {
-      setError("The slicer link could not be made. Try again.");
+      setError(t("model.slicer.linkFailed"));
     } finally {
       setBusy(false);
     }
@@ -110,7 +116,7 @@ export function OpenInSlicer({ fileId, fileName, navigateTo, platform }: OpenInS
           aria-disabled={busy}
           onClick={() => void open("bambu")}
         >
-          Open in Bambu Studio<span className="studio-visually-hidden">, {fileName}</span>
+          {rich("model.slicer.openBambu", { name: fileName }, { hidden: hiddenText })}
         </button>
         <button
           type="button"
@@ -118,11 +124,11 @@ export function OpenInSlicer({ fileId, fileName, navigateTo, platform }: OpenInS
           aria-disabled={busy}
           onClick={() => void open("orca")}
         >
-          Open in OrcaSlicer<span className="studio-visually-hidden">, {fileName}</span>
+          {rich("model.slicer.openOrca", { name: fileName }, { hidden: hiddenText })}
         </button>
       </div>
       <p id={lineId} className="studio-muted ph-small">
-        {BAMBU_PROMPT_LINE}
+        {t("model.slicer.bambuPrompt")}
       </p>
       {error === null ? null : (
         <p role="alert" className="ph-error">

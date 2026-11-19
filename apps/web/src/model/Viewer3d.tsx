@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 // A type-only import, erased from the build, so three.js still loads only
 // through the dynamic imports in defaultLoadThree.
 import type { Object3D } from "three";
+import { useI18n } from "../i18n/I18n";
 
 export interface ThreeSource {
   kind: "stl" | "glb";
@@ -179,6 +180,7 @@ export interface Viewer3dProps {
 }
 
 export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) {
+  const { t, rich } = useI18n();
   const host = useRef<HTMLDivElement>(null);
   const [handle, setHandle] = useState<ViewerHandle | null>(null);
   const [failed, setFailed] = useState(false);
@@ -225,28 +227,28 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
           className="ph-viewer3d"
           data-viewer3d=""
           role="img"
-          aria-label={`3D view of ${label}`}
+          aria-label={t("viewer.label", { name: label })}
         />
         {failed ? (
           <p className="studio-placeholder">
             <span>
-              The 3D view could not be shown. <a href={download}>Download {label}</a> instead.
+              {rich("viewer.failed", { name: label }, { a: (children) => <a href={download}>{children}</a> })}
             </span>
           </p>
         ) : handle === null ? (
-          <p className="studio-placeholder">Loading the 3D view...</p>
+          <p className="studio-placeholder">{t("viewer.loading")}</p>
         ) : null}
       </div>
       {failed ? null : (
         <fieldset className="studio-actions ph-viewer-controls">
-          <legend className="studio-visually-hidden">3D view controls</legend>
+          <legend className="studio-visually-hidden">{t("viewer.controls")}</legend>
           <button
             type="button"
             className="studio-button"
             aria-disabled={handle === null}
             onClick={() => press((h) => h.rotate(-ROTATE_STEP))}
           >
-            Rotate left
+            {t("viewer.rotateLeft")}
           </button>
           <button
             type="button"
@@ -254,7 +256,7 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
             aria-disabled={handle === null}
             onClick={() => press((h) => h.rotate(ROTATE_STEP))}
           >
-            Rotate right
+            {t("viewer.rotateRight")}
           </button>
           <button
             type="button"
@@ -262,7 +264,7 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
             aria-disabled={handle === null}
             onClick={() => press((h) => h.zoom(ZOOM_STEP))}
           >
-            Zoom in
+            {t("viewer.zoomIn")}
           </button>
           <button
             type="button"
@@ -270,7 +272,7 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
             aria-disabled={handle === null}
             onClick={() => press((h) => h.zoom(1 / ZOOM_STEP))}
           >
-            Zoom out
+            {t("viewer.zoomOut")}
           </button>
           <button
             type="button"
@@ -278,7 +280,7 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
             aria-disabled={handle === null}
             onClick={() => press((h) => h.reset())}
           >
-            Reset view
+            {t("viewer.reset")}
           </button>
         </fieldset>
       )}

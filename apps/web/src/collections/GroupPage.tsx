@@ -16,6 +16,7 @@
 import { type Ref, useLayoutEffect, useRef } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAppApi } from "../settings/api";
+import { type MessageKey, useI18n } from "../i18n/I18n";
 import { focusFirst, focusLost } from "../settings/focus";
 import { ModelRows, type OrganiseModel } from "./ModelRows";
 import "../settings/organise.css";
@@ -31,6 +32,13 @@ export interface GroupPageProps {
   emptyText: string;
 }
 
+/** The All link back to each list. */
+const ALL_KEYS: Readonly<Record<GroupPageProps["filter"], MessageKey>> = {
+  creator: "groups.creators.all",
+  collection: "groups.collections.all",
+  tag: "groups.tags.all",
+};
+
 interface Group {
   name: string;
   models: number;
@@ -44,6 +52,7 @@ interface ViewProps {
 }
 
 function GroupList({ title, listPath, emptyText, heading, onSwap }: GroupPageProps & ViewProps) {
+  const { t } = useI18n();
   const key = listPath.slice(1) as "creators" | "collections" | "tags";
   const list = useAppApi<Record<string, Group[]>>(listPath);
   const groups = list.data?.[key] ?? [];
@@ -58,7 +67,7 @@ function GroupList({ title, listPath, emptyText, heading, onSwap }: GroupPagePro
         <p className="studio-alert studio-alert-alert">{list.error}</p>
       )}
       {list.data === undefined && list.error === undefined ? (
-        <p className="studio-muted">Loading.</p>
+        <p className="studio-muted">{t("groups.loading")}</p>
       ) : null}
       {list.data !== undefined && groups.length === 0 ? (
         <p className="studio-empty">{emptyText}</p>
@@ -72,7 +81,7 @@ function GroupList({ title, listPath, emptyText, heading, onSwap }: GroupPagePro
                   {group.name}
                 </Link>
                 <span className="studio-muted">
-                  {group.models} {group.models === 1 ? "model" : "models"}
+                  {t("library.count.models", { count: group.models })}
                 </span>
               </div>
             </li>
@@ -90,6 +99,7 @@ function GroupModels({
   heading,
   onSwap,
 }: GroupPageProps & ViewProps & { name: string }) {
+  const { t } = useI18n();
   const rows = useAppApi<{ models: OrganiseModel[]; nextCursor: string | null }>(
     `/organise/models?${new URLSearchParams({ [filter]: name })}`,
   );
@@ -99,7 +109,7 @@ function GroupModels({
       <div className="studio-page-head">
         <h1>{title}</h1>
         <Link to="." onClick={onSwap}>
-          All {title.toLowerCase()}
+          {t(ALL_KEYS[filter])}
         </Link>
       </div>
       <div className="ph-section">
@@ -107,13 +117,13 @@ function GroupModels({
           <h2 ref={heading} tabIndex={-1}>
             {name}
           </h2>
-          <Link to={`/?${new URLSearchParams({ [filter]: name })}`}>Show in the library</Link>
+          <Link to={`/?${new URLSearchParams({ [filter]: name })}`}>{t("groups.showInLibrary")}</Link>
         </div>
         {rows.error === undefined ? null : (
           <p className="studio-alert studio-alert-alert">{rows.error}</p>
         )}
         {rows.data === undefined && rows.error === undefined ? (
-          <p className="studio-muted">Loading the models.</p>
+          <p className="studio-muted">{t("groups.loadingModels")}</p>
         ) : null}
         {rows.data === undefined ? null : (
           <ModelRows
@@ -123,7 +133,7 @@ function GroupModels({
         )}
         {rows.data?.nextCursor ? (
           <p className="studio-muted">
-            Only the first {models.length} models are shown here; the library shows them all.
+            {t("groups.firstOnly", { count: models.length })}
           </p>
         ) : null}
       </div>

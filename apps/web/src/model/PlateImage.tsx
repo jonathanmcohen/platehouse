@@ -26,6 +26,7 @@
 // The buttons are the 3D view's pattern (Viewer3d): a fieldset with a
 // hidden legend, text studio-buttons, studio.css's focus ring and tokens.
 import { useState } from "react";
+import { useI18n } from "../i18n/I18n";
 
 /** Height over width of studio.css's .studio-viewer-frame (aspect-ratio: 4 / 3). */
 export const FRAME_RATIO = 3 / 4;
@@ -93,6 +94,7 @@ export interface PlateImageProps {
 }
 
 export function PlateImage({ src, alt }: PlateImageProps) {
+  const { t } = useI18n();
   const [transform, setTransform] = useState<PlateTransform>(UNTURNED);
   /** The picture's height over its width, once it has loaded. */
   const [ratio, setRatio] = useState<number | null>(null);
@@ -112,25 +114,25 @@ export function PlateImage({ src, alt }: PlateImageProps) {
         />
       </div>
       <fieldset className="studio-actions ph-viewer-controls ph-plate-controls">
-        <legend className="studio-visually-hidden">Plate image controls</legend>
+        <legend className="studio-visually-hidden">{t("model.plateImage.controls")}</legend>
         <button type="button" className="studio-button" onClick={() => setTransform(rotateLeft)}>
-          Rotate left
+          {t("viewer.rotateLeft")}
         </button>
         <button type="button" className="studio-button" onClick={() => setTransform(rotateRight)}>
-          Rotate right
+          {t("viewer.rotateRight")}
         </button>
         <button
           type="button"
           className="studio-button"
           onClick={() => setTransform(flipHorizontal)}
         >
-          Flip horizontal
+          {t("model.plateImage.flipHorizontal")}
         </button>
         <button type="button" className="studio-button" onClick={() => setTransform(flipVertical)}>
-          Flip vertical
+          {t("model.plateImage.flipVertical")}
         </button>
         <button type="button" className="studio-button" onClick={() => setTransform(UNTURNED)}>
-          Reset
+          {t("model.plateImage.reset")}
         </button>
       </fieldset>
     </>

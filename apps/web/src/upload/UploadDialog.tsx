@@ -52,6 +52,7 @@ import {
   useState,
 } from "react";
 import { Link, useInRouterContext } from "react-router";
+import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import "./upload.css";
 import {
   ACCEPT,
@@ -120,28 +121,28 @@ function percent(item: UploadItem): number {
   return Math.min(100, Math.round((item.sent / item.total) * 100));
 }
 
-function statusText(item: UploadItem): string {
+function statusText(item: UploadItem, i18n: Pick<I18n, "t" | "fmt">): string {
+  const { t } = i18n;
   switch (item.status) {
     case "ready":
-      return "Ready";
+      return t("upload.status.ready");
     case "unsupported":
-      return item.message ?? "Not a supported file type";
+      return item.message ?? t("upload.status.unsupported");
     case "uploading":
-      return `${percent(item)}%`;
+      return i18n.fmt.percent(percent(item));
     case "adding":
-      return "Adding to the library";
+      return t("upload.status.adding");
     case "done":
-      return "Added";
+      return t("upload.status.added");
     case "failed":
-      return item.message ?? "The upload failed.";
+      return item.message ?? t("upload.failed");
     case "duplicate":
-      return "Skipped";
+      return t("upload.status.skipped");
   }
 }
 
 /** Shown under the intro: what happens to a file already in the library. */
-export const DUPLICATES_TEXT =
-  "A file that is already in the library is skipped, so nothing is added twice; you can choose Import anyway on it.";
+export const DUPLICATES_TEXT = ENGLISH_I18N.t("upload.duplicates");
 
 /** The link to a model's page: in the app when there is a router, a plain link otherwise. */
 function ModelLink({
@@ -171,18 +172,24 @@ function DuplicateNote({
   duplicates: readonly DuplicateMatch[];
   onFollow(): void;
 }) {
+  const { rich } = useI18n();
   const first = duplicates[0];
   if (first === undefined) return null;
   const others = new Set(duplicates.map((d) => d.modelId));
   others.delete(first.modelId);
   return (
     <span className="ph-upload-duplicate-text">
-      Already in the library as{" "}
-      <ModelLink modelId={first.modelId} onFollow={onFollow}>
-        {first.modelName}
-      </ModelLink>
-      {others.size === 0 ? "" : ` and ${others.size} other model${others.size === 1 ? "" : "s"}`},
-      so it was not added again.
+      {rich(
+        "upload.duplicate.note",
+        { name: first.modelName, others: others.size },
+        {
+          link: (children) => (
+            <ModelLink modelId={first.modelId} onFollow={onFollow}>
+              {children}
+            </ModelLink>
+          ),
+        },
+      )}
     </span>
   );
 }
@@ -200,6 +207,8 @@ export function UploadDialog({
   fetchResult,
   resultDelayMs,
 }: UploadDialogProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
   const titleId = useId();
   const dialog = useRef<HTMLDivElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -348,25 +357,25 @@ export function UploadDialog({
         aria-labelledby={titleId}
         tabIndex={-1}
       >
-        <h2 id={titleId}>Add files</h2>
+        <h2 id={titleId}>{t("upload.title")}</h2>
         <p className="studio-muted">
           {modelId !== undefined
-            ? "The files are added to this model."
-            : "Each file becomes its own model unless you combine them."}{" "}
-          Supported: .3mf, .stl, .step, .stp and .scad.
+            ? t("upload.intro.model")
+            : t("upload.intro.new")}{" "}
+          {t("upload.supported")}
         </p>
-        <p className="studio-muted">{DUPLICATES_TEXT}</p>
+        <p className="studio-muted">{t("upload.duplicates")}</p>
 
         {items.length === 0 ? (
-          <p className="studio-empty">No files yet. Choose files, or drop them here.</p>
+          <p className="studio-empty">{t("upload.empty")}</p>
         ) : (
-          <ul className="ph-upload-list" aria-label="Files">
+          <ul className="ph-upload-list" aria-label={t("model.tab.files")}>
             {items.map((item) => (
               <li key={item.key} className="ph-upload-row" data-upload={item.file.name}>
                 <span className="ph-upload-name">{item.file.name}</span>
                 {item.status === "unsupported" ? null : (
                   <progress
-                    aria-label={`Upload progress for ${item.file.name}`}
+                    aria-label={t("upload.progress", { name: item.file.name })}
                     value={item.sent}
                     max={item.total > 0 ? item.total : 1}
                   />
@@ -378,7 +387,7 @@ export function UploadDialog({
                       : "ph-upload-status"
                   }
                 >
-                  {statusText(item)}
+                  {statusText(item, i18n)}
                 </span>
                 {item.status === "duplicate" ? (
                   <div className="ph-upload-duplicate">
@@ -390,7 +399,7 @@ export function UploadDialog({
                       className="studio-button"
                       onClick={() => upload.importAnyway(item.key)}
                     >
-                      Import anyway
+                      {t("upload.importAnyway")}
                     </button>
                   </div>
                 ) : null}
@@ -412,7 +421,7 @@ export function UploadDialog({
             }}
           />
           <button type="button" className="studio-button" onClick={() => picker.current?.click()}>
-            Choose files
+            {t("upload.choose")}
           </button>
           {modelId !== undefined ? null : (
             <label className="ph-switch">
@@ -427,14 +436,14 @@ export function UploadDialog({
                   setCombine(event.currentTarget.checked);
                 }}
               />
-              <span>Combine into one model</span>
+              <span>{t("upload.combine")}</span>
             </label>
           )}
         </div>
 
         <div className="ph-dialog-actions">
           <button type="button" className="studio-button" onClick={close}>
-            {busy ? "Hide" : "Close"}
+            {busy ? t("upload.hide") : t("upload.close")}
           </button>
           <button
             type="button"
@@ -442,7 +451,7 @@ export function UploadDialog({
             disabled={ready === 0}
             onClick={send}
           >
-            Upload {ready === 1 ? "1 file" : `${ready} files`}
+            {t("upload.send", { count: ready })}
           </button>
         </div>
       </div>

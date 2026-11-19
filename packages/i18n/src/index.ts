@@ -33,6 +33,12 @@ export {
   resolveLocale,
   SOURCE_LOCALE,
 } from "./negotiate.js";
+export {
+  englishPrinterName,
+  OTHER_PRINTER_LABEL,
+  PRINTER_NAME,
+  parsePrinterName,
+} from "./printers.js";
 export { createTranslator, MISSING_TEXT, type Translator } from "./translator.js";
 export {
   type CatalogMeta,

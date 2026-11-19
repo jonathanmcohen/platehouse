@@ -10,6 +10,7 @@
 // push focus out of the form. The form always opens without an old error.
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { errorText } from "../settings/api";
+import { useI18n } from "../i18n/I18n";
 import "../settings/organise.css";
 
 export interface InlineRenameProps {
@@ -37,6 +38,7 @@ export function InlineRename({
   maxLength = 500,
   heading = false,
 }: InlineRenameProps) {
+  const { t } = useI18n();
   const id = useId();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -68,7 +70,7 @@ export function InlineRename({
     if (busy) return;
     const name = draft.trim();
     if (name === "") {
-      setError("A name cannot be empty.");
+      setError(t("rename.empty"));
       return;
     }
     if (name === value) {
@@ -112,7 +114,7 @@ export function InlineRename({
             setEditing(true);
           }}
         >
-          Rename
+          {t("rename.button")}
         </button>
       </Wrap>
     );
@@ -134,10 +136,10 @@ export function InlineRename({
         onKeyDown={onKeyDown}
       />
       <button type="submit" className="studio-button ph-small" aria-disabled={busy}>
-        Save
+        {t("rename.save")}
       </button>
       <button type="button" className="studio-button ph-small" onClick={leave} aria-disabled={busy}>
-        Cancel
+        {t("common.cancel")}
       </button>
       {error === undefined ? null : (
         <span role="alert" className="studio-alert studio-alert-alert">
