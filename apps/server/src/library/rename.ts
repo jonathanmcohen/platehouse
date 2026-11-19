@@ -15,7 +15,9 @@ function displayName(name: string, what: "model" | "file"): string {
 export function createRename(db: Kysely<DB>) {
   return {
     /**
-     * Gives a live model a new display name, trimmed. False when the model is
+     * Gives a live model a new display name, trimmed, and makes it the
+     * user's (name_source 'user'), so no title from a later upload or the
+     * "Use file titles" backfill ever replaces it. False when the model is
      * unknown, malformed or trashed; RangeError for an empty name.
      */
     async renameModel(id: string, name: string): Promise<boolean> {
@@ -28,7 +30,7 @@ export function createRename(db: Kysely<DB>) {
       // trashed_at IS NULL keeps it off a trashed model, and so off a purge.
       const result = await db
         .updateTable("models")
-        .set({ name: newName, updatedAt: sql<Date>`now()` })
+        .set({ name: newName, nameSource: "user", updatedAt: sql<Date>`now()` })
         .where("id", "=", id)
         .where("trashedAt", "is", null)
         .executeTakeFirst();
