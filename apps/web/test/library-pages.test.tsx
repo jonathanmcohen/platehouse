@@ -262,6 +262,17 @@ describe("numbered pages", () => {
     expect(pagerLink("Previous")?.getAttribute("href")).toBe("/?page=2");
   });
 
+  test("following the current page's own link leaves focus for a later filter change alone", async () => {
+    stubServer(cards(171, 60));
+    await render(libraryAt("/"));
+    await click(pagerLink("Page 1"));
+    const pla = linkNamed("PLA");
+    pla?.focus();
+    await click(pla);
+    expect(lastLibraryQuery().get("tag")).toBe("PLA");
+    expect(document.activeElement?.id).not.toBe("ph-library-count");
+  });
+
   test("Next and Previous step a page, and the last page has no Next", async () => {
     stubServer(cards(171));
     await render(libraryAt("/?page=3"));

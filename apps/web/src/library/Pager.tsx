@@ -8,8 +8,9 @@
 // behind their arrows (the words stay the links' names) so it fits at 375 px.
 // The first page has no Previous and the last no Next.
 //
-// onNavigate is called when one of the links is followed, before the new
-// page loads, so the library can move focus once it has.
+// onNavigate is called when a link to another page is followed, before the
+// new page loads, so the library can move focus once it has. The current
+// page's own link loads nothing, so it does not call it.
 import { Link } from "react-router";
 
 export type PagerItem = number | "gap";
@@ -75,8 +76,8 @@ export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
       <ul className="studio-chips ph-pager-pages">
         {pagerItems(page, pageCount).map((item, i) =>
           item === "gap" ? (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a gap has no page number; its slot is its identity.
-            <li key={`gap-${i}`} className="ph-pager-gap" aria-hidden="true">
+            // At most two gaps: one before the current page, one after.
+            <li key={i < 3 ? "gap-start" : "gap-end"} className="ph-pager-gap" aria-hidden="true">
               ...
             </li>
           ) : (
@@ -85,8 +86,7 @@ export function Pager({ page, pageCount, hrefFor, onNavigate }: PagerProps) {
                 to={hrefFor(item)}
                 className="studio-chip"
                 aria-label={`Page ${item}`}
-                onClick={followed}
-                {...(item === page ? { "aria-current": "page" as const } : {})}
+                {...(item === page ? { "aria-current": "page" as const } : { onClick: followed })}
               >
                 {item}
               </Link>
