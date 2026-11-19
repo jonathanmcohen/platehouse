@@ -7,7 +7,7 @@
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 import { registerOrganiseApi } from "../../src/app-api/organise.js";
-import { MAX_BULK_IDS, MAX_BULK_TAGS, readIds } from "../../src/repos/bulk.js";
+import { byLowerName, MAX_BULK_IDS, MAX_BULK_TAGS, readIds } from "../../src/repos/bulk.js";
 
 const A = "0198f0c4-0000-7000-8000-00000000000a";
 const B = "0198f0c4-0000-7000-8000-00000000000b";
@@ -22,6 +22,24 @@ describe("readIds", () => {
       valid: [A],
       malformed: ["nope", "../etc"],
     });
+  });
+});
+
+// Add tags makes new tags in this order so two requests naming the same
+// tags in any order take the tag index's locks alike (PR #246 review).
+describe("byLowerName", () => {
+  test("sorts ignoring case and keeps each name as given", () => {
+    expect(byLowerName(["beta", "Gamma", "ALPHA"])).toEqual(["ALPHA", "beta", "Gamma"]);
+  });
+
+  test("the same names in any order come out in the same order", () => {
+    expect(byLowerName(["PLA", "desk", "Shelf"])).toEqual(byLowerName(["Shelf", "PLA", "desk"]));
+  });
+
+  test("leaves its argument as it was", () => {
+    const given = ["b", "a"];
+    byLowerName(given);
+    expect(given).toEqual(["b", "a"]);
   });
 });
 

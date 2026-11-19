@@ -9,8 +9,10 @@
 // session gate in front of them is tested with every /app/api route in
 // settings.test.ts. Every model and byte is synthetic.
 import Fastify, { type FastifyInstance } from "fastify";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { registerOrganiseApi } from "../../../src/app-api/organise.js";
+import { uuidv7 } from "../../../src/db/ids.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createTrash } from "../../../src/library/trash.js";
@@ -113,6 +115,63 @@ describe("add tags", () => {
     const [a] = live;
     const res = await post("/app/api/bulk/add-tags", { ids: [a, a.toUpperCase()], tags: ["Once"] });
     expect(res.body).toMatchObject({ changed: [a], unchanged: [], failed: [] });
+  });
+
+  // Two requests making the same new tags, listed in opposite orders, must
+  // not deadlock (PR #246 review). A new tag's insert waits on another
+  // transaction's uncommitted row with the same lower(name), so the tags are
+  // made in lower(name) order. Here a transaction makes the first tag by that
+  // order and holds it; Add tags, asked for both in reverse, waits on it; then
+  // the holder makes the second tag and commits. Made in the request's order,
+  // Add tags would already hold the second tag and the two would deadlock.
+  test("two requests making the same new tags in opposite orders do not deadlock", async () => {
+    const { live } = await selection();
+    const [a] = live;
+    const word = marker();
+    const first = `Alpha ${word}`;
+    const second = `Beta ${word}`;
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let made: () => void = () => {};
+    const firstMade = new Promise<void>((resolve) => {
+      made = resolve;
+    });
+    const holder = env.db.transaction().execute(async (trx) => {
+      const insert = (name: string) =>
+        trx
+          .insertInto("tags")
+          .values({ id: uuidv7(), name })
+          .onConflict((oc) => oc.expression(sql`lower(name)`).doNothing())
+          .execute();
+      await insert(first);
+      made();
+      await released;
+      await insert(second);
+    });
+    await firstMade;
+    const adding = bulkRepo(env.db).addTags([a], [second, first]);
+    try {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const { rows } = await sql<{ waiting: number }>`
+          select count(*)::int as waiting from pg_stat_activity
+           where wait_event_type = 'Lock' and query ilike 'insert into "tags"%'
+        `.execute(env.db);
+        if ((rows[0]?.waiting ?? 0) > 0) break;
+        if (Date.now() > deadline) throw new Error("Add tags never waited on the held tag");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      release();
+      await holder;
+      expect(await adding).toMatchObject({ changed: [a], tags: [second, first] });
+      expect(await tagsOf(a)).toEqual([first, second]);
+    } finally {
+      release();
+      await holder.catch(() => {});
+      await adding.catch(() => undefined);
+    }
   });
 });
 

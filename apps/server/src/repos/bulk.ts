@@ -9,7 +9,9 @@
 // - In the transaction, every selected model that exists is locked, in id
 //   order so two bulk requests cannot deadlock, FOR SHARE to change its tags
 //   or collections (as library/live.ts's withLiveModel locks one) and FOR
-//   UPDATE to trash it (as repos/models.ts trash does). A model in the trash
+//   UPDATE to trash it (as repos/models.ts trash does). Add tags then makes
+//   its new tags in lower(name) order, for the same reason: an insert waits
+//   on another transaction's uncommitted tag of that name. A model in the trash
 //   is not changed and is reported as in_trash, one that does not exist as
 //   not_found; the others are changed together or, if a statement fails, not
 //   at all (the request answers 500).
@@ -80,6 +82,17 @@ function names(values: readonly string[], what: string): string[] {
   }
   if (out.length === 0) throw new RangeError(`Name at least one ${what}`);
   return out;
+}
+
+/**
+ * The names sorted by their lowercase form, compared by code unit so every
+ * request puts the same names in the same order.
+ */
+export function byLowerName(values: readonly string[]): string[] {
+  return values
+    .map((name) => ({ name, key: name.toLowerCase() }))
+    .sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+    .map((entry) => entry.name);
 }
 
 interface Selection {
@@ -163,7 +176,11 @@ export function bulkRepo(db: Kysely<DB>) {
       const wanted = names(tags, "tag");
       return inTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "share");
-        for (const name of wanted) {
+        // Made in lower(name) order, not the request's: a new tag's insert
+        // waits on another transaction's uncommitted row of the same
+        // lower(name), so two requests making the same tags in opposite
+        // orders would deadlock (PR #246 review).
+        for (const name of byLowerName(wanted)) {
           await trx
             .insertInto("tags")
             .values({ id: uuidv7(), name })
