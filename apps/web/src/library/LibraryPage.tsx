@@ -287,6 +287,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     const quiet = asked === loadedFor.current;
     loadedFor.current = asked;
     if (!quiet) setLoad({ state: "loading" });
+    else {
+      // The shown cards stay, but not an earlier View all failure: its Try
+      // again would start a second loader from the old cards beside this one.
+      setLoad((shown) =>
+        shown.state === "ready" && shown.restFailed ? { ...shown, restFailed: false } : shown,
+      );
+    }
     getJson<LibraryAnswer>(url, controller.signal)
       .then((raw) => {
         if (mine !== generation.current) return;

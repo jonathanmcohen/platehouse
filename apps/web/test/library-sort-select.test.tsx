@@ -78,6 +78,8 @@ let location = "";
 /** Library requests for a page this says yes to wait until releaseHeld(). */
 let holding: ((page: number) => boolean) | null;
 let held: Array<() => void>;
+/** Library requests for a page this says yes to answer 500. */
+let failing: ((page: number) => boolean) | null;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -112,6 +114,7 @@ function stubServer(all: LibraryCard[]) {
       if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
       const asked = Number(url.searchParams.get("page"));
       if (holding?.(asked)) await new Promise<void>((resolve) => held.push(resolve));
+      if (failing?.(asked)) return new Response("no", { status: 500 });
       const pageSize = Number(url.searchParams.get("limit") ?? 48);
       const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
       const page = Math.min(Math.max(asked, 1), pageCount);
@@ -271,6 +274,7 @@ beforeEach(() => {
   posted = [];
   holding = null;
   held = [];
+  failing = null;
   matchCap = 1000;
   serverTags = ["Desk", "PLA"];
   bulkAnswer = (_url, body) =>
@@ -714,6 +718,33 @@ describe("bulk actions", () => {
     expect(button("Select all 450 matching")).toBeDefined();
     await releaseHeld();
     expect(checkboxes()).toHaveLength(450);
+    expect(container.textContent).toContain("450 models, all shown");
+  });
+
+  test("an action's quiet reload hides View all's Try again, so a second loader cannot start", async () => {
+    stubServer(cards(450));
+    failing = (page) => page === 2;
+    await render("/?view=all");
+    expect(container.textContent).toContain("The rest of the library could not be loaded.");
+    expect(button("Try again")).toBeDefined();
+    await selectMode();
+    expect(checkboxes()).toHaveLength(200);
+    await click(checkbox("Model 001"));
+    failing = null;
+    holding = (page) => page >= 2;
+    await click(button("Add to collection"));
+    await type(dialog()?.querySelector("input") as HTMLInputElement, "Garage");
+    await click(dialogButton("Add to collection"));
+    // The reload is gathering the later chunks: the old failure and its
+    // Try again are gone, so nothing can start a loader from the old cards.
+    expect(held.length).toBeGreaterThan(0);
+    expect(checkboxes()).toHaveLength(200);
+    expect(container.textContent).not.toContain("could not be loaded");
+    expect(() => button("Try again")).toThrow();
+    expect(container.textContent).toContain("Loading the rest of the library");
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(450);
+    expect(new Set(checkboxes().map((c) => c.getAttribute("aria-label"))).size).toBe(450);
     expect(container.textContent).toContain("450 models, all shown");
   });
 
