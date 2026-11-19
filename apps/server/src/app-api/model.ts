@@ -46,9 +46,11 @@
 //   the page's polling with the finished estimate never shown. The plates
 //   are read one after another on that transaction's connection.
 // - A file's render or conversion message (files.derived_message, OpenSCAD's
-//   or the STEP converter's own text) is cleaned by scrubDetail
+//   or the STEP converter's own text) is cleaned by scrubDerivedMessage
 //   (src/scrub.ts; issue #260) as it is read, so no slicer temp path or
-//   address reaches the page; the stored row is left as it is.
+//   address reaches the page; the whole stored message is kept, and a longer
+//   one keeps its end, where the program's error line is. The stored row is
+//   left as it is.
 // - Answers are JSON and never cached. Errors carry no detail from the
 //   database.
 
@@ -61,7 +63,7 @@ import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { type DisplayContext, type PlateNumbers, plateNumbers } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
 import type { TitleNamePlan } from "../repos/models.js";
-import { scrubDetail } from "../scrub.js";
+import { scrubDerivedMessage } from "../scrub.js";
 import { BLOB_PREFIX } from "./library.js";
 
 /** A "Use file titles" planId: the SHA-256 of the plan's renames, in hex. */
@@ -106,7 +108,7 @@ export interface ModelFileView {
   size: number;
   parseStatus: ParseStatus;
   derivedStatus: string | null;
-  /** The render or conversion message, cleaned by scrubDetail (issue #260); null with none. */
+  /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
   /** Task 17's download route for the file. */
   download: string;
@@ -342,7 +344,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             size: Number(f.size),
             parseStatus: f.parseStatus,
             derivedStatus: f.derivedStatus,
-            derivedMessage: scrubDetail(f.derivedMessage),
+            derivedMessage: scrubDerivedMessage(f.derivedMessage),
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null

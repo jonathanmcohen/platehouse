@@ -36,9 +36,10 @@
 //   gate releases it. Errors answer JSON with no detail from the database or
 //   the store.
 // - A file's derivedMessage (files.derived_message, OpenSCAD's or the STEP
-//   converter's own text) is cleaned by scrubDetail (src/scrub.ts; issue
-//   #260) as it is read, so no slicer temp path or address is answered; the
-//   stored row is left as it is.
+//   converter's own text) is cleaned by scrubDerivedMessage (src/scrub.ts;
+//   issue #260) as it is read, so no slicer temp path or address is
+//   answered; the whole stored message is kept, and a longer one keeps its
+//   end, where the program's error line is. The stored row is left as it is.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
 // - A file's content is named and sized here once for every route that
@@ -62,7 +63,7 @@ import { createSearch, InvalidCursor, type LibrarySearch } from "../library/sear
 import { createTags } from "../library/tags.js";
 import { createRepos } from "../repos/index.js";
 import type { Model } from "../repos/models.js";
-import { scrubDetail } from "../scrub.js";
+import { scrubDerivedMessage } from "../scrub.js";
 import {
   BlobNotFound,
   type BlobStore,
@@ -117,7 +118,7 @@ export interface ApiFile {
   sha256: string;
   parseStatus: ParseStatus;
   derivedStatus: string | null;
-  /** The render or conversion message, cleaned by scrubDetail (issue #260); null with none. */
+  /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
   createdAt: string;
   updatedAt: string;
@@ -403,7 +404,7 @@ export function createApiLibrary(deps: {
       sha256: file.sha256.toString("hex"),
       parseStatus: file.parseStatus,
       derivedStatus: file.derivedStatus,
-      derivedMessage: scrubDetail(file.derivedMessage),
+      derivedMessage: scrubDerivedMessage(file.derivedMessage),
       createdAt: iso(file.createdAt),
       updatedAt: iso(file.updatedAt),
       plates: await Promise.all(

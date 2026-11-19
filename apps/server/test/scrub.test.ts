@@ -9,12 +9,20 @@
 //   name or token taken out, keeping the words around them.
 // - scrubDetail: scrubText for a column that may be null, null when nothing
 //   is left to show.
+// - scrubDerivedMessage: scrubDetail for OpenSCAD's or the STEP converter's
+//   message, long enough for the whole stored message and keeping its end
+//   when cut, since the program's error line is last.
 //
 // Every credential-shaped value here is made by the run, never written into
 // this file.
 import { randomBytes } from "node:crypto";
 import { describe, expect, test } from "vitest";
-import { scrubDetail, scrubText } from "../src/scrub.js";
+import {
+  DERIVED_MESSAGE_MAX_CHARS,
+  scrubDerivedMessage,
+  scrubDetail,
+  scrubText,
+} from "../src/scrub.js";
 
 /** A random value of n base64url characters, made by the run. */
 function runValue(n: number): string {
@@ -89,6 +97,30 @@ describe("scrubText", () => {
     const out = scrubText("x".repeat(5000));
     expect(out.length).toBeLessThanOrEqual(1003);
     expect(out.endsWith("...")).toBe(true);
+  });
+});
+
+describe("scrubDerivedMessage", () => {
+  test("is null for no message, and cleans a short one as scrubDetail does", () => {
+    expect(scrubDerivedMessage(null)).toBeNull();
+    expect(scrubDerivedMessage("  ")).toBeNull();
+    expect(
+      scrubDerivedMessage('ERROR: Parser error in file "/tmp/render-x1/input.scad", line 3'),
+    ).toBe('ERROR: Parser error in file "[path]", line 3');
+  });
+
+  test("shows a whole stored message, the previous-renders sentence and a 2000-character tail together, uncut", () => {
+    const message = `${"S".repeat(200)} ${"t".repeat(2000)}`;
+    expect(message.length).toBeLessThanOrEqual(DERIVED_MESSAGE_MAX_CHARS);
+    expect(scrubDerivedMessage(message)).toBe(message);
+  });
+
+  test("keeps the end of a message too long to show, where the program's error line is", () => {
+    const message = `${"early output\n".repeat(400)}ERROR: the last line`;
+    const out = scrubDerivedMessage(message);
+    expect(out?.startsWith("...")).toBe(true);
+    expect(out?.endsWith("ERROR: the last line")).toBe(true);
+    expect(out?.length).toBeLessThanOrEqual(DERIVED_MESSAGE_MAX_CHARS + 3);
   });
 });
 
