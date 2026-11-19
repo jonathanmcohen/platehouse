@@ -22,6 +22,11 @@ export interface InlineRenameProps {
   onSave(name: string): Promise<void>;
   /** The longest name the server takes. */
   maxLength?: number;
+  /**
+   * Shows the name as the page's h1 (the model page head), with the Rename
+   * button beside the heading rather than inside it.
+   */
+  heading?: boolean;
 }
 
 export function InlineRename({
@@ -30,6 +35,7 @@ export function InlineRename({
   inputLabel,
   onSave,
   maxLength = 500,
+  heading = false,
 }: InlineRenameProps) {
   const id = useId();
   const [editing, setEditing] = useState(false);
@@ -91,9 +97,10 @@ export function InlineRename({
   }
 
   if (!editing) {
+    const Wrap = heading ? "div" : "span";
     return (
-      <span className="ph-name">
-        <span>{value}</span>
+      <Wrap className="ph-name">
+        {heading ? <h1>{value}</h1> : <span>{value}</span>}
         <button
           ref={button}
           type="button"
@@ -107,7 +114,7 @@ export function InlineRename({
         >
           Rename
         </button>
-      </span>
+      </Wrap>
     );
   }
 

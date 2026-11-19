@@ -13,7 +13,9 @@
 //   4. one transaction: the model (when new), the blob rows, the file, its
 //      filament list, its plates and the file's own numbers (estimates with
 //      source 'file'). Metadata is filled only into empty fields, so nothing
-//      Jon set is overwritten (AC-022);
+//      Jon set is overwritten (AC-022). A new model is named from the
+//      file's MakerWorld title, else its cleaned file name (names.ts); a
+//      model joined takes the title only while nobody has named it;
 //   5. enqueueing estimates (Task 12) and renders (Task 13) comes after the
 //      commit, through the afterCommit hook the caller wires in (Task 13's
 //      is derived.afterUpload, which only sends a job). Nothing here calls
@@ -69,7 +71,7 @@ import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { extractMakerWorld, htmlToMarkdown, mapLicense } from "@platehouse/makerworld";
-import { type Project, readProject } from "@platehouse/threemf";
+import { makerWorldDesignId, type Project, readProject } from "@platehouse/threemf";
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
@@ -84,6 +86,7 @@ import {
   duplicateMessage,
   findDuplicates,
 } from "./duplicates.js";
+import { newModelName } from "./names.js";
 
 export {
   type DuplicateMatch,
@@ -260,17 +263,17 @@ function baseName(name: string): string {
   return name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1).trim() || name;
 }
 
-/** A new model's name: the file's name without its extension. */
-function modelNameOf(name: string): string {
-  const base = baseName(name);
-  const dot = base.lastIndexOf(".");
-  return (dot > 0 ? base.slice(0, dot) : base).trim() || base;
-}
-
-/** The MakerWorld details of a .3mf as model metadata (AC-022, packages/makerworld). */
+/**
+ * The MakerWorld details of a .3mf as model metadata (AC-022,
+ * packages/makerworld), with the design ID (packages/threemf). The caption is
+ * the MakerWorld Title, which also names a new model (names.ts). A file that
+ * names no Designer is not a MakerWorld file, so it gives no details, no title
+ * and no design ID.
+ */
 function metadataOf(project: Project | null): FoundMetadata {
-  const details = project?.makerWorldXml ? extractMakerWorld(project.makerWorldXml) : null;
-  if (details === null) return {};
+  const xml = project?.makerWorldXml;
+  const details = xml ? extractMakerWorld(xml) : null;
+  if (!xml || details === null) return {};
   const license = mapLicense(details.license);
   const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
   // A footer licence sets no SPDX id. fillMetadata stores it as the licence
@@ -283,6 +286,7 @@ function metadataOf(project: Project | null): FoundMetadata {
     descriptionMd: markdown === "" ? null : markdown,
     licenseSpdx: license.spdx ?? null,
     licenseNote: license.footer ?? null,
+    makerworldDesignId: makerWorldDesignId(xml),
   };
 }
 
@@ -475,6 +479,14 @@ export function createIngest(deps: IngestDeps) {
         xid = id;
         const repos = createRepos(trx);
         const found = metadataOf(project);
+        // A new model is named from this file: its title, else its cleaned
+        // file name (names.ts).
+        let created = false;
+        const createModel = async (): Promise<void> => {
+          const { name, source } = newModelName(originalName, found.caption);
+          await repos.models.create({ id: modelId, name, nameSource: source });
+          created = true;
+        };
 
         if (policy === "skip") {
           // Copies sent at once take turns here, so the second sees the
@@ -508,13 +520,19 @@ export function createIngest(deps: IngestDeps) {
             .forUpdate()
             .executeTakeFirst();
           if (existing === undefined) {
-            await repos.models.create({ id: modelId, name: modelNameOf(originalName) });
+            await createModel();
           } else if (existing.trashedAt !== null) {
             throw new IngestError("model_not_found", MODEL_NOT_FOUND_MESSAGE);
           }
         } else {
-          await repos.models.create({ id: modelId, name: modelNameOf(originalName) });
+          await createModel();
         }
+        // A model joined rather than made takes this file's title only while
+        // nobody has named it and its caption is empty (names.ts;
+        // models.nameFromTitle). Before this file's row, so its name must
+        // already be one of the earlier files', and before fillMetadata, so
+        // the caption it reads is the earlier files'.
+        if (!created) await repos.models.nameFromTitle(modelId, found.caption);
         // One fill rule for a new model and an existing one (AC-022).
         await repos.models.fillMetadata(modelId, found);
 

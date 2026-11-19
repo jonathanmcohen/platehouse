@@ -302,7 +302,7 @@ describe("Select all matching", () => {
   });
 });
 
-test("the sort indexes exist on live models (migration 0005)", async () => {
+test("the sort indexes exist on live models (migration 0007)", async () => {
   const { rows } = await sql<{ indexname: string; indexdef: string }>`
     select indexname, indexdef from pg_indexes
     where tablename = 'models' and indexname in ('models_live_created', 'models_live_name')

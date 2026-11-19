@@ -1,4 +1,4 @@
--- Platehouse schema 0005: indexes for the library's sort orders (approved for
+-- Platehouse schema 0007: indexes for the library's sort orders (approved for
 -- 0.1.0 by Jon, 2026-11-19; repos/models.ts LIBRARY_SORTS).
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
 -- once applied anywhere: a change is a new file.

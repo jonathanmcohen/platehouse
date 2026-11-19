@@ -424,12 +424,11 @@ img {
   font-size: 1.05rem;
 }
 
-/* The logo: the scheme's own accent colour (Jon's "accent"). */
-.studio-brand-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--brand);
+/* The logo (Logo.tsx): the scheme's own accent colour (Jon's "accent"). It
+   draws in currentColor, so this colour is the logo's. */
+.studio-logo {
+  flex: none;
+  color: var(--brand);
 }
 
 .studio-nav-list {
