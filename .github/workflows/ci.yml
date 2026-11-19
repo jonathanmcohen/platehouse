@@ -79,9 +79,12 @@ jobs:
       # apps/slicer/Dockerfile, two slicer container test files, README.md and
       # CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
-      # the test and still goes green. The image list is what the gate image and
-      # its smoke checks are built from: tools/slicing-gate, this workflow and
-      # .node-version.
+      # the test and still goes green; ciworkflow.test.mjs scans the gate tests
+      # for such reads and fails on one missing here. The image list is what
+      # the gate image and its smoke checks are built from: tools/slicing-gate,
+      # this workflow and .node-version. Every image-list path must also be on
+      # the tests list (the gate image job needs a passed tests job), and
+      # ciworkflow.test.mjs fails if one is not.
       - name: Decide whether the gate jobs run
         id: diff
         env:
@@ -416,8 +419,9 @@ jobs:
   # while building the image). Runs only when the changes job says the gate,
   # this workflow or .node-version changed, and only after the gate tests
   # passed, as when both were one job. Every change that runs this job also
-  # runs the tests (the image list is part of the tests list), and the explicit
-  # condition builds only on a passed tests job, never a failed or skipped one.
+  # runs the tests (the image list is part of the tests list, pinned by
+  # ciworkflow.test.mjs), and the explicit condition builds only on a passed
+  # tests job, never a failed or skipped one.
   gate-image:
     name: Slicing gate image build
     needs: [changes, gate-tests]

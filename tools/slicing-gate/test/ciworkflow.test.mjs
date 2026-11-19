@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -792,6 +792,186 @@ for (const [file, want] of [
     assert.deepEqual(decideGate({ event: "pull_request", prBase: SHA, changed: [file] }), want);
   });
 }
+
+// PR #227 review: the table above is typed out by hand, so a gate test that
+// starts reading a new file outside tools/slicing-gate, with no entry on the
+// tests list, would skip on a PR changing only that file and still go green
+// (issue #222 again). This scan finds every repo path the gate tests and their
+// support files build from import.meta.url, through const X = join(Y, ...)
+// chains, join(X, ...) calls and new URL("...", import.meta.url), and every
+// slicer-image.yml step a test runs with cwd: at the repo root, with the repo
+// files that step names. Each path outside tools/slicing-gate must make the
+// Decide step run the gate tests.
+const GATE_DIR = join(ROOT, "tools", "slicing-gate");
+const GATE_TEST_DIR = join(GATE_DIR, "test");
+const insideGate = (p) => p === GATE_DIR || p.startsWith(`${GATE_DIR}/`);
+const repoPath = (p) => relative(ROOT, p).split("\\").join("/");
+// The helpers that run a workflow step with a cwd: option, and the workflow
+// each one runs its step from.
+const STEP_RUNNERS = { runSlicerStep: join(ROOT, ".github", "workflows", "slicer-image.yml") };
+
+function gateTestFiles(dir = GATE_TEST_DIR) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? gateTestFiles(join(dir, e.name)) : e.name.endsWith(".mjs") ? [join(dir, e.name)] : [],
+  );
+}
+
+// Every path outside tools/slicing-gate the gate tests read, as repo-relative
+// paths, each with every place it was found. Throws on a read it cannot
+// resolve.
+function gateTestReads() {
+  const reads = new Map();
+  const add = (abs, where) => {
+    if (insideGate(abs)) return;
+    const rel = repoPath(abs);
+    reads.set(rel, [...(reads.get(rel) ?? []), where]);
+  };
+  for (const file of gateTestFiles()) {
+    const src = readFileSync(file, "utf8");
+    const at = (index) => `${repoPath(file)}:${src.slice(0, index).split("\n").length}`;
+    const bases = new Map();
+    const baseOf = (expr) =>
+      /^dirname\(fileURLToPath\(import\.meta\.url\)\)$/.test(expr.trim()) ? dirname(file) : bases.get(expr.trim());
+    // Resolves join(<base>, "a", "b", ...) to an absolute path, or null when
+    // the base is not one tracked here. Throws when a non-literal argument
+    // follows a base outside the gate, as its file cannot be known.
+    const resolveJoin = (args, index) => {
+      const parts = args.split(/,(?![^(]*\))/).map((a) => a.trim());
+      const base = baseOf(parts[0]);
+      if (base === undefined) return null;
+      let p = base;
+      for (const a of parts.slice(1)) {
+        const lit = a.match(/^"([^"]*)"$/);
+        if (!lit) {
+          if (!insideGate(p)) throw new Error(`${at(index)}: join(${args}) builds a path outside tools/slicing-gate the scan cannot resolve`);
+          return null;
+        }
+        p = resolve(p, lit[1]);
+      }
+      return p;
+    };
+    for (const m of src.matchAll(/\bconst (\w+) = (dirname\(fileURLToPath\(import\.meta\.url\)\))|\bconst (\w+) = join\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *"[^"]*")*)\);/g)) {
+      if (m[1]) bases.set(m[1], dirname(file));
+      else {
+        const p = resolveJoin(m[4], m.index);
+        if (p !== null) bases.set(m[3], p);
+      }
+    }
+    for (const m of src.matchAll(/\bjoin\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *[^()]+?)*)\)/g)) {
+      const p = resolveJoin(m[1], m.index);
+      if (p !== null && p !== ROOT) add(p, at(m.index));
+    }
+    for (const m of src.matchAll(/new URL\(\s*"([^"]+)",\s*import\.meta\.url\s*\)/g)) add(resolve(dirname(file), m[1]), at(m.index));
+    // A step run with its cwd at the repo root reads the repo files its script
+    // names, relative to that root.
+    for (const m of src.matchAll(/\bcwd: (\w+)/g)) {
+      const cwd = bases.get(m[1]);
+      if (cwd === undefined || insideGate(cwd)) continue;
+      const call = [...src.slice(0, m.index).matchAll(/\b(\w+)\(\s*"([^"]+)",\s*"([^"]+)"/g)].at(-1);
+      const workflow = call && STEP_RUNNERS[call[1]];
+      if (!workflow) throw new Error(`${at(m.index)}: cwd: ${m[1]} runs something outside tools/slicing-gate the scan does not know; add its helper to STEP_RUNNERS`);
+      add(workflow, at(m.index));
+      const script = stepScript(jobBlock(readFileSync(workflow, "utf8"), call[2]), call[3]);
+      for (const t of script.matchAll(/(?<![\w$./{}-])([\w.-]+(?:\/[\w.-]+)+)/g)) {
+        const p = resolve(cwd, t[1]);
+        if (existsSync(p)) add(p, `${at(m.index)} (${call[2]} / ${call[3]})`);
+      }
+    }
+  }
+  return reads;
+}
+
+test("gate jobs decision: every file the gate tests read outside tools/slicing-gate runs the gate tests (PR #227 review)", () => {
+  const reads = gateTestReads();
+  // The scan still sees the reads known today, the Orca pins step's included,
+  // so a broken scan cannot pass by finding nothing.
+  for (const known of [
+    ".github/workflows/ci.yml",
+    ".node-version",
+    ".github/workflows/release.yml",
+    ".github/workflows/slicer-image.yml",
+    "docker/app.Dockerfile",
+    "apps/slicer/Dockerfile",
+    "apps/slicer/test/container/smoke.test.ts",
+    "apps/slicer/test/container/support/slicer.ts",
+    "README.md",
+    "CHANGELOG.md",
+  ]) {
+    assert.ok(reads.has(known), `the scan finds ${known}: ${[...reads.keys()].join(", ")}`);
+  }
+  for (const [file, where] of reads) {
+    assert.equal(
+      decideGate({ event: "pull_request", prBase: SHA, changed: [file] }).tests,
+      "true",
+      `${where.join(", ")} reads ${file}, but a PR changing only it skips the gate tests: add it to the tests list in ci.yml`,
+    );
+  }
+});
+
+test("gate jobs decision: the scan finds the file the Orca pins step reads from its cwd: at the repo root", () => {
+  const where = gateTestReads().get("apps/slicer/Dockerfile") ?? [];
+  assert.ok(
+    where.some((w) => w.endsWith("(detect / Resolve the Orca pins)")),
+    `apps/slicer/Dockerfile is found through the Orca pins step: ${where.join(", ")}`,
+  );
+});
+
+// One sample path per alternative of a Decide step regex: ^(a|b(c|d)\.e$|f/)
+// gives a, bc.e, bd.e and f/x. Throws on any regex syntax beyond literals,
+// escapes, groups, | and the two anchors, so a new form cannot pass unseen.
+function regexSamples(re) {
+  let i = 0;
+  const alternation = () => {
+    const out = [];
+    let seq = [""];
+    while (i < re.length && re[i] !== ")") {
+      const c = re[i++];
+      if (c === "|") {
+        out.push(...seq);
+        seq = [""];
+      } else if (c === "(") {
+        const inner = alternation();
+        assert.equal(re[i++], ")", `unclosed group in ${re}`);
+        seq = seq.flatMap((s) => inner.map((x) => s + x));
+      } else if (c === "\\") {
+        const next = re[i++];
+        seq = seq.map((s) => s + next);
+      }
+      else if (c === "^" && i === 1) continue;
+      else if (c === "$") seq = seq.map((s) => `${s}\0`);
+      else if (".[]*+?{}".includes(c)) throw new Error(`cannot sample ${c} in ${re}`);
+      else seq = seq.map((s) => s + c);
+    }
+    return [...out, ...seq];
+  };
+  const all = alternation();
+  assert.equal(i, re.length, `unbalanced ) in ${re}`);
+  return all.map((s) => (s.endsWith("\0") ? s.slice(0, -1) : s.endsWith("/") ? `${s}x` : s));
+}
+
+test("regexSamples gives one path per alternative", () => {
+  assert.deepEqual(regexSamples("^(a|b(c|d)\\.e$|f/)"), ["a", "bc.e", "bd.e", "f/x"]);
+  assert.throws(() => regexSamples("^(a.*)"), /cannot sample/);
+});
+
+// PR #227 review: the gate image job runs only after the gate tests job passed,
+// so a path on the image list but not the tests list would set image=true and
+// tests=false, skip both jobs and go green with no image built. Every path
+// that makes the Decide step build the image must also make it run the tests.
+test("gate jobs decision: every path that runs the gate image build also runs the gate tests (PR #227 review)", () => {
+  const script = stepScript(text(), "Decide whether the gate jobs run");
+  const lists = Object.fromEntries(
+    [...script.matchAll(/if grep -Eq '([^']+)' <<<"\$changed"; then\n[\s\S]*?\n\s*else\n\s*(tests|image)=false\n/g)].map((m) => [m[2], m[1]]),
+  );
+  assert.ok(lists.tests && lists.image, `the step has a tests list and an image list:\n${script}`);
+  const samples = regexSamples(lists.image);
+  assert.ok(samples.length > 0);
+  for (const file of samples) {
+    const got = decideGate({ event: "pull_request", prBase: SHA, changed: [file] });
+    assert.equal(got.image, "true", `${file} is on the image list`);
+    assert.equal(got.tests, "true", `${file} runs the gate image build but not the gate tests, so the image job would skip: add it to the tests list`);
+  }
+});
 
 // Runs one test job's step in bash with pnpm stubbed: the stub writes the given
 // vitest JSON report (or none) and exits with the given status.
