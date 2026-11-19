@@ -77,6 +77,10 @@ export function newModelName(
  * Every name a model could have been given by its files: each file's raw
  * stem (the name before this change) and its cleaned name (after). A model
  * whose name is none of these was named by a person, so nothing renames it.
+ * A model a person named before name_source existed is 'user' (migration
+ * 0006 marks every 'file' model whose name is none of its files' raw
+ * stems), so the cleaned name here only ever matches a model named by
+ * ingest since then.
  */
 export function fileStems(originalNames: readonly string[]): Set<string> {
   const stems = new Set<string>();

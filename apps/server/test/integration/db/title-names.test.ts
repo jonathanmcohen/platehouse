@@ -1,9 +1,12 @@
 // Names from file titles: the models repository's rules for when a model may
-// be renamed from its .3mf's title (models.name_source, migration 0005), and
-// the one-off "Use file titles" backfill's preview and its skip rules.
-// Against a migrated Postgres 17; every name here is made up.
+// be renamed from its .3mf's title (models.name_source, migrations 0005 and
+// 0006), and the one-off "Use file titles" backfill's preview and its skip
+// rules. Against a migrated Postgres 17; every name here is made up.
+import { cp, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { migrate } from "../../../src/db/migrate.js";
+import { MIGRATIONS_DIR, migrate, migrateFrom } from "../../../src/db/migrate.js";
 import type { NameSource } from "../../../src/db/types.js";
 import { createRename } from "../../../src/library/rename.js";
 import { createRepos, type Repos } from "../../../src/repos/index.js";
@@ -121,6 +124,110 @@ describe("models.name_source (0005)", () => {
       name: "My desk clip",
       nameSource: "user",
     });
+  });
+});
+
+describe("models a person named before name_source existed (0006)", () => {
+  /**
+   * A database migrated only to 0005, as a library that ran 0005 but not
+   * 0006 is, then the models of the test, then the rest of the migrations.
+   */
+  async function upTo0005(): Promise<{ t: TestDatabase; repos: Repos }> {
+    const t = await pgc.freshDatabase();
+    const dir = await mkdtemp(join(tmpdir(), "ph-title-names-"));
+    try {
+      await cp(MIGRATIONS_DIR, dir, { recursive: true });
+      await rm(join(dir, "0006_model_name_source_user.sql"));
+      await migrateFrom(t.db, dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    return { t, repos: createRepos(t.db) };
+  }
+
+  test("a 'file' model whose name is none of its files' raw stems becomes the user's", async () => {
+    const { t, repos } = await upTo0005();
+    const m = {
+      // Kept as 'file': the name is a file's raw stem, the only name a file
+      // gave a model before 0005.
+      raw: await modelWithFile(repos, { name: "Desk_hook", file: "Desk_hook.3mf" }),
+      lastExtension: await modelWithFile(repos, { name: "bracket.v2", file: "bracket.v2.stl" }),
+      folders: await modelWithFile(repos, { name: "Spacer", file: "parts/ Spacer .3mf" }),
+      backslashes: await modelWithFile(repos, { name: "Knob", file: "C:\\models\\Knob.3mf" }),
+      dotFirst: await modelWithFile(repos, { name: ".hidden", file: ".hidden" }),
+      secondFile: await modelWithFile(repos, { name: "Lamp arm", file: "Desk_lamp_arm.3mf" }),
+      // Made the user's: renamed by a person to the cleaned form, on the
+      // collections page or in Manyfold before import.
+      cleaned: await modelWithFile(repos, {
+        name: "Desk cable clip",
+        caption: "Desk Cable Clip | Two Cables",
+        file: "Desk_cable_clip.3mf",
+      }),
+      imported: await modelWithFile(repos, {
+        name: "Wall hook",
+        externalRef: "manyfold:def456",
+        file: "Wall_hook.3mf",
+      }),
+      chosen: await modelWithFile(repos, { name: "Kitchen divider", file: "drawer_divider.3mf" }),
+      noFiles: await repos.models.create({ name: "Empty", nameSource: "file" }),
+      // Not touched: already 'title' or 'user'.
+      titled: await modelWithFile(repos, {
+        name: "Hook Rail",
+        nameSource: "title",
+        file: "hook.3mf",
+      }),
+      user: await modelWithFile(repos, { name: "hook", nameSource: "user", file: "hook.3mf" }),
+    };
+    await addFile(repos, m.secondFile.id, "Lamp arm.stl");
+    const before = await repos.models.get(m.cleaned.id);
+
+    await migrate(t.db);
+
+    const sources: Record<string, NameSource | undefined> = {};
+    for (const [key, model] of Object.entries(m)) {
+      sources[key] = (await repos.models.get(model.id))?.nameSource;
+    }
+    expect(sources).toEqual({
+      raw: "file",
+      lastExtension: "file",
+      folders: "file",
+      backslashes: "file",
+      dotFirst: "file",
+      secondFile: "file",
+      cleaned: "user",
+      imported: "user",
+      chosen: "user",
+      noFiles: "user",
+      titled: "title",
+      user: "user",
+    });
+    // Only name_source changed.
+    expect(await repos.models.get(m.cleaned.id)).toEqual({ ...before, nameSource: "user" });
+  });
+
+  test("neither a later .3mf's title nor Use file titles renames such a model", async () => {
+    const { t, repos } = await upTo0005();
+    const cleaned = await modelWithFile(repos, {
+      name: "Desk cable clip",
+      caption: "Desk Cable Clip | Two Cables",
+      file: "Desk_cable_clip.3mf",
+    });
+    const imported = await modelWithFile(repos, {
+      name: "Wall hook",
+      externalRef: "manyfold:def456",
+      file: "Wall_hook.3mf",
+    });
+    await migrate(t.db);
+
+    expect(await repos.models.nameFromTitle(cleaned.id, "Desk Cable Clip | Two Cables")).toBe(
+      false,
+    );
+    expect(await repos.models.nameFromTitle(imported.id, "Wall Hook | Screwless")).toBe(false);
+    const plan = await repos.models.titleNamePlan();
+    expect(plan.renames).toEqual([]);
+    expect(plan.skipped.renamedByUser).toBe(2);
+    expect((await repos.models.get(cleaned.id))?.name).toBe("Desk cable clip");
+    expect((await repos.models.get(imported.id))?.name).toBe("Wall hook");
   });
 });
 

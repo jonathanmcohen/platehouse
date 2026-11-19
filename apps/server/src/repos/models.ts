@@ -447,8 +447,9 @@ export function modelsRepo(db: Kysely<DB>) {
      * when nobody has named it: only while name_source is 'file' and the
      * name is still one of its files' names (a raw stem or a cleaned file
      * name; see fileStems). A name a person set, by a rename (name_source
-     * 'user') or before name_source existed (a name none of its files has),
-     * is never overwritten (AC-022), and a model already named from a title
+     * 'user', which migration 0006 also gave every model a person named
+     * before name_source existed) or a name none of its files has, is never
+     * overwritten (AC-022), and a model already named from a title
      * keeps that one. True when the name changed. Runs in the caller's
      * transaction when there is one, with the model's row locked.
      */
