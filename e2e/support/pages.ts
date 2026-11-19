@@ -25,21 +25,26 @@ const MODEL: AppPage = {
   path: () => `/models/${readSeed().calibration.modelId}`,
 };
 
-/** The four pages the axe spec checks (Task 22: library, model, settings, trash). */
+/**
+ * The pages the axe spec checks (Task 22: library, model, settings, trash;
+ * and the Activity page, 2026-11-19).
+ */
 export const AXE_PAGES: readonly AppPage[] = [
   page("library", "/", "Library"),
   MODEL,
   page("settings", "/settings", "Settings"),
   page("trash", "/trash", "Trash"),
+  page("activity", "/activity", "Activity"),
 ];
 
-/** Every page the app has: the six sections of the sidebar and the model page. */
+/** Every page the app has: the seven sections of the sidebar and the model page. */
 export const ALL_PAGES: readonly AppPage[] = [
   page("library", "/", "Library"),
   page("creators", "/creators", "Creators"),
   page("collections", "/collections", "Collections"),
   page("tags", "/tags", "Tags"),
   page("trash", "/trash", "Trash"),
+  page("activity", "/activity", "Activity"),
   page("settings", "/settings", "Settings"),
   MODEL,
 ];
