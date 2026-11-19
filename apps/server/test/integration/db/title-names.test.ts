@@ -2,7 +2,7 @@
 // be renamed from its .3mf's title (models.name_source, migrations 0005 and
 // 0006), and the one-off "Use file titles" backfill's preview and its skip
 // rules. Against a migrated Postgres 17; every name here is made up.
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -152,7 +152,11 @@ describe("models a person named before name_source existed (0006)", () => {
     const dir = await mkdtemp(join(tmpdir(), "ph-title-names-"));
     try {
       await cp(MIGRATIONS_DIR, dir, { recursive: true });
-      await rm(join(dir, "0006_model_name_source_user.sql"));
+      // Every migration after 0005, not just 0006: the folder must stay
+      // numbered without gaps, and later migrations (0007 My printers) follow.
+      for (const name of await readdir(dir)) {
+        if (/^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 5) await rm(join(dir, name));
+      }
       await migrateFrom(t.db, dir);
     } finally {
       await rm(dir, { recursive: true, force: true });
