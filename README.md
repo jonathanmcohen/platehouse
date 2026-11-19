@@ -1,3 +1,5 @@
+<img src="docs/assets/logo.svg" alt="Platehouse logo: a roof over three stacked print layers" width="96" height="96">
+
 # platehouse
 
 Self-hosted library for 3D print files: plates, OrcaSlicer estimates, S3 storage, token API
@@ -6,8 +8,8 @@ Self-hosted library for 3D print files: plates, OrcaSlicer estimates, S3 storage
 
 Platehouse has an HTTP API for scripts and tools such as AI coding assistants: upload files,
 search the library, read models, plates and their estimates, download files, and add or remove
-tags and collections. It never deletes anything. Make a token in Settings, under API tokens, and send it
-as `Authorization: Bearer <token>`.
+tags and collections. It never deletes anything. Make a token in Settings, under API tokens, and
+send it as `Authorization: Bearer <token>`.
 
 - [docs/api.md](docs/api.md) is the guide: tokens, errors, limits, paging, uploads and curl
   examples.
@@ -135,3 +137,9 @@ smoke slice passes.
     never edited: the migrator refuses to run if one changed, so a change goes in a new file.
   - `src/repos` - the database repositories the rest of the server calls.
 - `tools/slicing-gate` - the Task 1 slicing gate harness; see its README.
+- `tools/brand` - writes the logo's static files (the favicons, app icons and web manifest in
+  `apps/web/public`, and `docs/assets/logo.svg` and `favicon.svg`) from the art in
+  `apps/web/src/shell/logoArt.ts` and the one `ACCENT` in `tools/brand/icons.ts`. After changing
+  either, run `node tools/brand/generate.ts` and commit what it writes; the PNGs are drawn by
+  Playwright's Chromium (`pnpm exec playwright install chromium` the first time). The app itself
+  draws the logo in the colour scheme's accent, so only these files carry a fixed colour.
