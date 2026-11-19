@@ -116,6 +116,8 @@ export interface MakerWorldSpec {
   /** HTML, as MakerWorld writes it; escaped once more into the XML here. */
   descriptionHtml?: string;
   license?: string;
+  /** The <metadata name="DesignId"> text, as MakerWorld writes it. */
+  designId?: string;
 }
 
 export interface ThreeMfSpec {
@@ -149,7 +151,8 @@ function modelXml(mw: MakerWorldSpec | undefined): string {
       ? meta("Designer", mw.designer) +
         meta("Title", mw.title) +
         meta("Description", mw.descriptionHtml) +
-        meta("License", mw.license)
+        meta("License", mw.license) +
+        meta("DesignId", mw.designId)
       : "") +
     ' <resources>\n  <object id="1" type="model"/>\n </resources>\n</model>\n'
   );
