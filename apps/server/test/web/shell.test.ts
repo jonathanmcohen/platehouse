@@ -432,4 +432,38 @@ describe("the icon files at the root", () => {
         .sort(),
     );
   });
+
+  // The app image builds the web app from its own context, not this
+  // checkout: without public/ in that context and copied into the build
+  // stage, vite build writes none of these files and every one answers 404
+  // in production, while the tests above still pass. Docker is not run
+  // here; these read the image's build files, and docker/test-app-image.sh
+  // requests each file from the running image in CI.
+  test("the app image copies public/ into its build and checks every file it ships", () => {
+    const root = new URL("../../../../docker/", import.meta.url);
+    const lines = (name: string) =>
+      readFileSync(new URL(name, root), "utf8")
+        .split("\n")
+        .map((line) => line.trim());
+    const ignore = lines("app.Dockerfile.dockerignore");
+    expect(ignore).toContain("!apps/web/public");
+    const dockerfile = readFileSync(new URL("app.Dockerfile", root), "utf8");
+    // The runtime stage is the last FROM.
+    const runtimeAt = dockerfile.lastIndexOf("\nFROM ");
+    expect(runtimeAt).toBeGreaterThan(-1);
+    const build = dockerfile.slice(0, runtimeAt);
+    const runtime = dockerfile.slice(runtimeAt);
+    expect(build).toContain("\nCOPY apps/web/public apps/web/public\n");
+    // The web app's sources go after the build, public/ with them.
+    expect(build).toMatch(/\n {6}apps\/web\/src [^\n]*apps\/web\/public[^\n]*\n/);
+    const script = readFileSync(new URL("test-app-image.sh", root), "utf8");
+    for (const path of Object.keys(ROOT_FILES)) {
+      expect(build, path).toContain(` test -f apps/web/dist${path}`);
+      expect(runtime, path).toContain(` test -r /app/apps/web/dist${path}`);
+    }
+    // The running image is asked for exactly these files.
+    const requested = /\nroot_files=\(\n((?: +\S+\n)+)\)\n/.exec(script)?.[1];
+    expect(requested, "a root_files=( ... ) list, one path per line").toBeDefined();
+    expect(requested?.trim().split(/\s+/).sort()).toEqual(Object.keys(ROOT_FILES).sort());
+  });
 });
