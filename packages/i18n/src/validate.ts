@@ -53,7 +53,13 @@ export interface CheckedCatalog {
 // C0 and C1 controls (a tab or newline has no place in a UI string either),
 // and the bidi embedding, override and isolate characters, which can make a
 // string display differently from what it holds.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: this pattern exists to find control characters and refuse them.
 const FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+/** Whether text holds no control or bidi-override character (a name a catalog gives itself). */
+export function isCleanText(text: string): boolean {
+  return !FORBIDDEN.test(text);
+}
 
 /** The plural categories a locale's numbers fall into, from Intl.PluralRules. */
 export function pluralCategories(locale: string): Set<string> {
@@ -105,7 +111,8 @@ function messageProblem(
     if (!english.tags.has(tag)) return `uses <${tag}>, which the English message does not`;
   }
   for (const [arg, cases] of shape.plurals) {
-    if (!english.plurals.has(arg)) return `makes {${arg}} a plural, which the English message does not`;
+    if (!english.plurals.has(arg))
+      return `makes {${arg}} a plural, which the English message does not`;
     for (const c of cases) {
       if (!c.startsWith("=") && !categories.has(c)) {
         return `names the plural case ${c}, which ${locale} does not have`;
@@ -118,8 +125,10 @@ function messageProblem(
     }
   }
   if (strict) {
-    if (!sameSet(shape.args, english.args)) return "does not use every placeholder the English message does";
-    if (!sameSet(shape.tags, english.tags)) return "does not use every tag the English message does";
+    if (!sameSet(shape.args, english.args))
+      return "does not use every placeholder the English message does";
+    if (!sameSet(shape.tags, english.tags))
+      return "does not use every tag the English message does";
   }
   return null;
 }

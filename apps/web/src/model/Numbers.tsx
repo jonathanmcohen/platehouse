@@ -288,7 +288,9 @@ export function PlateNumbersView({
           <p className="studio-muted">{t("model.numbers.none")}</p>
           {projectFilaments.length === 0 ? null : (
             <>
-              <p className="studio-filaments-label studio-muted">{t("model.numbers.projectFilaments")}</p>
+              <p className="studio-filaments-label studio-muted">
+                {t("model.numbers.projectFilaments")}
+              </p>
               <FilamentList filaments={projectFilaments} />
             </>
           )}

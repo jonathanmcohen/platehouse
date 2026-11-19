@@ -22,9 +22,9 @@
 // next model's Restore, else the previous one's, else the status line
 // (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
-import { appApi, AppApiError, segment, useAppApi, useErrorText } from "../settings/api";
-import { ConfirmDialog } from "../settings/Dialog";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { AppApiError, appApi, segment, useAppApi, useErrorText } from "../settings/api";
+import { ConfirmDialog } from "../settings/Dialog";
 import { useRowFocus } from "../settings/focus";
 
 export interface TrashedModel {
@@ -58,7 +58,9 @@ function incompleteFailure(failure: unknown, i18n: Pick<I18n, "t"> = ENGLISH_I18
   const done = typeof body.purged === "number" && body.purged > 0;
   // The server counts what it could not delete; an older answer has only its sentence.
   const rest =
-    typeof body.failed === "number" ? i18n.t("trash.incomplete", { count: body.failed }) : body.message;
+    typeof body.failed === "number"
+      ? i18n.t("trash.incomplete", { count: body.failed })
+      : body.message;
   const sentence = done ? `${deletedSentence(body.purged as number, i18n)} ${rest}` : rest;
   return new AppApiError(failure.status, sentence, failure.body);
 }
@@ -140,9 +142,7 @@ export function TrashList() {
 
   return (
     <div className="studio-panel">
-      <p className="studio-muted">
-        {t("trash.intro")}
-      </p>
+      <p className="studio-muted">{t("trash.intro")}</p>
       <div className="studio-actions">
         <button
           ref={emptyButton}

@@ -1,0 +1,58 @@
+# Adding a language to your server
+
+You can give your own Platehouse server more languages, or fix words in a built-in one, without
+rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
+
+## Set it up
+
+1. Make a folder on the host for the files, for example `/opt/platehouse/locales`.
+2. Mount it into the app container, read-only, and set `LOCALES_DIR` to where it is inside the
+   container. In `docker-compose.yml`, on the `app` service:
+
+   ```yaml
+   services:
+     app:
+       volumes:
+         - /opt/platehouse/locales:/data/locales:ro
+       environment:
+         LOCALES_DIR: /data/locales
+   ```
+
+   `LOCALES_DIR` must be an absolute path. Left unset, Platehouse offers its built-in languages
+   only.
+3. Put a file in the folder for each language, named for its code: `de.json`, `it.json`,
+   `pt-BR.json`. See [How a translation file looks](./index.md#how-a-translation-file-looks).
+
+A new or changed file is picked up the next time the language list is asked for (opening Settings,
+or loading a page), with no restart.
+
+## What Platehouse checks
+
+Every file is checked before anything in it is used:
+
+- It must be named `<code>.json` for a language code, be a regular file (a symlink is refused),
+  be at most 256 KiB, and hold a JSON object. At most 50 files are read.
+- Every message is checked against English. A message is dropped when it uses markup, a
+  placeholder or tag the English message does not have, a plural form the language does not have,
+  or a control or text-direction character. A key that is not an English key is dropped.
+- Whatever is missing or dropped shows in English.
+- Each message is shown as text, never as HTML.
+
+What was dropped is written to the server log by file name and key, never with the words
+themselves, for example:
+
+```
+platehouse: locales: messages in a LOCALES_DIR file were dropped {"file":"de.json","unknownKeys":["shell.nav.libary"],"refusedKeys":[]}
+```
+
+## Fixing words in a built-in language
+
+A file named for a built-in language, such as `es.json`, replaces the built-in messages it has and
+leaves the rest alone. English (`en.json`) cannot be replaced.
+
+## A partial translation
+
+A server file does not need every key. The Language menu marks a language that covers only part of
+the app as partly translated, and the rest of the app shows in English. Platehouse keeps the
+English keys stable within a version; after an upgrade, a renamed key shows in English until your
+file is updated, and the log names it.

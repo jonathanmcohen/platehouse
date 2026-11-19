@@ -232,7 +232,11 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
         {failed ? (
           <p className="studio-placeholder">
             <span>
-              {rich("viewer.failed", { name: label }, { a: (children) => <a href={download}>{children}</a> })}
+              {rich(
+                "viewer.failed",
+                { name: label },
+                { a: (children) => <a href={download}>{children}</a> },
+              )}
             </span>
           </p>
         ) : handle === null ? (

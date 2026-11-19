@@ -22,7 +22,8 @@
 //   reloads to show the change.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
-import { appApi, AppApiError, useAppApi, useErrorText } from "../settings/api";
+import { type MessageKey, useI18n } from "../i18n/I18n";
+import { AppApiError, appApi, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog, Dialog } from "../settings/Dialog";
 import {
   type BulkAction,
@@ -32,7 +33,6 @@ import {
   MAX_SELECTED,
   MAX_TAGS,
 } from "./selection";
-import { type MessageKey, useI18n } from "../i18n/I18n";
 
 /** The selection: each id with its model's name, or null when the page never showed it. */
 export type Selection = ReadonlyMap<string, string | null>;
@@ -57,7 +57,6 @@ export interface SelectBarProps {
 }
 
 type Open = "add-tags" | "remove-tag" | "add-to-collection" | "trash" | null;
-
 
 /** The buttons under a dialog's fields: go ahead, and Cancel. */
 function DialogActions({
@@ -144,7 +143,10 @@ function AddTagsDialog({
   const full = pending.length >= MAX_TAGS;
   const tooMany = toSend.length > MAX_TAGS;
   return (
-    <Dialog title={t("library.select.addTagsTitle", { models: t("library.count.models", { count }) })} onClose={close}>
+    <Dialog
+      title={t("library.select.addTagsTitle", { models: t("library.count.models", { count }) })}
+      onClose={close}
+    >
       <p>{t("library.select.addTagsIntro")}</p>
       <ChipEditor
         values={pending}
@@ -163,9 +165,7 @@ function AddTagsDialog({
         onRemove={async (tag) => setPending((list) => list.filter((t) => t !== tag))}
       />
       {full ? (
-        <p className="studio-muted">
-          {t("library.select.tagsMax", { max: MAX_TAGS })}
-        </p>
+        <p className="studio-muted">{t("library.select.tagsMax", { max: MAX_TAGS })}</p>
       ) : null}
       {alert}
       <DialogActions
@@ -347,9 +347,7 @@ export function SelectBar({
       const names = new Map(shown.map((c) => [c.id, c.name]));
       add(answer.ids.map((id) => [id, names.get(id) ?? null]));
       if (answer.capped) {
-        setNote(
-          t("library.select.capped", { count: answer.ids.length }),
-        );
+        setNote(t("library.select.capped", { count: answer.ids.length }));
       }
     } catch (failure) {
       setNote(errorText(failure));
@@ -361,10 +359,7 @@ export function SelectBar({
   async function run(action: BulkAction) {
     const ids = [...selected.keys()];
     if (ids.length > MAX_SELECTED) {
-      throw new AppApiError(
-        0,
-        t("library.select.tooMany", { max: MAX_SELECTED }),
-      );
+      throw new AppApiError(0, t("library.select.tooMany", { max: MAX_SELECTED }));
     }
     const answer = await appApi<BulkAnswer>(
       "POST",

@@ -31,7 +31,10 @@ export function PlateStrip({ plates, selected, onSelect }: PlateStripProps) {
           <button
             type="button"
             aria-pressed={plate.index === selected}
-            aria-label={i18n.t("model.plate.show", { index: plate.index, label: plateLabel(plate, i18n) })}
+            aria-label={i18n.t("model.plate.show", {
+              index: plate.index,
+              label: plateLabel(plate, i18n),
+            })}
             onClick={() => onSelect(plate.index)}
           >
             {plate.thumbnail === null ? (

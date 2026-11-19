@@ -6,8 +6,9 @@
 // carrying one plain sentence for the page to show; no server detail is
 // shown beyond the message the server wrote for the page. A .tsx module
 // like the pages that use it: useAppApi is a React hook.
-import { useCallback, useEffect, useRef, useState } from "react";
+
 import { formatDateTime, SOURCE_LOCALE } from "@platehouse/i18n";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 
 /** Builds the sentences in a language; English when left out. */
@@ -60,7 +61,12 @@ export function sentenceFor(status: number, body: unknown, i18n: Words = ENGLISH
   const { t } = i18n;
   if (status === 0) return t("api.unreachable");
   if (status === 401) return t("common.signedOut");
-  const fields = (body ?? {}) as { error?: unknown; code?: unknown; message?: unknown; max?: unknown };
+  const fields = (body ?? {}) as {
+    error?: unknown;
+    code?: unknown;
+    message?: unknown;
+    max?: unknown;
+  };
   const message = fields.message;
   const said = status < 500 && typeof message === "string" && message !== "";
   if (said && i18n.locale === SOURCE_LOCALE) return message;

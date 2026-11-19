@@ -30,6 +30,10 @@
 // (apps/slicer/src/profiles.ts pickFilament): it only ever picks a preset
 // named "Bambu ..." or "Generic ...", and reports null where it kept the
 // file's filament. The source is stored with the numbers when a slice lands.
+import {
+  englishPrinterName,
+  OTHER_PRINTER_LABEL as SHARED_OTHER_PRINTER_LABEL,
+} from "@platehouse/i18n";
 import type { Printer, Reason } from "@platehouse/slicer-contract";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
@@ -145,7 +149,7 @@ export function printerForFile(
  * the slicer could not be reached (issue #198): plain words, never the
  * file's bare printer code (C12, BL-P001), which means nothing to a reader.
  */
-export const OTHER_PRINTER_LABEL = "another printer";
+export const OTHER_PRINTER_LABEL: string = SHARED_OTHER_PRINTER_LABEL;
 
 /** The label of a file's own numbers: the matching menu printer's name, else OTHER_PRINTER_LABEL. */
 export function filePrinterLabel(printer: Printer | undefined): string {
@@ -164,10 +168,10 @@ const PRESET_NAME = /^(.+) ([0-9]+(?:\.[0-9]+)?) nozzle$/;
  */
 export function printerName(printerId: string, printers: readonly Printer[]): string {
   const printer = printers.find((p) => p.id === printerId);
-  if (printer !== undefined) return `${printer.model}, ${printer.nozzle} mm nozzle`;
+  if (printer !== undefined) return englishPrinterName(printer.model, printer.nozzle);
   const match = PRESET_NAME.exec(printerId);
   if (match === null) return printerId;
-  return `${match[1]}, ${Number(match[2])} mm nozzle`;
+  return englishPrinterName(match[1] as string, Number(match[2]));
 }
 
 interface EstimateRow {

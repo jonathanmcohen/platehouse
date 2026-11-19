@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createTranslator, MISSING_TEXT } from "../src/translator.js";
 import { formatDecimal, formatList, languageName } from "../src/format.js";
 import {
   canonicalLocale,
@@ -7,6 +6,7 @@ import {
   parseAcceptLanguage,
   resolveLocale,
 } from "../src/negotiate.js";
+import { createTranslator, MISSING_TEXT } from "../src/translator.js";
 
 describe("parseAcceptLanguage", () => {
   it("orders by q, keeps header order on a tie, and drops q=0 and *", () => {

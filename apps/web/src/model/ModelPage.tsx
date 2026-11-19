@@ -58,10 +58,10 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { InlineRename } from "../collections/InlineRename";
+import { type MessageKey, useI18n } from "../i18n/I18n";
 import { appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
-import { type MessageKey, useI18n } from "../i18n/I18n";
 import "./model.css";
 import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
 import { derivedMessageIn, FilesTab, viewable } from "./FilesTab";

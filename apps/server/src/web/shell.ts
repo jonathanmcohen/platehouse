@@ -16,7 +16,11 @@
 //   ph_accent cookie (one of the twelve ACCENTS; anything else is
 //   DEFAULT_ACCENT), so the right colour is on the first paint too. The
 //   answer is never cached, since it follows the cookies. A page path no
-//   task has registered stays a 404.
+//   task has registered stays a 404. The language (Jon, 2026-11-19) is
+//   written the same way: the html element's lang is the language the page
+//   is shown in, from the ph_lang cookie, else the browser's
+//   Accept-Language, else English (locales/locales.ts resolve), so the web
+//   app loads that language's messages before its first render.
 // - /assets/* serves dist/assets/ with @fastify/static. It is public-class
 //   (hashed build output), so the browser fetches the script and stylesheet
 //   for the login redirect's return without a session, and each file is
@@ -49,7 +53,9 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
+import { canonicalLocale, LANG_COOKIE, SOURCE_LOCALE } from "@platehouse/i18n";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { Locales } from "../locales/locales.js";
 
 export const THEMES = ["dark", "light", "system"] as const;
 
@@ -164,19 +170,24 @@ export interface ShellTemplate {
    * index.html with data-theme and color-scheme for this ph_theme cookie
    * value, and data-accent for this ph_accent cookie value.
    */
-  render(themeCookie: string | undefined, accentCookie?: string | undefined): string;
+  render(
+    themeCookie: string | undefined,
+    accentCookie?: string | undefined,
+    lang?: string | undefined,
+  ): string;
 }
 
 const HTML_TAG = /<html\b[^>]*>/g;
 const THEME_ATTRIBUTE = ' data-theme="dark"';
 const ACCENT_ATTRIBUTE = /\sdata-accent="([^"]*)"/g;
+const LANG_ATTRIBUTE = /\slang="([^"]*)"/g;
 const COLOR_SCHEME_META = /<meta name="color-scheme" content="dark"(\s*\/?)>/g;
 
 /** One place render writes: length characters of the template at `at` become value. */
 interface Cut {
   at: number;
   length: number;
-  value(theme: Theme, accent: Accent): string;
+  value(theme: Theme, accent: Accent, lang: string): string;
 }
 
 /**
@@ -237,6 +248,26 @@ export function parseShellTemplate(html: string): ShellTemplate {
     });
   }
 
+  // The language: the html element's lang, replaced; added after <html when
+  // the template has none.
+  const langs = [...htmlTag[0].matchAll(LANG_ATTRIBUTE)];
+  if (langs.length > 1)
+    throw new ShellTemplateError("index.html's html element carries more than one lang");
+  const langPlaceholder = langs[0];
+  if (langPlaceholder === undefined) {
+    cuts.push({
+      at: htmlTag.index + "<html".length,
+      length: 0,
+      value: (_t, _a, lang) => ` lang="${lang}"`,
+    });
+  } else {
+    cuts.push({
+      at: htmlTag.index + langPlaceholder.index + ' lang="'.length,
+      length: (langPlaceholder[1] as string).length,
+      value: (_t, _a, lang) => lang,
+    });
+  }
+
   // The template cut at the places render writes, in document order.
   cuts.sort((a, b) => a.at - b.at);
   const pieces: string[] = [];
@@ -248,12 +279,14 @@ export function parseShellTemplate(html: string): ShellTemplate {
   pieces.push(html.slice(from));
 
   return {
-    render(themeCookie, accentCookie) {
+    render(themeCookie, accentCookie, lang) {
       const theme = resolveTheme(themeCookie);
       const accent = resolveAccent(accentCookie);
+      // Only a canonical locale code reaches the page (letters, digits, hyphens).
+      const shown = (lang === undefined ? undefined : canonicalLocale(lang)) ?? SOURCE_LOCALE;
       let out = pieces[0] as string;
       cuts.forEach((cut, i) => {
-        out += cut.value(theme, accent) + (pieces[i + 1] as string);
+        out += cut.value(theme, accent, shown) + (pieces[i + 1] as string);
       });
       return out;
     },
@@ -290,7 +323,11 @@ export interface WebShell {
 }
 
 /** Registers the shell pages and /assets/ on the root app (after the gate). */
-export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<WebShell> {
+export async function registerWeb(
+  app: FastifyInstance,
+  deps: WebDeps,
+  locales?: Pick<Locales, "resolve">,
+): Promise<WebShell> {
   const indexPath = join(deps.dir, "index.html");
   let template: ShellTemplate | undefined;
 
@@ -322,7 +359,17 @@ export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<
     }
     return reply
       .type("text/html; charset=utf-8")
-      .send(loaded.render(request.cookies[THEME_COOKIE], request.cookies[ACCENT_COOKIE]));
+      .send(
+        loaded.render(
+          request.cookies[THEME_COOKIE],
+          request.cookies[ACCENT_COOKIE],
+          locales === undefined
+            ? SOURCE_LOCALE
+            : await locales
+                .resolve(request.cookies[LANG_COOKIE], request.headers["accept-language"])
+                .catch(() => SOURCE_LOCALE),
+        ),
+      );
   }
 
   for (const url of SHELL_PAGES) app.get(url, shell);

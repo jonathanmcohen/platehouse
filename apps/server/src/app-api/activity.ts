@@ -33,9 +33,20 @@ import type { FastifyInstance } from "fastify";
 import type { Kysely } from "kysely";
 import type { PgBoss } from "pg-boss";
 import type { DB, FileKind } from "../db/types.js";
+import { derivedParts } from "../derived/client.js";
 import { printerName } from "../estimates/display.js";
-import { reasonWords } from "../estimates/reasons.js";
-import { FAILED_DIR, REASON_SUFFIX } from "../inbox/watch.js";
+import { isReason, reasonWords } from "../estimates/reasons.js";
+import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
+
+/** A render event's message split into codes and detail (derived/client.ts). */
+function renderParts(message: string | null): {
+  messageCodes: string[];
+  messageDetail: string | null;
+} {
+  const { derivedCodes, derivedDetail } = derivedParts(message);
+  return { messageCodes: derivedCodes, messageDetail: derivedDetail };
+}
+
 import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
 import { activityRepo, type QueueCount } from "../repos/activity.js";
 import { settingsRepo } from "../repos/settings.js";
@@ -114,7 +125,15 @@ export type ActivityEvent =
        */
       source: ModelSource;
     }
-  | { type: "inbox_failed"; at: string; name: string; reason: string }
+  | {
+      type: "inbox_failed";
+      at: string;
+      name: string;
+      /** The reason in plain words, without the code the reason file starts with. */
+      reason: string;
+      /** That code (changed, too_large, ...; inbox/watch.ts reasonCode), or null for a file with none. */
+      reasonCode: string | null;
+    }
   | {
       type: "estimate_failed";
       at: string;
@@ -125,6 +144,8 @@ export type ActivityEvent =
       code: number | null;
       /** The reason in plain words (estimates/reasons.ts). */
       reason: string;
+      /** The contract's reason it stands for, for the page to say in its language. */
+      reasonCode: string;
       /** The slicer's own detail, scrubbed; null with none. */
       detail: string | null;
     }
@@ -137,6 +158,10 @@ export type ActivityEvent =
       file: { id: string; name: string };
       /** The renderer's message as the app stored it, scrubbed; null with none. */
       message: string | null;
+      /** Platehouse's own sentences at the start of message, by code (derived/client.ts). */
+      messageCodes: string[];
+      /** What message holds after those sentences, or null. */
+      messageDetail: string | null;
     };
 
 export interface ActivityView {
@@ -320,11 +345,15 @@ export async function readInboxFailures(
     } catch {
       reason = "";
     }
+    // A reason file starts with its code (inbox/watch.ts reasonFileText); an
+    // older one holds the sentence alone.
+    const parsed = parseReasonFile(reason);
     items.push({
       type: "inbox_failed",
       at: new Date(mtime).toISOString(),
       name: name.slice(0, -REASON_SUFFIX.length),
-      reason: scrubText(reason) || "No reason was recorded.",
+      reason: scrubText(parsed.reason) || "No reason was recorded.",
+      reasonCode: parsed.code,
     });
   }
   return { readable: true, items };
@@ -464,6 +493,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         plate: { index: e.plateIndex, name: e.plateName },
         code: e.failureCode,
         reason: reasonWords(e.failureReason),
+        reasonCode: isReason(e.failureReason) ? e.failureReason : "slicer_error",
         detail: scrubDetail(e.failureDetail),
       }));
       const renderEvents: ActivityEvent[] = derived
@@ -475,6 +505,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           model: { id: d.modelId, name: d.modelName },
           file: { id: d.fileId, name: d.fileName },
           message: scrubDerivedMessage(d.message),
+          ...renderParts(scrubDerivedMessage(d.message)),
         }));
 
       const working =

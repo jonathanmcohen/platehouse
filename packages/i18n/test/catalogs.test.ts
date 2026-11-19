@@ -41,7 +41,7 @@ describe("the built-in catalogs", () => {
     (name) => {
       const text = readFileSync(join(DIR, name), "utf8");
       expect(text).toBe(canonicalCatalog(JSON.parse(text)));
-      expect(/[^\x00-\x7f]/.test(text)).toBe(false);
+      expect([...text].some((ch) => (ch.codePointAt(0) ?? 0) > 0x7f)).toBe(false);
     },
   );
 

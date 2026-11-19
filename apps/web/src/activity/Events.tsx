@@ -6,10 +6,12 @@
 // the existing POST /app/api/estimates/:id/retry. Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
+
+import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useState } from "react";
 import { Link } from "react-router";
-import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { derivedMessageIn } from "../model/FilesTab";
 import { appApi, segment } from "../settings/api";
 import type { ActivityEvent, ModelSource } from "./ActivityPage";
 
@@ -115,7 +117,11 @@ function EstimateFailure({
         <When at={event.at} />
       </div>
       <p className="ph-activity-line">
-        {rich("activity.onModel", { what: plate }, { model: () => <ModelLink model={event.model} /> })}
+        {rich(
+          "activity.onModel",
+          { what: plate },
+          { model: () => <ModelLink model={event.model} /> },
+        )}
       </p>
       <p className="ph-activity-line">
         {reasonIn(i18n, ESTIMATE_REASON_KEYS, event.reasonCode, event.reason)}
@@ -196,7 +202,15 @@ function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () =
             )}
           </p>
           {event.message === null ? null : (
-            <p className="ph-activity-line ph-activity-detail studio-muted">{event.message}</p>
+            <p className="ph-activity-line ph-activity-detail studio-muted">
+              {derivedMessageIn(i18n, {
+                derivedMessage: event.message,
+                ...(event.messageCodes === undefined ? {} : { derivedCodes: event.messageCodes }),
+                ...(event.messageDetail === undefined
+                  ? {}
+                  : { derivedDetail: event.messageDetail }),
+              })}
+            </p>
           )}
         </>
       );
@@ -216,9 +230,7 @@ export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) 
   return (
     <>
       {inboxReadable ? null : (
-        <p className="studio-alert studio-alert-alert">
-          {t("activity.inboxUnreadable")}
-        </p>
+        <p className="studio-alert studio-alert-alert">{t("activity.inboxUnreadable")}</p>
       )}
       {items.length === 0 ? (
         <p className="studio-empty">{t("activity.noEvents")}</p>
@@ -231,9 +243,7 @@ export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) 
           ))}
         </ol>
       )}
-      <p className="studio-muted ph-activity-note">
-        {t("activity.eventsNote", { limit })}
-      </p>
+      <p className="studio-muted ph-activity-note">{t("activity.eventsNote", { limit })}</p>
     </>
   );
 }

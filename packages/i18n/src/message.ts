@@ -248,11 +248,7 @@ function valueText(locale: string, value: MessageValue): string {
 }
 
 /** The case a plural takes for n: an exact =n, else the locale's category, else other. */
-export function pluralCase(
-  locale: string,
-  cases: ReadonlyMap<string, unknown>,
-  n: number,
-): string {
+export function pluralCase(locale: string, cases: ReadonlyMap<string, unknown>, n: number): string {
   if (cases.has(`=${n}`)) return `=${n}`;
   const category = pluralRule(locale).select(n);
   return cases.has(category) ? category : "other";
@@ -278,7 +274,9 @@ export function renderMessage<T>(
           break;
         case "arg": {
           const value = values[node.name];
-          out.push(renderer.text(value === undefined ? `{${node.name}}` : valueText(locale, value)));
+          out.push(
+            renderer.text(value === undefined ? `{${node.name}}` : valueText(locale, value)),
+          );
           break;
         }
         case "pound":

@@ -31,7 +31,11 @@ export function SortControl({ q, printer }: SortControlProps) {
     measure === null
       ? null
       : printer === ""
-        ? t(measure === "time" ? "library.sort.noteTimeSelected" : "library.sort.noteWeightSelected")
+        ? t(
+            measure === "time"
+              ? "library.sort.noteTimeSelected"
+              : "library.sort.noteWeightSelected",
+          )
         : t(measure === "time" ? "library.sort.noteTime" : "library.sort.noteWeight", { printer });
   return (
     <div className="ph-sort">

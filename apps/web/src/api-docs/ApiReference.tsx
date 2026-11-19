@@ -23,6 +23,7 @@
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import "./api-docs.css";
+import { useI18n } from "../i18n/I18n";
 import {
   type ApiDocument,
   examplesOf,
@@ -38,7 +39,6 @@ import {
   type Schema,
   typeLabel,
 } from "./model";
-import { useI18n } from "../i18n/I18n";
 import raw from "./openapi.json";
 
 const DOC = raw as unknown as ApiDocument;

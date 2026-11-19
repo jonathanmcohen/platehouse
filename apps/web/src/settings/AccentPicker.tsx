@@ -12,9 +12,9 @@
 // an element inside the page with its own data-accent that scheme's tokens
 // in the current theme, so a dot shows exactly the fill the app would use.
 import { type KeyboardEvent, useId, useRef } from "react";
+import { useI18n } from "../i18n/I18n";
 import { useAccent } from "../shell/AccentContext";
 import { ACCENTS, type AccentId } from "../shell/accent";
-import { useI18n } from "../i18n/I18n";
 import { ACCENT_LABEL_KEYS, ACCENT_NAME_KEYS } from "../shell/accentLabels";
 
 /** Where a key moves from index, or null for a key the group leaves alone. */
@@ -87,7 +87,9 @@ export function AccentPicker() {
         })}
       </div>
       <div className="ph-accent-preview" aria-hidden="true">
-        <span className="studio-button studio-button-primary">{t(ACCENT_LABEL_KEYS.previewButton)}</span>
+        <span className="studio-button studio-button-primary">
+          {t(ACCENT_LABEL_KEYS.previewButton)}
+        </span>
         <span className="ph-accent-preview-link">{t(ACCENT_LABEL_KEYS.previewLink)}</span>
         <span className="studio-chip" aria-current="true">
           {t(ACCENT_LABEL_KEYS.previewChip)}

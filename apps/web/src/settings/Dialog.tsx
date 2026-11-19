@@ -22,8 +22,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { useErrorText } from "./api";
 import { useI18n } from "../i18n/I18n";
+import { useErrorText } from "./api";
 import { focusFirst } from "./focus";
 import "./organise.css";
 

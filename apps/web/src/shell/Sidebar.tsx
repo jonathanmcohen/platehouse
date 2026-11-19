@@ -14,21 +14,26 @@ import { Link, NavLink } from "react-router";
 import { ENGLISH_I18N, type MessageKey, useI18n } from "../i18n/I18n";
 import { Logo } from "./Logo";
 
-/** The sections, by message key; label is the English name (for code that is not shown). */
-const SECTION_KEYS: ReadonlyArray<{ key: MessageKey; to: string }> = [
-  { key: "shell.nav.library", to: "/" },
-  { key: "shell.nav.creators", to: "/creators" },
-  { key: "shell.nav.collections", to: "/collections" },
-  { key: "shell.nav.tags", to: "/tags" },
+/**
+ * The sections: each one's message key, its English name (for code that is
+ * not shown, such as the tests) and its path. A server test reads the paths
+ * from this literal list.
+ */
+export const SECTIONS: ReadonlyArray<{ key: MessageKey; label: string; to: string }> = [
+  { key: "shell.nav.library", label: ENGLISH_I18N.t("shell.nav.library"), to: "/" },
+  { key: "shell.nav.creators", label: ENGLISH_I18N.t("shell.nav.creators"), to: "/creators" },
+  {
+    key: "shell.nav.collections",
+    label: ENGLISH_I18N.t("shell.nav.collections"),
+    to: "/collections",
+  },
+  { key: "shell.nav.tags", label: ENGLISH_I18N.t("shell.nav.tags"), to: "/tags" },
   // Task 21: the trash and settings pages.
-  { key: "shell.nav.trash", to: "/trash" },
+  { key: "shell.nav.trash", label: ENGLISH_I18N.t("shell.nav.trash"), to: "/trash" },
   // What Platehouse is doing and holds: numbers, jobs, the slicer, events.
-  { key: "shell.nav.activity", to: "/activity" },
-  { key: "shell.nav.settings", to: "/settings" },
+  { key: "shell.nav.activity", label: ENGLISH_I18N.t("shell.nav.activity"), to: "/activity" },
+  { key: "shell.nav.settings", label: ENGLISH_I18N.t("shell.nav.settings"), to: "/settings" },
 ];
-
-export const SECTIONS: ReadonlyArray<{ key: MessageKey; label: string; to: string }> =
-  SECTION_KEYS.map(({ key, to }) => ({ key, label: ENGLISH_I18N.t(key), to }));
 
 export interface SidebarProps {
   /** Inside the menu panel: no brand, and onNavigate runs when a link is followed. */

@@ -110,10 +110,7 @@ function makeFormatters(translator: Translator): Formatters {
   };
 }
 
-function makeI18n(
-  translator: Translator,
-  setLanguage: I18n["setLanguage"],
-): I18n {
+function makeI18n(translator: Translator, setLanguage: I18n["setLanguage"]): I18n {
   return {
     locale: translator.locale,
     t: (key, values) => translator.t(key, values),
@@ -121,14 +118,18 @@ function makeI18n(
       const parts = translator.render<ReactNode>(key, values, {
         text: (value) => value,
         tag: (name, children) => {
-          const inner = children.map((child, i) => <Fragment key={i}>{child}</Fragment>);
+          const inner = children.map((child, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a message's parts are fixed for that message and never reorder, so their position is their identity.
+            <Fragment key={i}>{child}</Fragment>
+          ));
           const wrap = tags[name];
-          return wrap === undefined ? <>{inner}</> : wrap(<>{inner}</>);
+          return wrap === undefined ? inner : wrap(inner);
         },
       });
       return (
         <>
           {parts.map((part, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a message's parts are fixed for that message and never reorder, so their position is their identity.
             <Fragment key={i}>{part}</Fragment>
           ))}
         </>
@@ -156,7 +157,12 @@ export interface I18nProviderProps {
   load?: (code: string) => Promise<Messages>;
 }
 
-export function I18nProvider({ locale, messages, children, load = loadMessages }: I18nProviderProps) {
+export function I18nProvider({
+  locale,
+  messages,
+  children,
+  load = loadMessages,
+}: I18nProviderProps) {
   const [translator, setTranslator] = useState(() => createTranslator(locale, messages, ENGLISH));
 
   const setLanguage = useCallback(

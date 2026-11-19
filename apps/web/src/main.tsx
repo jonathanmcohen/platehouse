@@ -27,9 +27,13 @@ import { type ReactNode, StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
 import "./styles/studio.css";
+import type { Messages } from "@platehouse/i18n";
 import { ActivityPage } from "./activity/ActivityPage";
 import { CollectionsPage } from "./collections/CollectionsPage";
 import { CreatorsPage } from "./creators/CreatorsPage";
+import { ENGLISH, loadMessages } from "./i18n/catalogs";
+import { I18nProvider, useI18n } from "./i18n/I18n";
+import { readLanguage } from "./i18n/language";
 import { LibraryPage } from "./library/LibraryPage";
 import { ModelPage } from "./model/ModelPage";
 import { SettingsPage } from "./settings/SettingsPage";
@@ -39,10 +43,6 @@ import { readTheme } from "./shell/theme";
 import { TagsPage } from "./tags/TagsPage";
 import { TrashPage } from "./trash/TrashPage";
 import { UploadDialog } from "./upload/UploadDialog";
-import type { Messages } from "@platehouse/i18n";
-import { ENGLISH, loadMessages } from "./i18n/catalogs";
-import { I18nProvider, useI18n } from "./i18n/I18n";
-import { readLanguage } from "./i18n/language";
 
 function Section({ title }: { title: string }) {
   const { t } = useI18n();

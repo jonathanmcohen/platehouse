@@ -33,6 +33,7 @@ import {
   inboxProbes,
   POLL_MS,
   REASON_SUFFIX,
+  reasonFileText,
   repeatedErrorReason,
   STRIKES,
 } from "../../../src/inbox/watch.js";
@@ -329,7 +330,7 @@ describe("duplicates (approved for 0.1.0, 2026-11-19)", () => {
     const failed = join(inbox, FAILED_DIR);
     expect((await readFile(join(failed, "Cable tidy (2).3mf"))).equals(bytes)).toBe(true);
     expect(await readFile(join(failed, `Cable tidy (2).3mf${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason),
     );
     // Nothing to do with the environment: no checks, and never tried again.
     expect(lines.filter((l) => /outage|checks/.test(l))).toEqual([]);
@@ -773,7 +774,7 @@ describe("telling a bad file from an outage", () => {
     const reason = repeatedErrorReason(boom);
     expect(third.failed).toEqual([{ name: "A fails.3mf", reason }]);
     expect(await readFile(join(inbox, FAILED_DIR, `A fails.3mf${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason),
     );
     expect(reason).toContain("boom in a parser nobody expected");
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);

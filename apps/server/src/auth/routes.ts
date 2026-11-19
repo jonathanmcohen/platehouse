@@ -36,7 +36,15 @@
 // the request log records the path without the query (app.ts), so the
 // callback's code and state stay out of it too.
 import { hkdfSync } from "node:crypto";
+import {
+  createTranslator,
+  LANG_COOKIE,
+  type MessageValues,
+  SOURCE_LOCALE,
+  type Translator,
+} from "@platehouse/i18n";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { createLocales, englishMessages, type Locales } from "../locales/locales.js";
 import { type LoginChecks, LoginError, type OidcClient } from "./oidc.js";
 import {
   SESSION_ABSOLUTE_MS,
@@ -72,7 +80,7 @@ export const LOGIN_COOKIE_MS = 10 * 60 * 1000;
 export const MAX_PENDING_LOGINS = 5;
 
 /** What /auth/login shows, with status 503, when the issuer cannot be reached. */
-export const LOGIN_UNAVAILABLE = "Login is unavailable right now";
+export const LOGIN_UNAVAILABLE: string = englishMessages()["login.unavailable.title"] ?? "";
 
 /** The login cookie's attributes; the clearing one carries them too. */
 const LOGIN_COOKIE_OPTIONS = SESSION_COOKIE_OPTIONS;
@@ -103,6 +111,8 @@ export interface AuthRouteDeps {
   absoluteUrl(path: string): string;
   group: string;
   now?: () => Date;
+  /** The languages, for the pages' words; the built-in languages when left out. */
+  locales?: Locales;
 }
 
 /** What the login cookie holds, before signing. */
@@ -130,35 +140,45 @@ function escapeHtml(text: string): string {
  */
 const LOGO = '<img src="/favicon.svg" alt="Platehouse" width="48" height="48">';
 
-/** A plain page: the logo, a heading, a sentence and a link to try again. */
-function page(title: string, message: string): string {
+/** A message key and its values: the words a login page shows. */
+type Words = [key: string, values?: MessageValues];
+
+/**
+ * A plain page: the logo, a heading, a sentence and a link to try again, in the
+ * request's language (the ph_lang cookie, else Accept-Language, else
+ * English; Jon, 2026-11-19), with the html lang to match. Every word is
+ * escaped: a translation is text, never markup.
+ */
+function page(tr: Translator, title: Words, message: Words): string {
+  const heading = tr.t(...title);
   return [
     "<!doctype html>",
-    '<html lang="en">',
+    `<html lang="${escapeHtml(tr.locale)}">`,
     '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-    `<title>${escapeHtml(title)} - Platehouse</title></head>`,
-    `<body><main>${LOGO}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`,
-    '<p><a href="/auth/login">Try again</a></p></main></body>',
+    `<title>${escapeHtml(tr.t("login.pageTitle", { title: heading }))}</title></head>`,
+    `<body><main>${LOGO}<h1>${escapeHtml(heading)}</h1><p>${escapeHtml(tr.t(...message))}</p>`,
+    `<p><a href="/auth/login">${escapeHtml(tr.t("login.tryAgain"))}</a></p></main></body>`,
     "</html>",
     "",
   ].join("\n");
 }
 
-function sendPage(reply: FastifyReply, status: number, title: string, message: string) {
+function sendPage(
+  reply: FastifyReply,
+  tr: Translator,
+  status: number,
+  title: Words,
+  message: Words,
+) {
   return reply
     .code(status)
     .header("cache-control", "no-store")
     .type("text/html; charset=utf-8")
-    .send(page(title, message));
+    .send(page(tr, title, message));
 }
 
-function unavailable(reply: FastifyReply) {
-  return sendPage(
-    reply,
-    503,
-    LOGIN_UNAVAILABLE,
-    "Platehouse cannot reach Pocket ID. Try again in a few minutes.",
-  );
+function unavailable(reply: FastifyReply, tr: Translator) {
+  return sendPage(reply, tr, 503, ["login.unavailable.title"], ["login.unavailable.issuer"]);
 }
 
 /** The login cookie's checks, or undefined when it is missing, forged, malformed or expired. */
@@ -229,6 +249,18 @@ function queryOf(url: string): string {
 
 export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): Promise<void> {
   const now = deps.now ?? (() => new Date());
+  const locales = deps.locales ?? createLocales();
+
+  /** The words for a request's pages: its language, else English. */
+  async function words(request: FastifyRequest): Promise<Translator> {
+    try {
+      return await locales.translator(
+        await locales.resolve(request.cookies[LANG_COOKIE], request.headers["accept-language"]),
+      );
+    } catch {
+      return createTranslator(SOURCE_LOCALE, locales.english, locales.english);
+    }
+  }
 
   app.get("/auth/login", async (request, reply) => {
     let begun: Awaited<ReturnType<OidcClient["begin"]>>;
@@ -236,7 +268,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       begun = await deps.oidc.begin();
     } catch (error) {
       request.log.warn({ err: error }, "auth: login is unavailable: the issuer cannot be reached");
-      return unavailable(reply);
+      return unavailable(reply, await words(request));
     }
     const state: LoginState = {
       v: begun.checks.codeVerifier,
@@ -271,9 +303,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     if (checks === undefined) {
       return sendPage(
         reply,
+        await words(request),
         400,
-        "Login did not finish",
-        "This login took longer than 10 minutes, or was started in another browser. Try again.",
+        ["login.unfinished.title"],
+        ["login.unfinished.expired"],
       );
     }
     const callbackUrl = new URL(`${deps.absoluteUrl("/auth/callback")}${queryOf(request.url)}`);
@@ -285,27 +318,30 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       request.log.warn({ failure }, "auth: login refused");
       switch (failure) {
         case "unavailable":
-          return unavailable(reply);
+          return unavailable(reply, await words(request));
         case "not_in_group":
           return sendPage(
             reply,
+            await words(request),
             403,
-            "Login refused",
-            `Your Pocket ID account is not in the ${deps.group} group. Ask for it to be added, then try again.`,
+            ["login.refused.title"],
+            ["login.refused.group", { group: deps.group }],
           );
         case "email_not_verified":
           return sendPage(
             reply,
+            await words(request),
             403,
-            "Login refused",
-            "Your Pocket ID account's email address is not verified. Verify it in Pocket ID, then try again.",
+            ["login.refused.title"],
+            ["login.refused.email"],
           );
         default:
           return sendPage(
             reply,
+            await words(request),
             400,
-            "Login did not finish",
-            "Pocket ID's answer could not be checked. Try again.",
+            ["login.unfinished.title"],
+            ["login.unfinished.unchecked"],
           );
       }
     }
@@ -318,9 +354,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       request.log.warn({ err: error }, "auth: could not save the session");
       return sendPage(
         reply,
+        await words(request),
         503,
-        LOGIN_UNAVAILABLE,
-        "Platehouse cannot save your login right now. Try again in a few minutes.",
+        ["login.unavailable.title"],
+        ["login.unavailable.session"],
       );
     }
     reply.setCookie(SESSION_COOKIE, started.id, {

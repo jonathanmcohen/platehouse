@@ -9,8 +9,8 @@
 // ConfirmDialog, the buttons never take the disabled attribute, which would
 // push focus out of the form. The form always opens without an old error.
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
-import { useErrorText } from "../settings/api";
 import { useI18n } from "../i18n/I18n";
+import { useErrorText } from "../settings/api";
 import "../settings/organise.css";
 
 export interface InlineRenameProps {

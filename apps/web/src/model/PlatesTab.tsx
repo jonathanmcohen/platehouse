@@ -9,8 +9,9 @@
 // The headings never skip a level under the page's h1 (#206): with one .3mf
 // there is no file heading and the plate names are h2; with several, each
 // file's name is an h2 and its plate names h3.
-import { PrinterSwitch } from "../settings/PrinterSwitch";
+
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { PrinterSwitch } from "../settings/PrinterSwitch";
 import type { ModelFile, ModelView } from "./ModelPage";
 import { PlateNumbersView } from "./Numbers";
 import { OpenInSlicer, type Platform } from "./OpenInSlicer";
@@ -104,7 +105,9 @@ export function PlatesTab({
                       {plate.thumbnail === null ? null : (
                         <img src={plate.thumbnail} alt="" loading="lazy" />
                       )}
-                      <PlateHeading className="ph-plate-title">{plateLabel(plate, i18n)}</PlateHeading>
+                      <PlateHeading className="ph-plate-title">
+                        {plateLabel(plate, i18n)}
+                      </PlateHeading>
                     </div>
                     <PlateNumbersView
                       numbers={plate.numbers}

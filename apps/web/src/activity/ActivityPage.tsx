@@ -82,6 +82,10 @@ export type ActivityEvent =
       model: { id: string; name: string };
       file: { id: string; name: string };
       message: string | null;
+      /** Platehouse's own sentences at the start of message, by code; absent from an older answer. */
+      messageCodes?: string[];
+      /** What message holds after those sentences. */
+      messageDetail?: string | null;
     };
 
 export interface ActivityView {
@@ -232,10 +236,22 @@ function Library({ library }: { library: ActivityView["library"] }) {
         <Stat label={t("activity.library.models")} value={count(library.models.live)} />
         <Stat label={t("activity.library.trashed")} value={count(library.models.trashed)} />
         <Stat label={t("activity.library.plates")} value={count(library.plates)} />
-        <Stat label={t("activity.library.files", { kind: "3MF" })} value={count(library.files["3mf"])} />
-        <Stat label={t("activity.library.files", { kind: "STL" })} value={count(library.files.stl)} />
-        <Stat label={t("activity.library.files", { kind: "STEP" })} value={count(library.files.step)} />
-        <Stat label={t("activity.library.files", { kind: "SCAD" })} value={count(library.files.scad)} />
+        <Stat
+          label={t("activity.library.files", { kind: "3MF" })}
+          value={count(library.files["3mf"])}
+        />
+        <Stat
+          label={t("activity.library.files", { kind: "STL" })}
+          value={count(library.files.stl)}
+        />
+        <Stat
+          label={t("activity.library.files", { kind: "STEP" })}
+          value={count(library.files.step)}
+        />
+        <Stat
+          label={t("activity.library.files", { kind: "SCAD" })}
+          value={count(library.files.scad)}
+        />
         <Stat label={t("activity.library.objects")} value={count(library.blobs.count)} />
         <Stat label={t("activity.library.size")} value={formatSize(library.blobs.bytes, i18n)} />
         <Stat
@@ -305,8 +321,14 @@ function Estimates({ estimates }: { estimates: ActivityView["estimates"] }) {
       )}
       <dl className="ph-activity-stats">
         <Stat label={t("activity.estimates.done")} value={formatCount(estimates.done, i18n)} />
-        <Stat label={t("activity.estimates.waiting")} value={formatCount(estimates.pending, i18n)} />
-        <Stat label={t("activity.estimates.slicing")} value={formatCount(estimates.running, i18n)} />
+        <Stat
+          label={t("activity.estimates.waiting")}
+          value={formatCount(estimates.pending, i18n)}
+        />
+        <Stat
+          label={t("activity.estimates.slicing")}
+          value={formatCount(estimates.running, i18n)}
+        />
         <Stat label={t("activity.estimates.failed")} value={formatCount(estimates.failed, i18n)} />
       </dl>
       <p>{rateWords(estimates, i18n)}</p>
@@ -370,7 +392,9 @@ function Queues({ queues }: { queues: QueueRow[] }) {
         <tbody>
           {queues.map((q) => (
             <tr key={q.id}>
-              <th scope="row">{QUEUE_KEYS[q.id] === undefined ? q.label : t(QUEUE_KEYS[q.id] as MessageKey)}</th>
+              <th scope="row">
+                {QUEUE_KEYS[q.id] === undefined ? q.label : t(QUEUE_KEYS[q.id] as MessageKey)}
+              </th>
               <td>{formatCount(q.waiting, i18n)}</td>
               <td>{formatCount(q.active, i18n)}</td>
               <td>{formatCount(q.failed, i18n)}</td>
@@ -378,9 +402,7 @@ function Queues({ queues }: { queues: QueueRow[] }) {
           ))}
         </tbody>
       </table>
-      <p className="studio-muted ph-activity-note">
-        {t("activity.queues.note")}
-      </p>
+      <p className="studio-muted ph-activity-note">{t("activity.queues.note")}</p>
     </Section>
   );
 }
@@ -406,7 +428,9 @@ function Schedules({ schedules }: { schedules: ScheduleRow[] }) {
             <li key={s.key} className="studio-list-item">
               <div className="studio-row">
                 <strong>
-                  {SCHEDULE_KEYS[s.key] === undefined ? s.label : t(SCHEDULE_KEYS[s.key] as MessageKey)}
+                  {SCHEDULE_KEYS[s.key] === undefined
+                    ? s.label
+                    : t(SCHEDULE_KEYS[s.key] as MessageKey)}
                 </strong>
                 <span className="studio-muted">{scheduleIn(i18n, s.schedule)}</span>
               </div>
@@ -481,11 +505,7 @@ export function ActivityPage() {
         </div>
       ) : problem === "failed" ? (
         <div role="alert" className="studio-alert studio-alert-alert">
-          <p>
-            {view === undefined
-              ? t("activity.loadFailed")
-              : t("activity.refreshFailed")}
-          </p>
+          <p>{view === undefined ? t("activity.loadFailed") : t("activity.refreshFailed")}</p>
           <button type="button" className="studio-button" onClick={refresh}>
             {t("common.tryAgain")}
           </button>

@@ -19,6 +19,10 @@
 !packages/slicer-contract/package.json
 !packages/slicer-contract/tsconfig.json
 !packages/slicer-contract/src
+!packages/i18n/package.json
+!packages/i18n/tsconfig.json
+!packages/i18n/src
+!packages/i18n/locales
 !apps/server/package.json
 !apps/server/tsconfig.json
 !apps/server/src

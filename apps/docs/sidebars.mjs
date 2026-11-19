@@ -37,6 +37,12 @@ const sidebars = {
         "using/new-in-0-1-0",
       ],
     },
+    {
+      type: "category",
+      label: "Translations",
+      link: { type: "doc", id: "translations/index" },
+      items: ["translations/contributing", "translations/locales-dir"],
+    },
     "security",
     "backups-and-upgrades",
     "api",

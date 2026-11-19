@@ -15,8 +15,8 @@
 // focusable with tabIndex -1, rather than falling to the page body.
 import { type Ref, useLayoutEffect, useRef } from "react";
 import { Link, useSearchParams } from "react-router";
-import { useAppApi } from "../settings/api";
 import { type MessageKey, useI18n } from "../i18n/I18n";
+import { useAppApi } from "../settings/api";
 import { focusFirst, focusLost } from "../settings/focus";
 import { ModelRows, type OrganiseModel } from "./ModelRows";
 import "../settings/organise.css";
@@ -117,7 +117,9 @@ function GroupModels({
           <h2 ref={heading} tabIndex={-1}>
             {name}
           </h2>
-          <Link to={`/?${new URLSearchParams({ [filter]: name })}`}>{t("groups.showInLibrary")}</Link>
+          <Link to={`/?${new URLSearchParams({ [filter]: name })}`}>
+            {t("groups.showInLibrary")}
+          </Link>
         </div>
         {rows.error === undefined ? null : (
           <p className="studio-alert studio-alert-alert">{rows.error}</p>
@@ -132,9 +134,7 @@ function GroupModels({
           />
         )}
         {rows.data?.nextCursor ? (
-          <p className="studio-muted">
-            {t("groups.firstOnly", { count: models.length })}
-          </p>
+          <p className="studio-muted">{t("groups.firstOnly", { count: models.length })}</p>
         ) : null}
       </div>
     </>

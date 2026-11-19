@@ -88,6 +88,7 @@ import { createBearerHook } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
 import { type AppActivity, registerActivityApi } from "./app-api/activity.js";
 import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
+import { registerLocalesApi } from "./app-api/locales.js";
 import { type AppModel, emptyAppModel, registerModelApi } from "./app-api/model.js";
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
@@ -98,6 +99,7 @@ import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
 import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
 import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
+import { createLocales, type Locales } from "./locales/locales.js";
 import {
   REQUEST_TIMEOUT_MS,
   registerTus,
@@ -205,6 +207,13 @@ export interface AppDeps {
    * covers it) and answers 503.
    */
   activity?: AppActivity;
+  /**
+   * The languages (locales/locales.ts, Jon 2026-11-19): the built-in
+   * catalogs and LOCALES_DIR. They decide the shell page's lang, the login
+   * pages' words and GET /app/api/locales. Left out, the built-in languages
+   * only.
+   */
+  locales?: Locales;
 }
 
 /** What the /app/api routes of Task 21 read and change. */
@@ -467,7 +476,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return reply.code(404).send({ error: "Not Found", statusCode: 404 });
   });
 
+  const locales = deps.locales ?? createLocales();
   await registerAuthRoutes(app, {
+    locales,
     oidc: auth.oidc,
     sessions: auth.sessions,
     publicOrigin: auth.publicOrigin,
@@ -488,13 +499,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await registerTokensApi(app, deps.appApi?.tokens);
   await registerOrganiseApi(app, deps.appApi?.organise);
   await registerActivityApi(app, deps.activity);
+  await registerLocalesApi(app, locales);
   await registerTus(app, {
     prefix: UPLOAD_PREFIXES.api,
     authHook: apiUploadHook(api),
     uploads: deps.uploads,
   });
   // /healthz reads web, which is set here before the app can answer.
-  const web = await registerWeb(app, webDeps);
+  const web = await registerWeb(app, webDeps, locales);
 
   if (deps.delivery !== undefined) {
     await registerDownloads(app, deps.delivery);

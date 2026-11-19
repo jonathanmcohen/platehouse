@@ -12,9 +12,9 @@
 // Create token button (useRowFocus in ./focus).
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
 import { Link } from "react-router";
+import { useI18n } from "../i18n/I18n";
 import { appApi, segment, useAppApi, useErrorText } from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
-import { useI18n } from "../i18n/I18n";
 import { useRowFocus } from "./focus";
 
 /** A live token as the list shows it. */
@@ -138,7 +138,11 @@ export function Tokens() {
     <div className="ph-section">
       <h2>{t("tokens.heading")}</h2>
       <p className="studio-muted">
-        {rich("tokens.intro", {}, { link: (children) => <Link to="/settings?view=api">{children}</Link> })}
+        {rich(
+          "tokens.intro",
+          {},
+          { link: (children) => <Link to="/settings?view=api">{children}</Link> },
+        )}
       </p>
       <form className="ph-inline-form" onSubmit={create}>
         <label htmlFor={nameId}>{t("tokens.nameLabel")}</label>

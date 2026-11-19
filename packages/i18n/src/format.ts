@@ -42,7 +42,8 @@ export function formatList(locale: string, items: readonly string[]): string {
 export function languageName(locale: string): string {
   try {
     const name = new Intl.DisplayNames([locale], { type: "language" }).of(locale);
-    if (name !== undefined && name !== locale) return name.charAt(0).toLocaleUpperCase(locale) + name.slice(1);
+    if (name !== undefined && name !== locale)
+      return name.charAt(0).toLocaleUpperCase(locale) + name.slice(1);
   } catch {
     // An unknown code keeps its code as its name.
   }

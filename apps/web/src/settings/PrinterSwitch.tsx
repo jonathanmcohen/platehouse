@@ -17,9 +17,10 @@
 // - The menu's label is the sentence it completes, "Times and weights for",
 //   so a screen reader announces "Times and weights for, Bambu Lab P1S,
 //   0.4 mm nozzle, menu". Each option is the printer in full.
+
+import { useCallback, useId, useState } from "react";
 import { useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
-import { useCallback, useId, useState } from "react";
 import "./organise.css";
 
 /** Where the browser keeps the printer switch's choice. */

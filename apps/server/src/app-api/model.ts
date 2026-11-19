@@ -65,6 +65,7 @@ import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
+import { derivedParts } from "../derived/client.js";
 import {
   type DisplayContext,
   type PlateNumbers,
@@ -120,6 +121,14 @@ export interface ModelFileView {
   derivedStatus: string | null;
   /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
+  /**
+   * The sentences Platehouse wrote at the start of derivedMessage, by code
+   * (derived/client.ts splitDerivedMessage), for the page to show in its
+   * language (Jon, 2026-11-19); empty when it holds none.
+   */
+  derivedCodes: string[];
+  /** What derivedMessage holds after those sentences (the program's own words), or null. */
+  derivedDetail: string | null;
   /** Task 17's download route for the file. */
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
@@ -366,6 +375,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             parseStatus: f.parseStatus,
             derivedStatus: f.derivedStatus,
             derivedMessage: scrubDerivedMessage(f.derivedMessage),
+            ...derivedParts(scrubDerivedMessage(f.derivedMessage)),
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null
@@ -478,6 +488,7 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
           return reply.code(400).send({
             error: "bad_request",
             message: "Press Use file titles to see the list first.",
+            code: "titles_not_previewed",
           });
         }
         const done = await model.useTitleNames(planId);

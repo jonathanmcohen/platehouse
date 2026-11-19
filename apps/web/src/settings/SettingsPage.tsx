@@ -16,10 +16,10 @@
 // changes; Back and Forward (a POP) and a fresh load leave focus alone.
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { useNavigationType, useSearchParams } from "react-router";
+import { useI18n } from "../i18n/I18n";
+import { LanguagePicker } from "../i18n/LanguagePicker";
 import { TrashList } from "../trash/TrashList";
 import { AccentPicker } from "./AccentPicker";
-import { LanguagePicker } from "../i18n/LanguagePicker";
-import { useI18n } from "../i18n/I18n";
 import { useAppApi } from "./api";
 import { PrinterMenu } from "./PrinterMenu";
 import { TitleNames } from "./TitleNames";

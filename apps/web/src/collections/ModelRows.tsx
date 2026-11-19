@@ -14,8 +14,8 @@
 // to the next row's Move to trash, else the previous row's, else the status
 // line saying what happened (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
-import { appApi, nameQuery, segment, useErrorText } from "../settings/api";
 import { useI18n } from "../i18n/I18n";
+import { appApi, nameQuery, segment, useErrorText } from "../settings/api";
 import { type RowFocus, useRowFocus } from "../settings/focus";
 import { ChipEditor } from "./ChipEditor";
 import { InlineRename } from "./InlineRename";
@@ -201,9 +201,7 @@ export function ModelRows({ models, update }: ModelRowsProps) {
               }
               onTrashed={() => {
                 update((list) => list.filter((m) => m.id !== model.id));
-                setStatus(
-                  t("rows.trashed", { name: model.name }),
-                );
+                setStatus(t("rows.trashed", { name: model.name }));
               }}
             />
           ))}

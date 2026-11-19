@@ -145,8 +145,21 @@ export function need<T>(deps: T | undefined): T {
 }
 
 /** An answer with no detail: an error word and, for the page, a plain sentence. */
-export function refuse(reply: FastifyReply, status: number, error: string, message?: string) {
-  return reply.code(status).send(message === undefined ? { error } : { error, message });
+export function refuse(
+  reply: FastifyReply,
+  status: number,
+  error: string,
+  message?: string,
+  /**
+   * A finer code (and its values) the web app shows the refusal by in a
+   * language other than English (Jon, 2026-11-19); message stays the English
+   * sentence an English page and an API client read.
+   */
+  extra?: { code: string } & Record<string, string | number>,
+) {
+  return reply
+    .code(status)
+    .send(message === undefined ? { error, ...extra } : { error, message, ...extra });
 }
 
 /**
@@ -337,6 +350,7 @@ export async function registerSettingsApi(
               503,
               "unavailable",
               "The slicer cannot be reached, so a printer cannot be added right now.",
+              { code: "slicer_unavailable" },
             );
           }
           throw error;

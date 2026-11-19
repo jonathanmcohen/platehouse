@@ -36,8 +36,9 @@
 //
 // useTusUpload holds one dialog's files and their progress; the start and
 // result calls can be replaced, which the tests do.
-import { useCallback, useEffect, useRef, useState } from "react";
+
 import { SOURCE_LOCALE } from "@platehouse/i18n";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type HttpResponse, Upload, type UploadOptions } from "tus-js-client";
 import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 

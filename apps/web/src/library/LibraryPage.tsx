@@ -58,9 +58,9 @@
 //   words, and a failed load can be tried again.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { useI18n } from "../i18n/I18n";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
 import { menuIsOpen } from "../shell/MenuButton";
-import { useI18n } from "../i18n/I18n";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
@@ -465,9 +465,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           {active.map((f) => (
             <li key={f.key} className="studio-row">
               <span>
-                {rich("library.filter.value", { label: f.label, value: f.value }, {
-                  strong: (children) => <strong>{children}</strong>,
-                })}
+                {rich(
+                  "library.filter.value",
+                  { label: f.label, value: f.value },
+                  {
+                    strong: (children) => <strong>{children}</strong>,
+                  },
+                )}
               </span>
               <Link to={without(f.key)} className="studio-chip">
                 {f.clear}
@@ -521,15 +525,11 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         ) : null}
         {ready !== null && ready.models.length === 0 ? (
           <p className="studio-empty">
-            {!filtered
-              ? t("library.empty.none")
-              : t("library.empty.noMatch")}
+            {!filtered ? t("library.empty.none") : t("library.empty.noMatch")}
           </p>
         ) : null}
         {pastEnd ? (
-          <p className="studio-muted">
-            {t("library.pastEnd", { page, last: ready?.page ?? 1 })}
-          </p>
+          <p className="studio-muted">{t("library.pastEnd", { page, last: ready?.page ?? 1 })}</p>
         ) : null}
         {capNote === null ? null : <p className="studio-muted">{capNote}</p>}
       </div>

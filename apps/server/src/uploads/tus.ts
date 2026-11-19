@@ -319,7 +319,7 @@ export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): Uplo
               duplicates: duplicateList(output?.duplicates),
             };
           }
-          return { status: "failed", error: UPLOAD_FAILED_MESSAGE };
+          return { status: "failed", error: UPLOAD_FAILED_MESSAGE, code: "upload_failed" };
         }
         case "failed": {
           // Only ingest's own messages are written for Jon; anything else
@@ -330,12 +330,16 @@ export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): Uplo
             if (output.code === "duplicate" && duplicates.length > 0) {
               return { status: "failed", error: message, code: "duplicate", duplicates };
             }
-            return { status: "failed", error: message };
+            // The code (unsupported_type, model_not_found, ...) lets the page
+            // say it in its language (Jon, 2026-11-19).
+            return typeof output.code === "string"
+              ? { status: "failed", error: message, code: output.code }
+              : { status: "failed", error: message };
           }
-          return { status: "failed", error: UPLOAD_FAILED_MESSAGE };
+          return { status: "failed", error: UPLOAD_FAILED_MESSAGE, code: "upload_failed" };
         }
         default:
-          return { status: "failed", error: UPLOAD_FAILED_MESSAGE };
+          return { status: "failed", error: UPLOAD_FAILED_MESSAGE, code: "upload_failed" };
       }
     },
   };

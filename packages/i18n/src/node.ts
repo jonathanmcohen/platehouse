@@ -14,7 +14,8 @@ import { canonicalLocale } from "./negotiate.js";
  */
 export function builtinLocalesDir(moduleUrl: string = import.meta.url): string {
   const here = dirname(fileURLToPath(moduleUrl));
-  const pkg = basename(resolve(here, "..")) === "dist" ? resolve(here, "../..") : resolve(here, "..");
+  const pkg =
+    basename(resolve(here, "..")) === "dist" ? resolve(here, "../..") : resolve(here, "..");
   return join(pkg, "locales");
 }
 

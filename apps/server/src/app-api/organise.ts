@@ -515,10 +515,10 @@ export async function registerOrganiseApi(
         // Only readAt's own form: a date alone, an offset, or a day that
         // Date rolls over (February 30) is refused, not guessed at.
         if (!ISO_MILLIS.test(cutoff) || Number.isNaN(at) || new Date(at).toISOString() !== cutoff) {
-          return refuse(reply, 400, "bad_request", STALE_TRASH);
+          return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
         if (at > (await databaseNow(db)).getTime()) {
-          return refuse(reply, 400, "bad_request", STALE_TRASH);
+          return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
         try {
           const { purged } = await emptyTrashBefore(trash, new Date(at));
@@ -530,6 +530,7 @@ export async function registerOrganiseApi(
             return reply.code(500).send({
               error: "incomplete",
               purged: error.purged.length,
+              failed: n,
               message: `${n} ${n === 1 ? "model" : "models"} could not be deleted and ${n === 1 ? "stays" : "stay"} in the trash; the next purge tries again.`,
             });
           }

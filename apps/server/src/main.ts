@@ -90,6 +90,7 @@ import { createOrphanSweep } from "./ingest/orphans.js";
 import { createBoss } from "./jobs/boss.js";
 import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
 import { createTrash } from "./library/trash.js";
+import { createLocales } from "./locales/locales.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
 import { bossUploadQueue, createUploads } from "./uploads/tus.js";
@@ -492,6 +493,15 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         boss: startedBoss,
         slicer,
         inboxDir: config.inbox.dir,
+      }),
+      // The languages: the built-in catalogs and LOCALES_DIR (Jon, 2026-11-19).
+      // A dropped file is logged by name and key only, never by its words.
+      locales: createLocales({
+        dir: config.localesDir,
+        log: {
+          warn: (details, message) =>
+            console.warn(`platehouse: ${message} ${JSON.stringify(details)}`),
+        },
       }),
       ...(options.web === undefined ? {} : { web: options.web }),
       logger: true,

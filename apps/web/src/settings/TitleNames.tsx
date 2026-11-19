@@ -11,8 +11,8 @@
 // touched; the server decides that (apps/server/src/repos/models.ts
 // titleNamePlan).
 import { useRef, useState } from "react";
-import { appApi, useErrorText } from "./api";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { appApi, useErrorText } from "./api";
 import { ConfirmDialog } from "./Dialog";
 import "./organise.css";
 
@@ -106,7 +106,9 @@ export function TitleNames() {
       if (answer.renames.length === 0) {
         const rest = leftCount(t, answer.skipped);
         setStatus(
-          rest === "" ? t("titles.noneNeeded") : `${t("titles.noneNeeded")} ${t("titles.leftSentence", { left: rest })}`,
+          rest === ""
+            ? t("titles.noneNeeded")
+            : `${t("titles.noneNeeded")} ${t("titles.leftSentence", { left: rest })}`,
         );
       } else {
         returnTo.current = start.current;
@@ -136,9 +138,7 @@ export function TitleNames() {
     <div className="ph-section">
       <h2>{t("titles.heading")}</h2>
       <div className="studio-panel">
-        <p className="studio-muted">
-          {t("titles.intro")}
-        </p>
+        <p className="studio-muted">{t("titles.intro")}</p>
         <div className="studio-actions">
           <button
             ref={start}

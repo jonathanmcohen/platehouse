@@ -71,11 +71,19 @@ export function derivedMessageIn(
   file: Pick<ModelFile, "derivedMessage" | "derivedCodes" | "derivedDetail">,
 ): string | null {
   const codes = file.derivedCodes;
-  if (codes === undefined || codes.length === 0 || codes.some((c) => DERIVED_KEYS[c] === undefined)) {
+  if (
+    codes === undefined ||
+    codes.length === 0 ||
+    codes.some((c) => DERIVED_KEYS[c] === undefined)
+  ) {
     return file.derivedMessage;
   }
   const parts = codes.map((c) => i18n.t(DERIVED_KEYS[c] as MessageKey));
-  if (file.derivedDetail !== undefined && file.derivedDetail !== null && file.derivedDetail !== "") {
+  if (
+    file.derivedDetail !== undefined &&
+    file.derivedDetail !== null &&
+    file.derivedDetail !== ""
+  ) {
     parts.push(file.derivedDetail);
   }
   return parts.join(" ");
@@ -116,7 +124,10 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
             <div className="studio-row">
               <h2 className="ph-file-title">{file.name}</h2>
               <span className="studio-muted">
-                {t("model.files.kindSize", { kind: KIND_LABEL[file.kind], size: i18n.fmt.size(file.size) })}
+                {t("model.files.kindSize", {
+                  kind: KIND_LABEL[file.kind],
+                  size: i18n.fmt.size(file.size),
+                })}
               </span>
             </div>
             {file.preview === null ? null : (

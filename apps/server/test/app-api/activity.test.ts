@@ -153,7 +153,7 @@ describe("progressOf", () => {
 
 describe("mergeEvents", () => {
   function inbox(at: string, name: string): ActivityEvent {
-    return { type: "inbox_failed", at, name, reason: "x" };
+    return { type: "inbox_failed", at, name, reason: "x", reasonCode: null };
   }
 
   test("puts the newest first across every kind", () => {
@@ -213,18 +213,21 @@ describe("readInboxFailures", () => {
         at: new Date(3_000_000).toISOString(),
         name: "new.stl",
         reason: "The upload failed: EACCES: permission denied, open '[path]'",
+        reasonCode: null,
       },
       {
         type: "inbox_failed",
         at: new Date(2_000_000).toISOString(),
         name: "gone.scad",
         reason: "Gone.",
+        reasonCode: null,
       },
       {
         type: "inbox_failed",
         at: new Date(1_000_000).toISOString(),
         name: "old.3mf",
         reason: "This file is not a supported file.",
+        reasonCode: null,
       },
     ]);
     for (const item of items) expect(JSON.stringify(item)).not.toContain(dir);

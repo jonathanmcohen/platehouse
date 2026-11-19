@@ -97,6 +97,7 @@ export async function registerTokensApi(
               400,
               "bad_request",
               `A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters.`,
+              { code: "token_name_length", max: MAX_TOKEN_NAME_LENGTH },
             );
           }
           throw error;

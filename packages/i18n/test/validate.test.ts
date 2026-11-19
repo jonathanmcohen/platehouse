@@ -72,7 +72,10 @@ describe("checkCatalog, lenient (a LOCALES_DIR file)", () => {
       EN,
       { strict: false },
     );
-    expect(out.messages).toEqual({ "nav.library": "Bibliothek", "row.rename": "Umbenennen {name}" });
+    expect(out.messages).toEqual({
+      "nav.library": "Bibliothek",
+      "row.rename": "Umbenennen {name}",
+    });
     expect(out.unknown).toEqual(["nav.gone"]);
     expect(out.missing.sort()).toEqual(["card.plates", "trash.after"]);
     expect(out.problems).toEqual([]);
@@ -103,17 +106,22 @@ describe("checkCatalog, lenient (a LOCALES_DIR file)", () => {
       { strict: false },
     );
     expect(out.messages).toEqual({});
-    expect(out.problems.map((p) => p.key).sort()).toEqual(["nav.library", "row.rename", "trash.after"]);
+    expect(out.problems.map((p) => p.key).sort()).toEqual([
+      "nav.library",
+      "row.rename",
+      "trash.after",
+    ]);
   });
 
-  it.each([["an array", []], ["a string", "x"], ["null", null]])(
-    "refuses a file that is %s",
-    (_what, data) => {
-      const out = checkCatalog("de", data, EN, { strict: false });
-      expect(out.messages).toEqual({});
-      expect(out.problems[0]?.problem).toBe("the file is not a JSON object");
-    },
-  );
+  it.each([
+    ["an array", []],
+    ["a string", "x"],
+    ["null", null],
+  ])("refuses a file that is %s", (_what, data) => {
+    const out = checkCatalog("de", data, EN, { strict: false });
+    expect(out.messages).toEqual({});
+    expect(out.problems[0]?.problem).toBe("the file is not a JSON object");
+  });
 });
 
 describe("checkEnglish", () => {

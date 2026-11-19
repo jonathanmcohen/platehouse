@@ -13,6 +13,17 @@ The choice is kept in this browser only, in a cookie, so each browser or device 
 The picker works with the arrow keys, Home and End. Every scheme keeps text and controls readable
 in both themes.
 
+## Language
+
+Platehouse speaks English, Spanish and French, plus any language your server adds (see
+[Translations](../translations/index.md)). **Browser language** follows your browser's own
+language list; any other choice shows that language. A pick applies at once and is kept in this
+browser only, in a cookie, so each browser or device can have its own.
+
+Spanish and French are machine translations in 0.1.0 that nobody fluent has reviewed yet; the menu
+says so beside their names. A language your server adds that covers only part of the app is
+marked as partly translated, and the rest shows in English.
+
 ## Bucket versioning warning
 
 While the bucket's versioning is off or suspended, a red banner reads "Bucket versioning is off.

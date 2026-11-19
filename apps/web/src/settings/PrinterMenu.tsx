@@ -55,11 +55,11 @@
 //   it. While the slicer cannot be reached the list still shows, and the
 //   add menu says why it is missing.
 import { useEffect, useId, useRef, useState } from "react";
-import { appApi, AppApiError, useErrorText } from "./api";
-import { ConfirmDialog } from "./Dialog";
-import type { MyPrinterView, SettingsView } from "./SettingsPage";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
+import { AppApiError, appApi, useErrorText } from "./api";
+import { ConfirmDialog } from "./Dialog";
+import type { MyPrinterView, SettingsView } from "./SettingsPage";
 
 /** How often the page reads the waiting counts again while a printer has any. */
 export const WAITING_POLL_MS = 15_000;
@@ -349,9 +349,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
 
   return (
     <div className="ph-field">
-      <p className="studio-muted">
-        {t("printers.intro")}
-      </p>
+      <p className="studio-muted">{t("printers.intro")}</p>
       <ol
         ref={listRef}
         className="studio-list ph-my-printers"
@@ -372,16 +370,16 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                 </p>
               ) : null}
               {printer.offered === false ? (
-                <p className="studio-alert studio-alert-alert">
-                  {t("printers.notOffered")}
-                </p>
+                <p className="studio-alert studio-alert-alert">{t("printers.notOffered")}</p>
               ) : null}
               <div className="studio-actions">
                 {isDefault ? null : (
                   <button
                     type="button"
                     className="studio-button"
-                    aria-label={t("printers.makeDefaultLabel", { name: printerNameIn(i18n, printer.name) })}
+                    aria-label={t("printers.makeDefaultLabel", {
+                      name: printerNameIn(i18n, printer.name),
+                    })}
                     aria-disabled={locked}
                     onClick={() => makeDefault(printer)}
                   >
@@ -411,7 +409,9 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                 <button
                   type="button"
                   className="studio-button"
-                  aria-label={t("printers.removeLabel", { name: printerNameIn(i18n, printer.name) })}
+                  aria-label={t("printers.removeLabel", {
+                    name: printerNameIn(i18n, printer.name),
+                  })}
                   aria-disabled={locked || isDefault}
                   onClick={() => askRemove(printer)}
                 >
@@ -423,9 +423,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
         })}
       </ol>
       {view.printers === null ? (
-        <p className="studio-muted">
-          {t("printers.unreachable")}
-        </p>
+        <p className="studio-muted">{t("printers.unreachable")}</p>
       ) : (
         <>
           <label htmlFor={id}>{t("printers.addLabel")}</label>
@@ -463,11 +461,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       <p role="status">{status}</p>
       {unread === false ? null : (
         <div role="alert" className="studio-alert studio-alert-alert">
-          <p>
-            {unread === "saved"
-              ? t("printers.unread.saved")
-              : t("printers.unread.refused")}
-          </p>
+          <p>{unread === "saved" ? t("printers.unread.saved") : t("printers.unread.refused")}</p>
           <button
             type="button"
             className="studio-button"

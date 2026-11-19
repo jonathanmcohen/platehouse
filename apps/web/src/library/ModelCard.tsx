@@ -68,7 +68,9 @@ function FileTypeIcon({ kind }: { kind: LibraryCard["fileKind"] }) {
           <path d="M14 2.75V7h4.25" />
         </svg>
         <br />
-        {kind === null ? t("library.card.noFiles") : t("library.card.kindFile", { kind: KIND_LABEL[kind] })}
+        {kind === null
+          ? t("library.card.noFiles")
+          : t("library.card.kindFile", { kind: KIND_LABEL[kind] })}
       </span>
     </span>
   );
@@ -102,21 +104,14 @@ export function ModelCard({ card, selection }: { card: LibraryCard; selection?: 
         ) : null}
         {known ? (
           <span className="studio-card-meta">
-            {fmt.duration(card.timeSeconds as number)} -{" "}
-            {fmt.weight(card.weightGrams as number)}
+            {fmt.duration(card.timeSeconds as number)} - {fmt.weight(card.weightGrams as number)}
           </span>
         ) : card.numbersUnavailable ? (
-          <span
-            className="studio-card-meta"
-            title={t("library.card.unavailableTitle")}
-          >
+          <span className="studio-card-meta" title={t("library.card.unavailableTitle")}>
             {t("library.card.unavailable")}
           </span>
         ) : card.partial ? (
-          <span
-            className="studio-card-meta"
-            title={t("library.card.partialTitle")}
-          >
+          <span className="studio-card-meta" title={t("library.card.partialTitle")}>
             {t("library.card.partial")}
           </span>
         ) : null}

@@ -102,11 +102,7 @@ export function LanguagePicker({ list = fetchList }: LanguagePickerProps) {
     ...locales.map((l) => ({
       value: l.code,
       label: l.name,
-      note: l.machineDraft
-        ? t("language.machineDraft")
-        : l.complete
-          ? null
-          : t("language.partial"),
+      note: l.machineDraft ? t("language.machineDraft") : l.complete ? null : t("language.partial"),
     })),
   ];
 
@@ -116,7 +112,11 @@ export function LanguagePicker({ list = fetchList }: LanguagePickerProps) {
       <p id={introId} className="studio-muted">
         {t("language.intro")}
       </p>
-      <fieldset className="ph-language-picker" aria-labelledby={headingId} aria-describedby={introId}>
+      <fieldset
+        className="ph-language-picker"
+        aria-labelledby={headingId}
+        aria-describedby={introId}
+      >
         {options.map((option) => (
           <label key={option.value ?? ""} className="ph-language-option">
             <input

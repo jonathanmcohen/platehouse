@@ -359,9 +359,7 @@ export function UploadDialog({
       >
         <h2 id={titleId}>{t("upload.title")}</h2>
         <p className="studio-muted">
-          {modelId !== undefined
-            ? t("upload.intro.model")
-            : t("upload.intro.new")}{" "}
+          {modelId !== undefined ? t("upload.intro.model") : t("upload.intro.new")}{" "}
           {t("upload.supported")}
         </p>
         <p className="studio-muted">{t("upload.duplicates")}</p>
