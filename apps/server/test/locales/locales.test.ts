@@ -27,27 +27,54 @@ import {
 } from "../../src/locales/locales.js";
 
 /**
- * A filesystem for LOCALES_DIR that counts every call and can be held: with
- * hold set, every call waits forever, as a hung network mount does; with
- * delayMs set, every call takes that long and then answers. With
- * holdNextReadOf set to a file name, the next readFile of that file reads it
- * at once but answers only when release() is called (never, if it is not),
- * so one read of the folder hangs with what the file held when it was asked.
+ * A filesystem for LOCALES_DIR that counts every call and can be held, and
+ * that, like Node's fs.promises, runs every call on a bounded pool of threads
+ * (libuv's, 4 by default): a call takes a thread for as long as it runs, and
+ * a call that finds none free waits for one. With hold set, every call waits
+ * forever and keeps its thread, as a stat on a hung hard network mount does in
+ * the kernel; with delayMs set, every call takes that long and then answers.
+ * With holdNextReadOf set to a file name, the next readFile of that file reads
+ * it at once but answers, and gives its thread back, only when release() is
+ * called (never, if it is not), so one read of the folder hangs with what the
+ * file held when it was asked. other() is some other work on the same pool
+ * (static files, an upload, a DNS lookup): it settles only while a thread is
+ * free.
  */
-function testFs(): {
+function testFs(threads = 4): {
   fs: LocalesFs;
   calls: () => number;
+  busy: () => number;
+  other: () => Promise<void>;
   gate: { hold: boolean; delayMs: number; holdNextReadOf: string | undefined };
   release: () => void;
 } {
   let calls = 0;
+  let busy = 0;
+  const waiting: Array<() => void> = [];
   const gate = { hold: false, delayMs: 0, holdNextReadOf: undefined as string | undefined };
   const released: Array<() => void> = [];
+  async function take(): Promise<void> {
+    if (busy < threads) {
+      busy += 1;
+      return;
+    }
+    await new Promise<void>((r) => waiting.push(r));
+  }
+  function give(): void {
+    const next = waiting.shift();
+    if (next !== undefined) next();
+    else busy -= 1;
+  }
   async function through<T>(run: () => Promise<T>): Promise<T> {
     calls += 1;
+    await take();
     if (gate.hold) return new Promise<T>(() => {});
-    if (gate.delayMs > 0) await new Promise((r) => setTimeout(r, gate.delayMs));
-    return run();
+    try {
+      if (gate.delayMs > 0) await new Promise((r) => setTimeout(r, gate.delayMs));
+      return await run();
+    } finally {
+      give();
+    }
   }
   return {
     fs: {
@@ -58,15 +85,22 @@ function testFs(): {
         if (gate.holdNextReadOf !== undefined && path.endsWith(`/${gate.holdNextReadOf}`)) {
           gate.holdNextReadOf = undefined;
           calls += 1;
-          const now = readFile(path, encoding);
-          return new Promise<string>((resolve, reject) => {
-            released.push(() => void now.then(resolve, reject));
+          return take().then(() => {
+            const now = readFile(path, encoding);
+            return new Promise<string>((resolve, reject) => {
+              released.push(() => {
+                give();
+                void now.then(resolve, reject);
+              });
+            });
           });
         }
         return through(() => readFile(path, encoding));
       },
     },
     calls: () => calls,
+    busy: () => busy,
+    other: () => through(async () => {}),
     gate,
     release: () => {
       for (const go of released.splice(0)) go();
@@ -100,6 +134,8 @@ const SLOW = "locales: LOCALES_DIR is slow to read, so the languages last read f
 const GOOD = "locales: LOCALES_DIR can be read again";
 const NOT_YET =
   "locales: nothing has been read from LOCALES_DIR yet, so only the built-in languages are offered";
+const READ_AT_LAST =
+  "locales: LOCALES_DIR was read at last, so its languages are offered; it is still slow to read";
 
 let dir: string;
 /** A second folder, outside LOCALES_DIR, for what a symlink points at; removed after each test. */
@@ -421,43 +457,49 @@ describe("LOCALES_DIR", () => {
     expect((await locales.list()).every((l) => l.source === "built-in")).toBe(true);
   });
 
-  test("a read held forever does not stop a later tick from picking up a change", async () => {
+  test("a hung mount holds one thread of the pool, however many background reads come due", async () => {
     await file("de.json", { "shell.nav.library": "Bibliothek" });
     const disk = testFs();
-    // The first read hangs on de.json and never answers.
-    disk.gate.holdNextReadOf = "de.json";
-    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 15, refreshMs: 25 });
-    expect(await locales.available()).not.toContain("de");
-    await file("it.json", { "shell.nav.library": "Libreria" });
-    const later = new Date(Date.now() + 5_000);
-    await utimes(dir, later, later);
-    // A later tick starts a new read beside the hung one, and it lands.
-    await vi.waitFor(async () => expect(await locales.available()).toContain("it"), {
-      timeout: 2_000,
-    });
+    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 5, refreshMs: 10 });
+    expect(await locales.available()).toContain("de");
+    // The mount hangs: every call blocks and keeps its thread.
+    disk.gate.hold = true;
+    await vi.waitFor(() => expect(warnings.filter((w) => w.message === SLOW)).toHaveLength(1));
+    const atHang = disk.calls();
+    // Twenty ticks later: no new read beside the hung one, which would hang too.
+    await new Promise((r) => setTimeout(r, 200));
+    void locales.refresh();
+    expect(disk.busy()).toBe(1);
+    expect(disk.calls()).toBe(atHang);
+    // So the rest of the server still gets a thread.
+    disk.gate.hold = false;
+    expect(await settlesWithin(disk.other(), 100)).toBe(true);
     expect(await locales.available()).toContain("de");
   });
 
-  test("a stale read that finishes late does not replace the languages a newer read found", async () => {
+  test("a hung read that answers late is used, and the background reads go on after it", async () => {
     await file("de.json", { "shell.nav.library": "Bibliothek" });
     const disk = testFs();
-    // The first read hangs on de.json, holding what de.json held then.
+    // The first read hangs on de.json, holding what the folder held then.
     disk.gate.holdNextReadOf = "de.json";
-    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 15, refreshMs: 60_000 });
+    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 15, refreshMs: 25 });
     await vi.waitFor(() => expect(warnings.filter((w) => w.message === NOT_YET)).toHaveLength(1));
-    // The folder changes: de goes, it comes. A new read (the first is overdue) finds that.
-    await rm(join(dir, "de.json"));
     await file("it.json", { "shell.nav.library": "Libreria" });
     const later = new Date(Date.now() + 5_000);
     await utimes(dir, later, later);
-    await locales.refresh();
-    expect(await locales.available()).toContain("it");
-    expect(await locales.available()).not.toContain("de");
-    // Now the hung read answers, late, with the old folder: it is dropped.
+    // While it hangs, no tick starts another read.
+    const atHang = disk.calls();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(disk.calls()).toBe(atHang);
+    expect(await locales.available()).not.toContain("it");
+    // It answers, late: its languages are offered and the log says so.
     disk.release();
-    await new Promise((r) => setTimeout(r, 30));
-    expect(await locales.available()).toContain("it");
-    expect(await locales.available()).not.toContain("de");
+    await vi.waitFor(async () => expect(await locales.available()).toContain("de"));
+    expect(warnings.filter((w) => w.message === READ_AT_LAST)).toHaveLength(1);
+    // The next tick reads the folder as it is now.
+    await vi.waitFor(async () => expect(await locales.available()).toContain("it"), {
+      timeout: 2_000,
+    });
   });
 
   test("startup waits for the first read no longer than the read limit", async () => {

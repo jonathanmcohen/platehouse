@@ -11,9 +11,15 @@
 // A folder that cannot be read (missing, unreadable) offers the built-in
 // languages only; a read slower than readLimitMs keeps the languages last
 // read (before any read has worked, the built-in languages only, said as
-// such; issue 299). A read past the limit never blocks the next one: the
-// next background read starts beside it, and a late result from an older
-// read never replaces a newer one. Each is its own log line, said once when the folder goes bad, and
+// such; issue 299). There is never more than one read of the folder at a
+// time, even past the limit: a filesystem call cannot be cancelled, and on a
+// hard network mount whose server has gone a stat holds one of libuv's few
+// threadpool threads (4 by default) in the kernel for as long as the mount
+// hangs, so a second read beside it would hang too and hold another, until
+// static files, uploads and DNS lookups had no thread left (PR 287 review).
+// A background read that comes due while a read is still out is skipped; the
+// folder is read again on the first tick after that read settles. Each
+// state is its own log line, said once when the folder goes bad, and
 // once more when it can be read again, never once per read. Each file must
 // be named <code>.json for a locale code (es, pt-BR), be a regular file (a symlink is refused, as the inbox does),
 // be at most MAX_LOCALE_BYTES, and hold a JSON object. Its messages are
@@ -209,21 +215,11 @@ export function createLocales(options: LocalesOptions = {}): Locales {
     byCode: new Map(),
   };
   /**
-   * The newest read of the folder: its promise, its number, and whether it
-   * has outlasted readLimitMs (overdue). A call joins it while it is within
-   * the limit; once it is overdue the next call (the next tick) starts a new
-   * read beside it (issue 299), so one hung read never stops the folder from
-   * being read again. At most one read is not overdue at any time.
+   * The read of the folder still out, if any. Every call joins it, however
+   * long it has run: a read that has outlasted readLimitMs is still holding a
+   * threadpool thread, and a new read on the same mount would hold another.
    */
-  let inFlight: { promise: Promise<void>; id: number; overdue: boolean } | undefined;
-  /** The number the next read gets. */
-  let nextId = 1;
-  /**
-   * The number of the newest read whose result is in use. A read that ends
-   * after a newer one has landed (a hung read that comes back late) is
-   * dropped, so an old result never replaces a newer one.
-   */
-  let applied = 0;
+  let inFlight: Promise<void> | undefined;
   /** Whether any read of the folder has ever worked; until then only the built-in languages exist. */
   let everRead = false;
   /**
@@ -394,44 +390,36 @@ export function createLocales(options: LocalesOptions = {}): Locales {
   }
 
   /**
-   * One read of the folder, or the newest read while it is within the read
-   * limit. A read that outlasts readLimitMs puts the folder in the slow state
-   * (logged once; before any read has worked, as nothing read yet) and is left
-   * to finish in the background; the next call after that starts a new read
-   * beside it, so a hung read does not stop the folder from being read again.
-   * A read's result is used when it lands only if no newer read has landed
-   * first. Only a read that finishes within the limit counts as the folder
-   * recovering, so a mount that is always slow logs once, not once per read.
+   * One read of the folder, or the read already out. A read that outlasts
+   * readLimitMs puts the folder in the slow state (logged once; before any
+   * read has worked, as nothing read yet) and is left to finish in the
+   * background; until it settles every call joins it and no new read starts,
+   * so a hung mount holds one threadpool thread, never more. Its result is
+   * used when it lands, however late. Only a read that finishes within the
+   * limit counts as the folder recovering, so a mount that is always slow
+   * logs once, not once per read.
    * A folder that cannot be read offers no local languages until it can be
    * again, and is logged as unreadable, even after a slow line; a slow read
    * that then works is logged as slow, since its languages are offered again.
    */
   function readFolder(folder: string): Promise<void> {
-    if (inFlight !== undefined && !inFlight.overdue) return inFlight.promise;
-    const id = nextId++;
+    if (inFlight !== undefined) return inFlight;
     let slow = false;
     const limit = setTimeout(() => {
       slow = true;
-      if (inFlight?.id === id) inFlight.overdue = true;
       goneSlow({ readLimitMs });
     }, readLimitMs);
     unrefTimer(limit);
     const promise = (async () => {
       try {
         const signature = await signatureOf(folder);
-        // A newer read has landed meanwhile: this result is older, drop it.
-        if (id < applied) return;
         const byCode = signature === local.signature ? local.byCode : await readLocal(folder);
-        if (id < applied) return;
-        applied = id;
         local = { signature, byCode };
         everRead = true;
         if (!slow) recovered();
         else if (bad === "slowFirst") readAtLast({ readLimitMs });
         else backSlow({ readLimitMs });
       } catch (error) {
-        if (id < applied) return;
-        applied = id;
         local = { signature: "", byCode: new Map() };
         goneUnreadable({
           code: error instanceof FolderUnreadable ? error.code : (error as Error).name,
@@ -439,9 +427,9 @@ export function createLocales(options: LocalesOptions = {}): Locales {
       }
     })().finally(() => {
       clearTimeout(limit);
-      if (inFlight?.id === id) inFlight = undefined;
+      inFlight = undefined;
     });
-    inFlight = { promise, id, overdue: false };
+    inFlight = promise;
     return promise;
   }
 

@@ -68,9 +68,12 @@ starts anyway after 5 seconds, offers its built-in languages only, and says so i
 platehouse: locales: nothing has been read from LOCALES_DIR yet, so only the built-in languages are offered {"readLimitMs":5000}
 ```
 
-A read that hangs never stops the folder from being read again: once a read has taken longer than
-5 seconds, the next background read starts a new one beside it, so the folder's languages appear
-as soon as the mount answers. A hung read that answers late never replaces what a newer read found.
+Platehouse never reads the folder twice at once. A read of a hung mount cannot be cancelled, and
+each one ties up one of the few threads the server also uses to serve the web app's files, take
+uploads and look up hosts, so a second read beside a hung one would hang too and tie up another.
+While a read is still waiting on the mount, the background reads that come due are skipped; when
+it answers, however late, its languages are offered, and the next background read, within 15
+seconds, reads the folder as it is by then. A hung mount therefore ties up one thread at most, and the rest of the server keeps working.
 If the first read that works is itself slow, the log says
 `locales: LOCALES_DIR was read at last, so its languages are offered; it is still slow to read`.
 
