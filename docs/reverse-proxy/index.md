@@ -113,14 +113,14 @@ block. Match on the connection's own address, not on a header a client can set. 
 
 ## Where each requirement comes from
 
-| Requirement                                                | Source                                                                                |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| https only, Secure cookies                                 | The app's configuration and sign-in code                                              |
-| The three security headers, set by the proxy               | The app sets none of them; the reference deployment sets them at the proxy            |
-| 512 MiB uploads, one-request uploads, the one-hour timeout | The app's upload handler and server timeout                                           |
-| Traefik's 60-second read timeout                           | Traefik's documentation                                                               |
-| No buffering or compression on the streaming paths         | The reference deployment; `/api/v1/files/` added because the API streams the same way |
-| No login on `/api/v1/` and `/s/`                           | The app's route classes: both are cookieless                                          |
-| Encoded slashes in API paths                               | The API's tag and collection routes, and its own importer, which encodes `/` as `%2F` |
-| Path cleaning and origin-form targets                      | The reference deployment's apply-time checks                                          |
-| Forwarded headers are for logs only                        | The app's request log; it reads no forwarded header for addresses                     |
+| Requirement                                                | Source                                                                                                                          |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| https only, Secure cookies                                 | The app's configuration and sign-in code                                                                                        |
+| The three security headers, set by the proxy               | The app's responses: it sets none of them itself                                                                                |
+| 512 MiB uploads, one-request uploads, the one-hour timeout | The app's upload handler and server timeout                                                                                     |
+| Traefik's 60-second read timeout                           | Traefik's documentation                                                                                                         |
+| No buffering or compression on the streaming paths         | The app streams these paths from the bucket as it reads them                                                                    |
+| No login on `/api/v1/` and `/s/`                           | The app's route classes: both are cookieless                                                                                    |
+| Encoded slashes in API paths                               | The API's tag and collection routes, and its own importer, which encodes `/` as `%2F`                                           |
+| Path cleaning and origin-form targets                      | The app reads a slicer link's key from the path as sent, and logs paths; a full-address target would put a live link in its log |
+| Forwarded headers are for logs only                        | The app's request log; it reads no forwarded header for addresses                                                               |

@@ -41,7 +41,10 @@ The example is a starting point. Read it through: the comments say what each set
 Set every value in `.env`. [Configuration](./configuration.md) explains each one. The values
 you must make yourself:
 
-- `DB_PASS`: a long random password, for example from `openssl rand -hex 24`.
+- `DB_PASS`: a long random password of letters and digits only. Make one with
+  `openssl rand -hex 32`. The example puts it into the app's database URL as it is, so a
+  password with `@`, `/`, `:`, `#`, `%`, `?` or a space breaks that URL and the app cannot
+  connect to the database. See [Configuration](./configuration.md#the-database-password).
 - `LINK_SECRET`: at least 32 bytes, for example from `openssl rand -base64 48`.
 - The bucket's endpoint, name, region and keys.
 - The OIDC issuer, client ID and client secret.

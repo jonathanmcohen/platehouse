@@ -9,5 +9,6 @@ Until then, in short:
   (`Authorization: Bearer <token>`). See [Security](./security.md#api-tokens).
 - It describes itself in OpenAPI at `/api/v1/openapi.json`.
 - It can search the library, read models, files and plates, download files, upload files with the
-  same resumable upload the web app uses, and add and remove tags and collection memberships. It
+  same resumable upload the web app uses (a file the library already holds is stored again unless
+  the upload sets `duplicates` to `skip`), and add and remove tags and collection memberships. It
   cannot delete, trash or purge anything.

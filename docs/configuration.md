@@ -13,7 +13,7 @@ one takes its default.
 | Variable               | Required | Default              | What it does                                                                                                                                                                                                                                                                                                                  |
 | ---------------------- | -------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PUBLIC_ORIGIN`        | Yes      | -                    | The address people use to reach Platehouse, such as `https://platehouse.example.com`. It must be `https`, with no path, query, fragment or user name. Every link Platehouse builds starts with it: the sign-in redirect, slicer links and the API description. Platehouse never builds a link from the request's Host header. |
-| `DATABASE_URL`         | Yes      | -                    | The Postgres connection, as a `postgres://` or `postgresql://` URL, for example `postgres://platehouse:PASSWORD@platehouse-db:5432/platehouse`.                                                                                                                                                                               |
+| `DATABASE_URL`         | Yes      | -                    | The Postgres connection, as a `postgres://` or `postgresql://` URL, for example `postgres://platehouse:PASSWORD@platehouse-db:5432/platehouse`. The password must be URL-safe; see [the database password](#the-database-password).                                                                                           |
 | `PORT`                 | No       | `3000`               | The port the app listens on inside its container.                                                                                                                                                                                                                                                                             |
 | `S3_ENDPOINT`          | Yes      | -                    | The bucket's S3 endpoint, an `http` or `https` URL. See [Storage](./storage.md).                                                                                                                                                                                                                                              |
 | `S3_REGION`            | Yes      | -                    | The bucket's region. For a self-hosted store that ignores regions, any value it accepts, often `us-east-1`.                                                                                                                                                                                                                   |
@@ -37,6 +37,21 @@ one takes its default.
 `OIDC_ISSUER` is required as of 0.1.0. Earlier development builds had a default for it.
 
 :::
+
+## The database password
+
+`DATABASE_URL` is a URL, so its password part must be URL-safe. The example Compose file builds
+it from `DB_USER`, `DB_PASS` and `DB_NAME` in `.env` without encoding them, and gives the same
+`DB_PASS` to Postgres as `POSTGRES_PASSWORD`. So:
+
+- Use a password of letters and digits only, for example from `openssl rand -hex 32`. This is the
+  simple, recommended choice.
+- A password with `@`, `/`, `:`, `#`, `%`, `?` or a space still passes the configuration check,
+  but points the URL at the wrong host or database, so the app starts and then cannot connect.
+- If you must use such a password, percent-encode it in `DATABASE_URL` (for example `@` as
+  `%40` and `/` as `%2F`) and give Postgres the plain password.
+
+## Other settings
 
 The example Compose file also uses `TZ`, the container's time zone. The daily jobs run at local
 time: the trash purge at 03:30 and the cleanup of stray bucket objects at 04:00.

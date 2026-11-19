@@ -1,0 +1,28 @@
+# Activity
+
+The **Activity** page, in the sidebar between Trash and Settings, shows what Platehouse is doing and
+what has gone wrong lately. It is the first place to look when an import, an estimate or a render
+did not turn out as expected.
+
+## What it shows
+
+- **Library**: how many models are in the library and in the trash, files by kind, plates, the
+  number and total size of stored objects, and when the last import happened.
+- **Estimates**: progress for your selected printer, as a progress bar with a rough time left.
+- **Queues**: the background job queues (imports, the slicer queue and maintenance) and what is
+  waiting or running in each.
+- **Scheduled jobs**: the daily and regular jobs, such as the trash purge and the cleanup, with
+  their last runs.
+- **Slicer**: whether the slicer is healthy, and its OrcaSlicer and OpenSCAD versions.
+- **Recent events**: the newest 50 events: models added, inbox files that failed, estimates that
+  failed (with the same **Retry** as on the model page), and renders and STEP conversions that
+  failed.
+
+The page builds everything from what the database, the job queues and the inbox's `failed` folder
+record. It shows no log lines, and it takes file paths, network addresses and tokens out of any
+stored error text before showing it.
+
+## Refreshing
+
+The page refreshes itself every 5 seconds while work is pending and every 30 seconds otherwise.
+It stops refreshing while its browser tab is hidden.

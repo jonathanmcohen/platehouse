@@ -32,6 +32,8 @@ const sidebars = {
         "using/open-in-slicer",
         "using/organising",
         "using/trash",
+        "using/activity",
+        "using/settings",
         "using/new-in-0-1-0",
       ],
     },

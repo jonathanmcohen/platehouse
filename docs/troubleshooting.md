@@ -34,6 +34,9 @@ and never logs a secret, token or slicer link.
   is too small. See [Reverse proxy](./reverse-proxy/index.md#large-uploads).
 - **"Storage is unavailable right now; nothing was saved"**: the bucket could not be reached.
   Nothing is half-saved; try again once it answers.
+- **A file was skipped in the upload dialog**: the library already holds the same file, and the
+  dialog links to the model that has it. Press **Import anyway** to store a second copy. See
+  [Duplicate files](./using/adding-files.md#duplicate-files).
 - **A file is refused**: only `.3mf`, `.stl`, `.step`, `.stp` and `.scad` are taken, up to 512 MiB,
   and the contents must match the extension.
 - **"No Bambu plate data in this file"**: the `.3mf` was stored, but Platehouse could not read plate
@@ -43,19 +46,20 @@ and never logs a secret, token or slicer link.
 ## The inbox
 
 A file that cannot be imported moves to `inbox/failed/`, with `name.reason.txt` beside it saying
-why. The common reasons:
+why. The [Activity](./using/activity.md) page lists failed inbox files too. The common reasons:
 
-| Reason                                                                     | What to do                                                                                      |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| The file type or contents are not supported.                               | Only `.3mf`, `.stl`, `.step`, `.stp` and `.scad`, with matching contents.                       |
-| The file is larger than the upload limit (512 MiB).                        | Split or shrink it.                                                                             |
-| The file name is not valid UTF-8.                                          | Rename it.                                                                                      |
-| The import failed three times in a row; the reason quotes the error.       | Read the error. Move the file back into the inbox to try again.                                 |
-| The file was still being written.                                          | Something was still writing it when it was taken. Move it back once the copy has finished.      |
-| It could not be put back under its name, or another file took its name.    | A file with the same name arrived during the import. Check both files.                          |
-| A model was made, but the file changed during the import.                  | The library has the version that was imported. Compare it with the file before deleting either. |
-| It was stored but could not be removed from the inbox.                     | The model is probably in the library already; check before importing it again.                  |
-| Platehouse could not check whether it is the imported file or a newer one. | Compare it with the model in the library before deleting it.                                    |
+| Reason                                                                                    | What to do                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| This file is already in the library, in the model named in the reason, so it was skipped. | The library already holds these exact bytes (see [Duplicate files](./using/adding-files.md#duplicate-files)). Delete it from `failed/`, or upload it in the browser and press **Import anyway** to store a second copy. |
+| The file type or contents are not supported.                                              | Only `.3mf`, `.stl`, `.step`, `.stp` and `.scad`, with matching contents.                                                                                                                                               |
+| The file is larger than the upload limit (512 MiB).                                       | Split or shrink it.                                                                                                                                                                                                     |
+| The file name is not valid UTF-8.                                                         | Rename it.                                                                                                                                                                                                              |
+| The import failed three times in a row; the reason quotes the error.                      | Read the error. Move the file back into the inbox to try again.                                                                                                                                                         |
+| The file was still being written.                                                         | Something was still writing it when it was taken. Move it back once the copy has finished.                                                                                                                              |
+| It could not be put back under its name, or another file took its name.                   | A file with the same name arrived during the import. Check both files.                                                                                                                                                  |
+| A model was made, but the file changed during the import.                                 | The library has the version that was imported. Compare it with the file before deleting either.                                                                                                                         |
+| It was stored but could not be removed from the inbox.                                    | The model is probably in the library already; check before importing it again.                                                                                                                                          |
+| Platehouse could not check whether it is the imported file or a newer one.                | Compare it with the model in the library before deleting it.                                                                                                                                                            |
 
 If the database, the bucket or the temporary folder is down, files are not moved to `failed`: the
 inbox waits and tries again, and the log says an outage started and ended.
@@ -73,19 +77,20 @@ inbox waits and tries again, and the log says an outage started and ended.
 
 OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
 
-| Code     | Shown                                                                                | In plain words                                                                                                                                                                     |
-| -------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| -62      | The filaments on this plate need print temperatures too far apart to print together. | The plate mixes filaments, such as PLA and PETG, whose temperatures OrcaSlicer will not print together. It is a real limit of the file on that printer, not a fault in Platehouse. |
-| -101     | The slicer found print paths on this plate that would collide.                       | OrcaSlicer found moves that would crash the print head into the print. Usually the file needs changing in the slicer.                                                              |
-| -18      | The slicer could not slice this plate.                                               | The file holds settings with values OrcaSlicer will not accept on your printer. Details shows "invalid values in the 3mf".                                                         |
-| -16      | This file cannot be switched to the selected printer.                                | The file is limited to other printers.                                                                                                                                             |
-| -17      | This file's print settings do not fit the selected printer.                          | The file's process cannot run on your printer.                                                                                                                                     |
-| -52      | The plate is too big for this printer's bed.                                         | Objects sit outside your printer's bed.                                                                                                                                            |
-| -58      | Slicing took too long and was stopped.                                               | Raise `SLICE_PLATE_SECONDS` on both the app and the slicer if your plates are just slow.                                                                                           |
-| -66, -68 | This plate needs a different nozzle or extruder setup than the selected printer has. | For example a dual-nozzle file on a single-nozzle printer.                                                                                                                         |
+| Code      | Shown                                                                                | In plain words                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| -62       | The filaments on this plate need print temperatures too far apart to print together. | The plate mixes filaments, such as PLA and PETG, whose temperatures OrcaSlicer will not print together. It is a real limit of the file on that printer, not a fault in Platehouse. |
+| -101      | The slicer found print paths on this plate that would collide.                       | OrcaSlicer found moves that would crash the print head into the print. Usually the file needs changing in the slicer.                                                              |
+| -18       | The slicer could not slice this plate.                                               | The file holds settings with values OrcaSlicer will not accept on your printer. Details shows "invalid values in the 3mf".                                                         |
+| -16       | This file cannot be switched to the selected printer.                                | The file is limited to other printers.                                                                                                                                             |
+| -17       | This file's print settings do not fit the selected printer.                          | The file's process cannot run on your printer.                                                                                                                                     |
+| -52, -102 | The plate is too big for this printer's bed.                                         | Objects sit outside your printer's bed.                                                                                                                                            |
+| -58       | Slicing took too long and was stopped.                                               | Raise `SLICE_PLATE_SECONDS` on both the app and the slicer if your plates are just slow.                                                                                           |
+| -66, -68  | This plate needs a different nozzle or extruder setup than the selected printer has. | For example a dual-nozzle file on a single-nozzle printer.                                                                                                                         |
 
 Any other code shows "The slicer could not slice this plate." with OrcaSlicer's message under
-**Details**.
+**Details**. File paths, network addresses and tokens are taken out of that message before it is
+shown. The [Activity](./using/activity.md) page lists failed estimates with the same **Retry**.
 
 ## Renders and STEP files
 

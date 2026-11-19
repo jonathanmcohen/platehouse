@@ -26,9 +26,17 @@ library to one creator.
 
 ## Renaming
 
-You can rename a model and any of its files from the Tags, Creators and Collections pages. A
-rename changes only the name Platehouse shows. The file in the bucket keeps its key, and a
-download still uses the file's real extension.
+To rename a model, open its page and press **Rename** beside its name at the top. The name turns
+into a text field: type the new name, up to 500 characters, and press **Save**, or **Cancel** to
+keep the old one. The new name shows at once, in the library and in search.
+
+You can also rename a model, and any of its files, from its row on the **Tags**, **Creators** and
+**Collections** pages.
+
+- A rename changes only the name Platehouse shows. The file in the bucket keeps its key, and a
+  download still uses the file's real extension.
+- A model you have renamed counts as named by you, so neither a file's title nor
+  [Use file titles](./settings.md#model-names) ever replaces your name.
 
 ## From the API
 

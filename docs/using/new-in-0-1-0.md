@@ -1,45 +1,45 @@
 # New in 0.1.0
 
-These features are being added before the 0.1.0 release. Each section will be filled in once its
-change is merged.
+0.1.0 is the first release of Platehouse, so everything in these docs is new in it. This page
+points to the features added late in the release, and lists the few still to come before it ships.
 
-## Library pages and View all
+## Added late in 0.1.0
 
-Added in 0.1.0. The library gets numbered pages and a View all option in place of Load more.
+- **Numbered library pages and View all**, in place of Load more. See
+  [Using Platehouse](./index.md#pages-and-view-all).
+- **Duplicate files**: the browser upload skips a file the library already holds, with Import
+  anyway; the inbox moves one to `failed/`; the API can skip them. See
+  [Adding files](./adding-files.md#duplicate-files).
+- **The Activity page**: library numbers, estimate progress, queues, scheduled jobs, the slicer's
+  health and recent events. See [Activity](./activity.md).
+- **Accent colour picker**: twelve colour schemes in Settings. See
+  [Settings](./settings.md#accent-colour).
+- **The logo**, as the favicon, the app icons and the sidebar brand. It follows the accent colour.
+- **Names from the 3MF title**: new models take their MakerWorld title, or a cleaned file name. See
+  [Adding files](./adding-files.md#how-a-new-model-is-named).
+- **Rename on the model page.** See [Organising](./organising.md#renaming).
+- **View on MakerWorld** links. See
+  [Models, files and plates](./models-files-plates.md#view-on-makerworld).
+- **Use file titles**, to rename older models from their MakerWorld titles. See
+  [Settings](./settings.md#model-names).
+- **A neutral grey backdrop** behind pictures of prints, so black and white prints stay visible.
+- **Cleaner failure details**: a failed estimate's OrcaSlicer message has file paths, network
+  addresses and tokens taken out on the model page and in the API, as on the Activity page.
+- **Rotate and flip** buttons under a plate's large image. See
+  [Models, files and plates](./models-files-plates.md#turning-a-plate-image).
 
-## Duplicate upload warnings
+## Coming in 0.1.0
 
-Added in 0.1.0. Platehouse warns about, and skips, a file that a model in the library already
-holds.
+These are still being finished. Each section will be filled in once its change is merged.
 
-## Activity page
+### Several printers
 
-Added in 0.1.0. A page with library numbers, job progress and recent events.
+Coming in 0.1.0. Estimates for more than one printer.
 
-## Several printers
+### Sorting and bulk select
 
-Added in 0.1.0. Estimates for more than one printer.
+Coming in 0.1.0. Sorting the library, and selecting several models to act on them together.
 
-## Names from the 3MF title
+### Translations
 
-Added in 0.1.0. A new model takes its name from the title stored in its `.3mf`.
-
-## Rename and the MakerWorld link
-
-Added in 0.1.0. Renaming from the model page, and a link back to the model on MakerWorld.
-
-## Colour scheme picker
-
-Added in 0.1.0. A choice of colour schemes beside the dark, light and system themes.
-
-## Logo
-
-Added in 0.1.0. The Platehouse logo, favicons and app icons.
-
-## Translations
-
-Added in 0.1.0. The interface in English, Spanish and French.
-
-## Bulk select
-
-Added in 0.1.0. Selecting several models at once to act on them together.
+Coming in 0.1.0. The interface in English, Spanish and French.

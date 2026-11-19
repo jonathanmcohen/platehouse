@@ -8,8 +8,20 @@
 
 ## The model page
 
-A model's page has a large viewer on the left and three tabs on the right: **Plates**, **Files**
-and **About**. On a narrow screen they stack. The tabs work with the arrow keys, Home and End.
+A model's page has its name at the top, with a **Rename** button (see
+[Organising](./organising.md#renaming)), a large viewer on the left and three tabs on the right:
+**Plates**, **Files** and **About**. On a narrow screen they stack. The tabs work with the arrow
+keys, Home and End.
+
+Pictures of prints (the large plate image, the plate strip, the Plates tab and the Files tab
+preview) sit on a neutral grey backdrop, so a black or white print stays visible in both themes.
+
+### View on MakerWorld
+
+When a model's `.3mf` carries a MakerWorld design ID, the page shows a **View on MakerWorld** link
+beside the creator and in the About tab. It opens the design's page on MakerWorld in a new tab.
+The link is always built as `https://makerworld.com/models/<id>` from a checked ID; Platehouse
+never uses any other address found in a file. A model with no design ID shows no link.
 
 ### Plates
 
@@ -30,8 +42,8 @@ Lists the model's files, with **Open in Bambu Studio** and **Open in OrcaSlicer*
 
 ### About
 
-Shows the caption, creator, licence (with its licence note, if any), tags, collections and the
-description. Descriptions are shown as formatted text. Links in them go only to web addresses,
+Shows the caption, creator, the **View on MakerWorld** link when there is one, licence (with its
+licence note, if any), tags, collections and the description. Descriptions are shown as formatted text. Links in them go only to web addresses,
 and images in them show as links, so a description can never load anything from another site.
 
 ## The 3D viewer

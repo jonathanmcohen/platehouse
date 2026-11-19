@@ -42,7 +42,8 @@ good for comparing and planning, not exact.
 ## When a plate cannot be sliced
 
 The plate shows the reason in plain words, with OrcaSlicer's own message behind a **Details**
-button, and a **Retry** button that slices it again from the stored file. The other plates still
+button (with file paths, network addresses and tokens taken out, as on the Activity page and in
+the API), and a **Retry** button that slices it again from the stored file. The other plates still
 get their numbers. The reasons are:
 
 | Shown                                                                                | Typical cause                                                                                     |

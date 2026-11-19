@@ -62,7 +62,8 @@ which it puts and deletes again when it checks that the bucket can be written to
 A daily job at 04:00 deletes objects under `models/` that have no matching file in the database
 and are more than 24 hours old, such as one left behind by a crash between an upload and saving
 it. It is careful: it deletes nothing when the database holds no files at all, or when a run
-would delete more than 10 objects or a tenth of what it found (never more than 100), and it logs
-why. If you see such a log line, check that the app is pointed at the right database and bucket.
+would delete more than its limit, which is 10 objects or a tenth of what it found, whichever is
+larger, but never more than 100. It logs why. If you see such a log line, check that the app is
+pointed at the right database and bucket.
 
 To back up the bucket, see [Backups and upgrades](./backups-and-upgrades.md).
