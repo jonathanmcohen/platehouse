@@ -15,6 +15,7 @@ import { TitleNames } from "../src/settings/TitleNames";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 interface Plan {
+  planId: string;
   renames: Array<{ id: string; from: string; to: string }>;
   skipped: {
     renamedByUser: number;
@@ -22,6 +23,7 @@ interface Plan {
     noTitle: number;
     sameName: number;
     nameNotFromFile: number;
+    imported: number;
   };
 }
 
@@ -33,10 +35,14 @@ const SKIPPED = {
   noTitle: 4,
   sameName: 0,
   nameNotFromFile: 3,
+  imported: 5,
 };
+
+const PLAN_ID = "ab".repeat(32);
 
 function plan(renames: number): Plan {
   return {
+    planId: PLAN_ID,
     renames: Array.from({ length: renames }, (_, i) => ({
       id: id(i + 1),
       from: `File_name_${i + 1}`,
@@ -49,8 +55,10 @@ function plan(renames: number): Plan {
 let container: HTMLDivElement;
 let root: Root;
 let requests: string[];
+let posted: unknown[];
 let preview: Plan | number;
 let applyStatus: number;
+let applyBody: unknown;
 let applied: number;
 const native = { confirm: vi.fn(), alert: vi.fn(), prompt: vi.fn() };
 
@@ -66,8 +74,10 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   requests = [];
+  posted = [];
   preview = plan(3);
   applyStatus = 200;
+  applyBody = { error: "x" };
   applied = 3;
   for (const fn of Object.values(native)) fn.mockReset();
   vi.stubGlobal("confirm", native.confirm);
@@ -84,9 +94,8 @@ beforeEach(() => {
           return typeof preview === "number" ? json({ error: "x" }, preview) : json(preview);
         }
         if (method === "POST") {
-          return applyStatus === 200
-            ? json({ renamed: applied })
-            : json({ error: "x" }, applyStatus);
+          posted.push(typeof init?.body === "string" ? JSON.parse(init.body) : init?.body);
+          return applyStatus === 200 ? json({ renamed: applied }) : json(applyBody, applyStatus);
         }
       }
       return new Response("not found", { status: 404 });
@@ -148,11 +157,12 @@ describe("Use file titles", () => {
     const text = box?.textContent ?? "";
     expect(text).toContain("3 models will be renamed from their file's title.");
     expect(text).toContain('"File_name_1" becomes "Title 1"');
-    expect(text).toContain("10 are left as they are");
+    expect(text).toContain("15 are left as they are");
     expect(text).toContain("2 renamed by you");
     expect(text).toContain("3 whose name is not a file name");
     expect(text).toContain("4 with no title");
     expect(text).toContain("1 already named from a title");
+    expect(text).toContain("5 imported from another library");
     // Safe choice first.
     expect(document.activeElement?.textContent).toBe("Cancel");
   });
@@ -173,6 +183,8 @@ describe("Use file titles", () => {
       "GET /app/api/models/title-names",
       "POST /app/api/models/title-names",
     ]);
+    // It sends the preview's plan id, so only the list shown is applied.
+    expect(posted).toEqual([{ planId: PLAN_ID }]);
     expect(dialog()).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Renamed 3 models.");
   });
@@ -193,7 +205,7 @@ describe("Use file titles", () => {
     await click(button("Use file titles"));
     expect(dialog()).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe(
-      "No model needs a new name. 10 are left as they are.",
+      "No model needs a new name. 15 are left as they are.",
     );
     expect(requests).toEqual(["GET /app/api/models/title-names"]);
   });
@@ -216,6 +228,21 @@ describe("Use file titles", () => {
     expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
       "This is unavailable right now. Try again in a moment.",
     );
+  });
+
+  test("a preview the library has moved past keeps the dialog open and says nothing was renamed", async () => {
+    applyStatus = 409;
+    applyBody = {
+      error: "plan_changed",
+      message: "The library changed after this preview, so nothing was renamed.",
+    };
+    await show();
+    await click(button("Use file titles"));
+    await click(button("Rename 3 models"));
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+      "The library changed after this preview, so nothing was renamed.",
+    );
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("");
   });
 
   test("the examples are at most five", async () => {

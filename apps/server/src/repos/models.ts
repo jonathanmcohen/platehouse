@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type Kysely, sql } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
@@ -74,6 +75,12 @@ export interface TitleRename {
  * renames, by current name, and how many models it leaves alone, by reason.
  */
 export interface TitleNamePlan {
+  /**
+   * The SHA-256, in hex, of the renames list. Applying takes it back and
+   * renames only when the list worked out then is the same one, so only the
+   * renames the preview showed are ever made.
+   */
+  planId: string;
   renames: TitleRename[];
   skipped: {
     /** Renamed by a person (name_source 'user'). */
@@ -86,6 +93,12 @@ export interface TitleNamePlan {
     sameName: number;
     /** Its name is none of its files' names, so a person chose it. */
     nameNotFromFile: number;
+    /**
+     * Made by an import (it has an externalRef, such as manyfold:<id>): its
+     * caption is the source library's own, copied as written, not its
+     * .3mf's title, so it cannot name the model.
+     */
+    imported: number;
   };
 }
 
@@ -282,7 +295,7 @@ export function modelsRepo(db: Kysely<DB>) {
   async function titleNamePlan(): Promise<TitleNamePlan> {
     const models = await db
       .selectFrom("models")
-      .select(["id", "name", "nameSource", "caption"])
+      .select(["id", "name", "nameSource", "caption", "externalRef"])
       .where("trashedAt", "is", null)
       .orderBy("name")
       .orderBy("id")
@@ -299,20 +312,27 @@ export function modelsRepo(db: Kysely<DB>) {
       if (list === undefined) namesOf.set(f.modelId, [f.originalName]);
       else list.push(f.originalName);
     }
-    const plan: TitleNamePlan = {
-      renames: [],
-      skipped: { renamedByUser: 0, namedFromTitle: 0, noTitle: 0, sameName: 0, nameNotFromFile: 0 },
+    const renames: TitleRename[] = [];
+    const skipped: TitleNamePlan["skipped"] = {
+      renamedByUser: 0,
+      namedFromTitle: 0,
+      noTitle: 0,
+      sameName: 0,
+      nameNotFromFile: 0,
+      imported: 0,
     };
     for (const m of models) {
       const title = cutName(m.caption);
-      if (m.nameSource === "user") plan.skipped.renamedByUser += 1;
-      else if (m.nameSource === "title") plan.skipped.namedFromTitle += 1;
-      else if (title === null) plan.skipped.noTitle += 1;
-      else if (title === m.name) plan.skipped.sameName += 1;
-      else if (!fileStems(namesOf.get(m.id) ?? []).has(m.name)) plan.skipped.nameNotFromFile += 1;
-      else plan.renames.push({ id: m.id, from: m.name, to: title });
+      if (m.nameSource === "user") skipped.renamedByUser += 1;
+      else if (m.nameSource === "title") skipped.namedFromTitle += 1;
+      else if (m.externalRef !== null) skipped.imported += 1;
+      else if (title === null) skipped.noTitle += 1;
+      else if (title === m.name) skipped.sameName += 1;
+      else if (!fileStems(namesOf.get(m.id) ?? []).has(m.name)) skipped.nameNotFromFile += 1;
+      else renames.push({ id: m.id, from: m.name, to: title });
     }
-    return plan;
+    const planId = createHash("sha256").update(JSON.stringify(renames)).digest("hex");
+    return { planId, renames, skipped };
   }
 
   return {
@@ -464,21 +484,28 @@ export function modelsRepo(db: Kysely<DB>) {
     /**
      * The "Use file titles" backfill's preview: which live models it would
      * rename from their file's title, and which it leaves alone and why.
-     * The title is the model's caption, which ingest and the import fill from
-     * the .3mf's MakerWorld Title, so no file is read from the bucket. The
-     * rules are nameFromTitle's. Changes nothing.
+     * The title is the model's caption, which ingest fills from the .3mf's
+     * MakerWorld Title, so no file is read from the bucket. A model made by
+     * an import (one with an externalRef) is skipped: the importer copies
+     * the source library's caption as written, so it is not a title. The
+     * other rules are nameFromTitle's. Changes nothing.
      */
     titleNamePlan,
 
     /**
-     * Runs the backfill: renames each model the preview lists, in one
-     * transaction, and marks it named from its title. A model renamed by a
-     * person after the preview was read is left alone, since each update
-     * requires name_source 'file' and the name the preview saw.
+     * Runs the backfill the preview with this planId showed: renames each
+     * model it lists, in one transaction, and marks it named from its title.
+     * The list is worked out again here, and when it is not the previewed one
+     * (its planId differs: a model was renamed, a file added, a caption
+     * changed) nothing is renamed and the answer is null, so a model the
+     * preview did not show is never renamed. Each update also requires
+     * name_source 'file' and the name the preview saw, so a rename that lands
+     * while this runs still wins; renamed counts only the models changed.
      */
-    async applyTitleNames(): Promise<{ renamed: number }> {
+    async applyTitleNames(planId: string): Promise<{ renamed: number } | null> {
       return inTransaction(db, async (trx) => {
         const plan = await modelsRepo(trx).titleNamePlan();
+        if (plan.planId !== planId) return null;
         let renamed = 0;
         for (const { id, from, to } of plan.renames) {
           const result = await trx

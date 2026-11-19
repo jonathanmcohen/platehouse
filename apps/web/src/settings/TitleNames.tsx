@@ -4,9 +4,12 @@
 // preview (GET /app/api/models/title-names), which changes nothing, then
 // asks in the app's own dialog with the count, a few examples and what is
 // left alone, and why. Only Rename in that dialog sends the POST that
-// renames them. A model renamed by hand, or with a name that is none of its
-// files' names, is never touched; the server decides that
-// (apps/server/src/repos/models.ts titleNamePlan).
+// renames them, and it sends the preview's planId, so the server renames
+// only the list shown; if the library changed in between it renames
+// nothing and the dialog says so. A model renamed by hand, one made by an
+// import, or one with a name that is none of its files' names, is never
+// touched; the server decides that (apps/server/src/repos/models.ts
+// titleNamePlan).
 import { useRef, useState } from "react";
 import { appApi, errorText } from "./api";
 import { ConfirmDialog } from "./Dialog";
@@ -14,6 +17,8 @@ import "./organise.css";
 
 /** What GET /app/api/models/title-names answers. */
 export interface TitleNamePlan {
+  /** Sent back with Rename, so only this list is applied. */
+  planId: string;
   renames: Array<{ id: string; from: string; to: string }>;
   skipped: {
     renamedByUser: number;
@@ -21,6 +26,7 @@ export interface TitleNamePlan {
     noTitle: number;
     sameName: number;
     nameNotFromFile: number;
+    imported: number;
   };
 }
 
@@ -46,6 +52,7 @@ function leftAlone(skipped: TitleNamePlan["skipped"]): string {
     [skipped.noTitle, "with no title"],
     [skipped.namedFromTitle, "already named from a title"],
     [skipped.sameName, "already named as their title"],
+    [skipped.imported, "imported from another library"],
   ] as const;
   const listed = reasons.filter(([n]) => n > 0).map(([n, why]) => `${n} ${why}`);
   return `${count}: ${listed.join(", ")}.`;
@@ -96,7 +103,12 @@ export function TitleNames() {
   }
 
   async function run() {
-    const answer = await appApi<{ renamed: number }>("POST", "/models/title-names");
+    if (plan === null) return;
+    // A 409 (the library changed since the preview) throws, and the dialog
+    // shows the server's sentence and stays open.
+    const answer = await appApi<{ renamed: number }>("POST", "/models/title-names", {
+      planId: plan.planId,
+    });
     // The result goes where focus goes; the dialog has nothing left to do.
     returnTo.current = statusLine.current;
     setPlan(null);

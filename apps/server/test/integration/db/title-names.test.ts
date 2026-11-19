@@ -37,12 +37,19 @@ let fileCounter = 0;
 /** A model with one source file of the given original name. */
 async function modelWithFile(
   repos: Repos,
-  input: { name: string; nameSource?: NameSource; caption?: string | null; file: string },
+  input: {
+    name: string;
+    nameSource?: NameSource;
+    caption?: string | null;
+    externalRef?: string;
+    file: string;
+  },
 ) {
   const model = await repos.models.create({
     name: input.name,
     nameSource: input.nameSource ?? "file",
     caption: input.caption ?? null,
+    externalRef: input.externalRef ?? null,
   });
   await addFile(repos, model.id, input.file);
   return model;
@@ -218,6 +225,15 @@ describe("the Use file titles backfill", () => {
         caption: "Drawer Divider Set",
         file: "drawer_divider.3mf",
       }),
+      // Skipped: imported from Manyfold before 0005, so name_source is
+      // 'file' and its caption is Manyfold's own, copied as written, not
+      // its .3mf's title, though its name matches its file's cleaned name.
+      imported: await modelWithFile(repos, {
+        name: "Desk cable clip",
+        caption: "A clip that holds two cables under any desk edge up to 30 mm thick.",
+        externalRef: "manyfold:abc123",
+        file: "Desk_cable_clip.3mf",
+      }),
       // Not counted at all: in the trash.
       trashed: await modelWithFile(repos, {
         name: "Old_thing",
@@ -242,13 +258,18 @@ describe("the Use file titles backfill", () => {
       noTitle: 1,
       sameName: 1,
       nameNotFromFile: 1,
+      imported: 1,
     });
+    expect(plan.planId).toMatch(/^[0-9a-f]{64}$/);
+    expect((await repos.models.titleNamePlan()).planId).toBe(plan.planId);
     expect((await repos.models.get(m.raw.id))?.name).toBe("Spool_holder_wall");
+    expect((await repos.models.get(m.imported.id))?.name).toBe("Desk cable clip");
   });
 
   test("applying renames exactly the previewed models and marks them named from their title", async () => {
     const { repos, m } = await library();
-    expect(await repos.models.applyTitleNames()).toEqual({ renamed: 2 });
+    const { planId } = await repos.models.titleNamePlan();
+    expect(await repos.models.applyTitleNames(planId)).toEqual({ renamed: 2 });
     expect(await repos.models.get(m.raw.id)).toMatchObject({
       name: "Wall Spool Holder | Screwless",
       nameSource: "title",
@@ -256,21 +277,45 @@ describe("the Use file titles backfill", () => {
     expect((await repos.models.get(m.cleaned.id))?.name).toBe("Cable Clip for Desks");
     expect((await repos.models.get(m.user.id))?.name).toBe("My bin");
     expect((await repos.models.get(m.chosen.id))?.name).toBe("Drawer divider (kitchen)");
+    expect((await repos.models.get(m.imported.id))?.name).toBe("Desk cable clip");
     expect((await repos.models.get(m.untitled.id))?.name).toBe("Plain part");
     expect((await repos.models.get(m.trashed.id, { includeTrashed: true }))?.name).toBe(
       "Old_thing",
     );
     // A second run finds nothing left to do.
-    expect((await repos.models.titleNamePlan()).renames).toEqual([]);
-    expect(await repos.models.applyTitleNames()).toEqual({ renamed: 0 });
+    const again = await repos.models.titleNamePlan();
+    expect(again.renames).toEqual([]);
+    expect(await repos.models.applyTitleNames(again.planId)).toEqual({ renamed: 0 });
   });
 
-  test("a rename made after the preview wins over the backfill", async () => {
+  test("a rename made after the preview wins, and the stale preview renames nothing", async () => {
     const { t, repos, m } = await library();
-    expect((await repos.models.titleNamePlan()).renames).toHaveLength(2);
+    const plan = await repos.models.titleNamePlan();
+    expect(plan.renames).toHaveLength(2);
     await createRename(t.db).renameModel(m.raw.id, "Jon's spool holder");
-    expect(await repos.models.applyTitleNames()).toEqual({ renamed: 1 });
+    expect(await repos.models.applyTitleNames(plan.planId)).toBeNull();
     expect((await repos.models.get(m.raw.id))?.name).toBe("Jon's spool holder");
+    expect((await repos.models.get(m.cleaned.id))?.name).toBe("Cable clip PETG");
+  });
+
+  test("a model that comes to qualify after the preview is never renamed by it", async () => {
+    const { repos, m } = await library();
+    const plan = await repos.models.titleNamePlan();
+    expect(plan.renames).toHaveLength(2);
+    // A file whose name is the hand-picked name's stem joins the model, so
+    // the model now looks named after a file, though the preview left it.
+    await addFile(repos, m.chosen.id, "Drawer divider (kitchen).3mf");
+    expect((await repos.models.titleNamePlan()).renames).toHaveLength(3);
+    expect(await repos.models.applyTitleNames(plan.planId)).toBeNull();
+    expect((await repos.models.get(m.chosen.id))?.name).toBe("Drawer divider (kitchen)");
+    expect((await repos.models.get(m.raw.id))?.name).toBe("Spool_holder_wall");
+  });
+
+  test("a plan id that is not the current plan's renames nothing", async () => {
+    const { repos, m } = await library();
+    expect(await repos.models.applyTitleNames("0".repeat(64))).toBeNull();
+    expect(await repos.models.applyTitleNames("")).toBeNull();
+    expect((await repos.models.get(m.raw.id))?.name).toBe("Spool_holder_wall");
   });
 
   test("a title over the limit is previewed and applied cut to 500 characters", async () => {
@@ -280,15 +325,16 @@ describe("the Use file titles backfill", () => {
       caption: `${"Very long title ".repeat(60)}end`,
       file: "Long_one.3mf",
     });
-    const [rename] = (await repos.models.titleNamePlan()).renames;
+    const plan = await repos.models.titleNamePlan();
+    const [rename] = plan.renames;
     expect(rename?.to.length).toBeLessThanOrEqual(500);
-    await repos.models.applyTitleNames();
+    expect(await repos.models.applyTitleNames(plan.planId)).toEqual({ renamed: 1 });
     expect((await repos.models.get(model.id))?.name).toBe(rename?.to);
   });
 
   test("search answers a renamed model under its new name at once", async () => {
     const { repos, m } = await library();
-    await repos.models.applyTitleNames();
+    await repos.models.applyTitleNames((await repos.models.titleNamePlan()).planId);
     const found = await repos.models.search({ q: "Spool Holder" });
     expect(found.map((x) => [x.id, x.name])).toEqual([[m.raw.id, "Wall Spool Holder | Screwless"]]);
   });
