@@ -14,9 +14,13 @@ import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 import { patternClass } from "../../src/auth/gate.js";
 import {
+  ACCENT_COOKIE,
+  ACCENTS,
+  DEFAULT_ACCENT,
   defaultWebDir,
   parseShellTemplate,
   registerWeb,
+  resolveAccent,
   resolveTheme,
   SHELL_PAGES,
   ShellTemplateError,
@@ -25,7 +29,7 @@ import {
 
 const TEMPLATE = [
   "<!doctype html>",
-  '<html lang="en" data-theme="dark">',
+  '<html lang="en" data-theme="dark" data-accent="bambu-green">',
   "  <head>",
   '    <meta charset="utf-8" />',
   '    <meta name="color-scheme" content="dark" />',
@@ -44,6 +48,133 @@ function themeOf(html: string): string | undefined {
 function schemeOf(html: string): string | undefined {
   return /<meta name="color-scheme" content="([^"]*)"/.exec(html)?.[1];
 }
+
+function accentOf(html: string): string | undefined {
+  return /<html\b[^>]*\sdata-accent="([^"]*)"/.exec(html)?.[1];
+}
+
+/** The twelve accent ids as the web app lists them in src/shell/accent.ts. */
+function webAccents(): { ids: string[]; fallback: string | undefined; cookie: string | undefined } {
+  const source = readFileSync(new URL("../../../web/src/shell/accent.ts", import.meta.url), "utf8");
+  const list = /export const ACCENTS\b[^=]*=\s*\[([\s\S]*?)\]/.exec(source)?.[1] ?? "";
+  return {
+    ids: [...list.matchAll(/"([^"]*)"/g)].map((m) => m[1] as string),
+    fallback: /export const DEFAULT_ACCENT\b[^=]*=\s*"([^"]*)"/.exec(source)?.[1],
+    cookie: /export const ACCENT_COOKIE\b[^=]*=\s*"([^"]*)"/.exec(source)?.[1],
+  };
+}
+
+// Jon, 2026-11-19: the accent colour scheme, a second per-browser choice
+// beside the theme. data-accent on the html element comes from the
+// ph_accent cookie the same way data-theme comes from ph_theme, so the first
+// paint already has the right colour. Anything that is not one of the twelve
+// ids is the default, and only a known id is ever written into the page.
+describe("the shell renders data-accent from the cookie, with the default for anything else", () => {
+  const shell = parseShellTemplate(TEMPLATE);
+
+  test.each([...ACCENTS])("ph_accent=%s renders data-accent %s", (id) => {
+    const html = shell.render("light", id);
+    expect(accentOf(html)).toBe(id);
+    expect(themeOf(html)).toBe("light");
+    expect(schemeOf(html)).toBe("light");
+  });
+
+  test("no accent cookie renders the default", () => {
+    expect(accentOf(shell.render(undefined))).toBe(DEFAULT_ACCENT);
+    expect(accentOf(shell.render("system", undefined))).toBe(DEFAULT_ACCENT);
+  });
+
+  test.each([
+    "",
+    "Coral",
+    "CORAL",
+    " coral",
+    "coral ",
+    "sepia",
+    "green",
+    "toString",
+    "__proto__",
+    'coral" onload="x',
+    "coral><script>",
+    "coral; Domain=evil.example",
+  ])("ph_accent=%j renders the default and is not echoed", (cookie) => {
+    const html = shell.render("dark", cookie);
+    expect(accentOf(html)).toBe(DEFAULT_ACCENT);
+    expect(html.match(/data-accent=/g)).toHaveLength(1);
+    // Anything that is not plain lower-case words (markup, cookie syntax,
+    // another case) never reaches the page.
+    if (/[^a-z-]/.test(cookie)) expect(html).not.toContain(cookie);
+  });
+
+  test("changes nothing but data-theme, data-accent and the color-scheme meta", () => {
+    const html = shell.render("light", "coral");
+    expect(html).toBe(
+      TEMPLATE.replace(
+        'data-theme="dark" data-accent="bambu-green"',
+        'data-theme="light" data-accent="coral"',
+      ).replace(
+        '<meta name="color-scheme" content="dark" />',
+        '<meta name="color-scheme" content="light" />',
+      ),
+    );
+  });
+
+  test("the attribute order in the html element does not matter", () => {
+    const template = TEMPLATE.replace(
+      '<html lang="en" data-theme="dark" data-accent="bambu-green">',
+      '<html data-accent="bambu-green" lang="en" data-theme="dark">',
+    );
+    const html = parseShellTemplate(template).render("system", "lime");
+    expect(html).toContain('<html data-accent="lime" lang="en" data-theme="system">');
+  });
+
+  test("any known id in the template is a placeholder: the cookie or the default replaces it", () => {
+    const template = TEMPLATE.replace('data-accent="bambu-green"', 'data-accent="coral"');
+    const placeholder = parseShellTemplate(template);
+    expect(accentOf(placeholder.render(undefined))).toBe(DEFAULT_ACCENT);
+    expect(accentOf(placeholder.render(undefined, "amber"))).toBe("amber");
+  });
+
+  test("leaves the same words elsewhere in the page alone", () => {
+    const template = TEMPLATE.replace(
+      '<div id="root"></div>',
+      '<div id="root"></div><script>const a = \'data-accent="bambu-green"\';</script>',
+    );
+    const html = parseShellTemplate(template).render("dark", "coral");
+    expect(accentOf(html)).toBe("coral");
+    expect(html).toContain("const a = 'data-accent=\"bambu-green\"';");
+  });
+
+  test("a template with no data-accent gets one, right after data-theme", () => {
+    const template = TEMPLATE.replace(' data-accent="bambu-green"', "");
+    const plain = parseShellTemplate(template);
+    expect(plain.render("light", "coral")).toBe(
+      template
+        .replace('data-theme="dark"', 'data-theme="light" data-accent="coral"')
+        .replace(
+          '<meta name="color-scheme" content="dark" />',
+          '<meta name="color-scheme" content="light" />',
+        ),
+    );
+    expect(accentOf(plain.render(undefined))).toBe(DEFAULT_ACCENT);
+  });
+
+  test.each([
+    [
+      "a data-accent that is not a known id",
+      TEMPLATE.replace('data-accent="bambu-green"', 'data-accent="sepia"'),
+    ],
+    [
+      "two data-accent attributes",
+      TEMPLATE.replace(
+        'data-accent="bambu-green"',
+        'data-accent="bambu-green" data-accent="coral"',
+      ),
+    ],
+  ])("refuses a template with %s", (_name, template) => {
+    expect(() => parseShellTemplate(template)).toThrow(ShellTemplateError);
+  });
+});
 
 describe("the shell renders data-theme from the cookie, with dark as the default", () => {
   const shell = parseShellTemplate(TEMPLATE);
@@ -117,6 +248,8 @@ describe("parseShellTemplate", () => {
     const shell = parseShellTemplate(source);
     expect(themeOf(shell.render("system"))).toBe("system");
     expect(schemeOf(shell.render("system"))).toBe("light dark");
+    expect(accentOf(shell.render("system", "coral"))).toBe("coral");
+    expect(accentOf(shell.render("system"))).toBe(DEFAULT_ACCENT);
   });
 
   // The server parses the BUILT index.html, not the source one above, and a
@@ -140,7 +273,12 @@ describe("parseShellTemplate", () => {
       expect(built).not.toContain("/src/main.tsx");
       expect(built).toMatch(/src="\/assets\/[^"]+\.js"/);
       const shell = parseShellTemplate(built);
-      expect(shell.render(undefined)).toBe(built);
+      // The build carries no data-accent; render adds it after data-theme
+      // and changes nothing else.
+      expect(shell.render("dark", "magenta")).toBe(
+        built.replace('data-theme="dark"', 'data-theme="dark" data-accent="magenta"'),
+      );
+      expect(accentOf(shell.render(undefined))).toBe(DEFAULT_ACCENT);
       for (const [cookie, theme, scheme] of [
         ["dark", "dark", "dark"],
         ["light", "light", "light"],
@@ -188,6 +326,29 @@ describe("constants", () => {
     expect(resolveTheme(value)).toBe(theme);
   });
 
+  test("the accent cookie, the twelve ids and the default are the web app's", () => {
+    const web = webAccents();
+    expect(ACCENT_COOKIE).toBe("ph_accent");
+    expect(web.cookie).toBe(ACCENT_COOKIE);
+    expect(web.ids).toHaveLength(12);
+    expect([...ACCENTS]).toEqual(web.ids);
+    expect(web.fallback).toBe(DEFAULT_ACCENT);
+  });
+
+  test("the default accent is Bambu green, today's colour", () => {
+    expect(DEFAULT_ACCENT).toBe("bambu-green");
+  });
+
+  test.each([
+    ["coral", "coral"],
+    ["lime", "lime"],
+    [undefined, DEFAULT_ACCENT],
+    ["Coral", DEFAULT_ACCENT],
+    ["hasOwnProperty", DEFAULT_ACCENT],
+  ])("resolveAccent(%s) is %s", (value, id) => {
+    expect(resolveAccent(value)).toBe(id);
+  });
+
   test("the shell pages are the sidebar's sections and the model page, each a session-class page", () => {
     // Task 21 adds the trash and settings pages, Task 20 the model page.
     expect([...SHELL_PAGES]).toEqual([
@@ -219,7 +380,8 @@ describe("constants", () => {
 });
 
 describe("registerWeb without a web build", () => {
-  const INDEX = '<html lang="en" data-theme="dark"><meta name="color-scheme" content="dark" />';
+  const INDEX =
+    '<html lang="en" data-theme="dark" data-accent="bambu-green"><meta name="color-scheme" content="dark" />';
 
   async function withApp(
     run: (args: { dir: string; lines: string[]; app: ReturnType<typeof Fastify> }) => Promise<void>,
