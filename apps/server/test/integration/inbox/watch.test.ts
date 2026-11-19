@@ -135,6 +135,14 @@ const exists = (path: string) =>
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest();
 
 /**
+ * A .3mf with bytes of its own. The watcher skips a file a live model
+ * already holds (duplicates), and every test here shares one database, so
+ * each file a test means to import is built with a nonce.
+ */
+const fresh3mf = (spec: Parameters<typeof build3mf>[0]) =>
+  build3mf({ ...spec, nonce: randomBytes(8).toString("hex") });
+
+/**
  * An ingest whose transaction commits and then loses its answer: the
  * connection drops before the answer comes, and the server cannot be asked
  * how the transaction ended. Ingest keeps the objects and throws the
@@ -174,7 +182,7 @@ test("the watcher polls every 5 seconds", () => {
 describe("settle window", () => {
   test("a file written in chunks with 5 s pauses is not imported until 15 s after the last write", async () => {
     const watcher = watcherFor(env.ingest);
-    const bytes = build3mf({ plates: 2, sliced: [1] });
+    const bytes = fresh3mf({ plates: 2, sliced: [1] });
     const chunks = [
       bytes.subarray(0, 100),
       bytes.subarray(100, 300),
@@ -218,7 +226,7 @@ describe("settle window", () => {
 describe("import", () => {
   test("a settled .3mf appears as a model and the inbox copy is deleted", async () => {
     const watcher = watcherFor(env.ingest);
-    const bytes = build3mf({ plates: 3, sliced: [1, 2] });
+    const bytes = fresh3mf({ plates: 3, sliced: [1, 2] });
     const path = join(inbox, "Desk organiser.3mf");
     await writeFile(path, bytes);
 
@@ -266,9 +274,11 @@ describe("import", () => {
 
   test("an upload of the same name and bytes while the inbox copy settles does not stand in for it", async () => {
     // The web UI or the API stores the same file as a model of its own after
-    // the inbox copy arrived; the inbox copy still makes its own model.
+    // the inbox copy arrived. It is not taken for the inbox copy's own import
+    // (the copy is not deleted as imported); the inbox copy is a duplicate of
+    // it now, so it moves to failed with a reason naming that model.
     const watcher = watcherFor(env.ingest);
-    const bytes = build3mf({ plates: 1 });
+    const bytes = fresh3mf({ plates: 1 });
     const path = join(inbox, "Uploaded twice.3mf");
     await writeFile(path, bytes);
     const before = await footprint(env);
@@ -283,12 +293,83 @@ describe("import", () => {
     });
 
     const pass = await tick(watcher, SETTLE_SECONDS);
-    expect(pass.imported).toHaveLength(1);
-    expect(pass.imported[0]?.modelId).not.toBe(upload.modelId);
-    expect(pass.imported[0]?.fileId).not.toBe(upload.fileId);
-    expect((await footprint(env)).models).toBe(before.models + 2);
+    expect(pass.imported).toEqual([]);
+    expect(pass.failed).toHaveLength(1);
+    expect(pass.failed[0]?.reason).toContain(upload.modelId);
+    expect((await footprint(env)).models).toBe(before.models + 1);
     expect(lines.filter((l) => l.includes("already imported"))).toEqual([]);
     expect(await exists(path)).toBe(false);
+    expect(await exists(join(inbox, FAILED_DIR, "Uploaded twice.3mf"))).toBe(true);
+  });
+});
+
+describe("duplicates (approved for 0.1.0, 2026-11-19)", () => {
+  test("a file a live model holds is not imported: it moves to failed with a reason naming the model", async () => {
+    const watcher = watcherFor(env.ingest);
+    const bytes = fresh3mf({ plates: 2 });
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Cable tidy.3mf",
+      target: "new",
+    });
+    const path = join(inbox, "Cable tidy (2).3mf");
+    await writeFile(path, bytes);
+    const before = await footprint(env);
+
+    await watcher.pollOnce();
+    const pass = await tick(watcher, SETTLE_SECONDS);
+
+    expect(pass.imported).toEqual([]);
+    const reason =
+      `This file is already in the library, in the model "Cable tidy" (id ${first.modelId}), ` +
+      "so it was skipped; nothing was saved.";
+    expect(pass.failed).toEqual([{ name: "Cable tidy (2).3mf", reason }]);
+    expect(await footprint(env)).toEqual(before);
+    expect(await exists(path)).toBe(false);
+    const failed = join(inbox, FAILED_DIR);
+    expect((await readFile(join(failed, "Cable tidy (2).3mf"))).equals(bytes)).toBe(true);
+    expect(await readFile(join(failed, `Cable tidy (2).3mf${REASON_SUFFIX}`), "utf8")).toBe(
+      `${reason}\n`,
+    );
+    // Nothing to do with the environment: no checks, and never tried again.
+    expect(lines.filter((l) => /outage|checks/.test(l))).toEqual([]);
+    const later = await tick(watcher, SETTLE_SECONDS);
+    expect(later).toMatchObject({ imported: [], failed: [] });
+  });
+
+  test("a file only a trashed model holds is imported as a model of its own", async () => {
+    const watcher = watcherFor(env.ingest);
+    const bytes = fresh3mf({ plates: 1 });
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Old hook.3mf",
+      target: "new",
+    });
+    expect(await env.repos.models.trash(first.modelId)).toBe(true);
+    const path = join(inbox, "Old hook.3mf");
+    await writeFile(path, bytes);
+
+    await watcher.pollOnce();
+    const pass = await tick(watcher, SETTLE_SECONDS);
+
+    expect(pass.failed).toEqual([]);
+    expect(pass.imported).toHaveLength(1);
+    expect(pass.imported[0]?.modelId).not.toBe(first.modelId);
+    expect(await exists(path)).toBe(false);
+  });
+
+  test("two copies of one file dropped together: one is imported, the other moves to failed naming it", async () => {
+    const watcher = watcherFor(env.ingest);
+    const bytes = fresh3mf({ plates: 1 });
+    await writeFile(join(inbox, "Twin A.3mf"), bytes);
+    await writeFile(join(inbox, "Twin B.3mf"), bytes);
+
+    await watcher.pollOnce();
+    const pass = await tick(watcher, SETTLE_SECONDS);
+
+    expect(pass.imported).toHaveLength(1);
+    expect(pass.failed).toHaveLength(1);
+    expect(pass.failed[0]?.reason).toContain(pass.imported[0]?.modelId ?? "none");
   });
 });
 
@@ -351,7 +432,7 @@ describe("failures", () => {
       tmpDir: () => real.tmpDir(),
     };
     const watcher = watcherFor(createIngest({ db: env.db, store: flaky }), { probes });
-    const bytes = build3mf({ plates: 1 });
+    const bytes = fresh3mf({ plates: 1 });
     const path = join(inbox, "During the outage.3mf");
     await writeFile(path, bytes);
     const before = await footprint(env);
@@ -389,7 +470,7 @@ describe("failures", () => {
         return calls === 1 ? lossy.ingestFile(input) : env.ingest.ingestFile(input);
       },
     });
-    const bytes = build3mf({ plates: 1 });
+    const bytes = fresh3mf({ plates: 1 });
     const path = join(inbox, "Answer lost.3mf");
     await writeFile(path, bytes);
     const before = await footprint(env);
@@ -425,7 +506,7 @@ describe("failures", () => {
     // recreate or a host reboot; a new watcher sees the file for the first
     // time, with nothing in memory from the first.
     const lossy = answerLostIngest();
-    const bytes = build3mf({ plates: 1 });
+    const bytes = fresh3mf({ plates: 1 });
     const path = join(inbox, "Before a restart.3mf");
     await writeFile(path, bytes);
     const before = await footprint(env);
@@ -463,7 +544,7 @@ describe("failures", () => {
     // attempt 1, and that commit's answer was lost. Before the retry the
     // purge deleted attempt 0's model, and its file row with it. Both commits
     // are made here with the ids the watcher chooses for this copy.
-    const bytes = build3mf({ plates: 1 });
+    const bytes = fresh3mf({ plates: 1 });
     const name = "Gap below.3mf";
     const path = join(inbox, name);
     await writeFile(path, bytes);
@@ -510,7 +591,7 @@ describe("failures", () => {
   test("ignored names are never imported or moved", async () => {
     const watcher = watcherFor(env.ingest);
     const names = [".hidden.3mf", "Download.3mf.part", "Download.3mf.crdownload", "Copy.stl.tmp"];
-    for (const name of names) await writeFile(join(inbox, name), build3mf({ plates: 1 }));
+    for (const name of names) await writeFile(join(inbox, name), fresh3mf({ plates: 1 }));
     const before = await footprint(env);
 
     await watcher.pollOnce();
@@ -542,8 +623,8 @@ describe("telling a bad file from an outage", () => {
           tmpDir: () => healthy.tmpDir(),
         },
       });
-      await writeFile(join(inbox, "A grant missing.3mf"), build3mf({ plates: 1 }));
-      await writeFile(join(inbox, "B grant missing.3mf"), build3mf({ plates: 2 }));
+      await writeFile(join(inbox, "A grant missing.3mf"), fresh3mf({ plates: 1 }));
+      await writeFile(join(inbox, "B grant missing.3mf"), fresh3mf({ plates: 2 }));
       const before = await footprint(env);
 
       await watcher.pollOnce();
@@ -597,8 +678,8 @@ describe("telling a bad file from an outage", () => {
         findImported: (q) => roRepos.files.findImported(q),
         probes: inboxProbes({ db: readOnly, store: env.store, tmpDir: join(env.dir, "tmp") }),
       });
-      await writeFile(join(inbox, "A read only.3mf"), build3mf({ plates: 1 }));
-      await writeFile(join(inbox, "B read only.3mf"), build3mf({ plates: 1 }));
+      await writeFile(join(inbox, "A read only.3mf"), fresh3mf({ plates: 1 }));
+      await writeFile(join(inbox, "B read only.3mf"), fresh3mf({ plates: 1 }));
       const before = await footprint(env);
 
       await watcher.pollOnce();
@@ -646,7 +727,7 @@ describe("telling a bad file from an outage", () => {
       },
     });
     const path = join(inbox, "Write only.3mf");
-    await writeFile(path, build3mf({ plates: 1 }));
+    await writeFile(path, fresh3mf({ plates: 1 }));
 
     await watcher.pollOnce();
     const pass = await tick(watcher, SETTLE_SECONDS);
@@ -673,8 +754,8 @@ describe("telling a bad file from an outage", () => {
       },
     });
     const bad = join(inbox, "A fails.3mf");
-    await writeFile(bad, build3mf({ plates: 1 }));
-    await writeFile(join(inbox, "B imports.3mf"), build3mf({ plates: 1 }));
+    await writeFile(bad, fresh3mf({ plates: 1 }));
+    await writeFile(join(inbox, "B imports.3mf"), fresh3mf({ plates: 1 }));
 
     await watcher.pollOnce();
     const first = await tick(watcher, SETTLE_SECONDS);
@@ -715,7 +796,7 @@ describe("telling a bad file from an outage", () => {
       probes: inboxProbes({ db: env.db, store: env.store, tmpDir }),
     });
     const path = join(inbox, "No temp folder.3mf");
-    await writeFile(path, build3mf({ plates: 1 }));
+    await writeFile(path, fresh3mf({ plates: 1 }));
     const before = await footprint(env);
 
     await watcher.pollOnce();
@@ -789,8 +870,8 @@ describe("the checks write", () => {
     let restored = false;
     try {
       const watcher = watcherFor(env.ingest);
-      await writeFile(join(inbox, "A disk full.3mf"), build3mf({ plates: 1 }));
-      await writeFile(join(inbox, "B disk full.3mf"), build3mf({ plates: 2 }));
+      await writeFile(join(inbox, "A disk full.3mf"), fresh3mf({ plates: 1 }));
+      await writeFile(join(inbox, "B disk full.3mf"), fresh3mf({ plates: 2 }));
       const before = await footprint(env);
 
       await watcher.pollOnce();

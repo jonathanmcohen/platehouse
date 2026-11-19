@@ -30,6 +30,7 @@ import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
+import { createRepos } from "../../../src/repos/index.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { bossUploadQueue, createUploads, type Uploads } from "../../../src/uploads/tus.js";
 import { meta, OCTET, TUS } from "../../uploads/support/http.js";
@@ -110,6 +111,8 @@ interface UploadOutcome {
   modelId?: string;
   fileId?: string;
   error?: string;
+  code?: string;
+  duplicates?: Array<{ modelId: string; modelName: string; fileId: string; fileName: string }>;
 }
 
 /** A whole tus upload through /api/v1/uploads: create, one PATCH, then the result. */
@@ -736,6 +739,112 @@ describe("the operations", () => {
     const still = await call("GET", `/api/v1/models/${model.id}`);
     expect(still.status).toBe(200);
     expect((still.json() as { files: unknown[] }).files).toHaveLength(1);
+  });
+});
+
+describe("duplicates (approved for 0.1.0, 2026-11-19)", () => {
+  /** An ASCII STL no other upload sends, so its SHA-256 is its own. */
+  function uniqueStl(): string {
+    const name = `api-dup-${marker()}`.replace(/\s+/g, "-");
+    return ASCII_STL.replaceAll("cube", name);
+  }
+
+  async function modelCount(): Promise<number> {
+    const row = await env.db
+      .selectFrom("models")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
+  test("left out: a duplicate is still stored, and the result names the live copy", async () => {
+    const bytes = uniqueStl();
+    const first = await upload("Spool holder.stl", bytes);
+    expect(first.status, first.error).toBe("done");
+    expect(first.duplicates).toEqual([]);
+
+    const second = await upload("Spool holder (2).stl", bytes);
+    expect(second.status, second.error).toBe("done");
+    expect(second.modelId).not.toBe(first.modelId);
+    expect(second.duplicates).toEqual([
+      {
+        modelId: first.modelId,
+        modelName: "Spool holder",
+        fileId: first.fileId,
+        fileName: "Spool holder.stl",
+      },
+    ]);
+  });
+
+  test("skip: a duplicate is refused with code duplicate, naming the model, and nothing stored", async () => {
+    const bytes = uniqueStl();
+    const first = await upload("Cable clip.stl", bytes);
+    expect(first.status, first.error).toBe("done");
+    const before = await modelCount();
+
+    const again = await upload("Cable clip.stl", bytes, { duplicates: "skip" });
+    expect(again.status).toBe("failed");
+    expect(again.code).toBe("duplicate");
+    expect(again.duplicates?.map((d) => d.modelId)).toEqual([first.modelId]);
+    expect(again.error).toContain('"Cable clip"');
+    expect(again.error).toContain(first.modelId);
+    expect(again.modelId).toBeUndefined();
+    expect(await modelCount()).toBe(before);
+  });
+
+  test("skip: a file only a trashed model holds is stored, and the trashed model is never named", async () => {
+    const bytes = uniqueStl();
+    const first = await upload("Drawer pull.stl", bytes);
+    expect(first.status, first.error).toBe("done");
+    expect(await createRepos(env.db).models.trash(first.modelId ?? "")).toBe(true);
+
+    const skip = await upload("Drawer pull.stl", bytes, { duplicates: "skip" });
+    expect(skip.status, skip.error).toBe("done");
+    expect(skip.duplicates).toEqual([]);
+    const allow = await upload("Drawer pull.stl", bytes);
+    expect(allow.status, allow.error).toBe("done");
+    expect(allow.duplicates?.map((d) => d.modelId)).toEqual([skip.modelId]);
+    expect(JSON.stringify([skip, allow])).not.toContain(first.modelId ?? "none");
+  });
+
+  test("skip into an existing model that already holds the file is refused", async () => {
+    const bytes = uniqueStl();
+    const first = await upload("Hinge.stl", bytes);
+    const again = await upload("Hinge.stl", bytes, {
+      modelId: first.modelId ?? "",
+      duplicates: "skip",
+    });
+    expect(again.status).toBe("failed");
+    expect(again.code).toBe("duplicate");
+  });
+
+  test("a duplicates value other than skip or allow is refused at creation", async () => {
+    const res = await call("POST", "/api/v1/uploads", {
+      headers: {
+        ...TUS,
+        "upload-length": "10",
+        "upload-metadata": meta({ filename: "a.stl", duplicates: "never" }),
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(res.text).toMatch(/duplicates/);
+  });
+
+  test("the OpenAPI document describes duplicates on the upload and its result", async () => {
+    const res = await call("GET", "/api/v1/openapi.json");
+    const doc = res.json() as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+    };
+    const create = JSON.stringify(doc.paths["/uploads"]?.post);
+    expect(create).toContain("duplicates");
+    const result = doc.paths["/uploads/{id}/result"]?.get as {
+      responses: Record<string, { content?: Record<string, { schema: Record<string, unknown> }> }>;
+    };
+    const schema = result.responses["200"]?.content?.["application/json"]?.schema as {
+      properties: Record<string, { enum?: string[]; type?: string }>;
+    };
+    expect(schema.properties.code?.enum).toEqual(["duplicate"]);
+    expect(schema.properties.duplicates?.type).toBe("array");
   });
 });
 

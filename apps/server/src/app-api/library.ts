@@ -3,6 +3,10 @@
 //
 //   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
 //       { printer, printerName, printers, models: LibraryCard[], nextCursor }
+//   GET /app/api/library?q&tag&collection&creator&page&limit&printer
+//       { printer, printerName, printers, models, nextCursor: null, page,
+//         pageSize, pageCount, total, totalCapped, libraryTotal }
+//       numbered pages (the web app's)
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
@@ -48,8 +52,20 @@
 //   lookup is two queries, and at most PLATE_NUMBERS_CONCURRENCY run at once
 //   (mapLimit), so a page of many plates leaves most of the database pool to
 //   the ingest and slicer workers.
-// - Answers are JSON and never cached; an invalid cursor is 400. Errors carry
-//   no detail from the database.
+// - Numbered pages: ?page= (from 1) asks for one page of limit cards, 48 when
+//   limit is left out (LIBRARY_PAGE_SIZE), up to 200, instead of following a
+//   cursor; the two cannot be mixed. The page is a slice of the same ranked
+//   matches the cursor pages walk (the models repository's searchRanked, so
+//   the same search, filters and order, and trashed models never appear),
+//   read once per request and capped at PAGED_MATCH_CAP matches. total is the
+//   number of matches for the search and filters, up to that cap;
+//   totalCapped says there are more, which pages cannot reach. libraryTotal
+//   is every live model, for "12 of 171". A page past the end is the last
+//   page (its number is in the answer), never an empty one. Plate numbers
+//   are looked up for the page's cards only, so a request computes numbers
+//   for at most 200 models whatever the total.
+// - Answers are JSON and never cached; an invalid cursor is 400, and so is a
+//   page with a cursor. Errors carry no detail from the database.
 import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
@@ -61,12 +77,68 @@ import {
   printerName,
 } from "../estimates/display.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
+import { modelsRepo } from "../repos/models.js";
 
 /** The library's routes, every one session-class (the Route classes contract). */
 export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/library",
   "/app/api/library/tags",
 ]);
+
+/** Cards on one numbered page when the request names no limit; the web app's page. */
+export const LIBRARY_PAGE_SIZE = 48;
+
+/** Most cards one request computes, numbered page or cursor page. */
+const MAX_PAGE_SIZE = 200;
+
+/**
+ * Most matches a numbered page request reads, ranked, to slice its page from
+ * and count its total: searchRanked's own most. Matches past it are not
+ * counted, and the answer says the total is capped.
+ */
+export const PAGED_MATCH_CAP = 1000;
+
+/**
+ * Highest ?page= the route accepts (its querystring schema); past it the
+ * answer is 400. The web app asks for at most this page (PAGE_MAX in
+ * apps/web/src/library/paging.ts), which pageWindow serves as the last page.
+ */
+export const MAX_PAGE_NUMBER = 1_000_000;
+
+/** A numbered page's size: LIBRARY_PAGE_SIZE when left out, else a whole 1 to 200. */
+export function pageSizeFor(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return LIBRARY_PAGE_SIZE;
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE);
+}
+
+/**
+ * Which slice of total matches page is: the page actually served (a page
+ * past the end is the last page, one below 1 is page 1), the page count
+ * (at least 1, so no matches is page 1 of 1) and the slice's start and end.
+ */
+export function pageWindow({
+  total,
+  pageSize,
+  page,
+}: {
+  total: number;
+  pageSize: number;
+  page: number;
+}): { page: number; pageCount: number; start: number; end: number } {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const asked = Number.isFinite(page) ? Math.trunc(page) : 1;
+  const served = Math.min(Math.max(asked, 1), pageCount);
+  const start = (served - 1) * pageSize;
+  return { page: served, pageCount, start, end: Math.min(start + pageSize, total) };
+}
+
+/** A request named both a page and a cursor. */
+export class InvalidPageQuery extends Error {
+  constructor() {
+    super("Ask for a page or a cursor, not both");
+    this.name = "InvalidPageQuery";
+  }
+}
 
 /** Most plate number lookups one page runs at once; the pool holds 10 connections. */
 export const PLATE_NUMBERS_CONCURRENCY = 4;
@@ -175,6 +247,15 @@ export function printerChoices(ctx: DisplayContext): PrinterChoice[] {
   return ids.map((id) => ({ id, name: printerName(id, ctx.printers) }));
 }
 
+/** The printer fields of a library answer: the printer shown, its name and the choices. */
+function printerFields(ctx: DisplayContext) {
+  return {
+    printer: ctx.printerId,
+    printerName: printerName(ctx.printerId, ctx.printers),
+    printers: printerChoices(ctx),
+  };
+}
+
 /** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
 export const BLOB_PREFIX = "/blobs/";
 
@@ -215,15 +296,37 @@ export interface AppLibraryPage {
   nextCursor: string | null;
 }
 
-/** The library's query: the search, and the printer switch's choice. */
-export type LibraryQuery = LibrarySearch & { printer?: string };
+/** A numbered page (?page=). */
+export interface AppLibraryPages extends AppLibraryPage {
+  nextCursor: null;
+  /** The page served, from 1: the last page when the one asked for is past the end. */
+  page: number;
+  pageSize: number;
+  /** At least 1. */
+  pageCount: number;
+  /** Matches for the search and filters, up to PAGED_MATCH_CAP. */
+  total: number;
+  /** True when there are more matches than total counts. */
+  totalCapped: boolean;
+  /** Every live model, whatever the search and filters. */
+  libraryTotal: number;
+}
+
+export interface AppLibraryQuery extends LibrarySearch {
+  /** A numbered page, from 1, instead of a cursor. */
+  page?: number | undefined;
+  /** The printer switch's choice: one of My printers, else the default is shown. */
+  printer?: string | undefined;
+}
 
 export interface AppLibrary {
   /**
    * A page of cards, for query.printer when it is one of My printers, else
-   * for the default printer; InvalidCursor for a cursor search did not make.
+   * for the default printer: a numbered page when query.page is set, else a
+   * cursor page. InvalidCursor for a cursor search did not make,
+   * InvalidPageQuery for a page and a cursor together.
    */
-  list(query: LibraryQuery): Promise<AppLibraryPage>;
+  list(query: AppLibraryQuery): Promise<AppLibraryPage | AppLibraryPages>;
   /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
   tags(): Promise<string[]>;
 }
@@ -237,6 +340,15 @@ export interface AppLibraryDeps {
   displayContext(): Promise<DisplayContext>;
   /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
   plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
+  /** Most matches a numbered page reads; PAGED_MATCH_CAP. Smaller in tests. */
+  pagedMatchCap?: number;
+}
+
+// A blank filter, such as an empty tag= in a query string, is no filter, as
+// in library/search.ts.
+function filter(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
 /** The numbers a plate has for the selected printer, if any: time and weight both known. */
@@ -260,6 +372,65 @@ export function numbersFor(
 export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
   const { db } = deps;
   const search = createSearch(db);
+  const models = modelsRepo(db);
+  const matchCap = deps.pagedMatchCap ?? PAGED_MATCH_CAP;
+
+  async function liveModels(): Promise<number> {
+    const row = await db
+      .selectFrom("models")
+      .select((eb) => eb.fn.countAll<string>().as("n"))
+      .where("trashedAt", "is", null)
+      .executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
+  /**
+   * The ranked matches for the search and filters, up to the cap, and
+   * whether there are more: one query, and a second for one row past the
+   * cap only when the first came back full.
+   */
+  async function matches(query: AppLibraryQuery) {
+    const where = {
+      q: query.q ?? "",
+      tag: filter(query.tag),
+      collection: filter(query.collection),
+      creator: filter(query.creator),
+    };
+    // Only id, name, creator and rank: up to matchCap rows are read to slice
+    // one page and count it, and View all reads them once per chunk (up to
+    // five times for 1000 models), so no row carries its description.
+    const rows = await models.searchRankedCards({ ...where, limit: matchCap });
+    const last = rows.at(-1);
+    let capped = false;
+    if (rows.length === matchCap && last !== undefined) {
+      const after = { rank: last.rank, name: last.name, id: last.id };
+      capped = (await models.searchRankedCards({ ...where, after, limit: 1 })).length > 0;
+    }
+    return { rows, capped };
+  }
+
+  async function numbered(query: AppLibraryQuery & { page: number }): Promise<AppLibraryPages> {
+    const pageSize = pageSizeFor(query.limit);
+    const [found, read, libraryTotal] = await Promise.all([
+      matches(query),
+      deps.displayContext(),
+      liveModels(),
+    ]);
+    const ctx = forPrinter(read, query.printer);
+    const total = found.rows.length;
+    const window = pageWindow({ total, pageSize, page: query.page });
+    return {
+      ...printerFields(ctx),
+      models: await cards(found.rows.slice(window.start, window.end), ctx),
+      nextCursor: null,
+      page: window.page,
+      pageSize,
+      pageCount: window.pageCount,
+      total,
+      totalCapped: found.capped,
+      libraryTotal,
+    };
+  }
 
   async function cards(
     models: Array<{ id: string; name: string; creator: string | null }>,
@@ -356,13 +527,16 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
   }
 
   return {
-    async list({ printer, ...searchQuery }) {
+    async list(query) {
+      if (query.page !== undefined) {
+        if (query.cursor !== undefined) throw new InvalidPageQuery();
+        return numbered({ ...query, page: query.page });
+      }
+      const { printer, page: _page, ...searchQuery } = query;
       const [page, read] = await Promise.all([search.search(searchQuery), deps.displayContext()]);
       const ctx = forPrinter(read, printer);
       return {
-        printer: ctx.printerId,
-        printerName: printerName(ctx.printerId, ctx.printers),
-        printers: printerChoices(ctx),
+        ...printerFields(ctx),
         models: await cards(page.models, ctx),
         nextCursor: page.nextCursor,
       };
@@ -391,7 +565,22 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 
 /** The library when the server is given none: empty, so the routes still answer. */
 export const emptyAppLibrary: AppLibrary = Object.freeze({
-  list: async () => ({ printer: "", printerName: "", printers: [], models: [], nextCursor: null }),
+  list: async (query: AppLibraryQuery) =>
+    query.page === undefined
+      ? { printer: "", printerName: "", printers: [], models: [], nextCursor: null }
+      : {
+          printer: "",
+          printerName: "",
+          printers: [],
+          models: [],
+          nextCursor: null,
+          page: 1,
+          pageSize: pageSizeFor(query.limit),
+          pageCount: 1,
+          total: 0,
+          totalCapped: false,
+          libraryTotal: 0,
+        },
   tags: async () => [],
 });
 
@@ -403,7 +592,8 @@ const SEARCH_QUERY = {
     collection: { type: "string", maxLength: 100 },
     creator: { type: "string", maxLength: 300 },
     cursor: { type: "string", maxLength: 2000 },
-    limit: { type: "integer", minimum: 1, maximum: 200 },
+    limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_SIZE },
+    page: { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER },
     printer: { type: "string", maxLength: 200 },
   },
 } as const;
@@ -417,7 +607,11 @@ export async function registerLibraryApi(app: FastifyInstance, library: AppLibra
     });
     scope.setErrorHandler(async (error, request, reply) => {
       const err = error as Error & { validation?: unknown };
-      if (err.validation !== undefined || error instanceof InvalidCursor) {
+      if (
+        err.validation !== undefined ||
+        error instanceof InvalidCursor ||
+        error instanceof InvalidPageQuery
+      ) {
         return reply.code(400).send({ error: "bad_request", message: err.message });
       }
       // The cause (a database host) goes to the log only.
@@ -425,7 +619,7 @@ export async function registerLibraryApi(app: FastifyInstance, library: AppLibra
       return reply.code(500).send({ error: "internal" });
     });
 
-    scope.get<{ Querystring: LibraryQuery }>(
+    scope.get<{ Querystring: AppLibraryQuery }>(
       "/app/api/library",
       { schema: { querystring: SEARCH_QUERY } },
       async (request) => library.list(request.query),

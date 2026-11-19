@@ -162,7 +162,7 @@ export interface EstimateFilamentsTable {
 
 export interface SettingsTable {
   id: Generated<boolean>;
-  /** The default printer (0004): one of My printers (userPrinters). */
+  /** The default printer (0005): one of My printers (userPrinters). */
   printerId: Generated<string>;
   lastOrcaVersion: string | null;
   bucketVersioning: Generated<BucketVersioning>;
@@ -170,7 +170,7 @@ export interface SettingsTable {
 }
 
 /**
- * My printers (0004): the printers Jon owns, in display order. The default
+ * My printers (0005): the printers Jon owns, in display order. The default
  * is settings.printerId, which must be one of them.
  */
 export interface UserPrintersTable {

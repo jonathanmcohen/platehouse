@@ -45,6 +45,20 @@
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
 // after an outage.
 //
+// Duplicates (approved for 0.1.0 by Jon, 2026-11-19; duplicates.ts): a file
+// is a duplicate when a live model already holds a file with the same
+// SHA-256. With input.duplicates "skip" (the web dialog's default and the
+// inbox's), ingest hashes the upload and looks it up before any byte is put,
+// and refuses a duplicate with DuplicateFile (an IngestError, code
+// duplicate), naming the models that hold it and storing nothing. Inside the
+// transaction it looks again, under pg_advisory_xact_lock on the hash, so of
+// two copies sent at once one lands and the other is refused; that lock is
+// always taken before the batch lock below, so the two cannot deadlock. With
+// "allow", the default, so the Public API v1 behaves as before unless a
+// client asks, the file is stored as before and the result lists the live
+// copies that were already there (IngestResult.duplicates). A file in a
+// trashed model never counts.
+//
 // A combined batch (target {batch, combine: true}) puts every file in one
 // model. Its id is derived from the batch (batchModelId), so every file of
 // the batch knows its key prefix before the model exists, and
@@ -64,6 +78,19 @@ import type { FoundMetadata } from "../repos/models.js";
 import { blobKey } from "../storage/keys.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
 import { detectKind, FIRST_BYTES } from "./detect.js";
+import {
+  type DuplicateMatch,
+  type DuplicatePolicy,
+  duplicateMessage,
+  findDuplicates,
+} from "./duplicates.js";
+
+export {
+  type DuplicateMatch,
+  type DuplicatePolicy,
+  duplicateMessage,
+  MAX_DUPLICATES,
+} from "./duplicates.js";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "Storage is unavailable right now; nothing was saved";
 
@@ -84,6 +111,7 @@ export type IngestErrorCode =
   | "unsupported_type"
   | "storage_unavailable"
   | "model_not_found"
+  | "duplicate"
   | "ingest_failed";
 
 /**
@@ -104,6 +132,23 @@ export class IngestError extends Error {
     super(message, options);
     this.name = "IngestError";
     this.code = code;
+  }
+}
+
+/**
+ * A duplicate refused under duplicates "skip": a live model already holds a
+ * file with the same SHA-256, and nothing was saved. duplicates names those
+ * files and their models, oldest first; the message names the first model.
+ * Both are own enumerable fields, so they survive pg-boss storing the error
+ * as the ingest job's output (uploads/tus.ts reads them back).
+ */
+export class DuplicateFile extends IngestError {
+  readonly duplicates: DuplicateMatch[];
+
+  constructor(duplicates: DuplicateMatch[]) {
+    super("duplicate", duplicateMessage(duplicates));
+    this.name = "IngestError";
+    this.duplicates = duplicates;
   }
 }
 
@@ -139,11 +184,24 @@ export interface IngestInput {
    * the insert, as ingest_failed, and saves nothing.
    */
   fileId?: string;
+  /**
+   * What to do when a live model already holds a file with the same
+   * SHA-256: "skip" refuses it with DuplicateFile and stores nothing;
+   * "allow", the default, stores it and lists the copies in the result.
+   */
+  duplicates?: DuplicatePolicy;
 }
 
 export interface IngestResult {
   modelId: string;
   fileId: string;
+  /**
+   * The live files that already held the same bytes when this one was
+   * stored, oldest first: always empty under "skip". Set on every result
+   * ingest returns, a commit whose answer was lost included, as the lookup
+   * runs inside the transaction before its rows are written.
+   */
+  duplicates?: DuplicateMatch[];
 }
 
 /** A file whose rows have committed, as afterCommit is handed it. */
@@ -176,6 +234,13 @@ export function batchModelId(batch: string): string {
   b[8] = 0x80 | ((b[8] ?? 0) & 0x3f);
   const hex = b.subarray(0, 16).toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** The SHA-256 of a whole file, read as a stream. */
+async function hashFile(path: string): Promise<Buffer> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest();
 }
 
 /** The first FIRST_BYTES bytes of a file, which detectKind reads. */
@@ -348,8 +413,18 @@ export function createIngest(deps: IngestDeps) {
     const kind = detectKind(originalName, await readFirstBytes(tmpPath), size);
     if (kind === null) throw new IngestError("unsupported_type", UNSUPPORTED_MESSAGE);
     const modelId = await plannedModel(target);
+    const policy: DuplicatePolicy = input.duplicates ?? "allow";
+    if (policy !== "skip" && policy !== "allow") {
+      throw new TypeError('ingestFile: duplicates must be "skip" or "allow"');
+    }
+    if (policy === "skip") {
+      // Before any byte reaches the bucket. The transaction looks again.
+      const found = await findDuplicates(db, await hashFile(tmpPath));
+      if (found.length > 0) throw new DuplicateFile(found);
+    }
 
     const put: PutBlob[] = [];
+    let duplicates: DuplicateMatch[] = [];
     const putOne = async (
       kindOfBlob: BlobKind,
       body: Readable,
@@ -400,6 +475,18 @@ export function createIngest(deps: IngestDeps) {
         xid = id;
         const repos = createRepos(trx);
         const found = metadataOf(project);
+
+        if (policy === "skip") {
+          // Copies sent at once take turns here, so the second sees the
+          // first's committed row. Always before the batch lock.
+          await sql`select pg_advisory_xact_lock(hashtext('platehouse-sha256:' || ${source.sha256.toString("hex")}))`.execute(
+            trx,
+          );
+          const copies = await findDuplicates(trx, source.sha256);
+          if (copies.length > 0) throw new DuplicateFile(copies);
+        } else {
+          duplicates = await findDuplicates(trx, source.sha256);
+        }
 
         if (target !== "new" && "modelId" in target) {
           // Still live now that the rows are written (a trash may have come
@@ -510,7 +597,8 @@ export function createIngest(deps: IngestDeps) {
       const state = put.length > 0 && callbackFinished ? await commitState(xid) : "not_committed";
       // The rows landed and only the answer was lost: the upload is stored,
       // and reporting it as failed would make a retry store it twice.
-      if (state === "committed") return committed({ modelId, fileId }, kind);
+      // The rows include the duplicates lookup, so its list is known here too.
+      if (state === "committed") return committed({ modelId, fileId, duplicates }, kind);
       if (put.length > 0 && state === "not_committed") {
         try {
           await store.deleteBlobs(put.map((blob) => blob.key));
@@ -527,7 +615,7 @@ export function createIngest(deps: IngestDeps) {
       if (state === "unknown") throw new IngestOutcomeUnknown(error);
       throw error;
     }
-    return committed({ modelId, fileId }, kind);
+    return committed({ modelId, fileId, duplicates }, kind);
   }
 
   return { ingestFile };

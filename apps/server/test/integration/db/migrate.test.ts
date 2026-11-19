@@ -43,7 +43,8 @@ const SHIPPED = [
   "0001_init.sql",
   "0002_purge_started.sql",
   "0003_estimate_filament_profiles.sql",
-  "0004_my_printers.sql",
+  "0004_files_sha256.sql",
+  "0005_my_printers.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -216,10 +217,10 @@ describe("migrate with a changed migrations folder", () => {
   });
 });
 
-// Migration 0004 turns the one printer setting into My printers. It runs on
-// Jon's live database, which has the 0003 schema, one selected printer and
+// Migration 0005 turns the one printer setting into My printers. It runs on
+// Jon's live database, which has the schema before it, one selected printer and
 // estimates keyed by printer_id; all of that must come through as it is.
-describe("0004 My printers", () => {
+describe("0005 My printers", () => {
   const P1S = "Bambu Lab P1S 0.4 nozzle";
   const A1_MINI = "Bambu Lab A1 mini 0.4 nozzle";
   const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
@@ -228,7 +229,7 @@ describe("0004 My printers", () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
     await cp(MIGRATIONS_DIR, dir, { recursive: true });
-    await rm(join(dir, "0004_my_printers.sql"));
+    await rm(join(dir, "0005_my_printers.sql"));
   });
 
   afterEach(async () => {
@@ -236,11 +237,11 @@ describe("0004 My printers", () => {
   });
 
   /**
-   * A database at 0003 as Jon's is: printerId selected, one plate, and two
+   * A database migrated up to 0004, as Jon's will be: printerId selected, one plate, and two
    * finished estimates for it (one for printerId, one for the P1S on an older
    * Orca), as a printer change and an Orca update leave behind.
    */
-  async function at0003(printerId: string): Promise<Kysely<DB>> {
+  async function beforeMyPrinters(printerId: string): Promise<Kysely<DB>> {
     const { db } = await pgc.freshDatabase();
     await migrateFrom(db, dir);
     await sql`update settings set printer_id = ${printerId}`.execute(db);
@@ -289,7 +290,7 @@ describe("0004 My printers", () => {
   }
 
   test("the selected printer becomes the only entry in My printers and stays the default", async () => {
-    const db = await at0003(A1_MINI);
+    const db = await beforeMyPrinters(A1_MINI);
     const before = await estimateRows(db);
     expect(before).toHaveLength(2);
 
@@ -309,7 +310,7 @@ describe("0004 My printers", () => {
   });
 
   test("the default printer must be in My printers, so the list is never empty", async () => {
-    const db = await at0003(P1S);
+    const db = await beforeMyPrinters(P1S);
     await migrate(db);
     // Removing the default printer is refused at commit.
     await expect(
@@ -334,7 +335,7 @@ describe("0004 My printers", () => {
   });
 
   test("a printer is listed once, at a position of its own, and two can swap places", async () => {
-    const db = await at0003(P1S);
+    const db = await beforeMyPrinters(P1S);
     await migrate(db);
     await sql`insert into user_printers (printer_id, position) values (${A1_MINI}, 2)`.execute(db);
     await expect(

@@ -23,6 +23,12 @@
 //   order.
 // - The tag filter narrows the grid; search finds name, caption, creator and
 //   tag; a trashed model is never listed.
+// - Numbered pages (?page=): a page is a slice of the same ranked matches
+//   the cursor pages walk, with the total of matches for the search and
+//   filters and the count of every live model. A page past the end is the
+//   last page. Plate numbers are looked up for the page's models only.
+//   Matches past the paged match cap are not counted, and the answer says
+//   the total is capped.
 // - Every route is session-class: no session, 401 JSON.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,6 +39,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { buildApp } from "../../../src/app.js";
 import {
   type AppLibraryPage,
+  type AppLibraryPages,
   createAppLibrary,
   DISPLAY_MENU_TIMEOUT_MS,
   LIBRARY_API_PATHS,
@@ -43,6 +50,7 @@ import {
 } from "../../../src/app-api/library.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
+import { createCollections } from "../../../src/library/collections.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createRepos } from "../../../src/repos/index.js";
 import { createUploads } from "../../../src/uploads/tus.js";
@@ -103,6 +111,8 @@ const contexts = new Set<DisplayContext>();
 /** Plate number lookups running now, and the most that ever ran at once. */
 let lookupsInFlight = 0;
 let mostLookupsInFlight = 0;
+/** Every plate the library looked numbers up for, in order. */
+const lookedUp: string[] = [];
 
 async function ingest(name: string, bytes: Buffer | string) {
   const tmpPath = await writeUpload(env, bytes);
@@ -165,6 +175,7 @@ beforeAll(async () => {
       },
       plateNumbers: async (ctx, plateId) => {
         contexts.add(ctx);
+        lookedUp.push(plateId);
         lookupsInFlight += 1;
         mostLookupsInFlight = Math.max(mostLookupsInFlight, lookupsInFlight);
         try {
@@ -715,5 +726,171 @@ describe("search", () => {
     );
     expect(second.nextCursor).toBeNull();
     expect([...first.models, ...second.models].map((m) => m.id).sort()).toEqual(made.sort());
+  });
+});
+
+describe("numbered pages", () => {
+  async function pages(query: string): Promise<AppLibraryPages> {
+    return (await library(query)) as AppLibraryPages;
+  }
+
+  /** Every live model, counted straight from the database. */
+  async function liveModels(): Promise<number> {
+    const row = await env.db
+      .selectFrom("models")
+      .select((eb) => eb.fn.countAll<string>().as("n"))
+      .where("trashedAt", "is", null)
+      .executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
+  async function made(word: string, count: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      ids.push((await env.repos.models.create({ name: `Numbered ${i} ${word}` })).id);
+    }
+    return ids;
+  }
+
+  test("?page= is a slice of the cursor pages' order, with the total and the page count", async () => {
+    const word = marker();
+    const ids = await made(word, 5);
+    const order = (await library(`?q=${word}&limit=5`)).models.map((m) => m.id);
+    expect([...order].sort()).toEqual([...ids].sort());
+
+    const first = await pages(`?q=${word}&page=1&limit=2`);
+    expect(first.models.map((m) => m.id)).toEqual(order.slice(0, 2));
+    expect([first.page, first.pageSize, first.pageCount, first.total]).toEqual([1, 2, 3, 5]);
+    expect(first.totalCapped).toBe(false);
+    expect(first.nextCursor).toBeNull();
+    expect(first.printer).toBe(P1S.id);
+
+    const second = await pages(`?q=${word}&page=2&limit=2`);
+    const third = await pages(`?q=${word}&page=3&limit=2`);
+    expect(second.models.map((m) => m.id)).toEqual(order.slice(2, 4));
+    expect(third.models.map((m) => m.id)).toEqual(order.slice(4));
+    expect(third.page).toBe(3);
+  });
+
+  test("a page past the end is the last page, with its cards", async () => {
+    const word = marker();
+    const ids = await made(word, 3);
+    const past = await pages(`?q=${word}&page=40&limit=2`);
+    expect(past.page).toBe(2);
+    expect(past.pageCount).toBe(2);
+    expect(past.models).toHaveLength(1);
+    expect(ids).toContain(past.models[0]?.id);
+  });
+
+  test("no match is page 1 of 1, empty, with a total of 0", async () => {
+    const empty = await pages(`?q=${marker()}&page=3`);
+    expect([empty.page, empty.pageCount, empty.total, empty.models.length]).toEqual([1, 1, 0, 0]);
+  });
+
+  test("without a limit a page holds the library's 48", async () => {
+    const word = marker();
+    await made(word, 1);
+    expect((await pages(`?q=${word}&page=1`)).pageSize).toBe(48);
+  });
+
+  test("the total follows the tag, creator and collection filters, and libraryTotal counts every live model", async () => {
+    const word = marker();
+    const [a, b, c] = await made(word, 3);
+    const byCreator = await env.repos.models.create({ name: "Clip", creator: `Maker ${word}` });
+    const tag = `Paged tag ${word}`;
+    const collection = `Paged shelf ${word}`;
+    await createTags(env.db).addTag(a as string, tag);
+    await createTags(env.db).addTag(b as string, tag);
+    await createCollections(env.db).addToCollection(c as string, collection);
+
+    const tagged = await pages(`?tag=${encodeURIComponent(tag)}&page=1`);
+    expect(tagged.total).toBe(2);
+    expect(tagged.models.map((m) => m.id).sort()).toEqual([a, b].sort());
+
+    const shelved = await pages(`?collection=${encodeURIComponent(collection)}&page=1`);
+    expect(shelved.total).toBe(1);
+    expect(shelved.models.map((m) => m.id)).toEqual([c]);
+    const creator = await pages(`?creator=${encodeURIComponent(`Maker ${word}`)}&page=1`);
+    expect(creator.models.map((m) => m.id)).toEqual([byCreator.id]);
+    expect(creator.total).toBe(1);
+    const searched = await pages(`?q=${word}&tag=${encodeURIComponent(tag)}&page=1`);
+    expect(searched.total).toBe(2);
+
+    const live = await liveModels();
+    expect(tagged.libraryTotal).toBe(live);
+    expect((await pages("?page=1")).total).toBe(live);
+  });
+
+  test("a trashed model is neither listed nor counted, in the total or in libraryTotal", async () => {
+    const word = marker();
+    const [keep, gone] = await made(word, 2);
+    const before = await pages(`?q=${word}&page=1`);
+    expect(before.total).toBe(2);
+
+    expect(await env.repos.models.trash(gone as string)).toBe(true);
+    const after = await pages(`?q=${word}&page=1`);
+    expect(after.total).toBe(1);
+    expect(after.models.map((m) => m.id)).toEqual([keep]);
+    expect(after.libraryTotal).toBe(before.libraryTotal - 1);
+    expect(after.libraryTotal).toBe(await liveModels());
+  });
+
+  test("plate numbers are looked up for the page's models only", async () => {
+    const word = marker();
+    const first = await ingest(`A ${word}.3mf`, build3mf({ plates: 3, sliced: [1, 2, 3] }));
+    const second = await ingest(`B ${word}.3mf`, build3mf({ plates: 3, sliced: [1, 2, 3] }));
+    const platesOf = async (modelId: string) =>
+      (
+        await env.db
+          .selectFrom("plates")
+          .innerJoin("files", "files.id", "plates.fileId")
+          .select("plates.id")
+          .where("files.modelId", "=", modelId)
+          .execute()
+      ).map((p) => p.id);
+
+    const from = lookedUp.length;
+    const page = await pages(`?q=${word}&page=1&limit=1`);
+    expect(page.total).toBe(2);
+    const shown = page.models[0]?.id;
+    expect([first.modelId, second.modelId]).toContain(shown);
+    const expected = await platesOf(shown as string);
+    expect(expected).toHaveLength(3);
+    expect(lookedUp.slice(from).sort()).toEqual(expected.sort());
+  });
+
+  test("a page and a cursor together, page 0, or a limit over 200 is 400", async () => {
+    for (const query of [
+      "?page=1&cursor=abc",
+      "?page=0",
+      "?page=-1",
+      "?page=two",
+      "?page=1&limit=201",
+    ]) {
+      const res = await get(`/app/api/library${query}`);
+      expect(res.statusCode, query).toBe(400);
+      expect((res.json() as { error: string }).error, query).toBe("bad_request");
+    }
+  });
+
+  test("matches past the paged match cap are not counted, and the answer says so", async () => {
+    const word = marker();
+    await made(word, 5);
+    const withCap = (pagedMatchCap: number) =>
+      createAppLibrary({
+        db: env.db,
+        displayContext: async () => CONTEXT,
+        plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
+        pagedMatchCap,
+      });
+    const capped = withCap(3);
+    const first = (await capped.list({ q: word, page: 1, limit: 2 })) as AppLibraryPages;
+    expect([first.total, first.totalCapped, first.pageCount]).toEqual([3, true, 2]);
+    const last = (await capped.list({ q: word, page: 9, limit: 2 })) as AppLibraryPages;
+    expect([last.page, last.models.length]).toEqual([2, 1]);
+
+    // Exactly the cap is an exact total, not a capped one.
+    const whole = (await withCap(5).list({ q: word, page: 1, limit: 2 })) as AppLibraryPages;
+    expect([whole.total, whole.totalCapped]).toEqual([5, false]);
   });
 });
