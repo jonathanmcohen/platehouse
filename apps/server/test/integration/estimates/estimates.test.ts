@@ -933,18 +933,22 @@ describe("My printers", () => {
     await upload({ plates: 1 });
     await upload({ plates: 1 });
     await drain();
-    const forA1 = await unestimated(A1);
-    const forX1C = await unestimated(X1C);
-    expect(forA1).toBeGreaterThanOrEqual(2);
-    expect(forX1C).toBeGreaterThanOrEqual(2);
+    const missingA1 = await unestimated(A1);
+    const missingX1C = await unestimated(X1C);
     const held = stub.hold();
     const before = stub.calls.length;
     try {
       const saved = await estimates.savePrinters({ printers: [P1S, A1, X1C], defaultId: P1S });
-      expect(saved.added.map((a) => [a.printerId, a.queued])).toEqual([
-        [A1, forA1],
-        [X1C, forX1C],
-      ]);
+      expect(saved.added.map((a) => a.printerId)).toEqual([A1, X1C]);
+      // A plate whose file already carries Bambu's own numbers for a printer
+      // is not queued for it (an earlier test uploads one sliced for the
+      // X1C), so a printer's count can be below its missing estimates.
+      const forA1 = saved.added[0]?.queued ?? 0;
+      const forX1C = saved.added[1]?.queued ?? 0;
+      expect(forA1).toBeGreaterThanOrEqual(2);
+      expect(forA1).toBeLessThanOrEqual(missingA1);
+      expect(forX1C).toBeGreaterThanOrEqual(2);
+      expect(forX1C).toBeLessThanOrEqual(missingX1C);
       // A1's work was queued first, so it is through after its own plates;
       // X1C's plates wait behind all of A1's. (The figure can be one short
       // in the moment a slice has started but not yet marked itself running.)
