@@ -9,6 +9,8 @@
 // with the default scheme filled in, or with Green, the studio's own colour,
 // where they are compared with 4076a67. accent-palette.test.ts checks all
 // twelve.
+// Issue #245 added the thumbnail backdrop: pure black and pure white are
+// each at least 3:1 on it in every palette, and every picture frame draws it.
 //
 // Not ported: the picture stacking tests, which pin the restyling of
 // Manyfold's PreviewFrame markup (.card-img-top and its blurred backdrop).
@@ -130,6 +132,8 @@ const PAIRS: Array<[string, string]> = [
 // The palettes of manyfold-studio's studio.css at 4076a67, with its accent,
 // the Green scheme, filled in. --brand, the logo's colour, was
 // added with the accent schemes (Jon, 2026-11-19).
+// The thumbnail backdrop (--thumb-bg and --thumb-edge, issue #245) is
+// Platehouse's own; manyfold-studio did not have it.
 const STUDIO_DARK: Palette = {
   "--bg": "#121418",
   "--surface": "#1a1d23",
@@ -147,6 +151,8 @@ const STUDIO_DARK: Palette = {
   "--focus": "#33d17a",
   "--danger": "#ff7b72",
   "--brand": "#00ae42",
+  "--thumb-bg": "#7a8089",
+  "--thumb-edge": "#6b717a",
 };
 
 // Light differs from 4076a67 in the accent fill only, on purpose: #00ae42 is
@@ -170,6 +176,8 @@ const STUDIO_LIGHT: Palette = {
   "--focus": "#007a2f",
   "--danger": "#c62828",
   "--brand": "#00ae42",
+  "--thumb-bg": "#878d96",
+  "--thumb-edge": "#767c85",
 };
 
 // Every border-radius in studio.css at 4076a67, by selector.
@@ -232,11 +240,11 @@ describe("palettes", () => {
     }
   });
 
-  test("dark with Green is the studio dark palette at 4076a67, plus the logo colour", () => {
+  test("dark with Green is the studio dark palette at 4076a67, plus the logo colour and the thumbnail backdrop", () => {
     expect(palette(DARK, GREEN_SCHEME)).toEqual(STUDIO_DARK);
   });
 
-  test("light with Green is the studio light palette, with Jon's button green as the fill", () => {
+  test("light with Green is the studio light palette, with Jon's button green as the fill, plus the thumbnail backdrop", () => {
     expect(palette(LIGHT, GREEN_SCHEME)).toEqual(STUDIO_LIGHT);
   });
 
@@ -288,6 +296,82 @@ describe("palettes", () => {
   test("focus outlines use the palette's focus colour", () => {
     expect(declarationsFor(":focus-visible")).toMatch(/outline:\s*2px solid var\(--focus\)/);
   });
+});
+
+// Issue #245: a picture of a print sits on a neutral mid-grey, so a black
+// print does not vanish on the dark theme or a white one on the light theme.
+// The backdrop is a soft radial from --thumb-bg in the middle to --thumb-edge
+// at the rim; a gradient between two greys never leaves the range between
+// them, so checking both ends checks every point of it.
+describe("thumbnail backdrop", () => {
+  const BACKDROP = ["--thumb-bg", "--thumb-edge"];
+
+  const PALETTES: Array<[string, () => Palette]> = [
+    ["dark", () => palette(DARK)],
+    ["light", () => palette(LIGHT)],
+    ["system when the OS asks for light", () => declaredColours(systemLightBlock() ?? "")],
+  ];
+
+  test.each(PALETTES)(
+    "pure black and pure white are each at least 3:1 on it in %s",
+    (name, read) => {
+      const colours = read();
+      for (const token of BACKDROP) {
+        const backdrop = colours[token];
+        expect(backdrop, `${name}: ${token} is not defined`).toBeDefined();
+        for (const part of ["#000000", "#ffffff"]) {
+          const ratio = contrast(part, backdrop as string);
+          expect(
+            ratio,
+            `${name}: ${part} on ${token} ${backdrop} is ${ratio.toFixed(2)}:1`,
+          ).toBeGreaterThanOrEqual(3);
+        }
+      }
+    },
+  );
+
+  test.each(PALETTES)("it is a neutral grey in %s", (name, read) => {
+    const colours = read();
+    for (const token of BACKDROP) {
+      const channels = ((colours[token] ?? "").slice(1).match(/../g) ?? []).map((pair) =>
+        Number.parseInt(pair, 16),
+      );
+      expect(channels, `${name}: ${token} is not defined`).toHaveLength(3);
+      const spread = Math.max(...channels) - Math.min(...channels);
+      expect(spread, `${name}: ${token} ${colours[token]} is tinted`).toBeLessThanOrEqual(0x10);
+    }
+  });
+
+  test("only the theme palettes set it, so an accent colour never changes it", () => {
+    const flat = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const token of BACKDROP) {
+      // Dark, light, and System's copy of light.
+      expect(flat.match(new RegExp(`${token}\\s*:`, "g")) ?? [], token).toHaveLength(3);
+    }
+  });
+
+  test.each([
+    ".studio-card-media:has(> img)",
+    ".studio-viewer-frame:has(> img)",
+    ".studio-plate-strip a:has(img)",
+  ])("%s draws the backdrop", (selector) => {
+    const declarations = declarationsFor(selector);
+    expect(declarations, `no rule for ${selector}`).not.toBe("");
+    expect(declarations).toMatch(/background-color:\s*var\(--thumb-bg\);/);
+    expect(declarations).toMatch(
+      /background-image:\s*radial-gradient\([^;]*var\(--thumb-bg\)[^;]*var\(--thumb-edge\)\s*\);/,
+    );
+  });
+
+  // With no picture the frame holds placeholder text in --muted, which is
+  // checked against --raised above and would not reach 4.5:1 on a mid-grey.
+  test.each([".studio-card-media", ".studio-viewer-frame", ".studio-plate-strip a"])(
+    "%s with no picture keeps the raised background",
+    (selector) => {
+      expect(declarationsFor(selector)).toMatch(/background:\s*var\(--raised\);/);
+      expect(declarationsFor(".studio-placeholder")).toMatch(/color:\s*var\(--muted\);/);
+    },
+  );
 });
 
 describe("layout", () => {

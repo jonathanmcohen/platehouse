@@ -24,6 +24,14 @@
  * test/stylesheet.test.ts, and every scheme's pairs in every theme by
  * test/accent-palette.test.ts. Keep the palette and scheme blocks as plain
  * #rrggbb declarations or var(--scheme-*) so those tests can read them.
+ *
+ * Thumbnail backdrop (issue #245): a picture of a print sits on a soft
+ * radial from --thumb-bg in the middle to --thumb-edge at the rim, neutral
+ * greys chosen so pure black and pure white are each at least 3:1 on both
+ * ends, in every palette (test/stylesheet.test.ts checks this). The light
+ * palette's greys are a step lighter than the dark palette's so the picture
+ * sits well in each. Only the theme palettes set them, as plain #rrggbb; no
+ * accent scheme does, so the accent colour never changes them.
  */
 
 /* Dark is the default palette, and what System uses unless the OS asks
@@ -46,6 +54,8 @@
   --chip-active-text: #0b0d10;
   --focus: var(--scheme-dark-text);
   --danger: #ff7b72;
+  --thumb-bg: #7a8089;
+  --thumb-edge: #6b717a;
   color-scheme: dark;
 }
 
@@ -67,6 +77,8 @@
   --chip-active-text: #ffffff;
   --focus: var(--scheme-light-text);
   --danger: #c62828;
+  --thumb-bg: #878d96;
+  --thumb-edge: #767c85;
   color-scheme: light;
 }
 
@@ -253,6 +265,8 @@
     --chip-active-text: #ffffff;
     --focus: var(--scheme-light-text);
     --danger: #c62828;
+    --thumb-bg: #878d96;
+    --thumb-edge: #767c85;
     color-scheme: light;
   }
 
@@ -705,6 +719,13 @@ a.studio-card:hover {
   overflow: hidden;
 }
 
+/* A card with a picture puts it on the thumbnail backdrop. A card with no
+   picture keeps --raised, which its placeholder text is checked against. */
+.studio-card-media:has(> img) {
+  background-color: var(--thumb-bg);
+  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
+}
+
 .studio-placeholder {
   position: absolute;
   inset: 0;
@@ -795,6 +816,13 @@ a.studio-card:hover {
   background: var(--raised);
 }
 
+/* The large plate image or file preview, on the thumbnail backdrop. The 3D
+   view and the placeholder sentences keep --raised. */
+.studio-viewer-frame:has(> img) {
+  background-color: var(--thumb-bg);
+  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
+}
+
 .studio-viewer-frame > img.studio-plate-large {
   display: block;
   width: 100%;
@@ -819,6 +847,11 @@ a.studio-card:hover {
   overflow: hidden;
   border: 2px solid transparent;
   background: var(--raised);
+}
+
+.studio-plate-strip a:has(img) {
+  background-color: var(--thumb-bg);
+  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
 }
 
 .studio-plate-strip a[aria-current="true"] {
