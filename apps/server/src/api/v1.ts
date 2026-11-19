@@ -347,7 +347,7 @@ function sqlState(error: unknown): string | undefined {
 export function createApiLibrary(deps: {
   db: Kysely<DB>;
   store: Pick<BlobStore, "getBlobStream" | "headBlob">;
-  /** Task 12's plateNumbers for the selected printer (estimates.plateNumbers). */
+  /** Task 12's plateNumbers for the default printer of My printers (estimates.plateNumbers). */
   plateNumbers(plateId: string): Promise<PlateNumbers>;
 }): ApiLibrary {
   const { db, store } = deps;
@@ -687,10 +687,13 @@ const NUMBERS = {
   additionalProperties: true,
   [PLATE_NUMBERS]: true,
   description:
-    "The plate's numbers for the selected printer: file (Bambu's own, from the .3mf, " +
-    "labelled with the printer it was sliced for), platehouse (an OrcaSlicer estimate, " +
-    "with state current, estimating or stale) and failure (why the estimate failed). " +
-    "Each set has timeSeconds, weightGrams and per-filament grams.",
+    "The plate's numbers for the default printer of My printers (Settings): file " +
+    "(Bambu's own, from the .3mf, labelled with the printer it was sliced for), " +
+    "platehouse (an OrcaSlicer estimate, with state current, estimating or stale) and " +
+    "failure (why the estimate failed). Each set has timeSeconds, weightGrams and " +
+    "per-filament grams, and names its printer by printerId (the Orca preset name), " +
+    "printerLabel and printerName (the printer in full, such as " +
+    '"Bambu Lab P1S, 0.4 mm nozzle"; added with My printers).',
 } as const;
 
 const FILE = {
