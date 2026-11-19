@@ -44,7 +44,15 @@ for (const target of ALL_PAGES) {
     await expect(menu).toHaveAttribute("aria-expanded", "true");
     const panel = page.locator("#ph-menu");
     await expect(panel).toBeVisible();
-    for (const label of ["Library", "Creators", "Collections", "Tags", "Trash", "Settings"]) {
+    for (const label of [
+      "Library",
+      "Creators",
+      "Collections",
+      "Tags",
+      "Trash",
+      "Activity",
+      "Settings",
+    ]) {
       const link = panel.getByRole("link", { name: label, exact: true });
       await expect(link).toBeVisible();
       insideWidth(`menu link ${label}`, await link.boundingBox());
