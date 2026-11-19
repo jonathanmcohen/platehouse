@@ -197,8 +197,9 @@ export interface IngestResult {
   fileId: string;
   /**
    * The live files that already held the same bytes when this one was
-   * stored, oldest first: always empty under "skip". Left out only when the
-   * answer to the commit was lost and the rows were found to have landed.
+   * stored, oldest first: always empty under "skip". Set on every result
+   * ingest returns, a commit whose answer was lost included, as the lookup
+   * runs inside the transaction before its rows are written.
    */
   duplicates?: DuplicateMatch[];
 }
@@ -596,7 +597,8 @@ export function createIngest(deps: IngestDeps) {
       const state = put.length > 0 && callbackFinished ? await commitState(xid) : "not_committed";
       // The rows landed and only the answer was lost: the upload is stored,
       // and reporting it as failed would make a retry store it twice.
-      if (state === "committed") return committed({ modelId, fileId }, kind);
+      // The rows include the duplicates lookup, so its list is known here too.
+      if (state === "committed") return committed({ modelId, fileId, duplicates }, kind);
       if (put.length > 0 && state === "not_committed") {
         try {
           await store.deleteBlobs(put.map((blob) => blob.key));
