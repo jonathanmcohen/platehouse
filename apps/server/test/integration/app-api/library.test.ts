@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { buildApp } from "../../../src/app.js";
 import {
   type AppLibraryPage,
@@ -377,6 +377,49 @@ describe("card shows time and weight only when every plate is known", () => {
   });
 });
 
+// The library header's printer switch (Jon, 2026-11-19): ?printer= shows
+// another of My printers' times and weights. It reads numbers only.
+describe("the printer switch", () => {
+  afterEach(() => {
+    context = CONTEXT;
+  });
+
+  test("names the printer in full and shows another of My printers' numbers on ?printer=", async () => {
+    context = { ...CONTEXT, myPrinters: [P1S.id, X1C.id] };
+    const word = marker();
+    const other = await ingest(
+      `Switch ${word}.3mf`,
+      build3mf({ plates: 2, sliced: [1, 2], printerModelId: X1C.modelId }),
+    );
+    const before = await library(`?q=${word}`);
+    expect(before).toMatchObject({ printer: P1S.id, printerName: "Bambu Lab P1S, 0.4 mm nozzle" });
+    expect(card(before, other.modelId)).toMatchObject({ timeSeconds: null, partial: true });
+
+    const switched = await library(`?q=${word}&printer=${encodeURIComponent(X1C.id)}`);
+    expect(switched).toMatchObject({
+      printer: X1C.id,
+      printerName: "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+    });
+    expect(card(switched, other.modelId)).toMatchObject({ timeSeconds: 3000, partial: false });
+  });
+
+  test("a printer that is not in My printers falls back to the default and says so", async () => {
+    context = { ...CONTEXT, myPrinters: [P1S.id] };
+    const page = await library(`?printer=${encodeURIComponent(X1C.id)}`);
+    expect(page).toMatchObject({ printer: P1S.id, printerName: "Bambu Lab P1S, 0.4 mm nozzle" });
+  });
+
+  test("switching starts no slicing: no estimate is made or changed", async () => {
+    context = { ...CONTEXT, myPrinters: [P1S.id, X1C.id] };
+    const word = marker();
+    await ingest(`No slice ${word}.3mf`, build3mf({ plates: 2 }));
+    const rows = await env.db.selectFrom("estimates").selectAll().orderBy("id").execute();
+    await library(`?q=${word}&printer=${encodeURIComponent(X1C.id)}`);
+    await library(`?q=${word}&printer=${encodeURIComponent(P1S.id)}`);
+    expect(await env.db.selectFrom("estimates").selectAll().orderBy("id").execute()).toEqual(rows);
+  });
+});
+
 describe("while the slicer's printer menu cannot be read", () => {
   /** The selected printer with an empty menu, as readDisplayContext gives while the slicer is down. */
   const NO_MENU: DisplayContext = { printerId: P1S.id, orcaVersion: "2.5.0", printers: [] };
@@ -483,6 +526,7 @@ describe("readDisplayContext", () => {
     });
     expect(ctx).toEqual({
       printerId: stored.printerId,
+      myPrinters: stored.myPrinters,
       orcaVersion: stored.lastOrcaVersion,
       printers: [P1S, X1C],
     });

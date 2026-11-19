@@ -434,6 +434,31 @@ describe("the operations", () => {
     expect(file?.plates[0]?.numbers.file?.timeSeconds).toBeGreaterThan(0);
     expect(file?.plates[0]?.numbers.file?.weightGrams).toBeGreaterThan(0);
     expect(file?.plates[1]?.numbers.file).toBeUndefined();
+    // My printers kept the v1 shape: every field a client read before is
+    // still there with its old value, and printerName is added beside them.
+    // (This app is given no slicer menu, so the file's printer is unmatched.)
+    expect(file?.plates[0]?.numbers.file).toMatchObject({
+      source: "file",
+      printerId: "C12",
+      printerLabel: "another printer",
+      printerName: "another printer",
+      filaments: expect.any(Array),
+    });
+    expect(Object.keys(file?.plates[0]?.numbers.file ?? {}).sort()).toEqual(
+      [
+        "estimateId",
+        "filaments",
+        "printerId",
+        "printerLabel",
+        "printerName",
+        "processProfile",
+        "slicer",
+        "slicerVersion",
+        "source",
+        "timeSeconds",
+        "weightGrams",
+      ].sort(),
+    );
 
     const meta1 = await call("GET", `/api/v1/files/${file?.id}`);
     expect(meta1.status).toBe(200);

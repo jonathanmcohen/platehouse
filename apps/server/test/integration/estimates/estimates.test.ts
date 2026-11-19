@@ -16,6 +16,9 @@ import { OTHER_PRINTER_LABEL } from "../../../src/estimates/display.js";
 import {
   createEstimates,
   type Estimates,
+  MAX_MY_PRINTERS,
+  PrinterListRefused,
+  SLICE_PRIORITY,
   SLICER_DOWN_DETAIL,
   STORE_DOWN_DETAIL,
   UnknownPrinter,
@@ -172,7 +175,8 @@ beforeEach(async () => {
   storeDown = false;
   storeBreaksMidRead = false;
   await drain();
-  if ((await env.repos.settings.get()).printerId !== P1S) {
+  const settings = await env.repos.settings.get();
+  if (settings.printerId !== P1S || settings.myPrinters.join("|") !== P1S) {
     await estimates.setPrinter(P1S);
     await drain();
   }
@@ -838,5 +842,269 @@ describe("estimates", () => {
     expect(await estimates.platesWithoutNumbers()).toEqual([]);
     // The same version again queues nothing.
     expect(await estimates.pollOrca()).toEqual({ orca: "2.5.1", changed: false });
+  });
+});
+
+// My printers (Jon, 2026-11-19): the printers Jon owns, each estimated for
+// every plate, one of them the default. The tests share one library, so
+// counts are measured from the database rather than assumed.
+describe("My printers", () => {
+  /** Live plates with no Platehouse estimate for printerId at the current Orca version. */
+  async function unestimated(printerId: string): Promise<number> {
+    const orca = (await env.repos.settings.get()).lastOrcaVersion;
+    const { rows } = await sql<{ n: number }>`
+      select count(*)::int as n
+      from plates p join files f on f.id = p.file_id join models m on m.id = f.model_id
+      where m.trashed_at is null
+        and not exists (
+          select 1 from estimates e
+          where e.plate_id = p.id and e.source = 'platehouse'
+            and e.printer_id = ${printerId} and e.slicer_version = ${orca}
+        )
+    `.execute(env.db);
+    return rows[0]?.n ?? -1;
+  }
+
+  async function queuedJobs() {
+    return boss.findJobs<{ printerId: string; estimateId: string }>(QUEUE.slicer, {
+      queued: true,
+    });
+  }
+
+  test("adding a printer queues every existing plate for it, and the default stays", async () => {
+    const { plates } = await upload({ plates: 2 });
+    await drain();
+    const expected = await unestimated(A1);
+    expect(expected).toBeGreaterThanOrEqual(2);
+
+    const held = stub.hold();
+    try {
+      const saved = await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      expect(saved).toEqual({ added: [{ printerId: A1, queued: expected }], removed: [] });
+      expect(await env.repos.settings.get()).toMatchObject({
+        printerId: P1S,
+        myPrinters: [P1S, A1],
+      });
+      // The queue shows the work: every one of those plates waits for the A1.
+      await until(
+        () => stub.calls.length,
+        (n) => n > 0,
+      );
+      expect((await estimates.waitingByPrinter()).get(A1)).toBe(expected);
+      expect((await estimates.waitingByPrinter()).has(P1S)).toBe(false);
+      // Library-wide work goes behind anything a person is waiting on.
+      expect(
+        (await queuedJobs()).every(
+          (j) => j.data.printerId === A1 && j.priority === SLICE_PRIORITY.library,
+        ),
+      ).toBe(true);
+    } finally {
+      held.release();
+    }
+    await drain();
+    expect(await estimates.platesWithoutNumbers(A1)).toEqual([]);
+    for (const plate of plates) {
+      // The default printer's numbers are what a page shows first...
+      expect((await estimates.plateNumbers(plate.id)).platehouse).toMatchObject({
+        state: "current",
+        printerId: P1S,
+        printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      });
+      // ...and the A1's are there for the switch.
+      expect((await estimates.plateNumbers(plate.id, A1)).platehouse).toMatchObject({
+        state: "current",
+        printerId: A1,
+        printerName: "Bambu Lab A1, 0.4 mm nozzle",
+      });
+    }
+  });
+
+  test("a new plate queues a slice for every printer, the default first, ahead of library work", async () => {
+    await upload({ plates: 1 });
+    await upload({ plates: 1 });
+    await drain();
+    expect(await unestimated(A1)).toBeGreaterThanOrEqual(2);
+    const held = stub.hold();
+    let first = 0;
+    try {
+      // Library work for the A1: the first slice is held in the slicer, the
+      // rest wait in the queue.
+      await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      await until(
+        () => stub.calls.length,
+        (n) => n > 0,
+      );
+      first = stub.calls.length;
+      // A new three-plate file arrives meanwhile.
+      const { plates } = await upload({ plates: 3 });
+      await until(
+        async () => {
+          const rows = await env.db
+            .selectFrom("estimates")
+            .select("id")
+            .where(
+              "plateId",
+              "in",
+              plates.map((p) => p.id),
+            )
+            .where("status", "=", "pending")
+            .execute();
+          return rows.length;
+        },
+        (n) => n === 6,
+      );
+      const urgent = (await queuedJobs()).filter((j) => j.priority === SLICE_PRIORITY.waiting);
+      expect(urgent).toHaveLength(6);
+    } finally {
+      held.release();
+    }
+    await drain();
+    // After the held slice, the new file's six slices ran first: its plates
+    // for the default printer, then for the A1, before the library's.
+    expect(stub.calls.slice(first, first + 6).map((c) => [c.printer, c.plate])).toEqual([
+      [P1S, 1],
+      [P1S, 2],
+      [P1S, 3],
+      [A1, 1],
+      [A1, 2],
+      [A1, 3],
+    ]);
+    expect(stub.calls.length).toBeGreaterThan(first + 6);
+  });
+
+  test("removing a printer stops its pending work, and its finished numbers stay", async () => {
+    await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    await drain();
+    const done = await upload({ plates: 1 });
+    await drain();
+    const doneId = plateId(done.plates, 1);
+    expect((await platehouseRows(doneId)).map((r) => [r.printerId, r.status])).toEqual([
+      [P1S, "ok"],
+      [A1, "ok"],
+    ]);
+
+    const held = stub.hold();
+    let plates: Array<{ id: string; index: number }> = [];
+    try {
+      ({ plates } = await upload({ plates: 3 }));
+      await until(
+        () => stub.calls.length,
+        (n) => n > 0,
+      );
+      await until(
+        async () => (await queuedJobs()).filter((j) => j.data.printerId === A1).length,
+        (n) => n === 3,
+      );
+      const saved = await estimates.savePrinters({ printers: [P1S], defaultId: P1S });
+      expect(saved).toEqual({ added: [], removed: [A1] });
+      // Its queued slices are cancelled and its waiting estimates gone.
+      expect((await queuedJobs()).filter((j) => j.data.printerId === A1)).toEqual([]);
+      expect((await estimates.waitingByPrinter()).has(A1)).toBe(false);
+    } finally {
+      held.release();
+    }
+    await drain();
+    for (const plate of plates) {
+      const rows = await platehouseRows(plate.id);
+      expect(rows.filter((r) => r.printerId === A1)).toEqual([]);
+      expect(rows.find((r) => r.printerId === P1S)).toMatchObject({ status: "ok" });
+    }
+    // A plate the A1 had already estimated keeps those numbers.
+    expect((await platehouseRows(doneId)).map((r) => [r.printerId, r.status])).toEqual([
+      [P1S, "ok"],
+      [A1, "ok"],
+    ]);
+  });
+
+  test("reading another printer's numbers, or reordering, never starts a slice", async () => {
+    await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+    const { plates } = await upload({ plates: 2 });
+    await drain();
+    const calls = stub.calls.length;
+    const rows = await env.db.selectFrom("estimates").select("id").execute();
+
+    for (const plate of plates) {
+      await estimates.plateNumbers(plate.id, A1);
+      await estimates.plateNumbers(plate.id, P1S);
+      // A printer outside My printers: numbers are read, nothing is queued.
+      expect((await estimates.plateNumbers(plate.id, X1C)).platehouse).toBeUndefined();
+    }
+    await estimates.platesWithoutNumbers(X1C);
+    // A new order and a new default slice nothing either.
+    expect(await estimates.savePrinters({ printers: [A1, P1S], defaultId: A1 })).toEqual({
+      added: [],
+      removed: [],
+    });
+    expect(await env.repos.settings.get()).toMatchObject({ printerId: A1, myPrinters: [A1, P1S] });
+
+    await sleep(1_000);
+    expect(stub.calls.length).toBe(calls);
+    expect(await queuedJobs()).toEqual([]);
+    expect(await env.db.selectFrom("estimates").select("id").execute()).toEqual(rows);
+    // The default printer is now the A1, so the default numbers are the A1's.
+    expect((await estimates.plateNumbers(plateId(plates, 1))).platehouse).toMatchObject({
+      state: "current",
+      printerId: A1,
+    });
+  });
+
+  test("a printer still in My printers is never shown as another printer's stale numbers", async () => {
+    await estimates.savePrinters({ printers: [P1S], defaultId: P1S });
+    const { plates } = await upload({ plates: 1 });
+    await drain();
+    const id = plateId(plates, 1);
+    const held = stub.hold();
+    try {
+      await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S });
+      // The X1C's estimate is on its way: the X1C view says estimating, and
+      // does not pass the P1S's numbers off as old X1C numbers.
+      expect((await estimates.plateNumbers(id, X1C)).platehouse).toMatchObject({
+        state: "estimating",
+        printerId: X1C,
+        timeSeconds: null,
+      });
+    } finally {
+      held.release();
+    }
+    await drain();
+  });
+
+  test("a list that is empty, too long, repeats a printer or leaves out the default is refused", async () => {
+    const before = await env.repos.settings.get();
+    const refused: Array<{ printers: string[]; defaultId: string }> = [
+      { printers: [], defaultId: P1S },
+      { printers: [P1S, P1S], defaultId: P1S },
+      { printers: [P1S, A1], defaultId: X1C },
+      {
+        printers: Array.from({ length: MAX_MY_PRINTERS + 1 }, (_, i) => `Printer ${i} 0.4 nozzle`),
+        defaultId: "Printer 0 0.4 nozzle",
+      },
+    ];
+    for (const patch of refused) {
+      await expect(estimates.savePrinters(patch)).rejects.toBeInstanceOf(PrinterListRefused);
+    }
+    // A printer the slicer's menu does not have cannot be added.
+    await expect(
+      estimates.savePrinters({ printers: [P1S, "Bambu Lab Q9 0.4 nozzle"], defaultId: P1S }),
+    ).rejects.toBeInstanceOf(UnknownPrinter);
+    expect(await env.repos.settings.get()).toMatchObject({
+      printerId: before.printerId,
+      myPrinters: before.myPrinters,
+    });
+  });
+
+  test("a listed printer the slicer stopped offering stays in the list and is skipped", async () => {
+    const gone = "Bambu Lab A1 mini 0.4 nozzle";
+    // As after an Orca update renamed its preset: listed, but not in the menu.
+    await env.repos.settings.savePrinters({ printers: [P1S, gone], defaultId: P1S });
+    const { plates } = await upload({ plates: 1 });
+    await drain();
+    expect((await platehouseRows(plateId(plates, 1))).map((r) => r.printerId)).toEqual([P1S]);
+    expect(logs.some((line) => line.includes(`${gone} is in My printers`))).toBe(true);
+    // Keeping it while adding another is allowed; only added printers must be offered.
+    expect(
+      await estimates.savePrinters({ printers: [P1S, gone, X1C], defaultId: P1S }),
+    ).toMatchObject({ removed: [], added: [{ printerId: X1C }] });
+    await drain();
   });
 });

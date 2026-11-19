@@ -2,12 +2,24 @@
 // AC-031 to AC-034, AC-036; Review Focus 2 and 3).
 //
 // - The printer menu is /v1/profiles' printer list, read once per Orca
-//   version (listPrinters). The selected printer is settings.printer_id,
-//   P1S 0.4 by default.
-// - A Platehouse estimate is queued for a plate only when its file has no
-//   numbers of its own for the selected printer: the file's
+//   version (listPrinters). My printers (migration 0004) are the printers
+//   Jon owns, picked from that menu, in his order; one of them is the
+//   default (settings.printer_id, P1S 0.4 on a fresh database). Every
+//   estimate is made for each of My printers, not just the default.
+// - A Platehouse estimate is queued for a plate and printer only when its
+//   file has no numbers of its own for that printer: the file's
 //   slicedFor.printerModelId and nozzle matched against the menu printer's
-//   modelId and nozzle (enqueuePlate).
+//   modelId and nozzle (enqueuePlate). A new file's plates are queued for
+//   every printer, the default first, ahead of library-wide work
+//   (SLICE_PRIORITY).
+// - Adding a printer (savePrinters) queues every live plate for it, behind
+//   any upload. The slicer does one plate at a time, so on a large library
+//   this is hours of work. Removing a printer cancels its queued slice jobs
+//   and deletes its waiting estimates; its finished estimates stay, so a
+//   plate can show them as made for a printer no longer listed until the
+//   new default's land (display.ts). Reordering, or a new default, slices
+//   nothing, and neither does reading numbers for another printer
+//   (plateNumbers with a printerId: the pages' printer switch).
 // - Each estimate is one job on the singleton slicer queue (Task 8), so one
 //   slice runs at a time. A 409 busy or a lost connection uses one of 3
 //   retries (SLICER_RETRY), with backoff; once the last retry is used the
@@ -34,13 +46,14 @@
 //   rather than loop: one that had lost a connection before a slicer outage
 //   fails with a detail the poll does not queue again. Only lost connections
 //   count for that; a busy answer or an expired job does not (issue #75).
-// - On a printer change the queued slice jobs of other printers are
-//   cancelled and their waiting estimates deleted; a slice already running
-//   finishes and is kept, labelled with its printer. A job that starts after
-//   its printer stopped being selected drops itself. Then every live plate is
-//   queued for the new printer, and until its estimate lands the plate shows
-//   its newest older estimate, marked as made for the previous printer
-//   (display.ts).
+// - When a printer leaves My printers its queued slice jobs are cancelled
+//   and its waiting estimates deleted; a slice already running finishes and
+//   is kept, labelled with its printer. A job that starts after its printer
+//   left the list drops itself. setPrinter, the one-printer case, swaps the
+//   whole list for one printer, as the single printer setting did: every
+//   live plate is queued for it, and until its estimate lands the plate
+//   shows its newest older estimate, marked as made for the previous
+//   printer (display.ts).
 // - The Orca-version poll runs at startup and every 10 minutes (a pg-boss
 //   cron job, Task 8's maintenance queue). When /v1/health.orca differs from
 //   settings.last_orca_version it stores the new version and re-estimates
@@ -114,6 +127,34 @@ export class UnknownPrinter extends Error {
   }
 }
 
+/** Most printers My printers holds: far more than anyone owns, and a bound on the work. */
+export const MAX_MY_PRINTERS = 20;
+
+/** Why a new My printers list was refused; message is a sentence for the page. */
+export class PrinterListRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrinterListRefused";
+  }
+}
+
+/**
+ * Slice job priorities. pg-boss starts the queued job with the highest
+ * priority first, then the oldest. A plate someone is waiting on (a new
+ * upload, or a Retry pressed on the page) goes ahead of library-wide work
+ * (a printer just added, an Orca update, the poll's catch-up), so an upload
+ * still gets its numbers in minutes while hours of re-estimation queue.
+ */
+export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: 0 });
+
+/** What saving a new My printers list did. */
+export interface SavedPrinters {
+  /** The printers added, each with how many plate estimates were queued for it. */
+  added: Array<{ printerId: string; queued: number }>;
+  /** The printers removed; their queued and waiting estimates were dropped. */
+  removed: string[];
+}
+
 /**
  * Per-job overrides of the slicer queue's retry delay. The app leaves these
  * out and uses the queue's own (SLICER_RETRY); the tests shorten the delay.
@@ -152,7 +193,22 @@ export interface EstimatesDeps {
 export interface Estimates {
   /** The printer menu: every printer /v1/profiles lists. */
   listPrinters(): Promise<Printer[]>;
-  /** Selects a printer from the menu and re-estimates the library for it. */
+  /**
+   * Replaces My printers with a new list and default (add, remove, reorder,
+   * or a new default, in one call). Each added printer must be in the menu,
+   * and every live plate is queued for it; each removed printer's queued
+   * slices are cancelled and its waiting estimates deleted, while a slice of
+   * it already running finishes and is kept. A reorder or a new default
+   * starts no slicing. PrinterListRefused for a list that is empty, too
+   * long, names a printer twice or leaves out the default; UnknownPrinter
+   * for an added printer the menu lacks.
+   */
+  savePrinters(patch: { printers: readonly string[]; defaultId: string }): Promise<SavedPrinters>;
+  /**
+   * Makes printerId the only printer in My printers, and the default: the
+   * one-printer case of savePrinters, as the printer setting was before My
+   * printers.
+   */
   setPrinter(printerId: string): Promise<void>;
   /**
    * Makes sure a Platehouse estimate exists and is queued for the plate,
@@ -160,17 +216,29 @@ export interface Estimates {
    * printer or the plate is not on a live model.
    */
   enqueuePlate(plateId: string, printerId: string, orcaVersion: string): Promise<Estimate | null>;
-  /** Queues a newly ingested file's plates; returns how many were queued. */
+  /** Queues a newly ingested file's plates for each of My printers; returns how many were queued. */
   enqueueFile(fileId: string): Promise<number>;
-  /** Queues every live plate that has no estimate for the selected printer and Orca version. */
+  /**
+   * Queues every live plate that has no estimate for one of My printers and
+   * the current Orca version; returns how many were queued.
+   */
   reestimateAll(reason: ReestimateReason): Promise<number>;
   /** Queues a failed estimate again, from the stored file: no re-upload. */
   retryEstimate(estimateId: string): Promise<boolean>;
   /** The Orca-version poll (startup and every 10 minutes). */
   pollOrca(): Promise<{ orca: string; changed: boolean }>;
-  plateNumbers(plateId: string): Promise<PlateNumbers>;
-  /** The AC-032 query (display.ts). */
-  platesWithoutNumbers(): Promise<string[]>;
+  /**
+   * How many plate estimates each of My printers still has queued or
+   * slicing for the current Orca version; a printer with none is left out.
+   */
+  waitingByPrinter(): Promise<Map<string, number>>;
+  /**
+   * A plate's numbers for printerId, or for the default printer when it is
+   * left out. Reading numbers never queues a slice.
+   */
+  plateNumbers(plateId: string, printerId?: string): Promise<PlateNumbers>;
+  /** The AC-032 query (display.ts), for printerId or the default printer. */
+  platesWithoutNumbers(printerId?: string): Promise<string[]>;
   /** The slice job's handler. */
   runSliceJob(job: JobWithMetadata<SliceJobData>): Promise<void>;
   /** The slicer queue handlers to hand to startQueues. */
@@ -325,6 +393,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
 
   async function sendSlice(
     estimate: Estimate,
+    priority: number,
     carried: Carried | null = null,
     startAfterSeconds?: number,
   ): Promise<void> {
@@ -336,6 +405,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     };
     await boss.send(QUEUE.slicer, data, {
       expireInSeconds,
+      priority,
       ...retryOverrides,
       ...(startAfterSeconds === undefined ? {} : { startAfter: startAfterSeconds }),
     });
@@ -358,6 +428,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     plateId: string,
     printer: Printer,
     orcaVersion: string,
+    priority: number = SLICE_PRIORITY.library,
   ): Promise<{ estimate: Estimate | null; queued: boolean }> {
     if (!isUuid(plateId) || (await liveTarget(plateId)) === undefined) {
       return { estimate: null, queued: false };
@@ -383,41 +454,38 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       slicerVersion: orcaVersion,
     });
     if (estimate.status !== "pending") return { estimate, queued: false };
-    await sendSlice(estimate);
+    await sendSlice(estimate, priority);
     return { estimate, queued: true };
   }
 
-  async function selectedPrinter(): Promise<Printer> {
-    const { printerId } = await repos.settings.get();
-    const printer = (await listPrinters()).find((p) => p.id === printerId);
-    if (!printer) throw new UnknownPrinter();
-    return printer;
-  }
-
-  async function enqueuePlate(
-    plateId: string,
-    printerId: string,
-    orcaVersion: string,
-  ): Promise<Estimate | null> {
-    const printer = (await listPrinters()).find((p) => p.id === printerId);
-    if (!printer) throw new UnknownPrinter();
-    return (await enqueue(plateId, printer, orcaVersion)).estimate;
-  }
-
-  async function enqueueFile(fileId: string): Promise<number> {
-    if (!isUuid(fileId)) return 0;
-    const printer = await selectedPrinter();
-    const orca = await currentOrca();
-    let queued = 0;
-    for (const plate of await repos.plates.listForFile(fileId)) {
-      if ((await enqueue(plate.id, printer, orca)).queued) queued += 1;
+  /**
+   * My printers that the slicer can estimate for, the default first and the
+   * rest in list order. A listed printer the menu no longer has (an Orca
+   * update renamed its preset) is left out, and logged: nothing can be
+   * sliced for it until Jon replaces it. UnknownPrinter when that leaves
+   * none, as for the one printer before My printers.
+   */
+  async function slicedPrinters(): Promise<Printer[]> {
+    const { printerId, myPrinters } = await repos.settings.get();
+    const menu = await listPrinters();
+    const order = [printerId, ...myPrinters.filter((id) => id !== printerId)];
+    const out: Printer[] = [];
+    for (const id of order) {
+      const printer = menu.find((p) => p.id === id);
+      if (printer === undefined) log(`${id} is in My printers but not in the slicer's menu`);
+      else out.push(printer);
     }
-    return queued;
+    if (out.length === 0) throw new UnknownPrinter();
+    return out;
   }
 
-  async function reestimateAll(reason: ReestimateReason): Promise<number> {
-    const printer = await selectedPrinter();
-    const orca = await currentOrca();
+  /** Whether printerId is one of My printers now. */
+  async function isListed(printerId: string): Promise<boolean> {
+    return (await repos.settings.get()).myPrinters.includes(printerId);
+  }
+
+  /** Queues every live plate that has no estimate for printer and orca; returns how many. */
+  async function queueLibraryFor(printer: Printer, orca: string): Promise<number> {
     const { rows } = await sql<{ id: string }>`
       select p.id
       from plates p
@@ -435,35 +503,121 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     for (const row of rows) {
       if ((await enqueue(row.id, printer, orca)).queued) queued += 1;
     }
-    if (queued > 0) log(`queued ${queued} estimate(s) for ${printer.id} (${reason})`);
     return queued;
   }
 
-  /** Cancels queued slice jobs of other printers and deletes their waiting estimates. */
-  async function supersede(printerId: string): Promise<void> {
-    const queued = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
-      queued: true,
-      data: { kind: SLICE_JOB_KIND },
-      limit: JOB_PAGE,
-    });
-    const stale = queued.filter((job) => job.data.printerId !== printerId).map((job) => job.id);
-    if (stale.length > 0) await boss.cancel(QUEUE.slicer, stale);
+  async function enqueuePlate(
+    plateId: string,
+    printerId: string,
+    orcaVersion: string,
+  ): Promise<Estimate | null> {
+    const printer = (await listPrinters()).find((p) => p.id === printerId);
+    if (!printer) throw new UnknownPrinter();
+    return (await enqueue(plateId, printer, orcaVersion)).estimate;
+  }
+
+  async function enqueueFile(fileId: string): Promise<number> {
+    if (!isUuid(fileId)) return 0;
+    const printers = await slicedPrinters();
+    const orca = await currentOrca();
+    const plates = await repos.plates.listForFile(fileId);
+    let queued = 0;
+    // Plate by plate, each plate for every printer, the default first: the
+    // default printer's numbers for a new file land first.
+    for (const printer of printers) {
+      for (const plate of plates) {
+        if ((await enqueue(plate.id, printer, orca, SLICE_PRIORITY.waiting)).queued) queued += 1;
+      }
+    }
+    return queued;
+  }
+
+  async function reestimateAll(reason: ReestimateReason): Promise<number> {
+    const printers = await slicedPrinters();
+    const orca = await currentOrca();
+    let total = 0;
+    for (const printer of printers) {
+      const queued = await queueLibraryFor(printer, orca);
+      if (queued > 0) log(`queued ${queued} estimate(s) for ${printer.id} (${reason})`);
+      total += queued;
+    }
+    return total;
+  }
+
+  /**
+   * Cancels the queued slice jobs of printers no longer in My printers and
+   * deletes their waiting estimates. A slice of one that is running now
+   * finishes and is kept; one that starts later drops itself (runSliceJob).
+   */
+  async function dropUnlisted(myPrinters: readonly string[]): Promise<void> {
+    const ids = await queuedSliceJobs((job) => !myPrinters.includes(job.data.printerId));
+    if (ids.length > 0) await boss.cancel(QUEUE.slicer, ids);
     await db
       .deleteFrom("estimates")
       .where("source", "=", "platehouse")
       .where("status", "=", "pending")
-      .where("printerId", "!=", printerId)
+      .where("printerId", "not in", [...myPrinters])
       .execute();
   }
 
-  async function setPrinter(printerId: string): Promise<void> {
-    if (!(await listPrinters()).some((p) => p.id === printerId)) throw new UnknownPrinter();
-    await repos.settings.update({ printerId });
-    await supersede(printerId);
-    await reestimateAll("printer");
+  async function savePrinters(patch: {
+    printers: readonly string[];
+    defaultId: string;
+  }): Promise<SavedPrinters> {
+    const printers = [...patch.printers];
+    if (printers.length === 0) {
+      throw new PrinterListRefused("My printers needs at least one printer.");
+    }
+    if (printers.length > MAX_MY_PRINTERS) {
+      throw new PrinterListRefused(`My printers holds at most ${MAX_MY_PRINTERS} printers.`);
+    }
+    if (new Set(printers).size !== printers.length) {
+      throw new PrinterListRefused("Each printer can be in My printers only once.");
+    }
+    if (!printers.includes(patch.defaultId)) {
+      throw new PrinterListRefused("The default printer must be one of My printers.");
+    }
+    const before = (await repos.settings.get()).myPrinters;
+    const addedIds = printers.filter((id) => !before.includes(id));
+    const removed = before.filter((id) => !printers.includes(id));
+    // Only an added printer must be in the menu: one already listed stays
+    // even after the slicer stops offering it, so the page can show it.
+    const menu = addedIds.length === 0 ? [] : await listPrinters();
+    const added = addedIds.map((id) => {
+      const printer = menu.find((p) => p.id === id);
+      if (printer === undefined) throw new UnknownPrinter();
+      return printer;
+    });
+    await repos.settings.savePrinters({ printers, defaultId: patch.defaultId });
+    if (removed.length > 0) {
+      await dropUnlisted(printers);
+      log(`removed ${removed.join(", ")} from My printers; its waiting estimates were dropped`);
+    }
+    const out: SavedPrinters = { added: [], removed };
+    if (added.length > 0) {
+      const orca = await currentOrca();
+      for (const printer of added) {
+        const queued = await queueLibraryFor(printer, orca);
+        log(`added ${printer.id} to My printers; queued ${queued} estimate(s)`);
+        out.added.push({ printerId: printer.id, queued });
+      }
+    }
+    return out;
   }
 
-  async function retryEstimate(estimateId: string): Promise<boolean> {
+  async function setPrinter(printerId: string): Promise<void> {
+    await savePrinters({ printers: [printerId], defaultId: printerId });
+  }
+
+  /**
+   * Queues a failed estimate of one of My printers again. A Retry pressed on
+   * the page goes ahead of library-wide work; the poll's requeue of outage
+   * failures does not.
+   */
+  async function retryEstimate(
+    estimateId: string,
+    priority: number = SLICE_PRIORITY.waiting,
+  ): Promise<boolean> {
     if (!isUuid(estimateId)) return false;
     const row = await db
       .selectFrom("estimates")
@@ -473,7 +627,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     if (row?.source !== "platehouse" || row.status !== "failed" || !row.slicerVersion) {
       return false;
     }
-    if (row.printerId !== (await repos.settings.get()).printerId) return false;
+    if (!(await isListed(row.printerId))) return false;
     if ((await liveTarget(row.plateId)) === undefined) return false;
     const estimate = await repos.estimates.upsertPending({
       plateId: row.plateId,
@@ -484,7 +638,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       slicerVersion: row.slicerVersion,
     });
     if (estimate.status !== "pending") return false;
-    await sendSlice(estimate);
+    await sendSlice(estimate, priority);
     return true;
   }
 
@@ -595,10 +749,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     ) {
       return;
     }
-    const { printerId } = await repos.settings.get();
     const target = await liveTarget(estimate.plateId);
-    if (estimate.printerId !== printerId || target === undefined) {
-      // Its printer is no longer selected, or its model went to the trash.
+    if (!(await isListed(estimate.printerId)) || target === undefined) {
+      // Its printer left My printers, or its model went to the trash.
       await db
         .deleteFrom("estimates")
         .where("id", "=", estimate.id)
@@ -641,7 +794,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
           // The slicer never saw this plate, or its file could not be read
           // (at the start or partway through): no retry is used.
           if (await outageOver(outage, waitUntil)) continue;
-          await requeue(full, carried, outage);
+          await requeue(full, job.priority, carried, outage);
           return;
         }
         if (isRetryable(error) && carried.retriesUsed < job.retryLimit) {
@@ -652,6 +805,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
             const retry = carried.retriesUsed + 1;
             await sendSlice(
               full,
+              job.priority,
               { ...carried, retriesUsed: retry, lostConnections: carried.lostConnections + 1 },
               retryDelaySeconds(job, retry),
             );
@@ -720,7 +874,12 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * anything else, a busy answer included, with SLICER_DOWN_DETAIL, which
    * the poll queues again.
    */
-  async function requeue(estimate: Estimate, carried: Carried, outage: Outage): Promise<void> {
+  async function requeue(
+    estimate: Estimate,
+    priority: number,
+    carried: Carried,
+    outage: Outage,
+  ): Promise<void> {
     const { requeues } = carried;
     if (requeues >= slicerDown.requeues) {
       const detail =
@@ -736,7 +895,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       return;
     }
     await backToPending(estimate.id);
-    await sendSlice(estimate, { ...carried, requeues: requeues + 1 });
+    await sendSlice(estimate, priority, { ...carried, requeues: requeues + 1 });
     log(
       `estimate ${estimate.id}: the ${outage} is down; back on the queue (${requeues + 1} of ${slicerDown.requeues})`,
     );
@@ -754,7 +913,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
 
   /**
    * Queues again the estimates an outage failed (SLICER_DOWN_DETAIL and
-   * STORE_DOWN_DETAIL) for the selected printer and this Orca version. The
+   * STORE_DOWN_DETAIL) for My printers and this Orca version. The
    * poll calls it only once /v1/health has answered. Store failures are
    * queued only when the store answers a read, and one read per poll stands
    * for the whole store: the file of the first store-failed plate that is
@@ -762,7 +921,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * same poll (the store is one bucket).
    */
   async function requeueOutageFailures(orca: string): Promise<void> {
-    const { printerId } = await repos.settings.get();
+    const { myPrinters } = await repos.settings.get();
     const failed = await db
       .selectFrom("estimates")
       .select(["id", "plateId", "failureDetail"])
@@ -771,7 +930,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       .where("failureCode", "is", null)
       .where("failureReason", "=", "slicer_error")
       .where("failureDetail", "in", OUTAGE_DETAILS)
-      .where("printerId", "=", printerId)
+      .where("printerId", "in", myPrinters)
       .where("slicerVersion", "=", orca)
       .orderBy("createdAt")
       .execute();
@@ -784,18 +943,18 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         storeUp ??= await storeAnswers(target.key);
         if (!storeUp) continue;
       }
-      if (await retryEstimate(row.id)) queued += 1;
+      if (await retryEstimate(row.id, SLICE_PRIORITY.library)) queued += 1;
     }
     if (queued > 0) log(`queued ${queued} estimate(s) again that an outage had failed`);
   }
 
   /**
-   * The estimate ids of every slice job waiting in the queue (created, or
-   * waiting for a retry), read a page at a time. Only queued jobs are read,
-   * so the finished jobs pg-boss keeps never crowd out a live one.
+   * Every slice job waiting in the queue (created, or waiting for a retry),
+   * read a page at a time. Only queued jobs are read, so the finished jobs
+   * pg-boss keeps never crowd out a live one.
    */
-  async function queuedSliceEstimates(): Promise<Set<string>> {
-    const ids = new Set<string>();
+  async function queuedSlices(): Promise<Array<{ id: string; data: SliceJobData }>> {
+    const jobs: Array<{ id: string; data: SliceJobData }> = [];
     let after: string | undefined;
     for (;;) {
       const page = await boss.findJobs<SliceJobData>(QUEUE.slicer, {
@@ -804,11 +963,23 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         limit: JOB_PAGE,
         ...(after === undefined ? {} : { after }),
       });
-      for (const job of page) ids.add(job.data.estimateId);
+      for (const job of page) jobs.push({ id: job.id, data: job.data });
       const last = page.at(-1);
-      if (page.length < JOB_PAGE || last === undefined) return ids;
+      if (page.length < JOB_PAGE || last === undefined) return jobs;
       after = last.id;
     }
+  }
+
+  /** The ids of the queued slice jobs that match. */
+  async function queuedSliceJobs(
+    match: (job: { data: SliceJobData }) => boolean,
+  ): Promise<string[]> {
+    return (await queuedSlices()).filter(match).map((job) => job.id);
+  }
+
+  /** The estimate ids of every slice job waiting in the queue. */
+  async function queuedSliceEstimates(): Promise<Set<string>> {
+    return new Set((await queuedSlices()).map((job) => job.data.estimateId));
   }
 
   /** Whether the estimate has a job queued or active now: its own jobs only. */
@@ -852,7 +1023,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
           .where("status", "=", "running")
           .execute();
       } else {
-        await sendSlice({ ...row, filaments: [] });
+        await sendSlice({ ...row, filaments: [] }, SLICE_PRIORITY.library);
       }
     }
   }
@@ -872,7 +1043,26 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     return { orca, changed };
   }
 
-  async function displayContext(): Promise<DisplayContext> {
+  async function waitingByPrinter(): Promise<Map<string, number>> {
+    const { myPrinters, lastOrcaVersion } = await repos.settings.get();
+    const rows = await db
+      .selectFrom("estimates")
+      .select(["printerId", sql<number>`count(*)::int`.as("n")])
+      .where("source", "=", "platehouse")
+      .where("status", "in", ["pending", "running"])
+      .where("printerId", "in", myPrinters)
+      .where((eb) =>
+        lastOrcaVersion === null
+          ? eb("slicerVersion", "is", null)
+          : eb("slicerVersion", "=", lastOrcaVersion),
+      )
+      .groupBy("printerId")
+      .execute();
+    return new Map(rows.map((r) => [r.printerId, r.n]));
+  }
+
+  /** The display context for printerId, or for the default printer when it is left out. */
+  async function displayContext(printerId?: string): Promise<DisplayContext> {
     const settings = await repos.settings.get();
     let printers: Printer[] = [];
     try {
@@ -881,19 +1071,28 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       // A page still shows its numbers while the slicer is down; printers
       // are then labelled by their stored names.
     }
-    return { printerId: settings.printerId, orcaVersion: settings.lastOrcaVersion, printers };
+    return {
+      printerId: printerId ?? settings.printerId,
+      myPrinters: settings.myPrinters,
+      orcaVersion: settings.lastOrcaVersion,
+      printers,
+    };
   }
 
   return {
     listPrinters,
+    savePrinters,
     setPrinter,
     enqueuePlate,
     enqueueFile,
     reestimateAll,
-    retryEstimate,
+    retryEstimate: (estimateId) => retryEstimate(estimateId),
     pollOrca,
-    plateNumbers: async (plateId) => plateNumbers(db, await displayContext(), plateId),
-    platesWithoutNumbers: async () => platesWithoutNumbers(db, await displayContext()),
+    waitingByPrinter,
+    plateNumbers: async (plateId, printerId) =>
+      plateNumbers(db, await displayContext(printerId), plateId),
+    platesWithoutNumbers: async (printerId) =>
+      platesWithoutNumbers(db, await displayContext(printerId)),
     runSliceJob,
     slicerJobs: Object.freeze({
       [SLICE_JOB_KIND]: (job: JobWithMetadata<SlicerJob>) =>

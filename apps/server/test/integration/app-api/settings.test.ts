@@ -27,7 +27,7 @@ import {
 } from "../../../src/api/tokens.js";
 import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
-import { recordVersioning } from "../../../src/app-api/settings.js";
+import { recordVersioning, SLICES_PER_MINUTE } from "../../../src/app-api/settings.js";
 import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
@@ -260,7 +260,8 @@ describe("the settings page", () => {
   beforeEach(async () => {
     stub.onSlice(() => ({ kind: "ok" }));
     await drain();
-    if ((await env.repos.settings.get()).printerId !== P1S) {
+    const settings = await env.repos.settings.get();
+    if (settings.printerId !== P1S || settings.myPrinters.join("|") !== P1S) {
       await estimates.setPrinter(P1S);
       await drain();
     }
@@ -301,7 +302,7 @@ describe("the settings page", () => {
     await recordVersioning({ store: env.store, settings: env.repos.settings });
   });
 
-  test("the printer menu is the slicer's printers, grouped by model with nozzle choices", async () => {
+  test("the printer menu is the slicer's printers, grouped by model, each named in full", async () => {
     const res = await call("GET", "/app/api/settings");
     expect(res.status, res.text).toBe(200);
     const body = res.json() as { printerId: string; printers: unknown };
@@ -313,60 +314,132 @@ describe("the settings page", () => {
         printers: STUB_PRINTERS.filter((p) => p.model === model).map((p) => ({
           id: p.id,
           nozzle: p.nozzle,
+          name: `${p.model}, ${p.nozzle} mm nozzle`,
         })),
       })),
     );
   });
 
-  test("changing printer queues re-estimation and the old numbers stay marked", async () => {
-    const plateId = await uploadPlate();
-    await drain();
-    expect((await estimates.plateNumbers(plateId)).platehouse).toMatchObject({
-      state: "current",
+  test("My printers are listed in order with their full names, the default and their waiting work", async () => {
+    const res = await call("GET", "/app/api/settings");
+    expect(res.json()).toMatchObject({
       printerId: P1S,
+      myPrinters: [{ id: P1S, name: "Bambu Lab P1S, 0.4 mm nozzle", offered: true, waiting: 0 }],
+      slicesPerMinute: SLICES_PER_MINUTE,
     });
+    expect(SLICES_PER_MINUTE).toBe(3);
+  });
 
+  test("adding a printer queues every plate for it and answers how many", async () => {
+    await uploadPlate();
+    await drain();
     const held = stub.hold();
     try {
-      const res = await call("PUT", "/app/api/settings/printer", { json: { printerId: X1C } });
-      expect(res.status, res.text).toBe(204);
-      expect((await env.repos.settings.get()).printerId).toBe(X1C);
-      expect((await call("GET", "/app/api/settings")).json()).toMatchObject({ printerId: X1C });
-      // Re-estimation is queued: the plate has an X1C estimate waiting.
-      await until(
-        async () =>
-          (
-            await env.db
-              .selectFrom("estimates")
-              .select("printerId")
-              .where("plateId", "=", plateId)
-              .where("source", "=", "platehouse")
-              .execute()
-          ).some((r) => r.printerId === X1C),
-        (v) => v,
-      );
-      // The old numbers stay visible, marked as for the previous printer.
-      expect((await estimates.plateNumbers(plateId)).platehouse).toMatchObject({
-        state: "stale",
-        staleFor: P1S,
+      const res = await call("PUT", "/app/api/settings/printers", {
+        json: { printers: [P1S, X1C], defaultId: P1S },
+      });
+      expect(res.status, res.text).toBe(200);
+      const answer = res.json() as {
+        added: Array<{ printerId: string; queued: number }>;
+        removed: string[];
+      };
+      expect(answer.removed).toEqual([]);
+      expect(answer.added).toHaveLength(1);
+      expect(answer.added[0]?.printerId).toBe(X1C);
+      const queued = answer.added[0]?.queued ?? 0;
+      expect(queued).toBeGreaterThanOrEqual(1);
+      // The settings answer shows that work waiting for the X1C.
+      expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
         printerId: P1S,
+        myPrinters: [
+          { id: P1S, waiting: 0 },
+          { id: X1C, name: "Bambu Lab X1 Carbon, 0.4 mm nozzle", offered: true, waiting: queued },
+        ],
       });
     } finally {
       held.release();
     }
     await drain();
-    expect((await estimates.plateNumbers(plateId)).platehouse).toMatchObject({
-      state: "current",
-      printerId: X1C,
+    expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
+      myPrinters: [
+        { id: P1S, waiting: 0 },
+        { id: X1C, waiting: 0 },
+      ],
     });
   });
 
-  test("a printer that is not in the menu is refused and the setting stays", async () => {
-    for (const body of [{ printerId: "Bambu Lab Q9 0.4 nozzle" }, { printerId: "" }, {}]) {
-      const res = await call("PUT", "/app/api/settings/printer", { json: body });
+  test("a new order or a new default is saved and queues nothing; a removal drops its work", async () => {
+    await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [P1S, X1C], defaultId: P1S },
+    });
+    await drain();
+    const calls = stub.calls.length;
+    const reorder = await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [X1C, P1S], defaultId: X1C },
+    });
+    expect(reorder.status, reorder.text).toBe(200);
+    expect(reorder.json()).toEqual({ added: [], removed: [] });
+    expect(await env.repos.settings.get()).toMatchObject({
+      printerId: X1C,
+      myPrinters: [X1C, P1S],
+    });
+    await sleep(500);
+    expect(stub.calls.length).toBe(calls);
+
+    const remove = await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [X1C], defaultId: X1C },
+    });
+    expect(remove.json()).toEqual({ added: [], removed: [P1S] });
+    expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
+      printerId: X1C,
+      myPrinters: [{ id: X1C }],
+    });
+  });
+
+  test("a list that cannot be saved is refused with a sentence, and My printers stay", async () => {
+    const refused: Array<[unknown, string]> = [
+      [{ printers: [P1S, "Bambu Lab Q9 0.4 nozzle"], defaultId: P1S }, "unknown_printer"],
+      [{ printers: [P1S, P1S], defaultId: P1S }, "bad_request"],
+      [{ printers: [P1S], defaultId: X1C }, "bad_request"],
+      [{ printers: [], defaultId: P1S }, "bad_request"],
+      [{ printers: [P1S] }, "bad_request"],
+      [{ printerId: P1S }, "bad_request"],
+      [{ printers: [""], defaultId: "" }, "bad_request"],
+    ];
+    for (const [body, error] of refused) {
+      const res = await call("PUT", "/app/api/settings/printers", { json: body });
       expect(res.status, JSON.stringify(body)).toBe(400);
+      const answer = res.json() as { error: string; message?: string };
+      expect(answer.error, JSON.stringify(body)).toBe(error);
+      expect(typeof answer.message, JSON.stringify(body)).toBe("string");
     }
+    expect(await env.repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S] });
+  });
+
+  test("the old one-printer route is gone", async () => {
+    const res = await call("PUT", "/app/api/settings/printer", { json: { printerId: X1C } });
+    expect(res.status).toBe(404);
     expect((await env.repos.settings.get()).printerId).toBe(P1S);
+  });
+
+  test("the printer switch's list names My printers and the default, and changes nothing", async () => {
+    await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [P1S, X1C], defaultId: P1S },
+    });
+    await drain();
+    const calls = stub.calls.length;
+    const res = await call("GET", "/app/api/printers");
+    expect(res.status, res.text).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.json()).toEqual({
+      defaultId: P1S,
+      printers: [
+        { id: P1S, name: "Bambu Lab P1S, 0.4 mm nozzle" },
+        { id: X1C, name: "Bambu Lab X1 Carbon, 0.4 mm nozzle" },
+      ],
+    });
+    await sleep(300);
+    expect(stub.calls.length).toBe(calls);
   });
 });
 

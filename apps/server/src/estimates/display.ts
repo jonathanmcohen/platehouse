@@ -57,6 +57,12 @@ export interface Numbers {
   printerId: string;
   /** What the page names that printer: the menu printer id, or OTHER_PRINTER_LABEL for a file's printer the menu lacks. */
   printerLabel: string;
+  /**
+   * The printer's full name, its model and nozzle (printerName), such as
+   * "Bambu Lab P1S, 0.4 mm nozzle"; OTHER_PRINTER_LABEL for a file's printer
+   * the menu lacks. Added beside printerLabel, which keeps its old value.
+   */
+  printerName: string;
   slicer: string | null;
   slicerVersion: string | null;
   processProfile: string | null;
@@ -86,8 +92,20 @@ export interface PlateNumbers {
 }
 
 export interface DisplayContext {
-  /** settings.printer_id, the selected printer. */
+  /**
+   * The printer whose numbers are shown: the default printer
+   * (settings.printer_id), or the one a page's printer switch chose.
+   */
   printerId: string;
+  /**
+   * My printers (settings.myPrinters). While a plate's estimate for printerId
+   * is on its way, an older one is shown only when it was made for printerId
+   * with an older Orca, or for a printer no longer in this list: a printer
+   * still in the list has its own numbers one switch away, so they are not
+   * passed off as this printer's. Left out, any printer's older estimate may
+   * be shown, as before My printers.
+   */
+  myPrinters?: readonly string[];
   /** settings.last_orca_version, the slicer's current Orca version. */
   orcaVersion: string | null;
   /** The printer menu, from /v1/profiles. */
@@ -127,6 +145,24 @@ export const OTHER_PRINTER_LABEL = "another printer";
 /** The label of a file's own numbers: the matching menu printer's name, else OTHER_PRINTER_LABEL. */
 export function filePrinterLabel(printer: Printer | undefined): string {
   return printer?.id ?? OTHER_PRINTER_LABEL;
+}
+
+/** An Orca machine preset name: "<model> <nozzle> nozzle". */
+const PRESET_NAME = /^(.+) ([0-9]+(?:\.[0-9]+)?) nozzle$/;
+
+/**
+ * What the pages call a printer: its model and nozzle, such as "Bambu Lab
+ * P1S, 0.4 mm nozzle". The menu printer's own model and nozzle when the menu
+ * has it; else read from the Orca preset name, so a printer is still named
+ * in full while the slicer is down or after it stopped offering the preset;
+ * else the preset name as it is.
+ */
+export function printerName(printerId: string, printers: readonly Printer[]): string {
+  const printer = printers.find((p) => p.id === printerId);
+  if (printer !== undefined) return `${printer.model}, ${printer.nozzle} mm nozzle`;
+  const match = PRESET_NAME.exec(printerId);
+  if (match === null) return printerId;
+  return `${match[1]}, ${Number(match[2])} mm nozzle`;
 }
 
 interface EstimateRow {
@@ -198,11 +234,17 @@ export async function plateNumbers(
     .orderBy("slot")
     .execute();
 
-  const numbers = (row: EstimateRow, printerId: string, printerLabel = printerId): Numbers => ({
+  const numbers = (
+    row: EstimateRow,
+    printerId: string,
+    printerLabel = printerId,
+    name = printerName(printerId, ctx.printers),
+  ): Numbers => ({
     source: row.source,
     estimateId: row.id,
     printerId,
     printerLabel,
+    printerName: name,
     slicer: row.slicer,
     slicerVersion: row.slicerVersion,
     processProfile: row.processProfile,
@@ -235,6 +277,7 @@ export async function plateNumbers(
       fileRow,
       printer?.id ?? fileRow.printerModelId ?? fileRow.printerId,
       filePrinterLabel(printer),
+      printer === undefined ? OTHER_PRINTER_LABEL : printerName(printer.id, ctx.printers),
     );
   }
   if (fileRow && fileIsFor(fileRow, selected)) return out;
@@ -255,9 +298,16 @@ export async function plateNumbers(
       detail: wanted.failureDetail,
     };
   }
-  // The newest finished estimate made for anything else, shown meanwhile.
+  // The newest finished estimate made for an older Orca on this printer, or
+  // for a printer no longer in My printers, shown meanwhile (DisplayContext).
+  const listed = (printerId: string) => ctx.myPrinters?.includes(printerId) ?? false;
   const older = own
-    .filter((r) => r.status === "ok" && r !== wanted)
+    .filter(
+      (r) =>
+        r.status === "ok" &&
+        r !== wanted &&
+        (r.printerId === ctx.printerId || !listed(r.printerId)),
+    )
     .sort((a, b) => (b.finishedAt?.getTime() ?? 0) - (a.finishedAt?.getTime() ?? 0))[0];
   if (older) {
     out.platehouse = {

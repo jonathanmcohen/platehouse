@@ -74,6 +74,8 @@ const X1C: Printer = {
 };
 
 const CONTEXT: DisplayContext = { printerId: P1S.id, orcaVersion: "2.5.0", printers: [P1S, X1C] };
+/** The display context the model page is handed; the printer switch tests list My printers. */
+let context: DisplayContext = CONTEXT;
 
 /** Non-ASCII from code points, so this file stays ASCII. */
 const U_UMLAUT = String.fromCodePoint(0xfc);
@@ -119,8 +121,8 @@ async function post(url: string, opts: { cookie?: string | null; origin?: string
   });
 }
 
-async function modelView(id: string): Promise<ModelView> {
-  const res = await get(`/app/api/models/${id}`);
+async function modelView(id: string, query = ""): Promise<ModelView> {
+  const res = await get(`/app/api/models/${id}${query}`);
   expect(res.statusCode, res.body).toBe(200);
   return res.json() as ModelView;
 }
@@ -210,7 +212,7 @@ beforeAll(async () => {
     },
     model: createAppModel({
       db: env.db,
-      displayContext: async () => CONTEXT,
+      displayContext: async () => context,
       retryEstimate: async (estimateId) => {
         retried.push(estimateId);
         return retryAnswer;
@@ -458,6 +460,55 @@ describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
       .execute();
     expect((await plate())?.numbers.platehouse?.state).toBe("current");
     expect((await plate())?.estimatePending).toBe(false);
+  });
+
+  test("?printer= shows another of My printers' numbers, named in full, and starts no slicing", async () => {
+    context = { ...CONTEXT, myPrinters: [P1S.id, X1C.id] };
+    try {
+      const { modelId, fileId } = await ingest(
+        `Switch ${marker()}.3mf`,
+        build3mf({ plates: 1, sliced: [1], printerModelId: X1C.modelId }),
+      );
+      const [only] = await platesOf(fileId);
+      const plateId = only?.id ?? "";
+      await platehouseEstimate(plateId, "pending");
+      const rows = await env.db.selectFrom("estimates").selectAll().orderBy("id").execute();
+
+      // The default printer: the P1S estimate is on its way.
+      const asDefault = await modelView(modelId);
+      expect(asDefault).toMatchObject({
+        printer: P1S.id,
+        printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      });
+      expect(asDefault.files[0]?.plates[0]?.estimatePending).toBe(true);
+
+      // Switched to the X1C: the file's own numbers are for it, so nothing is
+      // pending for it and no estimate is wanted.
+      const switched = await modelView(modelId, `?printer=${encodeURIComponent(X1C.id)}`);
+      expect(switched).toMatchObject({
+        printer: X1C.id,
+        printerName: "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      });
+      const plate = switched.files[0]?.plates[0];
+      expect(plate?.estimatePending).toBe(false);
+      expect(plate?.numbers.file).toMatchObject({
+        printerId: X1C.id,
+        printerName: "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+      });
+      expect(plate?.numbers.platehouse).toBeUndefined();
+
+      // A printer that is not in My printers shows the default.
+      context = { ...CONTEXT, myPrinters: [P1S.id] };
+      expect(await modelView(modelId, `?printer=${encodeURIComponent(X1C.id)}`)).toMatchObject({
+        printer: P1S.id,
+      });
+      // Reading numbers changed no estimate.
+      expect(await env.db.selectFrom("estimates").selectAll().orderBy("id").execute()).toEqual(
+        rows,
+      );
+    } finally {
+      context = CONTEXT;
+    }
   });
 
   test("a failed plate shows the reason in plain words; its siblings keep their numbers", async () => {

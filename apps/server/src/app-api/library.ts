@@ -1,8 +1,8 @@
 // The library's app API (build plan Task 19; AC-061, AC-064, AC-073), for the
 // web app's library page:
 //
-//   GET /app/api/library?q&tag&collection&creator&cursor&limit
-//       { printer, models: LibraryCard[], nextCursor }
+//   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
+//       { printer, printerName, models: LibraryCard[], nextCursor }
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
@@ -18,7 +18,13 @@
 //   and only a stored blob of kind thumbnail is ever named, so rendering the
 //   library never fetches a model file (AC-073). This module is given no
 //   store at all.
-// - Time and weight are for the selected printer (settings.printer_id), from
+// - printer= is the header's printer switch: one of My printers, whose
+//   numbers the cards show instead of the default printer's. Anything else
+//   (a printer removed since the browser stored its choice) shows the
+//   default; printer and printerName say which printer the numbers are for.
+//   Switching reads numbers only and never queues a slice.
+// - Time and weight are for that printer (settings.printer_id when no
+//   switch is given; "the selected printer" below), from
 //   Task 12's plateNumbers per plate: a plate has numbers for that printer
 //   when the file's own numbers are for it or a current Platehouse estimate
 //   is. A card has totals only when every plate does, else partial. While
@@ -46,7 +52,12 @@ import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
-import type { DisplayContext, Numbers, PlateNumbers } from "../estimates/display.js";
+import {
+  type DisplayContext,
+  type Numbers,
+  type PlateNumbers,
+  printerName,
+} from "../estimates/display.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
 
 /** The library's routes, every one session-class (the Route classes contract). */
@@ -83,8 +94,12 @@ export async function mapLimit<T, R>(
 
 /** What readDisplayContext reads; main.ts hands it the settings repo and the estimates service. */
 export interface DisplayContextSources {
-  /** The settings row (repos.settings.get). */
-  settings(): Promise<{ printerId: string; lastOrcaVersion: string | null }>;
+  /** The settings row and My printers (repos.settings.get). */
+  settings(): Promise<{
+    printerId: string;
+    myPrinters?: readonly string[];
+    lastOrcaVersion: string | null;
+  }>;
   /** The printer menu (estimates.listPrinters), the cached /v1/profiles answer. */
   listPrinters(): Promise<readonly Printer[]>;
 }
@@ -123,7 +138,23 @@ export async function readDisplayContext(
   } finally {
     clearTimeout(timer);
   }
-  return { printerId: settings.printerId, orcaVersion: settings.lastOrcaVersion, printers };
+  return {
+    printerId: settings.printerId,
+    ...(settings.myPrinters === undefined ? {} : { myPrinters: settings.myPrinters }),
+    orcaVersion: settings.lastOrcaVersion,
+    printers,
+  };
+}
+
+/**
+ * The display context for the printer a page's switch asked for: that
+ * printer when it is one of My printers, else the context as read, for the
+ * default printer. The answer names the printer it used, so a page whose
+ * stored choice was removed falls back without an error.
+ */
+export function forPrinter(ctx: DisplayContext, printerId: string | undefined): DisplayContext {
+  if (printerId === undefined || !(ctx.myPrinters ?? []).includes(printerId)) return ctx;
+  return { ...ctx, printerId };
 }
 
 /** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
@@ -156,15 +187,23 @@ export interface LibraryCard {
 }
 
 export interface AppLibraryPage {
-  /** The selected printer the numbers are for. */
+  /** The printer the numbers are for: the default printer, or the switch's choice. */
   printer: string;
+  /** That printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  printerName: string;
   models: LibraryCard[];
   nextCursor: string | null;
 }
 
+/** The library's query: the search, and the printer switch's choice. */
+export type LibraryQuery = LibrarySearch & { printer?: string };
+
 export interface AppLibrary {
-  /** A page of cards; InvalidCursor for a cursor search did not make. */
-  list(query: LibrarySearch): Promise<AppLibraryPage>;
+  /**
+   * A page of cards, for query.printer when it is one of My printers, else
+   * for the default printer; InvalidCursor for a cursor search did not make.
+   */
+  list(query: LibraryQuery): Promise<AppLibraryPage>;
   /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
   tags(): Promise<string[]>;
 }
@@ -297,10 +336,12 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
   }
 
   return {
-    async list(query) {
-      const [page, ctx] = await Promise.all([search.search(query), deps.displayContext()]);
+    async list({ printer, ...searchQuery }) {
+      const [page, read] = await Promise.all([search.search(searchQuery), deps.displayContext()]);
+      const ctx = forPrinter(read, printer);
       return {
         printer: ctx.printerId,
+        printerName: printerName(ctx.printerId, ctx.printers),
         models: await cards(page.models, ctx),
         nextCursor: page.nextCursor,
       };
@@ -329,7 +370,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 
 /** The library when the server is given none: empty, so the routes still answer. */
 export const emptyAppLibrary: AppLibrary = Object.freeze({
-  list: async () => ({ printer: "", models: [], nextCursor: null }),
+  list: async () => ({ printer: "", printerName: "", models: [], nextCursor: null }),
   tags: async () => [],
 });
 
@@ -342,6 +383,7 @@ const SEARCH_QUERY = {
     creator: { type: "string", maxLength: 300 },
     cursor: { type: "string", maxLength: 2000 },
     limit: { type: "integer", minimum: 1, maximum: 200 },
+    printer: { type: "string", maxLength: 200 },
   },
 } as const;
 
@@ -362,7 +404,7 @@ export async function registerLibraryApi(app: FastifyInstance, library: AppLibra
       return reply.code(500).send({ error: "internal" });
     });
 
-    scope.get<{ Querystring: LibrarySearch }>(
+    scope.get<{ Querystring: LibraryQuery }>(
       "/app/api/library",
       { schema: { querystring: SEARCH_QUERY } },
       async (request) => library.list(request.query),

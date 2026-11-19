@@ -403,20 +403,52 @@ describe("settings", () => {
       bucketVersioning: "unknown",
     });
 
-    const after = await repos.settings.update({ printerId: "Bambu Lab A1 0.4 nozzle" });
+    expect(before.myPrinters).toEqual(["Bambu Lab P1S 0.4 nozzle"]);
+
+    const after = await repos.settings.update({ lastOrcaVersion: "2.5.0" });
     expect(after).toMatchObject({
-      printerId: "Bambu Lab A1 0.4 nozzle",
-      lastOrcaVersion: null,
+      printerId: "Bambu Lab P1S 0.4 nozzle",
+      myPrinters: ["Bambu Lab P1S 0.4 nozzle"],
+      lastOrcaVersion: "2.5.0",
       bucketVersioning: "unknown",
     });
     expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
 
-    await repos.settings.update({ lastOrcaVersion: "2.5.0", bucketVersioning: "off" });
+    await repos.settings.update({ bucketVersioning: "off" });
     expect(await repos.settings.get()).toMatchObject({
-      printerId: "Bambu Lab A1 0.4 nozzle",
+      printerId: "Bambu Lab P1S 0.4 nozzle",
       lastOrcaVersion: "2.5.0",
       bucketVersioning: "off",
     });
+  });
+
+  test("savePrinters stores My printers in order with the default, all or nothing", async () => {
+    const P1S = "Bambu Lab P1S 0.4 nozzle";
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    const MINI = "Bambu Lab A1 mini 0.4 nozzle";
+    try {
+      // Add two, keeping P1S the default.
+      let saved = await repos.settings.savePrinters({ printers: [P1S, A1, MINI], defaultId: P1S });
+      expect(saved).toMatchObject({ printerId: P1S, myPrinters: [P1S, A1, MINI] });
+      // Reorder and change the default: the order and the default are kept apart.
+      saved = await repos.settings.savePrinters({ printers: [MINI, P1S, A1], defaultId: A1 });
+      expect(saved).toMatchObject({ printerId: A1, myPrinters: [MINI, P1S, A1] });
+      expect(await repos.settings.get()).toMatchObject({
+        printerId: A1,
+        myPrinters: [MINI, P1S, A1],
+      });
+      // Remove one.
+      saved = await repos.settings.savePrinters({ printers: [MINI, A1], defaultId: A1 });
+      expect(saved.myPrinters).toEqual([MINI, A1]);
+      // A default outside the list is refused, and nothing changes.
+      expect(
+        await sqlState(repos.settings.savePrinters({ printers: [MINI], defaultId: P1S })),
+      ).toBe("23503");
+      expect(await repos.settings.get()).toMatchObject({ printerId: A1, myPrinters: [MINI, A1] });
+    } finally {
+      await repos.settings.savePrinters({ printers: [P1S], defaultId: P1S });
+    }
+    expect(await repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S] });
   });
 
   test("an unknown versioning state is refused", async () => {
