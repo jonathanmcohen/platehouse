@@ -12,6 +12,16 @@ import { Sidebar } from "./Sidebar";
 
 const PANEL_ID = "ph-menu";
 
+/**
+ * Whether the narrow-screen menu is open, for a page's own document Escape
+ * listener (Select mode's in LibraryPage): that listener can run before this
+ * one, so it asks here and leaves Escape to the menu while it is open.
+ */
+export function menuIsOpen(): boolean {
+  const panel = document.getElementById(PANEL_ID);
+  return panel !== null && !panel.hidden;
+}
+
 export interface MenuButtonProps {
   /** Runs after a link in the menu is followed; it should move focus. */
   onNavigate?: () => void;

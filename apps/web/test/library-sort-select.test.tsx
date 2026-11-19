@@ -19,14 +19,17 @@
 //   their model; a click or Space toggles one; the count is announced in a
 //   status line. Select all on this page, Select all matching (every match's
 //   id from /app/api/library/ids, capped as View all is, and it says so) and
-//   Clear selection. Escape leaves Select mode and clears the selection.
+//   Clear selection. Escape leaves Select mode and clears the selection,
+//   unless another overlay that takes Escape is open: the upload dialog
+//   (mounted beside the library) or the narrow-screen menu. Escape closes
+//   that overlay only (PR #246 review).
 // - With models selected: Add tags (type or pick), Remove tag, Add to
 //   collection (existing or new) and Move to trash (the app's own confirm
 //   dialog, with the count). Each is one request with the selected ids; the
 //   result is shown, failures name the models and why, and the grid and the
 //   library's tags (the tag filter, Remove tag's choices and Add tags'
 //   suggestions) reload.
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -35,6 +38,8 @@ import type { LibraryCard } from "../src/library/ModelCard";
 import { SORT_OPTIONS, sortFrom } from "../src/library/paging";
 import { describeBulk, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
+import { MenuButton } from "../src/shell/MenuButton";
+import { UploadDialog } from "../src/upload/UploadDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -172,6 +177,35 @@ async function render(path: string) {
     </MemoryRouter>
   );
   await act(async () => root.render(node));
+  await settle();
+}
+
+/** Opens the upload dialog WithOverlays renders. */
+let openUpload: () => void = () => undefined;
+
+/** The library with the shell's menu and the upload dialog beside it, as main.tsx mounts them. */
+function WithOverlays() {
+  const [open, setOpen] = useState(false);
+  openUpload = () => setOpen(true);
+  return (
+    <>
+      <MenuButton />
+      <Routes>
+        <Route path="/" element={<LibraryPage />} />
+      </Routes>
+      <UploadDialog open={open} files={[]} onClose={() => setOpen(false)} />
+    </>
+  );
+}
+
+async function renderWithOverlays() {
+  await act(async () =>
+    root.render(
+      <MemoryRouter initialEntries={["/"]}>
+        <WithOverlays />
+      </MemoryRouter>,
+    ),
+  );
   await settle();
 }
 
@@ -490,6 +524,42 @@ describe("Select mode", () => {
     expect(document.activeElement).toBe(button("Select"));
     await selectMode();
     expect(statusText()).toBe("No models selected");
+  });
+
+  describe("with another overlay open, Escape is that overlay's (PR #246 review)", () => {
+    test("Escape in the upload dialog closes it only; Select mode and the selection stay", async () => {
+      stubServer(cards(3));
+      await renderWithOverlays();
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await act(async () => openUpload());
+      await settle();
+      const upload = dialog();
+      expect(upload).not.toBeNull();
+      await key(upload as HTMLElement, "Escape");
+      expect(dialog()).toBeNull();
+      expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+      expect(statusText()).toBe("1 model selected");
+      // With the dialog closed, Escape is Select mode's again.
+      await key(checkbox("Model 001"), "Escape");
+      expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    test("Escape with the narrow-screen menu open closes the menu only; Select mode and the selection stay", async () => {
+      stubServer(cards(3));
+      await renderWithOverlays();
+      await selectMode();
+      await click(checkbox("Model 002"));
+      await click(button("Menu"));
+      expect(button("Menu").getAttribute("aria-expanded")).toBe("true");
+      await key(button("Menu"), "Escape");
+      expect(button("Menu").getAttribute("aria-expanded")).toBe("false");
+      expect(button("Select").getAttribute("aria-pressed")).toBe("true");
+      expect(statusText()).toBe("1 model selected");
+      // With the menu closed, Escape is Select mode's again.
+      await key(checkbox("Model 002"), "Escape");
+      expect(button("Select").getAttribute("aria-pressed")).toBe("false");
+    });
   });
 
   test("Select all on this page, then Clear selection", async () => {

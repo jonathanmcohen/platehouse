@@ -29,7 +29,10 @@
 //   shows the selection toolbar (SelectBar) with the count, the select-all
 //   choices and the bulk actions. The selection is kept across pages and
 //   filters until it is cleared or Select mode ends; Escape or Select again
-//   ends it, clears the selection and puts focus back on Select. An action
+//   ends it, clears the selection and puts focus back on Select. Escape is
+//   left alone while another overlay that takes it is open (otherOverlayOpen):
+//   a modal dialog, the upload dialog among them, or the narrow-screen menu,
+//   so closing one never throws the selection away. An action
 //   that changes models reloads the grid in place: the cards shown stay,
 //   with the scroll position and the toolbar's counts, until the new answer
 //   is in (in View all, until every chunk is in again).
@@ -56,6 +59,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
+import { menuIsOpen } from "../shell/MenuButton";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
@@ -229,10 +233,15 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   }, []);
 
   // Escape leaves Select mode, unless a dialog is open: Escape is the dialog's then.
+  // Select mode's own dialogs remove this listener (dialogOpen); any other
+  // overlay is asked about on each key (otherOverlayOpen), since its document
+  // listener is added later and so runs after this one.
   useEffect(() => {
     if (!selecting || dialogOpen) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape" && !event.defaultPrevented) stopSelecting();
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (otherOverlayOpen(event)) return;
+      stopSelecting();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -578,4 +587,19 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       ) : null}
     </DropZone>
   );
+}
+
+/**
+ * Another overlay that takes Escape for itself is open: a modal dialog (the
+ * upload dialog, mounted beside the library, opens from the top bar's Add or
+ * a drop on the library), the key came from inside a dialog, or the
+ * narrow-screen menu is open. Their document listeners are added after Select
+ * mode's, so their preventDefault comes too late for Select mode to see.
+ */
+function otherOverlayOpen(event: KeyboardEvent): boolean {
+  if (document.querySelector('[aria-modal="true"]') !== null) return true;
+  if (event.target instanceof Element && event.target.closest('[role="dialog"]') !== null) {
+    return true;
+  }
+  return menuIsOpen();
 }
