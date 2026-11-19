@@ -16,6 +16,7 @@ import {
   useServer,
 } from "./support/harness.js";
 import { library, sha256 } from "./support/library.js";
+import { bytesOf, type StubData, type StubFile } from "./support/manyfold-stub.js";
 
 useServer();
 
@@ -521,6 +522,266 @@ describe("exit code 2: the run could not start", () => {
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(2);
     expect(s.platehouse.models.size).toBe(0);
+  });
+});
+
+describe("file names (issue #226)", () => {
+  // One model whose files are given; the bytes are generated.
+  const oneModel = (files: StubFile[]): StubData => ({
+    creators: [],
+    collections: [],
+    models: [{ id: "m9", name: "Wall Mount", files }],
+  });
+  const file = (over: Partial<StubFile> & { id: string; filename: string }): StubFile => ({
+    bytes: bytesOf(over.id, 700),
+    ...over,
+  });
+  const rowsOf = (r: { report: { models: Array<{ files: unknown[] }> } | null }) =>
+    r.report?.models[0]?.files;
+
+  it("takes contentUrl's name when filename is missing", async () => {
+    const s = setup(
+      oneModel([
+        file({ id: "f9", filename: "mount.3mf", sentFilename: null, contentUrlName: "mount.3mf" }),
+      ]),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(rowsOf(r)).toEqual([expect.objectContaining({ name: "mount.3mf", status: "imported" })]);
+    expect(fileNames(s, "m9")).toEqual(["mount.3mf"]);
+  });
+
+  it("takes contentUrl's last part in the document's <id>.<extension> form when filename is missing", async () => {
+    const s = setup(oneModel([file({ id: "f9", filename: "mount.stl", sentFilename: null })]));
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(fileNames(s, "m9")).toEqual(["f9.stl"]);
+  });
+
+  it("takes contentUrl's name when filename has no extension", async () => {
+    const s = setup(
+      oneModel([
+        file({
+          id: "f9",
+          filename: "Wall Mount.3mf",
+          sentFilename: "Wall Mount",
+          contentUrlName: "Wall Mount.3mf",
+        }),
+      ]),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(fileNames(s, "m9")).toEqual(["Wall Mount.3mf"]);
+  });
+
+  it("does not read a dot inside a display-style name as an extension", async () => {
+    // The live dry run skipped such a file as ".5g 5 port wall mount files".
+    const name = "Switch 2.5g 5 Port Wall Mount";
+    const s = setup(
+      oneModel([
+        file({
+          id: "f9",
+          filename: `${name}.3mf`,
+          sentFilename: name,
+          contentUrlName: `${name}.3mf`,
+        }),
+      ]),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(fileNames(s, "m9")).toEqual([`${name}.3mf`]);
+  });
+
+  it("prefers filename when it has an extension Platehouse takes", async () => {
+    const s = setup(
+      oneModel([file({ id: "f9", filename: "mount.3mf", contentUrlName: "other-name.stl" })]),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(fileNames(s, "m9")).toEqual(["mount.3mf"]);
+  });
+
+  it("fails the file with the reason when neither has an extension, and never downloads it", async () => {
+    const s = setup(
+      oneModel([
+        file({ id: "f8", filename: "keep.3mf" }),
+        file({ id: "f9", filename: "mount.3mf", sentFilename: null, contentUrlName: "f9-content" }),
+      ]),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(1);
+    const model = r.report?.models[0];
+    expect(model?.outcome).toBe("failed");
+    expect(model?.reason).toBe("1 of 2 files failed");
+    const failed = model?.files.find((f) => f.status === "failed");
+    expect(failed).toEqual(
+      expect.objectContaining({
+        name: "mount",
+        reason:
+          "no file name with an extension: Manyfold sends no filename, and the last part of " +
+          'its contentUrl, "f9-content", has none; its file type cannot be told, so it is not imported',
+      }),
+    );
+    expect(s.manyfold.objectRequests.some((x) => x.url.includes("/f9?"))).toBe(false);
+    // The other file of the model still goes.
+    expect(fileNames(s, "m9")).toEqual(["keep.3mf"]);
+    expect(r.stdout.join("\n")).toMatch(/failed 1/);
+  });
+
+  it("fails the file, not a skip, in a dry run too, naming a filename that has no extension", async () => {
+    const s = setup(
+      oneModel([
+        file({
+          id: "f9",
+          filename: "Wall Mount.3mf",
+          sentFilename: "Wall Mount",
+          contentUrlName: "f9-content",
+        }),
+      ]),
+    );
+    const r = await s.run([]);
+    expect(r.code).toBe(1);
+    expect(rowsOf(r)).toEqual([
+      expect.objectContaining({
+        name: "Wall Mount",
+        status: "failed",
+        reason:
+          'no file name with an extension: the filename "Wall Mount" has none, and the last ' +
+          'part of its contentUrl, "f9-content", has none; its file type cannot be told, so it is not imported',
+      }),
+    ]);
+  });
+
+  it("still skips a file of a type Platehouse does not take, named by contentUrl", async () => {
+    const s = setup(
+      oneModel([
+        file({
+          id: "f9",
+          filename: "notes.pdf",
+          sentFilename: null,
+          contentUrlName: "notes.pdf",
+          encodingFormat: "application/pdf",
+        }),
+      ]),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).toBe(0);
+    expect(rowsOf(r)).toEqual([
+      expect.objectContaining({
+        name: "notes.pdf",
+        status: "skipped",
+        reason: "Platehouse does not take .pdf files",
+      }),
+    ]);
+  });
+});
+
+describe("the Manyfold and Platehouse addresses", () => {
+  // Neither has a default, so the command never points at any one network.
+  const without = (...keys: string[]) => {
+    const env: Record<string, string | undefined> = { ...ENV };
+    for (const key of keys) delete env[key];
+    return env;
+  };
+
+  it("are refused when neither a flag nor the variable gives Manyfold's, naming both", async () => {
+    const s = setup(library());
+    const r = await s.run(["--apply"], without("MANYFOLD_BASE"));
+    expect(r.code).toBe(2);
+    expect(r.stderr[0]).toBe(
+      "no Manyfold address: give --manyfold <https address> or set MANYFOLD_BASE",
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it("are refused when neither a flag nor the variable gives Platehouse's, naming both", async () => {
+    const s = setup(library());
+    const r = await s.run([], without("PLATEHOUSE_BASE"));
+    expect(r.code).toBe(2);
+    expect(r.stderr[0]).toBe(
+      "no Platehouse address: give --platehouse <https address> or set PLATEHOUSE_BASE",
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it("name every missing address at once", async () => {
+    const s = setup(library());
+    const r = await s.run([], without("MANYFOLD_BASE", "PLATEHOUSE_BASE"));
+    expect(r.code).toBe(2);
+    expect(r.stderr.slice(0, 2)).toEqual([
+      "no Manyfold address: give --manyfold <https address> or set MANYFOLD_BASE",
+      "no Platehouse address: give --platehouse <https address> or set PLATEHOUSE_BASE",
+    ]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("an empty or blank variable counts as not set", async () => {
+    const s = setup(library());
+    const r = await s.run([], { ...ENV, MANYFOLD_BASE: "", PLATEHOUSE_BASE: " " });
+    expect(r.code).toBe(2);
+    expect(r.stderr.slice(0, 2)).toEqual([
+      "no Manyfold address: give --manyfold <https address> or set MANYFOLD_BASE",
+      "no Platehouse address: give --platehouse <https address> or set PLATEHOUSE_BASE",
+    ]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("can come from the flags alone", async () => {
+    const s = setup(library());
+    const argv = ["--apply", "--manyfold", MANYFOLD, "--platehouse", PLATEHOUSE];
+    const r = await s.run(argv, without("MANYFOLD_BASE", "PLATEHOUSE_BASE"));
+    expect(r.code).toBe(0);
+    expect(r.stdout[0]).toMatch(/ platehouse-import apply: /);
+    expect(r.stdout[0]?.endsWith(`${MANYFOLD} -> ${PLATEHOUSE}`)).toBe(true);
+    expect(s.platehouse.models.size).toBe(3);
+  });
+
+  it("take the flag over the variable", async () => {
+    const s = setup(library());
+    // Requests to these hosts would be unhandled and fail the test.
+    const env = {
+      ...ENV,
+      MANYFOLD_BASE: "https://manyfold-wrong.example.test",
+      PLATEHOUSE_BASE: "https://platehouse-wrong.example.test",
+    };
+    const r = await s.run(["--manyfold", MANYFOLD, "--platehouse", PLATEHOUSE], env);
+    expect(r.code).toBe(0);
+    expect(r.report?.found).toBe(3);
+  });
+
+  it("drop a trailing slash", async () => {
+    const s = setup(library());
+    const r = await s.run(["--manyfold", `${MANYFOLD}/`, "--platehouse", `${PLATEHOUSE}/`]);
+    expect(r.code).toBe(0);
+    expect(r.stdout[0]?.endsWith(`${MANYFOLD} -> ${PLATEHOUSE}`)).toBe(true);
+  });
+
+  it.each([
+    ["http://manyfold.example.test", "plain http"],
+    ["manyfold.example.test", "no scheme"],
+    ["https://manyfold.example.test/manyfold", "a path"],
+    ["https://manyfold.example.test/?x=1", "a query"],
+    ["https://manyfold.example.test/#top", "a fragment"],
+    [["https://someone:", "pw-7f3a", "@manyfold.example.test"].join(""), "credentials"],
+  ])("refuse %s (%s) from the flag, without echoing it", async (value) => {
+    const s = setup(library());
+    const r = await s.run(["--manyfold", value]);
+    expect(r.code).toBe(2);
+    expect(r.stderr[0]).toBe(
+      "--manyfold must be an https address with no path, query, fragment or credentials",
+    );
+    expect(r.output).not.toContain(value);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("refuse a bad variable, naming the variable", async () => {
+    const s = setup(library());
+    const r = await s.run([], { ...ENV, PLATEHOUSE_BASE: "http://platehouse.example.test" });
+    expect(r.code).toBe(2);
+    expect(r.stderr[0]).toBe(
+      "PLATEHOUSE_BASE must be an https address with no path, query, fragment or credentials",
+    );
+    expect(seen).toHaveLength(0);
   });
 });
 

@@ -6,15 +6,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import { onFatal, run } from "../src/cli.js";
 import { createRedactor, REDACTED } from "../src/redact.js";
-import {
-  ENV,
-  FAKE_BEARER,
-  FAKE_KEY,
-  MANYFOLD,
-  PLATEHOUSE,
-  setup,
-  useServer,
-} from "./support/harness.js";
+import { ENV, FAKE_BEARER, FAKE_KEY, setup, useServer } from "./support/harness.js";
 import { library } from "./support/library.js";
 
 useServer();
@@ -33,8 +25,6 @@ describe("the catch-all in run()", () => {
       },
       stderr: (line) => stderr.push(line),
       sleep: noSleep,
-      manyfoldBase: MANYFOLD,
-      platehouseBase: PLATEHOUSE,
     });
     expect(r.code).toBe(2);
     expect(stderr).toEqual([`platehouse-import: unexpected error: stdout broke on ${REDACTED}`]);
@@ -51,8 +41,6 @@ describe("the catch-all in run()", () => {
       },
       stderr: (line) => stderr.push(line),
       sleep: noSleep,
-      manyfoldBase: MANYFOLD,
-      platehouseBase: PLATEHOUSE,
     });
     expect(r.code).toBe(1);
     expect(stderr).toEqual([`platehouse-import: unexpected error: write failed ${REDACTED}`]);
@@ -70,8 +58,6 @@ describe("the catch-all in run()", () => {
       fetch: async () => {
         throw new Error(`socket closed after ${FAKE_BEARER} and ${FAKE_KEY}`);
       },
-      manyfoldBase: MANYFOLD,
-      platehouseBase: PLATEHOUSE,
     });
     expect(r.code).toBe(2);
     const output = [...stdout, ...stderr].join("\n");
@@ -129,8 +115,6 @@ describe("errors raised outside run()", () => {
       stdout: () => {},
       stderr: () => {},
       sleep: noSleep,
-      manyfoldBase: MANYFOLD,
-      platehouseBase: PLATEHOUSE,
       redactor: h.redactor,
     });
     expect(r.code).toBe(0);

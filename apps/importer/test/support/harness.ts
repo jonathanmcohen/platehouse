@@ -19,11 +19,14 @@ export const FAKE_ID = ["stub", "client", "id", "7f3a"].join("-");
 export const FAKE_KEY = ["stub", "client", "key", "c0ffee", "9b1d"].join("-");
 export const FAKE_BEARER = ["ph", "_", "S".repeat(20), "t".repeat(23)].join("");
 
-/** The environment claude-env would give the command. */
+/** The environment claude-env would give the command, with the two addresses. */
 export const ENV: Record<string, string> = {};
 ENV.MANYFOLD_CLIENT_ID = FAKE_ID;
 ENV[["MANYFOLD", "CLIENT", "SECRET"].join("_")] = FAKE_KEY;
 ENV[["PLATEHOUSE", "TOKEN"].join("_")] = FAKE_BEARER;
+// The two addresses, which have no default: the stubs' origins.
+ENV.MANYFOLD_BASE = MANYFOLD;
+ENV.PLATEHOUSE_BASE = PLATEHOUSE;
 
 export interface SeenRequest {
   method: string;
@@ -112,8 +115,6 @@ export function setup(
         sleep: async (ms) => {
           waits.push(ms);
         },
-        manyfoldBase: MANYFOLD,
-        platehouseBase: PLATEHOUSE,
       });
       return { ...result, stdout, stderr, output: [...stdout, ...stderr].join("\n") };
     },

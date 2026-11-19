@@ -2,7 +2,7 @@ import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { ConfigError, loadConfig } from "../src/config.js";
 
-const ORIGIN = "https://platehouse.local.jonco.dev";
+const ORIGIN = "https://platehouse.example.com";
 
 // Synthetic values only. Each private value is joined from parts so that no
 // single source line looks like a credential.
@@ -22,6 +22,7 @@ const REQUIRED_KEYS = [
   "S3_ACCESS_KEY_ID",
   "S3_SECRET_ACCESS_KEY",
   "S3_FORCE_PATH_STYLE",
+  "OIDC_ISSUER",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
   "LINK_SECRET",
@@ -37,6 +38,7 @@ function validEnv(): NodeJS.ProcessEnv {
     ["S3_ACCESS_KEY_ID", ["SYNTHETIC", "ACCESS", "ID"].join("")],
     ["S3_SECRET_ACCESS_KEY", fakeS3],
     ["S3_FORCE_PATH_STYLE", "true"],
+    ["OIDC_ISSUER", "https://id.example.com"],
     ["OIDC_CLIENT_ID", "platehouse-synthetic-client"],
     ["OIDC_CLIENT_SECRET", fakeOidc],
     ["LINK_SECRET", fakeLink],
@@ -92,7 +94,7 @@ describe("loadConfig", () => {
   it("absoluteUrl ignores request host", () => {
     const config = loadConfig(validEnv());
     expect(config.absoluteUrl("/auth/callback")).toBe(
-      "https://platehouse.local.jonco.dev/auth/callback",
+      "https://platehouse.example.com/auth/callback",
     );
   });
 
@@ -124,13 +126,20 @@ describe("loadConfig", () => {
     expect(err.message).toContain(`${key} is missing`);
   });
 
+  it("OIDC_ISSUER has no default: unset, the start is refused with the key named", () => {
+    // The shipped image must not point at any one network's login server.
+    const err = configErrorOf(without(validEnv(), "OIDC_ISSUER"));
+    expect(err.keys).toEqual(["OIDC_ISSUER"]);
+    expect(err.message).toBe("Invalid configuration: OIDC_ISSUER is missing");
+  });
+
   const invalid: Array<[key: string, value: string]> = [
     ["PUBLIC_ORIGIN", "not-a-url-at-all"],
-    ["PUBLIC_ORIGIN", "http://platehouse.local.jonco.dev"],
-    ["PUBLIC_ORIGIN", "https://platehouse.local.jonco.dev/app"],
-    ["PUBLIC_ORIGIN", "https://platehouse.local.jonco.dev/?from=query"],
-    ["PUBLIC_ORIGIN", "https://platehouse.local.jonco.dev/#fragment"],
-    ["PUBLIC_ORIGIN", ["https://user:", fakeDb, "@platehouse.local.jonco.dev"].join("")],
+    ["PUBLIC_ORIGIN", "http://platehouse.example.com"],
+    ["PUBLIC_ORIGIN", "https://platehouse.example.com/app"],
+    ["PUBLIC_ORIGIN", "https://platehouse.example.com/?from=query"],
+    ["PUBLIC_ORIGIN", "https://platehouse.example.com/#fragment"],
+    ["PUBLIC_ORIGIN", ["https://user:", fakeDb, "@platehouse.example.com"].join("")],
     ["DATABASE_URL", ["mysql://platehouse:", fakeDb, "@db/platehouse"].join("")],
     ["DATABASE_URL", "not-a-database-url"],
     ["PORT", "0"],
@@ -141,7 +150,7 @@ describe("loadConfig", () => {
     ["S3_ENDPOINT", "ftp://minio-synthetic:9000"],
     ["S3_FORCE_PATH_STYLE", "maybe-later"],
     ["S3_FORCE_PATH_STYLE", "1"],
-    ["OIDC_ISSUER", "http://id.local.jonco.dev"],
+    ["OIDC_ISSUER", "http://id.example.com"],
     ["OIDC_ISSUER", "issuer-without-scheme"],
     ["LINK_SECRET", "a".repeat(31)],
     ["LINK_SECRET", `${"\u00e9".repeat(15)}a`],
@@ -177,7 +186,6 @@ describe("loadConfig", () => {
   it("applies the contract defaults when optional keys are unset", () => {
     const config = loadConfig(validEnv());
     expect(config.port).toBe(3000);
-    expect(config.oidc.issuer).toBe("https://id.local.jonco.dev");
     expect(config.oidc.group).toBe("platehouse");
     expect(config.slicer).toEqual({ url: "http://slicer:8080", plateSeconds: 120 });
     expect(config.inbox.dir).toBe("/data/inbox");
