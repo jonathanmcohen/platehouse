@@ -5,13 +5,14 @@
 // whose Origin is not PUBLIC_ORIGIN 403, before any of these handlers runs.
 //
 //   GET /app/api/settings           SettingsView: the default printer, My
-//                                   printers, the menu, bucketVersioning
-//   PUT /app/api/settings/printers  {printers, defaultId, expected} -> 200
+//                                   printers and their version, the menu,
+//                                   bucketVersioning
+//   PUT /app/api/settings/printers  {printers, defaultId, version} -> 200
 //                                   SavedPrinters | 400 refused (a sentence
-//                                   in message) | 409 printers_changed, My
-//                                   printers are no longer expected and
-//                                   nothing changed | 503 the slicer cannot
-//                                   be asked
+//                                   in message) | 409 printers_changed, the
+//                                   list or the default changed since
+//                                   version and nothing changed | 503 the
+//                                   slicer cannot be asked
 //
 // - The printer menu is Task 12's listPrinters (the slicer's /v1/profiles),
 //   grouped by printer model with each model's nozzle choices, in the order
@@ -23,11 +24,15 @@
 //   a new default) through the estimates service's savePrinters: an added
 //   printer has every live plate queued for it, which takes hours on a big
 //   library (SLICES_PER_MINUTE), and a removed one has its waiting work
-//   dropped. The page sends the list it last read as expected, and a list
-//   that is no longer the stored one is refused with 409 and changes
-//   nothing: a page open in another window, still showing the list from
-//   before a printer was added there, would otherwise remove that printer
-//   and cancel its slices. Each listed printer says how many plate
+//   dropped. GET answers printersVersion, which every save of the list or
+//   the default bumps, and the page sends back the one it last read; a save
+//   whose version is no longer the stored one is refused with 409 and
+//   changes nothing. A page open in another window would otherwise undo
+//   whatever changed there: remove a printer added there (cancelling its
+//   slices), bring back one removed there, or put back the old default,
+//   which decides what the library, the model page and the public API v1
+//   show first. One token covers the whole save, not field by field. Each
+//   listed printer says how many plate
 //   estimates it still has waiting, how many slices run up to and including
 //   its last one across every printer (through: one queue, one slice at a
 //   time, so a printer behind another's work waits for it too), and whether
@@ -56,8 +61,8 @@ import { printerName } from "../estimates/display.js";
 import {
   type Estimates,
   MAX_MY_PRINTERS,
-  PrinterListChanged,
   PrinterListRefused,
+  PrintersChanged,
   type SavedPrinters,
   UnknownPrinter,
 } from "../estimates/service.js";
@@ -108,6 +113,11 @@ export interface SettingsView {
   printerId: string;
   /** My printers, in order. */
   myPrinters: MyPrinterView[];
+  /**
+   * The version of My printers and the default together; a save sends back
+   * the one its page read, and an older one is refused (409).
+   */
+  printersVersion: number;
   /** The menu grouped by model; null while the slicer cannot be asked. */
   printers: PrinterGroup[] | null;
   /** SLICES_PER_MINUTE, for the page's "this will take about" sentence. */
@@ -252,15 +262,19 @@ const PRINTERS_BODY = {
   properties: {
     printers: { type: "array", items: PRINTER_ID, minItems: 1, maxItems: MAX_MY_PRINTERS },
     defaultId: PRINTER_ID,
-    /** My printers as the page last read them; never empty when stored. */
-    expected: { type: "array", items: PRINTER_ID, minItems: 1, maxItems: MAX_MY_PRINTERS },
+    /** The printersVersion the page last read. */
+    version: { type: "integer", minimum: 1 },
   },
-  required: ["printers", "defaultId", "expected"],
+  required: ["printers", "defaultId", "version"],
 } as const;
 
-/** The page's sentence for a 409 printers_changed. */
+/**
+ * The sentence for a 409 printers_changed. It says only what the server
+ * knows: the page adds that the list now shows the change once its own
+ * read of the list has worked.
+ */
 const PRINTERS_CHANGED =
-  "My printers were changed somewhere else after this page read them, so nothing was saved. The list now shows them as they are; make the change again.";
+  "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.";
 
 /** Registers the settings routes: GET /settings and PUT /settings/printers. */
 export async function registerSettingsApi(
@@ -279,6 +293,7 @@ export async function registerSettingsApi(
       ]);
       return {
         printerId: current.printerId,
+        printersVersion: current.printersVersion,
         myPrinters: current.myPrinters.map((id) => ({
           id,
           name: printerName(id, menu ?? []),
@@ -292,7 +307,7 @@ export async function registerSettingsApi(
       };
     });
 
-    scope.put<{ Body: { printers: string[]; defaultId: string; expected: string[] } }>(
+    scope.put<{ Body: { printers: string[]; defaultId: string; version: number } }>(
       "/settings/printers",
       { schema: { body: PRINTERS_BODY } },
       async (request, reply) => {
@@ -304,7 +319,7 @@ export async function registerSettingsApi(
           if (error instanceof PrinterListRefused) {
             return refuse(reply, 400, "bad_request", error.message);
           }
-          if (error instanceof PrinterListChanged) {
+          if (error instanceof PrintersChanged) {
             return refuse(reply, 409, "printers_changed", PRINTERS_CHANGED);
           }
           if (error instanceof UnknownPrinter) {

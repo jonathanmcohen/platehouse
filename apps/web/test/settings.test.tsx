@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { CollectionsPage } from "../src/collections/CollectionsPage";
 import { CreatorsPage } from "../src/creators/CreatorsPage";
 import { LibraryPage } from "../src/library/LibraryPage";
-import { howLong, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
+import { howLong, REREAD_SHOWS_CHANGE, WAITING_POLL_MS } from "../src/settings/PrinterMenu";
 import { SettingsPage } from "../src/settings/SettingsPage";
 import { VERSIONING_OFF_WARNING } from "../src/settings/VersioningBanner";
 import { TagsPage } from "../src/tags/TagsPage";
@@ -43,7 +43,7 @@ const NAMES: Record<string, string> = {
 const MENU_IDS = [P1S, P1S_06, X1C];
 /** The server's 409 printers_changed sentence (app-api/settings.ts). */
 const PRINTERS_CHANGED =
-  "My printers were changed somewhere else after this page read them, so nothing was saved. The list now shows them as they are; make the change again.";
+  "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.";
 
 /** A fresh API token, made the way the server makes one: ph_ and 43 base64url characters. */
 function freshToken(): string {
@@ -73,6 +73,8 @@ interface FakeModel {
 interface FakeState {
   /** The default printer. */
   printerId: string;
+  /** The version of My printers and the default; every save bumps it. */
+  printersVersion: number;
   /** My printers, in order. */
   myPrinters: string[];
   /** Plate estimates each printer still has waiting. */
@@ -221,6 +223,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     // any order (#254).
     const answer = json(200, {
       printerId: state.printerId,
+      printersVersion: state.printersVersion,
       myPrinters: state.myPrinters.map((id) => ({
         id,
         name: NAMES[id] ?? id,
@@ -253,11 +256,12 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   // The whole list at once, as the server's PUT /settings/printers: each
   // added printer has state.addQueued plates queued, a removed one's work stops.
   if (method === "PUT" && path === "/app/api/settings/printers") {
-    // Saved from a list that is no longer the stored one (another window
-    // changed it): refused, and nothing changes, as the server does.
-    if ((body.expected ?? []).join("\n") !== state.myPrinters.join("\n")) {
+    // Saved from an older version (another window changed the list or the
+    // default): refused, and nothing changes, as the server does.
+    if (body.version !== state.printersVersion) {
       return json(409, { error: "printers_changed", message: PRINTERS_CHANGED });
     }
+    state.printersVersion += 1;
     const next: string[] = body.printers;
     const added = next.filter((id) => !state.myPrinters.includes(id));
     if (added.some((id) => !MENU_IDS.includes(id))) {
@@ -439,6 +443,7 @@ let dialogs: {
 beforeEach(() => {
   state = {
     printerId: P1S,
+    printersVersion: 1,
     myPrinters: [P1S],
     waiting: {},
     // Jon's library on 2026-11-19.
@@ -747,7 +752,7 @@ describe("the settings page", () => {
     await show("/settings", <SettingsPage />);
     await choose(labelled<HTMLSelectElement>("Add a printer"), X1C);
     await click(button("Add printer"));
-    expect(putBodies()).toEqual([{ printers: [P1S, X1C], defaultId: P1S, expected: [P1S] }]);
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C], defaultId: P1S, version: 1 }]);
     const status = document.querySelector('[role="status"]')?.textContent ?? "";
     // 463 plates at the slicer's measured 3 a minute is 154.3 minutes.
     expect(status).toBe(
@@ -816,9 +821,7 @@ describe("the settings page", () => {
     parked = [];
     await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
     await click(button("Add printer"));
-    expect(putBodies()).toEqual([
-      { printers: [P1S, X1C, P1S_06], defaultId: P1S, expected: [P1S, X1C] },
-    ]);
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C, P1S_06], defaultId: P1S, version: 1 }]);
     // The PUT has answered; the list read after it has not.
     expect(parked).toHaveLength(1);
     const makeDefault = button(`Make ${NAMES[X1C]} the default`);
@@ -839,7 +842,7 @@ describe("the settings page", () => {
     expect(putBodies().at(-1)).toEqual({
       printers: [P1S, X1C, P1S_06],
       defaultId: X1C,
-      expected: [P1S, X1C, P1S_06],
+      version: 2,
     });
   });
 
@@ -853,10 +856,11 @@ describe("the settings page", () => {
     // Another window adds the 0.6 mm P1S; 463 plates are queued for it.
     state.myPrinters = [P1S, X1C, P1S_06];
     state.waiting = { [P1S_06]: 463 };
+    state.printersVersion += 1;
     const move = button(`Move ${NAMES[X1C]} up`);
     move.focus();
     await click(move);
-    expect(putBodies()).toEqual([{ printers: [X1C, P1S], defaultId: P1S, expected: [P1S, X1C] }]);
+    expect(putBodies()).toEqual([{ printers: [X1C, P1S], defaultId: P1S, version: 1 }]);
     // Nothing was dropped, and the page now shows the list as stored.
     expect(state.myPrinters).toEqual([P1S, X1C, P1S_06]);
     expect(state.waiting[P1S_06]).toBe(463);
@@ -865,29 +869,62 @@ describe("the settings page", () => {
       "Bambu Lab X1 Carbon, 0.4 mm nozzle",
       "Bambu Lab P1S, 0.6 mm nozzle",
     ]);
-    expect(announced()).toContain(PRINTERS_CHANGED);
+    // The list was read again, so the page says it now shows the change.
+    expect(announced()).toContain(`${PRINTERS_CHANGED} ${REREAD_SHOWS_CHANGE}`);
     // The controls are back, and the next change is made from the new list.
     expect(button(`Move ${NAMES[X1C]} up`).getAttribute("aria-disabled")).toBe("false");
     await click(button(`Move ${NAMES[X1C]} up`));
     expect(putBodies().at(-1)).toEqual({
       printers: [X1C, P1S, P1S_06],
       defaultId: P1S,
-      expected: [P1S, X1C, P1S_06],
+      version: 2,
     });
     expect(state.myPrinters).toEqual([X1C, P1S, P1S_06]);
+  });
+
+  // Issue #272: the same when the other window changed only the default. A
+  // save from this page would otherwise put the old default back.
+  test("a change made after another window changed the default is refused, and the default stays", async () => {
+    state.myPrinters = [P1S, X1C];
+    await show("/settings", <SettingsPage />);
+    // Another window makes the X1C the default; the list is the same.
+    state.printerId = X1C;
+    state.printersVersion += 1;
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies()).toEqual([{ printers: [P1S, X1C, P1S_06], defaultId: P1S, version: 1 }]);
+    // Nothing changed: the X1C is still the default, and no printer was added.
+    expect(state.printerId).toBe(X1C);
+    expect(state.myPrinters).toEqual([P1S, X1C]);
+    expect(announced()).toContain(`${PRINTERS_CHANGED} ${REREAD_SHOWS_CHANGE}`);
+    // The page shows the new default, and the next save keeps it.
+    const items = [...document.querySelectorAll("[data-my-printer]")];
+    expect(items[1]?.textContent).toContain("Default");
+    await choose(labelled<HTMLSelectElement>("Add a printer"), P1S_06);
+    await click(button("Add printer"));
+    expect(putBodies().at(-1)).toEqual({
+      printers: [P1S, X1C, P1S_06],
+      defaultId: X1C,
+      version: 2,
+    });
+    expect(state.printerId).toBe(X1C);
+    expect(state.myPrinters).toEqual([P1S, X1C, P1S_06]);
   });
 
   test("a refused change whose list cannot be read again keeps the controls locked and says nothing was saved", async () => {
     state.myPrinters = [P1S, X1C];
     await show("/settings", <SettingsPage />);
     state.myPrinters = [P1S, X1C, P1S_06];
+    state.printersVersion += 1;
     failing.add("GET /app/api/settings");
     await click(button(`Move ${NAMES[X1C]} up`));
     expect(putBodies()).toHaveLength(1);
-    expect(announced()).toContain(PRINTERS_CHANGED);
-    expect(text()).toContain(
-      "Nothing was saved, and the list could not be read again, so the buttons wait until it is.",
+    // One message, the page's own: the list on screen is still the old one,
+    // so nothing may claim it now shows the change (#252).
+    expect(announced()).toBe(
+      "My printers or the default printer were changed somewhere else, so nothing was saved, and the list could not be read again, so the buttons wait until it is.Read the list again",
     );
+    expect(text()).not.toContain(REREAD_SHOWS_CHANGE);
     expect(text()).not.toContain("The change was saved");
     await click(button(`Make ${NAMES[X1C]} the default`));
     expect(putBodies()).toHaveLength(1);
@@ -925,7 +962,7 @@ describe("the settings page", () => {
       expect(putBodies().at(-1)).toEqual({
         printers: [X1C, P1S, P1S_06],
         defaultId: P1S,
-        expected: [P1S, X1C, P1S_06],
+        version: 2,
       });
     } finally {
       vi.useRealTimers();
@@ -1021,7 +1058,7 @@ describe("the settings page", () => {
     expect(putBodies().at(-1)).toEqual({
       printers: [P1S, X1C],
       defaultId: X1C,
-      expected: [P1S, X1C],
+      version: 1,
     });
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
       "Bambu Lab X1 Carbon, 0.4 mm nozzle is now the default printer. No slicing was started.",
@@ -1030,7 +1067,7 @@ describe("the settings page", () => {
     expect(putBodies().at(-1)).toEqual({
       printers: [X1C, P1S],
       defaultId: X1C,
-      expected: [P1S, X1C],
+      version: 2,
     });
     expect(myPrinters()).toEqual([
       "Bambu Lab X1 Carbon, 0.4 mm nozzle",
@@ -1061,7 +1098,7 @@ describe("the settings page", () => {
       "The 120 plates still waiting to be estimated for it are dropped. Numbers already made for it are kept.",
     );
     await click(button("Remove", dialog() ?? document.body));
-    expect(putBodies()).toEqual([{ printers: [P1S], defaultId: P1S, expected: [P1S, X1C] }]);
+    expect(putBodies()).toEqual([{ printers: [P1S], defaultId: P1S, version: 1 }]);
     expect(myPrinters()).toEqual(["Bambu Lab P1S, 0.4 mm nozzle"]);
     expect(confirm).not.toHaveBeenCalled();
   });

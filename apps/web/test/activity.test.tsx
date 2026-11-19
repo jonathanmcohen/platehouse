@@ -29,6 +29,7 @@ import {
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const P1S = "Bambu Lab P1S 0.4 nozzle";
+const P1S_NAME = "Bambu Lab P1S, 0.4 mm nozzle";
 
 function emptyView(): ActivityView {
   return {
@@ -42,6 +43,7 @@ function emptyView(): ActivityView {
     },
     estimates: {
       printerId: P1S,
+      printerName: P1S_NAME,
       orcaVersion: "2.5.0",
       done: 0,
       pending: 0,
@@ -59,7 +61,14 @@ function emptyView(): ActivityView {
       { id: "scheduled", label: "Scheduled jobs", waiting: 0, active: 0, failed: 0 },
     ],
     schedules: [],
-    slicer: { reachable: true, busy: false, orca: "2.5.0", openscad: "2026.10.01", printerId: P1S },
+    slicer: {
+      reachable: true,
+      busy: false,
+      orca: "2.5.0",
+      openscad: "2026.10.01",
+      printerId: P1S,
+      printerName: P1S_NAME,
+    },
     events: { items: [], limit: 50, inboxReadable: true },
     working: false,
   };
@@ -80,6 +89,7 @@ function busyView(): ActivityView {
   };
   v.estimates = {
     printerId: P1S,
+    printerName: P1S_NAME,
     orcaVersion: "2.5.0",
     done: 300,
     pending: 119,
@@ -120,7 +130,14 @@ function busyView(): ActivityView {
       lastState: null,
     },
   ];
-  v.slicer = { reachable: true, busy: true, orca: "2.5.0", openscad: "2026.10.01", printerId: P1S };
+  v.slicer = {
+    reachable: true,
+    busy: true,
+    orca: "2.5.0",
+    openscad: "2026.10.01",
+    printerId: P1S,
+    printerName: P1S_NAME,
+  };
   v.events = {
     limit: 50,
     inboxReadable: true,
@@ -409,7 +426,7 @@ describe("the page", () => {
     const bar = est.querySelector('[role="progressbar"]');
     expect(bar).not.toBeNull();
     const labelId = bar?.getAttribute("aria-labelledby") ?? "";
-    expect(text(document.getElementById(labelId))).toContain(P1S);
+    expect(text(document.getElementById(labelId))).toContain(P1S_NAME);
     expect(bar?.getAttribute("aria-valuemin")).toBe("0");
     expect(bar?.getAttribute("aria-valuemax")).toBe("463");
     expect(bar?.getAttribute("aria-valuenow")).toBe("343");
@@ -463,19 +480,26 @@ describe("the page", () => {
     expect(items[2]).toContain("No run recorded in the last 7 days");
   });
 
-  test("shows the slicer's health, versions and the selected printer", async () => {
+  test("shows the slicer's health, versions and the default printer in full", async () => {
     await render();
     const s = section("Slicer");
     expect(stat(s, "Status")).toBe("Reachable, slicing now");
     expect(stat(s, "OrcaSlicer")).toBe("2.5.0");
     expect(stat(s, "OpenSCAD")).toBe("2026.10.01");
-    expect(stat(s, "Selected printer")).toBe(P1S);
+    expect(stat(s, "Default printer")).toBe(P1S_NAME);
   });
 
   test("says plainly when the slicer cannot be reached", async () => {
     answer = () => {
       const v = busyView();
-      v.slicer = { reachable: false, busy: null, orca: null, openscad: null, printerId: P1S };
+      v.slicer = {
+        reachable: false,
+        busy: null,
+        orca: null,
+        openscad: null,
+        printerId: P1S,
+        printerName: P1S_NAME,
+      };
       return v;
     };
     await render();

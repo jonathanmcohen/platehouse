@@ -5,12 +5,18 @@ import type { BucketVersioning, DB } from "../db/types.js";
 // The single settings row, seeded by migration 0001, and My printers
 // (migration 0007): the printers Jon owns, in display order. settings
 // .printer_id is the default printer, and must be one of My printers.
+// settings.printers_version counts the writes to the two together.
 
 export interface Settings {
   /** The default printer: the one pages show first and the public API v1 answers for. */
   printerId: string;
   /** My printers, in display order; never empty, and always holds printerId. */
   myPrinters: string[];
+  /**
+   * The version of My printers and the default together: every save of
+   * either bumps it. A save names the version it was built from.
+   */
+  printersVersion: number;
   lastOrcaVersion: string | null;
   bucketVersioning: BucketVersioning;
   updatedAt: Date;
@@ -26,23 +32,32 @@ export interface PrintersPatch {
   /** One of printers. */
   defaultId: string;
   /**
-   * The list the caller built printers from, in order. Given, the save goes
-   * ahead only while My printers is still exactly that list, and is refused
-   * with PrinterListChanged otherwise: a list built from an older read would
-   * remove a printer added since.
+   * The printersVersion the caller built this save from. Given, the save
+   * goes ahead only while the stored version is still that one, and is
+   * refused with PrintersChanged otherwise: a save built from an older read
+   * would undo whatever changed since, to the list or to the default.
    */
-  expected?: readonly string[];
+  version?: number;
 }
 
-/** My printers are no longer the list the save was built from; nothing changed. */
-export class PrinterListChanged extends Error {
+/**
+ * My printers or the default changed after the read this save was built
+ * from (its version is no longer the stored one); nothing changed.
+ */
+export class PrintersChanged extends Error {
   constructor() {
-    super("My printers changed after the list this save was built from was read");
-    this.name = "PrinterListChanged";
+    super("My printers or the default changed after the read this save was built from");
+    this.name = "PrintersChanged";
   }
 }
 
-const COLUMNS = ["printerId", "lastOrcaVersion", "bucketVersioning", "updatedAt"] as const;
+const COLUMNS = [
+  "printerId",
+  "printersVersion",
+  "lastOrcaVersion",
+  "bucketVersioning",
+  "updatedAt",
+] as const;
 
 /** My printers in display order, as one array column. */
 const MY_PRINTERS = sql<string[]>`(
@@ -79,21 +94,24 @@ export function settingsRepo(db: Kysely<DB>) {
     },
 
     /**
-     * Replaces My printers with patch.printers, in that order, and sets the
-     * default, in one transaction, and returns the new settings. A printer
-     * kept from the old list keeps its added_at. A default outside the list
-     * fails at commit with 23503 and changes nothing. With patch.expected,
-     * the settings row is locked first, so two saves run one after the other,
-     * and a list that is no longer patch.expected is refused with
-     * PrinterListChanged and changes nothing. The caller checks that the list
-     * is not empty and names each printer once.
+     * Replaces My printers with patch.printers, in that order, sets the
+     * default and bumps printersVersion, in one transaction, and returns the
+     * new settings. A printer kept from the old list keeps its added_at. A
+     * default outside the list fails with 23503 and changes nothing. The
+     * settings row is locked first, so two saves run one after the other;
+     * with patch.version, a save whose version is no longer the stored one
+     * is refused with PrintersChanged and changes nothing. The caller checks
+     * that the list is not empty and names each printer once.
      */
     async savePrinters(patch: PrintersPatch): Promise<Settings> {
       return inTransaction(db, async (trx) => {
-        if (patch.expected !== undefined) {
-          await trx.selectFrom("settings").select("printerId").forUpdate().execute();
-          const now = (await get(trx)).myPrinters;
-          if (!sameList(now, patch.expected)) throw new PrinterListChanged();
+        const locked = await trx
+          .selectFrom("settings")
+          .select("printersVersion")
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+        if (patch.version !== undefined && locked.printersVersion !== patch.version) {
+          throw new PrintersChanged();
         }
         const keep = [...patch.printers];
         if (keep.length === 0) {
@@ -112,7 +130,11 @@ export function settingsRepo(db: Kysely<DB>) {
         }
         await trx
           .updateTable("settings")
-          .set({ printerId: patch.defaultId, updatedAt: sql`now()` })
+          .set({
+            printerId: patch.defaultId,
+            printersVersion: sql`printers_version + 1`,
+            updatedAt: sql`now()`,
+          })
           .execute();
         // The default must be in the list: check it now, inside the
         // transaction, so the caller gets the error from this call.
@@ -124,8 +146,3 @@ export function settingsRepo(db: Kysely<DB>) {
 }
 
 export type SettingsRepo = ReturnType<typeof settingsRepo>;
-
-/** The same printers in the same order. */
-export function sameList(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((id, i) => id === b[i]);
-}

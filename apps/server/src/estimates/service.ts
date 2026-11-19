@@ -76,7 +76,7 @@ import type { DB } from "../db/types.js";
 import { QUEUE, SLICER_RETRY, type SlicerJob, type SlicerJobHandlers } from "../jobs/queues.js";
 import type { Estimate } from "../repos/estimates.js";
 import { createRepos, type Repos } from "../repos/index.js";
-import { PrinterListChanged, sameList } from "../repos/settings.js";
+import { PrintersChanged } from "../repos/settings.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
 import {
   SliceBodyUnreadable,
@@ -131,7 +131,7 @@ export class UnknownPrinter extends Error {
 /** Most printers My printers holds: far more than anyone owns, and a bound on the work. */
 export const MAX_MY_PRINTERS = 20;
 
-export { PrinterListChanged };
+export { PrintersChanged };
 
 /** Why a new My printers list was refused; message is a sentence for the page. */
 export class PrinterListRefused extends Error {
@@ -260,18 +260,18 @@ export interface Estimates {
    * it already running finishes and is kept. A reorder or a new default
    * starts no slicing. PrinterListRefused for a list that is empty, too
    * long, names a printer twice or leaves out the default; UnknownPrinter
-   * for an added printer the menu lacks. expected is the list the caller
-   * built printers from (the Settings page sends the list it last read):
-   * PrinterListChanged, and nothing changes, when My printers is no longer
-   * that list, so a page open in another window cannot remove a printer
-   * added since it read the list. Without expected the list is still
-   * checked against the one read here, so two saves at once cannot both act
-   * on the same old list.
+   * for an added printer the menu lacks. version is the printersVersion the
+   * caller built the save from (the Settings page sends the one it last
+   * read): PrintersChanged, and nothing changes, when it is no longer the
+   * stored one, because the list or the default changed since, so a page
+   * open in another window cannot undo either. Without version the save is
+   * still checked against the version read here, so two saves at once
+   * cannot both act on the same old read.
    */
   savePrinters(patch: {
     printers: readonly string[];
     defaultId: string;
-    expected?: readonly string[];
+    version?: number;
   }): Promise<SavedPrinters>;
   /**
    * Makes printerId the only printer in My printers, and the default: the
@@ -661,7 +661,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   async function savePrinters(patch: {
     printers: readonly string[];
     defaultId: string;
-    expected?: readonly string[];
+    version?: number;
   }): Promise<SavedPrinters> {
     const printers = [...patch.printers];
     if (printers.length === 0) {
@@ -676,10 +676,11 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     if (!printers.includes(patch.defaultId)) {
       throw new PrinterListRefused("The default printer must be one of My printers.");
     }
-    const before = (await repos.settings.get()).myPrinters;
-    if (patch.expected !== undefined && !sameList(before, patch.expected)) {
-      throw new PrinterListChanged();
+    const read = await repos.settings.get();
+    if (patch.version !== undefined && read.printersVersion !== patch.version) {
+      throw new PrintersChanged();
     }
+    const before = read.myPrinters;
     const addedIds = printers.filter((id) => !before.includes(id));
     const removed = before.filter((id) => !printers.includes(id));
     // Only an added printer must be in the menu: one already listed stays
@@ -690,9 +691,13 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       if (printer === undefined) throw new UnknownPrinter();
       return printer;
     });
-    // Saved only while My printers is still before, which added and removed
-    // were worked out from (the repo checks it under a lock).
-    await repos.settings.savePrinters({ printers, defaultId: patch.defaultId, expected: before });
+    // Saved only while the version is still the one read here, which added
+    // and removed were worked out from (the repo checks it under a lock).
+    await repos.settings.savePrinters({
+      printers,
+      defaultId: patch.defaultId,
+      version: read.printersVersion,
+    });
     if (removed.length > 0) {
       await dropUnlisted(printers);
       log(`removed ${removed.join(", ")} from My printers; its waiting estimates were dropped`);

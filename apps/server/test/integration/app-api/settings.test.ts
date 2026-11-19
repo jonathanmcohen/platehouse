@@ -149,6 +149,15 @@ async function drain(): Promise<void> {
 }
 
 /** Uploads a synthetic one-plate .3mf through the ingest queue; returns its plate's id. */
+/** The printers version GET /app/api/settings answers, as a page reads it. */
+async function version(): Promise<number> {
+  const res = await call("GET", "/app/api/settings");
+  expect(res.status, res.text).toBe(200);
+  const answer = res.json() as { printersVersion?: unknown };
+  expect(Number.isInteger(answer.printersVersion)).toBe(true);
+  return answer.printersVersion as number;
+}
+
 async function uploadPlate(): Promise<string> {
   const tmpPath = await writeUpload(env, build3mf({ plates: 1 }));
   const input: IngestInput = { tmpPath, originalName: "Synthetic.3mf", target: "new" };
@@ -344,7 +353,7 @@ describe("the settings page", () => {
     const held = stub.hold();
     try {
       const res = await call("PUT", "/app/api/settings/printers", {
-        json: { printers: [P1S, X1C], defaultId: P1S, expected: [P1S] },
+        json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
       });
       expect(res.status, res.text).toBe(200);
       const answer = res.json() as {
@@ -392,7 +401,7 @@ describe("the settings page", () => {
     const before = stub.calls.length;
     try {
       const res = await call("PUT", "/app/api/settings/printers", {
-        json: { printers: [P1S, X1C, A1], defaultId: P1S, expected: [P1S] },
+        json: { printers: [P1S, X1C, A1], defaultId: P1S, version: await version() },
       });
       expect(res.status, res.text).toBe(200);
       const added = (res.json() as { added: Array<{ printerId: string; queued: number }> }).added;
@@ -431,12 +440,12 @@ describe("the settings page", () => {
 
   test("a new order or a new default is saved and queues nothing; a removal drops its work", async () => {
     await call("PUT", "/app/api/settings/printers", {
-      json: { printers: [P1S, X1C], defaultId: P1S, expected: [P1S] },
+      json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
     await drain();
     const calls = stub.calls.length;
     const reorder = await call("PUT", "/app/api/settings/printers", {
-      json: { printers: [X1C, P1S], defaultId: X1C, expected: [P1S, X1C] },
+      json: { printers: [X1C, P1S], defaultId: X1C, version: await version() },
     });
     expect(reorder.status, reorder.text).toBe(200);
     expect(reorder.json()).toEqual({ added: [], removed: [] });
@@ -448,7 +457,7 @@ describe("the settings page", () => {
     expect(stub.calls.length).toBe(calls);
 
     const remove = await call("PUT", "/app/api/settings/printers", {
-      json: { printers: [X1C], defaultId: X1C, expected: [X1C, P1S] },
+      json: { printers: [X1C], defaultId: X1C, version: await version() },
     });
     expect(remove.json()).toEqual({ added: [], removed: [P1S] });
     expect((await call("GET", "/app/api/settings")).json()).toMatchObject({
@@ -460,18 +469,19 @@ describe("the settings page", () => {
   test("a list that cannot be saved is refused with a sentence, and My printers stay", async () => {
     const refused: Array<[unknown, string]> = [
       [
-        { printers: [P1S, "Bambu Lab Q9 0.4 nozzle"], defaultId: P1S, expected: [P1S] },
+        { printers: [P1S, "Bambu Lab Q9 0.4 nozzle"], defaultId: P1S, version: await version() },
         "unknown_printer",
       ],
-      [{ printers: [P1S, P1S], defaultId: P1S, expected: [P1S] }, "bad_request"],
-      [{ printers: [P1S], defaultId: X1C, expected: [P1S] }, "bad_request"],
-      [{ printers: [], defaultId: P1S, expected: [P1S] }, "bad_request"],
-      [{ printers: [P1S], expected: [P1S] }, "bad_request"],
+      [{ printers: [P1S, P1S], defaultId: P1S, version: await version() }, "bad_request"],
+      [{ printers: [P1S], defaultId: X1C, version: await version() }, "bad_request"],
+      [{ printers: [], defaultId: P1S, version: await version() }, "bad_request"],
+      [{ printers: [P1S], version: await version() }, "bad_request"],
       [{ printerId: P1S }, "bad_request"],
-      [{ printers: [""], defaultId: "", expected: [P1S] }, "bad_request"],
-      // Without the list the page last read, nothing says the page saw the X1C or not.
+      [{ printers: [""], defaultId: "", version: await version() }, "bad_request"],
+      // Without the version the page read, nothing says what the page saw.
       [{ printers: [P1S, X1C], defaultId: P1S }, "bad_request"],
-      [{ printers: [P1S, X1C], defaultId: P1S, expected: [] }, "bad_request"],
+      [{ printers: [P1S, X1C], defaultId: P1S, version: 0 }, "bad_request"],
+      [{ printers: [P1S, X1C], defaultId: P1S, version: "one" }, "bad_request"],
     ];
     for (const [body, error] of refused) {
       const res = await call("PUT", "/app/api/settings/printers", { json: body });
@@ -488,16 +498,18 @@ describe("the settings page", () => {
     await drain();
     const held = stub.hold();
     try {
-      // One window adds the X1C; its plates are queued.
+      // Window A reads the settings.
+      const readByA = await version();
+      // Window B adds the X1C; its plates are queued.
       const added = await call("PUT", "/app/api/settings/printers", {
-        json: { printers: [P1S, X1C], defaultId: P1S, expected: [P1S] },
+        json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
       });
       expect(added.status, added.text).toBe(200);
       const queued = (added.json() as { added: Array<{ queued: number }> }).added[0]?.queued ?? 0;
       expect(queued).toBeGreaterThanOrEqual(1);
-      // A window that read [P1S] before that saves [P1S]: refused, nothing dropped.
+      // Window A, still showing [P1S], saves [P1S]: refused, nothing dropped.
       const stale = await call("PUT", "/app/api/settings/printers", {
-        json: { printers: [P1S], defaultId: P1S, expected: [P1S] },
+        json: { printers: [P1S], defaultId: P1S, version: readByA },
       });
       expect(stale.status, stale.text).toBe(409);
       const answer = stale.json() as { error: string; message?: string };
@@ -513,6 +525,59 @@ describe("the settings page", () => {
       held.release();
     }
     await drain();
+  });
+
+  // Issue #272: one version covers the list and the default, so a page
+  // that read before either changed cannot undo it, whatever it saves.
+  test("after another window changes the default, an add or a move from the old read is refused", async () => {
+    await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
+    });
+    await drain();
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    const readByA = await version();
+    // Window B makes the X1C the default; the list is the same.
+    const madeDefault = await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [P1S, X1C], defaultId: X1C, version: readByA },
+    });
+    expect(madeDefault.status, madeDefault.text).toBe(200);
+    const calls = stub.calls.length;
+    // Window A, still showing P1S as the default, adds the A1, then moves the X1C up.
+    for (const body of [
+      { printers: [P1S, X1C, A1], defaultId: P1S, version: readByA },
+      { printers: [X1C, P1S], defaultId: P1S, version: readByA },
+    ]) {
+      const res = await call("PUT", "/app/api/settings/printers", { json: body });
+      expect(res.status, JSON.stringify(body)).toBe(409);
+      expect((res.json() as { error: string }).error).toBe("printers_changed");
+    }
+    // Nothing changed: the default is still the X1C, no A1, nothing queued.
+    expect(await env.repos.settings.get()).toMatchObject({
+      printerId: X1C,
+      myPrinters: [P1S, X1C],
+    });
+    await sleep(300);
+    expect(stub.calls.length).toBe(calls);
+    // A page that reads again saves.
+    const fresh = await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [X1C, P1S], defaultId: X1C, version: await version() },
+    });
+    expect(fresh.status, fresh.text).toBe(200);
+    expect(await env.repos.settings.get()).toMatchObject({
+      printerId: X1C,
+      myPrinters: [X1C, P1S],
+    });
+  });
+
+  test("the settings answer carries the version, and only printer saves move it", async () => {
+    const before = await version();
+    await recordVersioning({ store: env.store, settings: env.repos.settings });
+    expect(await version()).toBe(before);
+    const res = await call("PUT", "/app/api/settings/printers", {
+      json: { printers: [P1S], defaultId: P1S, version: before },
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(await version()).toBe(before + 1);
   });
 
   test("the old one-printer route is gone", async () => {

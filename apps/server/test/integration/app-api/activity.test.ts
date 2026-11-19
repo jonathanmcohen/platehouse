@@ -465,9 +465,10 @@ describe("a library with trash, estimates, jobs and failures", () => {
     expect(v.library.lastImportAt).not.toBeNull();
   });
 
-  test("shows estimate progress for the selected printer and Orca version on live models", () => {
+  test("shows estimate progress for the default printer, named in full, and Orca version on live models", () => {
     expect(v.estimates).toMatchObject({
       printerId: P1S,
+      printerName: "Bambu Lab P1S, 0.4 mm nozzle",
       orcaVersion: ORCA,
       done: 1,
       pending: 1,
@@ -588,6 +589,7 @@ describe("the slicer's health", () => {
       orca: null,
       openscad: null,
       printerId: P1S,
+      printerName: "Bambu Lab P1S, 0.4 mm nozzle",
     });
   });
 

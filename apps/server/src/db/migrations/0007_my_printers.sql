@@ -39,3 +39,12 @@ alter table settings
   add constraint settings_printer_in_my_printers
     foreign key (printer_id) references user_printers (printer_id)
     deferrable initially deferred;
+
+-- printers_version counts the writes to My printers and the default. Every
+-- save that changes either bumps it, and a save names the version it was
+-- built from: one built from an older read (a Settings page open in another
+-- window) is refused, so it cannot put back a removed printer, drop an added
+-- one or restore an old default. A counter of its own, not updated_at, which
+-- also moves when the Orca version or the bucket's versioning is recorded.
+alter table settings
+  add column printers_version integer not null default 1 check (printers_version >= 1);

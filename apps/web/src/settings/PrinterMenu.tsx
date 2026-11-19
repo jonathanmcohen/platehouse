@@ -39,12 +39,16 @@
 //   older read (a waiting-count poll sent before the save) never replaces it
 //   (useAppApi's reload). If the read fails, the controls stay locked, the
 //   page says why, and Read the list again unlocks them once the list is in.
-// - That covers this page only. Each save also sends the list the page last
-//   read (expected), and the server refuses it with 409 printers_changed,
-//   changing nothing, when My printers is no longer that list: a page open
-//   in another window or on another machine would otherwise drop a printer
-//   added there. The page then reads the list again and says why nothing
-//   was saved; the change is made again from the list as it now is.
+// - That covers this page only. Each save, add, remove, move or make
+//   default alike, also sends the printersVersion the page last read, and
+//   the server refuses it with 409 printers_changed, changing nothing, when
+//   the list or the default changed since (#272): a page open in another
+//   window or on another machine would otherwise undo that change, dropping
+//   a printer added there or putting back the old default. The page then
+//   reads the list again; once it is in, the page says nothing was saved
+//   and that the list now shows the change, to be made again. If that read
+//   fails, the page says only that nothing was saved and the list could not
+//   be read, and keeps the buttons locked until Read the list again.
 // - A listed printer the slicer no longer offers (an OrcaSlicer update
 //   renamed its preset) stays listed, and says nothing can be estimated for
 //   it. While the slicer cannot be reached the list still shows, and the
@@ -119,7 +123,16 @@ export function waitingLine(waiting: number, through: number, perMinute: number)
     : `${head}.`;
 }
 
-/** The server refused a save: My printers are no longer the list the page sent as expected. */
+/** The sentence a refused save ends with once the page has read the list again. */
+export const REREAD_SHOWS_CHANGE = "The list now shows them as they are; make the change again.";
+
+/**
+ * A refused save whose re-read failed: the page's own locked-list notice says
+ * what happened, so run() shows nothing more.
+ */
+class RefusedUnread extends Error {}
+
+/** The server refused a save: the list or the default changed after the version the page sent. */
 function isPrintersChanged(failure: unknown): boolean {
   return (
     failure instanceof AppApiError &&
@@ -213,11 +226,17 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       saved = await appApi<SavedPrinters>("PUT", "/settings/printers", {
         printers,
         defaultId,
-        expected: listed,
+        version: view.printersVersion,
       });
     } catch (failure) {
-      if (isPrintersChanged(failure) && !(await reload())) setUnread("refused");
-      throw failure;
+      if (!isPrintersChanged(failure)) throw failure;
+      if (!(await reload())) {
+        setUnread("refused");
+        throw new RefusedUnread();
+      }
+      // The list on screen is the stored one again: say so after the server's sentence.
+      const said = failure instanceof AppApiError ? failure.message : "";
+      throw new AppApiError(409, `${said} ${REREAD_SHOWS_CHANGE}`.trim(), null);
     }
     if (!(await reload())) setUnread("saved");
     return saved;
@@ -243,7 +262,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
     try {
       setStatus(await change());
     } catch (failure) {
-      setError(errorText(failure));
+      if (!(failure instanceof RefusedUnread)) setError(errorText(failure));
     } finally {
       setBusy(false);
     }
@@ -293,10 +312,20 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   }
 
   async function remove(printer: MyPrinterView): Promise<void> {
-    await save(
-      listed.filter((p) => p !== printer.id),
-      view.printerId,
-    );
+    try {
+      await save(
+        listed.filter((p) => p !== printer.id),
+        view.printerId,
+      );
+    } catch (failure) {
+      // Refused, and the list could not be read again: the locked-list
+      // notice says so; the dialog closes rather than say something else.
+      if (failure instanceof RefusedUnread) {
+        setRemoving(null);
+        return;
+      }
+      throw failure;
+    }
     setRemovedId(printer.id);
     setRemoving(null);
     setError(undefined);
@@ -423,7 +452,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
           <p>
             {unread === "saved"
               ? "The change was saved, but the list could not be read again, so the buttons wait until it is."
-              : "Nothing was saved, and the list could not be read again, so the buttons wait until it is."}
+              : "My printers or the default printer were changed somewhere else, so nothing was saved, and the list could not be read again, so the buttons wait until it is."}
           </p>
           <button
             type="button"

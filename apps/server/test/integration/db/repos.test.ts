@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { migrate } from "../../../src/db/migrate.js";
 import { createRepos, type Repos } from "../../../src/repos/index.js";
-import { PrinterListChanged } from "../../../src/repos/settings.js";
+import { PrintersChanged } from "../../../src/repos/settings.js";
 import {
   sqlState,
   startTestPostgres,
@@ -452,38 +452,63 @@ describe("settings", () => {
     expect(await repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S] });
   });
 
-  test("savePrinters with an expected list saves only while the stored list is that list", async () => {
+  test("savePrinters bumps printersVersion and saves only from the stored version", async () => {
     const P1S = "Bambu Lab P1S 0.4 nozzle";
     const A1 = "Bambu Lab A1 0.4 nozzle";
     const MINI = "Bambu Lab A1 mini 0.4 nozzle";
     try {
-      await repos.settings.savePrinters({ printers: [P1S, A1], defaultId: P1S });
-      // Saved from a read taken before A1 was added: refused, nothing changes.
+      const v0 = (await repos.settings.get()).printersVersion;
+      const added = await repos.settings.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      expect(added.printersVersion).toBe(v0 + 1);
+      // A save built from the read before A1 was added: refused, nothing changes.
       await expect(
-        repos.settings.savePrinters({ printers: [P1S, MINI], defaultId: P1S, expected: [P1S] }),
-      ).rejects.toBeInstanceOf(PrinterListChanged);
-      // The same printers in another order are another list.
+        repos.settings.savePrinters({ printers: [P1S, MINI], defaultId: P1S, version: v0 }),
+      ).rejects.toBeInstanceOf(PrintersChanged);
+      expect(await repos.settings.get()).toMatchObject({
+        printerId: P1S,
+        myPrinters: [P1S, A1],
+        printersVersion: v0 + 1,
+      });
+      // A change of the default alone also bumps the version, so a save
+      // built before it cannot put the old default back (#272).
+      const defaulted = await repos.settings.savePrinters({
+        printers: [P1S, A1],
+        defaultId: A1,
+        version: v0 + 1,
+      });
+      expect(defaulted.printersVersion).toBe(v0 + 2);
       await expect(
-        repos.settings.savePrinters({ printers: [P1S], defaultId: P1S, expected: [A1, P1S] }),
-      ).rejects.toBeInstanceOf(PrinterListChanged);
-      expect(await repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S, A1] });
+        repos.settings.savePrinters({ printers: [A1, P1S], defaultId: P1S, version: v0 + 1 }),
+      ).rejects.toBeInstanceOf(PrintersChanged);
+      expect(await repos.settings.get()).toMatchObject({
+        printerId: A1,
+        myPrinters: [P1S, A1],
+      });
       // Two saves from the same read, at once: one lands and the other is refused.
       const both = await Promise.allSettled([
-        repos.settings.savePrinters({ printers: [P1S], defaultId: P1S, expected: [P1S, A1] }),
-        repos.settings.savePrinters({ printers: [A1, P1S], defaultId: A1, expected: [P1S, A1] }),
+        repos.settings.savePrinters({ printers: [P1S, A1], defaultId: P1S, version: v0 + 2 }),
+        repos.settings.savePrinters({ printers: [A1, P1S], defaultId: A1, version: v0 + 2 }),
       ]);
       expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
       const refused = both.filter((r) => r.status === "rejected");
       expect(refused).toHaveLength(1);
-      expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(PrinterListChanged);
-      // The expected list that is stored saves.
-      const now = (await repos.settings.get()).myPrinters;
+      expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(PrintersChanged);
+      // A save from the stored version goes through.
+      const now = (await repos.settings.get()).printersVersion;
+      expect(now).toBe(v0 + 3);
       const saved = await repos.settings.savePrinters({
         printers: [MINI, P1S],
         defaultId: P1S,
-        expected: now,
+        version: now,
       });
-      expect(saved).toMatchObject({ printerId: P1S, myPrinters: [MINI, P1S] });
+      expect(saved).toMatchObject({
+        printerId: P1S,
+        myPrinters: [MINI, P1S],
+        printersVersion: v0 + 4,
+      });
+      // Other settings writes leave the version alone.
+      await repos.settings.update({ lastOrcaVersion: "2.5.1" });
+      expect((await repos.settings.get()).printersVersion).toBe(v0 + 4);
     } finally {
       await repos.settings.savePrinters({ printers: [P1S], defaultId: P1S });
     }

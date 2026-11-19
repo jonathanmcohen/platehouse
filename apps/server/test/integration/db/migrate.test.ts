@@ -300,6 +300,10 @@ describe("0007 My printers", () => {
 
     expect(await myPrinters(db)).toEqual([{ printerId: A1_MINI, position: 1 }]);
     expect(await defaultPrinter(db)).toBe(A1_MINI);
+    // The version My printers saves are checked against starts at 1.
+    expect((await db.selectFrom("settings").select("printersVersion").execute())[0]).toEqual({
+      printersVersion: 1,
+    });
     // Every existing estimate is untouched: the same rows, printer ids and numbers.
     expect(await estimateRows(db)).toEqual(before);
   });

@@ -43,6 +43,11 @@ export interface MyPrinterView {
 export interface SettingsView {
   /** The default printer. */
   printerId: string;
+  /**
+   * The version of My printers and the default together; every save sends
+   * back the one the page read, and the server refuses an older one (409).
+   */
+  printersVersion: number;
   /** My printers, in order. */
   myPrinters: MyPrinterView[];
   /** The slicer's printer menu; null while the slicer cannot be asked. */

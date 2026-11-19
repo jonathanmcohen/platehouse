@@ -171,6 +171,8 @@ export interface SettingsTable {
   printerId: Generated<string>;
   lastOrcaVersion: string | null;
   bucketVersioning: Generated<BucketVersioning>;
+  /** Bumped by every write to My printers or the default (0007). */
+  printersVersion: Generated<number>;
   updatedAt: UpdatedAt;
 }
 

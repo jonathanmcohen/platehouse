@@ -17,8 +17,8 @@ import {
   createEstimates,
   type Estimates,
   MAX_MY_PRINTERS,
-  PrinterListChanged,
   PrinterListRefused,
+  PrintersChanged,
   SLICE_PRIORITY,
   SLICER_DOWN_DETAIL,
   STORE_DOWN_DETAIL,
@@ -1240,27 +1240,47 @@ describe("My printers", () => {
     const id = plateId(plates, 1);
     const held = stub.hold();
     try {
-      // Another window adds the X1C: its plate is queued for it.
-      await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S, expected: [P1S] });
+      // Window A reads My printers: [P1S].
+      const readByA = (await env.repos.settings.get()).printersVersion;
+      // Window B adds the X1C: its plate is queued for it.
+      await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S, version: readByA });
       const forX1C = async () =>
         (await platehouseRows(id)).filter((r) => r.printerId === X1C).map((r) => r.id);
       const waiting = await forX1C();
       expect(waiting).toHaveLength(1);
-      // A window still showing [P1S] saves a list without the X1C: refused.
+      // Window A, still showing [P1S], saves a list without the X1C: refused.
       await expect(
-        estimates.savePrinters({ printers: [P1S], defaultId: P1S, expected: [P1S] }),
-      ).rejects.toBeInstanceOf(PrinterListChanged);
+        estimates.savePrinters({ printers: [P1S], defaultId: P1S, version: readByA }),
+      ).rejects.toBeInstanceOf(PrintersChanged);
       expect(await env.repos.settings.get()).toMatchObject({ myPrinters: [P1S, X1C] });
       // Its waiting estimate was not dropped.
       expect(await forX1C()).toEqual(waiting);
-      // Saved from the list as it is now, the removal goes through.
+      // Saved from the version as it is now, the removal goes through.
+      const now = (await env.repos.settings.get()).printersVersion;
       expect(
-        await estimates.savePrinters({ printers: [P1S], defaultId: P1S, expected: [P1S, X1C] }),
+        await estimates.savePrinters({ printers: [P1S], defaultId: P1S, version: now }),
       ).toEqual({ added: [], removed: [X1C] });
     } finally {
       held.release();
     }
     await drain();
+  });
+
+  // Issue #272: the same, when window B changed only the default.
+  test("a save from an old read cannot put back a default changed elsewhere", async () => {
+    await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S });
+    await drain();
+    const readByA = (await env.repos.settings.get()).printersVersion;
+    // Window B makes the X1C the default; the list is unchanged.
+    await estimates.savePrinters({ printers: [P1S, X1C], defaultId: X1C, version: readByA });
+    // Window A, still showing P1S as the default, moves a printer: refused.
+    await expect(
+      estimates.savePrinters({ printers: [X1C, P1S], defaultId: P1S, version: readByA }),
+    ).rejects.toBeInstanceOf(PrintersChanged);
+    expect(await env.repos.settings.get()).toMatchObject({
+      printerId: X1C,
+      myPrinters: [P1S, X1C],
+    });
   });
 
   test("a listed printer the slicer stopped offering stays in the list and is skipped", async () => {
