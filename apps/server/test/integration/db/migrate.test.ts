@@ -1,6 +1,6 @@
 // Build plan Task 4: migration 0001 and the forward-only migrator, against a
 // real postgres:17-alpine.
-import { appendFile, cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Kysely, sql } from "kysely";
@@ -47,6 +47,7 @@ const SHIPPED = [
   "0005_model_name_source.sql",
   "0006_model_name_source_user.sql",
   "0007_my_printers.sql",
+  "0008_library_sort.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -231,7 +232,13 @@ describe("0007 My printers", () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
     await cp(MIGRATIONS_DIR, dir, { recursive: true });
-    await rm(join(dir, "0007_my_printers.sql"));
+    // Every migration after 0006, not just 0007: the folder must stay
+    // numbered without gaps, and later migrations (0008 library sort) follow.
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 6,
+    );
+    expect(later).toContain("0007_my_printers.sql");
+    for (const name of later) await rm(join(dir, name));
   });
 
   afterEach(async () => {

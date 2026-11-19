@@ -3,13 +3,13 @@
 // search (?q=) and an active creator or collection filter (?creator=,
 // ?collection=; issue #194), so the filter is in the URL, works with Back
 // and Forward, and is reachable by keyboard. All drops only the tag. A chip
-// also keeps View all (?view=all) and drops the page number (?page=), so a
-// new tag starts again at page 1. The current choice is marked
+// also keeps View all (?view=all) and the sort (?sort=) and drops the page
+// number (?page=), so a new tag starts again at page 1. The current choice is marked
 // aria-current="true", which studio.css draws as the active chip.
 import { Link, useSearchParams } from "react-router";
 
-/** What a tag chip keeps of the library's address: the search, the other filters and View all. */
-const KEPT = ["q", "creator", "collection", "view"] as const;
+/** What a tag chip keeps of the library's address: the search, the other filters, View all and the sort. */
+const KEPT = ["q", "creator", "collection", "view", "sort"] as const;
 
 export interface FiltersProps {
   /** The tags to offer, in the order to show them. */

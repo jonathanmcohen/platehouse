@@ -127,10 +127,69 @@ export interface RankedSearchQuery {
   collection?: string | undefined;
   /** Only models by the creator with exactly this name. */
   creator?: string | undefined;
-  /** Only models after this one in the result order (keyset paging). */
+  /**
+   * Only models after this one in the result order (keyset paging). Only
+   * with the relevance sort: the cursor carries a rank, name and id.
+   */
   after?: { rank: number; name: string; id: string } | undefined;
-  /** At most this many models, 1 to 1000. */
+  /** The order; relevance (best match, then name and id) when left out. */
+  sort?: LibrarySort | undefined;
+  /** Whose numbers the time and weight sorts total; required for those sorts. */
+  printer?: SortPrinter | undefined;
+  /** At most this many models, 1 to 1000 (1001 for searchRankedCards). */
   limit: number;
+}
+
+/**
+ * The library's orders (Jon, 2026-11-19). relevance is best match first;
+ * the others are by date added, name ignoring case, total print time or
+ * weight for the selected printer, and plate count. Every order ends with
+ * the model's id, so it is total and models that tie always come in the
+ * same order. Pages sliced by offset hold together only while the order
+ * holds still: a model whose time or weight total arrives between two
+ * requests moves, and it or a model on a page boundary can repeat or be
+ * skipped.
+ */
+export const LIBRARY_SORTS = [
+  "relevance",
+  "newest",
+  "oldest",
+  "name-asc",
+  "name-desc",
+  "time-asc",
+  "time-desc",
+  "weight-asc",
+  "weight-desc",
+  "plates-desc",
+  "plates-asc",
+] as const;
+
+export type LibrarySort = (typeof LIBRARY_SORTS)[number];
+
+/** The sort when none is named: best match while a search is active, else newest. */
+export function defaultSort(q: string | undefined): LibrarySort {
+  return (q ?? "").trim() === "" ? "newest" : "relevance";
+}
+
+/**
+ * Whose numbers the time and weight sorts total, as the library's cards do
+ * (app-api/library.ts numbersFor over estimates/display.ts plateNumbers): a
+ * plate whose newest file numbers were sliced for fileModelId with
+ * fileNozzle (the selected printer's) has those numbers when
+ * fileNumbersCount, and none otherwise; any other plate has a finished
+ * Platehouse estimate for printerId and orcaVersion, if any. fileModelId and
+ * fileNozzle are null when the printer menu is unread or does not name the
+ * selected printer. fileNumbersCount is false when the menu names the
+ * selected printer after another with the same model and nozzle: the cards
+ * label a file's numbers with that first printer, so the selected one never
+ * gets them.
+ */
+export interface SortPrinter {
+  printerId: string;
+  orcaVersion: string | null;
+  fileModelId: string | null;
+  fileNozzle: number | null;
+  fileNumbersCount: boolean;
 }
 
 /** A ranked match with only what a library card and a keyset cursor need. */
@@ -151,6 +210,63 @@ export const SEARCH_RANK_MAX = 1_000_000;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_RANKED_LIMIT = 1000;
+
+/** Two nozzle sizes within this are the same, as in estimates/display.ts. */
+const NOZZLE_TOLERANCE = 0.001;
+
+/**
+ * A model's total print time or weight for the printer: the sum over the
+ * plates of its .3mf files, or null when it has no plates or any plate has
+ * no numbers for that printer, the rule the library's cards total by. A
+ * plate's numbers are its newest finished file numbers when those were
+ * sliced for the printer's model and nozzle (and then only those, as
+ * plateNumbers returns early), else the Platehouse estimate for the printer
+ * and Orca version once it is finished. Each estimate lookup is served by
+ * the estimates_key index (plate_id, source, ...), each plate lookup by
+ * plates (file_id, index) and files_model_id.
+ */
+function totalFor(column: "time_seconds" | "weight_grams", printer: SortPrinter) {
+  const col = sql.raw(column);
+  return sql<number | null>`(
+    select case when count(*) > 0 and count(n.v) = count(*) then sum(n.v) end
+    from plates p
+    join files f on f.id = p.file_id
+    left join lateral (
+      select e.printer_model_id, e.nozzle, e.${col} as v
+      from estimates e
+      where e.plate_id = p.id and e.source = 'file' and e.status = 'ok'
+      order by e.created_at desc, e.id desc
+      limit 1
+    ) fe on true
+    left join lateral (
+      select e.status, e.${col} as v
+      from estimates e
+      where e.plate_id = p.id and e.source = 'platehouse'
+        and e.printer_id = ${printer.printerId}
+        and e.slicer_version is not distinct from cast(${printer.orcaVersion} as text)
+      order by e.created_at desc, e.id desc
+      limit 1
+    ) pe on true
+    cross join lateral (
+      select case
+        when cast(${printer.fileModelId} as text) is not null
+          and fe.printer_model_id = cast(${printer.fileModelId} as text)
+          and abs(fe.nozzle - cast(${printer.fileNozzle} as double precision)) < ${NOZZLE_TOLERANCE}
+          then case when cast(${printer.fileNumbersCount} as boolean) then fe.v end
+        when pe.status = 'ok' then pe.v
+      end as v
+    ) n
+    where f.model_id = models.id and f.kind = '3mf'
+  )`;
+}
+
+/** How many plates a model's .3mf files have. */
+const PLATE_COUNT = sql<number>`(
+  select count(*)
+  from plates p
+  join files f on f.id = p.file_id
+  where f.model_id = models.id and f.kind = '3mf'
+)`;
 
 /** q as a LIKE pattern that matches it literally anywhere in the text. */
 function containsPattern(q: string): string {
@@ -210,11 +326,20 @@ export function modelsRepo(db: Kysely<DB>) {
    * the matches for query in the result order, at most query.limit.
    * searchRanked and searchRankedCards each add their own columns.
    */
-  function rankedQuery(query: RankedSearchQuery) {
+  function rankedQuery(query: RankedSearchQuery, maxLimit = MAX_RANKED_LIMIT) {
     const q = query.q.trim();
     const limit = Math.trunc(query.limit);
-    if (!(limit >= 1 && limit <= MAX_RANKED_LIMIT)) {
-      throw new RangeError(`searchRanked takes a limit from 1 to ${MAX_RANKED_LIMIT}`);
+    if (!(limit >= 1 && limit <= maxLimit)) {
+      throw new RangeError(`searchRanked takes a limit from 1 to ${maxLimit}`);
+    }
+    const sort = query.sort ?? "relevance";
+    if (query.after !== undefined && sort !== "relevance") {
+      throw new RangeError("A cursor pages only the relevance order");
+    }
+    const { printer } = query;
+    const byTotal = sort.startsWith("time-") || sort.startsWith("weight-");
+    if (byTotal && printer === undefined) {
+      throw new RangeError(`The ${sort} sort needs the selected printer`);
     }
     const pattern = containsPattern(q);
     const rank = sql<number>`round(greatest(
@@ -282,10 +407,49 @@ export function modelsRepo(db: Kysely<DB>) {
                    or (models.name = ${after.name} and models.id > cast(${after.id} as uuid)))))`,
       );
     }
-    return {
-      rank,
-      select: select.orderBy(rank, "desc").orderBy("models.name").orderBy("models.id").limit(limit),
-    };
+    // The sort's order, then the model's id, so the order is total and
+    // models that tie always come in the same order. (A model whose time or
+    // weight total arrives between two page requests still moves.) A time,
+    // weight or plate count tie goes by name ignoring case, then id.
+    switch (sort) {
+      case "relevance":
+        select = select.orderBy(rank, "desc").orderBy("models.name").orderBy("models.id");
+        break;
+      case "newest":
+      case "oldest": {
+        const dir = sort === "newest" ? "desc" : "asc";
+        select = select.orderBy("models.createdAt", dir).orderBy("models.id", dir);
+        break;
+      }
+      case "name-asc":
+      case "name-desc": {
+        const dir = sort === "name-asc" ? "asc" : "desc";
+        select = select
+          .orderBy(sql`lower(models.name)`, dir)
+          .orderBy("models.name", dir)
+          .orderBy("models.id", dir);
+        break;
+      }
+      case "plates-desc":
+      case "plates-asc":
+        select = select
+          .orderBy(PLATE_COUNT, sort === "plates-desc" ? "desc" : "asc")
+          .orderBy(sql`lower(models.name)`, "asc")
+          .orderBy("models.id", "asc");
+        break;
+      default: {
+        const total = totalFor(
+          sort.startsWith("time-") ? "time_seconds" : "weight_grams",
+          printer as SortPrinter,
+        );
+        const asc = sort.endsWith("-asc");
+        select = select
+          .orderBy(total, (ob) => (asc ? ob.asc().nullsLast() : ob.desc().nullsLast()))
+          .orderBy(sql`lower(models.name)`, "asc")
+          .orderBy("models.id", "asc");
+      }
+    }
+    return { rank, select: select.limit(limit) };
   }
 
   async function searchRanked(query: RankedSearchQuery): Promise<Array<Model & { rank: number }>> {
@@ -294,7 +458,9 @@ export function modelsRepo(db: Kysely<DB>) {
   }
 
   async function searchRankedCards(query: RankedSearchQuery): Promise<RankedCard[]> {
-    const { rank, select } = rankedQuery(query);
+    // Up to one past the most a numbered page counts, so one read tells
+    // whether there are more matches than it counts.
+    const { rank, select } = rankedQuery(query, MAX_RANKED_LIMIT + 1);
     return select
       .select(["models.id", "models.name", "creators.name as creator"])
       .select(rank.as("rank"))

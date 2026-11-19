@@ -20,6 +20,22 @@
 //   keeps the models shown and says so beside a Try again that goes on from
 //   that chunk. The Pages and View all choice shows when there is more than
 //   one page, or in View all.
+// - Sort (Jon, 2026-11-19): the Sort menu (SortControl) sets ?sort=, which
+//   the request carries unless it is the default (best match while a search
+//   is active, else newest), and which the server orders by. A new sort is a
+//   new address at page 1; the pager, View all and the tag chips keep it.
+// - Select mode (Jon, 2026-11-19): the Select button (aria-pressed) turns
+//   the cards into checkboxes (ModelCard; a click or Space toggles one) and
+//   shows the selection toolbar (SelectBar) with the count, the select-all
+//   choices and the bulk actions. The selection is kept across pages and
+//   filters until it is cleared or Select mode ends; Escape or Select again
+//   ends it, clears the selection and puts focus back on Select. Escape is
+//   left alone while another overlay that takes it is open (otherOverlayOpen):
+//   a modal dialog, the upload dialog among them, or the narrow-screen menu,
+//   so closing one never throws the selection away. An action
+//   that changes models reloads the grid in place: the cards shown stay,
+//   with the scroll position and the toolbar's counts, until the new answer
+//   is in (in View all, until every chunk is in again).
 // - The count shows the total ("171 models") or, with a search or filter,
 //   how many match of the whole library ("12 of 171 models"); with more
 //   matches than the server counts, "1000+" and a note.
@@ -43,19 +59,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
+import { menuIsOpen } from "../shell/MenuButton";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
 import { Pager } from "./Pager";
 import {
+  defaultSort,
   isViewAll,
   libraryHref,
   PAGE_SIZE,
   pageFrom,
   pageHref,
+  sortFrom,
   VIEW_ALL_CHUNK,
   VIEW_ALL_MAX,
 } from "./paging";
+import { SelectBar } from "./SelectBar";
+import { SortControl } from "./SortControl";
 import "./library.css";
 
 export interface LibraryPageProps {
@@ -151,9 +172,22 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const collection = params.get("collection")?.trim() ?? "";
   const viewAll = isViewAll(params);
   const page = viewAll ? 1 : pageFrom(params.get("page"));
+  const sort = sortFrom(params, q);
+  /** The sort the server is told: none for the default, which it applies itself. */
+  const sentSort = sort === defaultSort(q) ? "" : sort;
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Map<string, string | null>>(() => new Map());
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const selectButton = useRef<HTMLButtonElement>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [tags, setTags] = useState<string[]>([]);
+  /** Bumped after a bulk action, which can change which tags live models carry. */
+  const [tagsKey, setTagsKey] = useState(0);
   const [attempt, setAttempt] = useState(0);
+  /** Bumped after a bulk action: the grid reloads in place, keeping the cards shown. */
+  const [changedKey, setChangedKey] = useState(0);
+  /** What the shown grid was asked for, so a reload for the same thing is told apart. */
+  const loadedFor = useRef("");
   const generation = useRef(0);
   /** The current load's controller, so a View all retry is cancelled with it. */
   const loading = useRef<AbortController | null>(null);
@@ -165,20 +199,62 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const { choice, settle: settlePrinter } = printer;
   const [header, setHeader] = useState<PrinterHeader | null>(null);
 
+  /**
+   * The search, filters, printer switch and sort, as the library's app API
+   * takes them: the grid, View all's chunks and Select all matching alike,
+   * so a time or weight order is for the printer the header shows.
+   */
+  const matching = useCallback(() => {
+    const search = new URLSearchParams();
+    if (q !== "") search.set("q", q);
+    if (tag !== "") search.set("tag", tag);
+    if (creator !== "") search.set("creator", creator);
+    if (collection !== "") search.set("collection", collection);
+    if (choice !== null) search.set("printer", choice);
+    if (sentSort !== "") search.set("sort", sentSort);
+    return search;
+  }, [q, tag, creator, collection, choice, sentSort]);
+
   const query = useCallback(
     (at: number, limit: number) => {
-      const search = new URLSearchParams();
-      if (q !== "") search.set("q", q);
-      if (tag !== "") search.set("tag", tag);
-      if (creator !== "") search.set("creator", creator);
-      if (collection !== "") search.set("collection", collection);
-      if (choice !== null) search.set("printer", choice);
+      const search = matching();
       search.set("page", String(at));
       search.set("limit", String(limit));
       return `/app/api/library?${search}`;
     },
-    [q, tag, creator, collection, choice],
+    [matching],
   );
+
+  /** Leaves Select mode, clearing the selection, with focus back on Select. */
+  const stopSelecting = useCallback(() => {
+    setSelecting(false);
+    setSelected(new Map());
+    selectButton.current?.focus();
+  }, []);
+
+  // Escape leaves Select mode, unless a dialog is open: Escape is the dialog's then.
+  // Select mode's own dialogs remove this listener (dialogOpen); any other
+  // overlay is asked about on each key (otherOverlayOpen), since its document
+  // listener is added later and so runs after this one.
+  useEffect(() => {
+    if (!selecting || dialogOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (otherOverlayOpen(event)) return;
+      stopSelecting();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [selecting, dialogOpen, stopSelecting]);
+
+  function toggle(card: LibraryCard) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(card.id)) next.delete(card.id);
+      else next.set(card.id, card.name);
+      return next;
+    });
+  }
 
   /** The library's own address without one of its filters, at page 1. */
   function without(key: "creator" | "collection"): string {
@@ -194,9 +270,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   ].filter((f) => f.value !== "");
   const filtered = q !== "" || tag !== "" || active.length > 0;
 
-  /** View all's chunks from ready.nextChunk on, one request at a time. */
+  /**
+   * View all's chunks from ready.nextChunk on, one request at a time. Quiet,
+   * each is gathered and the whole is shown once the last is in, so the cards
+   * already shown are not cut back to the first chunk meanwhile.
+   */
   const loadRest = useCallback(
-    async (from: Ready, mine: number, signal: AbortSignal) => {
+    async (from: Ready, mine: number, signal: AbortSignal, quiet = false) => {
       let shown = from;
       while (shown.nextChunk !== null) {
         const chunk = shown.nextChunk;
@@ -218,7 +298,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
             nextChunk: chunkAfter(chunk, answer, all.length),
             restFailed: false,
           };
-          setLoad(shown);
+          if (!quiet || shown.nextChunk === null) setLoad(shown);
         } catch {
           if (!signal.aborted && mine === generation.current) {
             setLoad({ ...shown, restFailed: true });
@@ -231,15 +311,27 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   );
 
   // The grid, again whenever the search, a filter, the page, View all, a
-  // refresh or a retry changes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and attempt only trigger a reload.
+  // refresh or a retry changes, and in place after a bulk action (changedKey):
+  // a reload of what is shown keeps the cards until the new answer is in.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey, attempt and changedKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
     loading.current = controller;
     const mine = ++generation.current;
-    setLoad({ state: "loading" });
     const first = viewAll ? 1 : page;
-    getJson<LibraryAnswer>(query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE), controller.signal)
+    const url = query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE);
+    const asked = `${viewAll}|${refreshKey}|${attempt}|${url}`;
+    const quiet = asked === loadedFor.current;
+    loadedFor.current = asked;
+    if (!quiet) setLoad({ state: "loading" });
+    else {
+      // The shown cards stay, but not an earlier View all failure: its Try
+      // again would start a second loader from the old cards beside this one.
+      setLoad((shown) =>
+        shown.state === "ready" && shown.restFailed ? { ...shown, restFailed: false } : shown,
+      );
+    }
+    getJson<LibraryAnswer>(url, controller.signal)
       .then((raw) => {
         if (mine !== generation.current) return;
         const answer = read(raw);
@@ -249,22 +341,28 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           nextChunk: viewAll ? chunkAfter(1, answer, answer.models.length) : null,
           restFailed: false,
         };
-        setLoad(ready);
+        if (ready.nextChunk === null) setLoad(ready);
+        else {
+          if (!quiet) setLoad(ready);
+          void loadRest(ready, mine, controller.signal, quiet);
+        }
         setHeader({
           printer: answer.printer,
           printerName: answer.printerName,
           printers: answer.printers,
         });
         settlePrinter(answer.printer);
-        if (ready.nextChunk !== null) void loadRest(ready, mine, controller.signal);
       })
       .catch(() => {
         if (!controller.signal.aborted && mine === generation.current) setLoad({ state: "failed" });
       });
     return () => controller.abort();
-  }, [query, page, viewAll, loadRest, refreshKey, attempt]);
+  }, [query, page, viewAll, loadRest, refreshKey, attempt, changedKey]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey only triggers a reload.
+  // The library's tags, again on a refresh or after a bulk action (tagsKey),
+  // since adding, removing or trashing changes which tags live models carry:
+  // the tag filter, Remove tag and Add tags all read this list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and tagsKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
     getJson<{ tags: string[] }>("/app/api/library/tags", controller.signal)
@@ -273,7 +371,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         // The filter is a convenience: without it the grid still works.
       });
     return () => controller.abort();
-  }, [refreshKey]);
+  }, [refreshKey, tagsKey]);
 
   // Focus follows a pager link to the new page's count, once it is in.
   useEffect(() => {
@@ -358,6 +456,34 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         </ul>
       )}
       <Filters tags={tags} />
+      <div className="ph-library-tools">
+        <SortControl q={q} printer={shownPrinter?.printerName ?? ""} />
+        <button
+          ref={selectButton}
+          type="button"
+          className="studio-button ph-small"
+          aria-pressed={selecting}
+          onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+        >
+          Select
+        </button>
+      </div>
+      {selecting ? (
+        <SelectBar
+          selected={selected}
+          shown={ready?.models ?? []}
+          total={ready?.total ?? 0}
+          totalCapped={ready?.totalCapped ?? false}
+          matching={matching()}
+          tags={tags}
+          onChange={setSelected}
+          onChanged={() => {
+            setChangedKey((n) => n + 1);
+            setTagsKey((n) => n + 1);
+          }}
+          onDialog={setDialogOpen}
+        />
+      ) : null}
       <div aria-live="polite">
         {load.state === "loading" ? <p className="studio-muted">Loading the library</p> : null}
         {load.state === "failed" ? (
@@ -419,9 +545,17 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
             ) : null}
           </div>
           <ul className="studio-grid" aria-label="Models">
-            {ready.models.map((card) => (
-              <ModelCard key={card.id} card={card} />
-            ))}
+            {ready.models.map((card) =>
+              selecting ? (
+                <ModelCard
+                  key={card.id}
+                  card={card}
+                  selection={{ selected: selected.has(card.id), onToggle: () => toggle(card) }}
+                />
+              ) : (
+                <ModelCard key={card.id} card={card} />
+              ),
+            )}
           </ul>
           {!viewAll && ready.pageCount > 1 ? (
             <Pager
@@ -453,4 +587,19 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       ) : null}
     </DropZone>
   );
+}
+
+/**
+ * Another overlay that takes Escape for itself is open: a modal dialog (the
+ * upload dialog, mounted beside the library, opens from the top bar's Add or
+ * a drop on the library), the key came from inside a dialog, or the
+ * narrow-screen menu is open. Their document listeners are added after Select
+ * mode's, so their preventDefault comes too late for Select mode to see.
+ */
+function otherOverlayOpen(event: KeyboardEvent): boolean {
+  if (document.querySelector('[aria-modal="true"]') !== null) return true;
+  if (event.target instanceof Element && event.target.closest('[role="dialog"]') !== null) {
+    return true;
+  }
+  return menuIsOpen();
 }

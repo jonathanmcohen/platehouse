@@ -154,9 +154,11 @@ describe("models a person named before name_source existed (0006)", () => {
       await cp(MIGRATIONS_DIR, dir, { recursive: true });
       // Every migration after 0005, not just 0006: the folder must stay
       // numbered without gaps, and later migrations (0007 My printers) follow.
-      for (const name of await readdir(dir)) {
-        if (/^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 5) await rm(join(dir, name));
-      }
+      const later = (await readdir(dir)).filter(
+        (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 5,
+      );
+      expect(later).toContain("0006_model_name_source_user.sql");
+      for (const name of later) await rm(join(dir, name));
       await migrateFrom(t.db, dir);
     } finally {
       await rm(dir, { recursive: true, force: true });

@@ -5,7 +5,9 @@
 // slicer's printer menu could not be read, so the file's own numbers could
 // not be matched to the printer. An STL, STEP or SCAD model (no plate
 // thumbnail) shows a generic file-type icon instead. The card links to the
-// model page (Task 20).
+// model page (Task 20), except in the library's Select mode (Jon,
+// 2026-11-19), where the card is the label of a checkbox named for the
+// model, shown in its corner, and a selected card is ringed in the accent.
 //
 // The image is the only thing a card loads, and only from the /blobs/<id>
 // thumbnail the library's API named (AC-073). It is decorative (the link's
@@ -73,48 +75,86 @@ function FileTypeIcon({ kind }: { kind: LibraryCard["fileKind"] }) {
   );
 }
 
-export function ModelCard({ card }: { card: LibraryCard }) {
+/** A card in Select mode: whether it is selected, and how to toggle it. */
+export interface CardSelection {
+  selected: boolean;
+  onToggle(): void;
+}
+
+export function ModelCard({ card, selection }: { card: LibraryCard; selection?: CardSelection }) {
   const known = card.timeSeconds !== null && card.weightGrams !== null;
+  const content = (
+    <>
+      <span className="studio-card-media">
+        {card.thumbnail === null ? (
+          <FileTypeIcon kind={card.fileKind} />
+        ) : (
+          <img src={card.thumbnail} alt="" loading="lazy" decoding="async" />
+        )}
+      </span>
+      <span className="studio-card-body">
+        <span className="studio-card-title">{card.name}</span>
+        <span className="studio-card-meta">{card.creator ?? "Unknown creator"}</span>
+        {card.plateCount > 0 ? (
+          <span className="studio-card-plates">
+            {card.plateCount === 1 ? "1 plate" : `${card.plateCount} plates`}
+          </span>
+        ) : null}
+        {known ? (
+          <span className="studio-card-meta">
+            {formatDuration(card.timeSeconds as number)} -{" "}
+            {formatWeight(card.weightGrams as number)}
+          </span>
+        ) : card.numbersUnavailable ? (
+          <span
+            className="studio-card-meta"
+            title="The slicer could not be reached, so this printer's numbers cannot be shown yet"
+          >
+            numbers unavailable
+          </span>
+        ) : card.partial ? (
+          <span
+            className="studio-card-meta"
+            title="Some plates have no numbers for this printer yet"
+          >
+            partial
+          </span>
+        ) : null}
+      </span>
+    </>
+  );
+  if (selection === undefined) {
+    return (
+      <li>
+        <Link to={`/models/${card.id}`} className="studio-card">
+          {content}
+        </Link>
+      </li>
+    );
+  }
+  // Select mode: the card is the label of a real checkbox named for the
+  // model, drawn in its corner, so a click anywhere on the card toggles it
+  // and the focus ring is the checkbox's own. Space on the focused checkbox
+  // is toggled here, with the browser's own toggle prevented (a keydown
+  // whose default is prevented never becomes the checkbox's click), so it
+  // toggles exactly once in every browser and the page does not scroll.
   return (
     <li>
-      <Link to={`/models/${card.id}`} className="studio-card">
-        <span className="studio-card-media">
-          {card.thumbnail === null ? (
-            <FileTypeIcon kind={card.fileKind} />
-          ) : (
-            <img src={card.thumbnail} alt="" loading="lazy" decoding="async" />
-          )}
-        </span>
-        <span className="studio-card-body">
-          <span className="studio-card-title">{card.name}</span>
-          <span className="studio-card-meta">{card.creator ?? "Unknown creator"}</span>
-          {card.plateCount > 0 ? (
-            <span className="studio-card-plates">
-              {card.plateCount === 1 ? "1 plate" : `${card.plateCount} plates`}
-            </span>
-          ) : null}
-          {known ? (
-            <span className="studio-card-meta">
-              {formatDuration(card.timeSeconds as number)} -{" "}
-              {formatWeight(card.weightGrams as number)}
-            </span>
-          ) : card.numbersUnavailable ? (
-            <span
-              className="studio-card-meta"
-              title="The slicer could not be reached, so this printer's numbers cannot be shown yet"
-            >
-              numbers unavailable
-            </span>
-          ) : card.partial ? (
-            <span
-              className="studio-card-meta"
-              title="Some plates have no numbers for this printer yet"
-            >
-              partial
-            </span>
-          ) : null}
-        </span>
-      </Link>
+      <label className="studio-card ph-card-select" data-selected={selection.selected}>
+        <input
+          type="checkbox"
+          className="ph-card-check"
+          aria-label={card.name}
+          checked={selection.selected}
+          onChange={selection.onToggle}
+          onKeyDown={(event) => {
+            if (event.key !== " ") return;
+            event.preventDefault();
+            selection.onToggle();
+          }}
+        />
+        {content}
+      </label>
     </li>
   );
 }

@@ -3,10 +3,12 @@
 //
 //   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
 //       { printer, printerName, printers, models: LibraryCard[], nextCursor }
-//   GET /app/api/library?q&tag&collection&creator&page&limit&printer
+//   GET /app/api/library?q&tag&collection&creator&page&limit&printer&sort
 //       { printer, printerName, printers, models, nextCursor: null, page,
-//         pageSize, pageCount, total, totalCapped, libraryTotal }
+//         pageSize, pageCount, total, totalCapped, libraryTotal, sort }
 //       numbered pages (the web app's)
+//   GET /app/api/library/ids?q&tag&collection&creator&printer&sort
+//       { ids: string[], capped }  every match's id, for Select all matching
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
@@ -64,6 +66,28 @@
 //   page (its number is in the answer), never an empty one. Plate numbers
 //   are looked up for the page's cards only, so a request computes numbers
 //   for at most 200 models whatever the total.
+// - Sorting (Jon, 2026-11-19): ?sort= orders a numbered page, in the
+//   database (the models repository's LIBRARY_SORTS): best match, date added
+//   (newest, oldest), name ignoring case (A to Z, Z to A), total print time
+//   or weight for the selected printer (models without numbers for it last,
+//   either way), and plate count. Left out, it is best match while a search
+//   is active and newest otherwise (defaultSort), and the answer names the
+//   sort served. Every order ends with the model's id, so it is total and
+//   models that tie always come in the same order. Each numbered page or
+//   View all chunk is its own request that re-runs the sort and slices by
+//   offset, so pages hold together only while the order holds still: a
+//   model whose time or weight total arrives while you page (its last
+//   plate's estimate lands) moves out of the "no numbers" tail, and it or
+//   a model on a page boundary can repeat or be skipped. Keyset paging for
+//   the computed sorts would close that; it is not done. The matches are
+//   read once per request, one row past the cap, so one query both slices
+//   the page and says whether the total is capped. A time or
+//   weight sort reads the display context first, for the selected printer,
+//   and totals a model's plates by the cards' own rule (sortPrinterFor). A
+//   cursor page has its own order, best match; any other sort with it is 400.
+// - /app/api/library/ids answers every match's id in the sort's order, up to
+//   the same cap View all stops at, and whether there are more: the library's
+//   Select all matching.
 // - Answers are JSON and never cached; an invalid cursor is 400, and so is a
 //   page with a cursor. Errors carry no detail from the database.
 import type { Printer } from "@platehouse/slicer-contract";
@@ -74,14 +98,22 @@ import {
   type DisplayContext,
   type Numbers,
   type PlateNumbers,
+  printerForFile,
   printerName,
 } from "../estimates/display.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
-import { modelsRepo } from "../repos/models.js";
+import {
+  defaultSort,
+  LIBRARY_SORTS,
+  type LibrarySort,
+  modelsRepo,
+  type SortPrinter,
+} from "../repos/models.js";
 
 /** The library's routes, every one session-class (the Route classes contract). */
 export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/library",
+  "/app/api/library/ids",
   "/app/api/library/tags",
 ]);
 
@@ -138,6 +170,38 @@ export class InvalidPageQuery extends Error {
     super("Ask for a page or a cursor, not both");
     this.name = "InvalidPageQuery";
   }
+}
+
+/** A request named a sort other than best match without a numbered page. */
+export class InvalidSortQuery extends Error {
+  constructor() {
+    super("Only numbered pages can be sorted; ask for a page");
+    this.name = "InvalidSortQuery";
+  }
+}
+
+/**
+ * Whose numbers a time or weight sort totals: the selected printer, the
+ * current Orca version and, for a file's own numbers, the selected printer's
+ * BBL model id and nozzle, matched as the cards match them (numbersFor over
+ * plateNumbers). The cards label a file's numbers with the first menu
+ * printer of that model and nozzle (printerForFile), so they count only when
+ * that first printer is the selected one; with the menu unread nothing
+ * matches a file's numbers at all.
+ */
+export function sortPrinterFor(ctx: DisplayContext): SortPrinter {
+  const selected = ctx.printers.find((p) => p.id === ctx.printerId);
+  const first =
+    selected === undefined
+      ? undefined
+      : printerForFile({ printerModelId: selected.modelId, nozzle: selected.nozzle }, ctx.printers);
+  return {
+    printerId: ctx.printerId,
+    orcaVersion: ctx.orcaVersion,
+    fileModelId: selected?.modelId ?? null,
+    fileNozzle: selected?.nozzle ?? null,
+    fileNumbersCount: selected !== undefined && first?.id === selected.id,
+  };
 }
 
 /** Most plate number lookups one page runs at once; the pool holds 10 connections. */
@@ -310,6 +374,8 @@ export interface AppLibraryPages extends AppLibraryPage {
   totalCapped: boolean;
   /** Every live model, whatever the search and filters. */
   libraryTotal: number;
+  /** The order served: the one asked for, else defaultSort(q). */
+  sort: LibrarySort;
 }
 
 export interface AppLibraryQuery extends LibrarySearch {
@@ -317,6 +383,19 @@ export interface AppLibraryQuery extends LibrarySearch {
   page?: number | undefined;
   /** The printer switch's choice: one of My printers, else the default is shown. */
   printer?: string | undefined;
+  /**
+   * The order of a numbered page; defaultSort(q) when left out. A cursor
+   * page takes only relevance, its own order.
+   */
+  sort?: LibrarySort | undefined;
+}
+
+/** Every match's id for Select all matching (GET /app/api/library/ids). */
+export interface MatchingIds {
+  /** The matches' ids in the sort's order, at most the paged match cap. */
+  ids: string[];
+  /** True when there are more matches than ids holds. */
+  capped: boolean;
 }
 
 export interface AppLibrary {
@@ -327,6 +406,12 @@ export interface AppLibrary {
    * InvalidPageQuery for a page and a cursor together.
    */
   list(query: AppLibraryQuery): Promise<AppLibraryPage | AppLibraryPages>;
+  /**
+   * The ids of every match for the search and filters, in the sort's order,
+   * up to the paged match cap (the most View all shows), and whether there
+   * are more. Cursor and page are ignored.
+   */
+  ids(query: AppLibraryQuery): Promise<MatchingIds>;
   /** Tag names live models carry, for the tag filter, alphabetical ignoring case. */
   tags(): Promise<string[]>;
 }
@@ -385,11 +470,12 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
   }
 
   /**
-   * The ranked matches for the search and filters, up to the cap, and
-   * whether there are more: one query, and a second for one row past the
-   * cap only when the first came back full.
+   * The matches for the search and filters in the sort's order, up to the
+   * cap, and whether there are more: one query for one row past the cap.
+   * A time or weight sort totals for the selected printer, so it needs the
+   * display context first.
    */
-  async function matches(query: AppLibraryQuery) {
+  async function matches(query: AppLibraryQuery, sort: LibrarySort, ctx?: DisplayContext) {
     const where = {
       q: query.q ?? "",
       tag: filter(query.tag),
@@ -399,21 +485,36 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
     // Only id, name, creator and rank: up to matchCap rows are read to slice
     // one page and count it, and View all reads them once per chunk (up to
     // five times for 1000 models), so no row carries its description.
-    const rows = await models.searchRankedCards({ ...where, limit: matchCap });
-    const last = rows.at(-1);
-    let capped = false;
-    if (rows.length === matchCap && last !== undefined) {
-      const after = { rank: last.rank, name: last.name, id: last.id };
-      capped = (await models.searchRankedCards({ ...where, after, limit: 1 })).length > 0;
-    }
-    return { rows, capped };
+    const rows = await models.searchRankedCards({
+      ...where,
+      sort,
+      printer: ctx === undefined ? undefined : sortPrinterFor(ctx),
+      limit: matchCap + 1,
+    });
+    return { rows: rows.slice(0, matchCap), capped: rows.length > matchCap };
+  }
+
+  /** The sort a numbered page or the ids are served in. */
+  function sortOf(query: AppLibraryQuery): LibrarySort {
+    return query.sort ?? defaultSort(query.q);
+  }
+
+  /** The display context, read first only for a sort that totals numbers. */
+  function needsContext(sort: LibrarySort): boolean {
+    return sort.startsWith("time-") || sort.startsWith("weight-");
   }
 
   async function numbered(query: AppLibraryQuery & { page: number }): Promise<AppLibraryPages> {
     const pageSize = pageSizeFor(query.limit);
+    const sort = sortOf(query);
+    // A time or weight sort totals for the printer shown, so it reads the
+    // display context (and the switch's choice) first.
+    const first = needsContext(sort)
+      ? forPrinter(await deps.displayContext(), query.printer)
+      : undefined;
     const [found, read, libraryTotal] = await Promise.all([
-      matches(query),
-      deps.displayContext(),
+      matches(query, sort, first),
+      first ?? deps.displayContext(),
       liveModels(),
     ]);
     const ctx = forPrinter(read, query.printer);
@@ -429,6 +530,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       total,
       totalCapped: found.capped,
       libraryTotal,
+      sort,
     };
   }
 
@@ -532,7 +634,8 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         if (query.cursor !== undefined) throw new InvalidPageQuery();
         return numbered({ ...query, page: query.page });
       }
-      const { printer, page: _page, ...searchQuery } = query;
+      if (query.sort !== undefined && query.sort !== "relevance") throw new InvalidSortQuery();
+      const { printer, page: _page, sort: _sort, ...searchQuery } = query;
       const [page, read] = await Promise.all([search.search(searchQuery), deps.displayContext()]);
       const ctx = forPrinter(read, printer);
       return {
@@ -540,6 +643,15 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         models: await cards(page.models, ctx),
         nextCursor: page.nextCursor,
       };
+    },
+
+    async ids(query) {
+      const sort = sortOf(query);
+      const ctx = needsContext(sort)
+        ? forPrinter(await deps.displayContext(), query.printer)
+        : undefined;
+      const found = await matches(query, sort, ctx);
+      return { ids: found.rows.map((r) => r.id), capped: found.capped };
     },
 
     async tags() {
@@ -580,7 +692,9 @@ export const emptyAppLibrary: AppLibrary = Object.freeze({
           total: 0,
           totalCapped: false,
           libraryTotal: 0,
+          sort: query.sort ?? defaultSort(query.q),
         },
+  ids: async () => ({ ids: [], capped: false }),
   tags: async () => [],
 });
 
@@ -595,6 +709,7 @@ const SEARCH_QUERY = {
     limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_SIZE },
     page: { type: "integer", minimum: 1, maximum: MAX_PAGE_NUMBER },
     printer: { type: "string", maxLength: 200 },
+    sort: { type: "string", enum: [...LIBRARY_SORTS] },
   },
 } as const;
 
@@ -610,7 +725,8 @@ export async function registerLibraryApi(app: FastifyInstance, library: AppLibra
       if (
         err.validation !== undefined ||
         error instanceof InvalidCursor ||
-        error instanceof InvalidPageQuery
+        error instanceof InvalidPageQuery ||
+        error instanceof InvalidSortQuery
       ) {
         return reply.code(400).send({ error: "bad_request", message: err.message });
       }
@@ -623,6 +739,12 @@ export async function registerLibraryApi(app: FastifyInstance, library: AppLibra
       "/app/api/library",
       { schema: { querystring: SEARCH_QUERY } },
       async (request) => library.list(request.query),
+    );
+
+    scope.get<{ Querystring: AppLibraryQuery }>(
+      "/app/api/library/ids",
+      { schema: { querystring: SEARCH_QUERY } },
+      async (request) => library.ids(request.query),
     );
 
     scope.get("/app/api/library/tags", async () => ({ tags: await library.tags() }));

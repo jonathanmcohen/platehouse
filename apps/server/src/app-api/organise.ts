@@ -14,6 +14,17 @@
 //   GET    /app/api/trash                             {models: [... purgeAt], readAt}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
 //   POST   /app/api/trash/empty  {cutoff}             {purged}
+//   POST   /app/api/bulk/add-tags {ids, tags}         {changed, unchanged, failed, tags}
+//   POST   /app/api/bulk/remove-tag {ids, tag}        {changed, unchanged, failed, tag}
+//   POST   /app/api/bulk/add-to-collection {ids, collection}
+//                                                     {changed, unchanged, failed, collection}
+//   POST   /app/api/bulk/trash {ids}                  {changed, unchanged, failed}
+//
+// The bulk routes are the library's Select mode (Jon, 2026-11-19): up to
+// MAX_BULK_IDS models (1000, as View all) a request, in one transaction, and
+// a model that is in the trash or not found is reported in failed with its
+// reason while the others change (repos/bulk.ts). Bulk trash is the same
+// soft delete as Move to trash: restorable for 30 days, never a purge.
 //
 // Every change calls what Task 14 built: renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
@@ -70,6 +81,7 @@ import {
   PurgeStarted,
   TRASH_RETENTION_DAYS,
 } from "../library/trash.js";
+import { bulkRepo, MAX_BULK_IDS, MAX_BULK_TAGS } from "../repos/bulk.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
 /** The model rows one request of /app/api/organise/models answers at most. */
@@ -123,6 +135,37 @@ const ROWS_QUERY = {
     tag: { type: "string", maxLength: 100 },
     cursor: { type: "string", maxLength: 2000 },
   },
+} as const;
+
+/** The selected models of a bulk action: 1 to MAX_BULK_IDS ids. */
+const BULK_IDS = {
+  type: "array",
+  minItems: 1,
+  maxItems: MAX_BULK_IDS,
+  items: ID,
+} as const;
+const BULK_TAGS_BODY = {
+  type: "object",
+  properties: {
+    ids: BULK_IDS,
+    tags: { type: "array", minItems: 1, maxItems: MAX_BULK_TAGS, items: LABEL },
+  },
+  required: ["ids", "tags"],
+} as const;
+const BULK_TAG_BODY = {
+  type: "object",
+  properties: { ids: BULK_IDS, tag: LABEL },
+  required: ["ids", "tag"],
+} as const;
+const BULK_COLLECTION_BODY = {
+  type: "object",
+  properties: { ids: BULK_IDS, collection: LABEL },
+  required: ["ids", "collection"],
+} as const;
+const BULK_TRASH_BODY = {
+  type: "object",
+  properties: { ids: BULK_IDS },
+  required: ["ids"],
 } as const;
 
 const CUTOFF_BODY = {
@@ -408,6 +451,35 @@ export async function registerOrganiseApi(
         const done = await need(deps).trash.trashModel(request.params.id);
         return done ? reply.code(204).send() : refuse(reply, 404, "not_found");
       },
+    );
+
+    // Bulk actions on the library's selection: one request, one transaction
+    // (repos/bulk.ts). Each answers what changed, what was left as it was
+    // and which models failed and why; a model in the trash or not found is
+    // a failure, never a 404 for the whole request.
+    scope.post<{ Body: { ids: string[]; tags: string[] } }>(
+      "/bulk/add-tags",
+      { schema: { body: BULK_TAGS_BODY } },
+      async (request) => bulkRepo(need(deps).db).addTags(request.body.ids, request.body.tags),
+    );
+
+    scope.post<{ Body: { ids: string[]; tag: string } }>(
+      "/bulk/remove-tag",
+      { schema: { body: BULK_TAG_BODY } },
+      async (request) => bulkRepo(need(deps).db).removeTag(request.body.ids, request.body.tag),
+    );
+
+    scope.post<{ Body: { ids: string[]; collection: string } }>(
+      "/bulk/add-to-collection",
+      { schema: { body: BULK_COLLECTION_BODY } },
+      async (request) =>
+        bulkRepo(need(deps).db).addToCollection(request.body.ids, request.body.collection),
+    );
+
+    scope.post<{ Body: { ids: string[] } }>(
+      "/bulk/trash",
+      { schema: { body: BULK_TRASH_BODY } },
+      async (request) => bulkRepo(need(deps).db).trash(request.body.ids),
     );
 
     scope.get("/trash", async () => trashListing(need(deps).db));
