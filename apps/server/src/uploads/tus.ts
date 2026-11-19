@@ -124,7 +124,7 @@ export const MAX_BATCH_LENGTH = 200;
 export const UPLOAD_FAILED_MESSAGE =
   "The upload could not be confirmed in the library; check the library before sending it again";
 
-const QUEUE_FAILED_MESSAGE = "The upload could not be queued; nothing was saved. Try again.";
+export const QUEUE_FAILED_MESSAGE = "The upload could not be queued; nothing was saved. Try again.";
 
 /**
  * What GET <prefix>/:id/result answers (503) when the ingest queue cannot be

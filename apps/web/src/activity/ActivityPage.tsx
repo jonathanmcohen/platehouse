@@ -15,6 +15,7 @@
 import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
+import { serverText, serverTextWith } from "../i18n/serverText";
 import { AppApiError, appApi } from "../settings/api";
 import { Events } from "./Events";
 import { formatCount, formatDuration, formatRate, formatSize } from "./format";
@@ -362,16 +363,18 @@ const SCHEDULE_KEYS: Readonly<Record<string, MessageKey>> = {
  * brackets); its three plain forms are written again here, and anything
  * else (a cron line it could not put in words) is shown as it is.
  */
-export function scheduleIn(i18n: Pick<I18n, "t">, schedule: string): string {
-  const m = /^(.*) \(([^()]+)\)$/.exec(schedule);
-  if (m === null) return schedule;
-  const [, when = "", zone = ""] = m;
-  let every = /^Every (\d+) minutes$/.exec(when);
-  if (every !== null) return i18n.t("activity.when.minutes", { count: Number(every[1]), zone });
-  if (when === "Every hour") return i18n.t("activity.when.hour", { zone });
-  every = /^Daily at (\d\d:\d\d)$/.exec(when);
-  if (every !== null) return i18n.t("activity.when.daily", { time: every[1] as string, zone });
-  return schedule;
+export function scheduleIn(i18n: Pick<I18n, "t" | "locale">, schedule: string): string {
+  return serverTextWith(i18n, schedule, () => {
+    const m = /^(.*) \(([^()]+)\)$/.exec(schedule);
+    if (m === null) return undefined;
+    const [, when = "", zone = ""] = m;
+    let every = /^Every (\d+) minutes$/.exec(when);
+    if (every !== null) return i18n.t("activity.when.minutes", { count: Number(every[1]), zone });
+    if (when === "Every hour") return i18n.t("activity.when.hour", { zone });
+    every = /^Daily at (\d\d:\d\d)$/.exec(when);
+    if (every !== null) return i18n.t("activity.when.daily", { time: every[1] as string, zone });
+    return undefined;
+  });
 }
 
 function Queues({ queues }: { queues: QueueRow[] }) {
@@ -392,9 +395,7 @@ function Queues({ queues }: { queues: QueueRow[] }) {
         <tbody>
           {queues.map((q) => (
             <tr key={q.id}>
-              <th scope="row">
-                {QUEUE_KEYS[q.id] === undefined ? q.label : t(QUEUE_KEYS[q.id] as MessageKey)}
-              </th>
+              <th scope="row">{serverText(i18n, q.label, QUEUE_KEYS[q.id])}</th>
               <td>{formatCount(q.waiting, i18n)}</td>
               <td>{formatCount(q.active, i18n)}</td>
               <td>{formatCount(q.failed, i18n)}</td>
@@ -427,11 +428,7 @@ function Schedules({ schedules }: { schedules: ScheduleRow[] }) {
           {schedules.map((s) => (
             <li key={s.key} className="studio-list-item">
               <div className="studio-row">
-                <strong>
-                  {SCHEDULE_KEYS[s.key] === undefined
-                    ? s.label
-                    : t(SCHEDULE_KEYS[s.key] as MessageKey)}
-                </strong>
+                <strong>{serverText(i18n, s.label, SCHEDULE_KEYS[s.key])}</strong>
                 <span className="studio-muted">{scheduleIn(i18n, s.schedule)}</span>
               </div>
               <p

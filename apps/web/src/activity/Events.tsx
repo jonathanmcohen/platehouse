@@ -7,10 +7,10 @@
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
 
-import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useState } from "react";
 import { Link } from "react-router";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
 import { derivedMessageIn } from "../model/FilesTab";
 import { appApi, segment } from "../settings/api";
 import type { ActivityEvent, ModelSource } from "./ActivityPage";
@@ -19,18 +19,6 @@ const SOURCE_WORDS: Readonly<Record<ModelSource, MessageKey>> = {
   api: "activity.source.api",
   upload: "activity.source.upload",
   unknown: "activity.source.unknown",
-};
-
-/** The words for each reason a plate could not be sliced (the Slicer HTTP contract's reasons). */
-const ESTIMATE_REASON_KEYS: Readonly<Record<string, MessageKey>> = {
-  process_not_compatible: "estimate.reason.processNotCompatible",
-  machine_not_supported: "estimate.reason.machineNotSupported",
-  bed_too_small: "estimate.reason.bedTooSmall",
-  nozzle_mismatch: "estimate.reason.nozzleMismatch",
-  filament_temperature: "estimate.reason.filamentTemperature",
-  toolpath_conflict: "estimate.reason.toolpathConflict",
-  timeout: "estimate.reason.timeout",
-  slicer_error: "estimate.reason.slicerError",
 };
 
 /**
@@ -60,9 +48,7 @@ function reasonIn(
   code: string | null | undefined,
   words: string,
 ): string {
-  if (i18n.locale === SOURCE_LOCALE) return words;
-  const key = code === null || code === undefined ? undefined : keys[code];
-  return key === undefined ? words : i18n.t(key);
+  return serverText(i18n, words, code === null || code === undefined ? undefined : keys[code]);
 }
 
 function When({ at }: { at: string }) {

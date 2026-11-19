@@ -13,7 +13,7 @@ import { builtinLocales } from "./catalogs";
 import { useI18n } from "./I18n";
 import { savedLanguage } from "./language";
 
-/** One language as GET /app/api/locales lists it (apps/server/src/locales/routes.ts). */
+/** One language as GET /app/api/locales lists it (apps/server/src/app-api/locales.ts, ListedLocale in apps/server/src/locales/locales.ts). */
 export interface ListedLocale {
   code: string;
   /** The language's name in itself. */

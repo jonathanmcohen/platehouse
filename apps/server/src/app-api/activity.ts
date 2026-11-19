@@ -218,7 +218,7 @@ export function scheduleText(cron: string): string {
   return cron;
 }
 
-const ROW_LABELS: Readonly<Record<QueueRowId, string>> = {
+export const ROW_LABELS: Readonly<Record<QueueRowId, string>> = {
   ingest: "Ingest (new files)",
   estimates: "Estimates (slicing)",
   renders: "OpenSCAD renders",
@@ -361,7 +361,7 @@ export async function readInboxFailures(
 
 // ---- The service ----
 
-const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
+export const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
   [MAINTENANCE_TASKS.purgeExpired]: "Trash purge (models trashed over 30 days ago)",
   [MAINTENANCE_TASKS.sweepOrphans]: "Sweep of stored objects with no record",
   [MAINTENANCE_TASKS.purgeSessions]: "Expired login cleanup",

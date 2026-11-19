@@ -19,10 +19,10 @@
 //   from the stored file (no re-upload). A refused or failed retry is said
 //   beside the plate.
 // Times and weights are formatted as the library's cards format them.
-import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
+import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
 import type {
   FilamentNumbers,
   Numbers,
@@ -51,18 +51,6 @@ const SOURCE_WORDS: Record<NonNullable<FilamentNumbers["profileSource"]>, Messag
   file: "model.numbers.source.file",
 };
 
-/** The words for each reason a plate could not be sliced (the Slicer HTTP contract's reasons). */
-const REASON_WORDS: Readonly<Record<string, MessageKey>> = {
-  process_not_compatible: "estimate.reason.processNotCompatible",
-  machine_not_supported: "estimate.reason.machineNotSupported",
-  bed_too_small: "estimate.reason.bedTooSmall",
-  nozzle_mismatch: "estimate.reason.nozzleMismatch",
-  filament_temperature: "estimate.reason.filamentTemperature",
-  toolpath_conflict: "estimate.reason.toolpathConflict",
-  timeout: "estimate.reason.timeout",
-  slicer_error: "estimate.reason.slicerError",
-};
-
 /**
  * A failure's words in the shown language: the server's own words on an
  * English page, never en.json's copy of them; on another, by its reason,
@@ -72,9 +60,7 @@ function failureWords(
   i18n: Pick<I18n, "t" | "locale">,
   failure: { reason: string; words: string },
 ): string {
-  if (i18n.locale === SOURCE_LOCALE) return failure.words;
-  const key = REASON_WORDS[failure.reason];
-  return key === undefined ? failure.words : i18n.t(key);
+  return serverText(i18n, failure.words, ESTIMATE_REASON_KEYS[failure.reason]);
 }
 
 function FilamentList({ filaments }: { filaments: Array<FilamentNumbers | ProjectFilament> }) {

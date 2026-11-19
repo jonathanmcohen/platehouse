@@ -6,9 +6,9 @@
 // that failed says it could not be rendered, with the server's reason
 // (OpenSCAD's own message for a SCAD it rejects, AC-052). The page polls
 // while a render is pending, so View appears here when it lands.
-import { SOURCE_LOCALE } from "@platehouse/i18n";
 import type { ReactNode } from "react";
 import { ENGLISH_I18N, type Formatters, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
 import type { ModelFile } from "./ModelPage";
 import { OpenInSlicer, type Platform } from "./OpenInSlicer";
 import { parseStatusWords } from "./PlatesTab";
@@ -73,24 +73,22 @@ export function derivedMessageIn(
   i18n: Pick<I18n, "t" | "locale">,
   file: Pick<ModelFile, "derivedMessage" | "derivedCodes" | "derivedDetail">,
 ): string | null {
-  const codes = file.derivedCodes;
-  if (
-    i18n.locale === SOURCE_LOCALE ||
-    codes === undefined ||
-    codes.length === 0 ||
-    codes.some((c) => DERIVED_KEYS[c] === undefined)
-  ) {
-    return file.derivedMessage;
-  }
-  const parts = codes.map((c) => i18n.t(DERIVED_KEYS[c] as MessageKey));
-  if (
-    file.derivedDetail !== undefined &&
-    file.derivedDetail !== null &&
-    file.derivedDetail !== ""
-  ) {
-    parts.push(file.derivedDetail);
-  }
-  return parts.join(" ");
+  const sent = file.derivedMessage;
+  if (sent === null) return null;
+  return serverTextWith(i18n, sent, () => {
+    const codes = file.derivedCodes;
+    if (
+      codes === undefined ||
+      codes.length === 0 ||
+      codes.some((c) => DERIVED_KEYS[c] === undefined)
+    ) {
+      return undefined;
+    }
+    const parts = codes.map((c) => i18n.t(DERIVED_KEYS[c] as MessageKey));
+    const detail = file.derivedDetail;
+    if (detail !== undefined && detail !== null && detail !== "") parts.push(detail);
+    return parts.join(" ");
+  });
 }
 
 /** Whether the viewer can show the file: a .3mf's plates, a 3D view, or a preview image. */

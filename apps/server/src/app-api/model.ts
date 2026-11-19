@@ -77,6 +77,13 @@ import type { TitleNamePlan } from "../repos/models.js";
 import { scrubDerivedMessage } from "../scrub.js";
 import { BLOB_PREFIX, forPrinter, type PrinterChoice, printerChoices } from "./library.js";
 
+/** What Use file titles says when it is run with no preview (400, code titles_not_previewed). */
+export const TITLES_NOT_PREVIEWED_MESSAGE = "Press Use file titles to see the list first.";
+
+/** What Use file titles says when the library changed after its preview (409 plan_changed). */
+export const PLAN_CHANGED_MESSAGE =
+  "The library changed after this preview, so nothing was renamed. Cancel, then press Use file titles again to see the new list.";
+
 /** A "Use file titles" planId: the SHA-256 of the plan's renames, in hex. */
 const PLAN_ID = /^[0-9a-f]{64}$/;
 
@@ -487,7 +494,7 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
         if (typeof planId !== "string" || !PLAN_ID.test(planId)) {
           return reply.code(400).send({
             error: "bad_request",
-            message: "Press Use file titles to see the list first.",
+            message: TITLES_NOT_PREVIEWED_MESSAGE,
             code: "titles_not_previewed",
           });
         }
@@ -495,8 +502,7 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
         if (done === null) {
           return reply.code(409).send({
             error: "plan_changed",
-            message:
-              "The library changed after this preview, so nothing was renamed. Cancel, then press Use file titles again to see the new list.",
+            message: PLAN_CHANGED_MESSAGE,
           });
         }
         return done;

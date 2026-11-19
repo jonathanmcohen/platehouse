@@ -10,6 +10,8 @@ import { registerLocalesApi } from "../../src/app-api/locales.js";
 import { createLocales, MAX_LOCALE_BYTES } from "../../src/locales/locales.js";
 
 let dir: string;
+/** A second folder, outside LOCALES_DIR, for what a symlink points at; removed after each test. */
+let outsideDir: string;
 let warnings: Array<{ details: Record<string, unknown>; message: string }>;
 const log = {
   warn: (details: Record<string, unknown>, message: string) => warnings.push({ details, message }),
@@ -17,11 +19,13 @@ const log = {
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "platehouse-locales-"));
+  outsideDir = await mkdtemp(join(tmpdir(), "platehouse-locales-outside-"));
   warnings = [];
 });
 
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+  await rm(outsideDir, { recursive: true, force: true });
 });
 
 function file(name: string, data: unknown): Promise<void> {
@@ -90,7 +94,7 @@ describe("LOCALES_DIR", () => {
     [
       "a symlink",
       async (d) => {
-        const outside = join(d, "..", `outside-${Date.now()}.json`);
+        const outside = join(outsideDir, "de.json");
         await writeFile(outside, JSON.stringify({ "shell.nav.library": "Bibliothek" }));
         await symlink(outside, join(d, "de.json"));
       },
@@ -98,10 +102,7 @@ describe("LOCALES_DIR", () => {
     ["a folder named like a catalog", (d) => mkdir(join(d, "de.json"))],
     [
       "a name that is no locale code",
-      (d) =>
-        writeFile(join(d, "../de.json.json"), "{}").then(() =>
-          writeFile(join(d, "deutsch.json"), JSON.stringify({ "shell.nav.library": "B" })),
-        ),
+      (d) => writeFile(join(d, "deutsch.json"), JSON.stringify({ "shell.nav.library": "B" })),
     ],
   ])("refuses %s", async (_what, make) => {
     await make(dir);

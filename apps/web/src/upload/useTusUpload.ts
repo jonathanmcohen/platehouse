@@ -37,10 +37,10 @@
 // useTusUpload holds one dialog's files and their progress; the start and
 // result calls can be replaced, which the tests do.
 
-import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type HttpResponse, Upload, type UploadOptions } from "tus-js-client";
 import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
 
 /** Builds the sentences in a language; English when left out. */
 type Words = Pick<I18n, "t" | "locale">;
@@ -119,7 +119,6 @@ function plainReason(response: HttpResponse): string | undefined {
  */
 export function failureMessage(error: Error, i18n: Words = ENGLISH_I18N): string {
   const { t } = i18n;
-  const english = i18n.locale === SOURCE_LOCALE;
   const detailed = error as Error & {
     originalRequest?: unknown;
     originalResponse?: HttpResponse | null;
@@ -134,15 +133,19 @@ export function failureMessage(error: Error, i18n: Words = ENGLISH_I18N): string
     // English, and in another language replaced by a line for the status.
     const reason = status === 403 ? undefined : plainReason(response);
     if (reason !== undefined) {
-      if (english) return t("upload.refusedReason", { reason });
-      return status === 415 ? t("upload.refusedType") : t("upload.refusedStatus", { status });
+      return serverTextWith(i18n, t("upload.refusedReason", { reason }), () =>
+        status === 415 ? t("upload.refusedType") : t("upload.refusedStatus", { status }),
+      );
     }
     return t("upload.refusedStatus", { status });
   }
-  if (detailed.originalRequest !== undefined || error.message === "" || !english) {
+  if (detailed.originalRequest !== undefined || error.message === "") {
     return t("upload.connectionLost");
   }
-  return t("upload.failedBecause", { reason: error.message });
+  // tus-js-client's own English words: as they are in English, else the plain line.
+  return serverTextWith(i18n, t("upload.failedBecause", { reason: error.message }), () =>
+    t("upload.connectionLost"),
+  );
 }
 
 /** How often a finished upload's result is asked for while its ingest runs. */
@@ -350,10 +353,9 @@ const RESULT_KEYS: Readonly<Record<string, MessageKey>> = {
  * code when the page knows it, else the plain "The upload failed.".
  */
 export function resultMessage(result: UploadResult, i18n: Words = ENGLISH_I18N): string {
-  if (i18n.locale === SOURCE_LOCALE && result.error !== undefined) return result.error;
   const key = result.code === undefined ? undefined : RESULT_KEYS[result.code];
-  if (key !== undefined) return i18n.t(key);
-  return i18n.t("upload.failed");
+  const words = () => (key === undefined ? i18n.t("upload.failed") : i18n.t(key));
+  return result.error === undefined ? words() : serverTextWith(i18n, result.error, words);
 }
 
 export type UploadStatus =

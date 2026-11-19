@@ -23,6 +23,7 @@
 // (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
 import { AppApiError, appApi, segment, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 import { useRowFocus } from "../settings/focus";
@@ -46,7 +47,10 @@ function deletedSentence(purged: number, i18n: Pick<I18n, "t"> = ENGLISH_I18N): 
  * sentence for the page (apps/server/src/app-api/organise.ts). Any other
  * failure is left as it is.
  */
-function incompleteFailure(failure: unknown, i18n: Pick<I18n, "t"> = ENGLISH_I18N): unknown {
+function incompleteFailure(
+  failure: unknown,
+  i18n: Pick<I18n, "t" | "locale"> = ENGLISH_I18N,
+): unknown {
   if (!(failure instanceof AppApiError)) return failure;
   const body = failure.body as {
     error?: unknown;
@@ -56,11 +60,12 @@ function incompleteFailure(failure: unknown, i18n: Pick<I18n, "t"> = ENGLISH_I18
   } | null;
   if (body?.error !== "incomplete" || typeof body.message !== "string") return failure;
   const done = typeof body.purged === "number" && body.purged > 0;
-  // The server counts what it could not delete; an older answer has only its sentence.
-  const rest =
-    typeof body.failed === "number"
-      ? i18n.t("trash.incomplete", { count: body.failed })
-      : body.message;
+  // The server's own sentence on an English page; in another language, its
+  // count in the catalog's words (an older answer, with no count, as it is).
+  const failed = body.failed;
+  const rest = serverTextWith(i18n, body.message, () =>
+    typeof failed === "number" ? i18n.t("trash.incomplete", { count: failed }) : undefined,
+  );
   const sentence = done ? `${deletedSentence(body.purged as number, i18n)} ${rest}` : rest;
   return new AppApiError(failure.status, sentence, failure.body);
 }

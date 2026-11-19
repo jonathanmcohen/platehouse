@@ -7,9 +7,9 @@
 // shown beyond the message the server wrote for the page. A .tsx module
 // like the pages that use it: useAppApi is a React hook.
 
-import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
 
 /** Builds the sentences in a language; English when left out. */
 type Words = Pick<I18n, "t" | "locale">;
@@ -68,15 +68,20 @@ export function sentenceFor(status: number, body: unknown, i18n: Words = ENGLISH
     max?: unknown;
   };
   const message = fields.message;
-  const said = status < 500 && typeof message === "string" && message !== "";
-  if (said && i18n.locale === SOURCE_LOCALE) return message;
   const key =
     (typeof fields.code === "string" ? CODE_KEYS[fields.code] : undefined) ??
     (typeof fields.error === "string" ? CODE_KEYS[fields.error] : undefined);
-  if (key !== undefined && status < 500) {
-    return t(key, typeof fields.max === "number" ? { max: fields.max } : {});
+  const known = () =>
+    key === undefined || status >= 500
+      ? undefined
+      : t(key, typeof fields.max === "number" ? { max: fields.max } : {});
+  if (status < 500 && typeof message === "string" && message !== "") {
+    // The server's own sentence for the page (serverTextWith's rule); its
+    // code's words, else a plain line, in another language.
+    return serverTextWith(i18n, message, () => known() ?? t("api.refused"));
   }
-  if (said) return t("api.refused");
+  const words = known();
+  if (words !== undefined) return words;
   if (status === 503) return t("api.unavailable");
   if (status === 404) return t("api.gone");
   return t("api.failed");

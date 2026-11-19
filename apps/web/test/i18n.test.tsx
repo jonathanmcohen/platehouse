@@ -12,15 +12,18 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { scheduleIn } from "../src/activity/ActivityPage";
 import { formatCount } from "../src/activity/format";
 import { loadMessages } from "../src/i18n/catalogs";
 import { I18nProvider, useI18n } from "../src/i18n/I18n";
 import { LanguagePicker, type ListedLocale } from "../src/i18n/LanguagePicker";
 import { languageCookie, readLanguage, savedLanguage } from "../src/i18n/language";
 import { printerNameIn } from "../src/i18n/printers";
+import { serverText } from "../src/i18n/serverText";
 import { ModelCard } from "../src/library/ModelCard";
 import { derivedMessageIn } from "../src/model/FilesTab";
 import { PlateNumbersView } from "../src/model/Numbers";
+import { sentenceFor } from "../src/settings/api";
 import { Shell } from "../src/shell/Shell";
 import { Sidebar } from "../src/shell/Sidebar";
 import { TrashList } from "../src/trash/TrashList";
@@ -413,5 +416,42 @@ describe("an English page and a server sentence the page knows by code", () => {
     render("es", failedPlate());
     expect(container.textContent).toContain(translator("es").t("estimate.reason.bedTooSmall"));
     expect(container.textContent).not.toContain(SAID);
+  });
+});
+
+describe("every other place that shows server text follows the same rule", () => {
+  const SAID = "Words only this server would write.";
+
+  function translator(locale: string) {
+    return createTranslator(locale, CATALOGS[locale] as Messages, CATALOGS.en as Messages);
+  }
+
+  test("serverText: the server's own text in English, the catalog's elsewhere, as sent with no key", () => {
+    expect(serverText(translator("en"), SAID, "activity.queue.ingest")).toBe(SAID);
+    expect(serverText(translator("fr"), SAID, "activity.queue.ingest")).toBe(
+      translator("fr").t("activity.queue.ingest"),
+    );
+    expect(serverText(translator("fr"), SAID, undefined)).toBe(SAID);
+  });
+
+  test("a schedule is the server's own in English and the catalog's in French", () => {
+    expect(scheduleIn(translator("en"), "Every 15 minutes (Etc/UTC)")).toBe(
+      "Every 15 minutes (Etc/UTC)",
+    );
+    expect(scheduleIn(translator("fr"), "Every 15 minutes (Etc/UTC)")).toBe(
+      translator("fr").t("activity.when.minutes", { count: 15, zone: "Etc/UTC" }),
+    );
+    expect(scheduleIn(translator("fr"), "17 */3 * * 1 (UTC)")).toBe("17 */3 * * 1 (UTC)");
+  });
+
+  test("a printer name is the server's own in English, even in a form the catalog writes differently", () => {
+    render("en", <PrinterName name="Bambu Lab P1S, 0.40 mm nozzle" />);
+    expect(container.textContent).toBe("Bambu Lab P1S, 0.40 mm nozzle");
+  });
+
+  test("an app API refusal is the server's own sentence in English and its code's words in Spanish", () => {
+    const body = { error: "bad_request", code: "stale_trash", message: SAID };
+    expect(sentenceFor(400, body, translator("en"))).toBe(SAID);
+    expect(sentenceFor(400, body, translator("es"))).toBe(translator("es").t("api.staleTrash"));
   });
 });

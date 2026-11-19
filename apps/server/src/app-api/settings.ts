@@ -286,7 +286,14 @@ const PRINTERS_BODY = {
  * knows: the page adds that the list now shows the change once its own
  * read of the list has worked.
  */
-const PRINTERS_CHANGED =
+/** What a printer the slicer's menu lacks says (400 unknown_printer). */
+export const UNKNOWN_PRINTER_MESSAGE = "That printer is not in the slicer's printer list.";
+
+/** What a printer save says while the slicer cannot be asked (503, code slicer_unavailable). */
+export const SLICER_UNAVAILABLE_MESSAGE =
+  "The slicer cannot be reached, so a printer cannot be added right now.";
+
+export const PRINTERS_CHANGED =
   "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.";
 
 /** Registers the settings routes: GET /settings and PUT /settings/printers. */
@@ -336,22 +343,13 @@ export async function registerSettingsApi(
             return refuse(reply, 409, "printers_changed", PRINTERS_CHANGED);
           }
           if (error instanceof UnknownPrinter) {
-            return refuse(
-              reply,
-              400,
-              "unknown_printer",
-              "That printer is not in the slicer's printer list.",
-            );
+            return refuse(reply, 400, "unknown_printer", UNKNOWN_PRINTER_MESSAGE);
           }
           if (isSlicerProblem(error)) {
             request.log.warn({ err: error }, "app api: the slicer's printer list is unavailable");
-            return refuse(
-              reply,
-              503,
-              "unavailable",
-              "The slicer cannot be reached, so a printer cannot be added right now.",
-              { code: "slicer_unavailable" },
-            );
+            return refuse(reply, 503, "unavailable", SLICER_UNAVAILABLE_MESSAGE, {
+              code: "slicer_unavailable",
+            });
           }
           throw error;
         }

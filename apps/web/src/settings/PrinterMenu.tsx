@@ -72,7 +72,7 @@ interface SavedPrinters {
 }
 
 /** Builds the sentences in a language; English when left out. */
-type Words = Pick<I18n, "t" | "fmt">;
+type Words = Pick<I18n, "t" | "fmt" | "locale">;
 
 /** About how long plates take at perMinute, in plain words: "about 2 hours and 35 minutes". */
 export function howLong(plates: number, perMinute: number, i18n: Words = ENGLISH_I18N): string {
