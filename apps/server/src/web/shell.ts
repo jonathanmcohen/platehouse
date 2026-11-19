@@ -61,6 +61,7 @@ export const SHELL_PAGES: readonly string[] = Object.freeze([
   "/collections",
   "/tags",
   "/trash",
+  "/activity",
   "/settings",
   "/models/:id",
 ]);

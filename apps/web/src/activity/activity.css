@@ -1,0 +1,122 @@
+/*
+ * The Activity page's own pieces (2026-11-19): the number tiles, the
+ * estimates progressbar, the queue table and the event lines. Built only
+ * from studio.css's tokens and shapes, so both palettes, System, their
+ * contrast checks and the focus ring apply unchanged; no colour value is
+ * written here, only var() references. Every class is prefixed
+ * ph-activity- so nothing here restyles another page. Everything wraps, so
+ * the page does not scroll sideways at 375 px.
+ */
+
+.ph-activity-section {
+  margin-top: 20px;
+}
+
+.ph-activity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+/* Number tiles: as many 9rem columns as fit, two at phone width. */
+.ph-activity-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.ph-activity-stat {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ph-activity-stat dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.ph-activity-stat dd {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The progressbar: a track edged in --muted and a fill in --accent-text,
+ * which meets 3:1 against the track in both palettes (WCAG 1.4.11); the
+ * plain accent does not against the light track.
+ */
+.ph-activity-progress {
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--muted);
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.ph-activity-progress-fill {
+  height: 100%;
+  background: var(--accent-text);
+}
+
+.ph-activity-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ph-activity-table th,
+.ph-activity-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ph-activity-table th[scope="row"],
+.ph-activity-table thead th:first-child {
+  text-align: left;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.ph-activity-table thead th {
+  color: var(--muted);
+  font-weight: 550;
+  font-size: 0.85rem;
+}
+
+.ph-activity-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ph-activity-detail {
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+.ph-activity-error {
+  color: var(--danger);
+}
+
+.ph-activity-note {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 480px) {
+  .ph-activity-table th,
+  .ph-activity-table td {
+    padding: 6px 4px;
+  }
+}
