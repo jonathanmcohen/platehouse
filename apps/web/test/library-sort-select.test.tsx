@@ -33,7 +33,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { LibraryPage } from "../src/library/LibraryPage";
 import type { LibraryCard } from "../src/library/ModelCard";
 import { SORT_OPTIONS, sortFrom } from "../src/library/paging";
-import { describeBulk, MAX_SELECTED } from "../src/library/selection";
+import { describeBulk, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -75,6 +75,9 @@ let serverTags: string[];
 /** What each bulk route answers; by default every id changed. */
 let bulkAnswer: (url: string, body: Record<string, unknown>) => Response;
 let location = "";
+/** Library requests for a page this says yes to wait until releaseHeld(). */
+let holding: ((page: number) => boolean) | null;
+let held: Array<() => void>;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -108,6 +111,7 @@ function stubServer(all: LibraryCard[]) {
       }
       if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
       const asked = Number(url.searchParams.get("page"));
+      if (holding?.(asked)) await new Promise<void>((resolve) => held.push(resolve));
       const pageSize = Number(url.searchParams.get("limit") ?? 48);
       const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
       const page = Math.min(Math.max(asked, 1), pageCount);
@@ -249,6 +253,15 @@ async function submit(form: HTMLFormElement | null | undefined) {
   await settle();
 }
 
+/** Lets every held library request answer. */
+async function releaseHeld() {
+  holding = null;
+  const waiting = held;
+  held = [];
+  for (const go of waiting) go();
+  await settle();
+}
+
 async function selectMode() {
   await click(button("Select"));
 }
@@ -256,6 +269,8 @@ async function selectMode() {
 beforeEach(() => {
   requests = [];
   posted = [];
+  holding = null;
+  held = [];
   matchCap = 1000;
   serverTags = ["Desk", "PLA"];
   bulkAnswer = (_url, body) =>
@@ -627,6 +642,79 @@ describe("bulk actions", () => {
     expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("true");
     await click(dialogButton("Add tags"));
     expect(posted).toHaveLength(1);
+  });
+
+  test("Add tags takes at most MAX_TAGS tags, the server's limit, and says so in words", async () => {
+    expect(MAX_TAGS).toBe(20);
+    await twoSelected();
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    const chips = () => dialog()?.querySelectorAll(".ph-chip").length;
+    for (let i = 1; i <= MAX_TAGS; i += 1) {
+      await type(input, `Tag ${String(i).padStart(2, "0")}`);
+      await submit(input.form);
+    }
+    expect(chips()).toBe(MAX_TAGS);
+    expect(dialog()?.textContent).toContain(
+      "One action adds at most 20 tags. Take one off the list to add another.",
+    );
+    // A 21st is not added to the list, stays typed, and says why.
+    await type(input, "Tag 21");
+    await submit(input.form);
+    expect(chips()).toBe(MAX_TAGS);
+    expect(input.value).toBe("Tag 21");
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe("The list is full.");
+    // Typed but not listed, it would be the 21st sent, so Add tags sends nothing.
+    expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("true");
+    await click(dialogButton("Add tags"));
+    expect(posted).toEqual([]);
+    expect(dialog()).not.toBeNull();
+    // One off the list, and the typed tag goes with the other 19.
+    await click(dialogButton("Take Tag 01 off the list"));
+    expect(dialog()?.textContent).not.toContain("One action adds at most");
+    expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("false");
+    await click(dialogButton("Add tags"));
+    const sent = posted.at(-1)?.body.tags as string[];
+    expect(sent).toHaveLength(MAX_TAGS);
+    expect(sent).not.toContain("Tag 01");
+    expect(sent.at(-1)).toBe("Tag 21");
+  });
+
+  test("after an action the grid reloads in place: the cards stay until the new answer is in", async () => {
+    await twoSelected();
+    const before = libraryQueries().length;
+    holding = () => true;
+    await click(button("Add to collection"));
+    await type(dialog()?.querySelector("input") as HTMLInputElement, "Garage");
+    await click(dialogButton("Add to collection"));
+    expect(libraryQueries().length).toBeGreaterThan(before);
+    expect(container.textContent).not.toContain("Loading the library");
+    expect(checkboxes()).toHaveLength(5);
+    expect(button("Select all 5 matching")).toBeDefined();
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(5);
+    expect(statusText()).toBe("2 models selected");
+  });
+
+  test("in View all an action's reload keeps every card shown until every chunk is in again", async () => {
+    stubServer(cards(450));
+    await render("/?view=all");
+    expect(checkboxes()).toHaveLength(0);
+    await selectMode();
+    expect(checkboxes()).toHaveLength(450);
+    await click(checkbox("Model 001"));
+    holding = (page) => page >= 2;
+    await click(button("Add to collection"));
+    await type(dialog()?.querySelector("input") as HTMLInputElement, "Garage");
+    await click(dialogButton("Add to collection"));
+    // The first chunk is back and the second is held: the grid is not cut to 200.
+    expect(held.length).toBeGreaterThan(0);
+    expect(container.textContent).not.toContain("Loading the library");
+    expect(checkboxes()).toHaveLength(450);
+    expect(button("Select all 450 matching")).toBeDefined();
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(450);
+    expect(container.textContent).toContain("450 models, all shown");
   });
 
   test("Remove tag: pick one of the library's tags", async () => {

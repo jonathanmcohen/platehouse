@@ -30,7 +30,9 @@
 //   choices and the bulk actions. The selection is kept across pages and
 //   filters until it is cleared or Select mode ends; Escape or Select again
 //   ends it, clears the selection and puts focus back on Select. An action
-//   that changes models reloads the grid.
+//   that changes models reloads the grid in place: the cards shown stay,
+//   with the scroll position and the toolbar's counts, until the new answer
+//   is in (in View all, until every chunk is in again).
 // - The count shows the total ("171 models") or, with a search or filter,
 //   how many match of the whole library ("12 of 171 models"); with more
 //   matches than the server counts, "1000+" and a note.
@@ -159,6 +161,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   /** Bumped after a bulk action, which can change which tags live models carry. */
   const [tagsKey, setTagsKey] = useState(0);
   const [attempt, setAttempt] = useState(0);
+  /** Bumped after a bulk action: the grid reloads in place, keeping the cards shown. */
+  const [changedKey, setChangedKey] = useState(0);
+  /** What the shown grid was asked for, so a reload for the same thing is told apart. */
+  const loadedFor = useRef("");
   const generation = useRef(0);
   /** The current load's controller, so a View all retry is cancelled with it. */
   const loading = useRef<AbortController | null>(null);
@@ -227,9 +233,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   ].filter((f) => f.value !== "");
   const filtered = q !== "" || tag !== "" || active.length > 0;
 
-  /** View all's chunks from ready.nextChunk on, one request at a time. */
+  /**
+   * View all's chunks from ready.nextChunk on, one request at a time. Quiet,
+   * each is gathered and the whole is shown once the last is in, so the cards
+   * already shown are not cut back to the first chunk meanwhile.
+   */
   const loadRest = useCallback(
-    async (from: Ready, mine: number, signal: AbortSignal) => {
+    async (from: Ready, mine: number, signal: AbortSignal, quiet = false) => {
       let shown = from;
       while (shown.nextChunk !== null) {
         const chunk = shown.nextChunk;
@@ -251,7 +261,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
             nextChunk: chunkAfter(chunk, answer, all.length),
             restFailed: false,
           };
-          setLoad(shown);
+          if (!quiet || shown.nextChunk === null) setLoad(shown);
         } catch {
           if (!signal.aborted && mine === generation.current) {
             setLoad({ ...shown, restFailed: true });
@@ -264,15 +274,20 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   );
 
   // The grid, again whenever the search, a filter, the page, View all, a
-  // refresh or a retry changes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey and attempt only trigger a reload.
+  // refresh or a retry changes, and in place after a bulk action (changedKey):
+  // a reload of what is shown keeps the cards until the new answer is in.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey, attempt and changedKey only trigger a reload.
   useEffect(() => {
     const controller = new AbortController();
     loading.current = controller;
     const mine = ++generation.current;
-    setLoad({ state: "loading" });
     const first = viewAll ? 1 : page;
-    getJson<LibraryAnswer>(query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE), controller.signal)
+    const url = query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE);
+    const asked = `${viewAll}|${refreshKey}|${attempt}|${url}`;
+    const quiet = asked === loadedFor.current;
+    loadedFor.current = asked;
+    if (!quiet) setLoad({ state: "loading" });
+    getJson<LibraryAnswer>(url, controller.signal)
       .then((raw) => {
         if (mine !== generation.current) return;
         const answer = read(raw);
@@ -282,14 +297,17 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           nextChunk: viewAll ? chunkAfter(1, answer, answer.models.length) : null,
           restFailed: false,
         };
-        setLoad(ready);
-        if (ready.nextChunk !== null) void loadRest(ready, mine, controller.signal);
+        if (ready.nextChunk === null) setLoad(ready);
+        else {
+          if (!quiet) setLoad(ready);
+          void loadRest(ready, mine, controller.signal, quiet);
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted && mine === generation.current) setLoad({ state: "failed" });
       });
     return () => controller.abort();
-  }, [query, page, viewAll, loadRest, refreshKey, attempt]);
+  }, [query, page, viewAll, loadRest, refreshKey, attempt, changedKey]);
 
   // The library's tags, again on a refresh or after a bulk action (tagsKey),
   // since adding, removing or trashing changes which tags live models carry:
@@ -397,7 +415,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           tags={tags}
           onChange={setSelected}
           onChanged={() => {
-            setAttempt((n) => n + 1);
+            setChangedKey((n) => n + 1);
             setTagsKey((n) => n + 1);
           }}
           onDialog={setDialogOpen}

@@ -8,6 +8,9 @@
 /** Most models one action takes: the server's MAX_BULK_IDS, as View all and Select all matching. */
 export const MAX_SELECTED = 1000;
 
+/** Most tags one Add tags action takes: the server's MAX_BULK_TAGS. */
+export const MAX_TAGS = 20;
+
 export type BulkAction =
   | { action: "add-tags"; tags: string[] }
   | { action: "remove-tag"; tag: string }

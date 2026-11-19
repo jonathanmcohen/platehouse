@@ -9,7 +9,8 @@
 // - The actions, each marked aria-disabled and ignoring a press while
 //   nothing is selected: Add tags (type tags or pick the library's, in a
 //   ChipEditor; a tag typed but not yet added to the list is sent too; a
-//   model's own tags are kept), Remove tag (one of the
+//   model's own tags are kept; at most MAX_TAGS, the server's limit, which
+//   the dialog says once the list is full), Remove tag (one of the
 //   library's tags), Add to collection (an existing one offered, or a new
 //   name) and Move to trash (ConfirmDialog, the app's own, with the count;
 //   the trash keeps a model 30 days and it can be restored there). Each is one
@@ -29,6 +30,7 @@ import {
   bulkBody,
   describeBulk,
   MAX_SELECTED,
+  MAX_TAGS,
 } from "./selection";
 
 /** The selection: each id with its model's name, or null when the page never showed it. */
@@ -136,6 +138,10 @@ function AddTagsDialog({
   // Add tags sends the list and any tag still being typed, so typing PLA and
   // pressing Add tags adds PLA rather than doing nothing.
   const toSend = withTag(pending, draft);
+  // The server takes at most MAX_TAGS a request and answers more with its
+  // validator's text, so the list stops there and Add tags will not send more.
+  const full = pending.length >= MAX_TAGS;
+  const tooMany = toSend.length > MAX_TAGS;
   return (
     <Dialog title={`Add tags to ${models(count)}`} onClose={close}>
       <p>Type a tag and press Enter, or pick one of the library's. Tags they have are kept.</p>
@@ -146,16 +152,27 @@ function AddTagsDialog({
         removeLabel={(tag) => `Take ${tag} off the list`}
         suggestions={tags}
         onDraft={setDraft}
-        onAdd={async (tag) => setPending((list) => withTag(list, tag))}
+        onAdd={async (tag) => {
+          // Thrown, the ChipEditor keeps the typed tag and shows why it was not added.
+          if (withTag(pending, tag).length > MAX_TAGS) {
+            throw new AppApiError(0, "The list is full.");
+          }
+          setPending((list) => withTag(list, tag));
+        }}
         onRemove={async (tag) => setPending((list) => list.filter((t) => t !== tag))}
       />
+      {full ? (
+        <p className="studio-muted">
+          One action adds at most {MAX_TAGS} tags. Take one off the list to add another.
+        </p>
+      ) : null}
       {alert}
       <DialogActions
         label="Add tags"
         busy={busy}
-        blocked={toSend.length === 0}
+        blocked={toSend.length === 0 || tooMany}
         onGo={() => {
-          if (toSend.length > 0) void run(() => onSubmit(toSend));
+          if (toSend.length > 0 && !tooMany) void run(() => onSubmit(toSend));
         }}
         onCancel={close}
       />
