@@ -110,6 +110,22 @@ describe("add tags", () => {
     expect(await tagsOf(b)).toEqual([tag]);
   });
 
+  // Tags are matched with Postgres's lower() on both sides, the unique
+  // index's rule, never JavaScript's toLowerCase (PR #246 review). A word
+  // ending in a capital sigma is where they part: JavaScript lowers it to a
+  // final sigma (\u03c2), Postgres to a medial one (\u03c3), so a match made
+  // with the JavaScript form found no tag and every model was "unchanged".
+  test("a tag ending in a capital sigma is added and named as stored", async () => {
+    const { live } = await selection();
+    const [a, b] = live;
+    const tag = `Bulk ${marker()} \u0391\u03a3`;
+    expect(tag.toLowerCase().endsWith("\u03c2")).toBe(true);
+    const res = await post("/app/api/bulk/add-tags", { ids: [a, b], tags: [tag] });
+    expect(res.body).toMatchObject({ changed: [a, b], unchanged: [], failed: [], tags: [tag] });
+    expect(await tagsOf(a)).toEqual([tag]);
+    expect(await tagsOf(b)).toEqual([tag]);
+  });
+
   test("the same id twice, in any case, counts once", async () => {
     const { live } = await selection();
     const [a] = live;
@@ -217,6 +233,16 @@ describe("remove a tag", () => {
     expect(kept?.name).toBe(tag);
   });
 
+  test("a tag ending in a capital sigma is taken off and named as stored", async () => {
+    const { live } = await selection();
+    const [a, b] = live;
+    const tag = `Gone ${marker()} \u0391\u03a3`;
+    await createTags(env.db).addTag(a, tag);
+    const res = await post("/app/api/bulk/remove-tag", { ids: [a, b], tag });
+    expect(res.body).toEqual({ changed: [a], unchanged: [b], failed: [], tag });
+    expect(await tagsOf(a)).toEqual([]);
+  });
+
   test("a tag no model has: every live model unchanged, and no stored name", async () => {
     const { live } = await selection();
     const res = await post("/app/api/bulk/remove-tag", { ids: live, tag: `Never ${marker()}` });
@@ -255,6 +281,18 @@ describe("add to a collection", () => {
     const res = await post("/app/api/bulk/add-to-collection", {
       ids: [a, b],
       collection: name.toLowerCase(),
+    });
+    expect(res.body).toMatchObject({ changed: [b], unchanged: [a], collection: name });
+  });
+
+  test("an existing collection ending in a capital sigma, named in other capitals, is named as stored", async () => {
+    const { live } = await selection();
+    const [a, b] = live;
+    const name = `Shelf ${marker()} \u0391\u03a3`;
+    await createCollections(env.db).addToCollection(a, name);
+    const res = await post("/app/api/bulk/add-to-collection", {
+      ids: [a, b],
+      collection: name.toUpperCase(),
     });
     expect(res.body).toMatchObject({ changed: [b], unchanged: [a], collection: name });
   });

@@ -223,19 +223,27 @@ function result(selection: Selection, changedIds: Iterable<string>): BulkResult 
   };
 }
 
-/** The stored names for these names, matched ignoring case, in the order given. */
+/**
+ * The stored names for these names, matched ignoring case, in the order given.
+ * Matched in SQL with Postgres's lower() on both sides, the unique index's
+ * rule, as repos/tags.ts does: JavaScript's toLowerCase does not always agree
+ * with it (a word ending in a capital sigma lowers to a final sigma in
+ * JavaScript and a medial one in Postgres), so a name lowered in JavaScript
+ * could miss the row its insert made or found (PR #246 review).
+ */
 async function storedNames(
   trx: Kysely<DB>,
   table: "tags" | "collections",
   wanted: readonly string[],
 ): Promise<string[]> {
-  const rows = await trx
-    .selectFrom(table)
-    .select("name")
-    .where(sql<boolean>`lower(name) = any(cast(${wanted.map((n) => n.toLowerCase())} as text[]))`)
-    .execute();
-  const byKey = new Map(rows.map((r) => [r.name.toLowerCase(), r.name]));
-  return wanted.map((n) => byKey.get(n.toLowerCase())).filter((n): n is string => n !== undefined);
+  const { rows } = await sql<{ name: string }>`
+    select t.name
+    from unnest(cast(${wanted} as text[])) with ordinality as w(name, ord)
+    join ${sql.table(table)} t on lower(t.name) = lower(w.name)
+    group by t.name
+    order by min(w.ord)
+  `.execute(trx);
+  return rows.map((r) => r.name);
 }
 
 export function bulkRepo(db: Kysely<DB>) {
@@ -264,12 +272,14 @@ export function bulkRepo(db: Kysely<DB>) {
         if (selection.locked.length > 0) {
           // Links in (model id, tag id) order: an insert waits on another
           // transaction's uncommitted link with the same key (issue #286).
+          // The tags are matched with lower() on both sides, as their insert's
+          // conflict is, never with JavaScript's toLowerCase (see storedNames).
           const { rows } = await sql<{ id: string }>`
             insert into model_tags (model_id, tag_id)
             select m.id, t.id
             from unnest(cast(${selection.locked} as uuid[])) as m(id)
             cross join tags t
-            where lower(t.name) = any(cast(${wanted.map((n) => n.toLowerCase())} as text[]))
+            where lower(t.name) in (select lower(w.name) from unnest(cast(${wanted} as text[])) as w(name))
             order by m.id, t.id
             on conflict (model_id, tag_id) do nothing
             returning model_id as id
