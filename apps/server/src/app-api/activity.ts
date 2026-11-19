@@ -33,6 +33,7 @@ import type { FastifyInstance } from "fastify";
 import type { Kysely } from "kysely";
 import type { PgBoss } from "pg-boss";
 import type { DB, FileKind } from "../db/types.js";
+import { printerName } from "../estimates/display.js";
 import { reasonWords } from "../estimates/reasons.js";
 import { FAILED_DIR, REASON_SUFFIX } from "../inbox/watch.js";
 import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
@@ -148,7 +149,12 @@ export interface ActivityView {
     blobs: { count: number; bytes: number };
     lastImportAt: string | null;
   };
-  estimates: EstimateProgress & { printerId: string; orcaVersion: string | null };
+  /** printerId is the default printer; printerName is it in full ("Bambu Lab P1S, 0.4 mm nozzle"). */
+  estimates: EstimateProgress & {
+    printerId: string;
+    printerName: string;
+    orcaVersion: string | null;
+  };
   queues: QueueRow[];
   schedules: ScheduleRow[];
   slicer: {
@@ -156,7 +162,9 @@ export interface ActivityView {
     busy: boolean | null;
     orca: string | null;
     openscad: string | null;
+    /** The default printer (My printers), and its full name. */
     printerId: string;
+    printerName: string;
   };
   events: {
     items: ActivityEvent[];
@@ -484,6 +492,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         estimates: {
           ...progress,
           printerId: settings.printerId,
+          printerName: printerName(settings.printerId, []),
           orcaVersion: settings.lastOrcaVersion,
         },
         queues: rows,
@@ -494,6 +503,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           orca: health?.orca ?? null,
           openscad: health?.openscad ?? null,
           printerId: settings.printerId,
+          printerName: printerName(settings.printerId, []),
         },
         events: {
           items: mergeEvents([modelEvents, estimateEvents, renderEvents, inbox.items]),

@@ -26,6 +26,13 @@
 // - An active creator or collection filter is shown above the grid, each
 //   with a Clear link (a studio.css chip, so Tab reaches it and the focus
 //   ring draws on it) to the same address without that filter, at page 1.
+// - The header says which printer the times and weights are for, in full.
+//   With more than one of My printers it is a menu (PrinterSwitch) that
+//   asks for the grid again with ?printer=; it reads only, and starts no
+//   slicing. The choice is kept per browser. The switch stays on the page
+//   while the grid reloads, drawn from the last answer's printers and showing
+//   the new choice, so a keyboard user's focus stays on it (on Windows an
+//   arrow key on a focused, closed select chooses at once).
 // - The page asks the server for nothing but /app/api: the cards and the tag
 //   list. The only images are the /blobs/<id> plate thumbnails the API names
 //   (ModelCard), so rendering the library never downloads a model file.
@@ -35,6 +42,7 @@
 //   words, and a failed load can be tried again.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
@@ -63,7 +71,11 @@ export interface LibraryPageProps {
  * model it lists.
  */
 interface LibraryAnswer {
+  /** The printer the numbers are for. */
   printer: string;
+  printerName: string;
+  /** The printer switch's choices: My printers. */
+  printers: PrinterChoice[];
   models: LibraryCard[];
   page?: number;
   pageCount?: number;
@@ -74,6 +86,8 @@ interface LibraryAnswer {
 
 interface Answer {
   printer: string;
+  printerName: string;
+  printers: PrinterChoice[];
   models: LibraryCard[];
   page: number;
   pageCount: number;
@@ -86,6 +100,8 @@ function read(answer: LibraryAnswer): Answer {
   const total = answer.total ?? answer.models.length;
   return {
     printer: answer.printer,
+    printerName: answer.printerName,
+    printers: answer.printers,
     models: answer.models,
     page: answer.page ?? 1,
     pageCount: answer.pageCount ?? 1,
@@ -104,6 +120,9 @@ interface Ready extends Answer {
 }
 
 type Load = { state: "loading" } | { state: "failed" } | Ready;
+
+/** The header switch's fields from the last answer, kept while the grid reloads. */
+type PrinterHeader = Pick<Answer, "printer" | "printerName" | "printers">;
 
 /** The chunk after chunk, or null when that was the last or View all is full. */
 function chunkAfter(chunk: number, answer: Answer, shown: number): number | null {
@@ -141,6 +160,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   /** A pager link was followed: focus the count once the new page is in. */
   const focusCount = useRef(false);
   const count = useRef<HTMLParagraphElement>(null);
+  /** The header's printer switch: whose times and weights the cards show. */
+  const printer = usePrinterChoice();
+  const { choice, settle: settlePrinter } = printer;
+  const [header, setHeader] = useState<PrinterHeader | null>(null);
 
   const query = useCallback(
     (at: number, limit: number) => {
@@ -149,11 +172,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       if (tag !== "") search.set("tag", tag);
       if (creator !== "") search.set("creator", creator);
       if (collection !== "") search.set("collection", collection);
+      if (choice !== null) search.set("printer", choice);
       search.set("page", String(at));
       search.set("limit", String(limit));
       return `/app/api/library?${search}`;
     },
-    [q, tag, creator, collection],
+    [q, tag, creator, collection, choice],
   );
 
   /** The library's own address without one of its filters, at page 1. */
@@ -226,6 +250,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           restFailed: false,
         };
         setLoad(ready);
+        setHeader({
+          printer: answer.printer,
+          printerName: answer.printerName,
+          printers: answer.printers,
+        });
+        settlePrinter(answer.printer);
         if (ready.nextChunk !== null) void loadRest(ready, mine, controller.signal);
       })
       .catch(() => {
@@ -291,13 +321,26 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       ? `Only the first ${ready.totalCapped ? ready.total : VIEW_ALL_MAX} matches can be shown. Narrow the search or pick a tag to find the rest.`
       : null;
   const showChoice = ready !== null && ready.total > 0 && (viewAll || ready.pageCount > 1);
+  // While the grid reloads for a new choice, the switch already shows it.
+  const chosen = load.state === "ready" ? undefined : header?.printers.find((p) => p.id === choice);
+  const shownPrinter =
+    header === null
+      ? null
+      : chosen === undefined
+        ? header
+        : { ...header, printer: chosen.id, printerName: chosen.name };
 
   return (
     <DropZone onFiles={(files) => onFiles?.(files)}>
       <div className="studio-page-head">
         <h1>{heading}</h1>
-        {load.state === "ready" && load.printer !== "" ? (
-          <p className="studio-muted">Times and weights for {load.printer}</p>
+        {shownPrinter !== null && shownPrinter.printer !== "" ? (
+          <PrinterSwitch
+            printer={shownPrinter.printer}
+            printerName={shownPrinter.printerName}
+            printers={shownPrinter.printers}
+            onChoose={printer.choose}
+          />
         ) : null}
       </div>
       {active.length === 0 ? null : (

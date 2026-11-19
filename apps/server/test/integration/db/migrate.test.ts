@@ -34,6 +34,7 @@ const TABLES = [
   "sessions",
   "settings",
   "tags",
+  "user_printers",
 ];
 
 // The migrations shipped in src/db/migrations, in order, and the number the
@@ -45,6 +46,7 @@ const SHIPPED = [
   "0004_files_sha256.sql",
   "0005_model_name_source.sql",
   "0006_model_name_source_user.sql",
+  "0007_my_printers.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -214,5 +216,151 @@ describe("migrate with a changed migrations folder", () => {
 
     expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED);
     expect(await tableNames(db)).not.toContain("half_made");
+  });
+});
+
+// Migration 0007 turns the one printer setting into My printers. It runs on
+// Jon's live database, which has the schema before it, one selected printer and
+// estimates keyed by printer_id; all of that must come through as it is.
+describe("0007 My printers", () => {
+  const P1S = "Bambu Lab P1S 0.4 nozzle";
+  const A1_MINI = "Bambu Lab A1 mini 0.4 nozzle";
+  const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    await rm(join(dir, "0007_my_printers.sql"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A database migrated up to 0006, as Jon's will be: printerId selected, one plate, and two
+   * finished estimates for it (one for printerId, one for the P1S on an older
+   * Orca), as a printer change and an Orca update leave behind.
+   */
+  async function beforeMyPrinters(printerId: string): Promise<Kysely<DB>> {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`update settings set printer_id = ${printerId}`.execute(db);
+    const modelId = "0190a0b0-0000-7000-8000-000000000001";
+    const blobId = "0190a0b0-0000-7000-8000-000000000002";
+    const fileId = "0190a0b0-0000-7000-8000-000000000003";
+    const plateId = "0190a0b0-0000-7000-8000-000000000004";
+    const sha = Buffer.alloc(32, 1);
+    await sql`insert into models (id, name) values (${modelId}, 'Synthetic')`.execute(db);
+    await sql`
+      insert into blobs (id, model_id, key, kind, size, sha256, content_type, state)
+      values (${blobId}, ${modelId}, ${`models/${modelId}/${blobId}`}, 'source', 10, ${sha},
+              'model/3mf', 'stored')
+    `.execute(db);
+    await sql`
+      insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256)
+      values (${fileId}, ${modelId}, ${blobId}, 'Synthetic.3mf', 'Synthetic.3mf', '3mf', 10, ${sha})
+    `.execute(db);
+    await sql`
+      insert into plates (id, file_id, "index", object_count) values (${plateId}, ${fileId}, 1, 1)
+    `.execute(db);
+    await sql`
+      insert into estimates (id, plate_id, source, printer_id, slicer, slicer_version, status,
+                             time_seconds, weight_grams, finished_at)
+      values ('0190a0b0-0000-7000-8000-000000000005', ${plateId}, 'platehouse', ${printerId},
+              'OrcaSlicer', '2.5.0', 'ok', 600, 12.5, now()),
+             ('0190a0b0-0000-7000-8000-000000000006', ${plateId}, 'platehouse', ${P1S},
+              'OrcaSlicer', '2.4.2', 'ok', 610, 12.0, now())
+    `.execute(db);
+    return db;
+  }
+
+  async function estimateRows(db: Kysely<DB>): Promise<unknown[]> {
+    return (await sql`select * from estimates order by id`.execute(db)).rows;
+  }
+
+  async function myPrinters(db: Kysely<DB>) {
+    const { rows } = await sql<{ printerId: string; position: number }>`
+      select printer_id as "printerId", position from user_printers order by position
+    `.execute(db);
+    return rows;
+  }
+
+  async function defaultPrinter(db: Kysely<DB>): Promise<string | undefined> {
+    return (await db.selectFrom("settings").select("printerId").execute())[0]?.printerId;
+  }
+
+  test("the selected printer becomes the only entry in My printers and stays the default", async () => {
+    const db = await beforeMyPrinters(A1_MINI);
+    const before = await estimateRows(db);
+    expect(before).toHaveLength(2);
+
+    await migrate(db);
+
+    expect(await myPrinters(db)).toEqual([{ printerId: A1_MINI, position: 1 }]);
+    expect(await defaultPrinter(db)).toBe(A1_MINI);
+    // The version My printers saves are checked against starts at 1.
+    expect((await db.selectFrom("settings").select("printersVersion").execute())[0]).toEqual({
+      printersVersion: 1,
+    });
+    // Every existing estimate is untouched: the same rows, printer ids and numbers.
+    expect(await estimateRows(db)).toEqual(before);
+  });
+
+  test("a fresh database gets the P1S 0.4 default as its one printer", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    expect(await myPrinters(db)).toEqual([{ printerId: P1S, position: 1 }]);
+    expect(await defaultPrinter(db)).toBe(P1S);
+  });
+
+  test("the default printer must be in My printers, so the list is never empty", async () => {
+    const db = await beforeMyPrinters(P1S);
+    await migrate(db);
+    // Removing the default printer is refused at commit.
+    await expect(
+      sql`delete from user_printers where printer_id = ${P1S}`.execute(db),
+    ).rejects.toMatchObject({ code: "23503" });
+    // So is a default that is not in the list.
+    await expect(
+      sql`update settings set printer_id = ${A1_MINI}`.execute(db),
+    ).rejects.toMatchObject({ code: "23503" });
+    expect(await defaultPrinter(db)).toBe(P1S);
+    // Adding a printer, making it the default and removing the old one in one
+    // transaction works, because the check waits for the commit.
+    await db.transaction().execute(async (trx) => {
+      await sql`insert into user_printers (printer_id, position) values (${A1_MINI}, 2)`.execute(
+        trx,
+      );
+      await sql`update settings set printer_id = ${A1_MINI}`.execute(trx);
+      await sql`delete from user_printers where printer_id = ${P1S}`.execute(trx);
+    });
+    expect(await myPrinters(db)).toEqual([{ printerId: A1_MINI, position: 2 }]);
+    expect(await defaultPrinter(db)).toBe(A1_MINI);
+  });
+
+  test("a printer is listed once, at a position of its own, and two can swap places", async () => {
+    const db = await beforeMyPrinters(P1S);
+    await migrate(db);
+    await sql`insert into user_printers (printer_id, position) values (${A1_MINI}, 2)`.execute(db);
+    await expect(
+      sql`insert into user_printers (printer_id, position) values (${A1_MINI}, 3)`.execute(db),
+    ).rejects.toMatchObject({ code: "23505" });
+    await expect(
+      sql`insert into user_printers (printer_id, position) values (${X1C}, 2)`.execute(db),
+    ).rejects.toMatchObject({ code: "23505" });
+    await expect(
+      sql`insert into user_printers (printer_id, position) values (' ', 3)`.execute(db),
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      sql`insert into user_printers (printer_id, position) values (${X1C}, 0)`.execute(db),
+    ).rejects.toMatchObject({ code: "23514" });
+    // The position check waits for the commit, so two printers can swap places.
+    await db.transaction().execute(async (trx) => {
+      await sql`update user_printers set position = 2 where printer_id = ${P1S}`.execute(trx);
+      await sql`update user_printers set position = 1 where printer_id = ${A1_MINI}`.execute(trx);
+    });
+    expect((await myPrinters(db)).map((r) => r.printerId)).toEqual([A1_MINI, P1S]);
   });
 });

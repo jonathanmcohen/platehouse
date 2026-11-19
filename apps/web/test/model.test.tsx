@@ -50,6 +50,7 @@ import {
 } from "../src/model/ModelPage";
 import { BAMBU_PROMPT_LINE, type SlicerLink } from "../src/model/OpenInSlicer";
 import type { ThreeLoader, ThreeSource } from "../src/model/Viewer3d";
+import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
 
@@ -121,6 +122,9 @@ vi.mock("tus-js-client", async (importOriginal) => {
 
 const P1S = "Bambu Lab P1S 0.4 nozzle";
 const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
+/** Each printer in full, as the server names it. */
+const P1S_NAME = "Bambu Lab P1S, 0.4 mm nozzle";
+const X1C_NAME = "Bambu Lab X1 Carbon, 0.4 mm nozzle";
 
 const MODEL_ID = "0198f0c4-0000-7000-8000-00000000a001";
 const OTHER_MODEL_ID = "0198f0c4-0000-7000-8000-00000000a002";
@@ -144,6 +148,7 @@ function fileNumbers(n: number) {
     estimateId: `0198f0c4-0000-7000-8000-00000000e00${n}`,
     printerId: P1S,
     printerLabel: P1S,
+    printerName: P1S_NAME,
     slicer: null,
     slicerVersion: null,
     processProfile: "0.20mm Standard @BBL P1P",
@@ -165,6 +170,7 @@ function estimate(
     estimateId: "0198f0c4-0000-7000-8000-00000000e100",
     printerId: P1S,
     printerLabel: P1S,
+    printerName: P1S_NAME,
     slicer: "OrcaSlicer",
     slicerVersion: "2.5.0",
     processProfile: "0.20mm Standard @BBL X1C",
@@ -273,6 +279,8 @@ function model(files: ModelFile[], overrides: Partial<ModelView> = {}): ModelVie
     tags: ["Gridfinity"],
     collections: ["Desk"],
     printer: P1S,
+    printerName: P1S_NAME,
+    printers: [{ id: P1S, name: P1S_NAME }],
     files,
     ...overrides,
   };
@@ -492,6 +500,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  localStorage.removeItem(PRINTER_CHOICE_KEY);
   vi.useRealTimers();
 });
 
@@ -716,7 +725,7 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
     await render(pageAt(MODEL_ID));
     const first = text(plateItems()[0]);
     expect(first).toContain("Bambu, in the file");
-    expect(first).toContain(P1S);
+    expect(first).toContain(P1S_NAME);
     expect(first).toContain("0.20mm Standard @BBL P1P");
     expect(first).not.toMatch(/estimate/i);
   });
@@ -726,7 +735,7 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
     const second = text(plateItems()[1]);
     expect(second).toContain("Platehouse estimate");
     expect(second).toContain("OrcaSlicer 2.5.0");
-    expect(second).toContain(P1S);
+    expect(second).toContain(P1S_NAME);
     expect(second).toContain("0.20mm Standard @BBL X1C");
     expect(second).toContain("Bambu PLA Basic @BBL P1S");
   });
@@ -737,7 +746,7 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
       model([
         threeMf([
           plate(1, "Base", {
-            file: { ...fileNumbers(1), printerId: X1C, printerLabel: X1C },
+            file: { ...fileNumbers(1), printerId: X1C, printerLabel: X1C, printerName: X1C_NAME },
             platehouse: estimate("current"),
           }),
         ]),
@@ -746,9 +755,9 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
     await render(pageAt(MODEL_ID));
     const only = text(plateItems()[0]);
     expect(only).toContain("Bambu, in the file");
-    expect(only).toContain(X1C);
+    expect(only).toContain(X1C_NAME);
     expect(only).toContain("Platehouse estimate");
-    expect(only).toContain(P1S);
+    expect(only).toContain(P1S_NAME);
   });
 
   test("an older estimate shown meanwhile is marked as for the previous printer", async () => {
@@ -757,7 +766,12 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
       model([
         threeMf([
           plate(1, "Base", {
-            platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }),
+            platehouse: estimate("stale", {
+              printerId: X1C,
+              printerLabel: X1C,
+              printerName: X1C_NAME,
+              staleFor: X1C,
+            }),
           }),
         ]),
       ]),
@@ -765,7 +779,189 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
     await render(pageAt(MODEL_ID));
     const only = text(plateItems()[0]);
     expect(only).toMatch(/previous printer/i);
-    expect(only).toContain(X1C);
+    expect(only).toContain(X1C_NAME);
+  });
+
+  // Jon, 2026-11-19: the card read "Platehouse estimate Estimate".
+  test("the estimate is labelled once, and a screen reader hears that label once", async () => {
+    await render(pageAt(MODEL_ID));
+    const second = plateItems()[1];
+    const source = second?.querySelector(".ph-numbers-source");
+    // What a screen reader reads for the label: its text, with nothing hidden
+    // from it and no second badge.
+    expect(text(source)).toBe("Platehouse estimate");
+    expect(source?.querySelector("[aria-hidden]")).toBeNull();
+    expect(second?.querySelector(".ph-estimate-mark")).toBeNull();
+    expect(text(second).match(/estimate/gi)).toHaveLength(1);
+    // The printer is named in full, never by its preset id.
+    expect(text(second)).not.toContain(P1S);
+  });
+
+  test("an estimating plate and a failed one name the printer in full", async () => {
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(1, "Base", { platehouse: estimate("estimating") }),
+          plate(2, "Lid", {
+            failure: {
+              estimateId: EST_FAILED,
+              reason: "bed_too_small",
+              words: "The plate is too big for this printer's bed.",
+              detail: null,
+            },
+          }),
+        ]),
+      ]),
+    );
+    await render(pageAt(MODEL_ID));
+    expect(text(plateItems()[0])).toContain(`Estimating for ${P1S_NAME}.`);
+    expect(text(plateItems()[1])).toContain(`Platehouse estimate for ${P1S_NAME}`);
+  });
+});
+
+// The model page's printer switch (Jon, 2026-11-19): My printers in a small
+// menu on the Plates tab. It asks for the model again with ?printer= and
+// starts no slicing.
+describe("the model page's printer switch", () => {
+  function twoPrinters(shown: string): ModelView {
+    return model([threeMf([plate(1, "Base", { file: fileNumbers(1) })])], {
+      printer: shown,
+      printerName: shown === X1C ? X1C_NAME : P1S_NAME,
+      printers: [
+        { id: P1S, name: P1S_NAME },
+        { id: X1C, name: X1C_NAME },
+      ],
+    });
+  }
+
+  function printerSwitch(): HTMLSelectElement {
+    const label = [...panel().querySelectorAll("label")].find(
+      (l) => text(l) === "Times and weights for",
+    );
+    const select = label ? document.getElementById(label.getAttribute("for") ?? "") : null;
+    if (!(select instanceof HTMLSelectElement)) throw new Error("no printer switch");
+    return select;
+  }
+
+  test("with one printer there is no menu, and the Plates tab names the printer in full", async () => {
+    await render(pageAt(MODEL_ID));
+    expect(text(panel())).toContain(`Times and weights for ${P1S_NAME}`);
+    expect(panel().querySelector("select")).toBeNull();
+  });
+
+  test("choosing another printer asks for its numbers only, and the choice is kept", async () => {
+    models.set(MODEL_ID, twoPrinters(P1S));
+    await render(pageAt(MODEL_ID));
+    const select = printerSwitch();
+    expect([...select.options].map((o) => o.textContent)).toEqual([P1S_NAME, X1C_NAME]);
+    models.set(MODEL_ID, twoPrinters(X1C));
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(select, X1C);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}`,
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+    ]);
+    expect(printerSwitch().value).toBe(X1C);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(X1C);
+  });
+
+  // Issue #255: the select is drawn from the model on screen, which still
+  // names the old printer until the new answer lands. It must show the new
+  // choice meanwhile, or React puts it back and arrow keys cannot get past
+  // the next printer (on Windows each arrow press on a closed select chooses).
+  const A1 = "Bambu Lab A1 0.4 nozzle";
+  const A1_NAME = "Bambu Lab A1, 0.4 mm nozzle";
+
+  function threePrinters(shown: string): ModelView {
+    const names: Record<string, string> = { [P1S]: P1S_NAME, [X1C]: X1C_NAME, [A1]: A1_NAME };
+    return model([threeMf([plate(1, "Base", { file: fileNumbers(1) })])], {
+      printer: shown,
+      printerName: names[shown] ?? shown,
+      printers: [
+        { id: P1S, name: P1S_NAME },
+        { id: X1C, name: X1C_NAME },
+        { id: A1, name: A1_NAME },
+      ],
+    });
+  }
+
+  /** A server whose ?printer= answers wait until the test releases them. */
+  function holdChoices() {
+    const answers = new Map<string, (r: Response) => void>();
+    const fast = stubServer();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "https://platehouse.test");
+        const asked = url.searchParams.get("printer");
+        if (asked === null) return fast(input, init);
+        requests.push(`GET ${url.pathname}${url.search}`);
+        return new Promise<Response>((resolve) => answers.set(asked, resolve));
+      }),
+    );
+    return answers;
+  }
+
+  async function step(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+  }
+
+  test("while the new printer's numbers load, the switch shows the new choice and keeps focus", async () => {
+    models.set(MODEL_ID, threePrinters(P1S));
+    await render(pageAt(MODEL_ID));
+    const answers = holdChoices();
+    const select = printerSwitch();
+    select.focus();
+
+    // Two arrow presses before any answer: X1C, then A1.
+    await step(select, X1C);
+    expect(printerSwitch().value).toBe(X1C);
+    expect(document.activeElement).toBe(printerSwitch());
+    await step(printerSwitch(), A1);
+    expect(printerSwitch().value).toBe(A1);
+    expect(requests).toContain(`GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(A1)}`);
+
+    // The X1C answer, overtaken, never lands; the A1 one does.
+    await act(async () => {
+      answers.get(X1C)?.(json(threePrinters(X1C)));
+      answers.get(A1)?.(json(threePrinters(A1)));
+    });
+    await settle();
+    expect(printerSwitch().value).toBe(A1);
+    expect(text(panel())).not.toContain(`Times and weights for ${X1C_NAME}`);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(A1);
+  });
+
+  test("a load that fails keeps the new choice shown, matching what is stored, and Try again asks again", async () => {
+    models.set(MODEL_ID, threePrinters(P1S));
+    await render(pageAt(MODEL_ID));
+    const answers = holdChoices();
+    await step(printerSwitch(), X1C);
+    await act(async () => {
+      answers.get(X1C)?.(json({ error: "x" }, 503));
+    });
+    await settle();
+    expect(container.textContent).toContain("The model could not be refreshed right now.");
+    expect(printerSwitch().value).toBe(X1C);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(X1C);
+
+    const before = requests.length;
+    const retry = [...container.querySelectorAll("button")].find((b) => text(b) === "Try again");
+    await act(async () => retry?.click());
+    await settle();
+    expect(requests.slice(before)).toEqual([
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+    ]);
   });
 });
 
@@ -922,7 +1118,14 @@ describe("estimating state renders and is replaced when numbers arrive", () => {
           plate(
             1,
             "Base",
-            { platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }) },
+            {
+              platehouse: estimate("stale", {
+                printerId: X1C,
+                printerLabel: X1C,
+                printerName: X1C_NAME,
+                staleFor: X1C,
+              }),
+            },
             false,
           ),
         ]),
@@ -947,14 +1150,21 @@ describe("estimating state renders and is replaced when numbers arrive", () => {
           plate(
             1,
             "Base",
-            { platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }) },
+            {
+              platehouse: estimate("stale", {
+                printerId: X1C,
+                printerLabel: X1C,
+                printerName: X1C_NAME,
+                staleFor: X1C,
+              }),
+            },
             true,
           ),
         ]),
       ]),
     );
     await render(pageAt(MODEL_ID));
-    expect(text(plateItems()[0])).toContain(`A new estimate for ${P1S} is on its way.`);
+    expect(text(plateItems()[0])).toContain(`A new estimate for ${P1S_NAME} is on its way.`);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(POLL_MS);
     });
@@ -974,7 +1184,14 @@ describe("estimating state renders and is replaced when numbers arrive", () => {
           plate(
             1,
             "Base",
-            { platehouse: estimate("stale", { printerId: X1C, printerLabel: X1C, staleFor: X1C }) },
+            {
+              platehouse: estimate("stale", {
+                printerId: X1C,
+                printerLabel: X1C,
+                printerName: X1C_NAME,
+                staleFor: X1C,
+              }),
+            },
             true,
           ),
         ]),

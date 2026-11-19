@@ -602,7 +602,9 @@ function declaresBody(request: FastifyRequest): boolean {
  */
 export function releaseUnreadBody(request: FastifyRequest, reply: FastifyReply): void {
   const raw = request.raw;
-  if (raw.complete || raw.destroyed || !declaresBody(request)) return;
+  // A body read to its end (complete on a real request; readableEnded also
+  // on an injected one, which has no complete flag) has nothing to drain.
+  if (raw.complete || raw.readableEnded || raw.destroyed || !declaresBody(request)) return;
   reply.header("connection", "close");
   const socket = raw.socket;
   const destroySoon = socket.destroySoon;

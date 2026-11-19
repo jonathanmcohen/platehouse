@@ -4,9 +4,12 @@
 // - Bambu's own numbers from the file, labelled "Bambu, in the file", with
 //   the printer the file was sliced for and its process. This block never
 //   says "estimate".
-// - A Platehouse estimate, labelled "Platehouse estimate" and marked as an
-//   estimate, with the slicer and its version, the printer, the process and
-//   each filament's preset (Bambu's own, Orca's Generic, or the file's own).
+// - A Platehouse estimate, labelled "Platehouse estimate" once, as plain
+//   text like the file's "Bambu, in the file" (it once also carried an
+//   "Estimate" badge, so it read "Platehouse estimate Estimate", and a
+//   screen reader said both), with the slicer and its version, the printer
+//   in full, the process and each filament's preset (Bambu's own, Orca's
+//   Generic, or the file's own).
 //   While it runs it says Estimating; an older one shown meanwhile is marked
 //   as made for the previous printer (or Orca version) (AC-031), and says a
 //   new one is on its way only when the server says one is queued or
@@ -89,7 +92,7 @@ function Facts({ numbers, printerWord }: { numbers: Numbers; printerWord: string
       )}
       <dl className="studio-dl ph-numbers-facts">
         <dt>{printerWord}</dt>
-        <dd>{numbers.printerLabel}</dd>
+        <dd>{numbers.printerName}</dd>
         {slicer === null ? null : (
           <>
             <dt>Slicer</dt>
@@ -120,21 +123,21 @@ function FileNumbers({ numbers }: { numbers: Numbers }) {
 function EstimateNumbers({
   numbers,
   printer,
+  printerName,
   pending,
 }: {
   numbers: PlatehouseNumbers;
   printer: string;
-  /** Whether a new estimate for the selected printer is queued or slicing. */
+  printerName: string;
+  /** Whether a new estimate for the shown printer is queued or slicing. */
   pending: boolean;
 }) {
   return (
     <div className="ph-numbers">
-      <p className="ph-numbers-source">
-        Platehouse estimate <span className="studio-chip ph-estimate-mark">Estimate</span>
-      </p>
+      <p className="ph-numbers-source">Platehouse estimate</p>
       {numbers.state === "estimating" ? (
         <p className="studio-muted">
-          Estimating for {printer}. The numbers show here when the slice finishes.
+          Estimating for {printerName}. The numbers show here when the slice finishes.
         </p>
       ) : (
         <>
@@ -142,8 +145,8 @@ function EstimateNumbers({
             <p className="studio-muted">
               {numbers.printerId === printer
                 ? `Made with the previous slicer version, ${numbers.staleFor ?? "unknown"}.`
-                : `Made for the previous printer, ${numbers.printerLabel}.`}
-              {pending ? ` A new estimate for ${printer} is on its way.` : null}
+                : `Made for the previous printer, ${numbers.printerName}.`}
+              {pending ? ` A new estimate for ${printerName} is on its way.` : null}
             </p>
           ) : null}
           <Facts numbers={numbers} printerWord="Printer" />
@@ -155,8 +158,10 @@ function EstimateNumbers({
 
 export interface PlateNumbersViewProps {
   numbers: PlateNumbers;
-  /** The selected printer. */
+  /** The printer the page shows numbers for (an Orca preset id). */
   printer: string;
+  /** That printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  printerName: string;
   /** The file's project filament list, shown when the plate has no numbers yet. */
   projectFilaments: ProjectFilament[];
   /** Whether an estimate for the selected printer is queued or slicing (ModelPlate.estimatePending). */
@@ -168,6 +173,7 @@ export interface PlateNumbersViewProps {
 export function PlateNumbersView({
   numbers,
   printer,
+  printerName,
   projectFilaments,
   pending,
   onRetry,
@@ -200,12 +206,13 @@ export function PlateNumbersView({
         <EstimateNumbers
           numbers={platehouse}
           printer={printer}
+          printerName={printerName}
           pending={pending && failure === undefined}
         />
       )}
       {failure === undefined ? null : (
         <div className="ph-numbers ph-failure">
-          <p className="ph-numbers-source">Platehouse estimate for {printer}</p>
+          <p className="ph-numbers-source">Platehouse estimate for {printerName}</p>
           <p>{failure.words}</p>
           <div className="studio-actions">
             {failure.detail === null ? null : (
