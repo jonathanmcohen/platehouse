@@ -60,7 +60,9 @@
   inset: 0;
 }
 
-/* The 3D view's buttons: a fieldset for its legend, without its frame. */
+/* The 3D view's buttons, and the plate image's (PlateImage): a fieldset for
+   its legend, without its frame. studio-actions wraps them onto a second
+   row on a narrow screen. */
 .ph-viewer-controls {
   min-width: 0;
   margin: 0;
