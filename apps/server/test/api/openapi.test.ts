@@ -111,6 +111,23 @@ describe("the OpenAPI document", () => {
     expect(problems(doc)).toEqual([]);
   });
 
+  test.each([
+    ["/models/{id}", "get", "summary", "no summary"],
+    ["/models/{id}", "get", "404", "takes a path parameter but 404 is not documented"],
+    ["/models", "post", "400", "takes a body or query parameters but 400 is not documented"],
+    ["/models", "get", "400", "takes a body or query parameters but 400 is not documented"],
+    ["/uploads/{id}", "patch", "404", "takes a path parameter but 404 is not documented"],
+    ["/models/{id}/tags/{tag}", "put", "401", "401 is not documented"],
+  ])("a %s %s that loses its %s is caught", (path, method, what, line) => {
+    const broken = structuredClone(doc);
+    const op = broken.paths[path]?.[method];
+    expect(op, `${method} ${path}`).toBeDefined();
+    if (op === undefined) return;
+    if (what === "summary") delete op.summary;
+    else delete op.responses?.[what];
+    expect(problems(broken)).toContain(`${method.toUpperCase()} ${path}: ${line}`);
+  });
+
   test("describes every v1 route, and nothing else", () => {
     const v1 = routes.filter((r) => r.url.startsWith("/api/v1/"));
     expect(v1.length).toBeGreaterThan(15);

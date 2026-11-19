@@ -11,6 +11,7 @@
 // focus goes to the next row's Revoke, else the previous row's, else the
 // Create token button (useRowFocus in ./focus).
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
+import { Link } from "react-router";
 import { appApi, errorText, formatDate, segment, useAppApi } from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
 import { useRowFocus } from "./focus";
@@ -137,7 +138,8 @@ export function Tokens() {
       <h2>API tokens</h2>
       <p className="studio-muted">
         Each API client, such as Claude Code on one Mac, gets its own token. A token is shown once,
-        when it is made.
+        when it is made. The <Link to="/settings?view=api">API reference</Link> shows what a token
+        can do and how to use it.
       </p>
       <form className="ph-inline-form" onSubmit={create}>
         <label htmlFor={nameId}>Token name</label>

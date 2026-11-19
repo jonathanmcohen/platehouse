@@ -1,0 +1,261 @@
+/*
+ * The API reference page's own pieces (ApiReference.tsx). Built only from
+ * studio.css's tokens and shapes, like organise.css: no colour value is
+ * written here, only var() references, and every text and background pair
+ * used is one test/stylesheet.test.ts checks for WCAG AA in both palettes
+ * (--text and --muted on --surface and --raised, --accent-text on
+ * --accent-soft). The focus ring is studio.css's :focus-visible.
+ *
+ * At 375 px nothing scrolls sideways: long paths, names and words wrap, and
+ * an example wider than the screen scrolls inside its own block.
+ */
+
+.ph-api {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.ph-api-intro {
+  display: grid;
+  gap: 12px;
+  max-width: 60rem;
+}
+
+.ph-api-intro p {
+  margin: 0;
+}
+
+.ph-api code,
+.ph-api pre {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  font-size: 0.9em;
+}
+
+.ph-api code {
+  overflow-wrap: anywhere;
+}
+
+.ph-api-ops {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* One operation: a card that opens. */
+.ph-api-op {
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.ph-api-op > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ph-api-op > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The open and closed marker, drawn so it follows the theme. */
+.ph-api-op > summary::before {
+  content: "";
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.ph-api-op[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.ph-api-op > summary:hover {
+  background: var(--raised);
+}
+
+.ph-api-op h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.ph-api-method {
+  display: inline-block;
+  min-width: 4.2em;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.ph-api-summary {
+  font-weight: 400;
+  color: var(--text);
+}
+
+.ph-api-body {
+  display: grid;
+  gap: 10px;
+  padding: 4px 14px 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ph-api-body p {
+  margin: 0;
+}
+
+.ph-api-body h4 {
+  margin: 8px 0 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.ph-api-body h5 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.ph-api-code {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+}
+
+.ph-api-part {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ph-api-part .ph-api-part {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.ph-api-fields {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.ph-api-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.ph-api-field > span:last-child:not(.ph-api-meta) {
+  flex-basis: 100%;
+}
+
+.ph-api-meta {
+  font-size: 0.85rem;
+}
+
+/* Nested fields step in; deeper than 5 shares the last step. */
+.ph-api-depth-1 {
+  margin-left: 1rem;
+}
+
+.ph-api-depth-2 {
+  margin-left: 2rem;
+}
+
+.ph-api-depth-3 {
+  margin-left: 3rem;
+}
+
+.ph-api-depth-4 {
+  margin-left: 4rem;
+}
+
+.ph-api-depth-5 {
+  margin-left: 5rem;
+}
+
+.ph-api-examples {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ph-api-example {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+}
+
+.ph-api-example figcaption {
+  font-size: 0.85rem;
+}
+
+.ph-api-example pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 24rem;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+@media (max-width: 480px) {
+  .ph-api-body {
+    padding: 4px 10px 12px;
+  }
+
+  /* Indents are halved so deep fields keep room to read. */
+  .ph-api-depth-1 {
+    margin-left: 0.5rem;
+  }
+
+  .ph-api-depth-2 {
+    margin-left: 1rem;
+  }
+
+  .ph-api-depth-3 {
+    margin-left: 1.5rem;
+  }
+
+  .ph-api-depth-4 {
+    margin-left: 2rem;
+  }
+
+  .ph-api-depth-5 {
+    margin-left: 2.5rem;
+  }
+}

@@ -121,6 +121,18 @@ export function problems(doc: OpenApiDoc): string[] {
       if (!codes.some((c) => c.startsWith("2"))) found.push(`${where}: no success response`);
       if (!codes.includes("500")) found.push(`${where}: 500 is not documented`);
       if (!codes.includes("503")) found.push(`${where}: 503 is not documented`);
+      // Every route answers 500 and 503, so those alone would hide a route
+      // that dropped its own errors: one that names something in its path
+      // answers 404 when it is not there, and one that takes a body or
+      // query parameters answers 400 when they are wrong.
+      const params = op.parameters ?? [];
+      if (params.some((p) => p.in === "path") && !codes.includes("404")) {
+        found.push(`${where}: takes a path parameter but 404 is not documented`);
+      }
+      const takesInput = op.requestBody !== undefined || params.some((p) => p.in === "query");
+      if (takesInput && !codes.includes("400")) {
+        found.push(`${where}: takes a body or query parameters but 400 is not documented`);
+      }
 
       let examples = 0;
       for (const [code, response] of responses) {
