@@ -20,6 +20,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const CSS = readFileSync(new URL("../src/styles/studio.css", import.meta.url), "utf8");
+/** The model page's own sheet, which styles its plate strip buttons, plate pictures and file previews. */
+const MODEL_CSS = readFileSync(new URL("../src/model/model.css", import.meta.url), "utf8");
 
 const DARK = ':root,\n[data-theme="dark"]';
 const LIGHT = '[data-theme="light"]';
@@ -88,10 +90,10 @@ function contrast(a: string, b: string): number {
 
 /**
  * The declarations of every flat rule (media queries aside) whose selector
- * list includes selector, comments removed.
+ * list includes selector, comments removed. sheet is studio.css unless given.
  */
-function declarationsFor(selector: string): string {
-  const flat = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+function declarationsFor(selector: string, sheet: string = CSS): string {
+  const flat = sheet.replace(/\/\*[\s\S]*?\*\//g, "");
   let found = "";
   for (const m of flat.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = (m[1] as string).split(",").map((s) => s.replace(/\s+/g, " ").trim());
@@ -350,28 +352,51 @@ describe("thumbnail backdrop", () => {
     }
   });
 
+  // Every place a picture of a print is shown: the library cards and the
+  // model page's large plate image or file preview (studio.css), and the
+  // model page's plate strip buttons, Plates tab pictures and Files tab
+  // preview (model.css). The strip and the Plates tab picture are 48 to 72 px
+  // squares, but a black or white print vanishes there just the same.
   test.each([
-    ".studio-card-media:has(> img)",
-    ".studio-viewer-frame:has(> img)",
-    ".studio-plate-strip a:has(img)",
-  ])("%s draws the backdrop", (selector) => {
-    const declarations = declarationsFor(selector);
+    ["studio.css", ".studio-card-media:has(> img)", CSS],
+    ["studio.css", ".studio-viewer-frame:has(> img)", CSS],
+    ["model.css", ".studio-plate-strip button:has(img)", MODEL_CSS],
+    ["model.css", ".ph-plate-head img", MODEL_CSS],
+    ["model.css", ".ph-file-preview", MODEL_CSS],
+  ])("%s: %s draws the backdrop", (_file, selector, sheet) => {
+    const declarations = declarationsFor(selector, sheet);
     expect(declarations, `no rule for ${selector}`).not.toBe("");
     expect(declarations).toMatch(/background-color:\s*var\(--thumb-bg\);/);
     expect(declarations).toMatch(
       /background-image:\s*radial-gradient\([^;]*var\(--thumb-bg\)[^;]*var\(--thumb-edge\)\s*\);/,
     );
+    expect(declarations, `${selector} still sets --raised`).not.toMatch(/var\(--raised\)/);
   });
 
   // With no picture the frame holds placeholder text in --muted, which is
   // checked against --raised above and would not reach 4.5:1 on a mid-grey.
-  test.each([".studio-card-media", ".studio-viewer-frame", ".studio-plate-strip a"])(
-    "%s with no picture keeps the raised background",
+  test.each([".studio-card-media", ".studio-viewer-frame"])(
+    "studio.css: %s with no picture keeps the raised background",
     (selector) => {
       expect(declarationsFor(selector)).toMatch(/background:\s*var\(--raised\);/);
       expect(declarationsFor(".studio-placeholder")).toMatch(/color:\s*var\(--muted\);/);
     },
   );
+
+  // A plate with no picture shows its number (.ph-strip-empty) in the
+  // button's --muted, so that button keeps --raised.
+  test("model.css: a plate strip button with no picture keeps the raised background", () => {
+    const button = declarationsFor(".studio-plate-strip button", MODEL_CSS);
+    expect(button).toMatch(/background:\s*var\(--raised\);/);
+    expect(button).toMatch(/color:\s*var\(--muted\);/);
+  });
+
+  // The app's plate strip is buttons (PlateStrip.tsx); studio.css's link
+  // rules for the strip are a port from manyfold-studio that styles nothing
+  // here, so the backdrop is not drawn through them.
+  test("studio.css draws no backdrop on plate strip links, which the app never renders", () => {
+    expect(declarationsFor(".studio-plate-strip a:has(img)")).toBe("");
+  });
 });
 
 describe("layout", () => {

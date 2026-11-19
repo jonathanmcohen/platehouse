@@ -849,11 +849,6 @@ a.studio-card:hover {
   background: var(--raised);
 }
 
-.studio-plate-strip a:has(img) {
-  background-color: var(--thumb-bg);
-  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
-}
-
 .studio-plate-strip a[aria-current="true"] {
   border-color: var(--accent);
 }
