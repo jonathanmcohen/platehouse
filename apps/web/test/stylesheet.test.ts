@@ -3,8 +3,14 @@
 // palettes are read out of studio.css itself, so a colour edited there is
 // checked here: every text and background pair meets WCAG AA (4.5:1) in both
 // palettes, the alert edges meet 3:1, System's light copy equals Light, the
-// accent is Bambu green, and the palettes, radii and breakpoints are the ones
-// manyfold-studio shipped at 4076a67.
+// default accent is Blueprint indigo, and the palettes, radii and breakpoints
+// are the ones manyfold-studio shipped at 4076a67. The palettes take their
+// accent tokens from the accent scheme (Jon, 2026-11-19); here they are read
+// with the default scheme filled in, or with Green, the studio's own colour,
+// where they are compared with 4076a67. accent-palette.test.ts checks all
+// twelve.
+// Issue #245 added the thumbnail backdrop: pure black and pure white are
+// each at least 3:1 on it in every palette, and every picture frame draws it.
 //
 // Not ported: the picture stacking tests, which pin the restyling of
 // Manyfold's PreviewFrame markup (.card-img-top and its blurred backdrop).
@@ -14,24 +20,50 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const CSS = readFileSync(new URL("../src/styles/studio.css", import.meta.url), "utf8");
+/** The model page's own sheet, which styles its plate strip buttons, plate pictures and file previews. */
+const MODEL_CSS = readFileSync(new URL("../src/model/model.css", import.meta.url), "utf8");
 
 const DARK = ':root,\n[data-theme="dark"]';
 const LIGHT = '[data-theme="light"]';
+/** The default accent scheme's block, which :root also carries (accent-palette.test.ts checks all twelve). */
+const ROOT_SCHEME = ':where(:root),\n[data-accent="blueprint-indigo"]';
+/** Green's block: the accent manyfold-studio shipped at 4076a67. */
+const GREEN_SCHEME = '[data-accent="bambu-green"]';
 
 type Palette = Record<string, string>;
 
-/** The custom properties declared as plain #rrggbb in the block for selector. */
-function palette(selector: string): Palette {
+function blockFor(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const block = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "m").exec(CSS)?.[1];
   expect(block, `no block for ${selector}`).toBeDefined();
-  return declaredColours(block ?? "");
+  return block ?? "";
 }
 
-function declaredColours(block: string): Palette {
+/** The plain #rrggbb custom properties in a block. */
+function hexColours(block: string): Palette {
   const colours: Palette = {};
   for (const m of block.matchAll(/(--[a-z-]+)\s*:\s*(#[0-9a-fA-F]{6})\s*;/g)) {
     colours[m[1] as string] = m[2] as string;
+  }
+  return colours;
+}
+
+/**
+ * The colours of the block for selector, with a scheme's colours for its
+ * var(--scheme-*) tokens. The default scheme gives what the page paints with
+ * no accent chosen.
+ */
+function palette(selector: string, schemeSelector: string = ROOT_SCHEME): Palette {
+  return declaredColours(blockFor(selector), schemeSelector);
+}
+
+function declaredColours(block: string, schemeSelector: string = ROOT_SCHEME): Palette {
+  const scheme = hexColours(blockFor(schemeSelector));
+  const colours = hexColours(block);
+  for (const m of block.matchAll(/(--[a-z-]+)\s*:\s*var\((--scheme-[a-z-]+)\)\s*;/g)) {
+    const value = scheme[m[2] as string];
+    expect(value, `${m[1]}: ${m[2]} is not in the scheme`).toBeDefined();
+    colours[m[1] as string] = value as string;
   }
   return colours;
 }
@@ -58,10 +90,10 @@ function contrast(a: string, b: string): number {
 
 /**
  * The declarations of every flat rule (media queries aside) whose selector
- * list includes selector, comments removed.
+ * list includes selector, comments removed. sheet is studio.css unless given.
  */
-function declarationsFor(selector: string): string {
-  const flat = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+function declarationsFor(selector: string, sheet: string = CSS): string {
+  const flat = sheet.replace(/\/\*[\s\S]*?\*\//g, "");
   let found = "";
   for (const m of flat.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = (m[1] as string).split(",").map((s) => s.replace(/\s+/g, " ").trim());
@@ -99,7 +131,11 @@ const PAIRS: Array<[string, string]> = [
   ["--chip-text", "--surface"],
 ];
 
-// The palettes of manyfold-studio's studio.css at 4076a67, exactly.
+// The palettes of manyfold-studio's studio.css at 4076a67, with its accent,
+// the Green scheme, filled in. --brand, the logo's colour, was
+// added with the accent schemes (Jon, 2026-11-19).
+// The thumbnail backdrop (--thumb-bg and --thumb-edge, issue #245) is
+// Platehouse's own; manyfold-studio did not have it.
 const STUDIO_DARK: Palette = {
   "--bg": "#121418",
   "--surface": "#1a1d23",
@@ -116,8 +152,15 @@ const STUDIO_DARK: Palette = {
   "--chip-active-text": "#0b0d10",
   "--focus": "#33d17a",
   "--danger": "#ff7b72",
+  "--brand": "#00ae42",
+  "--thumb-bg": "#7a8089",
+  "--thumb-edge": "#6b717a",
 };
 
+// Light differs from 4076a67 in the accent fill only, on purpose: #00ae42 is
+// 2.94:1 on white, under the 3:1 a button fill and a progress bar need, so
+// the light theme fills with Jon's button green, #00873a, behind white text
+// (4.64:1). The logo keeps #00ae42.
 const STUDIO_LIGHT: Palette = {
   "--bg": "#f6f7f9",
   "--surface": "#ffffff",
@@ -125,15 +168,18 @@ const STUDIO_LIGHT: Palette = {
   "--border": "#eceef2",
   "--text": "#111111",
   "--muted": "#5f6570",
-  "--accent": "#00ae42",
+  "--accent": "#00873a",
   "--accent-text": "#007a2f",
   "--accent-soft": "#e7f7ed",
-  "--on-accent": "#0b0d10",
+  "--on-accent": "#ffffff",
   "--chip-text": "#3a3f47",
   "--chip-active-bg": "#111111",
   "--chip-active-text": "#ffffff",
   "--focus": "#007a2f",
   "--danger": "#c62828",
+  "--brand": "#00ae42",
+  "--thumb-bg": "#878d96",
+  "--thumb-edge": "#767c85",
 };
 
 // Every border-radius in studio.css at 4076a67, by selector.
@@ -196,17 +242,17 @@ describe("palettes", () => {
     }
   });
 
-  test("dark is the studio dark palette at 4076a67, exactly", () => {
-    expect(palette(DARK)).toEqual(STUDIO_DARK);
+  test("dark with Green is the studio dark palette at 4076a67, plus the logo colour and the thumbnail backdrop", () => {
+    expect(palette(DARK, GREEN_SCHEME)).toEqual(STUDIO_DARK);
   });
 
-  test("light is the studio light palette at 4076a67, exactly", () => {
-    expect(palette(LIGHT)).toEqual(STUDIO_LIGHT);
+  test("light with Green is the studio light palette, with Jon's button green as the fill, plus the thumbnail backdrop", () => {
+    expect(palette(LIGHT, GREEN_SCHEME)).toEqual(STUDIO_LIGHT);
   });
 
-  test("the plan's colours are the ones in use", () => {
-    const dark = palette(DARK);
-    const light = palette(LIGHT);
+  test("the plan's colours are the ones in use, with Green", () => {
+    const dark = palette(DARK, GREEN_SCHEME);
+    const light = palette(LIGHT, GREEN_SCHEME);
     expect(dark).toMatchObject({
       "--bg": "#121418",
       "--surface": "#1a1d23",
@@ -226,9 +272,14 @@ describe("palettes", () => {
     });
   });
 
-  test("the accent is #00ae42 in both palettes", () => {
-    expect(palette(DARK)["--accent"]).toBe("#00ae42");
-    expect(palette(LIGHT)["--accent"]).toBe("#00ae42");
+  // Jon, 2026-11-19: the default is Blueprint indigo. Its dark fill and logo
+  // are #596eec, not #5560e0, which is 3.83:1 under the dark button text
+  // (src/shell/accent.ts); #5560e0 is the light logo.
+  test("the default accent is Blueprint indigo: #596eec in dark and in the dark logo, #3d47c4 as the light fill, #5560e0 as the light logo", () => {
+    expect(palette(DARK)["--accent"]).toBe("#596eec");
+    expect(palette(DARK)["--brand"]).toBe("#596eec");
+    expect(palette(LIGHT)["--accent"]).toBe("#3d47c4");
+    expect(palette(LIGHT)["--brand"]).toBe("#5560e0");
   });
 
   test("dark is the default: it is the :root block", () => {
@@ -246,6 +297,105 @@ describe("palettes", () => {
 
   test("focus outlines use the palette's focus colour", () => {
     expect(declarationsFor(":focus-visible")).toMatch(/outline:\s*2px solid var\(--focus\)/);
+  });
+});
+
+// Issue #245: a picture of a print sits on a neutral mid-grey, so a black
+// print does not vanish on the dark theme or a white one on the light theme.
+// The backdrop is a soft radial from --thumb-bg in the middle to --thumb-edge
+// at the rim; a gradient between two greys never leaves the range between
+// them, so checking both ends checks every point of it.
+describe("thumbnail backdrop", () => {
+  const BACKDROP = ["--thumb-bg", "--thumb-edge"];
+
+  const PALETTES: Array<[string, () => Palette]> = [
+    ["dark", () => palette(DARK)],
+    ["light", () => palette(LIGHT)],
+    ["system when the OS asks for light", () => declaredColours(systemLightBlock() ?? "")],
+  ];
+
+  test.each(PALETTES)(
+    "pure black and pure white are each at least 3:1 on it in %s",
+    (name, read) => {
+      const colours = read();
+      for (const token of BACKDROP) {
+        const backdrop = colours[token];
+        expect(backdrop, `${name}: ${token} is not defined`).toBeDefined();
+        for (const part of ["#000000", "#ffffff"]) {
+          const ratio = contrast(part, backdrop as string);
+          expect(
+            ratio,
+            `${name}: ${part} on ${token} ${backdrop} is ${ratio.toFixed(2)}:1`,
+          ).toBeGreaterThanOrEqual(3);
+        }
+      }
+    },
+  );
+
+  test.each(PALETTES)("it is a neutral grey in %s", (name, read) => {
+    const colours = read();
+    for (const token of BACKDROP) {
+      const channels = ((colours[token] ?? "").slice(1).match(/../g) ?? []).map((pair) =>
+        Number.parseInt(pair, 16),
+      );
+      expect(channels, `${name}: ${token} is not defined`).toHaveLength(3);
+      const spread = Math.max(...channels) - Math.min(...channels);
+      expect(spread, `${name}: ${token} ${colours[token]} is tinted`).toBeLessThanOrEqual(0x10);
+    }
+  });
+
+  test("only the theme palettes set it, so an accent colour never changes it", () => {
+    const flat = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const token of BACKDROP) {
+      // Dark, light, and System's copy of light.
+      expect(flat.match(new RegExp(`${token}\\s*:`, "g")) ?? [], token).toHaveLength(3);
+    }
+  });
+
+  // Every place a picture of a print is shown: the library cards and the
+  // model page's large plate image or file preview (studio.css), and the
+  // model page's plate strip buttons, Plates tab pictures and Files tab
+  // preview (model.css). The strip and the Plates tab picture are 48 to 72 px
+  // squares, but a black or white print vanishes there just the same.
+  test.each([
+    ["studio.css", ".studio-card-media:has(> img)", CSS],
+    ["studio.css", ".studio-viewer-frame:has(> img)", CSS],
+    ["model.css", ".studio-plate-strip button:has(img)", MODEL_CSS],
+    ["model.css", ".ph-plate-head img", MODEL_CSS],
+    ["model.css", ".ph-file-preview", MODEL_CSS],
+  ])("%s: %s draws the backdrop", (_file, selector, sheet) => {
+    const declarations = declarationsFor(selector, sheet);
+    expect(declarations, `no rule for ${selector}`).not.toBe("");
+    expect(declarations).toMatch(/background-color:\s*var\(--thumb-bg\);/);
+    expect(declarations).toMatch(
+      /background-image:\s*radial-gradient\([^;]*var\(--thumb-bg\)[^;]*var\(--thumb-edge\)\s*\);/,
+    );
+    expect(declarations, `${selector} still sets --raised`).not.toMatch(/var\(--raised\)/);
+  });
+
+  // With no picture the frame holds placeholder text in --muted, which is
+  // checked against --raised above and would not reach 4.5:1 on a mid-grey.
+  test.each([".studio-card-media", ".studio-viewer-frame"])(
+    "studio.css: %s with no picture keeps the raised background",
+    (selector) => {
+      expect(declarationsFor(selector)).toMatch(/background:\s*var\(--raised\);/);
+      expect(declarationsFor(".studio-placeholder")).toMatch(/color:\s*var\(--muted\);/);
+    },
+  );
+
+  // A plate with no picture shows its number (.ph-strip-empty) in the
+  // button's --muted, so that button keeps --raised.
+  test("model.css: a plate strip button with no picture keeps the raised background", () => {
+    const button = declarationsFor(".studio-plate-strip button", MODEL_CSS);
+    expect(button).toMatch(/background:\s*var\(--raised\);/);
+    expect(button).toMatch(/color:\s*var\(--muted\);/);
+  });
+
+  // The app's plate strip is buttons (PlateStrip.tsx); studio.css's link
+  // rules for the strip are a port from manyfold-studio that styles nothing
+  // here, so the backdrop is not drawn through them.
+  test("studio.css draws no backdrop on plate strip links, which the app never renders", () => {
+    expect(declarationsFor(".studio-plate-strip a:has(img)")).toBe("");
   });
 });
 

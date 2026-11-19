@@ -43,6 +43,13 @@
   cursor: pointer;
 }
 
+/* A plate with a picture puts it on the thumbnail backdrop (issue 245). A
+   plate with no picture shows its number in --muted, so it keeps --raised. */
+.studio-plate-strip button:has(img) {
+  background-color: var(--thumb-bg);
+  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
+}
+
 .studio-plate-strip button[aria-pressed="true"] {
   border-color: var(--accent);
 }
@@ -90,7 +97,9 @@
   flex: 0 0 auto;
   border-radius: 6px;
   object-fit: cover;
-  background: var(--raised);
+  /* The thumbnail backdrop (issue 245): the img is only drawn with a picture. */
+  background-color: var(--thumb-bg);
+  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
 }
 
 .ph-plate-title,
@@ -176,7 +185,9 @@
   width: 100%;
   max-width: 240px;
   border-radius: 8px;
-  background: var(--raised);
+  /* The thumbnail backdrop (issue 245): the img is only drawn with a preview. */
+  background-color: var(--thumb-bg);
+  background-image: radial-gradient(circle at 50% 45%, var(--thumb-bg), var(--thumb-edge));
 }
 
 /* A failed render in the viewer: the sentence above the server's reason. */
