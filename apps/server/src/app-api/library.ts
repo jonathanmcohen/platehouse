@@ -73,9 +73,15 @@
 //   either way), and plate count. Left out, it is best match while a search
 //   is active and newest otherwise (defaultSort), and the answer names the
 //   sort served. Every order ends with the model's id, so it is total and
-//   numbered pages and View all's chunks never repeat or skip a model. The
-//   matches are read once per request, one row past the cap, so one query
-//   both slices the page and says whether the total is capped. A time or
+//   models that tie always come in the same order. Each numbered page or
+//   View all chunk is its own request that re-runs the sort and slices by
+//   offset, so pages hold together only while the order holds still: a
+//   model whose time or weight total arrives while you page (its last
+//   plate's estimate lands) moves out of the "no numbers" tail, and it or
+//   a model on a page boundary can repeat or be skipped. Keyset paging for
+//   the computed sorts would close that; it is not done. The matches are
+//   read once per request, one row past the cap, so one query both slices
+//   the page and says whether the total is capped. A time or
 //   weight sort reads the display context first, for the selected printer,
 //   and totals a model's plates by the cards' own rule (sortPrinterFor). A
 //   cursor page has its own order, best match; any other sort with it is 400.

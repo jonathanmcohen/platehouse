@@ -144,7 +144,11 @@ export interface RankedSearchQuery {
  * The library's orders (Jon, 2026-11-19). relevance is best match first;
  * the others are by date added, name ignoring case, total print time or
  * weight for the selected printer, and plate count. Every order ends with
- * the model's id, so it is total and a page never repeats or skips a model.
+ * the model's id, so it is total and models that tie always come in the
+ * same order. Pages sliced by offset hold together only while the order
+ * holds still: a model whose time or weight total arrives between two
+ * requests moves, and it or a model on a page boundary can repeat or be
+ * skipped.
  */
 export const LIBRARY_SORTS = [
   "relevance",
@@ -403,9 +407,10 @@ export function modelsRepo(db: Kysely<DB>) {
                    or (models.name = ${after.name} and models.id > cast(${after.id} as uuid)))))`,
       );
     }
-    // The sort's order, then the model's id, so the order is total and a
-    // page sliced from it never repeats or skips a model. A time, weight or
-    // plate count tie goes by name ignoring case, then id.
+    // The sort's order, then the model's id, so the order is total and
+    // models that tie always come in the same order. (A model whose time or
+    // weight total arrives between two page requests still moves.) A time,
+    // weight or plate count tie goes by name ignoring case, then id.
     switch (sort) {
       case "relevance":
         select = select.orderBy(rank, "desc").orderBy("models.name").orderBy("models.id");
