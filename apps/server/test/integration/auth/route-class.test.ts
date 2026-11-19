@@ -36,6 +36,14 @@ describe("routeClass", () => {
     ["/auth/logout", "public"],
     ["/healthz", "public"],
     ["/assets/index-4f3a2b.js", "public"],
+    // the icon files, each by its exact path (ROOT_FILES in web/shell.ts)
+    ["/favicon.ico", "public"],
+    ["/favicon.svg", "public"],
+    ["/apple-touch-icon.png", "public"],
+    ["/icon-192.png", "public"],
+    ["/icon-512.png", "public"],
+    ["/icon-maskable-512.png", "public"],
+    ["/site.webmanifest", "public"],
     // everything else: session
     ["/", "session"],
     ["/app/api/models", "session"],
@@ -60,6 +68,14 @@ describe("routeClass", () => {
     ["/Healthz", "session"],
     ["/assets", "session"],
     ["/assetsx/a.js", "session"],
+    // an icon path is public only exactly as listed
+    ["/favicon.ico/", "session"],
+    ["/favicon.ico/x", "session"],
+    ["/favicon.icox", "session"],
+    ["/Favicon.ico", "session"],
+    ["/icon-1024.png", "session"],
+    ["/x/favicon.svg", "session"],
+    ["/favicon.%69co", "session"],
     // a path that is not a plain route path is session, whatever it starts
     // with, except under /api/v1/ (below)
     ["/auth/../app/api/models", "session"],
@@ -132,6 +148,9 @@ describe("patternClass", () => {
     ["/auth/login", "public"],
     ["/assets/:file(^[\\w.-]+\\.js$)", "public"],
     ["/healthz", "public"],
+    ["/favicon.ico", "public"],
+    ["/site.webmanifest", "public"],
+    ["/favicon.ico/:x", "session"],
     ["/app/uploads/:id(\\d+)", "session"],
     ["/files/:id(\\d+)/download", "session"],
     ["/", "session"],

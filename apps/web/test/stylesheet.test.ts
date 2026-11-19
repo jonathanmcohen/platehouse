@@ -182,12 +182,12 @@ const STUDIO_LIGHT: Palette = {
   "--thumb-edge": "#767c85",
 };
 
-// Every border-radius in studio.css at 4076a67, by selector.
+// Every border-radius in studio.css at 4076a67, by selector, less the brand
+// dot's 50%: the logo (Logo.tsx) replaced the dot, and its rule is gone.
 const STUDIO_RADII: Array<[string, string]> = [
   [":focus-visible", "6px"],
   [".studio-skip", "8px"],
   [".studio-sidebar", "12px"],
-  [".studio-brand-dot", "50%"],
   [".studio-nav-list a", "8px"],
   ['.studio-search input[type="search"]', "10px"],
   [".studio-button", "9px"],
