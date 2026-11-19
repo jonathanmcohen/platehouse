@@ -35,6 +35,7 @@
 //   and it is bearer-class like every other v1 route.
 import fastifySwagger from "@fastify/swagger";
 import type { FastifyInstance, FastifySchema } from "fastify";
+import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
 
 /** Where the API is mounted; also the path part of servers[0].url. */
 const API_PREFIX = "/api/v1";
@@ -378,13 +379,16 @@ const UNAUTHORIZED_RESPONSE = {
   },
 };
 
+/** The upload cap tus enforces, as the document states it: bytes, then MiB. */
+const UPLOAD_CAP = `${MAX_UPLOAD_BYTES} bytes (${MAX_UPLOAD_BYTES / 2 ** 20} MiB)`;
+
 /** The tus upload routes' operations, by method and path (Public API v1 contract). */
 const TUS_DOCS: Record<string, FastifySchema> = {
   [`POST ${API_PREFIX}/uploads`]: {
     summary: "Start an upload",
     description:
       "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in " +
-      "Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, " +
+      `Upload-Length, at most ${UPLOAD_CAP}. Upload-Metadata must carry filename, ` +
       "whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId " +
       "to put the file into an existing model, or batch (and combine) to group several " +
       "uploads; with neither, the file becomes a model of its own, named after the file.\n\n" +
@@ -407,8 +411,8 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         "upload-length": {
           type: "integer",
           minimum: 0,
-          maximum: 536870912,
-          description: "The file's size in bytes, at most 536870912",
+          maximum: MAX_UPLOAD_BYTES,
+          description: `The file's size in bytes, at most ${MAX_UPLOAD_BYTES}`,
           examples: [5242880],
         },
         "upload-metadata": {
@@ -455,7 +459,7 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       401: UNAUTHORIZED_RESPONSE,
       404: json("modelId names no live model: unknown, or in the trash", { error: "not_found" }),
       412: TUS_412,
-      413: text("Upload-Length is over 536870912 bytes", "Maximum size exceeded\n"),
+      413: text(`Upload-Length is over ${MAX_UPLOAD_BYTES} bytes`, "Maximum size exceeded\n"),
       415: text(
         "The file name's extension is not one Platehouse takes",
         "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved\n",

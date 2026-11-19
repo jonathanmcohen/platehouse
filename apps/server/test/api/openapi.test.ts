@@ -25,7 +25,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { registerOpenApi } from "../../src/api/openapi.js";
 import { TOKEN_PREFIX } from "../../src/api/tokens.js";
 import { apiUploadHook, refusingApi, registerV1 } from "../../src/api/v1.js";
-import { createUploads, registerTus } from "../../src/uploads/tus.js";
+import { createUploads, MAX_UPLOAD_BYTES, registerTus } from "../../src/uploads/tus.js";
 import { documentedPath, METHODS, type OpenApiDoc, problems } from "./support/openapi-rules.js";
 
 /** The repository's root, where biome.json is. */
@@ -49,6 +49,9 @@ function formatted(json: string): string {
     },
   );
 }
+
+/** The upload cap as the document and the guide write it, from the cap tus enforces. */
+const UPLOAD_CAP = `${MAX_UPLOAD_BYTES} bytes (${MAX_UPLOAD_BYTES / 2 ** 20} MiB)`;
 
 /** The origin every example and the web app's copy use; never a real host. */
 const EXAMPLE_ORIGIN = "https://platehouse.example.com";
@@ -213,6 +216,17 @@ describe("the OpenAPI document", () => {
     expect(tag400).not.toMatch(/100/);
   });
 
+  test("gives the upload cap tus enforces, MAX_UPLOAD_BYTES, wherever it states one", () => {
+    const create = doc.paths["/uploads"]?.post;
+    const length = create?.parameters?.find((p) => p.in === "header" && p.name === "upload-length");
+    expect(length?.schema?.maximum).toBe(MAX_UPLOAD_BYTES);
+    expect(length?.description).toBe(`The file's size in bytes, at most ${MAX_UPLOAD_BYTES}`);
+    expect(create?.description).toContain(`Upload-Length, at most ${UPLOAD_CAP}.`);
+    expect(create?.responses?.["413"]?.description).toBe(
+      `Upload-Length is over ${MAX_UPLOAD_BYTES} bytes`,
+    );
+  });
+
   test("describes the token scheme and the server from PUBLIC_ORIGIN", () => {
     expect(doc.servers).toHaveLength(1);
     expect(doc.servers[0]?.url).toBe(`${EXAMPLE_ORIGIN}/api/v1`);
@@ -298,6 +312,16 @@ describe("docs/api.md", () => {
       expect(meaning(request, "404"), request).toMatch(/24 hours/);
     }
     expect(meaning("PATCH /uploads/{id}", "503")).toMatch(/upload was removed/);
+  });
+
+  test("its limit rows give the upload cap tus enforces, MAX_UPLOAD_BYTES", () => {
+    // The 413 row is held to the document's words by the status table test.
+    const limit = (heading: string, what: string) =>
+      tableUnder(guide, heading).find((r) => r[0] === what)?.[1];
+    expect(limit("## Limits", "An uploaded file")).toBe(UPLOAD_CAP);
+    expect(limit("### Resumable and chunked uploads: use a tus client", "Size")).toBe(
+      `at most ${UPLOAD_CAP}`,
+    );
   });
 
   test("it no longer documents a hand-written resumable client in shell", () => {
