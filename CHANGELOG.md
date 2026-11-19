@@ -40,7 +40,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Changed
 
-- OIDC_ISSUER is now required: the server had a default issuer on Jon's home network, so the published image would have sent every login there. Unset, the server refuses to start and names the key, as it does for the other required keys. The Manyfold importer likewise has no default Manyfold or Platehouse address any more: give each with --manyfold and --platehouse, or set MANYFOLD_BASE and PLATEHOUSE_BASE, as https addresses with no path; without them it exits 2 naming what is missing. No shipped code under apps/ or packages/ names that network any more ([#230](https://github.com/jonathanmcohen/platehouse/pull/230)).
+- OIDC_ISSUER is now required: the server had a default issuer on Jon's home network, so the published image would have sent every login there. Unset, the server refuses to start and names the key, as it does for the other required keys. The Manyfold importer likewise has no default Manyfold or Platehouse address any more: give each with --manyfold and --platehouse, or set MANYFOLD_BASE and PLATEHOUSE_BASE, as https addresses with no path; without them it exits 2 naming what is missing. No shipped code under apps/ or packages/ names that network any more, and the API token section in Settings no longer names one of Jon's machines in its placeholder and help text; a test fails if shipped web or server text names one again ([#230](https://github.com/jonathanmcohen/platehouse/pull/230)).
 
 ### Fixed
 
