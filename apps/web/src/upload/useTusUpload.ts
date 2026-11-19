@@ -345,14 +345,14 @@ const RESULT_KEYS: Readonly<Record<string, MessageKey>> = {
 };
 
 /**
- * A failed result's sentence in the shown language: by its code when the
- * page knows it; else the server's own English sentence on an English page,
- * and the plain "The upload failed." on any other.
+ * A failed result's sentence in the shown language: the server's own English
+ * sentence on an English page, never en.json's copy of it; on another, by its
+ * code when the page knows it, else the plain "The upload failed.".
  */
 export function resultMessage(result: UploadResult, i18n: Words = ENGLISH_I18N): string {
+  if (i18n.locale === SOURCE_LOCALE && result.error !== undefined) return result.error;
   const key = result.code === undefined ? undefined : RESULT_KEYS[result.code];
   if (key !== undefined) return i18n.t(key);
-  if (i18n.locale === SOURCE_LOCALE && result.error !== undefined) return result.error;
   return i18n.t("upload.failed");
 }
 

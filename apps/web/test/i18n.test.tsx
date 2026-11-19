@@ -19,10 +19,13 @@ import { LanguagePicker, type ListedLocale } from "../src/i18n/LanguagePicker";
 import { languageCookie, readLanguage, savedLanguage } from "../src/i18n/language";
 import { printerNameIn } from "../src/i18n/printers";
 import { ModelCard } from "../src/library/ModelCard";
+import { derivedMessageIn } from "../src/model/FilesTab";
+import { PlateNumbersView } from "../src/model/Numbers";
 import { Shell } from "../src/shell/Shell";
 import { Sidebar } from "../src/shell/Sidebar";
 import { TrashList } from "../src/trash/TrashList";
 import { UploadDialog } from "../src/upload/UploadDialog";
+import { resultMessage } from "../src/upload/useTusUpload";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -350,5 +353,65 @@ describe("a language a self-hoster added", () => {
     const t = createTranslator("de", messages, CATALOGS.en as Messages);
     expect(t.t("shell.nav.library")).toBe("Bibliothek");
     expect(t.t("shell.nav.trash")).toBe("Trash");
+  });
+});
+
+// A server sentence the page also holds by code (PR 287 review): an English
+// page shows the sentence the server sent, never en.json's copy of it, so a
+// server sentence reworded without en.json still reaches the page as sent.
+// Another language shows the catalog's words for the code. SAID is a wording
+// en.json does not hold, as a reworded server sentence would be.
+describe("an English page and a server sentence the page knows by code", () => {
+  const SAID = "The slicer stopped answering mid-render.";
+
+  function translator(locale: string) {
+    return createTranslator(locale, CATALOGS[locale] as Messages, CATALOGS.en as Messages);
+  }
+
+  test("a render message is the server's own in English and the catalog's in Spanish", () => {
+    const file = {
+      derivedMessage: `${SAID} exit status 1`,
+      derivedCodes: ["slicerDown"],
+      derivedDetail: "exit status 1",
+    };
+    expect(derivedMessageIn(translator("en"), file)).toBe(`${SAID} exit status 1`);
+    expect(derivedMessageIn(translator("es"), file)).toBe(
+      `${translator("es").t("derived.slicerDown")} exit status 1`,
+    );
+  });
+
+  test("an upload result is the server's own in English and the catalog's in Spanish", () => {
+    const result = { status: "failed" as const, error: SAID, code: "ingest_failed" };
+    expect(resultMessage(result, translator("en"))).toBe(SAID);
+    expect(resultMessage(result, translator("es"))).toBe(
+      translator("es").t("upload.result.ingestFailed"),
+    );
+  });
+
+  function failedPlate() {
+    return (
+      <PlateNumbersView
+        numbers={{
+          failure: { estimateId: "est-1", reason: "bed_too_small", words: SAID, detail: null },
+        }}
+        printer="p1s"
+        printerName="Bambu Lab P1S, 0.4 mm nozzle"
+        projectFilaments={[]}
+        pending={false}
+        onRetry={async () => true}
+      />
+    );
+  }
+
+  test("a plate that could not be sliced says the server's words on an English page", () => {
+    render("en", failedPlate());
+    expect(container.textContent).toContain(SAID);
+    expect(container.textContent).not.toContain(translator("en").t("estimate.reason.bedTooSmall"));
+  });
+
+  test("a plate that could not be sliced says the catalog's words on a Spanish page", () => {
+    render("es", failedPlate());
+    expect(container.textContent).toContain(translator("es").t("estimate.reason.bedTooSmall"));
+    expect(container.textContent).not.toContain(SAID);
   });
 });

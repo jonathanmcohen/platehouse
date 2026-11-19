@@ -6,6 +6,7 @@
 // that failed says it could not be rendered, with the server's reason
 // (OpenSCAD's own message for a SCAD it rejects, AC-052). The page polls
 // while a render is pending, so View appears here when it lands.
+import { SOURCE_LOCALE } from "@platehouse/i18n";
 import type { ReactNode } from "react";
 import { ENGLISH_I18N, type Formatters, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import type { ModelFile } from "./ModelPage";
@@ -61,17 +62,20 @@ const DERIVED_KEYS: Readonly<Record<string, MessageKey>> = {
 };
 
 /**
- * What a file says about its render, in the shown language: Platehouse's
- * own sentences (derivedCodes) in the catalog's words, then the program's
- * own message (derivedDetail) as it is. An answer without codes, or with a
- * code this page does not know, shows derivedMessage as the server wrote it.
+ * What a file says about its render, in the shown language. An English page
+ * shows derivedMessage as the server wrote it, never en.json's copy of its
+ * sentences. Another language shows Platehouse's own sentences
+ * (derivedCodes) in the catalog's words, then the program's own message
+ * (derivedDetail) as it is. An answer without codes, or with a code this
+ * page does not know, shows derivedMessage as the server wrote it.
  */
 export function derivedMessageIn(
-  i18n: Pick<I18n, "t">,
+  i18n: Pick<I18n, "t" | "locale">,
   file: Pick<ModelFile, "derivedMessage" | "derivedCodes" | "derivedDetail">,
 ): string | null {
   const codes = file.derivedCodes;
   if (
+    i18n.locale === SOURCE_LOCALE ||
     codes === undefined ||
     codes.length === 0 ||
     codes.some((c) => DERIVED_KEYS[c] === undefined)

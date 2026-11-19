@@ -19,6 +19,7 @@
 //   from the stored file (no re-upload). A refused or failed retry is said
 //   beside the plate.
 // Times and weights are formatted as the library's cards format them.
+import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
@@ -62,10 +63,18 @@ const REASON_WORDS: Readonly<Record<string, MessageKey>> = {
   slicer_error: "estimate.reason.slicerError",
 };
 
-/** A failure's words in the shown language: by its reason, else the server's words. */
-function failureWords(t: I18n["t"], failure: { reason: string; words: string }): string {
+/**
+ * A failure's words in the shown language: the server's own words on an
+ * English page, never en.json's copy of them; on another, by its reason,
+ * else the server's words.
+ */
+function failureWords(
+  i18n: Pick<I18n, "t" | "locale">,
+  failure: { reason: string; words: string },
+): string {
+  if (i18n.locale === SOURCE_LOCALE) return failure.words;
   const key = REASON_WORDS[failure.reason];
-  return key === undefined ? failure.words : t(key);
+  return key === undefined ? failure.words : i18n.t(key);
 }
 
 function FilamentList({ filaments }: { filaments: Array<FilamentNumbers | ProjectFilament> }) {
@@ -249,7 +258,7 @@ export function PlateNumbersView({
           <p className="ph-numbers-source">
             {t("model.numbers.estimateFor", { printer: printerNameIn(i18n, printerName) })}
           </p>
-          <p>{failureWords(t, failure)}</p>
+          <p>{failureWords(i18n, failure)}</p>
           <div className="studio-actions">
             {failure.detail === null ? null : (
               <button
