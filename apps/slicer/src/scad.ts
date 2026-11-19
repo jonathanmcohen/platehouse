@@ -2,7 +2,7 @@
 // /v1/scad/png. The .scad text is written alone into a fresh job folder and
 // OpenSCAD 2026.11-RC0 renders it under prlimit and landrun (see
 // sandbox.ts), with a time cap and OPENSCADPATH unset. What Landlock cannot
-// restrict on Hades' kernel (UDP, and a connect to a pathname Unix socket
+// restrict on the deploy host's kernel (UDP, and a connect to a pathname Unix socket
 // below ABI 9) is left to the container: only its internal network and no
 // socket mounted (MIN_LANDLOCK_ABI in sandbox.ts). A render that fails answers with the tail of
 // OpenSCAD's own stderr. OpenSCAD's file-size limit is

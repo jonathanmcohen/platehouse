@@ -1,5 +1,5 @@
 // The inbox watcher (build plan Task 10; AC-021). A supported file placed in
-// the inbox folder (INBOX_DIR, ${APPDATA}/platehouse/inbox on Hades) becomes a
+// the inbox folder (INBOX_DIR, /data/inbox in the container) becomes a
 // model with no manual step, through ingestFile (ingest/ingest.ts), each file
 // a model of its own.
 //

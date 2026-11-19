@@ -1,6 +1,6 @@
 // Orca's BBL profiles for the slicer (build plan Task 11, AC-031): the T1
-// recipe, ported from the slicing gate's flatten-profiles.mjs, which Hades
-// run 4 proved on 332 slices.
+// recipe, ported from the slicing gate's flatten-profiles.mjs, which the
+// gate's run 4 proved on 332 slices.
 //
 // At image build (node profiles.js --source ... --out ... --process-full ...):
 // - every preset is flattened through inherits, because --load-settings does

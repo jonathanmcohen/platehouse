@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   externalRefFor,
+  fileNameFor,
   importable,
+  lastPathPart,
   MAX_UPLOAD_BYTES,
   planModel,
   type SourceModel,
@@ -443,5 +445,106 @@ describe("labels that would be URL dot segments", () => {
       existing({ tags: [] }),
     );
     expect(plan.tags).toEqual(["v1.2", "...", ".hidden"]);
+  });
+});
+
+describe("fileNameFor (issue #226)", () => {
+  const BASE = "https://manyfold.example.test/models/m1/model_files/";
+  const NONE = "its file type cannot be told, so it is not imported";
+
+  it.each([
+    // [filename, contentUrl's last part, display name, the name it gets]
+    ["benchy.3mf", "f1.3mf", "benchy", "benchy.3mf"],
+    ["benchy.3mf", "other.stl", "benchy", "benchy.3mf"],
+    [null, "f1.3mf", "benchy", "f1.3mf"],
+    [null, "benchy.3mf", "benchy", "benchy.3mf"],
+    ["", "benchy.stl", "benchy", "benchy.stl"],
+    ["   ", "benchy.stl", "benchy", "benchy.stl"],
+    ["benchy", "benchy.3mf", "benchy", "benchy.3mf"],
+    ["Switch 2.5g Mount", "f1.3MF", "Switch 2.5g Mount", "f1.3MF"],
+    [null, "Wall%20Mount.step", "Wall Mount", "Wall Mount.step"],
+    // A type Platehouse does not take keeps its name, so the plan skips it.
+    ["photo.png", "f1.png", "photo", "photo.png"],
+    [null, "photo.png", "photo", "photo.png"],
+    ["photo.png", "f1", "photo", "photo.png"],
+  ])("filename %j, contentUrl part %j, display %j: %j", (filename, part, display, name) => {
+    expect(fileNameFor({ filename, contentUrl: `${BASE}${part}`, displayName: display })).toEqual({
+      name,
+      problem: null,
+    });
+  });
+
+  it.each([
+    [
+      null,
+      "f1",
+      "mount",
+      "mount",
+      'Manyfold sends no filename, and the last part of its contentUrl, "f1", has none',
+    ],
+    [
+      "Wall Mount",
+      "f1",
+      "Wall Mount",
+      "Wall Mount",
+      'the filename "Wall Mount" has none, and the last part of its contentUrl, "f1", has none',
+    ],
+    [
+      "Switch 2.5g 5 Port Mount",
+      "f1",
+      "x",
+      "Switch 2.5g 5 Port Mount",
+      'the filename "Switch 2.5g 5 Port Mount" has none, and the last part of its contentUrl, "f1", has none',
+    ],
+    [
+      null,
+      "",
+      "mount",
+      "mount",
+      "Manyfold sends no filename, and its contentUrl's path ends in no name",
+    ],
+    [
+      null,
+      "a%2Fb.3mf",
+      null,
+      "(no name)",
+      "Manyfold sends no filename, and its contentUrl's path ends in no name",
+    ],
+    [
+      null,
+      "bad%E0.3mf",
+      null,
+      "(no name)",
+      "Manyfold sends no filename, and its contentUrl's path ends in no name",
+    ],
+  ])(
+    "filename %j, contentUrl part %j: no name, labelled %j",
+    (filename, part, display, label, why) => {
+      expect(fileNameFor({ filename, contentUrl: `${BASE}${part}`, displayName: display })).toEqual(
+        {
+          name: label,
+          problem: `no file name with an extension: ${why}; ${NONE}`,
+        },
+      );
+    },
+  );
+
+  it("a file with a problem fails in the plan, with that reason, and is never downloaded", () => {
+    const plan = planModel(
+      source({
+        files: [
+          { url: "u1", filename: "mount", contentUrl: "c1", contentSize: 10, problem: "no name" },
+        ],
+      }),
+      undefined,
+    );
+    expect(plan.files).toEqual([expect.objectContaining({ action: "fail", reason: "no name" })]);
+  });
+
+  it("lastPathPart takes the decoded last part, and nothing that is not one name", () => {
+    expect(lastPathPart(`${BASE}a%20b.stl?download=1`)).toBe("a b.stl");
+    expect(lastPathPart(`${BASE}`)).toBeNull();
+    expect(lastPathPart(`${BASE}a%5Cb.stl`)).toBeNull();
+    expect(lastPathPart("not a url")).toBeNull();
   });
 });

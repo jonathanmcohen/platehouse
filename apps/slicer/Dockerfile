@@ -4,7 +4,7 @@
 # only defines it.
 #
 # Every step that fetches or prepares OrcaSlicer, its profiles, OpenSCAD,
-# landrun and Node follows tools/slicing-gate/Dockerfile, which Hades run 4
+# landrun and Node follows tools/slicing-gate/Dockerfile, which the gate's run 4
 # proved on 2026-11-08 (332 slices, PASS). Each of those steps was a real
 # failure on the way: the AppImage layout (run 1), libatomic1 for Node
 # (run 2), file modes for a non-root user (first CI build), and the
@@ -21,7 +21,7 @@
 # Build context: the repository root.
 #   docker build --platform linux/amd64 -f apps/slicer/Dockerfile -t platehouse-slicer .
 #
-# Run it as Hades does (AC-035): read-only root, a tmpfs at /work mounted
+# Run it as the deploy does (AC-035): read-only root, a tmpfs at /work mounted
 # noexec, nosuid and nodev (nothing in a job folder is ever run), internal
 # network only, 4 CPUs and 4 GB (the gate's measured worst plate: 2568 MiB
 # RSS, 55.31 s, 171 MiB scratch):
@@ -146,7 +146,7 @@ RUN source /usr/local/lib/fetch.sh \
  && chmod 0755 /opt/landrun
 
 # Node.js 26.13.0, linux x64. It links libatomic.so.1 (installed above; the
-# gate's Hades run 2 died without it), checked before Node first runs.
+# gate's run 2 died without it), checked before Node first runs.
 ARG NODE_URL=https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz
 ARG NODE_SHA256=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
 RUN source /usr/local/lib/fetch.sh \

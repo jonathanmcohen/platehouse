@@ -4,7 +4,7 @@
 // folder, which holds the one .scad file. OPENSCADPATH is never set, so no
 // library folder is searched.
 //
-// Two lessons from the slicing gate (Hades runs 3 and 4, 2026-11-08):
+// Two lessons from the slicing gate (runs 3 and 4, 2026-11-08):
 // - every path a binary is executed or mapped from needs --rox: the plan's
 //   form with --ro on the OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--": landrun reads flags past the command
@@ -102,19 +102,19 @@ export function landrunArgs(opts: {
 }
 
 /**
- * The lowest Landlock ABI the self-test accepts (Jon, 2026-11-11; Hades runs
- * kernel 6.17). ABI 6 is the first that also scopes signals and abstract
+ * The lowest Landlock ABI the self-test accepts (Jon, 2026-11-11; the deploy
+ * host runs kernel 6.17). ABI 6 is the first that also scopes signals and abstract
  * Unix sockets, on top of the TCP rules of ABI 4 and the filesystem rules
  * this sandbox is built on.
  *
  * Known limits, which only the container setup covers (security review of
  * PR #123, issue #153): below ABI 9, best effort drops the right that stops
  * a connect() to a pathname Unix socket (landrun sandbox.go, go-landlock
- * config.go), and Hades' kernel 6.17 is below ABI 9 (inferred from the
- * kernel's history; the first self-test line on Hades records the ABI). And
+ * config.go), and the deploy host's kernel 6.17 is below ABI 9 (inferred from
+ * the kernel's history; the first self-test line there records the ABI). And
  * Landlock restricts no UDP at any ABI. So OpenSCAD's sandbox relies on the
  * container having no Unix socket mounted and only its internal network
- * (Task 26 checks both on Hades).
+ * (Task 26 checks both on the deploy host).
  */
 export const MIN_LANDLOCK_ABI = 6;
 
@@ -151,7 +151,7 @@ export function readLandlockAbi(run: GroupResult): AbiReading {
 }
 
 /**
- * CPUs the slicer container gets (AC-035: --cpus 4 on Hades, the gate's
+ * CPUs the slicer container gets (AC-035: --cpus 4 in the deploy, the gate's
  * sizing). CPU time adds up across a program's threads, so a render that
  * uses all of them for its whole wall-clock cap spends this many seconds of
  * CPU per second.
@@ -174,14 +174,14 @@ export const OPENSCAD_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024;
 /**
  * The process-count limit (RLIMIT_NPROC): far above what a render needs
  * (OpenSCAD's TBB and Mesa llvmpipe start about one thread per host CPU;
- * Hades has 8), far below what a runaway fork could reach. RLIMIT_NPROC
+ * the deploy host has 8), far below what a runaway fork could reach. RLIMIT_NPROC
  * counts every process and thread of the user, and with Docker's default of
  * no user-namespace remap that is per UID across the whole host, not per
  * container: the server's own threads count, and so would any other
  * container running as UID 10001, such as the slicing gate image, which
  * uses the same UID. Past the limit OpenSCAD fails to start threads
  * (security review of PR #123, issues #138 and #153; Task 26 checks that no
- * other container on Hades runs as 10001). The container's pids_limit
+ * other container on the deploy host runs as 10001). The container's pids_limit
  * (Task 26) is the hard cap.
  */
 export const OPENSCAD_PROCESS_LIMIT = 512;

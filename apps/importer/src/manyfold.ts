@@ -43,6 +43,7 @@
 //   only when it came from Manyfold; the token request quotes only
 //   Doorkeeper's error code.
 
+import { fileNameFor } from "./plan.js";
 import { quoteBody } from "./redact.js";
 
 /** The media type of Manyfold's JSON API (v0). */
@@ -111,9 +112,12 @@ export interface ManyfoldModel {
 
 export interface ManyfoldFile {
   url: string;
+  /** The name to upload it under (plan.ts fileNameFor), or the report's label when problem is set. */
   filename: string;
   contentUrl: string;
   contentSize: number | null;
+  /** Why no file name with an extension could be found; the file then fails. */
+  problem: string | null;
 }
 
 export interface Manyfold {
@@ -505,18 +509,23 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     async getFile(link) {
       const j = await getJson(link);
       const self = safeUrl(str(j["@id"]) ?? link);
-      const contentUrl = str(j.contentUrl);
-      if (contentUrl === null) throw new ManyfoldError(`${shortPath(self)}: no contentUrl`);
-      const filename = str(j.filename) ?? str(j.name);
-      if (filename === null || filename === "") {
-        throw new ManyfoldError(`${shortPath(self)}: no filename`);
-      }
+      const content = str(j.contentUrl);
+      if (content === null) throw new ManyfoldError(`${shortPath(self)}: no contentUrl`);
+      const contentUrl = safeUrl(content).toString();
+      // Never the name field alone: it is the display name, without the
+      // extension (issue #226).
+      const { name, problem } = fileNameFor({
+        filename: str(j.filename),
+        contentUrl,
+        displayName: str(j.name),
+      });
       const size = j.contentSize;
       return {
         url: self.toString(),
-        filename,
-        contentUrl: safeUrl(contentUrl).toString(),
+        filename: name,
+        contentUrl,
         contentSize: typeof size === "number" && Number.isInteger(size) && size >= 0 ? size : null,
+        problem,
       };
     },
 
