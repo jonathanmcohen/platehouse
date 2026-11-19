@@ -5,7 +5,15 @@
 //   /api/v1/                          bearer: a token, cookies ignored (Task 16)
 //   /s/                               link: the link token (Task 17)
 //   /auth/, /healthz, /assets/        public: nothing
+//   the icon files (ROOT_FILES)       public: nothing
 //   everything else                   session
+//
+// The icon files are the favicons, app icons and web manifest at their exact
+// root paths (web/shell.ts), public since Jon's decision A-1 (2026-11-19) so
+// a signed-out browser can load them: on the auth pages, while the login
+// redirect returns, and for the manifest, which browsers fetch without
+// cookies. Only those exact paths: /favicon.ico/x or /icon-1024.png is
+// session like anything else unlisted.
 //
 // Anything unlisted is session. patternClass classes a matched route's
 // registered pattern by its prefix alone, so a regex-constrained param
@@ -60,6 +68,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Session } from "../db/types.js";
 import { type AuthHook, releaseUnreadBody } from "../uploads/tus.js";
+import { ROOT_FILES } from "../web/shell.js";
 import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, type Sessions } from "./sessions.js";
 
 export type RouteClass = "bearer" | "link" | "public" | "session";
@@ -95,7 +104,12 @@ function isPlainPath(path: string): boolean {
 export function patternClass(pattern: string): RouteClass {
   if (pattern.startsWith("/api/v1/")) return "bearer";
   if (pattern.startsWith("/s/")) return "link";
-  if (pattern.startsWith("/auth/") || pattern === "/healthz" || pattern.startsWith("/assets/")) {
+  if (
+    pattern.startsWith("/auth/") ||
+    pattern === "/healthz" ||
+    pattern.startsWith("/assets/") ||
+    Object.hasOwn(ROOT_FILES, pattern)
+  ) {
     return "public";
   }
   return "session";

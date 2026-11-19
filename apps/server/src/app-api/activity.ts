@@ -1,0 +1,514 @@
+// The Activity page's app API (Jon, 2026-11-19: one page that shows what
+// Platehouse is doing and holds, so he never has to read container logs).
+//
+//   GET /app/api/activity   ActivityView: the library's numbers, estimate
+//                           progress for the selected printer, the pg-boss
+//                           queues and scheduled jobs, the slicer's health,
+//                           and the newest events
+//
+// - Session-class like every /app/api route (the Route classes contract:
+//   /app/api is unlisted), so the gate refuses a request without a live
+//   session before this handler runs. It changes nothing. Nothing is added
+//   under /api/v1.
+// - Built only from what the database, pg-boss and the inbox's failed/
+//   folder already record (repos/activity.ts); no log line is read or
+//   shown. Error text the app stored (Orca's detail, OpenSCAD's message, an
+//   inbox reason) goes through scrubText (src/scrub.ts, shared with the
+//   model page and the Public API v1) first, so no file system path,
+//   address, host name, signed URL or token reaches the page.
+// - The database is read in one read-only REPEATABLE READ transaction, one
+//   query after another on its one connection, so the numbers come from one
+//   snapshot and a poll never holds more than one pooled connection. The
+//   slicer's /v1/health is asked beside it, with SLICER_HEALTH_TIMEOUT_MS,
+//   so a slicer that is down makes the page say so rather than hang. The
+//   inbox's failed/ folder is read at most once every INBOX_CACHE_MS.
+// - Events are capped at EVENT_LIMIT, newest first, across every kind.
+import { readdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import type { Health } from "@platehouse/slicer-contract";
+import type { FastifyInstance } from "fastify";
+import type { Kysely } from "kysely";
+import type { PgBoss } from "pg-boss";
+import type { DB, FileKind } from "../db/types.js";
+import { reasonWords } from "../estimates/reasons.js";
+import { FAILED_DIR, REASON_SUFFIX } from "../inbox/watch.js";
+import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
+import { activityRepo, type QueueCount } from "../repos/activity.js";
+import { settingsRepo } from "../repos/settings.js";
+import { scrubDetail, scrubText } from "../scrub.js";
+import { appApiScope, need } from "./settings.js";
+
+/** The Activity page's route, session-class (the Route classes contract). */
+export const ACTIVITY_API_PATHS: readonly string[] = Object.freeze(["/app/api/activity"]);
+
+/** Most events the page is sent, across every kind. */
+export const EVENT_LIMIT = 50;
+
+/** How far back the estimate rate looks. */
+export const RATE_WINDOW_MS = 30 * 60_000;
+
+/** Fewer recent finishes than this give no rate: too few to tell. */
+export const MIN_RECENT_FOR_RATE = 3;
+
+/** How long the page waits for the slicer's /v1/health before calling it unreachable. */
+export const SLICER_HEALTH_TIMEOUT_MS = 3_000;
+
+/** How long one read of the inbox's failed/ folder is reused. */
+export const INBOX_CACHE_MS = 15_000;
+
+/** How much of a reason file is read. */
+const REASON_BYTES = 4_096;
+
+// ---- What the page is sent ----
+
+export type QueueRowId = "ingest" | "estimates" | "renders" | "step" | "scheduled" | "other";
+
+export interface QueueRow {
+  id: QueueRowId;
+  label: string;
+  /** Queued, or waiting to retry. */
+  waiting: number;
+  active: number;
+  /** Failed jobs pg-boss still keeps (it deletes them 7 days after they end). */
+  failed: number;
+}
+
+export interface ScheduleRow {
+  key: string;
+  label: string;
+  /** The schedule in plain words, with its time zone. */
+  schedule: string;
+  /** When the newest run pg-boss still keeps finished; null when it keeps none. */
+  lastRunAt: string | null;
+  lastState: "completed" | "failed" | null;
+}
+
+export interface EstimateProgress {
+  done: number;
+  pending: number;
+  running: number;
+  failed: number;
+  total: number;
+  /** Plates finished a minute, over the last RATE_WINDOW_MS; null with too few to tell. */
+  perMinute: number | null;
+  /** A rough time left at that rate; null when nothing waits or there is no rate. */
+  secondsLeft: number | null;
+}
+
+export type ModelSource = "api" | "upload" | "unknown";
+
+export type ActivityEvent =
+  | {
+      type: "model_imported";
+      at: string;
+      model: { id: string; name: string; trashed: boolean };
+      /**
+       * api: made through the public API with an external reference (the
+       * Manyfold import); upload: a web or API upload pg-boss still has a
+       * record of; unknown: neither is recorded (an inbox import, or an
+       * upload more than 7 days ago).
+       */
+      source: ModelSource;
+    }
+  | { type: "inbox_failed"; at: string; name: string; reason: string }
+  | {
+      type: "estimate_failed";
+      at: string;
+      estimateId: string;
+      model: { id: string; name: string };
+      plate: { index: number; name: string | null };
+      /** Orca's return code, when the slicer reported one. */
+      code: number | null;
+      /** The reason in plain words (estimates/reasons.ts). */
+      reason: string;
+      /** The slicer's own detail, scrubbed; null with none. */
+      detail: string | null;
+    }
+  | {
+      type: "render_failed";
+      at: string;
+      /** scad: an OpenSCAD render; step: a STEP conversion. */
+      kind: "scad" | "step";
+      model: { id: string; name: string };
+      file: { id: string; name: string };
+      /** The renderer's message as the app stored it, scrubbed; null with none. */
+      message: string | null;
+    };
+
+export interface ActivityView {
+  /** The server's clock when the answer was read. */
+  generatedAt: string;
+  library: {
+    models: { live: number; trashed: number };
+    files: Record<FileKind, number>;
+    plates: number;
+    blobs: { count: number; bytes: number };
+    lastImportAt: string | null;
+  };
+  estimates: EstimateProgress & { printerId: string; orcaVersion: string | null };
+  queues: QueueRow[];
+  schedules: ScheduleRow[];
+  slicer: {
+    reachable: boolean;
+    busy: boolean | null;
+    orca: string | null;
+    openscad: string | null;
+    printerId: string;
+  };
+  events: {
+    items: ActivityEvent[];
+    limit: number;
+    /** False when the inbox's failed/ folder could not be read, so its failures may be missing. */
+    inboxReadable: boolean;
+  };
+  /** True while anything is queued or running: the page polls faster then. */
+  working: boolean;
+}
+
+// ---- Pure parts, tested without a database ----
+
+/** A cron expression the app schedules, in plain words; any other is shown as it is. */
+export function scheduleText(cron: string): string {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return cron;
+  const [minute, hour, dom, month, dow] = parts as [string, string, string, string, string];
+  if (dom !== "*" || month !== "*" || dow !== "*") return cron;
+  const every = /^\*\/(\d+)$/.exec(minute);
+  if (every && hour === "*") return `Every ${every[1]} minutes`;
+  if (minute === "0" && hour === "*") return "Every hour";
+  if (/^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour)) {
+    return `Daily at ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+  }
+  return cron;
+}
+
+const ROW_LABELS: Readonly<Record<QueueRowId, string>> = {
+  ingest: "Ingest (new files)",
+  estimates: "Estimates (slicing)",
+  renders: "OpenSCAD renders",
+  step: "STEP conversion",
+  scheduled: "Scheduled jobs",
+  other: "Other slicer work",
+};
+
+/** The slicer queue's job kinds (estimates/service.ts, derived/derived.ts) and their rows. */
+const SLICER_KIND_ROWS: Readonly<Record<string, QueueRowId>> = {
+  slice: "estimates",
+  "render-scad": "renders",
+  "convert-step": "step",
+};
+
+/** pg-boss's live counts as the page's rows; "other" only when a slicer job of an unknown kind is live. */
+export function queueRows(counts: readonly QueueCount[]): QueueRow[] {
+  const rows = new Map<QueueRowId, QueueRow>();
+  for (const id of ["ingest", "estimates", "renders", "step", "scheduled"] as const) {
+    rows.set(id, { id, label: ROW_LABELS[id], waiting: 0, active: 0, failed: 0 });
+  }
+  for (const c of counts) {
+    let id: QueueRowId;
+    if (c.queue === QUEUE.ingest) id = "ingest";
+    else if (c.queue === QUEUE.maintenance) id = "scheduled";
+    else if (c.queue === QUEUE.slicer) {
+      id =
+        (c.kind !== null && Object.hasOwn(SLICER_KIND_ROWS, c.kind) && SLICER_KIND_ROWS[c.kind]) ||
+        "other";
+    } else continue;
+    let row = rows.get(id);
+    if (row === undefined) {
+      row = { id, label: ROW_LABELS[id], waiting: 0, active: 0, failed: 0 };
+      rows.set(id, row);
+    }
+    if (c.state === "created" || c.state === "retry") row.waiting += c.n;
+    else if (c.state === "active") row.active += c.n;
+    else if (c.state === "failed") row.failed += c.n;
+  }
+  return [...rows.values()];
+}
+
+/** The estimate counts as progress, with a rate and a rough time left from the recent finishes. */
+export function progressOf(
+  counts: {
+    ok: number;
+    pending: number;
+    running: number;
+    failed: number;
+    recentFinished: number;
+    firstRecent: Date | null;
+  },
+  now: Date,
+): EstimateProgress {
+  const { ok, pending, running, failed, recentFinished, firstRecent } = counts;
+  let perMinute: number | null = null;
+  if (recentFinished >= MIN_RECENT_FOR_RATE && firstRecent !== null) {
+    const minutes = Math.max((now.getTime() - firstRecent.getTime()) / 60_000, 1);
+    perMinute = Math.round((recentFinished / minutes) * 100) / 100;
+  }
+  const left = pending + running;
+  const secondsLeft =
+    perMinute !== null && perMinute > 0 && left > 0 ? Math.round((left / perMinute) * 60) : null;
+  return {
+    done: ok,
+    pending,
+    running,
+    failed,
+    total: ok + pending + running + failed,
+    perMinute,
+    secondsLeft,
+  };
+}
+
+/** Every kind's events in one list, newest first, at most EVENT_LIMIT. */
+export function mergeEvents(lists: ReadonlyArray<readonly ActivityEvent[]>): ActivityEvent[] {
+  return lists
+    .flat()
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+    .slice(0, EVENT_LIMIT);
+}
+
+/**
+ * The inbox's failed files (inbox/watch.ts moves each to failed/<name> with
+ * <name>.reason.txt beside it), newest reason file first, at most limit.
+ * Each is the file's name and its scrubbed reason; no path is returned.
+ * readable is false when no inbox is set up or failed/ cannot be listed,
+ * so the page can say its failures may be missing; a failed/ that does not
+ * exist yet simply has none.
+ */
+export async function readInboxFailures(
+  inboxDir: string | undefined,
+  limit: number,
+): Promise<{ readable: boolean; items: ActivityEvent[] }> {
+  if (inboxDir === undefined) return { readable: false, items: [] };
+  const dir = join(inboxDir, FAILED_DIR);
+  let names: string[];
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    names = entries
+      .filter(
+        (e) => e.isFile() && e.name.endsWith(REASON_SUFFIX) && e.name.length > REASON_SUFFIX.length,
+      )
+      .map((e) => e.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { readable: true, items: [] };
+    return { readable: false, items: [] };
+  }
+  const dated: Array<{ name: string; mtime: number }> = [];
+  for (const name of names) {
+    try {
+      dated.push({ name, mtime: (await stat(join(dir, name))).mtimeMs });
+    } catch {
+      // Gone since the listing: nothing to show.
+    }
+  }
+  dated.sort((a, b) => b.mtime - a.mtime || (a.name < b.name ? -1 : 1));
+  const items: ActivityEvent[] = [];
+  for (const { name, mtime } of dated.slice(0, limit)) {
+    let reason = "";
+    try {
+      const handle = await readFile(join(dir, name));
+      reason = handle.subarray(0, REASON_BYTES).toString("utf8");
+    } catch {
+      reason = "";
+    }
+    items.push({
+      type: "inbox_failed",
+      at: new Date(mtime).toISOString(),
+      name: name.slice(0, -REASON_SUFFIX.length),
+      reason: scrubText(reason) || "No reason was recorded.",
+    });
+  }
+  return { readable: true, items };
+}
+
+// ---- The service ----
+
+const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
+  [MAINTENANCE_TASKS.purgeExpired]: "Trash purge (models trashed over 30 days ago)",
+  [MAINTENANCE_TASKS.sweepOrphans]: "Sweep of stored objects with no record",
+  [MAINTENANCE_TASKS.purgeSessions]: "Expired login cleanup",
+  [MAINTENANCE_TASKS.sweepUploads]: "Sweep of unfinished uploads",
+  [MAINTENANCE_TASKS.pollOrca]: "Slicer version check",
+  [MAINTENANCE_TASKS.checkRenders]: "Render check",
+};
+
+const SCHEDULE_ORDER: readonly string[] = [
+  MAINTENANCE_TASKS.purgeExpired,
+  MAINTENANCE_TASKS.sweepOrphans,
+  MAINTENANCE_TASKS.purgeSessions,
+  MAINTENANCE_TASKS.sweepUploads,
+  MAINTENANCE_TASKS.checkRenders,
+  MAINTENANCE_TASKS.pollOrca,
+];
+
+export interface AppActivity {
+  read(): Promise<ActivityView>;
+}
+
+export interface AppActivityDeps {
+  db: Kysely<DB>;
+  boss: Pick<PgBoss, "getSchedules">;
+  slicer: { health(): Promise<Health> };
+  /** INBOX_DIR; its failed/ folder holds the inbox's failures. */
+  inboxDir?: string;
+  /** The clock; the real one when left out. */
+  now?: () => Date;
+  /** SLICER_HEALTH_TIMEOUT_MS when left out. */
+  healthTimeoutMs?: number;
+}
+
+/** A health answer, or null when the slicer did not answer in time or at all. */
+async function healthWithin(slicer: AppActivityDeps["slicer"], ms: number): Promise<Health | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  try {
+    return await Promise.race([slicer.health(), late]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function createAppActivity(deps: AppActivityDeps): AppActivity {
+  const clock = deps.now ?? (() => new Date());
+  const healthMs = deps.healthTimeoutMs ?? SLICER_HEALTH_TIMEOUT_MS;
+  let inboxCache: { at: number; value: { readable: boolean; items: ActivityEvent[] } } | null =
+    null;
+
+  async function inboxFailures() {
+    const nowMs = clock().getTime();
+    if (inboxCache !== null && nowMs - inboxCache.at < INBOX_CACHE_MS) return inboxCache.value;
+    const value = await readInboxFailures(deps.inboxDir, EVENT_LIMIT);
+    inboxCache = { at: nowMs, value };
+    return value;
+  }
+
+  async function readDatabase(now: Date) {
+    return deps.db
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .setAccessMode("read only")
+      .execute(async (trx) => {
+        const repo = activityRepo(trx);
+        const settings = await settingsRepo(trx).get();
+        const version = settings.lastOrcaVersion;
+        const library = await repo.libraryCounts();
+        const counts = await repo.estimateCounts(
+          settings.printerId,
+          version,
+          new Date(now.getTime() - RATE_WINDOW_MS),
+        );
+        const queues = await repo.queueCounts([QUEUE.ingest, QUEUE.slicer, QUEUE.maintenance]);
+        const lastRuns = await repo.lastRuns(QUEUE.maintenance);
+        const models = await repo.recentModels(QUEUE.ingest, EVENT_LIMIT);
+        const estimates = await repo.failedEstimates(settings.printerId, version, EVENT_LIMIT);
+        const derived = await repo.failedDerived(EVENT_LIMIT);
+        return { settings, library, counts, queues, lastRuns, models, estimates, derived };
+      });
+  }
+
+  return {
+    async read(): Promise<ActivityView> {
+      const now = clock();
+      const [data, health, inbox, schedules] = await Promise.all([
+        readDatabase(now),
+        healthWithin(deps.slicer, healthMs),
+        inboxFailures(),
+        deps.boss.getSchedules(QUEUE.maintenance),
+      ]);
+      const { settings, library, counts, queues, lastRuns, models, estimates, derived } = data;
+
+      const progress = progressOf(counts, now);
+      const rows = queueRows(queues);
+      const runs = new Map(lastRuns.map((r) => [r.task, r]));
+      const scheduleRows: ScheduleRow[] = [...schedules]
+        .sort((a, b) => {
+          const ia = SCHEDULE_ORDER.indexOf(a.key);
+          const ib = SCHEDULE_ORDER.indexOf(b.key);
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || (a.key < b.key ? -1 : 1);
+        })
+        .map((s) => {
+          const run = runs.get(s.key);
+          return {
+            key: s.key,
+            label: SCHEDULE_LABELS[s.key] ?? s.key,
+            schedule: `${scheduleText(s.cron)} (${s.timezone})`,
+            lastRunAt: run === undefined ? null : run.at.toISOString(),
+            lastState: run === undefined ? null : run.state,
+          };
+        });
+
+      const modelEvents: ActivityEvent[] = models.map((m) => ({
+        type: "model_imported",
+        at: m.createdAt.toISOString(),
+        model: { id: m.id, name: m.name, trashed: m.trashed },
+        source: m.apiRef ? "api" : m.uploaded ? "upload" : "unknown",
+      }));
+      const estimateEvents: ActivityEvent[] = estimates.map((e) => ({
+        type: "estimate_failed",
+        at: e.finishedAt.toISOString(),
+        estimateId: e.id,
+        model: { id: e.modelId, name: e.modelName },
+        plate: { index: e.plateIndex, name: e.plateName },
+        code: e.failureCode,
+        reason: reasonWords(e.failureReason),
+        detail: scrubDetail(e.failureDetail),
+      }));
+      const renderEvents: ActivityEvent[] = derived
+        .filter((d) => d.kind === "scad" || d.kind === "step")
+        .map((d) => ({
+          type: "render_failed",
+          at: d.at.toISOString(),
+          kind: d.kind === "scad" ? "scad" : "step",
+          model: { id: d.modelId, name: d.modelName },
+          file: { id: d.fileId, name: d.fileName },
+          message: scrubDetail(d.message),
+        }));
+
+      const working =
+        progress.pending + progress.running > 0 || rows.some((r) => r.waiting + r.active > 0);
+
+      return {
+        generatedAt: now.toISOString(),
+        library: {
+          models: library.models,
+          files: library.files,
+          plates: library.plates,
+          blobs: library.blobs,
+          lastImportAt: library.lastImportAt?.toISOString() ?? null,
+        },
+        estimates: {
+          ...progress,
+          printerId: settings.printerId,
+          orcaVersion: settings.lastOrcaVersion,
+        },
+        queues: rows,
+        schedules: scheduleRows,
+        slicer: {
+          reachable: health !== null,
+          busy: health?.busy ?? null,
+          orca: health?.orca ?? null,
+          openscad: health?.openscad ?? null,
+          printerId: settings.printerId,
+        },
+        events: {
+          items: mergeEvents([modelEvents, estimateEvents, renderEvents, inbox.items]),
+          limit: EVENT_LIMIT,
+          inboxReadable: inbox.readable,
+        },
+        working,
+      };
+    },
+  };
+}
+
+/** Registers GET /app/api/activity; without an AppActivity it answers 503. */
+export async function registerActivityApi(
+  app: FastifyInstance,
+  activity: AppActivity | undefined,
+): Promise<void> {
+  await appApiScope(app, (scope) => {
+    scope.get("/activity", async (): Promise<ActivityView> => need(activity).read());
+  });
+}

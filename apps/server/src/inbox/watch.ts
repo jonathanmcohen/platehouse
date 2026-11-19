@@ -1,5 +1,5 @@
 // The inbox watcher (build plan Task 10; AC-021). A supported file placed in
-// the inbox folder (INBOX_DIR, ${APPDATA}/platehouse/inbox on Hades) becomes a
+// the inbox folder (INBOX_DIR, /data/inbox in the container) becomes a
 // model with no manual step, through ingestFile (ingest/ingest.ts), each file
 // a model of its own.
 //
@@ -32,6 +32,15 @@
 //   source's mtime (rsync -t, cp -p) would otherwise look settled at once.
 //   The clock is read for each file as it is looked at, not once per pass,
 //   so a slow import earlier in a pass does not shorten a later file's window.
+// - A settled file goes to ingestFile with duplicates "skip" (approved for
+//   0.1.0 by Jon, 2026-11-19): a file whose SHA-256 a live model already
+//   holds is not imported. Ingest refuses it with DuplicateFile before any
+//   byte is stored, and it moves to failed as any refusal does (FILE_FAULTS,
+//   below), only while its name still holds the file ingest read, with a
+//   reason naming the model that holds it, by name and id. A file in a
+//   trashed model does not count. The check for an earlier attempt of this
+//   same copy (findImported, below) comes first, so an import whose answer
+//   was lost is found as before and never taken for a duplicate of itself.
 // - A settled file goes to ingestFile. Once it returns, the watcher runs
 //   onIngested with the stored file, as the ingest queue's worker does
 //   (jobs/queues.ts), so an inbox file's plates are queued for estimates
@@ -127,8 +136,8 @@
 //   size alone, before anything is read or uploaded.
 // - A file goes to failed at once only for a reason that belongs to the
 //   file: ingest's IngestError with code unsupported_type (its type or
-//   content) or model_not_found (FILE_FAULTS), or the watcher's own
-//   refusals, the size limit and a name that is not UTF-8. Since Task 9,
+//   content), model_not_found or duplicate (FILE_FAULTS), or the watcher's
+//   own refusals, the size limit and a name that is not UTF-8. Since Task 9,
 //   ingest wraps every failure that is not its own in IngestError
 //   ingest_failed, with the error it met as the cause: a database or
 //   filesystem fault, or anything else that failed before COMMIT. That says
@@ -455,13 +464,18 @@ export const MAX_INBOX_BYTES = MAX_UPLOAD_BYTES;
 
 /**
  * The IngestError codes that are about the file itself, so the file moves to
- * failed at once: its type or content (unsupported_type), or the model it
- * was meant for (model_not_found; the inbox always asks for a new model, so
- * this one is for completeness). Every other failure of ingest, ingest_failed
+ * failed at once: its type or content (unsupported_type), the model it was
+ * meant for (model_not_found; the inbox always asks for a new model, so this
+ * one is for completeness), or bytes a live model already holds (duplicate;
+ * the reason names that model). Every other failure of ingest, ingest_failed
  * and storage_unavailable and IngestOutcomeUnknown among them, says nothing
  * about the file and goes through the checks.
  */
-const FILE_FAULTS: ReadonlySet<IngestErrorCode> = new Set(["unsupported_type", "model_not_found"]);
+const FILE_FAULTS: ReadonlySet<IngestErrorCode> = new Set([
+  "unsupported_type",
+  "model_not_found",
+  "duplicate",
+]);
 
 /**
  * The reason for a file larger than maxBytes, giving the limit in bytes and
@@ -2065,6 +2079,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
               originalName: name,
               target: "new",
               fileId: earlier.fileId,
+              duplicates: "skip",
             });
     } catch (error) {
       // The temp folder would not take the copy: never the file's fault.

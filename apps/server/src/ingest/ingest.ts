@@ -13,7 +13,9 @@
 //   4. one transaction: the model (when new), the blob rows, the file, its
 //      filament list, its plates and the file's own numbers (estimates with
 //      source 'file'). Metadata is filled only into empty fields, so nothing
-//      Jon set is overwritten (AC-022);
+//      Jon set is overwritten (AC-022). A new model is named from the
+//      file's MakerWorld title, else its cleaned file name (names.ts); a
+//      model joined takes the title only while nobody has named it;
 //   5. enqueueing estimates (Task 12) and renders (Task 13) comes after the
 //      commit, through the afterCommit hook the caller wires in (Task 13's
 //      is derived.afterUpload, which only sends a job). Nothing here calls
@@ -45,6 +47,20 @@
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
 // after an outage.
 //
+// Duplicates (approved for 0.1.0 by Jon, 2026-11-19; duplicates.ts): a file
+// is a duplicate when a live model already holds a file with the same
+// SHA-256. With input.duplicates "skip" (the web dialog's default and the
+// inbox's), ingest hashes the upload and looks it up before any byte is put,
+// and refuses a duplicate with DuplicateFile (an IngestError, code
+// duplicate), naming the models that hold it and storing nothing. Inside the
+// transaction it looks again, under pg_advisory_xact_lock on the hash, so of
+// two copies sent at once one lands and the other is refused; that lock is
+// always taken before the batch lock below, so the two cannot deadlock. With
+// "allow", the default, so the Public API v1 behaves as before unless a
+// client asks, the file is stored as before and the result lists the live
+// copies that were already there (IngestResult.duplicates). A file in a
+// trashed model never counts.
+//
 // A combined batch (target {batch, combine: true}) puts every file in one
 // model. Its id is derived from the batch (batchModelId), so every file of
 // the batch knows its key prefix before the model exists, and
@@ -55,7 +71,7 @@ import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { extractMakerWorld, htmlToMarkdown, mapLicense } from "@platehouse/makerworld";
-import { type Project, readProject } from "@platehouse/threemf";
+import { makerWorldDesignId, type Project, readProject } from "@platehouse/threemf";
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
@@ -64,6 +80,20 @@ import type { FoundMetadata } from "../repos/models.js";
 import { blobKey } from "../storage/keys.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
 import { detectKind, FIRST_BYTES } from "./detect.js";
+import {
+  type DuplicateMatch,
+  type DuplicatePolicy,
+  duplicateMessage,
+  findDuplicates,
+} from "./duplicates.js";
+import { newModelName } from "./names.js";
+
+export {
+  type DuplicateMatch,
+  type DuplicatePolicy,
+  duplicateMessage,
+  MAX_DUPLICATES,
+} from "./duplicates.js";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "Storage is unavailable right now; nothing was saved";
 
@@ -84,6 +114,7 @@ export type IngestErrorCode =
   | "unsupported_type"
   | "storage_unavailable"
   | "model_not_found"
+  | "duplicate"
   | "ingest_failed";
 
 /**
@@ -104,6 +135,23 @@ export class IngestError extends Error {
     super(message, options);
     this.name = "IngestError";
     this.code = code;
+  }
+}
+
+/**
+ * A duplicate refused under duplicates "skip": a live model already holds a
+ * file with the same SHA-256, and nothing was saved. duplicates names those
+ * files and their models, oldest first; the message names the first model.
+ * Both are own enumerable fields, so they survive pg-boss storing the error
+ * as the ingest job's output (uploads/tus.ts reads them back).
+ */
+export class DuplicateFile extends IngestError {
+  readonly duplicates: DuplicateMatch[];
+
+  constructor(duplicates: DuplicateMatch[]) {
+    super("duplicate", duplicateMessage(duplicates));
+    this.name = "IngestError";
+    this.duplicates = duplicates;
   }
 }
 
@@ -139,11 +187,24 @@ export interface IngestInput {
    * the insert, as ingest_failed, and saves nothing.
    */
   fileId?: string;
+  /**
+   * What to do when a live model already holds a file with the same
+   * SHA-256: "skip" refuses it with DuplicateFile and stores nothing;
+   * "allow", the default, stores it and lists the copies in the result.
+   */
+  duplicates?: DuplicatePolicy;
 }
 
 export interface IngestResult {
   modelId: string;
   fileId: string;
+  /**
+   * The live files that already held the same bytes when this one was
+   * stored, oldest first: always empty under "skip". Set on every result
+   * ingest returns, a commit whose answer was lost included, as the lookup
+   * runs inside the transaction before its rows are written.
+   */
+  duplicates?: DuplicateMatch[];
 }
 
 /** A file whose rows have committed, as afterCommit is handed it. */
@@ -178,6 +239,13 @@ export function batchModelId(batch: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** The SHA-256 of a whole file, read as a stream. */
+async function hashFile(path: string): Promise<Buffer> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest();
+}
+
 /** The first FIRST_BYTES bytes of a file, which detectKind reads. */
 export async function readFirstBytes(path: string): Promise<Buffer> {
   const handle = await open(path, "r");
@@ -195,17 +263,17 @@ function baseName(name: string): string {
   return name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1).trim() || name;
 }
 
-/** A new model's name: the file's name without its extension. */
-function modelNameOf(name: string): string {
-  const base = baseName(name);
-  const dot = base.lastIndexOf(".");
-  return (dot > 0 ? base.slice(0, dot) : base).trim() || base;
-}
-
-/** The MakerWorld details of a .3mf as model metadata (AC-022, packages/makerworld). */
+/**
+ * The MakerWorld details of a .3mf as model metadata (AC-022,
+ * packages/makerworld), with the design ID (packages/threemf). The caption is
+ * the MakerWorld Title, which also names a new model (names.ts). A file that
+ * names no Designer is not a MakerWorld file, so it gives no details, no title
+ * and no design ID.
+ */
 function metadataOf(project: Project | null): FoundMetadata {
-  const details = project?.makerWorldXml ? extractMakerWorld(project.makerWorldXml) : null;
-  if (details === null) return {};
+  const xml = project?.makerWorldXml;
+  const details = xml ? extractMakerWorld(xml) : null;
+  if (!xml || details === null) return {};
   const license = mapLicense(details.license);
   const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
   // A footer licence sets no SPDX id. fillMetadata stores it as the licence
@@ -218,6 +286,7 @@ function metadataOf(project: Project | null): FoundMetadata {
     descriptionMd: markdown === "" ? null : markdown,
     licenseSpdx: license.spdx ?? null,
     licenseNote: license.footer ?? null,
+    makerworldDesignId: makerWorldDesignId(xml),
   };
 }
 
@@ -348,8 +417,18 @@ export function createIngest(deps: IngestDeps) {
     const kind = detectKind(originalName, await readFirstBytes(tmpPath), size);
     if (kind === null) throw new IngestError("unsupported_type", UNSUPPORTED_MESSAGE);
     const modelId = await plannedModel(target);
+    const policy: DuplicatePolicy = input.duplicates ?? "allow";
+    if (policy !== "skip" && policy !== "allow") {
+      throw new TypeError('ingestFile: duplicates must be "skip" or "allow"');
+    }
+    if (policy === "skip") {
+      // Before any byte reaches the bucket. The transaction looks again.
+      const found = await findDuplicates(db, await hashFile(tmpPath));
+      if (found.length > 0) throw new DuplicateFile(found);
+    }
 
     const put: PutBlob[] = [];
+    let duplicates: DuplicateMatch[] = [];
     const putOne = async (
       kindOfBlob: BlobKind,
       body: Readable,
@@ -400,6 +479,26 @@ export function createIngest(deps: IngestDeps) {
         xid = id;
         const repos = createRepos(trx);
         const found = metadataOf(project);
+        // A new model is named from this file: its title, else its cleaned
+        // file name (names.ts).
+        let created = false;
+        const createModel = async (): Promise<void> => {
+          const { name, source } = newModelName(originalName, found.caption);
+          await repos.models.create({ id: modelId, name, nameSource: source });
+          created = true;
+        };
+
+        if (policy === "skip") {
+          // Copies sent at once take turns here, so the second sees the
+          // first's committed row. Always before the batch lock.
+          await sql`select pg_advisory_xact_lock(hashtext('platehouse-sha256:' || ${source.sha256.toString("hex")}))`.execute(
+            trx,
+          );
+          const copies = await findDuplicates(trx, source.sha256);
+          if (copies.length > 0) throw new DuplicateFile(copies);
+        } else {
+          duplicates = await findDuplicates(trx, source.sha256);
+        }
 
         if (target !== "new" && "modelId" in target) {
           // Still live now that the rows are written (a trash may have come
@@ -421,13 +520,19 @@ export function createIngest(deps: IngestDeps) {
             .forUpdate()
             .executeTakeFirst();
           if (existing === undefined) {
-            await repos.models.create({ id: modelId, name: modelNameOf(originalName) });
+            await createModel();
           } else if (existing.trashedAt !== null) {
             throw new IngestError("model_not_found", MODEL_NOT_FOUND_MESSAGE);
           }
         } else {
-          await repos.models.create({ id: modelId, name: modelNameOf(originalName) });
+          await createModel();
         }
+        // A model joined rather than made takes this file's title only while
+        // nobody has named it and its caption is empty (names.ts;
+        // models.nameFromTitle). Before this file's row, so its name must
+        // already be one of the earlier files', and before fillMetadata, so
+        // the caption it reads is the earlier files'.
+        if (!created) await repos.models.nameFromTitle(modelId, found.caption);
         // One fill rule for a new model and an existing one (AC-022).
         await repos.models.fillMetadata(modelId, found);
 
@@ -510,7 +615,8 @@ export function createIngest(deps: IngestDeps) {
       const state = put.length > 0 && callbackFinished ? await commitState(xid) : "not_committed";
       // The rows landed and only the answer was lost: the upload is stored,
       // and reporting it as failed would make a retry store it twice.
-      if (state === "committed") return committed({ modelId, fileId }, kind);
+      // The rows include the duplicates lookup, so its list is known here too.
+      if (state === "committed") return committed({ modelId, fileId, duplicates }, kind);
       if (put.length > 0 && state === "not_committed") {
         try {
           await store.deleteBlobs(put.map((blob) => blob.key));
@@ -527,7 +633,7 @@ export function createIngest(deps: IngestDeps) {
       if (state === "unknown") throw new IngestOutcomeUnknown(error);
       throw error;
     }
-    return committed({ modelId, fileId }, kind);
+    return committed({ modelId, fileId, duplicates }, kind);
   }
 
   return { ingestFile };

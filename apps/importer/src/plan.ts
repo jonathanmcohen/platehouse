@@ -15,6 +15,13 @@
 // - A model Platehouse has is never edited: the API has no route to change a
 //   model's details, and a field Jon changed stays his. It only gets the
 //   tags and collections it lacks, and the files it lacks.
+// - A file's name is Manyfold's filename when it has an extension Platehouse
+//   takes, else the last part of its contentUrl's path when that has one
+//   (fileNameFor; issue #226: Manyfold's name field is the display name,
+//   without the extension, so it is never used as the file name). A file of
+//   a type Platehouse does not take keeps the name its type was read from and
+//   is skipped below. A file with no name that has an extension at all fails,
+//   with the reason, and is never downloaded.
 // - A file is in Platehouse when the model holds a file with the same
 //   original name and Manyfold's contentSize, matched one to one. A file of
 //   that name with another size is a failure, not a second upload, so a
@@ -52,9 +59,12 @@ import type { NewModel, PlatehouseFile, PlatehouseModel } from "./platehouse.js"
 
 export interface SourceFile {
   url: string;
+  /** The name it is uploaded under; when problem is set, only a label for the report. */
   filename: string;
   contentUrl: string;
   contentSize: number | null;
+  /** Why no file name could be found for it (fileNameFor); the file then fails. */
+  problem?: string | null;
 }
 
 export interface SourceModel {
@@ -104,6 +114,73 @@ function extensionOf(name: string): string {
  * that file and fails if the two ever differ (PR #211 review).
  */
 export const MAX_UPLOAD_BYTES = 536_870_912;
+
+/**
+ * An extension as a file type is written: letters and digits, at least one
+ * letter, no space. So a dot inside a display name ("Bracket v1.2", "Flex 2.5g
+ * 5 Port") is not read as one; a short tail such as "2.5g" still is.
+ */
+const TYPE_LIKE = /^(?=[0-9]*[a-z])[a-z0-9]{1,10}$/;
+
+/**
+ * The last part of a URL's path, decoded, or null when there is none or it
+ * would not be one name (an escaped slash or backslash inside it, a bad escape).
+ */
+export function lastPathPart(link: string): string | null {
+  const url = URL.parse(link);
+  if (url === null) return null;
+  const raw = url.pathname.split("/").at(-1) ?? "";
+  let part: string;
+  try {
+    part = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  return part === "" || /[/\\]/.test(part) ? null : part;
+}
+
+/**
+ * A Manyfold file's name (issue #226): filename when it has an extension
+ * Platehouse takes; else the last part of contentUrl's path when that has
+ * one. Else, for a type Platehouse does not take, which the plan skips with
+ * its reason as before: contentUrl's extension when it is written as a file
+ * type (Manyfold builds contentUrl from the file's real extension), under
+ * filename when filename has the same one; else filename's. Else no name,
+ * with the reason, and the label the report shows for it. Manyfold's
+ * display name is never the file name: it has no extension, and a dot
+ * inside it ("Switch 2.5g") would read as one.
+ */
+export function fileNameFor(file: {
+  filename: string | null;
+  contentUrl: string;
+  displayName: string | null;
+}): { name: string; problem: null } | { name: string; problem: string } {
+  const filename = file.filename === null || file.filename.trim() === "" ? null : file.filename;
+  const part = lastPathPart(file.contentUrl);
+  for (const name of [filename, part]) {
+    if (name !== null && importable(name)) return { name, problem: null };
+  }
+  const partType = part === null ? "" : extensionOf(part);
+  if (part !== null && TYPE_LIKE.test(partType)) {
+    const same = filename !== null && extensionOf(filename) === partType;
+    return { name: same ? filename : part, problem: null };
+  }
+  if (filename !== null && TYPE_LIKE.test(extensionOf(filename))) {
+    return { name: filename, problem: null };
+  }
+  const fromFilename =
+    filename === null ? "Manyfold sends no filename" : `the filename "${shown(filename)}" has none`;
+  const fromUrl =
+    part === null
+      ? "its contentUrl's path ends in no name"
+      : `the last part of its contentUrl, "${shown(part)}", has none`;
+  return {
+    name: filename ?? file.displayName ?? part ?? "(no name)",
+    problem:
+      `no file name with an extension: ${fromFilename}, and ${fromUrl}; ` +
+      "its file type cannot be told, so it is not imported",
+  };
+}
 
 /** The externalRef a Manyfold model is matched by. */
 export function externalRefFor(manyfoldId: string): string {
@@ -258,6 +335,7 @@ function newModel(
 function planFiles(files: SourceFile[], stored: PlatehouseFile[]): FilePlan[] {
   const unmatched = [...stored];
   return files.map((file): FilePlan => {
+    if (typeof file.problem === "string") return { action: "fail", file, reason: file.problem };
     if (!importable(file.filename)) {
       const ext = extensionOf(file.filename);
       const what = ext === "" ? "files without an extension" : `.${ext} files`;

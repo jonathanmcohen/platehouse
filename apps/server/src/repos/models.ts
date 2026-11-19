@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { type Kysely, sql } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
-import type { DB } from "../db/types.js";
+import type { DB, NameSource } from "../db/types.js";
+import { cutName, fileStems } from "../ingest/names.js";
 
 export interface Model {
   id: string;
@@ -14,6 +16,10 @@ export interface Model {
   licenseSpdx: string | null;
   licenseNote: string | null;
   externalRef: string | null;
+  /** Who named the model: its file, its .3mf's title, or a person (0005). */
+  nameSource: NameSource;
+  /** The MakerWorld design ID its .3mf carries, digits only; null when none. */
+  makerworldDesignId: string | null;
   trashedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -29,6 +35,12 @@ export interface NewModel {
   licenseSpdx?: string | null;
   licenseNote?: string | null;
   externalRef?: string | null;
+  /**
+   * Where the name came from. Ingest says "file" or "title"; any other caller
+   * (the public API's create-model, the importer through it) gave the name
+   * itself, so it is "user" when left out and nothing renames the model.
+   */
+  nameSource?: NameSource;
 }
 
 /** Metadata a parse or an import found; fillMetadata writes only into empty fields. */
@@ -47,6 +59,56 @@ export interface FoundMetadata {
    * 2026-11-08). The model page shows license_note (Task 20).
    */
   licenseNote?: string | null;
+  /** The MakerWorld design ID, digits only (packages/threemf makerWorldDesignId). */
+  makerworldDesignId?: string | null;
+}
+
+/** A model the "Use file titles" backfill would rename. */
+export interface TitleRename {
+  id: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * What the "Use file titles" backfill would do to the live models: the
+ * renames, by current name, and how many models it leaves alone, by reason.
+ */
+export interface TitleNamePlan {
+  /**
+   * The SHA-256, in hex, of the renames list. Applying takes it back and
+   * renames only when the list worked out then is the same one, so only the
+   * renames the preview showed are ever made.
+   */
+  planId: string;
+  renames: TitleRename[];
+  skipped: {
+    /** Renamed by a person (name_source 'user'). */
+    renamedByUser: number;
+    /** Already named from a title. */
+    namedFromTitle: number;
+    /** No title recorded (no caption). */
+    noTitle: number;
+    /** The title is the name it already has. */
+    sameName: number;
+    /** Its name is none of its files' names, so a person chose it. */
+    nameNotFromFile: number;
+    /**
+     * Made by an import (it has an externalRef, such as manyfold:<id>): its
+     * caption is the source library's own, copied as written, not its
+     * .3mf's title, so it cannot name the model.
+     */
+    imported: number;
+    /**
+     * Its caption was not read from a .3mf by ingest (#258). A caption has
+     * two writers: ingest, which fills an empty one from a .3mf's MakerWorld
+     * Title, and the public API's create-model, which takes free text. Only
+     * a model ingest made counts, one that shares its transaction, and so
+     * its created_at, with one of its files; a model the API made never
+     * does, since its files come in later requests.
+     */
+    captionNotFromFile: number;
+  };
 }
 
 export interface SearchQuery {
@@ -71,6 +133,14 @@ export interface RankedSearchQuery {
   limit: number;
 }
 
+/** A ranked match with only what a library card and a keyset cursor need. */
+export interface RankedCard {
+  id: string;
+  name: string;
+  creator: string | null;
+  rank: number;
+}
+
 /**
  * A model's search rank: the best pg_trgm similarity of q to its name,
  * caption, creator or any of its tags, scaled to a whole number from 0 to
@@ -87,24 +157,29 @@ function containsPattern(q: string): string {
   return `%${q.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
+/** A Model's columns, from models left-joined to creators. */
+const MODEL_COLUMNS = [
+  "models.id",
+  "models.name",
+  "models.caption",
+  "models.descriptionMd",
+  "models.creatorId",
+  "creators.name as creator",
+  "models.licenseSpdx",
+  "models.licenseNote",
+  "models.externalRef",
+  "models.nameSource",
+  "models.makerworldDesignId",
+  "models.trashedAt",
+  "models.createdAt",
+  "models.updatedAt",
+] as const;
+
 function selectModels(db: Kysely<DB>) {
   return db
     .selectFrom("models")
     .leftJoin("creators", "creators.id", "models.creatorId")
-    .select([
-      "models.id",
-      "models.name",
-      "models.caption",
-      "models.descriptionMd",
-      "models.creatorId",
-      "creators.name as creator",
-      "models.licenseSpdx",
-      "models.licenseNote",
-      "models.externalRef",
-      "models.trashedAt",
-      "models.createdAt",
-      "models.updatedAt",
-    ]);
+    .select(MODEL_COLUMNS);
 }
 
 /** The creator's id, making the creator on first use. */
@@ -130,7 +205,12 @@ export function modelsRepo(db: Kysely<DB>) {
     return query.executeTakeFirst();
   }
 
-  async function searchRanked(query: RankedSearchQuery): Promise<Array<Model & { rank: number }>> {
+  /**
+   * The ranked search's query without its columns, and its rank expression:
+   * the matches for query in the result order, at most query.limit.
+   * searchRanked and searchRankedCards each add their own columns.
+   */
+  function rankedQuery(query: RankedSearchQuery) {
     const q = query.q.trim();
     const limit = Math.trunc(query.limit);
     if (!(limit >= 1 && limit <= MAX_RANKED_LIMIT)) {
@@ -147,8 +227,9 @@ export function modelsRepo(db: Kysely<DB>) {
           where mt.model_id = models.id), 0)
       ) * ${SEARCH_RANK_MAX})::integer`;
 
-    let select = selectModels(db)
-      .select(rank.as("rank"))
+    let select = db
+      .selectFrom("models")
+      .leftJoin("creators", "creators.id", "models.creatorId")
       .where("models.trashedAt", "is", null)
       .where((eb) =>
         eb.or([
@@ -201,12 +282,83 @@ export function modelsRepo(db: Kysely<DB>) {
                    or (models.name = ${after.name} and models.id > cast(${after.id} as uuid)))))`,
       );
     }
+    return {
+      rank,
+      select: select.orderBy(rank, "desc").orderBy("models.name").orderBy("models.id").limit(limit),
+    };
+  }
+
+  async function searchRanked(query: RankedSearchQuery): Promise<Array<Model & { rank: number }>> {
+    const { rank, select } = rankedQuery(query);
+    return select.select(MODEL_COLUMNS).select(rank.as("rank")).execute();
+  }
+
+  async function searchRankedCards(query: RankedSearchQuery): Promise<RankedCard[]> {
+    const { rank, select } = rankedQuery(query);
     return select
-      .orderBy(rank, "desc")
-      .orderBy("models.name")
-      .orderBy("models.id")
-      .limit(limit)
+      .select(["models.id", "models.name", "creators.name as creator"])
+      .select(rank.as("rank"))
       .execute();
+  }
+
+  async function titleNamePlan(): Promise<TitleNamePlan> {
+    const models = await db
+      .selectFrom("models")
+      .select(["id", "name", "nameSource", "caption", "externalRef"])
+      // Made by ingest: one of its files was written in the transaction
+      // that made the model (now() is the transaction's start, so the two
+      // created_at values are equal to the microsecond). Compared in SQL,
+      // since a JavaScript Date keeps only milliseconds.
+      .select((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom("files")
+              .select("files.id")
+              .whereRef("files.modelId", "=", "models.id")
+              .whereRef("files.createdAt", "=", "models.createdAt"),
+          )
+          .as("madeByIngest"),
+      )
+      .where("trashedAt", "is", null)
+      .orderBy("name")
+      .orderBy("id")
+      .execute();
+    const files = await db
+      .selectFrom("files")
+      .innerJoin("models", "models.id", "files.modelId")
+      .select(["files.modelId", "files.originalName"])
+      .where("models.trashedAt", "is", null)
+      .execute();
+    const namesOf = new Map<string, string[]>();
+    for (const f of files) {
+      const list = namesOf.get(f.modelId);
+      if (list === undefined) namesOf.set(f.modelId, [f.originalName]);
+      else list.push(f.originalName);
+    }
+    const renames: TitleRename[] = [];
+    const skipped: TitleNamePlan["skipped"] = {
+      renamedByUser: 0,
+      namedFromTitle: 0,
+      noTitle: 0,
+      sameName: 0,
+      nameNotFromFile: 0,
+      imported: 0,
+      captionNotFromFile: 0,
+    };
+    for (const m of models) {
+      const title = cutName(m.caption);
+      if (m.nameSource === "user") skipped.renamedByUser += 1;
+      else if (m.nameSource === "title") skipped.namedFromTitle += 1;
+      else if (m.externalRef !== null) skipped.imported += 1;
+      else if (title === null) skipped.noTitle += 1;
+      else if (!m.madeByIngest) skipped.captionNotFromFile += 1;
+      else if (title === m.name) skipped.sameName += 1;
+      else if (!fileStems(namesOf.get(m.id) ?? []).has(m.name)) skipped.nameNotFromFile += 1;
+      else renames.push({ id: m.id, from: m.name, to: title });
+    }
+    const planId = createHash("sha256").update(JSON.stringify(renames)).digest("hex");
+    return { planId, renames, skipped };
   }
 
   return {
@@ -229,6 +381,7 @@ export function modelsRepo(db: Kysely<DB>) {
             licenseSpdx: input.licenseSpdx ?? null,
             licenseNote: input.licenseNote ?? null,
             externalRef: input.externalRef ?? null,
+            nameSource: input.nameSource ?? "user",
           })
           .execute();
         return selectModels(trx).where("models.id", "=", id).executeTakeFirstOrThrow();
@@ -257,16 +410,35 @@ export function modelsRepo(db: Kysely<DB>) {
         // The row is locked, so the fields read here are the ones updated.
         const row = await trx
           .selectFrom("models")
-          .select(["caption", "descriptionMd", "licenseSpdx", "licenseNote", "creatorId"])
+          .select([
+            "caption",
+            "descriptionMd",
+            "licenseSpdx",
+            "licenseNote",
+            "creatorId",
+            "makerworldDesignId",
+          ])
           .where("id", "=", id)
           .forUpdate()
           .executeTakeFirst();
         if (row === undefined) return false;
         const set: Partial<
-          Record<"caption" | "descriptionMd" | "licenseSpdx" | "licenseNote" | "creatorId", string>
+          Record<
+            | "caption"
+            | "descriptionMd"
+            | "licenseSpdx"
+            | "licenseNote"
+            | "creatorId"
+            | "makerworldDesignId",
+            string
+          >
         > = {};
         const caption = value(found.caption);
         if (caption !== undefined && empty(row.caption)) set.caption = caption;
+        const designId = value(found.makerworldDesignId);
+        if (designId !== undefined && empty(row.makerworldDesignId)) {
+          set.makerworldDesignId = designId;
+        }
 
         const spdx = value(found.licenseSpdx);
         const note = value(found.licenseNote);
@@ -297,6 +469,96 @@ export function modelsRepo(db: Kysely<DB>) {
     },
 
     /**
+     * Names a live model from its .3mf's title, cut at the API's name limit,
+     * when nobody has named it: only while name_source is 'file' and the
+     * name is still one of its files' names (a raw stem or a cleaned file
+     * name; see fileStems). A name a person set, by a rename (name_source
+     * 'user', which migration 0006 also gave every model a person named
+     * before name_source existed) or a name none of its files has, is never
+     * overwritten (AC-022), and a model already named from a title
+     * keeps that one. Only while the caption is empty, too, so this title is
+     * the one fillMetadata then stores as the caption: a model whose caption
+     * an earlier .3mf already filled keeps its name, so its name and caption
+     * never disagree and Use file titles (which names it from that caption)
+     * picks the same title. True when the name changed. Runs in the caller's
+     * transaction when there is one, with the model's row locked.
+     */
+    async nameFromTitle(id: string, title: string | null | undefined): Promise<boolean> {
+      const name = cutName(title);
+      if (name === null || !isUuid(id)) return false;
+      return inTransaction(db, async (trx) => {
+        const row = await trx
+          .selectFrom("models")
+          .select(["name", "nameSource", "caption"])
+          .where("id", "=", id)
+          .where("trashedAt", "is", null)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined || row.nameSource !== "file" || row.name === name) return false;
+        // fillMetadata's test for an empty caption.
+        if (row.caption !== null && row.caption !== "") return false;
+        const files = await trx
+          .selectFrom("files")
+          .select("originalName")
+          .where("modelId", "=", id)
+          .execute();
+        if (!fileStems(files.map((f) => f.originalName)).has(row.name)) return false;
+        const result = await trx
+          .updateTable("models")
+          .set({ name, nameSource: "title", updatedAt: sql`now()` })
+          .where("id", "=", id)
+          .where("nameSource", "=", "file")
+          .where("name", "=", row.name)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
+    },
+
+    /**
+     * The "Use file titles" backfill's preview: which live models it would
+     * rename from their file's title, and which it leaves alone and why.
+     * The title is the model's caption, which ingest fills from the .3mf's
+     * MakerWorld Title, so no file is read from the bucket. A model made by
+     * an import (one with an externalRef) is skipped: the importer copies
+     * the source library's caption as written, so it is not a title. So is
+     * any other model ingest did not make (captionNotFromFile, #258), such
+     * as one made through the public API's create-model, whose caption is
+     * the client's free text. The other rules are nameFromTitle's. Changes
+     * nothing.
+     */
+    titleNamePlan,
+
+    /**
+     * Runs the backfill the preview with this planId showed: renames each
+     * model it lists, in one transaction, and marks it named from its title.
+     * The list is worked out again here, and when it is not the previewed one
+     * (its planId differs: a model was renamed, a file added, a caption
+     * changed) nothing is renamed and the answer is null, so a model the
+     * preview did not show is never renamed. Each update also requires
+     * name_source 'file' and the name the preview saw, so a rename that lands
+     * while this runs still wins; renamed counts only the models changed.
+     */
+    async applyTitleNames(planId: string): Promise<{ renamed: number } | null> {
+      return inTransaction(db, async (trx) => {
+        const plan = await modelsRepo(trx).titleNamePlan();
+        if (plan.planId !== planId) return null;
+        let renamed = 0;
+        for (const { id, from, to } of plan.renames) {
+          const result = await trx
+            .updateTable("models")
+            .set({ name: to, nameSource: "title", updatedAt: sql`now()` })
+            .where("id", "=", id)
+            .where("nameSource", "=", "file")
+            .where("name", "=", from)
+            .where("trashedAt", "is", null)
+            .executeTakeFirst();
+          if (result.numUpdatedRows > 0n) renamed += 1;
+        }
+        return { renamed };
+      });
+    },
+
+    /**
      * Live models whose name, caption, creator or any tag contains q,
      * ignoring case, best trigram match first. An empty q lists live models.
      */
@@ -312,6 +574,13 @@ export function modelsRepo(db: Kysely<DB>) {
      * each model's rank for the page cursor. Trashed models never appear.
      */
     searchRanked,
+
+    /**
+     * searchRanked's matches with only id, name, creator and rank, for a
+     * numbered library page, which reads up to 1000 matches to slice one page
+     * and count them, and needs no description or licence to do it.
+     */
+    searchRankedCards,
 
     /**
      * Moves a live model to the trash; false when it is unknown or already

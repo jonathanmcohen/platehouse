@@ -2,13 +2,14 @@
 // live models carry, and All. A chip is a link that sets ?tag= and keeps the
 // search (?q=) and an active creator or collection filter (?creator=,
 // ?collection=; issue #194), so the filter is in the URL, works with Back
-// and Forward, and is reachable by keyboard. All drops only the tag. The
-// current choice is marked aria-current="true", which studio.css draws as
-// the active chip.
+// and Forward, and is reachable by keyboard. All drops only the tag. A chip
+// also keeps View all (?view=all) and drops the page number (?page=), so a
+// new tag starts again at page 1. The current choice is marked
+// aria-current="true", which studio.css draws as the active chip.
 import { Link, useSearchParams } from "react-router";
 
-/** What a tag chip keeps of the library's address: the search and the other filters. */
-const KEPT = ["q", "creator", "collection"] as const;
+/** What a tag chip keeps of the library's address: the search, the other filters and View all. */
+const KEPT = ["q", "creator", "collection", "view"] as const;
 
 export interface FiltersProps {
   /** The tags to offer, in the order to show them. */

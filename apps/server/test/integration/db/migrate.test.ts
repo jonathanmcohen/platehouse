@@ -38,7 +38,14 @@ const TABLES = [
 
 // The migrations shipped in src/db/migrations, in order, and the number the
 // tests below give a migration they add to a copy of that folder.
-const SHIPPED = ["0001_init.sql", "0002_purge_started.sql", "0003_estimate_filament_profiles.sql"];
+const SHIPPED = [
+  "0001_init.sql",
+  "0002_purge_started.sql",
+  "0003_estimate_filament_profiles.sql",
+  "0004_files_sha256.sql",
+  "0005_model_name_source.sql",
+  "0006_model_name_source_user.sql",
+];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
 let pgc: TestPostgres;

@@ -68,6 +68,7 @@ import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
 import { buildApp } from "./app.js";
+import { createAppActivity } from "./app-api/activity.js";
 import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
 import { createAppModel } from "./app-api/model.js";
 import { recordVersioning } from "./app-api/settings.js";
@@ -485,6 +486,13 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         tokens: { tokens, list: dbTokenList(db) },
         organise: { db, trash },
       },
+      // The Activity page: read-only numbers, queues, slicer health and events.
+      activity: createAppActivity({
+        db,
+        boss: startedBoss,
+        slicer,
+        inboxDir: config.inbox.dir,
+      }),
       ...(options.web === undefined ? {} : { web: options.web }),
       logger: true,
     });

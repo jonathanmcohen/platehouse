@@ -1,0 +1,14 @@
+-- Platehouse schema 0004: an index on each file's SHA-256, for the duplicate
+-- check (approved for 0.1.0 by Jon, 2026-11-19; ingest/duplicates.ts).
+-- Hand-written; every statement is read in review (lesson 14). Never edit it
+-- once applied anywhere: a change is a new file.
+--
+-- Every upload, the inbox and the API look up the file's SHA-256 among the
+-- files of live models before and while it is stored. files.sha256 is
+-- already recorded for every file (0001) but had no index, so the lookup
+-- read the whole table. Not unique: a duplicate stays allowed when the user
+-- or an API client asks for it, and a trashed model may hold the same bytes.
+-- Additive only: no existing row or column changes. migrate.ts runs each
+-- file in a transaction, so this is a plain create index, not concurrently;
+-- the files table is small (one row per uploaded file).
+create index files_sha256 on files (sha256);

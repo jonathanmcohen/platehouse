@@ -140,17 +140,15 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: required(text, NOT_EMPTY),
   S3_SECRET_ACCESS_KEY: required(text, NOT_EMPTY),
   S3_FORCE_PATH_STYLE: required(flag, "must be true or false"),
-  OIDC_ISSUER: optional(
-    "https://id.local.jonco.dev",
-    issuer,
-    "must be an https URL with no query, fragment or credentials",
-  ),
+  // Required, with no default: the published image must not point at any one
+  // network's login server.
+  OIDC_ISSUER: required(issuer, "must be an https URL with no query, fragment or credentials"),
   OIDC_CLIENT_ID: required(text, NOT_EMPTY),
   OIDC_CLIENT_SECRET: required(text, NOT_EMPTY),
   OIDC_GROUP: optional("platehouse", text, NOT_EMPTY),
   LINK_SECRET: required(linkKey, `must be at least ${LINK_MIN_BYTES} bytes`),
   SLICER_URL: optional("http://slicer:8080", httpUrl, HTTP_URL),
-  // 120 s from the slicing gate: the worst plate took 55.31 s on Hades (run 4).
+  // 120 s from the slicing gate: the worst plate took 55.31 s in its fourth run.
   SLICE_PLATE_SECONDS: optional("120", positiveInt, WHOLE),
   INBOX_DIR: optional("/data/inbox", absolutePath, ABSOLUTE),
   TMP_DIR: optional("/data/tmp", absolutePath, ABSOLUTE),

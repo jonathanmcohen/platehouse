@@ -23,6 +23,7 @@ import {
   STORAGE_UNAVAILABLE_MESSAGE,
   UNKNOWN_FILE_PRINTER,
 } from "../../../src/ingest/ingest.js";
+import { createRename } from "../../../src/library/rename.js";
 import { createBlobStore, StoreUnavailable } from "../../../src/storage/s3.js";
 import { startS3 } from "../support/containers.js";
 import {
@@ -39,6 +40,7 @@ import {
   startIngestEnv,
   writeUpload,
 } from "../support/ingest.js";
+import { marker } from "../support/library.js";
 
 let env: IngestEnv;
 
@@ -221,7 +223,7 @@ describe("what a stored file records", () => {
 
     const model = await modelRow(r.modelId);
     expect(model).toEqual({
-      name: "Desk tidy",
+      name: "Synthetic Desk Tidy",
       caption: "Synthetic Desk Tidy",
       descriptionMd: "A **tidy** for the desk.",
       licenseSpdx: "CC-BY-NC-SA-4.0",
@@ -365,6 +367,259 @@ describe("what a stored file records", () => {
     expect(model.descriptionMd).toBe(
       "Print it.\n\nLicense on MakerWorld: Standard Digital File License",
     );
+  });
+});
+
+// A new model is named from its .3mf's MakerWorld Title, else from its file
+// name cleaned (ingest/names.ts); a name a person set is never replaced.
+// Every title and name here is made up.
+describe("a model's name from its file", () => {
+  async function newModel(originalName: string, bytes: Buffer | string) {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName,
+      target: "new",
+    });
+    const model = await env.repos.models.get(r.modelId);
+    if (model === undefined) throw new Error("the model just made is gone");
+    return model;
+  }
+
+  test("a .3mf with a MakerWorld title is named from the title", async () => {
+    const model = await newModel(
+      "Cable_clip_PETG.3mf",
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title: "Cable Clip | Desk Edge" },
+      }),
+    );
+    expect(model).toMatchObject({ name: "Cable Clip | Desk Edge", nameSource: "title" });
+  });
+
+  test("with no title the name is the file name cleaned, case kept", async () => {
+    const plain = await newModel(
+      "Spool_Holder--Wall_V2.1.3mf",
+      build3mf({ plates: 1, nonce: marker() }),
+    );
+    expect(plain).toMatchObject({ name: "Spool Holder Wall V2.1", nameSource: "file" });
+    const stl = await newModel("Hook_[large].stl", `${ASCII_STL}\n${marker()}`);
+    expect(stl).toMatchObject({ name: "Hook [large]", nameSource: "file" });
+  });
+
+  test("a title in a file with no Designer is not used: only MakerWorld titles name a model", async () => {
+    // build3mf writes a Title only with MakerWorld details; this file has a
+    // Designer that is blank, as Jon's own designs and other tools' do.
+    const model = await newModel(
+      "Own_design.3mf",
+      build3mf({ plates: 1, nonce: marker(), makerWorld: { designer: "", title: "Untitled Bin" } }),
+    );
+    expect(model).toMatchObject({ name: "Own design", nameSource: "file", caption: null });
+  });
+
+  test("odd characters in a title are kept as text", async () => {
+    const title = `Clip & "Pro" <M3> / 50% ${String.fromCodePoint(0xfc)} ${String.fromCodePoint(0x1f529)}`;
+    const model = await newModel(
+      "odd.3mf",
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title },
+      }),
+    );
+    expect(model.name).toBe(title);
+  });
+
+  test("a very long title is cut at the API's 500-character name limit", async () => {
+    const model = await newModel(
+      "long.3mf",
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title: "T".repeat(1200) },
+      }),
+    );
+    expect(model.name).toBe("T".repeat(500));
+  });
+
+  test("a model named after its file takes the title of a .3mf added to it", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, `${ASCII_STL}\n${marker()}`),
+      originalName: "Desk_hook.stl",
+      target: "new",
+    });
+    expect((await env.repos.models.get(first.modelId))?.name).toBe("Desk hook");
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Desk Hook | Screwless" },
+        }),
+      ),
+      originalName: "Desk_hook.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Desk Hook | Screwless",
+      nameSource: "title",
+    });
+  });
+
+  test("a model named after its file that already has a caption keeps its name when a .3mf with another title joins", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Lamp Arm | Clamp" },
+        }),
+      ),
+      originalName: "Lamp_arm.3mf",
+      target: "new",
+    });
+    // As a model ingested before titles were used: named from the file's
+    // raw stem, its caption the file's title (migration 0006 leaves it 'file').
+    await env.db
+      .updateTable("models")
+      .set({ name: "Lamp_arm", nameSource: "file" })
+      .where("id", "=", first.modelId)
+      .execute();
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Lamp Arm Spring Kit" },
+        }),
+      ),
+      originalName: "Lamp_arm_spring.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Lamp_arm",
+      nameSource: "file",
+      caption: "Lamp Arm | Clamp",
+    });
+    // Use file titles names it from that same caption.
+    expect((await env.repos.models.titleNamePlan()).renames).toContainEqual({
+      id: first.modelId,
+      from: "Lamp_arm",
+      to: "Lamp Arm | Clamp",
+    });
+  });
+
+  test("a name the user set is never overwritten by a title", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, `${ASCII_STL}\n${marker()}`),
+      originalName: "Shelf_bracket.stl",
+      target: "new",
+    });
+    // The user renames it, here to the very name the file gave it.
+    await createRename(env.db).renameModel(first.modelId, "Shelf bracket");
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Shelf Bracket Pro" },
+        }),
+      ),
+      originalName: "Shelf_bracket.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Shelf bracket",
+      nameSource: "user",
+      caption: "Shelf Bracket Pro",
+    });
+  });
+
+  test("a model whose first title named it keeps that name when a second .3mf has another", async () => {
+    const batch = uuidv7();
+    const a = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "D", title: "First Title" },
+        }),
+      ),
+      originalName: "a.3mf",
+      target: { batch, combine: true },
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "D", title: "Second Title" },
+        }),
+      ),
+      originalName: "b.3mf",
+      target: { batch, combine: true },
+    });
+    expect((await env.repos.models.get(a.modelId))?.name).toBe("First Title");
+  });
+});
+
+// "View on MakerWorld": the design ID a MakerWorld .3mf carries
+// (<metadata name="DesignId">) is stored only when it is valid.
+describe("the MakerWorld design ID", () => {
+  async function designIdOf(makerWorld: { designer: string; designId?: string; title?: string }) {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 1, nonce: marker(), makerWorld })),
+      originalName: "Design.3mf",
+      target: "new",
+    });
+    return (await env.repos.models.get(r.modelId))?.makerworldDesignId;
+  }
+
+  test("a valid design ID, or the ID from a MakerWorld model URL, is stored", async () => {
+    expect(await designIdOf({ designer: "D", designId: "1234567" })).toBe("1234567");
+    expect(
+      await designIdOf({
+        designer: "D",
+        designId: "https://makerworld.com/en/models/7654321-a-kit",
+      }),
+    ).toBe("7654321");
+  });
+
+  test("an invalid one, or none, stores nothing", async () => {
+    expect(await designIdOf({ designer: "D" })).toBeNull();
+    expect(await designIdOf({ designer: "D", designId: "javascript:alert(1)" })).toBeNull();
+    expect(
+      await designIdOf({ designer: "D", designId: "https://evil.example/models/1" }),
+    ).toBeNull();
+    expect(await designIdOf({ designer: "D", designId: "0042" })).toBeNull();
+  });
+
+  test("a file with no Designer is not a MakerWorld file, so its DesignId is ignored", async () => {
+    expect(await designIdOf({ designer: "", designId: "1234567" })).toBeNull();
+  });
+
+  test("a design ID already on the model is kept", async () => {
+    const model = await env.repos.models.create({ name: `Kept id ${marker()}` });
+    await env.db
+      .updateTable("models")
+      .set({ makerworldDesignId: "111" })
+      .where("id", "=", model.id)
+      .execute();
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({ plates: 1, nonce: marker(), makerWorld: { designer: "D", designId: "222" } }),
+      ),
+      originalName: "Second.3mf",
+      target: { modelId: model.id },
+    });
+    expect((await env.repos.models.get(model.id))?.makerworldDesignId).toBe("111");
   });
 });
 
@@ -677,6 +932,48 @@ describe("a failed commit never deletes what may have been committed", () => {
     const files = await filesOf(result.modelId);
     expect(files.map((f) => f.id)).toEqual([result.fileId]);
     expect(files[0]?.originalName).toBe("Committed after all.3mf");
+  });
+
+  test("a duplicate stored under allow whose commit answer is lost still lists the live copy", async () => {
+    // The rows were written, so the lookup inside the transaction already
+    // ran: the result says which live file held the same bytes, as it would
+    // had the answer arrived, rather than leaving the list out (the Public
+    // API reads a missing list as "no copy").
+    const tag = `lost-${randomBytes(8).toString("hex")}`;
+    const bytes =
+      `solid ${tag}\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n` +
+      `   vertex 0 1 0\n  endloop\n endfacet\nendsolid ${tag}\n`;
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Bracket.stl",
+      target: "new",
+    });
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+    });
+    const result = await createIngest({ db: committedThenLost, store: env.store }).ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Bracket copy.stl",
+      target: "new",
+      duplicates: "allow",
+    });
+    expect((await filesOf(result.modelId)).map((f) => f.id)).toEqual([result.fileId]);
+    expect(result.duplicates).toEqual([
+      {
+        modelId: first.modelId,
+        modelName: "Bracket",
+        fileId: first.fileId,
+        fileName: "Bracket.stl",
+      },
+    ]);
   });
 
   test("a transaction that never started deletes its objects, with no lookup", async () => {

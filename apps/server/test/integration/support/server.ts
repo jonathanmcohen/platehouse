@@ -82,6 +82,8 @@ export async function startServerEnv(): Promise<ServerEnv> {
       S3_ACCESS_KEY_ID: s3.accessKeyId,
       S3_SECRET_ACCESS_KEY: s3.secretAccessKey,
       S3_FORCE_PATH_STYLE: "true",
+      // Required since it lost its default; a .test name never resolves.
+      OIDC_ISSUER: "https://id.platehouse.test",
       OIDC_CLIENT_ID: "platehouse-test",
       OIDC_CLIENT_SECRET: randomBytes(16).toString("hex"),
       LINK_SECRET: randomBytes(32).toString("hex"),

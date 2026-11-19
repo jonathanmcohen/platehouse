@@ -9,7 +9,8 @@
 #     image (apps/server/dist/src/db/migrations, beside the built migrate.js)
 #     is recorded in schema_migrations, and they are the files in
 #     apps/server/src/db/migrations when run from a checkout; the server runs
-#     as a non-root user; and no apps/importer or test folder is in the image.
+#     as a non-root user; each favicon, app icon and the web manifest answers
+#     200 signed out; and no apps/importer or test folder is in the image.
 #
 #   docker/test-app-image.sh IMAGE unhealthy
 #     For an image built without apps/web/dist: the server starts and keeps
@@ -99,13 +100,15 @@ s3_port="$(docker port "$s3" 9000/tcp | head -n 1 | sed 's/.*://')"
 until_ok 90 "the S3 test server" curl -fsS "http://127.0.0.1:${s3_port}/minio/health/live"
 
 export DATABASE_URL PUBLIC_ORIGIN S3_ENDPOINT S3_REGION S3_BUCKET S3_FORCE_PATH_STYLE \
-  OIDC_CLIENT_ID OIDC_CLIENT_SECRET LINK_SECRET
+  OIDC_ISSUER OIDC_CLIENT_ID OIDC_CLIENT_SECRET LINK_SECRET
 DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@db:5432/platehouse"
 PUBLIC_ORIGIN=https://platehouse.test
 S3_ENDPOINT=http://s3:9000
 S3_REGION=us-east-1
 S3_BUCKET=platehouse-image-check
 S3_FORCE_PATH_STYLE=true
+# Required, with no default; a .test name never resolves.
+OIDC_ISSUER=https://id.platehouse.test
 OIDC_CLIENT_ID=platehouse-image-check
 OIDC_CLIENT_SECRET="$(secret 16)"
 LINK_SECRET="$(secret 32)"
@@ -132,7 +135,7 @@ if [ "$mode" = unhealthy ]; then
   app_args+=(--health-start-period=10s --health-interval=3s --health-retries=3)
 fi
 app_args+=(-e DATABASE_URL -e PUBLIC_ORIGIN "${s3_env[@]}" -e S3_FORCE_PATH_STYLE
-  -e OIDC_CLIENT_ID -e OIDC_CLIENT_SECRET -e LINK_SECRET "$image")
+  -e OIDC_ISSUER -e OIDC_CLIENT_ID -e OIDC_CLIENT_SECRET -e LINK_SECRET "$image")
 docker run "${app_args[@]}" >/dev/null
 app_port="$(docker port "$app" 3000/tcp | head -n 1 | sed 's/.*://')"
 
@@ -176,6 +179,26 @@ if [ "$mode" = unhealthy ]; then
 fi
 
 [ "$code" = 200 ] || fail "GET /healthz answered ${code}, not 200"
+
+# The favicons, app icons and web manifest: vite build copies apps/web/public
+# to the root of apps/web/dist, the server answers each file at its root path
+# (ROOT_FILES in apps/server/src/web/shell.ts, which a server test keeps this
+# list equal to), and the auth gate lets a signed-out browser have them. An
+# image built without public/ answers 404 for every one.
+root_files=(
+  /favicon.ico
+  /favicon.svg
+  /apple-touch-icon.png
+  /icon-192.png
+  /icon-512.png
+  /icon-maskable-512.png
+  /site.webmanifest
+)
+for file in "${root_files[@]}"; do
+  got="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${app_port}${file}" || true)"
+  [ "$got" = 200 ] || fail "GET ${file} answered ${got}, not 200"
+done
+echo "== the ${#root_files[@]} icon and manifest files answer 200 signed out"
 
 # The migrations: what the image ships beside migrate.js, what the server
 # applied, and (from a checkout) what the repo holds, all the same list.

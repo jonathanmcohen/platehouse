@@ -1,12 +1,17 @@
 // Platehouse's navigation (build plan Task 18, AC-071): Library, Creators,
-// Collections and Tags, then Task 21's Trash and Settings. Rendered as the
+// Collections and Tags, then Task 21's Trash, the Activity page (Jon,
+// 2026-11-19) and Task 21's Settings. Rendered as the
 // sidebar on wide screens and, with menu, inside the narrow-screen menu
 // panel. NavLink marks the current section aria-current="page"; Library
 // matches only its own path. The server answers with the shell only at
 // listed paths (SHELL_PAGES in
 // apps/server/src/web/shell.ts); a server test checks every section here is
 // one of them, or a reload of that section would be a 404.
+//
+// The brand at the top is the logo (Logo.tsx, aria-hidden beside the name)
+// and the name, linking to the library.
 import { Link, NavLink } from "react-router";
+import { Logo } from "./Logo";
 
 export const SECTIONS: ReadonlyArray<{ label: string; to: string }> = [
   { label: "Library", to: "/" },
@@ -15,6 +20,8 @@ export const SECTIONS: ReadonlyArray<{ label: string; to: string }> = [
   { label: "Tags", to: "/tags" },
   // Task 21: the trash and settings pages.
   { label: "Trash", to: "/trash" },
+  // What Platehouse is doing and holds: numbers, jobs, the slicer, events.
+  { label: "Activity", to: "/activity" },
   { label: "Settings", to: "/settings" },
 ];
 
@@ -29,7 +36,7 @@ export function Sidebar({ menu = false, onNavigate }: SidebarProps) {
     <nav className={menu ? "studio-menu-nav" : "studio-sidebar"} aria-label="Main">
       {menu ? null : (
         <Link to="/" className="studio-brand">
-          <span className="studio-brand-dot" aria-hidden="true" />
+          <Logo />
           Platehouse
         </Link>
       )}
