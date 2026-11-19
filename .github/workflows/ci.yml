@@ -13,7 +13,14 @@
 # gate image build), slicer-image (Slicer image and container tests) and
 # app-image (App image (amd64) and App image (arm64), build plan Task 24: the
 # image build, its healthy and unhealthy checks, then the release workflow's
-# Trivy gate).
+# Trivy gate) and docs (Docs build).
+#
+# The docs job builds the user docs site (apps/docs, Docusaurus, reading the
+# pages in docs/) and fails on a broken link or anchor. It runs, by the same
+# changes job, only when docs/, apps/docs, the workspace files its install
+# reads, this workflow or .node-version changes. It only builds: nothing is
+# deployed or published, and there is no GitHub Pages step (publishing waits
+# for the public repository). Nothing depends on it.
 #
 # The two slicing gate jobs keep their own path scoping, decided by the changes
 # job (issue #222). The gate tests are quick, so they run when tools/slicing-gate
@@ -59,6 +66,7 @@ jobs:
       gate_tests: ${{ steps.diff.outputs.tests }}
       gate_image: ${{ steps.diff.outputs.image }}
       slicer: ${{ steps.slicer.outputs.slicer }}
+      docs: ${{ steps.docs.outputs.docs }}
     steps:
       - name: Check out
         uses: actions/checkout@v7.0.1
@@ -148,6 +156,32 @@ jobs:
             fi
           fi
           echo "slicer=${slicer}" >>"$GITHUB_OUTPUT"
+
+      # The same rule for the docs job, with the same base commit and the same
+      # safe default. It runs when the pages (docs/) or the site (apps/docs)
+      # change, or anything its install reads: the root workspace files, this
+      # workflow and .node-version.
+      - name: Decide whether the docs job runs
+        id: docs
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          docs=true
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (${base:-none}); the docs job runs."
+          else
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
+            if grep -Eq '^(docs/|apps/docs/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The docs, the docs site or an input of its install changed; the docs job runs."
+            else
+              docs=false
+              echo "Nothing the docs site is built from changed; the docs job is skipped."
+            fi
+          fi
+          echo "docs=${docs}" >>"$GITHUB_OUTPUT"
 
   lint:
     name: Lint (Biome)
@@ -673,3 +707,30 @@ jobs:
           format: table
           cache-dir: ${{ runner.temp }}/trivy-cache
           version: v0.76.2
+
+  docs:
+    name: Docs build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      # Only the docs site and what it depends on.
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter @platehouse/docs
+      # docusaurus.config.mjs sets onBrokenLinks, onBrokenAnchors and the
+      # broken Markdown link and image hooks to throw, so a broken link fails
+      # the build.
+      - name: Build the docs site
+        run: pnpm --filter @platehouse/docs run build

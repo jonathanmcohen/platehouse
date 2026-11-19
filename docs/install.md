@@ -1,0 +1,140 @@
+# Install
+
+Platehouse runs as three containers under Docker Compose: the app, the slicer and Postgres.
+This page walks through a first install with the example files in the repository's
+`examples/` folder.
+
+## What you need
+
+- **A Linux host with Docker and Docker Compose v2.** The app image is built for amd64 and arm64.
+  The slicer image is amd64 only, so the host must be amd64.
+- **CPU and memory.** The example gives the slicer 4 CPUs and 4 GiB, and the app 2 CPUs and
+  2 GiB, plus whatever Postgres needs. The heaviest plate measured so far used about 2.5 GiB of
+  memory while slicing.
+- **A Linux kernel with Landlock ABI 6 or newer** (Linux 6.12 or newer) if you want
+  OpenSCAD renders. The slicer checks its sandbox before the first render and refuses renders
+  when the kernel is too old. Slicing and STEP files work either way.
+- **An S3-compatible bucket** with an access key that can read, write and delete in it. See
+  [Storage](./storage.md).
+- **An OpenID Connect provider** with a client for Platehouse and a group for the people who
+  may sign in. See [Sign-in](./sign-in.md).
+- **A reverse proxy with TLS** for a host name such as `platehouse.example.com`. Platehouse only
+  works over https, because its cookies are marked Secure. See
+  [Reverse proxy](./reverse-proxy/index.md).
+
+## 1. Get the example files
+
+Make a folder for the project and copy `examples/docker-compose.yml` and
+`examples/.env.example` into it. Rename `.env.example` to `.env`.
+
+```bash
+mkdir platehouse && cd platehouse
+cp /path/to/platehouse/examples/docker-compose.yml .
+cp /path/to/platehouse/examples/.env.example .env
+chmod 600 .env
+```
+
+The example is a starting point. Read it through: the comments say what each setting is for.
+
+## 2. Fill in `.env`
+
+Set every value in `.env`. [Configuration](./configuration.md) explains each one. The values
+you must make yourself:
+
+- `DB_PASS`: a long random password of letters and digits only. Make one with
+  `openssl rand -hex 32`. The example puts it into the app's database URL as it is, so a
+  password with `@`, `/`, `:`, `#`, `%`, `?` or a space breaks that URL and the app cannot
+  connect to the database. See [Configuration](./configuration.md#the-database-password).
+- `LINK_SECRET`: at least 32 bytes, for example from `openssl rand -base64 48`.
+- The bucket's endpoint, name, region and keys.
+- The OIDC issuer, client ID and client secret.
+
+Keep `.env` out of version control and readable only by you.
+
+## 3. Create the networks and folders
+
+The example uses three external networks, so Compose never creates or removes them:
+
+```bash
+docker network create proxy                       # skip if your proxy already has one
+docker network create --internal platehouse-db
+docker network create --internal platehouse-slicer
+```
+
+- `proxy` is the network your reverse proxy container shares with the app. If your proxy already
+  has one under another name, use that name in `docker-compose.yml` instead.
+- `platehouse-db` holds the app and Postgres.
+- `platehouse-slicer` holds the app and the slicer, and nothing else. `--internal` means nothing
+  on it can reach the internet, which keeps the slicer offline.
+
+If your reverse proxy runs directly on the host instead of in a container, you do not need the
+`proxy` network: remove it from the app and uncomment the `ports` line, which publishes the app
+on `127.0.0.1:3000` only.
+
+Then create the app's folders and give them to the app image's user (uid and gid 1000). If
+Docker creates them on first start they belong to root, and the app cannot write its inbox:
+
+```bash
+mkdir -p data/inbox data/tmp
+sudo chown 1000:1000 data/inbox data/tmp
+```
+
+Postgres creates and owns `data/db` itself.
+
+## 4. Check the file
+
+```bash
+docker compose config --quiet
+```
+
+This exits with no output when `.env` has every value the file needs. A missing value is named
+in the error.
+
+## 5. First start
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+On its first start the app creates its database tables, starts its job queues and the inbox
+watcher, and reads the bucket's versioning setting. Within a minute `docker compose ps` should
+show the app and the slicer as `healthy`.
+
+If the app keeps restarting, read its log:
+
+```bash
+docker compose logs app
+```
+
+A configuration problem is named there by key, for example `Invalid configuration: LINK_SECRET
+must be at least 32 bytes`. The log never prints the value.
+
+## 6. Put it behind your proxy
+
+Point your reverse proxy at the app (`platehouse:3000` on the `proxy` network, or
+`127.0.0.1:3000` on the host) and follow the guide for your proxy in
+[Reverse proxy](./reverse-proxy/index.md). Platehouse relies on the proxy for TLS and for a few
+security headers, so the proxy settings matter.
+
+## 7. Sign in
+
+Open your `PUBLIC_ORIGIN` in a browser. You are sent to your identity provider, and back to the
+library once you sign in. If sign-in is refused, the page says why; see
+[Troubleshooting](./troubleshooting.md#sign-in).
+
+Then, in **Settings**:
+
+- add your printers under **My printers** and make one the default, so estimates are made for them;
+- check that there is no red banner about bucket versioning (see [Storage](./storage.md));
+- create an API token if you want to use the API.
+
+## Running it without the example
+
+You can run Platehouse any way you run containers, as long as:
+
+- the slicer can be reached by the app and cannot reach the internet;
+- the slicer keeps the locked-down settings from the example (read-only root, the `/work`
+  tmpfs, no capabilities, its own user);
+- the app can reach Postgres, the bucket and your identity provider;
+- the reverse proxy follows the requirements in [Reverse proxy](./reverse-proxy/index.md).
