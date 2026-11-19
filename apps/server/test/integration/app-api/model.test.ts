@@ -46,6 +46,7 @@ import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
 import { REASON_WORDS } from "../../../src/estimates/reasons.js";
+import { createRename } from "../../../src/library/rename.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import {
   ASCII_STL,
@@ -870,14 +871,9 @@ describe("Use file titles (GET and POST /app/api/models/title-names)", () => {
   test("running it renames the model from its title, and leaves a renamed one alone", async () => {
     const model = await namedAfterItsFile();
     const kept = await namedAfterItsFile();
-    const patch = await app.inject({
-      method: "PATCH",
-      url: `/app/api/models/${kept.id}`,
-      headers: { accept: "application/json", origin: TEST_ORIGIN },
-      cookies: { [SESSION_COOKIE]: session },
-      payload: { name: "Named by hand" },
-    });
-    expect(patch.statusCode).toBe(204);
+    // The rename the organising route makes (this app is built without the
+    // organising routes, so their call is made directly).
+    expect(await createRename(env.db).renameModel(kept.id, "Named by hand")).toBe(true);
     const res = await post("/app/api/models/title-names");
     expect(res.statusCode).toBe(200);
     expect((res.json() as { renamed: number }).renamed).toBeGreaterThanOrEqual(1);
