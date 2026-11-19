@@ -28,34 +28,49 @@ afterAll(async () => {
   await pgc?.stop();
 });
 
+/** The database freshRepos made last; modelWithFile writes there. */
+let latest: TestDatabase;
+
 /** A fresh migrated database, so a test's counts are its own. */
 async function freshRepos(): Promise<{ t: TestDatabase; repos: Repos }> {
   const t = await pgc.freshDatabase();
   await migrate(t.db);
+  latest = t;
   return { t, repos: createRepos(t.db) };
 }
 
 let fileCounter = 0;
 
-/** A model with one source file of the given original name. */
+/**
+ * A model with one source file of the given original name, in the latest
+ * fresh database. madeBy "ingest" (the default) writes the model and its
+ * file in one transaction, as ingest does, so the caption counts as read
+ * from that .3mf. "api" writes them in two, as a model made through POST
+ * /api/v1/models and then given a file does: its caption is the client's.
+ */
 async function modelWithFile(
-  repos: Repos,
+  _repos: Repos,
   input: {
     name: string;
     nameSource?: NameSource;
     caption?: string | null;
     externalRef?: string;
     file: string;
+    madeBy?: "ingest" | "api";
   },
 ) {
-  const model = await repos.models.create({
-    name: input.name,
-    nameSource: input.nameSource ?? "file",
-    caption: input.caption ?? null,
-    externalRef: input.externalRef ?? null,
-  });
-  await addFile(repos, model.id, input.file);
-  return model;
+  const make = async (repos: Repos) => {
+    const model = await repos.models.create({
+      name: input.name,
+      nameSource: input.nameSource ?? "file",
+      caption: input.caption ?? null,
+      externalRef: input.externalRef ?? null,
+    });
+    await addFile(repos, model.id, input.file);
+    return model;
+  };
+  if ((input.madeBy ?? "ingest") === "api") return make(createRepos(latest.db));
+  return latest.db.transaction().execute((trx) => make(createRepos(trx)));
 }
 
 async function addFile(repos: Repos, modelId: string, originalName: string) {
@@ -142,6 +157,7 @@ describe("models a person named before name_source existed (0006)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+    latest = t;
     return { t, repos: createRepos(t.db) };
   }
 
@@ -340,6 +356,16 @@ describe("the Use file titles backfill", () => {
         caption: "A clip that holds two cables under any desk edge up to 30 mm thick.",
         externalRef: "manyfold:abc123",
         file: "Desk_cable_clip.3mf",
+        madeBy: "api",
+      }),
+      // Skipped: made through POST /api/v1/models with no externalRef before
+      // 0005, then given a file whose stem is its name. Its caption is the
+      // API client's free text, not a title ingest read from a .3mf (#258).
+      apiMade: await modelWithFile(repos, {
+        name: "Bracket",
+        caption: "Wall bracket for shelves, PETG",
+        file: "Bracket.stl",
+        madeBy: "api",
       }),
       // Not counted at all: in the trash.
       trashed: await modelWithFile(repos, {
@@ -366,6 +392,7 @@ describe("the Use file titles backfill", () => {
       sameName: 1,
       nameNotFromFile: 1,
       imported: 1,
+      captionNotFromFile: 1,
     });
     expect(plan.planId).toMatch(/^[0-9a-f]{64}$/);
     expect((await repos.models.titleNamePlan()).planId).toBe(plan.planId);
@@ -385,6 +412,7 @@ describe("the Use file titles backfill", () => {
     expect((await repos.models.get(m.user.id))?.name).toBe("My bin");
     expect((await repos.models.get(m.chosen.id))?.name).toBe("Drawer divider (kitchen)");
     expect((await repos.models.get(m.imported.id))?.name).toBe("Desk cable clip");
+    expect((await repos.models.get(m.apiMade.id))?.name).toBe("Bracket");
     expect((await repos.models.get(m.untitled.id))?.name).toBe("Plain part");
     expect((await repos.models.get(m.trashed.id, { includeTrashed: true }))?.name).toBe(
       "Old_thing",
@@ -444,5 +472,41 @@ describe("the Use file titles backfill", () => {
     await repos.models.applyTitleNames((await repos.models.titleNamePlan()).planId);
     const found = await repos.models.search({ q: "Spool Holder" });
     expect(found.map((x) => [x.id, x.name])).toEqual([[m.raw.id, "Wall Spool Holder | Screwless"]]);
+  });
+});
+
+// #258: the backfill renames only to a title ingest read from a stored .3mf.
+// The only writers of a caption are ingest (the MakerWorld Title, filled
+// into an empty caption) and the public API's create-model (free text). A
+// model ingest made shares its transaction, and so its created_at, with the
+// file it was made for; a model the API made never does.
+describe("Use file titles takes only captions ingest read from a .3mf", () => {
+  test("an API-made model with a caption, no externalRef and a name equal to its file's stem is skipped", async () => {
+    const { repos } = await freshRepos();
+    const api = await modelWithFile(repos, {
+      name: "Bracket",
+      caption: "Wall bracket for shelves, PETG",
+      file: "Bracket.3mf",
+      madeBy: "api",
+    });
+    const plan = await repos.models.titleNamePlan();
+    expect(plan.renames).toEqual([]);
+    expect(plan.skipped.captionNotFromFile).toBe(1);
+    expect(await repos.models.applyTitleNames(plan.planId)).toEqual({ renamed: 0 });
+    expect((await repos.models.get(api.id))?.name).toBe("Bracket");
+  });
+
+  test("the same model made by ingest is renamed from its caption", async () => {
+    const { repos } = await freshRepos();
+    const ingested = await modelWithFile(repos, {
+      name: "Bracket",
+      caption: "Wall Bracket | Shelf",
+      file: "Bracket.3mf",
+    });
+    const plan = await repos.models.titleNamePlan();
+    expect(plan.renames).toEqual([
+      { id: ingested.id, from: "Bracket", to: "Wall Bracket | Shelf" },
+    ]);
+    expect(plan.skipped.captionNotFromFile).toBe(0);
   });
 });

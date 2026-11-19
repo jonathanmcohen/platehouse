@@ -384,6 +384,7 @@ export const emptyAppModel: AppModel = Object.freeze({
       sameName: 0,
       nameNotFromFile: 0,
       imported: 0,
+      captionNotFromFile: 0,
     },
   }),
   useTitleNames: async (planId: string) => (planId === EMPTY_PLAN_ID ? { renamed: 0 } : null),

@@ -27,6 +27,8 @@ export interface TitleNamePlan {
     sameName: number;
     nameNotFromFile: number;
     imported: number;
+    /** A caption that was not read from a .3mf, such as an API client's free text. */
+    captionNotFromFile: number;
   };
 }
 
@@ -53,6 +55,7 @@ function leftAlone(skipped: TitleNamePlan["skipped"]): string {
     [skipped.namedFromTitle, "already named from a title"],
     [skipped.sameName, "already named as their title"],
     [skipped.imported, "imported from another library"],
+    [skipped.captionNotFromFile, "whose caption was not read from a .3mf"],
   ] as const;
   const listed = reasons.filter(([n]) => n > 0).map(([n, why]) => `${n} ${why}`);
   return `${count}: ${listed.join(", ")}.`;

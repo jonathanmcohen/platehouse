@@ -24,6 +24,7 @@ interface Plan {
     sameName: number;
     nameNotFromFile: number;
     imported: number;
+    captionNotFromFile: number;
   };
 }
 
@@ -36,6 +37,7 @@ const SKIPPED = {
   sameName: 0,
   nameNotFromFile: 3,
   imported: 5,
+  captionNotFromFile: 2,
 };
 
 const PLAN_ID = "ab".repeat(32);
@@ -157,12 +159,13 @@ describe("Use file titles", () => {
     const text = box?.textContent ?? "";
     expect(text).toContain("3 models will be renamed from their file's title.");
     expect(text).toContain('"File_name_1" becomes "Title 1"');
-    expect(text).toContain("15 are left as they are");
+    expect(text).toContain("17 are left as they are");
     expect(text).toContain("2 renamed by you");
     expect(text).toContain("3 whose name is not a file name");
     expect(text).toContain("4 with no title");
     expect(text).toContain("1 already named from a title");
     expect(text).toContain("5 imported from another library");
+    expect(text).toContain("2 whose caption was not read from a .3mf");
     // Safe choice first.
     expect(document.activeElement?.textContent).toBe("Cancel");
   });
@@ -205,7 +208,7 @@ describe("Use file titles", () => {
     await click(button("Use file titles"));
     expect(dialog()).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe(
-      "No model needs a new name. 15 are left as they are.",
+      "No model needs a new name. 17 are left as they are.",
     );
     expect(requests).toEqual(["GET /app/api/models/title-names"]);
   });

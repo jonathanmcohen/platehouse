@@ -99,6 +99,15 @@ export interface TitleNamePlan {
      * .3mf's title, so it cannot name the model.
      */
     imported: number;
+    /**
+     * Its caption was not read from a .3mf by ingest (#258). A caption has
+     * two writers: ingest, which fills an empty one from a .3mf's MakerWorld
+     * Title, and the public API's create-model, which takes free text. Only
+     * a model ingest made counts, one that shares its transaction, and so
+     * its created_at, with one of its files; a model the API made never
+     * does, since its files come in later requests.
+     */
+    captionNotFromFile: number;
   };
 }
 
@@ -296,6 +305,21 @@ export function modelsRepo(db: Kysely<DB>) {
     const models = await db
       .selectFrom("models")
       .select(["id", "name", "nameSource", "caption", "externalRef"])
+      // Made by ingest: one of its files was written in the transaction
+      // that made the model (now() is the transaction's start, so the two
+      // created_at values are equal to the microsecond). Compared in SQL,
+      // since a JavaScript Date keeps only milliseconds.
+      .select((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom("files")
+              .select("files.id")
+              .whereRef("files.modelId", "=", "models.id")
+              .whereRef("files.createdAt", "=", "models.createdAt"),
+          )
+          .as("madeByIngest"),
+      )
       .where("trashedAt", "is", null)
       .orderBy("name")
       .orderBy("id")
@@ -320,6 +344,7 @@ export function modelsRepo(db: Kysely<DB>) {
       sameName: 0,
       nameNotFromFile: 0,
       imported: 0,
+      captionNotFromFile: 0,
     };
     for (const m of models) {
       const title = cutName(m.caption);
@@ -327,6 +352,7 @@ export function modelsRepo(db: Kysely<DB>) {
       else if (m.nameSource === "title") skipped.namedFromTitle += 1;
       else if (m.externalRef !== null) skipped.imported += 1;
       else if (title === null) skipped.noTitle += 1;
+      else if (!m.madeByIngest) skipped.captionNotFromFile += 1;
       else if (title === m.name) skipped.sameName += 1;
       else if (!fileStems(namesOf.get(m.id) ?? []).has(m.name)) skipped.nameNotFromFile += 1;
       else renames.push({ id: m.id, from: m.name, to: title });
@@ -488,8 +514,11 @@ export function modelsRepo(db: Kysely<DB>) {
      * The title is the model's caption, which ingest fills from the .3mf's
      * MakerWorld Title, so no file is read from the bucket. A model made by
      * an import (one with an externalRef) is skipped: the importer copies
-     * the source library's caption as written, so it is not a title. The
-     * other rules are nameFromTitle's. Changes nothing.
+     * the source library's caption as written, so it is not a title. So is
+     * any other model ingest did not make (captionNotFromFile, #258), such
+     * as one made through the public API's create-model, whose caption is
+     * the client's free text. The other rules are nameFromTitle's. Changes
+     * nothing.
      */
     titleNamePlan,
 

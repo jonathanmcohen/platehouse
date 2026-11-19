@@ -876,6 +876,7 @@ describe("Use file titles (GET and POST /app/api/models/title-names)", () => {
     expect(plan.planId).toMatch(/^[0-9a-f]{64}$/);
     expect(plan.renames).toContainEqual({ id: model.id, from: model.name, to: model.caption });
     expect(Object.keys(plan.skipped).sort()).toEqual([
+      "captionNotFromFile",
       "imported",
       "nameNotFromFile",
       "namedFromTitle",
