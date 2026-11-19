@@ -295,18 +295,27 @@ time, weight and filaments for the printer chosen in Settings.
 
 ### Upload a file
 
+Save these steps as a script and run it with `sh`, so that a step that fails stops the rest.
+
 ```sh
 FILE=cable-clip.3mf
 SIZE=$(wc -c < "$FILE" | tr -d ' ')
 NAME=$(printf '%s' "$FILE" | base64 | tr -d '\n')
 
 # 1. Start the upload; keep the address it answers in Location.
-LOCATION=$(curl -sS -o /dev/null -D - -X POST "$PLATEHOUSE/api/v1/uploads" \
+START=$(curl -sS -o /dev/null -D - -X POST "$PLATEHOUSE/api/v1/uploads" \
   -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
   -H "Tus-Resumable: 1.0.0" \
   -H "Upload-Length: $SIZE" \
   -H "Upload-Metadata: filename $NAME" \
-  | tr -d '\r' | awk 'tolower($1) == "location:" { print $2 }')
+  | tr -d '\r')
+LOCATION=$(printf '%s\n' "$START" | awk 'tolower($1) == "location:" { print $2 }')
+# No Location means it did not start: a bad token (401), a file type it does
+# not take (415) or a file that is too big (413). Stop and show the answer.
+if [ -z "$LOCATION" ]; then
+  echo "The upload did not start: $(printf '%s\n' "$START" | head -n 1)" >&2
+  exit 1
+fi
 
 # 2. Send the whole file.
 curl -sS -X PATCH "$PLATEHOUSE$LOCATION" \
@@ -353,10 +362,15 @@ while :; do
   STATUS=$(printf '%s\n' "$HEAD" | awk 'NR == 1 { print $2 }')
   OFFSET=$(printf '%s\n' "$HEAD" | awk 'tolower($1) == "upload-offset:" { print $2 }')
   case "$STATUS" in
-    404 | 410) echo "The upload is gone; start again." >&2; break ;;
-    200) [ -n "$OFFSET" ] || { sleep 5; continue; } ;;
-    *) sleep 5; continue ;; # no answer, or a passing error such as 503: ask again
+    200) ;;
+    '' | 5??) sleep 5; continue ;; # no answer, or a passing error such as 503: ask again
+    404 | 410) echo "The upload is gone; start again." >&2; exit 1 ;;
+    *) echo "Platehouse answered $STATUS; stopping." >&2; exit 1 ;; # 401, 403, 412: asking again will not help
   esac
+  if [ -z "$OFFSET" ]; then
+    echo "Platehouse sent no Upload-Offset; stopping." >&2
+    exit 1
+  fi
   [ "$OFFSET" -lt "$SIZE" ] || break
   tail -c +"$((OFFSET + 1))" "$FILE" | head -c "$CHUNK" \
     | curl -sS -f -o /dev/null -X PATCH "$PLATEHOUSE$LOCATION" \
