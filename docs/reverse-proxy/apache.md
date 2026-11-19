@@ -1,0 +1,97 @@
+# Apache httpd
+
+Written against Apache httpd 2.4. It has not been run against a real Platehouse deployment, so
+treat it as an example to adapt and run the [checklist](./checklist.md) after.
+
+You need these modules: `ssl`, `proxy`, `proxy_http`, `headers` and `setenvif`. On Debian and
+Ubuntu:
+
+```bash
+sudo a2enmod ssl proxy proxy_http headers setenvif
+```
+
+Then add a site, such as `/etc/apache2/sites-available/platehouse.conf`. Change the host name, the
+certificate paths and the upstream address to yours. Apache usually runs on the host, so the
+example uses `127.0.0.1:3000`, the port the example Compose file can publish on the loopback
+address.
+
+```apacheconf
+# Platehouse behind Apache httpd. An example to adapt.
+
+<VirtualHost *:80>
+    ServerName platehouse.example.com
+    Redirect permanent / https://platehouse.example.com/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName platehouse.example.com
+
+    SSLEngine on
+    SSLCertificateFile    /etc/ssl/platehouse/fullchain.pem
+    SSLCertificateKeyFile /etc/ssl/platehouse/privkey.pem
+    SSLProtocol           -all +TLSv1.2 +TLSv1.3
+
+    # Security headers. Platehouse sets none of them itself.
+    Header always set Strict-Transport-Security "max-age=31536000"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Content-Security-Policy "frame-ancestors 'none'"
+
+    # Keep an encoded slash (%2F) encoded and pass it on as sent. Needs
+    # "nocanon" on ProxyPass below. Set it here: it is not inherited from
+    # the main server configuration.
+    AllowEncodedSlashes NoDecode
+
+    # Uploads of up to 512 MiB (600 MiB here), with time for slow links.
+    LimitRequestBody 629145600
+    Timeout          3600
+    ProxyTimeout     3600
+
+    # No compression on the streamed paths.
+    SetEnvIf Request_URI "^/(s|files|blobs|api/v1/files)/" no-gzip=1 no-brotli=1
+
+    # Optional: allow only your own networks. Uncomment and change the ranges.
+    # <Location "/">
+    #     Require ip 192.168.0.0/16 172.16.0.0/12
+    # </Location>
+
+    ProxyRequests     Off
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+
+    ProxyPass        "/" "http://127.0.0.1:3000/" nocanon flushpackets=on
+    ProxyPassReverse "/" "http://127.0.0.1:3000/"
+</VirtualHost>
+```
+
+Enable it and reload:
+
+```bash
+sudo a2ensite platehouse
+sudo apachectl configtest && sudo systemctl reload apache2
+```
+
+## Why it looks like this
+
+- **`AllowEncodedSlashes NoDecode` with `nocanon`.** By default Apache refuses any path with
+  `%2F` in it with a 404. `NoDecode` lets it through without decoding it, and `nocanon` makes
+  `mod_proxy` pass the path to the app exactly as it arrived. Both are needed for API paths with
+  a tag or collection name that holds `/`.
+- **`LimitRequestBody`** allows 600 MiB, above the 512 MiB upload limit. Apache 2.4.53 and newer
+  default to 1 GiB, so this mostly documents the need.
+- **`Timeout` and `ProxyTimeout`** give large uploads and downloads an hour. Apache's
+  `mod_reqtimeout`, if loaded, also requires a request body to keep arriving at 500 bytes per
+  second by default, which any real upload does.
+- **`flushpackets=on`** sends each chunk of a streamed download to the client as it arrives from
+  the app, instead of collecting it first.
+- **`no-gzip` and `no-brotli`** stop `mod_deflate` and `mod_brotli` from compressing the streamed
+  paths, if either is enabled.
+- **Forwarded headers.** `mod_proxy` adds `X-Forwarded-For` and `X-Forwarded-Host` itself, and the
+  example sets `X-Forwarded-Proto`. `ProxyPreserveHost On` keeps the original host name. Platehouse
+  uses these only in its log; every link comes from `PUBLIC_ORIGIN`.
+- **The allowlist** uses `Require ip`, which matches the connection's own address unless you have
+  set up `mod_remoteip`.
+- **No authentication directives** (`AuthType`, `Require valid-user`, an OIDC module) in front of
+  Platehouse: the API and slicer links must reach the app without a cookie.
+
+Apache sends the app origin-form request targets and keeps its own path checks on, so nothing
+else is needed for those.

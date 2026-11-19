@@ -9,6 +9,9 @@ saveExact: true
 # falls back to its JavaScript crypto, cpu-features is an optional speed-up for
 # it, and protobufjs's postinstall only checks its own version.
 allowBuilds:
+  # core-js comes in through Docusaurus (apps/docs); its postinstall only
+  # prints a funding message.
+  core-js: false
   cpu-features: false
   protobufjs: false
   ssh2: false
