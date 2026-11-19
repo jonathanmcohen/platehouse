@@ -1003,7 +1003,7 @@ describe("the settings page", () => {
       "463 plates waiting to be estimated, about 2 hours and 35 minutes left.",
     );
     expect(lines[2]).toContain(
-      "463 plates waiting to be estimated, about 5 hours and 9 minutes left, counting 463 plates for other printers queued ahead of them.",
+      "463 plates waiting to be estimated, about 5 hours and 9 minutes left, counting 463 other plates and renders queued ahead of them.",
     );
   });
 
@@ -1015,8 +1015,8 @@ describe("the settings page", () => {
     await click(button("Add printer"));
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
       "Added Bambu Lab P1S, 0.6 mm nozzle. Platehouse is now estimating 463 plates for it, " +
-        "one at a time, at about 3 plates a minute. The slicer has 463 plates for other " +
-        "printers queued ahead of them, so this takes about 5 hours and 9 minutes. Its numbers " +
+        "one at a time, at about 3 plates a minute. The slicer has 463 other plates and " +
+        "renders queued ahead of them, so this takes about 5 hours and 9 minutes. Its numbers " +
         "show on each plate as they land, and the other printers' numbers stay as they are.",
     );
   });

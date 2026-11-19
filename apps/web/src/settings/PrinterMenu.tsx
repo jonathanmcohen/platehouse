@@ -19,9 +19,10 @@
 //   and about how long they take at the slicer's rate (slicesPerMinute), and
 //   each printer's line shows the plates it still has waiting, read again
 //   every WAITING_POLL_MS while any are. There is one slicer queue for every
-//   printer, so both times count the plates queued ahead for other printers
-//   (the server's through: slices up to and including the printer's last
-//   one), not just the printer's own.
+//   printer, so both times count the plates queued ahead for other printers,
+//   and the OpenSCAD renders and STEP meshes that share the queue (the
+//   server's through: jobs up to and including the printer's last slice),
+//   not just the printer's own.
 // - Removing asks first in the app's own dialog, because the printer's
 //   waiting work is dropped (numbers already made for it are kept). The
 //   default printer cannot be removed: another one is made the default
@@ -83,10 +84,10 @@ export function howLong(plates: number, perMinute: number): string {
 }
 
 /**
- * What the page says once a printer is added. through is how many slices
- * run up to and including its last plate: the slicer is one queue for every
- * printer, so plates already queued for other printers come first and the
- * time counts them.
+ * What the page says once a printer is added. through is how many jobs run
+ * up to and including its last plate: the slicer is one queue for every
+ * printer and for renders, so plates already queued for other printers, and
+ * renders, come first and the time counts them.
  */
 export function addedMessage(
   name: string,
@@ -101,7 +102,7 @@ export function addedMessage(
   const ahead = through - queued;
   const wait =
     ahead > 0
-      ? `. The slicer has ${plural(ahead, "plate", "plates")} for other printers queued ahead ` +
+      ? `. The slicer has ${plural(ahead, "other plate or render", "other plates and renders")} queued ahead ` +
         `of them, so this takes ${howLong(through, perMinute)}.`
       : `, so this takes ${howLong(queued, perMinute)}.`;
   return `${start}${wait} Its numbers show on each plate as they land, and the other printers' numbers stay as they are.`;
@@ -109,8 +110,8 @@ export function addedMessage(
 
 /**
  * A printer's waiting line: its plates, and about how long until its last
- * one lands, counting the plates for other printers the one slicer does
- * ahead of them (through).
+ * one lands, counting the plates for other printers, and the renders, the
+ * one slicer does ahead of them (through).
  */
 export function waitingLine(waiting: number, through: number, perMinute: number): string {
   const head = `${plural(waiting, "plate", "plates")} waiting to be estimated, ${howLong(
@@ -119,7 +120,7 @@ export function waitingLine(waiting: number, through: number, perMinute: number)
   )} left`;
   const ahead = through - waiting;
   return ahead > 0
-    ? `${head}, counting ${plural(ahead, "plate", "plates")} for other printers queued ahead of them.`
+    ? `${head}, counting ${plural(ahead, "other plate or render", "other plates and renders")} queued ahead of them.`
     : `${head}.`;
 }
 

@@ -3,7 +3,7 @@
 // waiting plates take is how many slices run up to and including its last
 // one, not its own count (PR #240 review, eta-ignores-shared-queue).
 import { describe, expect, test } from "vitest";
-import { slicesThrough } from "../../src/estimates/service.js";
+import { SLICE_PRIORITY, slicesThrough } from "../../src/estimates/service.js";
 
 const P1S = "Bambu Lab P1S 0.4 nozzle";
 const A1 = "Bambu Lab A1 0.4 nozzle";
@@ -11,6 +11,11 @@ const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
 
 function job(id: number, printerId: string, priority = 0, at = id) {
   return { id: `j${id}`, printerId, priority, createdOn: new Date(at * 1000) };
+}
+
+/** A render or mesh job (derived.ts): sent with pg-boss's default priority, 0, and no printer. */
+function render(id: number, at = id) {
+  return { id: `r${id}`, priority: 0, createdOn: new Date(at * 1000) };
 }
 
 describe("slicesThrough", () => {
@@ -66,5 +71,29 @@ describe("slicesThrough", () => {
     const through = slicesThrough(jobs, 0);
     expect(through.get(P1S)).toBe(1);
     expect(through.get(A1)).toBe(3);
+  });
+
+  // PR #240 review, library-priority-ties-renders: renders and meshes are sent
+  // with pg-boss's default priority, so library work must sit below it, or a
+  // new .scad or STEP file waits behind a whole backfill.
+  test("library work sits below pg-boss's default priority, and a plate someone waits on above it", () => {
+    expect(SLICE_PRIORITY.library).toBeLessThan(0);
+    expect(SLICE_PRIORITY.waiting).toBeGreaterThan(0);
+    expect(Number.isInteger(SLICE_PRIORITY.library)).toBe(true);
+  });
+
+  test("a render queued after a printer's backfill runs before it, and counts in its figure", () => {
+    const lib = SLICE_PRIORITY.library;
+    const jobs = [job(1, A1, lib), job(2, A1, lib), job(3, A1, lib), render(4)];
+    const through = slicesThrough(jobs, 0);
+    expect(through.get(A1)).toBe(4);
+  });
+
+  test("a render takes a place in the queue but gives no printer a figure", () => {
+    const jobs = [render(1), job(2, P1S, SLICE_PRIORITY.waiting), render(3)];
+    const through = slicesThrough(jobs, 1);
+    // The urgent slice runs first, after the one running now; the renders after it.
+    expect(through.get(P1S)).toBe(2);
+    expect([...through.keys()]).toEqual([P1S]);
   });
 });

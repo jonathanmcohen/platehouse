@@ -48,6 +48,13 @@ let slicer: SlicerClient;
 let estimates: Estimates;
 /** The service's log lines. */
 const logs: string[] = [];
+/**
+ * A stand-in for derived.ts's render and mesh jobs: a job of this kind on the
+ * slicer queue, sent with no priority as derived.ts sends its own. Each run
+ * records how many slices the stub had been asked for when it started.
+ */
+const RENDER_KIND = "synthetic-render";
+const renderRuns: number[] = [];
 /** While true, every read of a stored file fails as a store outage does. */
 let storeDown = false;
 /**
@@ -156,7 +163,12 @@ beforeAll(async () => {
     purgeExpired: async () => ({ purged: [] }),
     sweepOrphans: async () => ({ listed: 0, deleted: 0, outsideLayout: 0 }),
     sweepUploads: async () => undefined,
-    slicerJobs: estimates.slicerJobs,
+    slicerJobs: {
+      ...estimates.slicerJobs,
+      [RENDER_KIND]: async () => {
+        renderRuns.push(stub.calls.length);
+      },
+    },
     pollOrca: () => estimates.pollOrca(),
     onIngested: (result) => estimates.enqueueFile(result.fileId),
     pollingIntervalSeconds: 0.5,
@@ -1108,6 +1120,62 @@ describe("My printers", () => {
       [A1, 3],
     ]);
     expect(stub.calls.length).toBeGreaterThan(first + 6);
+  });
+
+  // PR #240 review, library-priority-ties-renders: an OpenSCAD render or a
+  // STEP mesh shares the slicer queue and is sent at pg-boss's default
+  // priority. It must not wait behind a printer's whole backfill.
+  test("a render queued behind a printer backfill runs before it, and the wait counts it", async () => {
+    await upload({ plates: 1 });
+    await upload({ plates: 1 });
+    await drain();
+    expect(await unestimated(A1)).toBeGreaterThanOrEqual(2);
+    renderRuns.length = 0;
+    const held = stub.hold();
+    const before = stub.calls.length;
+    let first = 0;
+    let queued = 0;
+    try {
+      // Library work for the A1: the first slice is held in the slicer, the
+      // rest wait in the queue.
+      const saved = await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      queued = saved.added[0]?.queued ?? 0;
+      expect(queued).toBeGreaterThanOrEqual(2);
+      await until(
+        () => stub.calls.length,
+        (n) => n > before,
+      );
+      first = stub.calls.length;
+      await until(
+        async () =>
+          (
+            await env.db
+              .selectFrom("estimates")
+              .select("id")
+              .where("status", "=", "running")
+              .execute()
+          ).length,
+        (n) => n === 1,
+      );
+      // A .scad file arrives meanwhile: its render is sent as derived.ts
+      // sends one, with no priority.
+      expect(await boss.send(QUEUE.slicer, { kind: RENDER_KIND })).not.toBeNull();
+      // The A1's wait counts the render, which now runs ahead of its plates.
+      expect((await estimates.queueByPrinter()).get(A1)).toEqual({
+        waiting: queued,
+        through: queued + 1,
+      });
+    } finally {
+      held.release();
+    }
+    await drain();
+    await until(
+      () => renderRuns.length,
+      (n) => n === 1,
+    );
+    // The render ran straight after the held slice, before the rest of the backfill.
+    expect(renderRuns).toEqual([first]);
+    expect(stub.calls.length).toBeGreaterThanOrEqual(first + queued - 1);
   });
 
   test("removing a printer stops its pending work, and its finished numbers stay", async () => {

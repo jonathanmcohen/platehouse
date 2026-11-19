@@ -11,7 +11,8 @@
 //   slicedFor.printerModelId and nozzle matched against the menu printer's
 //   modelId and nozzle (enqueuePlate). A new file's plates are queued for
 //   every printer, the default first, ahead of library-wide work
-//   (SLICE_PRIORITY).
+//   (SLICE_PRIORITY). Library-wide work also goes behind the render and mesh
+//   jobs (derived.ts) that share the slicer queue.
 // - Adding a printer (savePrinters) queues every live plate for it, behind
 //   any upload. The slicer does one plate at a time, so on a large library
 //   this is hours of work. Removing a printer cancels its queued slice jobs
@@ -147,8 +148,24 @@ export class PrinterListRefused extends Error {
  * upload, or a Retry pressed on the page) goes ahead of library-wide work
  * (a printer just added, an Orca update, the poll's catch-up), so an upload
  * still gets its numbers in minutes while hours of re-estimation queue.
+ * Library work is below 0, pg-boss's default, because the render and mesh
+ * jobs (derived.ts) share the slicer queue and are sent with that default:
+ * a new .scad or STEP file's STL, preview or mesh then runs ahead of a
+ * backfill too, not after it (PR #240 review).
  */
-export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: 0 });
+export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: -1 });
+
+/**
+ * A job waiting in the slicer queue: a slice carries its printer and
+ * estimate, a render or mesh job (derived.ts) neither.
+ */
+export interface QueuedWork {
+  id: string;
+  printerId?: string;
+  estimateId?: string;
+  priority: number;
+  createdOn: Date;
+}
 
 /**
  * For each printer with slices queued, how many slices run up to and
@@ -156,19 +173,15 @@ export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: 0 });
  * then the queued slices in the order pg-boss starts them, highest priority
  * first, then oldest. There is one slicer queue and it runs one slice at a
  * time for every printer, so this, not a printer's own count, is what its
- * waiting plates take. Jobs waiting out a retry delay are counted where
- * they sit; a page's figure is "about". An estimate with more than one job
- * (an urgent copy of a library job, see enqueue) is sliced once, by the
- * first of them to run, so it counts once, there.
+ * waiting plates take. A render or mesh job on the same queue (no printerId)
+ * takes its place like a slice but gives no printer a figure. Jobs waiting
+ * out a retry delay are counted where they sit; a page's figure is "about".
+ * An estimate with more than one job (an urgent copy of a library job, see
+ * enqueue) is sliced once, by the first of them to run, so it counts once,
+ * there.
  */
 export function slicesThrough(
-  jobs: ReadonlyArray<{
-    id: string;
-    printerId: string;
-    priority: number;
-    createdOn: Date;
-    estimateId?: string;
-  }>,
+  jobs: ReadonlyArray<QueuedWork>,
   running: number,
 ): Map<string, number> {
   const order = [...jobs].sort(
@@ -186,7 +199,7 @@ export function slicesThrough(
       seen.add(job.estimateId);
     }
     position += 1;
-    through.set(job.printerId, position);
+    if (job.printerId !== undefined) through.set(job.printerId, position);
   }
   return through;
 }
@@ -196,8 +209,9 @@ export interface PrinterQueue {
   /** Its plate estimates still queued or slicing, at the current Orca version. */
   waiting: number;
   /**
-   * Slices that run up to and including its last waiting one, across every
-   * printer (slicesThrough); at least waiting.
+   * Slicer jobs that run up to and including its last waiting slice, across
+   * every printer, renders and meshes included (slicesThrough); at least
+   * waiting.
    */
   through: number;
 }
@@ -206,8 +220,9 @@ export interface PrinterQueue {
 export interface SavedPrinters {
   /**
    * The printers added, each with how many plate estimates were queued for
-   * it and how many slices run up to and including its last one (through),
-   * the work already queued for other printers included.
+   * it and how many slicer jobs run up to and including its last one
+   * (through), the work already queued for other printers and the renders
+   * ahead of it included.
    */
   added: Array<{ printerId: string; queued: number; through: number }>;
   /** The printers removed; their queued and waiting estimates were dropped. */
@@ -299,9 +314,9 @@ export interface Estimates {
   /**
    * Each of My printers' place in the slicer queue: its plate estimates
    * still queued or slicing for the current Orca version, and how many
-   * slices run up to and including its last one, every printer's work
-   * counted (one queue, one slice at a time). A printer with nothing
-   * waiting is left out.
+   * slicer jobs run up to and including its last one, every printer's work
+   * and the queued renders and meshes counted (one queue, one job at a
+   * time). A printer with nothing waiting is left out.
    */
   queueByPrinter(): Promise<Map<string, PrinterQueue>>;
   /**
@@ -1095,6 +1110,41 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     }
   }
 
+  /**
+   * Every job waiting in the slicer queue, of any kind: the slices, and the
+   * render and mesh jobs (derived.ts) that run on the same one-at-a-time
+   * queue. A slice job carries its printer and estimate; the others carry
+   * neither. Read a page at a time, queued jobs only, as queuedSlices.
+   */
+  async function queuedSlicerWork(): Promise<QueuedWork[]> {
+    const jobs: QueuedWork[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const page = await boss.findJobs<Partial<SliceJobData>>(QUEUE.slicer, {
+        queued: true,
+        limit: JOB_PAGE,
+        ...(after === undefined ? {} : { after }),
+      });
+      for (const job of page) {
+        const slice = job.data?.kind === SLICE_JOB_KIND;
+        jobs.push({
+          id: job.id,
+          ...(slice && typeof job.data.printerId === "string"
+            ? { printerId: job.data.printerId }
+            : {}),
+          ...(slice && typeof job.data.estimateId === "string"
+            ? { estimateId: job.data.estimateId }
+            : {}),
+          priority: job.priority,
+          createdOn: new Date(job.createdOn),
+        });
+      }
+      const last = page.at(-1);
+      if (page.length < JOB_PAGE || last === undefined) return jobs;
+      after = last.id;
+    }
+  }
+
   /** The ids of the queued slice jobs that match. */
   async function queuedSliceJobs(
     match: (job: { data: SliceJobData }) => boolean,
@@ -1191,18 +1241,11 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         .where("source", "=", "platehouse")
         .where("status", "=", "running")
         .executeTakeFirstOrThrow(),
-      queuedSlices(),
+      // Render and mesh jobs too: they share the queue, and the ones ahead
+      // of a printer's slices are part of its wait.
+      queuedSlicerWork(),
     ]);
-    const through = slicesThrough(
-      jobs.map((j) => ({
-        id: j.id,
-        printerId: j.data.printerId,
-        priority: j.priority,
-        createdOn: j.createdOn,
-        estimateId: j.data.estimateId,
-      })),
-      running.n,
-    );
+    const through = slicesThrough(jobs, running.n);
     return new Map(
       rows.map((r) => [
         r.printerId,
