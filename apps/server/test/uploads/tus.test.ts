@@ -147,6 +147,7 @@ describe("parseUploadMetadata", () => {
     expect(parseUploadMetadata({ filename: "Benchy.3mf" })).toEqual({
       originalName: "Benchy.3mf",
       target: "new",
+      duplicates: "allow",
     });
   });
 
@@ -155,6 +156,7 @@ describe("parseUploadMetadata", () => {
     expect(parseUploadMetadata({ filename: "a.stl", modelId: id })).toEqual({
       originalName: "a.stl",
       target: { modelId: id.toLowerCase() },
+      duplicates: "allow",
     });
   });
 
@@ -167,6 +169,7 @@ describe("parseUploadMetadata", () => {
     expect(parseUploadMetadata({ filename: "a.stl", batch: "b-1", combine })).toEqual({
       originalName: "a.stl",
       target: { batch: "b-1", combine: expected },
+      duplicates: "allow",
     });
   });
 
@@ -182,6 +185,17 @@ describe("parseUploadMetadata", () => {
     const name = `${`Long name with spaces and ${accents} `.repeat(8)}.3mf`;
     expect(name.length).toBeGreaterThan(200);
     expect(parseUploadMetadata({ filename: name }).originalName).toBe(name);
+  });
+
+  test("duplicates: left out it is allow, so an API client that never sends it sees no change", () => {
+    expect(parseUploadMetadata({ filename: "a.stl" }).duplicates).toBe("allow");
+    expect(parseUploadMetadata({ filename: "a.stl", duplicates: "allow" }).duplicates).toBe(
+      "allow",
+    );
+    expect(parseUploadMetadata({ filename: "a.stl", duplicates: "skip" }).duplicates).toBe("skip");
+    expect(
+      parseUploadMetadata({ filename: "a.stl", modelId: randomUUID(), duplicates: "skip" }),
+    ).toMatchObject({ duplicates: "skip" });
   });
 
   test("metadata keys it does not know are ignored", () => {
@@ -212,6 +226,13 @@ describe("parseUploadMetadata", () => {
       400,
       /modelId/,
     ],
+    [
+      "duplicates that is not skip or allow",
+      { filename: "a.stl", duplicates: "no" },
+      400,
+      /duplicates/,
+    ],
+    ["duplicates with no value", { filename: "a.stl", duplicates: null }, 400, /duplicates/],
     ["an unsupported type", { filename: "notes.txt" }, 415, /not a supported/],
     ["no extension", { filename: "README" }, 415, /not a supported/],
   ];
@@ -250,8 +271,25 @@ describe("tus routes", () => {
       tmpPath: join(uploads.dir, id),
       originalName: "Part.stl",
       target: { batch: "b", combine: true },
+      duplicates: "allow",
     });
     expect((await readFile(join(uploads.dir, id))).equals(body)).toBe(true);
+  });
+
+  test("duplicates skip in the metadata reaches the queued ingest", async () => {
+    const body = randomBinaryStl(20);
+    const created = await create(body.length, { filename: "Part.stl", duplicates: "skip" });
+    expect(created.status).toBe(201);
+    const id = idOf(created.headers.location);
+    expect((await patch(id, 0, body)).status).toBe(204);
+    expect(queue.enqueued.get(id)).toMatchObject({ target: "new", duplicates: "skip" });
+  });
+
+  test("a bad duplicates value is refused at creation and stores nothing", async () => {
+    const created = await create(10, { filename: "Part.stl", duplicates: "maybe" });
+    expect(created.status).toBe(400);
+    expect(created.body).toMatch(/duplicates/);
+    expect(queue.enqueued.size).toBe(0);
   });
 
   test("a PATCH cut off part way resumes from the offset the server kept", async () => {
@@ -416,12 +454,32 @@ describe("tus routes", () => {
     expect(await resultOf(id)).toEqual({ status: 200, body: { status: "pending" } });
     const modelId = randomUUID();
     const fileId = randomUUID();
-    queue.results.set(id, { status: "done", modelId, fileId });
-    expect(await resultOf(id)).toEqual({ status: 200, body: { status: "done", modelId, fileId } });
+    queue.results.set(id, { status: "done", modelId, fileId, duplicates: [] });
+    expect(await resultOf(id)).toEqual({
+      status: 200,
+      body: { status: "done", modelId, fileId, duplicates: [] },
+    });
     queue.results.set(id, { status: "failed", error: "Nope; nothing was saved" });
     expect(await resultOf(id)).toEqual({
       status: 200,
       body: { status: "failed", error: "Nope; nothing was saved" },
+    });
+    // A refused duplicate reaches the client whole, as serialized JSON.
+    const match = { modelId, modelName: "Clip", fileId, fileName: "Clip.stl" };
+    queue.results.set(id, {
+      status: "failed",
+      error: "Already there; nothing was saved",
+      code: "duplicate",
+      duplicates: [match],
+    });
+    expect(await resultOf(id)).toEqual({
+      status: 200,
+      body: {
+        status: "failed",
+        error: "Already there; nothing was saved",
+        code: "duplicate",
+        duplicates: [match],
+      },
     });
   });
 
@@ -447,7 +505,12 @@ describe("tus routes", () => {
     expect((await patch(id, 0, body)).status).toBe(204);
     const input = queue.enqueued.get(id) as IngestInput;
     await uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }))(input);
-    queue.results.set(id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+    queue.results.set(id, {
+      status: "done",
+      modelId: randomUUID(),
+      fileId: randomUUID(),
+      duplicates: [],
+    });
     return id;
   }
 
@@ -591,7 +654,12 @@ describe("tus routes", () => {
     release();
     const res = await answer;
     await ingest;
-    queue.results.set(id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+    queue.results.set(id, {
+      status: "done",
+      modelId: randomUUID(),
+      fileId: randomUUID(),
+      duplicates: [],
+    });
 
     expect(res.status).toBe(200);
     expect(res.headers["upload-offset"]).toBe(String(body.length));
@@ -657,7 +725,12 @@ describe("tus routes", () => {
     const stored = await sendOnce(good);
     expect(stored.methods).toEqual(["POST", "PATCH"]);
     await ingest(stored.id, async () => ({ modelId: "m", fileId: "f" }));
-    queue.results.set(stored.id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+    queue.results.set(stored.id, {
+      status: "done",
+      modelId: randomUUID(),
+      fileId: randomUUID(),
+      duplicates: [],
+    });
     expect(urls.size).toBe(1);
     const repeat = await sendOnce(good);
     expect(repeat.methods).toEqual(["HEAD"]);
@@ -848,7 +921,12 @@ describe("sweepStaleUploads", () => {
     await uploads.ingestUpload(async () => ({ modelId: "m", fileId: "f" }))(
       queue.enqueued.get(id) as IngestInput,
     );
-    queue.results.set(id, { status: "done", modelId: randomUUID(), fileId: randomUUID() });
+    queue.results.set(id, {
+      status: "done",
+      modelId: randomUUID(),
+      fileId: randomUUID(),
+      duplicates: [],
+    });
 
     expect(await uploads.sweepStaleUploads(later(STALE_UPLOAD_MS - 60_000))).toMatchObject({
       deleted: 0,
@@ -927,11 +1005,58 @@ describe("bossUploadQueue", () => {
     });
   });
 
-  test("a completed job is done with its model and file", async () => {
+  test("a completed job is done with its model and file, and no duplicates when it had none", async () => {
+    // Also how a job stored before duplicates were reported reads.
     const output = { modelId: randomUUID(), fileId: randomUUID() };
     expect(
       await bossUploadQueue(fakeBoss({ state: "completed", output }).boss).result(randomUUID()),
+    ).toEqual({ status: "done", ...output, duplicates: [] });
+  });
+
+  const MATCH = {
+    modelId: randomUUID(),
+    modelName: "Clip",
+    fileId: randomUUID(),
+    fileName: "Clip.stl",
+  };
+
+  test("a completed job stored anyway lists the live copies that were already there", async () => {
+    const output = { modelId: randomUUID(), fileId: randomUUID(), duplicates: [MATCH] };
+    expect(
+      await bossUploadQueue(fakeBoss({ state: "completed", output }).boss).result(randomUUID()),
     ).toEqual({ status: "done", ...output });
+  });
+
+  test("a refused duplicate says so with code duplicate and the copies it matched", async () => {
+    // As pg-boss stores a thrown DuplicateFile: its own fields beside name and message.
+    const message = `This file is already in the library, in the model "Clip" (id ${MATCH.modelId}), so it was skipped; nothing was saved`;
+    const output = {
+      name: "IngestError",
+      code: "duplicate",
+      message,
+      duplicates: [MATCH],
+      stack: "IngestError: ...",
+    };
+    expect(
+      await bossUploadQueue(fakeBoss({ state: "failed", output }).boss).result(randomUUID()),
+    ).toEqual({ status: "failed", error: message, code: "duplicate", duplicates: [MATCH] });
+  });
+
+  test("a duplicate entry that is not a file and model is left out, never passed on", async () => {
+    const output = {
+      modelId: randomUUID(),
+      fileId: randomUUID(),
+      duplicates: [MATCH, { modelId: 4, modelName: "x" }, null, "text"],
+    };
+    const r = await bossUploadQueue(fakeBoss({ state: "completed", output }).boss).result(
+      randomUUID(),
+    );
+    expect(r).toEqual({
+      status: "done",
+      modelId: output.modelId,
+      fileId: output.fileId,
+      duplicates: [MATCH],
+    });
   });
 
   test.each(["Storage is unavailable right now; nothing was saved", INGEST_FAILED_MESSAGE])(

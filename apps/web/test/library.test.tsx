@@ -994,20 +994,27 @@ describe("the tus options", () => {
     expect(new URL("/app/uploads/0198f0c4", options.endpoint).pathname).toBe(
       "/app/uploads/0198f0c4",
     );
-    expect(options.metadata).toEqual({ filename: "Air Dry - AMS.3mf" });
+    expect(options.metadata).toEqual({ filename: "Air Dry - AMS.3mf", duplicates: "skip" });
     expect(options.storeFingerprintForResuming).not.toBe(false);
   });
 
   test("the metadata names the target: new, an existing model, or the combined batch", () => {
-    expect(uploadMetadata(file, { kind: "new" })).toEqual({ filename: file.name });
+    // Each also asks the server to skip a file already in the library
+    // (duplicates, tested in upload.test.tsx).
+    expect(uploadMetadata(file, { kind: "new" })).toEqual({
+      filename: file.name,
+      duplicates: "skip",
+    });
     expect(uploadMetadata(file, { kind: "model", modelId: STL.id })).toEqual({
       filename: file.name,
       modelId: STL.id,
+      duplicates: "skip",
     });
     expect(uploadMetadata(file, { kind: "batch", batch: "b-1" })).toEqual({
       filename: file.name,
       batch: "b-1",
       combine: "1",
+      duplicates: "skip",
     });
   });
 
@@ -1192,6 +1199,7 @@ describe("upload dialog shows progress per file and honours combine", () => {
         filename: s.file.name,
         batch,
         combine: "1",
+        duplicates: "skip",
       });
     }
   });

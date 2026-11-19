@@ -88,6 +88,24 @@
   border-left: 4px solid var(--danger);
 }
 
+/* A skipped duplicate: a note, not an error (nothing went wrong). */
+.ph-upload-duplicate {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-left: 8px;
+  border-left: 4px solid var(--accent);
+  color: var(--text);
+}
+
+.ph-upload-duplicate-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .ph-dialog-controls,
 .ph-dialog-actions {
   display: flex;

@@ -34,10 +34,28 @@
 // dropped where nothing takes it (the sidebar, the top bar, a page with no
 // drop zone), which would otherwise open or download the file and leave the
 // app. Text and links dragged over the page keep the browser's handling.
-import { type DragEvent, type MouseEvent, useEffect, useId, useRef, useState } from "react";
+//
+// Duplicates (approved for 0.1.0 by Jon, 2026-11-19): the dialog says up
+// front that a file already in the library is skipped. A file the server
+// skips (its SHA-256 matches a file in a live model; a trashed one does not
+// count) shows Skipped, names the model that holds it with a link to its
+// page, and offers Import anyway, which sends that file again and stores it.
+// The link moves within the app and hides the dialog, so uploads still
+// sending carry on; outside a router (the tests) it is a plain link.
+import {
+  type DragEvent,
+  type MouseEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { Link, useInRouterContext } from "react-router";
 import "./upload.css";
 import {
   ACCEPT,
+  type DuplicateMatch,
   type FetchResult,
   type StartUpload,
   type UploadItem,
@@ -116,7 +134,57 @@ function statusText(item: UploadItem): string {
       return "Added";
     case "failed":
       return item.message ?? "The upload failed.";
+    case "duplicate":
+      return "Skipped";
   }
+}
+
+/** Shown under the intro: what happens to a file already in the library. */
+export const DUPLICATES_TEXT =
+  "A file that is already in the library is skipped, so nothing is added twice; you can choose Import anyway on it.";
+
+/** The link to a model's page: in the app when there is a router, a plain link otherwise. */
+function ModelLink({
+  modelId,
+  onFollow,
+  children,
+}: {
+  modelId: string;
+  onFollow(): void;
+  children: ReactNode;
+}) {
+  const routed = useInRouterContext();
+  const to = `/models/${modelId}`;
+  if (!routed) return <a href={to}>{children}</a>;
+  return (
+    <Link to={to} onClick={onFollow}>
+      {children}
+    </Link>
+  );
+}
+
+/** A skipped row's sentence: the first model that holds the file, linked, and how many others. */
+function DuplicateNote({
+  duplicates,
+  onFollow,
+}: {
+  duplicates: readonly DuplicateMatch[];
+  onFollow(): void;
+}) {
+  const first = duplicates[0];
+  if (first === undefined) return null;
+  const others = new Set(duplicates.map((d) => d.modelId));
+  others.delete(first.modelId);
+  return (
+    <span className="ph-upload-duplicate-text">
+      Already in the library as{" "}
+      <ModelLink modelId={first.modelId} onFollow={onFollow}>
+        {first.modelName}
+      </ModelLink>
+      {others.size === 0 ? "" : ` and ${others.size} other model${others.size === 1 ? "" : "s"}`},
+      so it was not added again.
+    </span>
+  );
 }
 
 const FOCUSABLE =
@@ -287,6 +355,7 @@ export function UploadDialog({
             : "Each file becomes its own model unless you combine them."}{" "}
           Supported: .3mf, .stl, .step, .stp and .scad.
         </p>
+        <p className="studio-muted">{DUPLICATES_TEXT}</p>
 
         {items.length === 0 ? (
           <p className="studio-empty">No files yet. Choose files, or drop them here.</p>
@@ -311,6 +380,18 @@ export function UploadDialog({
                 >
                   {statusText(item)}
                 </span>
+                {item.status === "duplicate" ? (
+                  <div className="ph-upload-duplicate">
+                    <DuplicateNote duplicates={item.duplicates ?? []} onFollow={onClose} />
+                    <button
+                      type="button"
+                      className="studio-button"
+                      onClick={() => upload.importAnyway(item.key)}
+                    >
+                      Import anyway
+                    </button>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
