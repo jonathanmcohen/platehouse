@@ -3,9 +3,9 @@
 // has to read container logs). The queries themselves run against Postgres
 // and pg-boss in test/integration/app-api/activity.test.ts.
 //
-// - scrubText: error text from Orca, OpenSCAD or the inbox is shown as the
-//   app stores it, with any file system path, address, host name or token
-//   taken out first.
+// - scrubText, which cleans error text from Orca, OpenSCAD or the inbox
+//   before it is shown, is shared with the model page and the API and is
+//   tested in test/scrub.test.ts.
 // - scheduleText: the maintenance schedules in plain words.
 // - queueRows: pg-boss's live counts grouped into the page's rows, the
 //   slicer queue split by job kind.
@@ -14,10 +14,6 @@
 // - mergeEvents: newest first, capped.
 // - readInboxFailures: the inbox's failed/ folder, newest first, with each
 //   file's reason, never a path.
-//
-// Every credential-shaped value here is made by the run, never written into
-// this file.
-import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,79 +26,7 @@ import {
   queueRows,
   readInboxFailures,
   scheduleText,
-  scrubText,
 } from "../../src/app-api/activity.js";
-
-/** A random value of n base64url characters, made by the run. */
-function runValue(n: number): string {
-  return randomBytes(n).toString("base64url").slice(0, n);
-}
-
-describe("scrubText", () => {
-  test("keeps plain words as they are", () => {
-    expect(scrubText("The slicer could not slice this plate.")).toBe(
-      "The slicer could not slice this plate.",
-    );
-  });
-
-  test("takes out absolute POSIX paths, keeping the words around them", () => {
-    expect(
-      scrubText('ERROR: Parser error in file "/tmp/render-x1/input.scad", line 3: syntax error'),
-    ).toBe('ERROR: Parser error in file "[path]", line 3: syntax error');
-    expect(scrubText("open /var/lib/platehouse/inbox/failed/a.3mf failed")).toBe(
-      "open [path] failed",
-    );
-    expect(scrubText("/opt/orca/bin/orca-slicer exited with 139")).toBe("[path] exited with 139");
-  });
-
-  test("takes out home and Windows paths", () => {
-    expect(scrubText("see ~/projects/x.scad")).toBe("see [path]");
-    expect(scrubText("C:\\Users\\jon\\x.3mf is locked")).toBe("[path] is locked");
-  });
-
-  test("takes out URLs, signed or not", () => {
-    const signature = runValue(24);
-    expect(
-      scrubText(`GET https://bucket.example.com/models/a/b?X-Amz-Signature=${signature} failed`),
-    ).toBe("GET [address] failed");
-    expect(scrubText("connect to http://slicer:8080/v1/slice")).toBe("connect to [address]");
-  });
-
-  test("takes out IP addresses and host:port pairs", () => {
-    expect(scrubText("connect ECONNREFUSED 10.1.50.105:5432")).toBe(
-      "connect ECONNREFUSED [address]",
-    );
-    expect(scrubText("no answer from slicer:8080")).toBe("no answer from [address]");
-    expect(scrubText("db at platehouse-db:5432 refused")).toBe("db at [address] refused");
-  });
-
-  test("takes out internal host names", () => {
-    expect(scrubText("could not reach platehouse.local.jonco.dev")).toBe(
-      "could not reach [address]",
-    );
-    expect(scrubText("hades.lan is down")).toBe("[address] is down");
-  });
-
-  test("takes out tokens and credentials", () => {
-    const token = ["ph", runValue(43)].join("_");
-    expect(scrubText(`token ${token} refused`)).toBe("token [redacted] refused");
-    expect(scrubText(`Authorization: Bearer ${runValue(20)}`)).toBe(
-      "Authorization: Bearer [redacted]",
-    );
-    const key = ["pass", "word"].join("");
-    expect(scrubText(`${key}=${runValue(12)} rejected`)).toBe(`${key}=[redacted] rejected`);
-  });
-
-  test("leaves a fraction, a ratio and a time alone", () => {
-    expect(scrubText("plate 1/2 at 12:30, ratio 3:4")).toBe("plate 1/2 at 12:30, ratio 3:4");
-  });
-
-  test("cuts very long text", () => {
-    const out = scrubText("x".repeat(5000));
-    expect(out.length).toBeLessThanOrEqual(1003);
-    expect(out.endsWith("...")).toBe(true);
-  });
-});
 
 describe("scheduleText", () => {
   test("says each schedule the app uses in plain words", () => {
