@@ -10,7 +10,10 @@
 // never touches the filesystem, so a hung network mount cannot hold a page.
 // A folder that cannot be read (missing, unreadable) offers the built-in
 // languages only; a read slower than readLimitMs keeps the languages last
-// read. Each is its own log line, said once when the folder goes bad, and
+// read (before any read has worked, the built-in languages only, said as
+// such; issue 299). A read past the limit never blocks the next one: the
+// next background read starts beside it, and a late result from an older
+// read never replaces a newer one. Each is its own log line, said once when the folder goes bad, and
 // once more when it can be read again, never once per read. Each file must
 // be named <code>.json for a locale code (es, pt-BR), be a regular file (a symlink is refused, as the inbox does),
 // be at most MAX_LOCALE_BYTES, and hold a JSON object. Its messages are
@@ -205,25 +208,63 @@ export function createLocales(options: LocalesOptions = {}): Locales {
     signature: "",
     byCode: new Map(),
   };
-  /** The read of the folder in flight; at most one at a time. */
-  let inFlight: Promise<void> | undefined;
+  /**
+   * The newest read of the folder: its promise, its number, and whether it
+   * has outlasted readLimitMs (overdue). A call joins it while it is within
+   * the limit; once it is overdue the next call (the next tick) starts a new
+   * read beside it (issue 299), so one hung read never stops the folder from
+   * being read again. At most one read is not overdue at any time.
+   */
+  let inFlight: { promise: Promise<void>; id: number; overdue: boolean } | undefined;
+  /** The number the next read gets. */
+  let nextId = 1;
+  /**
+   * The number of the newest read whose result is in use. A read that ends
+   * after a newer one has landed (a hung read that comes back late) is
+   * dropped, so an old result never replaces a newer one.
+   */
+  let applied = 0;
+  /** Whether any read of the folder has ever worked; until then only the built-in languages exist. */
+  let everRead = false;
   /**
    * The folder's bad state, logged once until it recovers: slow (a read
-   * outlasted readLimitMs, the languages last read are kept) or unreadable
-   * (the read failed, the built-in languages only are offered). A slow read
-   * that then fails is logged again, as unreadable, and a slow read that works
-   * while unreadable is logged again, as slow; nothing else is.
+   * outlasted readLimitMs, the languages last read are kept), slowFirst (the
+   * same before any read has worked, so only the built-in languages are
+   * offered) or unreadable (the read failed, the built-in languages only are
+   * offered). A slow read that then fails is logged again, as unreadable; a
+   * slow read that works while unreadable is logged again, as slow; a first
+   * read that lands late is logged once, as read at last; nothing else is.
    */
-  let bad: "slow" | "unreadable" | undefined;
+  let bad: "slow" | "slowFirst" | "unreadable" | undefined;
   let closed = false;
   let timer: ReturnType<typeof setInterval> | undefined;
 
   function goneSlow(details: Record<string, unknown>): void {
     if (bad !== undefined) return;
+    if (!everRead) {
+      // Nothing was ever read (a mount unreachable at startup): there are no
+      // languages "last read", only the built-in ones.
+      bad = "slowFirst";
+      log?.warn(
+        details,
+        "locales: nothing has been read from LOCALES_DIR yet, so only the built-in languages are offered",
+      );
+      return;
+    }
     bad = "slow";
     log?.warn(
       details,
       "locales: LOCALES_DIR is slow to read, so the languages last read from it are offered",
+    );
+  }
+
+  /** The first read that worked came after the read limit: its languages are offered now. */
+  function readAtLast(details: Record<string, unknown>): void {
+    if (bad !== "slowFirst") return;
+    bad = "slow";
+    log?.warn(
+      details,
+      "locales: LOCALES_DIR was read at last, so its languages are offered; it is still slow to read",
     );
   }
 
@@ -353,33 +394,44 @@ export function createLocales(options: LocalesOptions = {}): Locales {
   }
 
   /**
-   * One read of the folder, or the read already in flight. A read that
-   * outlasts readLimitMs puts the folder in the slow state (logged once) and
-   * is left to finish in the background: its result is still used when it
-   * lands, but only a read that finishes within the limit counts as the
-   * folder recovering, so a mount that is always slow logs once, not once
-   * per read. A folder that cannot be read offers no local languages until
-   * it can be again, and is logged as unreadable, even after a slow line; a
-   * slow read that then works is logged as slow, since its languages are
-   * offered again.
+   * One read of the folder, or the newest read while it is within the read
+   * limit. A read that outlasts readLimitMs puts the folder in the slow state
+   * (logged once; before any read has worked, as nothing read yet) and is left
+   * to finish in the background; the next call after that starts a new read
+   * beside it, so a hung read does not stop the folder from being read again.
+   * A read's result is used when it lands only if no newer read has landed
+   * first. Only a read that finishes within the limit counts as the folder
+   * recovering, so a mount that is always slow logs once, not once per read.
+   * A folder that cannot be read offers no local languages until it can be
+   * again, and is logged as unreadable, even after a slow line; a slow read
+   * that then works is logged as slow, since its languages are offered again.
    */
   function readFolder(folder: string): Promise<void> {
-    if (inFlight !== undefined) return inFlight;
+    if (inFlight !== undefined && !inFlight.overdue) return inFlight.promise;
+    const id = nextId++;
     let slow = false;
     const limit = setTimeout(() => {
       slow = true;
+      if (inFlight?.id === id) inFlight.overdue = true;
       goneSlow({ readLimitMs });
     }, readLimitMs);
     unrefTimer(limit);
-    inFlight = (async () => {
+    const promise = (async () => {
       try {
         const signature = await signatureOf(folder);
-        if (signature !== local.signature) {
-          local = { signature, byCode: await readLocal(folder) };
-        }
-        if (slow) backSlow({ readLimitMs });
-        else recovered();
+        // A newer read has landed meanwhile: this result is older, drop it.
+        if (id < applied) return;
+        const byCode = signature === local.signature ? local.byCode : await readLocal(folder);
+        if (id < applied) return;
+        applied = id;
+        local = { signature, byCode };
+        everRead = true;
+        if (!slow) recovered();
+        else if (bad === "slowFirst") readAtLast({ readLimitMs });
+        else backSlow({ readLimitMs });
       } catch (error) {
+        if (id < applied) return;
+        applied = id;
         local = { signature: "", byCode: new Map() };
         goneUnreadable({
           code: error instanceof FolderUnreadable ? error.code : (error as Error).name,
@@ -387,9 +439,10 @@ export function createLocales(options: LocalesOptions = {}): Locales {
       }
     })().finally(() => {
       clearTimeout(limit);
-      inFlight = undefined;
+      if (inFlight?.id === id) inFlight = undefined;
     });
-    return inFlight;
+    inFlight = { promise, id, overdue: false };
+    return promise;
   }
 
   /** Every language as last read: the built-in ones and LOCALES_DIR's. Never reads the filesystem. */

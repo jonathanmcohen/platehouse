@@ -29,15 +29,20 @@ import {
 /**
  * A filesystem for LOCALES_DIR that counts every call and can be held: with
  * hold set, every call waits forever, as a hung network mount does; with
- * delayMs set, every call takes that long and then answers.
+ * delayMs set, every call takes that long and then answers. With
+ * holdNextReadOf set to a file name, the next readFile of that file reads it
+ * at once but answers only when release() is called (never, if it is not),
+ * so one read of the folder hangs with what the file held when it was asked.
  */
 function testFs(): {
   fs: LocalesFs;
   calls: () => number;
-  gate: { hold: boolean; delayMs: number };
+  gate: { hold: boolean; delayMs: number; holdNextReadOf: string | undefined };
+  release: () => void;
 } {
   let calls = 0;
-  const gate = { hold: false, delayMs: 0 };
+  const gate = { hold: false, delayMs: 0, holdNextReadOf: undefined as string | undefined };
+  const released: Array<() => void> = [];
   async function through<T>(run: () => Promise<T>): Promise<T> {
     calls += 1;
     if (gate.hold) return new Promise<T>(() => {});
@@ -49,10 +54,23 @@ function testFs(): {
       stat: (path) => through(() => stat(path)),
       readdir: (path) => through(() => readdir(path)),
       lstat: (path) => through(() => lstat(path)),
-      readFile: (path, encoding) => through(() => readFile(path, encoding)),
+      readFile: (path, encoding) => {
+        if (gate.holdNextReadOf !== undefined && path.endsWith(`/${gate.holdNextReadOf}`)) {
+          gate.holdNextReadOf = undefined;
+          calls += 1;
+          const now = readFile(path, encoding);
+          return new Promise<string>((resolve, reject) => {
+            released.push(() => void now.then(resolve, reject));
+          });
+        }
+        return through(() => readFile(path, encoding));
+      },
     },
     calls: () => calls,
     gate,
+    release: () => {
+      for (const go of released.splice(0)) go();
+    },
   };
 }
 
@@ -80,6 +98,8 @@ async function started(options: LocalesOptions = {}): Promise<Locales> {
 const BAD = "locales: LOCALES_DIR cannot be read, so only the built-in languages are offered";
 const SLOW = "locales: LOCALES_DIR is slow to read, so the languages last read from it are offered";
 const GOOD = "locales: LOCALES_DIR can be read again";
+const NOT_YET =
+  "locales: nothing has been read from LOCALES_DIR yet, so only the built-in languages are offered";
 
 let dir: string;
 /** A second folder, outside LOCALES_DIR, for what a symlink points at; removed after each test. */
@@ -384,6 +404,60 @@ describe("LOCALES_DIR", () => {
     const atClose = timed.calls();
     await new Promise((r) => setTimeout(r, 50));
     expect(timed.calls()).toBe(atClose);
+  });
+
+  test("a first read that hangs says nothing has been read yet, and offers the built-in languages", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const disk = testFs();
+    disk.gate.hold = true;
+    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 20, refreshMs: 60_000 });
+    await vi.waitFor(() => expect(warnings.filter((w) => w.message === NOT_YET)).toHaveLength(1));
+    expect(warnings.filter((w) => w.message === NOT_YET)).toEqual([
+      { details: { readLimitMs: 20 }, message: NOT_YET },
+    ]);
+    // Never the "last read" line: nothing was ever read.
+    expect(warnings.filter((w) => w.message === SLOW)).toHaveLength(0);
+    expect((await locales.list()).map((l) => l.code)).not.toContain("de");
+    expect((await locales.list()).every((l) => l.source === "built-in")).toBe(true);
+  });
+
+  test("a read held forever does not stop a later tick from picking up a change", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const disk = testFs();
+    // The first read hangs on de.json and never answers.
+    disk.gate.holdNextReadOf = "de.json";
+    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 15, refreshMs: 25 });
+    expect(await locales.available()).not.toContain("de");
+    await file("it.json", { "shell.nav.library": "Libreria" });
+    const later = new Date(Date.now() + 5_000);
+    await utimes(dir, later, later);
+    // A later tick starts a new read beside the hung one, and it lands.
+    await vi.waitFor(async () => expect(await locales.available()).toContain("it"), {
+      timeout: 2_000,
+    });
+    expect(await locales.available()).toContain("de");
+  });
+
+  test("a stale read that finishes late does not replace the languages a newer read found", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const disk = testFs();
+    // The first read hangs on de.json, holding what de.json held then.
+    disk.gate.holdNextReadOf = "de.json";
+    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 15, refreshMs: 60_000 });
+    await vi.waitFor(() => expect(warnings.filter((w) => w.message === NOT_YET)).toHaveLength(1));
+    // The folder changes: de goes, it comes. A new read (the first is overdue) finds that.
+    await rm(join(dir, "de.json"));
+    await file("it.json", { "shell.nav.library": "Libreria" });
+    const later = new Date(Date.now() + 5_000);
+    await utimes(dir, later, later);
+    await locales.refresh();
+    expect(await locales.available()).toContain("it");
+    expect(await locales.available()).not.toContain("de");
+    // Now the hung read answers, late, with the old folder: it is dropped.
+    disk.release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(await locales.available()).toContain("it");
+    expect(await locales.available()).not.toContain("de");
   });
 
   test("startup waits for the first read no longer than the read limit", async () => {

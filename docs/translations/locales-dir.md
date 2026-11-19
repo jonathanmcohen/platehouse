@@ -60,6 +60,20 @@ last read that worked on offer meanwhile, and writes a different line:
 platehouse: locales: LOCALES_DIR is slow to read, so the languages last read from it are offered {"readLimitMs":5000}
 ```
 
+If the mount hangs from the start, for example a network share that is not reachable when the
+container starts, nothing has been read yet, so there are no earlier languages to keep. Platehouse
+starts anyway after 5 seconds, offers its built-in languages only, and says so instead:
+
+```
+platehouse: locales: nothing has been read from LOCALES_DIR yet, so only the built-in languages are offered {"readLimitMs":5000}
+```
+
+A read that hangs never stops the folder from being read again: once a read has taken longer than
+5 seconds, the next background read starts a new one beside it, so the folder's languages appear
+as soon as the mount answers. A hung read that answers late never replaces what a newer read found.
+If the first read that works is itself slow, the log says
+`locales: LOCALES_DIR was read at last, so its languages are offered; it is still slow to read`.
+
 If that slow read then fails, the "cannot be read" line follows it. If a folder that could not be
 read comes back but slow, its languages are offered again and the "slow to read" line follows. Nothing
 more is logged while the folder stays that way, however many times it is read. When a read works again within the limit, the log says so once:
