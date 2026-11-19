@@ -17,6 +17,7 @@ import {
   createEstimates,
   type Estimates,
   MAX_MY_PRINTERS,
+  PrinterListChanged,
   PrinterListRefused,
   SLICE_PRIORITY,
   SLICER_DOWN_DETAIL,
@@ -1230,6 +1231,36 @@ describe("My printers", () => {
       printerId: before.printerId,
       myPrinters: before.myPrinters,
     });
+  });
+
+  test("a list saved from an old read is refused, so a printer added elsewhere keeps its work", async () => {
+    await estimates.savePrinters({ printers: [P1S], defaultId: P1S });
+    const { plates } = await upload({ plates: 1 });
+    await drain();
+    const id = plateId(plates, 1);
+    const held = stub.hold();
+    try {
+      // Another window adds the X1C: its plate is queued for it.
+      await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S, expected: [P1S] });
+      const forX1C = async () =>
+        (await platehouseRows(id)).filter((r) => r.printerId === X1C).map((r) => r.id);
+      const waiting = await forX1C();
+      expect(waiting).toHaveLength(1);
+      // A window still showing [P1S] saves a list without the X1C: refused.
+      await expect(
+        estimates.savePrinters({ printers: [P1S], defaultId: P1S, expected: [P1S] }),
+      ).rejects.toBeInstanceOf(PrinterListChanged);
+      expect(await env.repos.settings.get()).toMatchObject({ myPrinters: [P1S, X1C] });
+      // Its waiting estimate was not dropped.
+      expect(await forX1C()).toEqual(waiting);
+      // Saved from the list as it is now, the removal goes through.
+      expect(
+        await estimates.savePrinters({ printers: [P1S], defaultId: P1S, expected: [P1S, X1C] }),
+      ).toEqual({ added: [], removed: [X1C] });
+    } finally {
+      held.release();
+    }
+    await drain();
   });
 
   test("a listed printer the slicer stopped offering stays in the list and is skipped", async () => {

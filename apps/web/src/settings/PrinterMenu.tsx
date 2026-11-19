@@ -39,12 +39,18 @@
 //   older read (a waiting-count poll sent before the save) never replaces it
 //   (useAppApi's reload). If the read fails, the controls stay locked, the
 //   page says why, and Read the list again unlocks them once the list is in.
+// - That covers this page only. Each save also sends the list the page last
+//   read (expected), and the server refuses it with 409 printers_changed,
+//   changing nothing, when My printers is no longer that list: a page open
+//   in another window or on another machine would otherwise drop a printer
+//   added there. The page then reads the list again and says why nothing
+//   was saved; the change is made again from the list as it now is.
 // - A listed printer the slicer no longer offers (an OrcaSlicer update
 //   renamed its preset) stays listed, and says nothing can be estimated for
 //   it. While the slicer cannot be reached the list still shows, and the
 //   add menu says why it is missing.
 import { useEffect, useId, useRef, useState } from "react";
-import { appApi, errorText } from "./api";
+import { AppApiError, appApi, errorText } from "./api";
 import { ConfirmDialog } from "./Dialog";
 import type { MyPrinterView, SettingsView } from "./SettingsPage";
 
@@ -113,6 +119,15 @@ export function waitingLine(waiting: number, through: number, perMinute: number)
     : `${head}.`;
 }
 
+/** The server refused a save: My printers are no longer the list the page sent as expected. */
+function isPrintersChanged(failure: unknown): boolean {
+  return (
+    failure instanceof AppApiError &&
+    failure.status === 409 &&
+    (failure.body as { error?: unknown } | null)?.error === "printers_changed"
+  );
+}
+
 export interface PrinterMenuProps {
   view: SettingsView;
   /**
@@ -130,9 +145,14 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const [busy, setBusy] = useState(false);
   /** A save went through but the list could not be read after it: the list on screen may be old. */
-  const [unread, setUnread] = useState(false);
+  /**
+   * The list could not be read after a save ("saved") or after a save the
+   * server refused because the list changed elsewhere ("refused"): the list
+   * on screen may be old. false while it is current.
+   */
+  const [unread, setUnread] = useState<false | "saved" | "refused">(false);
   /** Every control ignores input: a change is running, or the list on screen may be old. */
-  const locked = busy || unread;
+  const locked = busy || unread !== false;
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
   const [removing, setRemoving] = useState<MyPrinterView | null>(null);
@@ -180,16 +200,26 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
   }
 
   /**
-   * Saves a new list and default, then waits for the list read after it;
-   * resolves what the server did, or throws. When that read fails the
-   * controls stay locked (unread) rather than act on the old list.
+   * Saves a new list and default, built from the list on screen, then waits
+   * for the list read after it; resolves what the server did, or throws.
+   * When that read fails the controls stay locked (unread) rather than act
+   * on the old list. A save the server refuses because My printers changed
+   * elsewhere reads the list again before it throws, so the next change is
+   * made from the list as it is.
    */
   async function save(printers: string[], defaultId: string): Promise<SavedPrinters> {
-    const saved = await appApi<SavedPrinters>("PUT", "/settings/printers", {
-      printers,
-      defaultId,
-    });
-    if (!(await reload())) setUnread(true);
+    let saved: SavedPrinters;
+    try {
+      saved = await appApi<SavedPrinters>("PUT", "/settings/printers", {
+        printers,
+        defaultId,
+        expected: listed,
+      });
+    } catch (failure) {
+      if (isPrintersChanged(failure) && !(await reload())) setUnread("refused");
+      throw failure;
+    }
+    if (!(await reload())) setUnread("saved");
     return saved;
   }
 
@@ -388,11 +418,12 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
         </>
       )}
       <p role="status">{status}</p>
-      {unread ? (
+      {unread === false ? null : (
         <div role="alert" className="studio-alert studio-alert-alert">
           <p>
-            The change was saved, but the list could not be read again, so the buttons wait until it
-            is.
+            {unread === "saved"
+              ? "The change was saved, but the list could not be read again, so the buttons wait until it is."
+              : "Nothing was saved, and the list could not be read again, so the buttons wait until it is."}
           </p>
           <button
             type="button"
@@ -403,7 +434,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
             Read the list again
           </button>
         </div>
-      ) : null}
+      )}
       {error === undefined ? null : (
         <p role="alert" className="studio-alert studio-alert-alert">
           {error}

@@ -6,9 +6,12 @@
 //
 //   GET /app/api/settings           SettingsView: the default printer, My
 //                                   printers, the menu, bucketVersioning
-//   PUT /app/api/settings/printers  {printers, defaultId} -> 200 SavedPrinters
-//                                   | 400 refused (a sentence in message) |
-//                                   503 the slicer cannot be asked
+//   PUT /app/api/settings/printers  {printers, defaultId, expected} -> 200
+//                                   SavedPrinters | 400 refused (a sentence
+//                                   in message) | 409 printers_changed, My
+//                                   printers are no longer expected and
+//                                   nothing changed | 503 the slicer cannot
+//                                   be asked
 //
 // - The printer menu is Task 12's listPrinters (the slicer's /v1/profiles),
 //   grouped by printer model with each model's nozzle choices, in the order
@@ -20,11 +23,15 @@
 //   a new default) through the estimates service's savePrinters: an added
 //   printer has every live plate queued for it, which takes hours on a big
 //   library (SLICES_PER_MINUTE), and a removed one has its waiting work
-//   dropped. Each listed printer says how many plate estimates it still has
-//   waiting, how many slices run up to and including its last one across
-//   every printer (through: one queue, one slice at a time, so a printer
-//   behind another's work waits for it too), and whether the slicer still
-//   offers it.
+//   dropped. The page sends the list it last read as expected, and a list
+//   that is no longer the stored one is refused with 409 and changes
+//   nothing: a page open in another window, still showing the list from
+//   before a printer was added there, would otherwise remove that printer
+//   and cancel its slices. Each listed printer says how many plate
+//   estimates it still has waiting, how many slices run up to and including
+//   its last one across every printer (through: one queue, one slice at a
+//   time, so a printer behind another's work waits for it too), and whether
+//   the slicer still offers it.
 // - The library's and the model page's printer switch read their choices
 //   from those pages' own answers (app-api/library.ts printerChoices), and
 //   switching reads numbers only; nothing there starts a slice.
@@ -49,6 +56,7 @@ import { printerName } from "../estimates/display.js";
 import {
   type Estimates,
   MAX_MY_PRINTERS,
+  PrinterListChanged,
   PrinterListRefused,
   type SavedPrinters,
   UnknownPrinter,
@@ -244,9 +252,15 @@ const PRINTERS_BODY = {
   properties: {
     printers: { type: "array", items: PRINTER_ID, minItems: 1, maxItems: MAX_MY_PRINTERS },
     defaultId: PRINTER_ID,
+    /** My printers as the page last read them; never empty when stored. */
+    expected: { type: "array", items: PRINTER_ID, minItems: 1, maxItems: MAX_MY_PRINTERS },
   },
-  required: ["printers", "defaultId"],
+  required: ["printers", "defaultId", "expected"],
 } as const;
+
+/** The page's sentence for a 409 printers_changed. */
+const PRINTERS_CHANGED =
+  "My printers were changed somewhere else after this page read them, so nothing was saved. The list now shows them as they are; make the change again.";
 
 /** Registers the settings routes: GET /settings and PUT /settings/printers. */
 export async function registerSettingsApi(
@@ -278,7 +292,7 @@ export async function registerSettingsApi(
       };
     });
 
-    scope.put<{ Body: { printers: string[]; defaultId: string } }>(
+    scope.put<{ Body: { printers: string[]; defaultId: string; expected: string[] } }>(
       "/settings/printers",
       { schema: { body: PRINTERS_BODY } },
       async (request, reply) => {
@@ -289,6 +303,9 @@ export async function registerSettingsApi(
         } catch (error) {
           if (error instanceof PrinterListRefused) {
             return refuse(reply, 400, "bad_request", error.message);
+          }
+          if (error instanceof PrinterListChanged) {
+            return refuse(reply, 409, "printers_changed", PRINTERS_CHANGED);
           }
           if (error instanceof UnknownPrinter) {
             return refuse(

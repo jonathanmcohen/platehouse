@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { migrate } from "../../../src/db/migrate.js";
 import { createRepos, type Repos } from "../../../src/repos/index.js";
+import { PrinterListChanged } from "../../../src/repos/settings.js";
 import {
   sqlState,
   startTestPostgres,
@@ -449,6 +450,43 @@ describe("settings", () => {
       await repos.settings.savePrinters({ printers: [P1S], defaultId: P1S });
     }
     expect(await repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S] });
+  });
+
+  test("savePrinters with an expected list saves only while the stored list is that list", async () => {
+    const P1S = "Bambu Lab P1S 0.4 nozzle";
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    const MINI = "Bambu Lab A1 mini 0.4 nozzle";
+    try {
+      await repos.settings.savePrinters({ printers: [P1S, A1], defaultId: P1S });
+      // Saved from a read taken before A1 was added: refused, nothing changes.
+      await expect(
+        repos.settings.savePrinters({ printers: [P1S, MINI], defaultId: P1S, expected: [P1S] }),
+      ).rejects.toBeInstanceOf(PrinterListChanged);
+      // The same printers in another order are another list.
+      await expect(
+        repos.settings.savePrinters({ printers: [P1S], defaultId: P1S, expected: [A1, P1S] }),
+      ).rejects.toBeInstanceOf(PrinterListChanged);
+      expect(await repos.settings.get()).toMatchObject({ printerId: P1S, myPrinters: [P1S, A1] });
+      // Two saves from the same read, at once: one lands and the other is refused.
+      const both = await Promise.allSettled([
+        repos.settings.savePrinters({ printers: [P1S], defaultId: P1S, expected: [P1S, A1] }),
+        repos.settings.savePrinters({ printers: [A1, P1S], defaultId: A1, expected: [P1S, A1] }),
+      ]);
+      expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      const refused = both.filter((r) => r.status === "rejected");
+      expect(refused).toHaveLength(1);
+      expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(PrinterListChanged);
+      // The expected list that is stored saves.
+      const now = (await repos.settings.get()).myPrinters;
+      const saved = await repos.settings.savePrinters({
+        printers: [MINI, P1S],
+        defaultId: P1S,
+        expected: now,
+      });
+      expect(saved).toMatchObject({ printerId: P1S, myPrinters: [MINI, P1S] });
+    } finally {
+      await repos.settings.savePrinters({ printers: [P1S], defaultId: P1S });
+    }
   });
 
   test("an unknown versioning state is refused", async () => {

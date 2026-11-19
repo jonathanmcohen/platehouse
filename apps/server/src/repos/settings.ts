@@ -25,6 +25,21 @@ export interface PrintersPatch {
   printers: readonly string[];
   /** One of printers. */
   defaultId: string;
+  /**
+   * The list the caller built printers from, in order. Given, the save goes
+   * ahead only while My printers is still exactly that list, and is refused
+   * with PrinterListChanged otherwise: a list built from an older read would
+   * remove a printer added since.
+   */
+  expected?: readonly string[];
+}
+
+/** My printers are no longer the list the save was built from; nothing changed. */
+export class PrinterListChanged extends Error {
+  constructor() {
+    super("My printers changed after the list this save was built from was read");
+    this.name = "PrinterListChanged";
+  }
 }
 
 const COLUMNS = ["printerId", "lastOrcaVersion", "bucketVersioning", "updatedAt"] as const;
@@ -67,11 +82,19 @@ export function settingsRepo(db: Kysely<DB>) {
      * Replaces My printers with patch.printers, in that order, and sets the
      * default, in one transaction, and returns the new settings. A printer
      * kept from the old list keeps its added_at. A default outside the list
-     * fails at commit with 23503 and changes nothing. The caller checks that
-     * the list is not empty and names each printer once.
+     * fails at commit with 23503 and changes nothing. With patch.expected,
+     * the settings row is locked first, so two saves run one after the other,
+     * and a list that is no longer patch.expected is refused with
+     * PrinterListChanged and changes nothing. The caller checks that the list
+     * is not empty and names each printer once.
      */
     async savePrinters(patch: PrintersPatch): Promise<Settings> {
       return inTransaction(db, async (trx) => {
+        if (patch.expected !== undefined) {
+          await trx.selectFrom("settings").select("printerId").forUpdate().execute();
+          const now = (await get(trx)).myPrinters;
+          if (!sameList(now, patch.expected)) throw new PrinterListChanged();
+        }
         const keep = [...patch.printers];
         if (keep.length === 0) {
           await trx.deleteFrom("userPrinters").execute();
@@ -101,3 +124,8 @@ export function settingsRepo(db: Kysely<DB>) {
 }
 
 export type SettingsRepo = ReturnType<typeof settingsRepo>;
+
+/** The same printers in the same order. */
+export function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
