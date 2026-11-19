@@ -522,8 +522,8 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     const orca = await currentOrca();
     const plates = await repos.plates.listForFile(fileId);
     let queued = 0;
-    // Plate by plate, each plate for every printer, the default first: the
-    // default printer's numbers for a new file land first.
+    // Printer by printer: every plate of the file for the default printer,
+    // then for each other printer in list order, so the default lands first.
     for (const printer of printers) {
       for (const plate of plates) {
         if ((await enqueue(plate.id, printer, orca, SLICE_PRIORITY.waiting)).queued) queued += 1;
