@@ -195,13 +195,15 @@ describe("constants", () => {
   });
 
   test("the shell pages are the sidebar's sections and the model page, each a session-class page", () => {
-    // Task 21 adds the trash and settings pages, Task 20 the model page.
+    // Task 21 adds the trash and settings pages, Task 20 the model page, and
+    // the Activity page (Jon, 2026-11-19) comes before Settings.
     expect([...SHELL_PAGES]).toEqual([
       "/",
       "/creators",
       "/collections",
       "/tags",
       "/trash",
+      "/activity",
       "/settings",
       "/models/:id",
     ]);

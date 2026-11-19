@@ -9,8 +9,11 @@
 //   1. POST <prefix> creates an upload. Upload-Length is required and at most
 //      MAX_UPLOAD_BYTES (512 MiB), so an open length cannot dodge the cap.
 //      Upload-Metadata must carry filename, and may carry modelId (into an
-//      existing model) or batch with combine (Task 8's batch target). A
-//      refused creation (400, 413, 415) writes nothing.
+//      existing model) or batch with combine (Task 8's batch target), and
+//      duplicates: skip or allow (approved for 0.1.0 by Jon, 2026-11-19).
+//      Left out it is allow, so an API client that never sends it sees no
+//      change; the web dialog sends skip unless the user chose Import anyway.
+//      A refused creation (400, 413, 415) writes nothing.
 //   2. PATCH <prefix>/<id> appends bytes at Upload-Offset; HEAD <prefix>/<id>
 //      tells a client where to resume after a cut-off (a phone switching from
 //      the LAN to Tailscale, a backgrounded tab). One PATCH may carry the
@@ -18,7 +21,12 @@
 //   3. When the last byte lands, the upload is queued for ingest on the
 //      ingest queue (Task 8) under the upload's own id, and ingestFile runs
 //      there. GET <prefix>/<id>/result answers pending, done (modelId,
-//      fileId) or failed (a message for Jon).
+//      fileId, and duplicates: the live files that already held the same
+//      bytes, empty when none did) or failed (a message for Jon; a duplicate
+//      refused under skip adds code "duplicate" and the duplicates it
+//      matched, so a client can link to the model or send it again with
+//      allow). A refused duplicate is an IngestError, so HEAD answers it 410
+//      like any other refusal: nothing was saved.
 //   4. The worker deletes the temp file after ingest, whether it succeeds or
 //      fails (ingestUpload), and keeps the upload's info file for the sweep
 //      with the ingest's outcome written into it. A client whose last PATCH
@@ -73,6 +81,8 @@ import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import { kindFromName } from "../ingest/detect.js";
 import {
+  type DuplicateMatch,
+  type DuplicatePolicy,
   IngestError,
   type IngestInput,
   type IngestResult,
@@ -136,8 +146,9 @@ export type AuthHook = (request: FastifyRequest, reply: FastifyReply) => Promise
 /** What GET <prefix>/:id/result answers (Public API v1 contract). */
 export type UploadResult =
   | { status: "pending" }
-  | { status: "done"; modelId: string; fileId: string }
-  | { status: "failed"; error: string };
+  | { status: "done"; modelId: string; fileId: string; duplicates: DuplicateMatch[] }
+  | { status: "failed"; error: string }
+  | { status: "failed"; error: string; code: "duplicate"; duplicates: DuplicateMatch[] };
 
 /** The ingest queue as the uploads see it. */
 export interface UploadQueue {
@@ -186,6 +197,22 @@ function hasControlCharacter(text: string): boolean {
 export function parseUploadMetadata(metadata: Record<string, string | null> | undefined): {
   originalName: string;
   target: IngestTarget;
+  duplicates: DuplicatePolicy;
+} {
+  return { ...parseTarget(metadata), duplicates: parseDuplicates(metadata) };
+}
+
+/** The duplicates key: skip or allow, allow when it is left out. */
+function parseDuplicates(metadata: Record<string, string | null> | undefined): DuplicatePolicy {
+  if (metadata === undefined || !Object.hasOwn(metadata, "duplicates")) return "allow";
+  const value = metadata.duplicates;
+  if (value === "skip" || value === "allow") return value;
+  throw new UploadRefused(400, "duplicates must be skip or allow");
+}
+
+function parseTarget(metadata: Record<string, string | null> | undefined): {
+  originalName: string;
+  target: IngestTarget;
 } {
   const name = metadata?.filename;
   if (typeof name !== "string" || name.trim() === "") {
@@ -229,6 +256,29 @@ export function parseUploadMetadata(metadata: Record<string, string | null> | un
   return { originalName: name, target: "new" };
 }
 
+/** The entries of a stored duplicates list that are a file and its model; anything else is dropped. */
+function duplicateList(value: unknown): DuplicateMatch[] {
+  if (!Array.isArray(value)) return [];
+  const out: DuplicateMatch[] = [];
+  for (const item of value) {
+    const m = item as Record<string, unknown> | null;
+    if (
+      typeof m?.modelId === "string" &&
+      typeof m.modelName === "string" &&
+      typeof m.fileId === "string" &&
+      typeof m.fileName === "string"
+    ) {
+      out.push({
+        modelId: m.modelId,
+        modelName: m.modelName,
+        fileId: m.fileId,
+        fileName: m.fileName,
+      });
+    }
+  }
+  return out;
+}
+
 /** How the ingest queue (pg-boss) reports an upload's ingest. */
 export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): UploadQueue {
   return {
@@ -249,7 +299,13 @@ export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): Uplo
           const modelId = output?.modelId;
           const fileId = output?.fileId;
           if (typeof modelId === "string" && typeof fileId === "string") {
-            return { status: "done", modelId, fileId };
+            // A job stored before duplicates were reported has none.
+            return {
+              status: "done",
+              modelId,
+              fileId,
+              duplicates: duplicateList(output?.duplicates),
+            };
           }
           return { status: "failed", error: UPLOAD_FAILED_MESSAGE };
         }
@@ -258,6 +314,10 @@ export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): Uplo
           // (a database error, a stack) stays in the job and the logs.
           const message = output?.message;
           if (output?.name === "IngestError" && typeof message === "string") {
+            const duplicates = duplicateList(output.duplicates);
+            if (output.code === "duplicate" && duplicates.length > 0) {
+              return { status: "failed", error: message, code: "duplicate", duplicates };
+            }
             return { status: "failed", error: message };
           }
           return { status: "failed", error: UPLOAD_FAILED_MESSAGE };
@@ -623,12 +683,13 @@ export async function registerTus(
       return {};
     },
     onUploadFinish: async (_req, upload: Upload) => {
-      const { originalName, target } = parseUploadMetadata(upload.metadata);
+      const { originalName, target, duplicates } = parseUploadMetadata(upload.metadata);
       try {
         await uploads.queue.enqueue(upload.id, {
           tmpPath: join(uploads.dir, upload.id),
           originalName,
           target,
+          duplicates,
         });
       } catch {
         // Nothing will ingest it, so it is removed now rather than left for

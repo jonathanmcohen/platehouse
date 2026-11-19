@@ -27,6 +27,7 @@ import { type ReactNode, StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
 import "./styles/studio.css";
+import { ActivityPage } from "./activity/ActivityPage";
 import { CollectionsPage } from "./collections/CollectionsPage";
 import { CreatorsPage } from "./creators/CreatorsPage";
 import { LibraryPage } from "./library/LibraryPage";
@@ -60,6 +61,7 @@ const PAGES: Readonly<Record<string, ReactNode>> = {
   "/collections": <CollectionsPage />,
   "/tags": <TagsPage />,
   "/trash": <TrashPage />,
+  "/activity": <ActivityPage />,
   "/settings": <SettingsPage />,
 };
 

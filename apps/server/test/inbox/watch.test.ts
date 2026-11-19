@@ -72,6 +72,8 @@ import {
   UNREMOVED_REASON,
 } from "../../src/inbox/watch.js";
 import {
+  DuplicateFile,
+  duplicateMessage,
   INGEST_FAILED_MESSAGE,
   IngestError,
   type IngestInput,
@@ -2320,6 +2322,64 @@ describe("failures", () => {
     expect(await readFile(join(inbox, FAILED_DIR, `notes.txt${REASON_SUFFIX}`), "utf8")).toBe(
       `${reason}\n`,
     );
+  });
+
+  test("a duplicate moves to failed with a reason naming the model that holds it, at once", async () => {
+    const holder = {
+      modelId: "0198f0c4-0000-7000-8000-00000000000a",
+      modelName: "Benchy",
+      fileId: "0198f0c4-0000-7000-8000-0000000000fa",
+      fileName: "Benchy.3mf",
+    };
+    const policies: Array<string | undefined> = [];
+    const fake = fakeIngest((input) => {
+      policies.push(input.duplicates);
+      throw new DuplicateFile([holder]);
+    });
+    const { probes, at } = checks(() => false);
+    const w = watcher(fake, { probes });
+    await writeFile(join(inbox, "Benchy (2).stl"), "solid copy\nendsolid copy\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    // The inbox always asks ingest to skip a duplicate.
+    expect(policies).toEqual(["skip"]);
+    const reason = `${duplicateMessage([holder])}.`;
+    expect(reason).toContain('"Benchy"');
+    expect(reason).toContain(holder.modelId);
+    expect(pass.imported).toEqual([]);
+    expect(pass.failed).toEqual([{ name: "Benchy (2).stl", reason }]);
+    expect(await readFile(join(inbox, FAILED_DIR, "Benchy (2).stl"), "utf8")).toBe(
+      "solid copy\nendsolid copy\n",
+    );
+    expect(await readFile(join(inbox, FAILED_DIR, `Benchy (2).stl${REASON_SUFFIX}`), "utf8")).toBe(
+      `${reason}\n`,
+    );
+    expect(await exists(join(inbox, "Benchy (2).stl"))).toBe(false);
+    // A duplicate is the file's own fault: no environment check, no strikes.
+    expect(at).toEqual([]);
+    expect(fake.calls).toEqual(["Benchy (2).stl"]);
+  });
+
+  test("a duplicate is moved only while its name still holds the file ingest read", async () => {
+    const holder = {
+      modelId: "0198f0c4-0000-7000-8000-00000000000a",
+      modelName: "Benchy",
+      fileId: "0198f0c4-0000-7000-8000-0000000000fa",
+      fileName: "Benchy.3mf",
+    };
+    const path = join(inbox, "copy.stl");
+    const fake = fakeIngest(async () => {
+      // A new copy is put under the name while ingest runs.
+      await writeFile(path, "solid newer\nendsolid newer\n");
+      throw new DuplicateFile([holder]);
+    });
+    const w = watcher(fake);
+    await writeFile(path, "solid copy\nendsolid copy\n");
+    await w.pollOnce();
+    const pass = await tick(w, 15_000);
+    expect(pass.failed).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe("solid newer\nendsolid newer\n");
+    expect(await exists(join(inbox, FAILED_DIR, "copy.stl"))).toBe(false);
   });
 
   test("a refused file goes to failed at once, without checking the environment", async () => {
