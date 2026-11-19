@@ -60,8 +60,9 @@ last read that worked on offer meanwhile, and writes a different line:
 platehouse: locales: LOCALES_DIR is slow to read, so the languages last read from it are offered {"readLimitMs":5000}
 ```
 
-If that slow read then fails, the "cannot be read" line follows it. Nothing more is logged while the
-folder stays that way, however many times it is read. When a read works again within the limit, the log says so once:
+If that slow read then fails, the "cannot be read" line follows it. If a folder that could not be
+read comes back but slow, its languages are offered again and the "slow to read" line follows. Nothing
+more is logged while the folder stays that way, however many times it is read. When a read works again within the limit, the log says so once:
 `locales: LOCALES_DIR can be read again`.
 
 ## Fixing words in a built-in language

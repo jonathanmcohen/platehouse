@@ -211,7 +211,8 @@ export function createLocales(options: LocalesOptions = {}): Locales {
    * The folder's bad state, logged once until it recovers: slow (a read
    * outlasted readLimitMs, the languages last read are kept) or unreadable
    * (the read failed, the built-in languages only are offered). A slow read
-   * that then fails is logged again, as unreadable; nothing else is.
+   * that then fails is logged again, as unreadable, and a slow read that works
+   * while unreadable is logged again, as slow; nothing else is.
    */
   let bad: "slow" | "unreadable" | undefined;
   let closed = false;
@@ -233,6 +234,13 @@ export function createLocales(options: LocalesOptions = {}): Locales {
       details,
       "locales: LOCALES_DIR cannot be read, so only the built-in languages are offered",
     );
+  }
+
+  /** A slow read worked while the folder was unreadable: its languages are offered again. */
+  function backSlow(details: Record<string, unknown>): void {
+    if (bad !== "unreadable") return;
+    bad = undefined;
+    goneSlow(details);
   }
 
   function recovered(): void {
@@ -351,7 +359,9 @@ export function createLocales(options: LocalesOptions = {}): Locales {
    * lands, but only a read that finishes within the limit counts as the
    * folder recovering, so a mount that is always slow logs once, not once
    * per read. A folder that cannot be read offers no local languages until
-   * it can be again, and is logged as unreadable, even after a slow line.
+   * it can be again, and is logged as unreadable, even after a slow line; a
+   * slow read that then works is logged as slow, since its languages are
+   * offered again.
    */
   function readFolder(folder: string): Promise<void> {
     if (inFlight !== undefined) return inFlight;
@@ -367,7 +377,8 @@ export function createLocales(options: LocalesOptions = {}): Locales {
         if (signature !== local.signature) {
           local = { signature, byCode: await readLocal(folder) };
         }
-        if (!slow) recovered();
+        if (slow) backSlow({ readLimitMs });
+        else recovered();
       } catch (error) {
         local = { signature: "", byCode: new Map() };
         goneUnreadable({

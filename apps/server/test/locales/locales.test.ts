@@ -329,6 +329,29 @@ describe("LOCALES_DIR", () => {
     expect(warnings.filter((w) => w.message === BAD)).toHaveLength(1);
   });
 
+  test("a folder that comes back slow after it could not be read says its languages are offered again", async () => {
+    const missing = join(dir, "nowhere");
+    const disk = testFs();
+    const locales = await started({ dir: missing, log, fs: disk.fs, readLimitMs: 15 });
+    const said = (message: string) => warnings.filter((w) => w.message === message);
+    expect(said(BAD)).toEqual([{ details: { code: "ENOENT" }, message: BAD }]);
+    // The mount comes back, but slow: its languages are offered, and the log says so.
+    await mkdir(missing);
+    await writeFile(join(missing, "de.json"), JSON.stringify({ "shell.nav.library": "B" }));
+    disk.gate.delayMs = 40;
+    await locales.refresh();
+    expect(await locales.available()).toContain("de");
+    expect(said(SLOW)).toEqual([{ details: { readLimitMs: 15 }, message: SLOW }]);
+    expect(said(BAD)).toHaveLength(1);
+    expect(said(GOOD)).toHaveLength(0);
+    // Still slow: nothing more. Quick again: said once.
+    await locales.refresh();
+    expect(said(SLOW)).toHaveLength(1);
+    disk.gate.delayMs = 0;
+    await locales.refresh();
+    expect(said(GOOD)).toEqual([{ details: {}, message: GOOD }]);
+  });
+
   test("a change is picked up by the background read on its timer", async () => {
     const locales = await started({ dir, log, refreshMs: 25 });
     expect(await locales.available()).not.toContain("it");
