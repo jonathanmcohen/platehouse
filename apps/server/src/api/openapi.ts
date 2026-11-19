@@ -331,9 +331,36 @@ const UPLOAD_ID_PARAM = {
   required: ["id"],
 };
 
+// What an upload's address answers once the upload is over, said once here
+// so HEAD and PATCH agree (issues #276, #277), and docs/api.md's upload
+// status table repeats these words exactly (test/api/openapi.test.ts):
+// - the hourly sweep deletes an upload untouched for 24 hours, and an
+//   ingested upload's kept info file 24 hours after the ingest, data and
+//   info file both, so the address then answers 404, never 410;
+// - a finish whose import cannot be queued removes the upload too (404 after);
+// - HEAD answers 410 only after an import that failed with nothing saved (an
+//   imported upload answers 200, finished); PATCH answers 410 after any
+//   import, since its store sees the data file gone either way.
+const UPLOAD_404 =
+  "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 " +
+  "hours after its import), or it was removed because its import could not be queued";
+const RESEND_UNLESS_FILE =
+  "send the file again as a new upload, unless that reason is about the file itself (an " +
+  "unsupported type, or a duplicate under duplicates skip)";
+const HEAD_410 =
+  "The import failed and nothing was saved. GET /uploads/{id}/result says why; " +
+  RESEND_UNLESS_FILE;
+const PATCH_410 =
+  "The upload is over: it was imported, or its import failed with nothing saved. GET " +
+  `/uploads/{id}/result says which; if it failed, ${RESEND_UNLESS_FILE}`;
+const QUEUE_FAILED =
+  "the last byte arrived but the import could not be queued: nothing was saved and the " +
+  "upload was removed, so send the file again as a new upload";
+
 const TUS_412 = text("The Tus-Resumable header is missing", "Tus-Resumable Required\n");
 const TUS_500 = text(
-  "Something unexpected went wrong while handling the bytes. Resume with HEAD.",
+  "Something unexpected went wrong while handling the bytes. If the upload has an address, " +
+    "ask HEAD where to carry on; if not, start again.",
   "Something went wrong with that request\n",
 );
 const UNAUTHORIZED_RESPONSE = {
@@ -440,9 +467,9 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       ),
       503: {
         description:
-          "The model named by modelId could not be checked (the database is unreachable, " +
-          "JSON), the token could not be checked (JSON), or a creation that carried the " +
-          "whole file could not be queued for import (text; nothing was saved). Try again.",
+          "JSON: the model named by modelId, or the token, could not be checked (the " +
+          "database is unreachable); try again. Text: a creation that carried the whole " +
+          `file, where ${QUEUE_FAILED}`,
         content: {
           "application/json": { schema: ERROR_DOC, example: { error: "unavailable" } },
           "text/plain": {
@@ -459,7 +486,9 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. " +
       "Use it after a cut-off, such as a network change. Once the file has been imported, " +
       "Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed " +
-      "with nothing saved, the answer is 410 and the file can be sent again from the start.",
+      "with nothing saved, the answer is 410, and GET /uploads/{id}/result says why. An " +
+      "upload removed by the 24-hour sweep, or because its import could not be queued, is " +
+      "404.",
     tags: ["Uploads"],
     operationId: "resumeUpload",
     headers: {
@@ -482,11 +511,8 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         headers: UNAUTHORIZED_DOC.headers,
         type: "null",
       },
-      404: { description: "No such upload", type: "null" },
-      410: {
-        description: "The upload is gone and nothing was saved; send the file again",
-        type: "null",
-      },
+      404: { description: UPLOAD_404, type: "null" },
+      410: { description: HEAD_410, type: "null" },
       412: { description: "The Tus-Resumable header is missing", type: "null" },
       500: { description: "Something unexpected went wrong", type: "null" },
       503: { description: UNAVAILABLE_DOC.description, type: "null" },
@@ -544,22 +570,19 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         "Upload-Offset or the Content-Type application/offset+octet-stream is missing",
         "Content-Type header required\n",
       ),
-      404: text("No such upload", "The file for this url was not found\n"),
+      404: text(UPLOAD_404, "The file for this url was not found\n"),
       409: text(
         "Upload-Offset is not the number of bytes received; ask HEAD for it",
         "Upload-Offset conflict\n",
       ),
-      410: text(
-        "The upload is gone: finished and imported, or deleted after 24 hours untouched",
-        "The file for this url no longer exists\n",
-      ),
+      410: text(PATCH_410, "The file for this url no longer exists\n"),
       412: TUS_412,
       413: text("The body runs past Upload-Length", "upload's size exceeded\n"),
       500: TUS_500,
       503: {
         description:
-          "The last byte arrived but the file could not be queued for import; nothing was " +
-          "saved, so send it again (text). Or the token could not be checked (JSON).",
+          `Text: ${QUEUE_FAILED}. JSON: the token could not be checked (the database is ` +
+          "unreachable); try again.",
         content: {
           "text/plain": {
             schema: { type: "string" },

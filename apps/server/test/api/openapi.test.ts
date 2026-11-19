@@ -15,6 +15,7 @@
 // a route or its schema changes, run `pnpm exec vitest run --project unit
 // -u apps/server/test/api/openapi.test.ts` and commit the new copy.
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -237,5 +238,71 @@ describe("the OpenAPI document", () => {
 
   test("the web app's copy is what this code generates", async () => {
     await expect(formatted(JSON.stringify(doc, null, 2))).toMatchFileSnapshot(join(ROOT, WEB_COPY));
+  });
+});
+
+/** The upload requests docs/api.md's "What each answer means" table lists, in its order. */
+const UPLOAD_OPERATIONS = [
+  ["POST", "/uploads"],
+  ["HEAD", "/uploads/{id}"],
+  ["PATCH", "/uploads/{id}"],
+  ["GET", "/uploads/{id}/result"],
+] as const;
+
+/** The rows of the markdown table under a heading: each row's cells, trimmed, backticks off. */
+function tableUnder(markdown: string, heading: string): string[][] {
+  const start = markdown.indexOf(`\n${heading}\n`);
+  expect(start, heading).toBeGreaterThan(-1);
+  const rows: string[][] = [];
+  let inTable = false;
+  for (const line of markdown.slice(start + heading.length + 2).split("\n")) {
+    if (line.startsWith("#")) break;
+    if (!line.startsWith("|")) {
+      if (inTable) break;
+      continue;
+    }
+    inTable = true;
+    const cells = line
+      .slice(1, -1)
+      .split("|")
+      .map((c) => c.trim().replace(/^`|`$/g, ""));
+    if (cells.every((c) => /^-+$/.test(c))) continue;
+    rows.push(cells);
+  }
+  return rows;
+}
+
+describe("docs/api.md", () => {
+  const guide = readFileSync(join(ROOT, "docs/api.md"), "utf8");
+
+  test("its upload status table is every upload answer, in the OpenAPI document's words", () => {
+    const expected: string[][] = [["Request", "Status", "What it means"]];
+    for (const [method, path] of UPLOAD_OPERATIONS) {
+      const responses = doc.paths[path]?.[method.toLowerCase()]?.responses ?? {};
+      expect(Object.keys(responses).length, `${method} ${path}`).toBeGreaterThan(3);
+      for (const code of Object.keys(responses).sort()) {
+        expected.push([`${method} ${path}`, code, responses[code]?.description ?? ""]);
+      }
+    }
+    expect(tableUnder(guide, "### What each answer means")).toEqual(expected);
+  });
+
+  test("the reader cannot learn a wrong 410 or 404 from the table", () => {
+    // The two meanings the review found wrong (issues #275, #276): a 410 is
+    // never an expired upload, and an expired upload is a 404.
+    const rows = tableUnder(guide, "### What each answer means");
+    const meaning = (request: string, code: string) =>
+      rows.find((r) => r[0] === request && r[1] === code)?.[2] ?? "";
+    for (const request of ["HEAD /uploads/{id}", "PATCH /uploads/{id}"]) {
+      expect(meaning(request, "410"), request).not.toMatch(/24 hours|expired/i);
+      expect(meaning(request, "404"), request).toMatch(/24 hours/);
+    }
+    expect(meaning("PATCH /uploads/{id}", "503")).toMatch(/upload was removed/);
+  });
+
+  test("it no longer documents a hand-written resumable client in shell", () => {
+    expect(guide).not.toMatch(/platehouse-upload\.sh|give_up|CHUNK=/);
+    expect(guide).toMatch(/tus-js-client/);
+    expect(guide).toMatch(/tuspy/);
   });
 });

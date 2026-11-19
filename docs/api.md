@@ -105,8 +105,8 @@ sentence in `message`:
 | 503    | `unavailable`  | The database or file store cannot be reached right now, or the token could not be checked. Nothing was changed; try again shortly.                       |
 
 The upload routes follow the tus protocol, and tus's own errors answer plain text rather than
-JSON, for example `409` with `Upload-Offset conflict`. Each upload operation in the reference
-lists its answers.
+JSON, for example `409` with `Upload-Offset conflict`.
+[What each answer means](#what-each-answer-means) lists every answer of the upload requests.
 
 Two answers come from the server itself rather than from an API operation, and use its own
 shape: a path under `/api/v1` that the API does not have answers `404` with
@@ -139,7 +139,8 @@ is not an error: it answers `204` like any other success.
 | Tags or collections given when making a model | 100 of each                                                        |
 | One path parameter, such as an id             | 100 characters once decoded; a longer one is answered `414`        |
 | One request                                   | about 72 minutes, enough to send 512 MiB at 1 Mbit/s               |
-| An unfinished upload                          | deleted after 24 hours without a byte                              |
+| An unfinished upload                          | removed after 24 hours untouched; its address then answers `404`   |
+| A finished upload's address                   | removed 24 hours after its import; it then answers `404`           |
 | An upload's result                            | kept for 24 hours                                                  |
 
 There is no rate limit. Platehouse slices estimates and renders previews in the background one at
@@ -177,8 +178,10 @@ done
 ## Uploading files
 
 Uploads use [tus 1.0.0](https://tus.io/protocols/resumable-upload), an open protocol for uploads
-that can resume after a cut-off. A tus client library does all of this for you; tus has one for
-most languages, such as `tus-js-client` and `tuspy`. With plain HTTP it takes three steps.
+that can resume after a cut-off. A [tus client](#resumable-and-chunked-uploads-use-a-tus-client)
+does all of this for you. With plain HTTP it takes three steps, and the first two can be one
+request: `POST /uploads` can carry the whole file as its body, with
+`Content-Type: application/offset+octet-stream`, as the [example](#upload-a-file) does.
 
 1. **Start the upload.** `POST /uploads` with the file's size in `Upload-Length` and its name in
    `Upload-Metadata`. The answer is `201` with the upload's address in `Location`, such as
@@ -230,20 +233,149 @@ that has it, or send the file again with `allow`:
 
 `duplicates` lists at most 10 files, oldest first. Any other failure has no `code`.
 
-### Large files and chunking
+### Resumable and chunked uploads: use a tus client
 
-One `PATCH` can carry the whole file, up to 512 MiB, and that is the simplest way to send one.
-On a link that may drop, send it in chunks instead: each `PATCH` carries the next part of the
-file, starting at the offset the last one ended at. If a request is cut off, ask where to carry
-on with `HEAD <address>`, whose `Upload-Offset` header is the number of bytes Platehouse has, and
-send the rest from there. Nothing is imported until the last byte has arrived.
+The [single-request example](#upload-a-file) below sends the whole file in the request that
+creates the upload. That is all most scripts need. If a cut-off should resume rather than start
+again, for a big file or a link that drops, use a tus client rather than writing the protocol by
+hand. It sends the file in chunks, asks `HEAD` where to carry on after a cut-off, and retries for
+you. Point it at the endpoint and give it the token header and the metadata; the client encodes
+the metadata in base64 itself.
 
-Chunks can be any size. A few MiB each is a good balance between the number of requests and how
-much a cut-off costs. The [upload script](#upload-a-file) below does all of this.
+| What                    | Value                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| Endpoint                | `https://platehouse.example.com/api/v1/uploads`                                 |
+| Header on every request | `Authorization: Bearer <token>` (the client adds `Tus-Resumable: 1.0.0`)        |
+| Metadata                | `filename` (required), and `modelId`, `batch`, `combine`, `duplicates` as above |
+| Size                    | at most 536870912 bytes (512 MiB)                                               |
+| When it is done         | `GET <upload address>/result` for the model and file                            |
 
-After the import, `HEAD` answers with `Upload-Offset` equal to `Upload-Length`, so a client that
-retries never sends the file twice. If the import failed with nothing saved, `HEAD` answers `410`
-and the file can be sent again from the start.
+**JavaScript**, with [tus-js-client](https://github.com/tus/tus-js-client)
+(`npm install tus-js-client`), in Node 18 or later:
+
+```js
+// upload.mjs: node upload.mjs cable-clip.3mf
+import { createReadStream, statSync } from "node:fs";
+import { basename } from "node:path";
+import { Upload } from "tus-js-client";
+
+const path = process.argv[2];
+const headers = { Authorization: `Bearer ${process.env.PLATEHOUSE_TOKEN}` };
+
+const upload = new Upload(createReadStream(path), {
+  endpoint: `${process.env.PLATEHOUSE}/api/v1/uploads`,
+  headers,
+  metadata: { filename: basename(path) },
+  uploadSize: statSync(path).size,
+  chunkSize: 8 * 1024 * 1024,
+  retryDelays: [0, 3000, 10000, 30000, 60000],
+  removeFingerprintOnSuccess: true,
+  onError(error) {
+    console.error(`Upload failed: ${error.message}`);
+    process.exitCode = 1;
+  },
+  async onSuccess() {
+    // upload.url is the upload's address; its result says what became of it.
+    for (;;) {
+      const result = await (await fetch(`${upload.url}/result`, { headers })).json();
+      if (result.status !== "pending") {
+        console.log(result);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  },
+});
+upload.start();
+```
+
+**Python**, with [tuspy](https://github.com/tus/tus-py-client) (`pip install tuspy`):
+
+```python
+# upload.py: python3 upload.py cable-clip.3mf
+import json
+import os
+import sys
+import time
+import urllib.request
+
+from tusclient import client
+
+path = sys.argv[1]
+headers = {"Authorization": "Bearer " + os.environ["PLATEHOUSE_TOKEN"]}
+
+tus = client.TusClient(os.environ["PLATEHOUSE"] + "/api/v1/uploads", headers=headers)
+uploader = tus.uploader(
+    path,
+    chunk_size=8 * 1024 * 1024,
+    metadata={"filename": os.path.basename(path)},
+    retries=5,
+    retry_delay=10,
+)
+uploader.upload()
+
+# uploader.url is the upload's address; its result says what became of it.
+while True:
+    request = urllib.request.Request(uploader.url + "/result", headers=headers)
+    result = json.load(urllib.request.urlopen(request))
+    if result["status"] != "pending":
+        print(result)
+        break
+    time.sleep(2)
+```
+
+Both examples were checked with tus-js-client 4.3.1 and tuspy 1.1.0. Each sent a 20 MiB file
+in 8 MiB chunks, resumed from the right offset after a dropped connection and after a `502`,
+and stopped on a `401`.
+
+A browser client should keep `removeFingerprintOnSuccess: true` (or put the target, such as
+`modelId`, into its fingerprint). Otherwise the same file dropped later onto another model
+resumes the finished upload and stores nothing there.
+
+### What each answer means
+
+Every answer the upload requests can give, in the same words as the
+[OpenAPI document](#the-openapi-document) and the API reference in Settings. tus's own answers
+are plain text; Platehouse's are JSON.
+
+| Request                    | Status | What it means                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /uploads`            | 201    | Created. Location is the upload's address, /api/v1/uploads/{id}; send the bytes there. With creation-with-upload, Upload-Offset says how many bytes were taken.                                                                                                                                                                                                                                                                                      |
+| `POST /uploads`            | 400    | Upload-Length is missing, or Upload-Metadata is malformed, has no filename, has a duplicates other than skip or allow, or breaks a rule above. The body says which.                                                                                                                                                                                                                                                                                  |
+| `POST /uploads`            | 401    | No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.                                                                                                                                                                                                                                                                                                            |
+| `POST /uploads`            | 404    | modelId names no live model: unknown, or in the trash                                                                                                                                                                                                                                                                                                                                                                                                |
+| `POST /uploads`            | 412    | The Tus-Resumable header is missing                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `POST /uploads`            | 413    | Upload-Length is over 536870912 bytes                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `POST /uploads`            | 415    | The file name's extension is not one Platehouse takes                                                                                                                                                                                                                                                                                                                                                                                                |
+| `POST /uploads`            | 500    | Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.                                                                                                                                                                                                                                                                                                             |
+| `POST /uploads`            | 501    | A tus extension Platehouse does not offer: Upload-Defer-Length or Upload-Concat                                                                                                                                                                                                                                                                                                                                                                      |
+| `POST /uploads`            | 503    | JSON: the model named by modelId, or the token, could not be checked (the database is unreachable); try again. Text: a creation that carried the whole file, where the last byte arrived but the import could not be queued: nothing was saved and the upload was removed, so send the file again as a new upload                                                                                                                                    |
+| `HEAD /uploads/{id}`       | 200    | Upload-Offset and Upload-Length; no body                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `HEAD /uploads/{id}`       | 401    | No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.                                                                                                                                                                                                                                                                                                            |
+| `HEAD /uploads/{id}`       | 404    | No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued                                                                                                                                                                                                                                                                          |
+| `HEAD /uploads/{id}`       | 410    | The import failed and nothing was saved. GET /uploads/{id}/result says why; send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)                                                                                                                                                                                                                             |
+| `HEAD /uploads/{id}`       | 412    | The Tus-Resumable header is missing                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `HEAD /uploads/{id}`       | 414    | A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.                                                                                                                                                                                                                                                                                       |
+| `HEAD /uploads/{id}`       | 500    | Something unexpected went wrong                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `HEAD /uploads/{id}`       | 503    | Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.                                                                                                                                                                                                                                                                                            |
+| `PATCH /uploads/{id}`      | 204    | Taken; Upload-Offset is the new offset                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `PATCH /uploads/{id}`      | 400    | A tus header is malformed                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `PATCH /uploads/{id}`      | 401    | No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.                                                                                                                                                                                                                                                                                                            |
+| `PATCH /uploads/{id}`      | 403    | Upload-Offset or the Content-Type application/offset+octet-stream is missing                                                                                                                                                                                                                                                                                                                                                                         |
+| `PATCH /uploads/{id}`      | 404    | No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued                                                                                                                                                                                                                                                                          |
+| `PATCH /uploads/{id}`      | 409    | Upload-Offset is not the number of bytes received; ask HEAD for it                                                                                                                                                                                                                                                                                                                                                                                   |
+| `PATCH /uploads/{id}`      | 410    | The upload is over: it was imported, or its import failed with nothing saved. GET /uploads/{id}/result says which; if it failed, send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)                                                                                                                                                                        |
+| `PATCH /uploads/{id}`      | 412    | The Tus-Resumable header is missing                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `PATCH /uploads/{id}`      | 413    | The body runs past Upload-Length                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `PATCH /uploads/{id}`      | 414    | A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.                                                                                                                                                                                                                                                                                       |
+| `PATCH /uploads/{id}`      | 500    | Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.                                                                                                                                                                                                                                                                                                             |
+| `PATCH /uploads/{id}`      | 503    | Text: the last byte arrived but the import could not be queued: nothing was saved and the upload was removed, so send the file again as a new upload. JSON: the token could not be checked (the database is unreachable); try again.                                                                                                                                                                                                                 |
+| `GET /uploads/{id}/result` | 200    | The upload's state. pending while it is arriving or being imported; done with the model and file, and duplicates: the files of live models that already held the same bytes (empty when none did); or failed with a message. A duplicate refused under duplicates skip is failed with code duplicate and the duplicates it matched, so the client can point at the model or send the file again with duplicates allow. Other failures carry no code. |
+| `GET /uploads/{id}/result` | 401    | No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.                                                                                                                                                                                                                                                                                                            |
+| `GET /uploads/{id}/result` | 404    | No such upload, or its result is more than 24 hours old                                                                                                                                                                                                                                                                                                                                                                                              |
+| `GET /uploads/{id}/result` | 414    | A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.                                                                                                                                                                                                                                                                                       |
+| `GET /uploads/{id}/result` | 500    | Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.                                                                                                                                                                                                                                                                                                                                        |
+| `GET /uploads/{id}/result` | 503    | The result cannot be read right now; try again shortly                                                                                                                                                                                                                                                                                                                                                                                               |
 
 ## Downloads and slicer links
 
@@ -295,156 +427,37 @@ time, weight and filaments for the printer chosen in Settings.
 
 ### Upload a file
 
-The script below does the three upload steps, sends the file in chunks and resumes after a
-cut-off. Save it as `platehouse-upload.sh` and run it with `sh`. It is a script rather than
-lines to paste because it ends with `exit` when it stops, which would close your terminal if
-the lines ran there. It is written for POSIX `sh` (dash, ash, ksh, or bash and zsh run as `sh`)
-and needs `curl`, `base64`, `tail`, `head` and `mktemp`.
+This sends the whole file in the request that creates the upload (tus creation-with-upload),
+then asks what became of it. It prints the status of the first request, which is `201` when the
+file arrived; any other status means it did not, and
+[What each answer means](#what-each-answer-means) says why. For a big file or a link that drops,
+use a [tus client](#resumable-and-chunked-uploads-use-a-tus-client) instead, which resumes after a
+cut-off.
 
 ```sh
-#!/bin/sh
-# platehouse-upload.sh: upload one file to Platehouse with the tus protocol.
-# Written for POSIX sh (dash, ash, ksh, or bash and zsh run as sh); it needs
-# curl, base64, tail, head and mktemp.
-#
-#   sh platehouse-upload.sh cable-clip.3mf
-#
-# PLATEHOUSE and PLATEHOUSE_TOKEN come from the environment. Set MODEL_ID to
-# add the file to that model instead of making a new one, and CHUNK to
-# change how many bytes each request sends (8 MiB by default; set it to the
-# file's size to send the whole file in one request).
-set -eu
+FILE=cable-clip.3mf
+SIZE=$(wc -c < "$FILE" | tr -d ' ')
+NAME=$(printf '%s' "$FILE" | base64 | tr -d '\n')
 
-FILE=${1:?usage: sh platehouse-upload.sh FILE}
-CHUNK=${CHUNK:-8388608}
-TRIES=60
-SIZE=$(wc -c <"$FILE" | tr -d ' ')
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-FAILED=0
+# 1. Create the upload with the whole file as its body; no -L, so a redirect is reported.
+STATUS=$(curl -sS -o /dev/null -D headers.txt -w '%{http_code}' -X POST "$PLATEHOUSE/api/v1/uploads" \
+  -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
+  -H "Tus-Resumable: 1.0.0" \
+  -H "Upload-Length: $SIZE" \
+  -H "Upload-Metadata: filename $NAME" \
+  -H "Content-Type: application/offset+octet-stream" \
+  --data-binary @"$FILE")
+echo "HTTP $STATUS"
 
-# The last header block's status line and Location (a 100 Continue comes first).
-status_line() { tr -d '\r' <"$TMP/headers" | awk '/^HTTP\// { line = $0 } END { print line }'; }
-header() { tr -d '\r' <"$TMP/headers" | awk -v name="$1:" 'tolower($1) == name { value = $2 } END { print value }'; }
-
-# Stops the script with the answer that will not get better by asking again.
-# (Not named stop: ksh has a stop alias for kill -s STOP.)
-give_up() {
-  echo "Stopping: $(status_line)" >&2
-  location=$(header location)
-  if [ -n "$location" ]; then echo "Location: $location" >&2; fi
-  case $STATUS in
-    3??) echo "Hint: a redirect. Use the https:// address in PLATEHOUSE, or a proxy is redirecting API calls (to a login page?) and must let /api/v1/ through." >&2 ;;
-    413) echo "Hint: a proxy in front of Platehouse refused the body size. Raise its limit (for nginx, client_max_body_size) or set CHUNK smaller." >&2 ;;
-    410) echo "Hint: the upload expired, or its import already failed. If it failed, GET ${UPLOAD:-<upload address>}/result says why; sending the same file again would fail the same way." >&2 ;;
-  esac
-  exit 1
-}
-
-# call EXPECTED METHOD URL [curl options]: one request, with the answer's
-# headers in $TMP/headers, its body in $TMP/body and its status in STATUS.
-# Returns 0 on the EXPECTED status. On no answer, 409 or a 5xx it waits 5
-# seconds and returns 1, so the caller asks again (a PATCH asks HEAD for the
-# offset first); after TRIES of those with no progress between them it
-# stops. Anything else stops. Progress is the expected answer to anything but
-# HEAD: a HEAD only reads the offset, so one that answers between two failed
-# PATCHes does not reset the count.
-call() {
-  expected=$1 method=$2 url=$3
-  shift 3
-  if [ "$method" = HEAD ]; then verb=--head; else verb="-X $method"; fi
-  : >"$TMP/headers"
-  : >"$TMP/body"
-  # No -L: a redirect is reported, not followed. $verb is split on purpose.
-  # shellcheck disable=SC2086
-  if STATUS=$(curl -sS $verb -o "$TMP/body" -D "$TMP/headers" -w '%{http_code}' "$url" \
-    -H "Authorization: Bearer $PLATEHOUSE_TOKEN" -H "Tus-Resumable: 1.0.0" "$@"); then
-    :
-  elif [ "$STATUS" = "$expected" ]; then
-    STATUS=000 # the answer started but was cut off: treat it as no answer
-  fi
-  # Only a 100 Continue before the connection dropped is not an answer either.
-  case ${STATUS:-000} in 1??) STATUS=000 ;; esac
-  case ${STATUS:-000} in
-    "$expected")
-      if [ "$method" != HEAD ]; then FAILED=0; fi
-      return 0
-      ;;
-    000 | 409 | 5??) ;;
-    *) give_up ;;
-  esac
-  FAILED=$((FAILED + 1))
-  if [ "${STATUS:-000}" = 000 ]; then why="no answer"; else why=$STATUS; fi
-  if [ "$FAILED" -gt "$TRIES" ]; then echo "Stopping: $why after $TRIES retries with no progress." >&2; exit 1; fi
-  echo "retrying after $why ($FAILED/$TRIES)" >&2
-  sleep 5
-  return 1
-}
-
-# 1. Start the upload; its address is the answer's Location.
-METADATA="filename $(printf '%s' "${FILE##*/}" | base64 | tr -d '\n')"
-if [ -n "${MODEL_ID:-}" ]; then
-  METADATA="$METADATA,modelId $(printf '%s' "$MODEL_ID" | base64 | tr -d '\n')"
+# 2. When it was 201, ask what became of it; run this again while it says pending.
+if [ "$STATUS" = 201 ]; then
+  LOCATION=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "location:" { print $2 }')
+  curl -sS "$PLATEHOUSE$LOCATION/result" -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
 fi
-until call 201 POST "$PLATEHOUSE/api/v1/uploads" \
-  -H "Upload-Length: $SIZE" -H "Upload-Metadata: $METADATA"; do :; done
-UPLOAD="$PLATEHOUSE$(header location)"
-echo "Started: $UPLOAD" >&2
-
-# 2. Send the bytes, a chunk at a time, each from the offset Platehouse has.
-while :; do
-  call 200 HEAD "$UPLOAD" || continue
-  OFFSET=$(header upload-offset)
-  if [ -z "$OFFSET" ]; then echo "Stopping: $(status_line) with no Upload-Offset" >&2; exit 1; fi
-  [ "$OFFSET" -lt "$SIZE" ] || break
-  tail -c +"$((OFFSET + 1))" "$FILE" | head -c "$CHUNK" >"$TMP/chunk"
-  call 204 PATCH "$UPLOAD" -H "Upload-Offset: $OFFSET" \
-    -H "Content-Type: application/offset+octet-stream" --data-binary @"$TMP/chunk" || continue
-  OFFSET=$(header upload-offset)
-  echo "Sent $OFFSET of $SIZE bytes" >&2
-  # The last byte is in: read the result now, not HEAD first. Once an import
-  # has failed with nothing saved, HEAD answers 410, which would hide why.
-  if [ "$OFFSET" = "$SIZE" ]; then break; fi
-done
-
-# 3. Wait for the import and print its result.
-while :; do
-  call 200 GET "$UPLOAD/result" || continue
-  case $(cat "$TMP/body") in
-    *'"status":"pending"'*) sleep 2 ;;
-    *'"status":"done"'*) cat "$TMP/body"; echo; exit 0 ;;
-    *) cat "$TMP/body"; echo; exit 1 ;;
-  esac
-done
 ```
 
-Run it with the two variables from [Tokens](#tokens) exported:
-
-```sh
-sh platehouse-upload.sh cable-clip.3mf
-```
-
-Every request goes through `call`, which reads the answer's status and does one of three
-things:
-
-| Answer                                                                        | What the script does                                                                                                                                                                                                                                                                                                           |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The one it wants: 201 to start, 200 to HEAD, 204 to PATCH, 200 for the result | Carries on.                                                                                                                                                                                                                                                                                                                    |
-| No answer, `409` or a `5xx`                                                   | Prints `retrying after 502 (1/60)` (or `no answer`), waits 5 seconds and asks again; a failed PATCH asks HEAD for the offset first. It stops after 60 of these with no progress between them. A HEAD that answers is not progress, so a PATCH that keeps failing still stops.                                                  |
-| Anything else                                                                 | Stops and prints the status line and any `Location`: a redirect, `401`, `403`, `404`, `410`, `412`, `413`, `415`. A redirect and a `413` get a hint, below. A `410` means the upload expired, or its import failed after the last PATCH's answer was lost; the script then prints the result's address, whose answer says why. |
-
-Two of those usually come from a proxy in front of Platehouse rather than from Platehouse:
-
-- **A redirect** (`301`, `302`, `307`, `308`): `PLATEHOUSE` starts with `http://` and the proxy
-  sends it to `https://`, so use the `https://` address; or the proxy sends API calls to a login
-  page, so let `/api/v1/` through without one (see
-  [Running Platehouse behind a proxy](#running-platehouse-behind-a-proxy)). The script never
-  follows a redirect, since a login page would answer a `200` it could mistake for success.
-- **`413`**: the proxy limits the size of a request body below the chunk size. Raise its limit
-  (for nginx, `client_max_body_size`), or set `CHUNK` smaller, for example `CHUNK=1000000`.
-
-When it is done, the script prints the result, which names the model and the file and lists any
-copies of the same file the library already held (see [Duplicates](#duplicates)):
+When the import is done, the result names the model and the file, and lists any copies of the
+same file the library already held (see [Duplicates](#duplicates)):
 
 ```json
 {
@@ -455,11 +468,11 @@ copies of the same file the library already held (see [Duplicates](#duplicates))
 }
 ```
 
-A `failed` result is printed the same way, and the script exits with 1. To add the file to a model
-you already have, give its id:
+To add the file to a model you already have, add its id, in base64, to the metadata:
 
 ```sh
-MODEL_ID=0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f sh platehouse-upload.sh cable-clip.3mf
+MODEL=$(printf '%s' 0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f | base64 | tr -d '\n')
+# then, in step 1:  -H "Upload-Metadata: filename $NAME,modelId $MODEL"
 ```
 
 ### Add a tag

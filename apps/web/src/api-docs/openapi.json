@@ -3524,7 +3524,7 @@
             }
           },
           "500": {
-            "description": "Something unexpected went wrong while handling the bytes. Resume with HEAD.",
+            "description": "Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -3546,7 +3546,7 @@
             }
           },
           "503": {
-            "description": "The model named by modelId could not be checked (the database is unreachable, JSON), the token could not be checked (JSON), or a creation that carried the whole file could not be queued for import (text; nothing was saved). Try again.",
+            "description": "JSON: the model named by modelId, or the token, could not be checked (the database is unreachable); try again. Text: a creation that carried the whole file, where the last byte arrived but the import could not be queued: nothing was saved and the upload was removed, so send the file again as a new upload",
             "content": {
               "application/json": {
                 "schema": {
@@ -3583,7 +3583,7 @@
         "operationId": "resumeUpload",
         "summary": "Where to resume an upload",
         "tags": ["Uploads"],
-        "description": "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. Use it after a cut-off, such as a network change. Once the file has been imported, Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed with nothing saved, the answer is 410 and the file can be sent again from the start.",
+        "description": "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. Use it after a cut-off, such as a network change. Once the file has been imported, Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed with nothing saved, the answer is 410, and GET /uploads/{id}/result says why. An upload removed by the 24-hour sweep, or because its import could not be queued, is 404.",
         "parameters": [
           {
             "schema": {
@@ -3638,10 +3638,10 @@
             }
           },
           "404": {
-            "description": "No such upload"
+            "description": "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued"
           },
           "410": {
-            "description": "The upload is gone and nothing was saved; send the file again"
+            "description": "The import failed and nothing was saved. GET /uploads/{id}/result says why; send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)"
           },
           "412": {
             "description": "The Tus-Resumable header is missing"
@@ -3812,7 +3812,7 @@
             }
           },
           "404": {
-            "description": "No such upload",
+            "description": "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued",
             "content": {
               "text/plain": {
                 "schema": {
@@ -3834,7 +3834,7 @@
             }
           },
           "410": {
-            "description": "The upload is gone: finished and imported, or deleted after 24 hours untouched",
+            "description": "The upload is over: it was imported, or its import failed with nothing saved. GET /uploads/{id}/result says which; if it failed, send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)",
             "content": {
               "text/plain": {
                 "schema": {
@@ -3898,7 +3898,7 @@
             }
           },
           "500": {
-            "description": "Something unexpected went wrong while handling the bytes. Resume with HEAD.",
+            "description": "Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -3909,7 +3909,7 @@
             }
           },
           "503": {
-            "description": "The last byte arrived but the file could not be queued for import; nothing was saved, so send it again (text). Or the token could not be checked (JSON).",
+            "description": "Text: the last byte arrived but the import could not be queued: nothing was saved and the upload was removed, so send the file again as a new upload. JSON: the token could not be checked (the database is unreachable); try again.",
             "content": {
               "text/plain": {
                 "schema": {
