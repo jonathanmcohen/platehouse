@@ -15,7 +15,7 @@
 // a route or its schema changes, run `pnpm exec vitest run --project unit
 // -u apps/server/test/api/openapi.test.ts` and commit the new copy.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -365,6 +365,11 @@ function tableUnder(markdown: string, heading: string): string[][] {
   return rows;
 }
 
+/** The bodies of the markdown's ```sh fenced blocks, in order. */
+function shBlocks(markdown: string): string[] {
+  return [...markdown.matchAll(/^```sh\n([\s\S]*?)^```$/gm)].map((m) => m[1] ?? "");
+}
+
 describe("docs/api.md", () => {
   const guide = readFileSync(join(ROOT, "docs/api.md"), "utf8");
 
@@ -402,6 +407,37 @@ describe("docs/api.md", () => {
     expect(limit("### Resumable and chunked uploads: use a tus client", "Size")).toBe(
       `at most ${UPLOAD_CAP}`,
     );
+  });
+
+  test("its token setup runs in any POSIX sh, dash included, and exports the token", () => {
+    // Every example depends on this block, and it is fenced as sh. dash, which
+    // is /bin/sh on Debian and Ubuntu, refuses bash's `read -s` and leaves the
+    // token empty, so every example then answers 401 (PR #235 review). POSIX
+    // read takes -r and nothing else; the hidden prompt is stty's job.
+    const setup = shBlocks(guide).find((block) => block.includes("PLATEHOUSE_TOKEN"));
+    expect(setup, "the sh block that sets PLATEHOUSE_TOKEN").toBeDefined();
+    const reads = [...(setup ?? "").matchAll(/(?:^|[;&|])\s*read\b([^;&|#\n]*)/gm)];
+    expect(reads.length).toBeGreaterThan(0);
+    for (const [, args] of reads) {
+      for (const option of (args ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter((a) => a.startsWith("-"))) {
+        expect(option, "a POSIX read option").toBe("-r");
+      }
+    }
+    // Run it, with the token on stdin, under /bin/sh and under dash where this
+    // machine has it (CI runs on Ubuntu, where /bin/sh is dash). With stdin a pipe stty
+    // complains on stderr, which the block survives.
+    const shells = ["/bin/sh", "/bin/dash"].filter((shell) => existsSync(shell));
+    for (const shell of shells) {
+      const out = execFileSync(
+        shell,
+        ["-c", `${setup}\nprintf '<%s>' "$(printenv PLATEHOUSE_TOKEN)"`],
+        { input: `${TOKEN_PREFIX}example\n`, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+      );
+      expect(out, shell).toMatch(new RegExp(`<${TOKEN_PREFIX}example>$`));
+    }
   });
 
   test("it no longer documents a hand-written resumable client in shell", () => {

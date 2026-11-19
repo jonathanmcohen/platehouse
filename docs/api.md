@@ -58,14 +58,17 @@ call it, and it sends no CORS headers, so a web page on another site cannot read
 A request without a live token (missing, malformed, unknown or revoked) gets `401` with
 `WWW-Authenticate: Bearer`.
 
-The examples below keep the address and the token in two shell variables. `read -rs` asks for
-the token without showing it, so it stays out of your screen and your shell history:
+The examples below keep the address and the token in two shell variables. `stty -echo` turns
+off echo while `read` asks for the token, so it stays out of your screen and your shell history.
+The block runs in any POSIX shell, dash, bash and zsh included:
 
 ```sh
 export PLATEHOUSE=https://platehouse.example.com
-read -rs PLATEHOUSE_TOKEN   # paste the token and press Enter
+stty -echo; read -r PLATEHOUSE_TOKEN; stty echo; echo   # paste the token and press Enter
 export PLATEHOUSE_TOKEN
 ```
+
+If you interrupt it before pressing Enter and your typing stops showing, run `stty echo`.
 
 ## Base URL and versioning
 
