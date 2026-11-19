@@ -7,7 +7,130 @@
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
 import { registerOrganiseApi } from "../../src/app-api/organise.js";
-import { byLowerName, MAX_BULK_IDS, MAX_BULK_TAGS, readIds } from "../../src/repos/bulk.js";
+import {
+  BULK_TRIES,
+  byId,
+  byLowerName,
+  MAX_BULK_IDS,
+  MAX_BULK_TAGS,
+  readIds,
+  retryOnConflict,
+} from "../../src/repos/bulk.js";
+
+/** A Postgres error as pg raises it: an Error with the SQLSTATE in code. */
+function pgError(code: string): Error {
+  return Object.assign(new Error(`postgres ${code}`), { code });
+}
+
+describe("retryOnConflict", () => {
+  const noWait = { sleep: async () => {}, random: () => 0.5 };
+
+  test("tries again after a deadlock (40P01) and answers what the next try answers", async () => {
+    let calls = 0;
+    const answer = await retryOnConflict(
+      false,
+      async () => {
+        calls += 1;
+        if (calls < 3) throw pgError("40P01");
+        return "done";
+      },
+      noWait,
+    );
+    expect(answer).toBe("done");
+    expect(calls).toBe(3);
+  });
+
+  test("a serialization failure (40001) is tried again too", async () => {
+    let calls = 0;
+    await retryOnConflict(
+      false,
+      async () => {
+        calls += 1;
+        if (calls === 1) throw pgError("40001");
+      },
+      noWait,
+    );
+    expect(calls).toBe(2);
+  });
+
+  test("gives up after BULK_TRIES tries, with the last error", async () => {
+    expect(BULK_TRIES).toBe(3);
+    let calls = 0;
+    await expect(
+      retryOnConflict(
+        false,
+        async () => {
+          calls += 1;
+          throw pgError("40P01");
+        },
+        noWait,
+      ),
+    ).rejects.toMatchObject({ code: "40P01" });
+    expect(calls).toBe(BULK_TRIES);
+  });
+
+  test("any other error is not tried again", async () => {
+    let calls = 0;
+    await expect(
+      retryOnConflict(
+        false,
+        async () => {
+          calls += 1;
+          throw pgError("23505");
+        },
+        noWait,
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+    expect(calls).toBe(1);
+  });
+
+  test("inside the caller's transaction it runs once: that transaction is already aborted", async () => {
+    let calls = 0;
+    await expect(
+      retryOnConflict(
+        true,
+        async () => {
+          calls += 1;
+          throw pgError("40P01");
+        },
+        noWait,
+      ),
+    ).rejects.toMatchObject({ code: "40P01" });
+    expect(calls).toBe(1);
+  });
+
+  test("waits a jittered, growing time between tries", async () => {
+    const waits: number[] = [];
+    let calls = 0;
+    await retryOnConflict(
+      false,
+      async () => {
+        calls += 1;
+        if (calls < 3) throw pgError("40P01");
+      },
+      { sleep: async (ms) => void waits.push(ms), random: () => 0.5 },
+    );
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toBeGreaterThan(0);
+    expect(waits[1]).toBeGreaterThan(waits[0] as number);
+  });
+});
+
+describe("byId", () => {
+  test("sorts ids as Postgres orders uuids, without changing the list given", () => {
+    const given = [
+      "0198f0c4-0000-7000-8000-00000000000b",
+      "0198f0c4-0000-7000-8000-00000000000a",
+      "0198f0c3-ffff-7000-8000-00000000000c",
+    ];
+    expect(byId(given)).toEqual([
+      "0198f0c3-ffff-7000-8000-00000000000c",
+      "0198f0c4-0000-7000-8000-00000000000a",
+      "0198f0c4-0000-7000-8000-00000000000b",
+    ]);
+    expect(given[0]).toBe("0198f0c4-0000-7000-8000-00000000000b");
+  });
+});
 
 const A = "0198f0c4-0000-7000-8000-00000000000a";
 const B = "0198f0c4-0000-7000-8000-00000000000b";

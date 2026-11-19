@@ -6,15 +6,27 @@
 //   a malformed one is reported as not found without a query. At most
 //   MAX_BULK_IDS a request (the routes' schema refuses more), the most View
 //   all shows and Select all matching selects.
-// - In the transaction, every selected model that exists is locked, in id
-//   order so two bulk requests cannot deadlock, FOR SHARE to change its tags
-//   or collections (as library/live.ts's withLiveModel locks one) and FOR
-//   UPDATE to trash it (as repos/models.ts trash does). Add tags then makes
-//   its new tags in lower(name) order, for the same reason: an insert waits
-//   on another transaction's uncommitted tag of that name. A model in the trash
-//   is not changed and is reported as in_trash, one that does not exist as
-//   not_found; the others are changed together or, if a statement fails, not
-//   at all (the request answers 500).
+// - In the transaction, every selected model that exists is locked FOR SHARE
+//   to change its tags or collections (as library/live.ts's withLiveModel
+//   locks one) and FOR UPDATE to trash it (as repos/models.ts trash does). A
+//   model in the trash is not changed and is reported as in_trash, one that
+//   does not exist as not_found; the others are changed together or, if a
+//   statement fails, not at all.
+// - Lock order (issue #286). Every row a bulk action locks, it locks in one
+//   fixed order, whatever order the request listed the models in: the
+//   models by id; Add tags' new tags by lower(name); the tag links an add
+//   inserts and a removal deletes by model id, then tag id; the collection
+//   links by model id; the trashed models by id. Two bulk requests therefore
+//   wait on each other's rows in the same order and cannot deadlock each
+//   other on them. That does not cover a deadlock with some other writer (a
+//   single-model tag or collection change, an ingest, a purge) or an order
+//   this file missed, so each action's transaction is tried again, up to
+//   BULK_TRIES tries in all with a short jittered wait, when Postgres ends it
+//   with a deadlock (40P01) or serialization failure (40001); a retry starts
+//   the whole action again and nothing of the failed try is kept. If every
+//   try fails, the request answers 500 and nothing changed. Run inside a
+//   caller's transaction (inTransaction), an action is not retried, since
+//   the failed statement has already aborted that transaction.
 // - The answer says which models changed, which were left as they were
 //   (they already had the tags, did not have the tag, or were already in the
 //   collection) and which failed and why. Tags and collections are one per
@@ -95,9 +107,65 @@ export function byLowerName(values: readonly string[]): string[] {
     .map((entry) => entry.name);
 }
 
+/**
+ * Ids sorted as Postgres orders uuids: lowercase hex compared by code unit
+ * is the uuid's byte order. A new list; the one given is left as it is.
+ */
+export function byId(ids: readonly string[]): string[] {
+  return [...ids].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+}
+
+/** Tries in all, the first included, before a deadlock or serialization failure is given up on. */
+export const BULK_TRIES = 3;
+
+/** Postgres SQLSTATEs that end a transaction which may well succeed when run again. */
+const RETRYABLE = new Set(["40P01", "40001"]);
+
+function isRetryable(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && RETRYABLE.has(code);
+}
+
+/** How retryOnConflict waits; tests hand in their own. */
+export interface RetryClock {
+  sleep(ms: number): Promise<void>;
+  /** A number from 0 up to 1, for the jitter. */
+  random(): number;
+}
+
+const realClock: RetryClock = {
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  random: Math.random,
+};
+
+/**
+ * Runs fn, and runs it again, up to BULK_TRIES times in all, while it fails
+ * with a deadlock (40P01) or serialization failure (40001), waiting a short,
+ * growing, jittered time between tries so two requests that met do not meet
+ * again in step. Any other error, or the last try's, is thrown. Within the
+ * caller's transaction (inCaller) fn runs once: a failed statement has
+ * aborted that transaction, so only the caller can start again.
+ */
+export async function retryOnConflict<T>(
+  inCaller: boolean,
+  fn: () => Promise<T>,
+  clock: RetryClock = realClock,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (inCaller || attempt >= BULK_TRIES || !isRetryable(error)) throw error;
+      await clock.sleep(Math.round(20 * attempt * (0.5 + clock.random())));
+    }
+  }
+}
+
 interface Selection {
-  /** Live models, locked, in the request's order. */
+  /** Live models, locked, in the request's order: the order the answer lists them in. */
   live: string[];
+  /** The same live models sorted by id: the order every statement locks them in. */
+  locked: string[];
   failed: BulkFailure[];
 }
 
@@ -137,7 +205,12 @@ async function select(
     else if (isLive) live.push(id);
     else failed.push({ id, reason: "in_trash" });
   }
-  return { live, failed };
+  return { live, locked: byId(live), failed };
+}
+
+/** An action's transaction, retried on a deadlock or serialization failure unless db is the caller's. */
+function bulkTransaction<T>(db: Kysely<DB>, fn: (trx: Kysely<DB>) => Promise<T>): Promise<T> {
+  return retryOnConflict(db.isTransaction, () => inTransaction(db, fn));
 }
 
 /** The result for these live models given the ones that changed. */
@@ -174,7 +247,7 @@ export function bulkRepo(db: Kysely<DB>) {
      */
     async addTags(ids: readonly string[], tags: readonly string[]) {
       const wanted = names(tags, "tag");
-      return inTransaction(db, async (trx) => {
+      return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "share");
         // Made in lower(name) order, not the request's: a new tag's insert
         // waits on another transaction's uncommitted row of the same
@@ -188,13 +261,16 @@ export function bulkRepo(db: Kysely<DB>) {
             .execute();
         }
         let changed: string[] = [];
-        if (selection.live.length > 0) {
+        if (selection.locked.length > 0) {
+          // Links in (model id, tag id) order: an insert waits on another
+          // transaction's uncommitted link with the same key (issue #286).
           const { rows } = await sql<{ id: string }>`
             insert into model_tags (model_id, tag_id)
             select m.id, t.id
-            from unnest(cast(${selection.live} as uuid[])) as m(id)
+            from unnest(cast(${selection.locked} as uuid[])) as m(id)
             cross join tags t
             where lower(t.name) = any(cast(${wanted.map((n) => n.toLowerCase())} as text[]))
+            order by m.id, t.id
             on conflict (model_id, tag_id) do nothing
             returning model_id as id
           `.execute(trx);
@@ -211,15 +287,24 @@ export function bulkRepo(db: Kysely<DB>) {
      */
     async removeTag(ids: readonly string[], tag: string) {
       const [name] = names([tag], "tag") as [string];
-      return inTransaction(db, async (trx) => {
+      return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "share");
         let changed: string[] = [];
-        if (selection.live.length > 0) {
+        if (selection.locked.length > 0) {
+          // A DELETE takes no order, so the links are locked first, in
+          // (model id, tag id) order, and then deleted (issue #286).
           const { rows } = await sql<{ id: string }>`
-            delete from model_tags
-            where model_id = any(cast(${selection.live} as uuid[]))
-              and tag_id in (select id from tags where lower(name) = lower(${name}))
-            returning model_id as id
+            delete from model_tags mt
+            using (
+              select l.model_id, l.tag_id
+              from model_tags l
+              where l.model_id = any(cast(${selection.locked} as uuid[]))
+                and l.tag_id in (select id from tags where lower(name) = lower(${name}))
+              order by l.model_id, l.tag_id
+              for update
+            ) gone
+            where mt.model_id = gone.model_id and mt.tag_id = gone.tag_id
+            returning mt.model_id as id
           `.execute(trx);
           changed = rows.map((r) => r.id);
         }
@@ -234,7 +319,7 @@ export function bulkRepo(db: Kysely<DB>) {
      */
     async addToCollection(ids: readonly string[], collection: string) {
       const [name] = names([collection], "collection") as [string];
-      return inTransaction(db, async (trx) => {
+      return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "share");
         await trx
           .insertInto("collections")
@@ -242,13 +327,15 @@ export function bulkRepo(db: Kysely<DB>) {
           .onConflict((oc) => oc.expression(sql`lower(name)`).doNothing())
           .execute();
         let changed: string[] = [];
-        if (selection.live.length > 0) {
+        if (selection.locked.length > 0) {
+          // Links in model id order, for the same reason as Add tags' links.
           const { rows } = await sql<{ id: string }>`
             insert into collection_models (collection_id, model_id)
             select c.id, m.id
-            from unnest(cast(${selection.live} as uuid[])) as m(id)
+            from unnest(cast(${selection.locked} as uuid[])) as m(id)
             cross join collections c
             where lower(c.name) = lower(${name})
+            order by m.id
             on conflict (collection_id, model_id) do nothing
             returning model_id as id
           `.execute(trx);
@@ -265,14 +352,15 @@ export function bulkRepo(db: Kysely<DB>) {
      * already in the trash is reported as in_trash. Never deletes anything.
      */
     async trash(ids: readonly string[]): Promise<BulkResult> {
-      return inTransaction(db, async (trx) => {
+      return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "update");
         let changed: string[] = [];
-        if (selection.live.length > 0) {
-          // The rows are locked above, so the stamp is taken after any wait.
+        if (selection.locked.length > 0) {
+          // The rows are already locked FOR UPDATE, in id order, by select(),
+          // so this takes no new lock, and the stamp is taken after any wait.
           const { rows } = await sql<{ id: string }>`
             update models set trashed_at = clock_timestamp()
-            where id = any(cast(${selection.live} as uuid[])) and trashed_at is null
+            where id = any(cast(${selection.locked} as uuid[])) and trashed_at is null
             returning id
           `.execute(trx);
           changed = rows.map((r) => r.id);

@@ -324,6 +324,76 @@ describe("the cap", () => {
   });
 });
 
+describe("two bulk requests at once, with the models in opposite orders (issue #286)", () => {
+  // Each round runs two actions on the same two models at the same time, one
+  // listing them a then b and the other b then a, on two pool connections.
+  // Links are written in (model id, tag id) order whatever the request's
+  // order, and a deadlock or serialization failure is retried, so neither
+  // request fails. Ten rounds, so the two meet mid-statement in some.
+  const ROUNDS = 10;
+
+  test("Add tags: both succeed every round and both models get every tag", async () => {
+    const repo = bulkRepo(env.db);
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const { live } = await selection();
+      const [a, b] = live;
+      const tags = [`Race ${round} one ${marker()}`, `Race ${round} two ${marker()}`];
+      const answers = await Promise.allSettled([
+        repo.addTags([a, b], tags),
+        repo.addTags([b, a], [...tags].reverse()),
+      ]);
+      expect(
+        answers.map((x) => x.status),
+        `round ${round}`,
+      ).toEqual(["fulfilled", "fulfilled"]);
+      const changed = answers.flatMap((x) => (x.status === "fulfilled" ? x.value.changed : []));
+      expect(new Set(changed), `round ${round}`).toEqual(new Set([a, b]));
+      for (const id of [a, b]) {
+        expect((await tagsOf(id)).sort(), `round ${round}`).toEqual([...tags].sort());
+      }
+    }
+  });
+
+  test("Add to collection: both succeed every round and both models are in it", async () => {
+    const repo = bulkRepo(env.db);
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const { live } = await selection();
+      const [a, b] = live;
+      const name = `Race shelf ${round} ${marker()}`;
+      const answers = await Promise.allSettled([
+        repo.addToCollection([a, b], name),
+        repo.addToCollection([b, a], name),
+      ]);
+      expect(
+        answers.map((x) => x.status),
+        `round ${round}`,
+      ).toEqual(["fulfilled", "fulfilled"]);
+      for (const id of [a, b]) {
+        expect(await env.repos.collections.forModel(id), `round ${round}`).toEqual([name]);
+      }
+    }
+  });
+
+  test("Remove tag: both succeed and the tag is off both models", async () => {
+    const repo = bulkRepo(env.db);
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const { live } = await selection();
+      const [a, b] = live;
+      const tag = `Race off ${round} ${marker()}`;
+      await repo.addTags([a, b], [tag]);
+      const answers = await Promise.allSettled([
+        repo.removeTag([a, b], tag),
+        repo.removeTag([b, a], tag),
+      ]);
+      expect(
+        answers.map((x) => x.status),
+        `round ${round}`,
+      ).toEqual(["fulfilled", "fulfilled"]);
+      for (const id of [a, b]) expect(await tagsOf(id), `round ${round}`).toEqual([]);
+    }
+  });
+});
+
 describe("one transaction", () => {
   test("inside a transaction that rolls back, a bulk change leaves nothing behind", async () => {
     const { live } = await selection();
