@@ -477,6 +477,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   const locales = deps.locales ?? createLocales();
+  // The background reads of LOCALES_DIR stop with the server.
+  app.addHook("onClose", async () => locales.close());
   await registerAuthRoutes(app, {
     locales,
     oidc: auth.oidc,

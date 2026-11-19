@@ -28,6 +28,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { ENGLISH, type InitialMessages, loadInitialMessages, type MessageKey } from "./catalogs";
@@ -71,8 +72,10 @@ export interface I18n {
   /**
    * Shows another language and keeps the choice: a code, or null to follow
    * the browser (shown is then the language the browser's list resolves to).
+   * Resolves true when this pick was applied, false when a newer pick
+   * replaced it before its language loaded (issue 298).
    */
-  setLanguage(choice: string | null, shown: string): Promise<void>;
+  setLanguage(choice: string | null, shown: string): Promise<boolean>;
 }
 
 /** The browser's languages, best first; none where there is no browser. */
@@ -161,7 +164,7 @@ function makeI18n(translator: Translator, setLanguage: I18n["setLanguage"]): I18
 const ENGLISH_TRANSLATOR = createTranslator("en", ENGLISH, ENGLISH);
 
 /** English, for a component outside the provider (a test) and for code with no component. */
-export const ENGLISH_I18N: I18n = makeI18n(ENGLISH_TRANSLATOR, async () => {});
+export const ENGLISH_I18N: I18n = makeI18n(ENGLISH_TRANSLATOR, async () => true);
 
 const I18nContext = createContext<I18n>(ENGLISH_I18N);
 
@@ -194,13 +197,19 @@ export function I18nProvider({
   load = loadInitialMessages,
 }: I18nProviderProps) {
   const [translator, setTranslator] = useState(() => createTranslator(locale, messages, ENGLISH));
+  /**
+   * Each language pick's number, in the order made (issue 298): two quick
+   * picks can load out of order, so only the newest one is applied, and an
+   * older one's messages, overlay and failure are dropped when they land.
+   */
+  const picks = useRef(0);
 
   useEffect(() => {
     if (later === undefined) return;
     let live = true;
     void later.then((next) => {
-      if (!live || next === undefined) return;
-      // A language chosen meanwhile stays; the overlay is the first one's.
+      // A language picked meanwhile stays; the overlay is the first paint's.
+      if (!live || next === undefined || picks.current !== 0) return;
       setTranslator((shown) =>
         shown.locale === locale ? createTranslator(locale, next, ENGLISH) : shown,
       );
@@ -211,18 +220,27 @@ export function I18nProvider({
   }, [later, locale]);
 
   const setLanguage = useCallback(
-    async (choice: string | null, shown: string) => {
-      const { messages: next, later: overlay } = await load(shown);
+    async (choice: string | null, shown: string): Promise<boolean> => {
+      const mine = ++picks.current;
+      let loaded: InitialMessages;
+      try {
+        loaded = await load(shown);
+      } catch (error) {
+        // A newer pick has replaced this one: its failure is not the page's.
+        if (mine !== picks.current) return false;
+        throw error;
+      }
+      if (mine !== picks.current) return false;
+      const { messages: next, later: overlay } = loaded;
       applyLanguage(choice, shown, document);
       setTranslator(createTranslator(shown, next, ENGLISH));
-      // A self-hoster's changes arrive when the list answers, as at startup;
-      // a language chosen meanwhile stays.
+      // A self-hoster's changes arrive when the list answers, as at startup,
+      // and are dropped if another language was picked meanwhile.
       void overlay?.then((merged) => {
-        if (merged === undefined) return;
-        setTranslator((current) =>
-          current.locale === shown ? createTranslator(shown, merged, ENGLISH) : current,
-        );
+        if (merged === undefined || mine !== picks.current) return;
+        setTranslator(createTranslator(shown, merged, ENGLISH));
       });
+      return true;
     },
     [load],
   );

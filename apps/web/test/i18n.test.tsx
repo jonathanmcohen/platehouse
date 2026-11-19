@@ -267,6 +267,70 @@ describe("the language menu", () => {
     return input;
   }
 
+  /** The provider with a load whose answer for each language waits delays[code] ms. */
+  function renderPicker(
+    delays: Readonly<Record<string, number>>,
+    overlays: Record<string, Messages> = {},
+  ) {
+    act(() => {
+      root.render(
+        <I18nProvider
+          locale="en"
+          messages={CATALOGS.en as Messages}
+          load={async (code) => {
+            await new Promise((r) => setTimeout(r, delays[code] ?? 0));
+            const overlay = overlays[code];
+            return {
+              messages: CATALOGS[code] as Messages,
+              ...(overlay === undefined
+                ? {}
+                : {
+                    later: new Promise<Messages>((r) =>
+                      setTimeout(() => r(overlay), (delays[code] ?? 0) + 40),
+                    ),
+                  }),
+            };
+          }}
+        >
+          <MemoryRouter>
+            <LanguagePicker list={async () => LIST} />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+  }
+
+  test("two quick picks finishing out of order leave the later pick shown (issue 298)", async () => {
+    renderPicker({ es: 80, fr: 5 });
+    await act(async () => {});
+    await act(async () => {
+      radio("Espa\u00f1ol").click();
+      radio("Fran\u00e7ais").click();
+      // Both loads land: French first, Spanish 75 ms later.
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    expect(document.documentElement.getAttribute("lang")).toBe("fr");
+    expect(container.querySelector("h2")?.textContent).toBe("Langue");
+    expect(savedLanguage(document)).toBe("fr");
+    expect(radio("Fran\u00e7ais").checked).toBe(true);
+    expect(radio("Espa\u00f1ol").checked).toBe(false);
+  });
+
+  test("a replaced pick's LOCALES_DIR overlay is dropped when it lands", async () => {
+    const esOverlay = { ...(CATALOGS.es as Messages), "language.heading": "Idioma (local)" };
+    renderPicker({ es: 5, fr: 20 }, { es: esOverlay });
+    await act(async () => {});
+    await act(async () => {
+      radio("Espa\u00f1ol").click();
+      await new Promise((r) => setTimeout(r, 10));
+      radio("Fran\u00e7ais").click();
+      // The Spanish overlay lands at 45 ms, after French was picked.
+      await new Promise((r) => setTimeout(r, 120));
+    });
+    expect(document.documentElement.getAttribute("lang")).toBe("fr");
+    expect(container.querySelector("h2")?.textContent).toBe("Langue");
+  });
+
   test("switches at once, keeps the choice in ph_lang and sets the html lang", async () => {
     render("en", <LanguagePicker list={async () => LIST} />);
     await act(async () => {});

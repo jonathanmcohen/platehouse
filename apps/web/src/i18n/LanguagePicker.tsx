@@ -96,8 +96,9 @@ export function LanguagePicker({ list = fetchList }: LanguagePickerProps) {
     const shown = next ?? browserShows;
     setFailed(false);
     try {
-      await setLanguage(next, shown);
-      setChoice(next);
+      // Only the pick still current marks its radio; one a newer pick
+      // replaced before its language loaded changes nothing (issue 298).
+      if (await setLanguage(next, shown)) setChoice(next);
     } catch {
       setFailed(true);
     }

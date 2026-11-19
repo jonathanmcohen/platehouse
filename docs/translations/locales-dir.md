@@ -23,8 +23,9 @@ rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
 3. Put a file in the folder for each language, named for its code: `de.json`, `it.json`,
    `pt-BR.json`. See [How a translation file looks](./index.md#how-a-translation-file-looks).
 
-A new or changed file is picked up the next time the language list is asked for (opening Settings,
-or loading a page), with no restart.
+Platehouse reads the folder when it starts, then again every 15 seconds in the background. A new
+or changed file is picked up within those 15 seconds, with no restart. Pages never wait for the
+folder: they are always shown with the languages from the last read.
 
 ## What Platehouse checks
 
@@ -45,16 +46,18 @@ themselves, for example:
 platehouse: locales: messages in a LOCALES_DIR file were dropped {"file":"de.json","unknownKeys":["shell.nav.libary"],"refusedKeys":[]}
 ```
 
-If the folder cannot be read at all, for example a typo in the path or a volume that was never
-mounted, Platehouse offers its built-in languages only and writes the error code to the log once:
+If the folder cannot be read, for example a typo in the path or a volume that was never mounted,
+Platehouse offers its built-in languages only until it can, and writes one line to the log:
 
 ```
-platehouse: locales: LOCALES_DIR cannot be read {"code":"ENOENT"}
+platehouse: locales: LOCALES_DIR cannot be read, so the languages last read from it are offered {"code":"ENOENT"}
 ```
 
-If the folder is slow to answer, such as a network mount that hangs, a page waits for it at most
-one second and is then shown with the languages last read from the folder. The log says
-`locales: LOCALES_DIR is slow to read, so the languages last read from it are offered`.
+A network mount that hangs or takes longer than 5 seconds to answer is logged the same way, with
+`{"readLimitMs":5000}` in place of an error code; the languages from the last read that worked stay
+on offer meanwhile. Nothing more is logged while the folder stays that way, however many times it
+is read. When a read works again within the limit, the log says so once:
+`locales: LOCALES_DIR can be read again`.
 
 ## Fixing words in a built-in language
 
