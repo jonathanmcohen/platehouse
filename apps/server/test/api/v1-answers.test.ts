@@ -75,6 +75,7 @@ const FILE: ApiFile = {
           estimateId: "e1",
           printerId: "Bambu Lab P1S 0.4 nozzle",
           printerLabel: "Bambu Lab P1S 0.4 nozzle",
+          printerName: "Bambu Lab P1S, 0.4 mm nozzle",
           slicer: "BambuStudio",
           slicerVersion: "02.03.00.70",
           processProfile: "0.20mm Standard @BBL X1C",
@@ -466,10 +467,10 @@ describe("one model, one file", () => {
     expect(await answer("GET", `/api/v1/models/${MODEL_ID}`)).toMatchInlineSnapshot(`
       {
         "auth": undefined,
-        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"Cable clip","caption":"A clip for desk cables","description":"Prints without supports.","creator":"Example Maker","license":"CC-BY-4.0","licenseNote":null,"externalRef":"manyfold:42","tags":["desk","clips"],"collections":["Office"],"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-02T11:30:00.000Z","files":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}]}",
+        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"Cable clip","caption":"A clip for desk cables","description":"Prints without supports.","creator":"Example Maker","license":"CC-BY-4.0","licenseNote":null,"externalRef":"manyfold:42","tags":["desk","clips"],"collections":["Office"],"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-02T11:30:00.000Z","files":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","printerName":"Bambu Lab P1S, 0.4 mm nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}]}",
         "cache": "no-store",
         "disposition": undefined,
-        "length": "1238",
+        "length": "1283",
         "status": 200,
         "type": "application/json; charset=utf-8",
       }
@@ -494,10 +495,10 @@ describe("one model, one file", () => {
     expect(await answer("GET", `/api/v1/files/${FILE_ID}`)).toMatchInlineSnapshot(`
       {
         "auth": undefined,
-        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}",
+        "body": "{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a6c","modelId":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","name":"cable-clip.3mf","originalName":"cable-clip.3mf","kind":"3mf","size":5,"sha256":"abababababababababababababababababababababababababababababababab","parseStatus":"ok","derivedStatus":null,"derivedMessage":null,"createdAt":"2026-11-01T10:00:00.000Z","updatedAt":"2026-11-01T10:00:00.000Z","plates":[{"id":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7d","index":1,"name":"Plate 1","objectCount":4,"numbers":{"file":{"source":"file","estimateId":"e1","printerId":"Bambu Lab P1S 0.4 nozzle","printerLabel":"Bambu Lab P1S 0.4 nozzle","printerName":"Bambu Lab P1S, 0.4 mm nozzle","slicer":"BambuStudio","slicerVersion":"02.03.00.70","processProfile":"0.20mm Standard @BBL X1C","timeSeconds":3720,"weightGrams":21.5,"filaments":[{"slot":1,"type":"PLA","color":"#00AE42","grams":21.5,"profile":null,"profileSource":null}]}}}]}",
         "cache": "no-store",
         "disposition": undefined,
-        "length": "864",
+        "length": "909",
         "status": 200,
         "type": "application/json; charset=utf-8",
       }

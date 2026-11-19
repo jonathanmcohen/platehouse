@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { PLATE_NUMBERS_DOC } from "../../../src/api/openapi.js";
 import {
   createTokens,
   dbTokenStore,
@@ -462,6 +463,18 @@ describe("the operations", () => {
         "timeSeconds",
         "weightGrams",
       ].sort(),
+    );
+    // The OpenAPI document shows the same fields for a set, and the same for
+    // each filament line, so it cannot drift from the real answer (#280).
+    const fileSet = PLATE_NUMBERS_DOC.properties.file.properties;
+    expect(Object.keys(file?.plates[0]?.numbers.file ?? {}).sort()).toEqual(
+      Object.keys(fileSet).sort(),
+    );
+    const fileNumbers = file?.plates[0]?.numbers.file as { filaments?: object[] } | undefined;
+    const filament = fileNumbers?.filaments?.[0];
+    expect(filament).toBeDefined();
+    expect(Object.keys(filament ?? {}).sort()).toEqual(
+      Object.keys(fileSet.filaments.items.properties).sort(),
     );
 
     const meta1 = await call("GET", `/api/v1/files/${file?.id}`);

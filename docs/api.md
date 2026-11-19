@@ -204,7 +204,8 @@ request: `POST /uploads` can carry the whole file as its body, with
 | `duplicates` | `allow` (the default) or `skip`: what to do when the library already holds the same file.                          |
 
 `modelId` cannot be sent with `batch` or `combine`. Without `modelId` or `batch`, the file becomes
-a model of its own, named after the file. Every tus request carries `Tus-Resumable: 1.0.0`.
+a model of its own, named from the `.3mf`'s MakerWorld title when it has one, else from the
+file's name. Every tus request carries `Tus-Resumable: 1.0.0`.
 
 ### Duplicates
 
@@ -423,7 +424,8 @@ curl -sS "$PLATEHOUSE/api/v1/models/0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f" \
 ```
 
 The answer has the model's details, its files, each 3MF file's plates, and each plate's print
-time, weight and filaments for the printer chosen in Settings.
+time, weight and filaments for the default printer of My printers (in Settings). Each set of
+numbers names its printer in full in `printerName`, such as `Bambu Lab P1S, 0.4 mm nozzle`.
 
 ### Upload a file
 

@@ -63,7 +63,7 @@ import { createSearch, InvalidCursor, type LibrarySearch } from "../library/sear
 import { createTags } from "../library/tags.js";
 import { createRepos } from "../repos/index.js";
 import type { Model } from "../repos/models.js";
-import { scrubDerivedMessage } from "../scrub.js";
+import { DERIVED_MESSAGE_MAX_CHARS, scrubDerivedMessage } from "../scrub.js";
 import {
   BlobNotFound,
   type BlobStore,
@@ -719,7 +719,13 @@ const FILE = {
         "For .scad and STEP files, the preview render: pending, ok or failed. Null for " +
         "other kinds.",
     },
-    derivedMessage: { ...nullableString, description: "Why the render failed, in a sentence" },
+    derivedMessage: {
+      ...nullableString,
+      description:
+        "The render or conversion message, such as why it failed, cleaned of work paths, " +
+        `addresses and tokens; at most ${DERIVED_MESSAGE_MAX_CHARS} characters, keeping the ` +
+        "end of a longer one, where the error line is",
+    },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
     plates: {
@@ -1104,7 +1110,9 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
               "Makes an empty model with the details given, ready for files: upload them with " +
               "its id as modelId in the upload's metadata. Only name is required. Tags and " +
               "collections are made on first use. A field this API does not know is refused " +
-              "rather than ignored.\n\n" +
+              "rather than ignored. The name given is kept: a .3mf uploaded into the model " +
+              "later never renames it from its title, though its MakerWorld details fill any " +
+              "of caption, creator, description and licence the model left empty.\n\n" +
               "externalRef records where a model came from and is unique, so an import that " +
               "runs twice makes each model once: a taken externalRef is 409, with trashed " +
               "saying whether that model is in the trash.",
@@ -1168,7 +1176,7 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
             description:
               "One live model with all its details, its files oldest first, each .3mf " +
               "file's plates, and each plate's print time, weight and filaments for the " +
-              "printer selected in Settings. A model in the trash is 404.",
+              "default printer of My printers (Settings). A model in the trash is 404.",
             tags: ["Models"],
             operationId: "getModel",
             params: { type: "object", properties: { id: MODEL_ID_PARAM }, required: ["id"] },

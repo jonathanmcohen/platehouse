@@ -22,10 +22,24 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { registerOpenApi } from "../../src/api/openapi.js";
+import { PLATE_NUMBERS_DOC, registerOpenApi } from "../../src/api/openapi.js";
 import { TOKEN_PREFIX } from "../../src/api/tokens.js";
 import { apiUploadHook, refusingApi, registerV1 } from "../../src/api/v1.js";
-import { createUploads, MAX_UPLOAD_BYTES, registerTus } from "../../src/uploads/tus.js";
+import type {
+  FilamentNumbers,
+  Numbers,
+  PlateFailure,
+  PlatehouseNumbers,
+  PlateNumbers,
+} from "../../src/estimates/display.js";
+import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
+import {
+  createUploads,
+  MAX_UPLOAD_BYTES,
+  REQUEST_TIMEOUT_MS,
+  registerTus,
+  SLOW_LINK_BYTES_PER_SECOND,
+} from "../../src/uploads/tus.js";
 import { documentedPath, METHODS, type OpenApiDoc, problems } from "./support/openapi-rules.js";
 
 /** The repository's root, where biome.json is. */
@@ -52,6 +66,30 @@ function formatted(json: string): string {
 
 /** The upload cap as the document and the guide write it, from the cap tus enforces. */
 const UPLOAD_CAP = `${MAX_UPLOAD_BYTES} bytes (${MAX_UPLOAD_BYTES / 2 ** 20} MiB)`;
+
+/** How long one request may take, as the document and the guide write it, from the request timeout. */
+const REQUEST_LIMIT =
+  `about ${Math.round(REQUEST_TIMEOUT_MS / 60_000)} minutes, enough to send ` +
+  `${MAX_UPLOAD_BYTES / 2 ** 20} MiB at ${(SLOW_LINK_BYTES_PER_SECOND * 8) / 1_000_000} Mbit/s`;
+
+// The plate numbers the document shows (PLATE_NUMBERS_DOC) have exactly the
+// fields the API serializes (estimates/display.ts), checked by tsc: a field
+// added to or dropped from either side fails the type check (issue #280).
+// The integration test (test/integration/api/api.test.ts) checks the same
+// against a real plate's numbers.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type DocProps<T> = T extends { properties: infer P } ? keyof P : never;
+type FileSet = (typeof PLATE_NUMBERS_DOC.properties)["file"];
+type HouseSet = (typeof PLATE_NUMBERS_DOC.properties)["platehouse"];
+type FailureSet = (typeof PLATE_NUMBERS_DOC.properties)["failure"];
+type FilamentSet = FileSet["properties"]["filaments"]["items"];
+const shapesAgree: [
+  Same<keyof typeof PLATE_NUMBERS_DOC.properties, keyof PlateNumbers>,
+  Same<DocProps<FileSet>, keyof Numbers>,
+  Same<DocProps<HouseSet>, keyof PlatehouseNumbers>,
+  Same<DocProps<FailureSet>, keyof PlateFailure>,
+  Same<DocProps<FilamentSet>, keyof FilamentNumbers>,
+] = [true, true, true, true, true];
 
 /** The origin every example and the web app's copy use; never a real host. */
 const EXAMPLE_ORIGIN = "https://platehouse.example.com";
@@ -227,6 +265,47 @@ describe("the OpenAPI document", () => {
     );
   });
 
+  test("shows a plate's numbers with the fields the API sends, printerName included", () => {
+    expect(shapesAgree).toEqual([true, true, true, true, true]);
+    const file = PLATE_NUMBERS_DOC.properties.file;
+    // Every field of a set is always sent (a missing value is null).
+    expect([...file.required].sort()).toEqual(Object.keys(file.properties).sort());
+    expect(file.required).toContain("printerName");
+    const house = PLATE_NUMBERS_DOC.properties.platehouse;
+    expect([...house.required].sort()).toEqual(
+      Object.keys(house.properties)
+        .filter((k) => k !== "staleFor")
+        .sort(),
+    );
+    // The document's example has every field of a set.
+    const example = doc.paths["/models/{id}"]?.get?.responses?.["200"]?.content?.[
+      "application/json"
+    ]?.example as { files: Array<{ plates: Array<{ numbers: { file: object } }> }> };
+    expect(Object.keys(example.files[0]?.plates[0]?.numbers.file ?? {}).sort()).toEqual(
+      Object.keys(file.properties).sort(),
+    );
+    // My printers (#240): the numbers are the default printer's, never "the selected printer".
+    const text = JSON.stringify(doc);
+    expect(text).not.toMatch(/selected printer|printer selected|chosen in Settings/i);
+    expect(text).toMatch(/default printer of My printers/);
+    expect(PLATE_NUMBERS_DOC.properties.failure.properties.detail.description).toContain(
+      `at most ${SCRUB_MAX_CHARS} characters`,
+    );
+  });
+
+  test("states the request time limit and the upload cap from the constants the server uses", () => {
+    expect(doc.paths["/uploads/{id}"]?.patch?.description).toContain(
+      `A single request may take up to ${REQUEST_LIMIT}.`,
+    );
+    expect(doc.info.description).toContain(`uploads are at most ${UPLOAD_CAP}.`);
+    // No size or time written out by hand anywhere else in the document.
+    const text = JSON.stringify(doc);
+    const mib = `${MAX_UPLOAD_BYTES / 2 ** 20} MiB`;
+    expect(text.split(mib).length - 1).toBe(
+      text.split(`(${mib})`).length - 1 + (text.split(`send ${mib}`).length - 1),
+    );
+  });
+
   test("describes the token scheme and the server from PUBLIC_ORIGIN", () => {
     expect(doc.servers).toHaveLength(1);
     expect(doc.servers[0]?.url).toBe(`${EXAMPLE_ORIGIN}/api/v1`);
@@ -319,6 +398,7 @@ describe("docs/api.md", () => {
     const limit = (heading: string, what: string) =>
       tableUnder(guide, heading).find((r) => r[0] === what)?.[1];
     expect(limit("## Limits", "An uploaded file")).toBe(UPLOAD_CAP);
+    expect(limit("## Limits", "One request")).toBe(REQUEST_LIMIT);
     expect(limit("### Resumable and chunked uploads: use a tus client", "Size")).toBe(
       `at most ${UPLOAD_CAP}`,
     );

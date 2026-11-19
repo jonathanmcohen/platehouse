@@ -30,7 +30,7 @@ import {
   typeLabel,
 } from "../src/api-docs/model";
 import raw from "../src/api-docs/openapi.json";
-import { SettingsPage } from "../src/settings/SettingsPage";
+import { SettingsPage, type SettingsView } from "../src/settings/SettingsPage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -50,11 +50,24 @@ async function fakeApi(input: RequestInfo | URL): Promise<Response> {
   const url = new URL(String(input), "https://platehouse.test");
   calls.push(url.pathname);
   if (url.pathname === "/app/api/settings") {
+    // The whole answer the server gives (My printers, #240), checked against
+    // the page's own type so a new field cannot be missed here (#281).
     return json(200, {
       printerId: "Bambu Lab P1S 0.4 nozzle",
+      printersVersion: 1,
+      myPrinters: [
+        {
+          id: "Bambu Lab P1S 0.4 nozzle",
+          name: "Bambu Lab P1S, 0.4 mm nozzle",
+          offered: null,
+          waiting: 0,
+          through: 0,
+        },
+      ],
       printers: null,
+      slicesPerMinute: 3,
       bucketVersioning: "enabled",
-    });
+    } satisfies SettingsView);
   }
   if (url.pathname === "/app/api/tokens") return json(200, { tokens: [] });
   if (url.pathname === "/app/api/trash") {

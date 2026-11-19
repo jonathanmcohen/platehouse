@@ -35,7 +35,12 @@
 //   and it is bearer-class like every other v1 route.
 import fastifySwagger from "@fastify/swagger";
 import type { FastifyInstance, FastifySchema } from "fastify";
-import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
+import { SCRUB_MAX_CHARS } from "../scrub.js";
+import {
+  MAX_UPLOAD_BYTES,
+  REQUEST_TIMEOUT_MS,
+  SLOW_LINK_BYTES_PER_SECOND,
+} from "../uploads/tus.js";
 
 /** Where the API is mounted; also the path part of servers[0].url. */
 const API_PREFIX = "/api/v1";
@@ -186,9 +191,23 @@ const NUMBER_SET_PROPERTIES = {
   estimateId: { type: "string" },
   printerId: {
     type: "string",
-    description: "The printer these numbers are for, such as Bambu Lab P1S 0.4 nozzle",
+    description:
+      "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S " +
+      "0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the " +
+      "file names",
   },
-  printerLabel: { type: "string", description: "The name the UI shows for that printer" },
+  printerLabel: {
+    type: "string",
+    description:
+      "The printer's label: printerId for a printer in the slicer's menu, or \"another " +
+      "printer\" for a file's printer the menu lacks",
+  },
+  printerName: {
+    type: "string",
+    description:
+      'The printer in full, its model and nozzle, such as "Bambu Lab P1S, 0.4 mm nozzle"; ' +
+      '"another printer" for a file\'s printer the menu lacks',
+  },
   slicer: { ...NULLABLE_STRING, description: "The slicer that made the numbers" },
   slicerVersion: NULLABLE_STRING,
   processProfile: { ...NULLABLE_STRING, description: "The process (quality) preset" },
@@ -202,6 +221,7 @@ const NUMBER_SET_REQUIRED = [
   "estimateId",
   "printerId",
   "printerLabel",
+  "printerName",
   "slicer",
   "slicerVersion",
   "processProfile",
@@ -214,8 +234,8 @@ const NUMBER_SET_REQUIRED = [
 export const PLATE_NUMBERS_DOC = {
   type: "object",
   description:
-    "The plate's print time, weight and filaments for the printer selected in Settings. " +
-    "Each set is there only when it applies, so the object can be empty.",
+    "The plate's print time, weight and filaments for the default printer of My printers " +
+    "(Settings). Each set is there only when it applies, so the object can be empty.",
   properties: {
     file: {
       type: "object",
@@ -228,16 +248,18 @@ export const PLATE_NUMBERS_DOC = {
     platehouse: {
       type: "object",
       description:
-        "Platehouse's own OrcaSlicer estimate for the selected printer, made when the file " +
-        "has no numbers for it. Rough numbers.",
+        "Platehouse's own OrcaSlicer estimate for the default printer of My printers, made " +
+        "when the file has no numbers for that printer. Rough numbers.",
       properties: {
         ...NUMBER_SET_PROPERTIES,
         state: {
           type: "string",
           enum: ["current", "estimating", "stale"],
           description:
-            "current: for the selected printer. estimating: being made, nothing older to " +
-            "show. stale: a new one is being made and this older one is shown meanwhile.",
+            "current: for the default printer and the slicer's current OrcaSlicer. " +
+            "estimating: being made, nothing older to show. stale: a new one is being made, " +
+            "and this older one is shown meanwhile: made by an older OrcaSlicer for the same " +
+            "printer, or for a printer no longer in My printers.",
         },
         staleFor: {
           type: "string",
@@ -248,7 +270,7 @@ export const PLATE_NUMBERS_DOC = {
     },
     failure: {
       type: "object",
-      description: "Why the estimate for the selected printer failed",
+      description: "Why the estimate for the default printer of My printers failed",
       properties: {
         estimateId: { type: "string" },
         reason: {
@@ -265,7 +287,12 @@ export const PLATE_NUMBERS_DOC = {
           ],
         },
         words: { type: "string", description: "The reason in plain words" },
-        detail: { ...NULLABLE_STRING, description: "The slicer's own message" },
+        detail: {
+          ...NULLABLE_STRING,
+          description:
+            "The slicer's own message, cleaned of work paths, addresses and tokens, at most " +
+            `${SCRUB_MAX_CHARS} characters; null when nothing is left to show`,
+        },
       },
       required: ["estimateId", "reason", "words", "detail"],
     },
@@ -279,6 +306,7 @@ export const EXAMPLE_NUMBERS = {
     estimateId: EXAMPLE_IDS.estimate,
     printerId: "Bambu Lab P1S 0.4 nozzle",
     printerLabel: "Bambu Lab P1S 0.4 nozzle",
+    printerName: "Bambu Lab P1S, 0.4 mm nozzle",
     slicer: "BambuStudio",
     slicerVersion: "02.03.00.70",
     processProfile: "0.20mm Standard @BBL X1C",
@@ -382,6 +410,15 @@ const UNAUTHORIZED_RESPONSE = {
 /** The upload cap tus enforces, as the document states it: bytes, then MiB. */
 const UPLOAD_CAP = `${MAX_UPLOAD_BYTES} bytes (${MAX_UPLOAD_BYTES / 2 ** 20} MiB)`;
 
+/**
+ * How long one request may take, as the document and docs/api.md state it,
+ * from the request timeout app.ts gives Fastify and the slow link it is
+ * sized for (uploads/tus.ts).
+ */
+const REQUEST_LIMIT =
+  `about ${Math.round(REQUEST_TIMEOUT_MS / 60_000)} minutes, enough to send ` +
+  `${MAX_UPLOAD_BYTES / 2 ** 20} MiB at ${(SLOW_LINK_BYTES_PER_SECOND * 8) / 1_000_000} Mbit/s`;
+
 /** The tus upload routes' operations, by method and path (Public API v1 contract). */
 const TUS_DOCS: Record<string, FastifySchema> = {
   [`POST ${API_PREFIX}/uploads`]: {
@@ -391,7 +428,8 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       `Upload-Length, at most ${UPLOAD_CAP}. Upload-Metadata must carry filename, ` +
       "whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId " +
       "to put the file into an existing model, or batch (and combine) to group several " +
-      "uploads; with neither, the file becomes a model of its own, named after the file.\n\n" +
+      "uploads; with neither, the file becomes a model of its own, named from the .3mf's " +
+      "MakerWorld title when it has one, else from the file's name.\n\n" +
       "duplicates says what happens when a live model already holds a file with the same " +
       "SHA-256: allow (the default) stores it anyway and the result lists the copies; skip " +
       "stores nothing and the result is failed with code duplicate. A file in the trash " +
@@ -530,8 +568,7 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       "curl does, or the file may be sent in chunks of any size, each starting where the " +
       "last ended. After a cut-off, ask HEAD /uploads/{id} for the offset and carry on.\n\n" +
       "When the last byte lands, the file is queued for import; read " +
-      "GET /uploads/{id}/result for the outcome. A single request may take up to about 72 " +
-      "minutes, enough for 512 MiB at 1 Mbit/s.",
+      `GET /uploads/{id}/result for the outcome. A single request may take up to ${REQUEST_LIMIT}.`,
     tags: ["Uploads"],
     operationId: "sendUploadBytes",
     consumes: ["application/offset+octet-stream"],
@@ -835,7 +872,7 @@ export async function registerOpenApi(
           "Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS " +
           "headers, so a web page on another site cannot call it.\n\n" +
           "Errors answer JSON with an error code word and, often, a message sentence. JSON " +
-          "bodies are at most 1 MiB; uploads are at most 512 MiB. The guide is docs/api.md " +
+          `bodies are at most 1 MiB; uploads are at most ${UPLOAD_CAP}. The guide is docs/api.md ` +
           "in the Platehouse repository.",
       },
       servers: [{ url: opts.serverUrl, description: "This Platehouse server" }],

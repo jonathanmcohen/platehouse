@@ -3,7 +3,7 @@
   "info": {
     "title": "Platehouse API",
     "version": "1.0.0",
-    "description": "The Platehouse public API, for scripts and tools such as AI coding assistants: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence. JSON bodies are at most 1 MiB; uploads are at most 512 MiB. The guide is docs/api.md in the Platehouse repository."
+    "description": "The Platehouse public API, for scripts and tools such as AI coding assistants: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence. JSON bodies are at most 1 MiB; uploads are at most 536870912 bytes (512 MiB). The guide is docs/api.md in the Platehouse repository."
   },
   "components": {
     "securitySchemes": {
@@ -601,7 +601,7 @@
         "operationId": "createModel",
         "summary": "Make a model with no files yet",
         "tags": ["Models"],
-        "description": "Makes an empty model with the details given, ready for files: upload them with its id as modelId in the upload's metadata. Only name is required. Tags and collections are made on first use. A field this API does not know is refused rather than ignored.\n\nexternalRef records where a model came from and is unique, so an import that runs twice makes each model once: a taken externalRef is 409, with trashed saying whether that model is in the trash.",
+        "description": "Makes an empty model with the details given, ready for files: upload them with its id as modelId in the upload's metadata. Only name is required. Tags and collections are made on first use. A field this API does not know is refused rather than ignored. The name given is kept: a .3mf uploaded into the model later never renames it from its title, though its MakerWorld details fill any of caption, creator, description and licence the model left empty.\n\nexternalRef records where a model came from and is unique, so an import that runs twice makes each model once: a taken externalRef is 409, with trashed saying whether that model is in the trash.",
         "requestBody": {
           "required": true,
           "content": {
@@ -993,7 +993,7 @@
         "operationId": "getModel",
         "summary": "Get a model with its files, plates and estimates",
         "tags": ["Models"],
-        "description": "One live model with all its details, its files oldest first, each .3mf file's plates, and each plate's print time, weight and filaments for the printer selected in Settings. A model in the trash is 404.",
+        "description": "One live model with all its details, its files oldest first, each .3mf file's plates, and each plate's print time, weight and filaments for the default printer of My printers (Settings). A model in the trash is 404.",
         "parameters": [
           {
             "schema": {
@@ -1120,7 +1120,7 @@
                           "derivedMessage": {
                             "type": "string",
                             "nullable": true,
-                            "description": "Why the render failed, in a sentence"
+                            "description": "The render or conversion message, such as why it failed, cleaned of work paths, addresses and tokens; at most 2500 characters, keeping the end of a longer one, where the error line is"
                           },
                           "createdAt": {
                             "type": "string",
@@ -1154,7 +1154,7 @@
                                 },
                                 "numbers": {
                                   "type": "object",
-                                  "description": "The plate's print time, weight and filaments for the printer selected in Settings. Each set is there only when it applies, so the object can be empty.",
+                                  "description": "The plate's print time, weight and filaments for the default printer of My printers (Settings). Each set is there only when it applies, so the object can be empty.",
                                   "properties": {
                                     "file": {
                                       "type": "object",
@@ -1170,11 +1170,15 @@
                                         },
                                         "printerId": {
                                           "type": "string",
-                                          "description": "The printer these numbers are for, such as Bambu Lab P1S 0.4 nozzle"
+                                          "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
                                         },
                                         "printerLabel": {
                                           "type": "string",
-                                          "description": "The name the UI shows for that printer"
+                                          "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                        },
+                                        "printerName": {
+                                          "type": "string",
+                                          "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
                                         },
                                         "slicer": {
                                           "type": "string",
@@ -1252,6 +1256,7 @@
                                         "estimateId",
                                         "printerId",
                                         "printerLabel",
+                                        "printerName",
                                         "slicer",
                                         "slicerVersion",
                                         "processProfile",
@@ -1262,7 +1267,7 @@
                                     },
                                     "platehouse": {
                                       "type": "object",
-                                      "description": "Platehouse's own OrcaSlicer estimate for the selected printer, made when the file has no numbers for it. Rough numbers.",
+                                      "description": "Platehouse's own OrcaSlicer estimate for the default printer of My printers, made when the file has no numbers for that printer. Rough numbers.",
                                       "properties": {
                                         "source": {
                                           "type": "string",
@@ -1274,11 +1279,15 @@
                                         },
                                         "printerId": {
                                           "type": "string",
-                                          "description": "The printer these numbers are for, such as Bambu Lab P1S 0.4 nozzle"
+                                          "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
                                         },
                                         "printerLabel": {
                                           "type": "string",
-                                          "description": "The name the UI shows for that printer"
+                                          "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                        },
+                                        "printerName": {
+                                          "type": "string",
+                                          "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
                                         },
                                         "slicer": {
                                           "type": "string",
@@ -1353,7 +1362,7 @@
                                         "state": {
                                           "type": "string",
                                           "enum": ["current", "estimating", "stale"],
-                                          "description": "current: for the selected printer. estimating: being made, nothing older to show. stale: a new one is being made and this older one is shown meanwhile."
+                                          "description": "current: for the default printer and the slicer's current OrcaSlicer. estimating: being made, nothing older to show. stale: a new one is being made, and this older one is shown meanwhile: made by an older OrcaSlicer for the same printer, or for a printer no longer in My printers."
                                         },
                                         "staleFor": {
                                           "type": "string",
@@ -1365,6 +1374,7 @@
                                         "estimateId",
                                         "printerId",
                                         "printerLabel",
+                                        "printerName",
                                         "slicer",
                                         "slicerVersion",
                                         "processProfile",
@@ -1376,7 +1386,7 @@
                                     },
                                     "failure": {
                                       "type": "object",
-                                      "description": "Why the estimate for the selected printer failed",
+                                      "description": "Why the estimate for the default printer of My printers failed",
                                       "properties": {
                                         "estimateId": {
                                           "type": "string"
@@ -1401,7 +1411,7 @@
                                         "detail": {
                                           "type": "string",
                                           "nullable": true,
-                                          "description": "The slicer's own message"
+                                          "description": "The slicer's own message, cleaned of work paths, addresses and tokens, at most 1000 characters; null when nothing is left to show"
                                         }
                                       },
                                       "required": ["estimateId", "reason", "words", "detail"]
@@ -1488,6 +1498,7 @@
                               "estimateId": "0193a5c2-8001-7e30-8c33-4d5e6f7a8b92",
                               "printerId": "Bambu Lab P1S 0.4 nozzle",
                               "printerLabel": "Bambu Lab P1S 0.4 nozzle",
+                              "printerName": "Bambu Lab P1S, 0.4 mm nozzle",
                               "slicer": "BambuStudio",
                               "slicerVersion": "02.03.00.70",
                               "processProfile": "0.20mm Standard @BBL X1C",
@@ -1655,7 +1666,7 @@
         "operationId": "getModel-head",
         "summary": "Get a model with its files, plates and estimates (headers only)",
         "tags": ["Models"],
-        "description": "The same status and headers as the GET, with no body. One live model with all its details, its files oldest first, each .3mf file's plates, and each plate's print time, weight and filaments for the printer selected in Settings. A model in the trash is 404.",
+        "description": "The same status and headers as the GET, with no body. One live model with all its details, its files oldest first, each .3mf file's plates, and each plate's print time, weight and filaments for the default printer of My printers (Settings). A model in the trash is 404.",
         "parameters": [
           {
             "schema": {
@@ -1768,7 +1779,7 @@
                     "derivedMessage": {
                       "type": "string",
                       "nullable": true,
-                      "description": "Why the render failed, in a sentence"
+                      "description": "The render or conversion message, such as why it failed, cleaned of work paths, addresses and tokens; at most 2500 characters, keeping the end of a longer one, where the error line is"
                     },
                     "createdAt": {
                       "type": "string",
@@ -1802,7 +1813,7 @@
                           },
                           "numbers": {
                             "type": "object",
-                            "description": "The plate's print time, weight and filaments for the printer selected in Settings. Each set is there only when it applies, so the object can be empty.",
+                            "description": "The plate's print time, weight and filaments for the default printer of My printers (Settings). Each set is there only when it applies, so the object can be empty.",
                             "properties": {
                               "file": {
                                 "type": "object",
@@ -1818,11 +1829,15 @@
                                   },
                                   "printerId": {
                                     "type": "string",
-                                    "description": "The printer these numbers are for, such as Bambu Lab P1S 0.4 nozzle"
+                                    "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
                                   },
                                   "printerLabel": {
                                     "type": "string",
-                                    "description": "The name the UI shows for that printer"
+                                    "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                  },
+                                  "printerName": {
+                                    "type": "string",
+                                    "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
                                   },
                                   "slicer": {
                                     "type": "string",
@@ -1900,6 +1915,7 @@
                                   "estimateId",
                                   "printerId",
                                   "printerLabel",
+                                  "printerName",
                                   "slicer",
                                   "slicerVersion",
                                   "processProfile",
@@ -1910,7 +1926,7 @@
                               },
                               "platehouse": {
                                 "type": "object",
-                                "description": "Platehouse's own OrcaSlicer estimate for the selected printer, made when the file has no numbers for it. Rough numbers.",
+                                "description": "Platehouse's own OrcaSlicer estimate for the default printer of My printers, made when the file has no numbers for that printer. Rough numbers.",
                                 "properties": {
                                   "source": {
                                     "type": "string",
@@ -1922,11 +1938,15 @@
                                   },
                                   "printerId": {
                                     "type": "string",
-                                    "description": "The printer these numbers are for, such as Bambu Lab P1S 0.4 nozzle"
+                                    "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
                                   },
                                   "printerLabel": {
                                     "type": "string",
-                                    "description": "The name the UI shows for that printer"
+                                    "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                  },
+                                  "printerName": {
+                                    "type": "string",
+                                    "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
                                   },
                                   "slicer": {
                                     "type": "string",
@@ -2001,7 +2021,7 @@
                                   "state": {
                                     "type": "string",
                                     "enum": ["current", "estimating", "stale"],
-                                    "description": "current: for the selected printer. estimating: being made, nothing older to show. stale: a new one is being made and this older one is shown meanwhile."
+                                    "description": "current: for the default printer and the slicer's current OrcaSlicer. estimating: being made, nothing older to show. stale: a new one is being made, and this older one is shown meanwhile: made by an older OrcaSlicer for the same printer, or for a printer no longer in My printers."
                                   },
                                   "staleFor": {
                                     "type": "string",
@@ -2013,6 +2033,7 @@
                                   "estimateId",
                                   "printerId",
                                   "printerLabel",
+                                  "printerName",
                                   "slicer",
                                   "slicerVersion",
                                   "processProfile",
@@ -2024,7 +2045,7 @@
                               },
                               "failure": {
                                 "type": "object",
-                                "description": "Why the estimate for the selected printer failed",
+                                "description": "Why the estimate for the default printer of My printers failed",
                                 "properties": {
                                   "estimateId": {
                                     "type": "string"
@@ -2049,7 +2070,7 @@
                                   "detail": {
                                     "type": "string",
                                     "nullable": true,
-                                    "description": "The slicer's own message"
+                                    "description": "The slicer's own message, cleaned of work paths, addresses and tokens, at most 1000 characters; null when nothing is left to show"
                                   }
                                 },
                                 "required": ["estimateId", "reason", "words", "detail"]
@@ -2103,6 +2124,7 @@
                           "estimateId": "0193a5c2-8001-7e30-8c33-4d5e6f7a8b92",
                           "printerId": "Bambu Lab P1S 0.4 nozzle",
                           "printerLabel": "Bambu Lab P1S 0.4 nozzle",
+                          "printerName": "Bambu Lab P1S, 0.4 mm nozzle",
                           "slicer": "BambuStudio",
                           "slicerVersion": "02.03.00.70",
                           "processProfile": "0.20mm Standard @BBL X1C",
@@ -3365,7 +3387,7 @@
         "operationId": "createUpload",
         "summary": "Start an upload",
         "tags": ["Uploads"],
-        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named after the file.\n\nduplicates says what happens when a live model already holds a file with the same SHA-256: allow (the default) stores it anyway and the result lists the copies; skip stores nothing and the result is failed with code duplicate. A file in the trash never counts.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives, and an upload left unfinished for 24 hours is deleted.",
+        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named from the .3mf's MakerWorld title when it has one, else from the file's name.\n\nduplicates says what happens when a live model already holds a file with the same SHA-256: allow (the default) stores it anyway and the result lists the copies; skip stores nothing and the result is failed with code duplicate. A file in the trash never counts.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives, and an upload left unfinished for 24 hours is deleted.",
         "parameters": [
           {
             "schema": {
@@ -3689,7 +3711,7 @@
         "operationId": "sendUploadBytes",
         "summary": "Send an upload's bytes",
         "tags": ["Uploads"],
-        "description": "Appends the request body to the upload at Upload-Offset, which must equal the bytes received so far (0 for the first request). One PATCH may carry the whole file, as curl does, or the file may be sent in chunks of any size, each starting where the last ended. After a cut-off, ask HEAD /uploads/{id} for the offset and carry on.\n\nWhen the last byte lands, the file is queued for import; read GET /uploads/{id}/result for the outcome. A single request may take up to about 72 minutes, enough for 512 MiB at 1 Mbit/s.",
+        "description": "Appends the request body to the upload at Upload-Offset, which must equal the bytes received so far (0 for the first request). One PATCH may carry the whole file, as curl does, or the file may be sent in chunks of any size, each starting where the last ended. After a cut-off, ask HEAD /uploads/{id} for the offset and carry on.\n\nWhen the last byte lands, the file is queued for import; read GET /uploads/{id}/result for the outcome. A single request may take up to about 72 minutes, enough to send 512 MiB at 1 Mbit/s.",
         "requestBody": {
           "required": true,
           "content": {
