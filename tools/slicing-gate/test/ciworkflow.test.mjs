@@ -9,8 +9,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -80,14 +81,28 @@ test("every setup-node step reads .node-version, which pins Node 26", () => {
   assert.match(readFileSync(join(ROOT, ".node-version"), "utf8"), /^26\.\d+\.\d+\n?$/);
 });
 
-test("the job runs the gate tests, then builds the image, then smoke-checks it", () => {
+// Issue #222 split the gate job in two: gate-tests runs the gate tests, and
+// gate-image, after it, builds the image and then smoke-checks it.
+test("the gate tests job runs the tests, then the image job builds the image and smoke-checks it", () => {
   const t = text();
   // Reporter options may sit between node --test and the glob, across lines.
-  const tests = t.search(/node --test (\\\s+|--\S+\s+)*'tools\/slicing-gate\/test\/\*\*\/\*\.test\.mjs'/);
-  const build = t.search(/docker build --platform linux\/amd64 -t \S+ tools\/slicing-gate/);
+  const gateTests = /node --test (\\\s+|--\S+\s+)*'tools\/slicing-gate\/test\/\*\*\/\*\.test\.mjs'/;
+  const gateBuild = /docker build --platform linux\/amd64 -t \S+ tools\/slicing-gate/;
+  const tests = t.search(gateTests);
+  const build = t.search(gateBuild);
   const smoke = t.indexOf("/opt/orca/AppRun --help");
   assert.ok(tests !== -1 && build !== -1 && smoke !== -1, "tests, build and smoke steps are present");
   assert.ok(tests < build && build < smoke, "in that order");
+  assert.equal([...t.matchAll(/node --test/g)].length, 1, "the gate tests run once in the workflow");
+  const testsJob = jobBlock(t, "gate-tests");
+  const imageJob = jobBlock(t, "gate-image");
+  assert.match(testsJob, gateTests, "the gate tests job runs the gate tests");
+  assert.doesNotMatch(testsJob, /docker /, "the gate tests job builds and runs no image");
+  assert.doesNotMatch(imageJob, /node --test/, "the image job does not run the tests again");
+  const imageBuild = imageJob.search(gateBuild);
+  const imageSmoke = imageJob.indexOf("/opt/orca/AppRun --help");
+  assert.ok(imageBuild !== -1 && imageSmoke !== -1, "the image job builds and smoke-checks the image");
+  assert.ok(imageBuild < imageSmoke, "it builds before it smoke-checks");
   for (const check of [
     "check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json",
     "check-profile-version.mjs /opt/orca/resources/profiles/OrcaFilamentLibrary.opc /opt/orca-profiles/OrcaFilamentLibrary.json",
@@ -95,7 +110,7 @@ test("the job runs the gate tests, then builds the image, then smoke-checks it",
     "/opt/openscad/AppRun --version",
     "landrun --version",
   ]) {
-    assert.ok(t.includes(check), `smoke check: ${check}`);
+    assert.ok(imageJob.includes(check), `smoke check in the image job: ${check}`);
   }
 });
 
@@ -263,21 +278,34 @@ test("lint, typecheck, unit and integration run in a chain, each gated on the on
   );
 });
 
-// The gate job builds a large image, so it runs only when the changes job finds
-// the gate, this workflow or .node-version among the changed files.
-test("the gate job runs only when the changes job says so", () => {
+// Issue #222: the gate tests run when the changes job finds the gate or any
+// file they read among the changed files. The gate image is large, so its build
+// runs only when the changes job finds the gate, this workflow or .node-version
+// among them, and only after the gate tests passed.
+test("the gate jobs run only when the changes job says so", () => {
   const t = text();
-  const gate = jobBlock(t, "gate-image");
-  assert.match(gate, /\n {4}needs: changes\n/);
+  const tests = jobBlock(t, "gate-tests");
+  assert.match(tests, /\n {4}needs: changes\n/);
   assert.ok(
-    gate.includes(
-      "if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate == 'true' }}",
+    tests.includes(
+      "if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate_tests == 'true' }}",
     ),
-    gate,
+    tests,
   );
-  assert.match(jobBlock(t, "changes"), /gate: \$\{\{ steps\.diff\.outputs\.gate \}\}/);
+  const image = jobBlock(t, "gate-image");
+  assert.match(image, /\n {4}needs: \[changes, gate-tests\]\n/);
+  assert.ok(
+    image.includes(
+      "if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate_image == 'true' && needs.gate-tests.result == 'success' }}",
+    ),
+    image,
+  );
+  assert.match(jobBlock(t, "changes"), /\n {6}gate_tests: \$\{\{ steps\.diff\.outputs\.tests \}\}\n/);
+  assert.match(jobBlock(t, "changes"), /\n {6}gate_image: \$\{\{ steps\.diff\.outputs\.image \}\}\n/);
   assert.match(jobBlock(t, "changes"), /fetch-depth: 0/);
-  // No job depends on the gate job, so its skip reaches nothing else.
+  // Only the image job depends on the tests job, and nothing depends on the
+  // image job, so their skips reach nothing else.
+  assert.deepEqual([...t.matchAll(/needs: \[?[^\n]*gate-tests/g)].map((m) => m[0]), ["needs: [changes, gate-tests"]);
   assert.doesNotMatch(t, /needs: \[?[^\n]*gate-image/);
 });
 
@@ -607,9 +635,9 @@ test("the pushed-image check passes one image built through the OCI and docker e
   assert.match(reverted.stdout + reverted.stderr, /::error::/, "with an error annotation");
 });
 
-// Runs the changes job's script in bash with git stubbed, and returns the gate
-// output it wrote. The git diff stub behaves as real git does with renames
-// detected (diff.renames defaults to true): each moved [from, to] pair prints
+// Runs the changes job's script in bash with git stubbed, and returns the two
+// gate outputs it wrote, tests and image. The git diff stub behaves as real
+// git does with renames detected (diff.renames defaults to true): each moved [from, to] pair prints
 // only its new path, unless the job passes --no-renames, which prints both.
 function decideGate({ event, prBase = "", before = "", baseExists = true, changed = [], moved = [] }) {
   const dir = mkdtempSync(join(tmpdir(), "ci-changes-"));
@@ -630,7 +658,7 @@ function decideGate({ event, prBase = "", before = "", baseExists = true, change
         "  esac",
         "}",
       ].join("\n"),
-      stepScript(text(), "Decide whether the gate job runs"),
+      stepScript(text(), "Decide whether the gate jobs run"),
     ].join("\n");
     const r = spawnSync("bash", ["-c", script], {
       encoding: "utf8",
@@ -647,9 +675,14 @@ function decideGate({ event, prBase = "", before = "", baseExists = true, change
       },
     });
     assert.equal(r.status, 0, `exit ${r.status}: ${r.stderr}`);
-    const m = readFileSync(out, "utf8").match(/^gate=(true|false)$/m);
-    assert.ok(m, `gate output written: ${readFileSync(out, "utf8")}`);
-    return m[1];
+    const written = readFileSync(out, "utf8");
+    const value = (key) => {
+      const all = [...written.matchAll(new RegExp(`^${key}=(.*)$`, "gm"))];
+      assert.equal(all.length, 1, `one ${key} output written: ${written}`);
+      assert.match(all[0][1], /^(true|false)$/, `${key} is true or false: ${written}`);
+      return all[0][1];
+    };
+    return { tests: value("tests"), image: value("image") };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -657,17 +690,23 @@ function decideGate({ event, prBase = "", before = "", baseExists = true, change
 
 const SHA = "3b2a20f0000000000000000000000000000000aa";
 
+// Each case gives what the changes job decides for the gate tests job and for
+// the gate image job. RUN is both, SKIP is neither, TESTS is the tests alone.
+const RUN = { tests: "true", image: "true" };
+const SKIP = { tests: "false", image: "false" };
+const TESTS = { tests: "true", image: "false" };
+
 for (const [name, input, want] of [
-  ["a PR touching only the server skips it", { event: "pull_request", prBase: SHA, changed: ["apps/server/src/config.ts"] }, "false"],
-  ["a PR touching the gate runs it", { event: "pull_request", prBase: SHA, changed: ["apps/server/a.ts", "tools/slicing-gate/Dockerfile"] }, "true"],
-  ["a PR touching this workflow runs it", { event: "pull_request", prBase: SHA, changed: [".github/workflows/ci.yml"] }, "true"],
-  // The gate job takes its Node version from .node-version, so a bump to it
+  ["a PR touching only the server skips both", { event: "pull_request", prBase: SHA, changed: ["apps/server/src/config.ts"] }, SKIP],
+  ["a PR touching the gate runs both", { event: "pull_request", prBase: SHA, changed: ["apps/server/a.ts", "tools/slicing-gate/Dockerfile"] }, RUN],
+  ["a PR touching this workflow runs both", { event: "pull_request", prBase: SHA, changed: [".github/workflows/ci.yml"] }, RUN],
+  // The gate jobs take their Node version from .node-version, so a bump to it
   // alone must run the gate tests and the image build on the new Node.
-  ["a PR touching only .node-version runs it", { event: "pull_request", prBase: SHA, changed: [".node-version"] }, "true"],
-  ["a push touching only .node-version runs it", { event: "push", before: SHA, changed: [".node-version"] }, "true"],
-  ["a PR with no changed files skips it", { event: "pull_request", prBase: SHA, changed: [] }, "false"],
+  ["a PR touching only .node-version runs both", { event: "pull_request", prBase: SHA, changed: [".node-version"] }, RUN],
+  ["a push touching only .node-version runs both", { event: "push", before: SHA, changed: [".node-version"] }, RUN],
+  ["a PR with no changed files skips both", { event: "pull_request", prBase: SHA, changed: [] }, SKIP],
   [
-    "look-alike paths skip it",
+    "look-alike paths skip both",
     {
       event: "pull_request",
       prBase: SHA,
@@ -675,48 +714,407 @@ for (const [name, input, want] of [
         "tools/slicing-gate-old/x",
         "docs/tools/slicing-gate/x",
         ".github/workflows/ci.yml.orig",
-        ".github/workflows/release.yml",
+        ".github/workflows/release.yml.orig",
+        ".github/workflows/slicer-image.yml.orig",
         "apps/server/.node-version",
         ".node-version.bak",
+        "docs/README.md",
+        "README.md.bak",
+        "docs/CHANGELOG.md",
+        "docker/app.Dockerfile.bak",
+        "apps/server/docker/app.Dockerfile",
+        "apps/slicer/Dockerfile.dev",
+        "apps/slicer/test/container/other.test.ts",
+        "apps/slicer/test/container/smoke.test.ts.snap",
+        "apps/slicer/test/container/support/slicer.tsx",
       ],
     },
-    "false",
+    SKIP,
   ],
-  ["a push touching only the README skips it", { event: "push", before: SHA, changed: ["README.md"] }, "false"],
-  ["a push touching the gate runs it", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, "true"],
+  // ciworkflow.test.mjs reads README.md, so a README-only change runs the
+  // tests; the image is not built from it, so the image build is skipped.
+  ["a push touching only the README runs the tests, not the image build", { event: "push", before: SHA, changed: ["README.md"] }, TESTS],
+  ["a push touching the gate runs both", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, RUN],
   // PR #17 review: git diff --name-only lists only the new path of a rename, so
   // a module moved out of the gate (say into packages/threemf/ in Task 6) left
   // no gate path in the list and the gate job was skipped. The job passes
   // --no-renames so a move lists its old path too.
   [
-    "a PR moving a file out of the gate runs it",
+    "a PR moving a file out of the gate runs both",
     { event: "pull_request", prBase: SHA, moved: [["tools/slicing-gate/lib/zip.mjs", "packages/threemf/src/zip.mjs"]] },
-    "true",
+    RUN,
   ],
   [
-    "a push moving a file out of the gate runs it",
+    "a push moving a file out of the gate runs both",
     { event: "push", before: SHA, moved: [["tools/slicing-gate/lib/threemf.mjs", "packages/threemf/src/threemf.mjs"]] },
-    "true",
+    RUN,
   ],
   [
-    "a PR moving a file into the gate runs it",
+    "a PR moving a file into the gate runs both",
     { event: "pull_request", prBase: SHA, moved: [["packages/threemf/src/zip.mjs", "tools/slicing-gate/lib/zip.mjs"]] },
-    "true",
+    RUN,
   ],
   [
-    "a PR moving a file between two non-gate paths skips it",
-    { event: "pull_request", prBase: SHA, moved: [["apps/server/src/a.ts", "apps/server/src/b.ts"]] },
-    "false",
+    "a PR moving a file the gate tests read runs the tests",
+    { event: "pull_request", prBase: SHA, moved: [["docker/app.Dockerfile", "docker/app2.Dockerfile"]] },
+    TESTS,
   ],
-  ["a new branch (all-zero before) runs it", { event: "push", before: "0".repeat(40), changed: [] }, "true"],
-  ["a push with no before runs it", { event: "push", before: "", changed: [] }, "true"],
-  ["a base commit that is gone (force-push) runs it", { event: "push", before: SHA, baseExists: false, changed: [] }, "true"],
-  ["a PR with no base runs it", { event: "pull_request", prBase: "", changed: [] }, "true"],
+  [
+    "a PR moving a file between two non-gate paths skips both",
+    { event: "pull_request", prBase: SHA, moved: [["apps/server/src/a.ts", "apps/server/src/b.ts"]] },
+    SKIP,
+  ],
+  ["a new branch (all-zero before) runs both", { event: "push", before: "0".repeat(40), changed: [] }, RUN],
+  ["a push with no before runs both", { event: "push", before: "", changed: [] }, RUN],
+  ["a base commit that is gone (force-push) runs both", { event: "push", before: SHA, baseExists: false, changed: [] }, RUN],
+  ["a PR with no base runs both", { event: "pull_request", prBase: "", changed: [] }, RUN],
 ]) {
-  test(`gate job decision: ${name}`, () => {
-    assert.equal(decideGate(input), want);
+  test(`gate jobs decision: ${name}`, () => {
+    assert.deepEqual(decideGate(input), want);
   });
 }
+
+// Issue #222: every file the gate tests read from outside tools/slicing-gate,
+// alone in a PR, runs the gate tests. Only this workflow and .node-version,
+// which the gate image job is built from, also run the image build.
+for (const [file, want] of [
+  [".github/workflows/ci.yml", RUN],
+  [".node-version", RUN],
+  [".github/workflows/release.yml", TESTS],
+  [".github/workflows/slicer-image.yml", TESTS],
+  ["docker/app.Dockerfile", TESTS],
+  ["apps/slicer/Dockerfile", TESTS],
+  ["apps/slicer/test/container/smoke.test.ts", TESTS],
+  ["apps/slicer/test/container/support/slicer.ts", TESTS],
+  ["README.md", TESTS],
+  ["CHANGELOG.md", TESTS],
+]) {
+  test(`gate jobs decision: a PR touching only ${file} runs the gate tests`, () => {
+    assert.deepEqual(decideGate({ event: "pull_request", prBase: SHA, changed: [file] }), want);
+  });
+}
+
+// PR #227 review: the table above is typed out by hand, so a gate test that
+// starts reading a new file outside tools/slicing-gate, with no entry on the
+// tests list, would skip on a PR changing only that file and still go green
+// (issue #222 again). This scan finds every repo path the gate tests and their
+// support files build from import.meta.url, through const X = join(Y, ...)
+// chains, join(X, ...) calls and new URL("...", import.meta.url); every
+// slicer-image.yml step a test runs with cwd: at the repo root, with the repo
+// files that step names; and every module outside tools/slicing-gate the tests
+// load, through the gate scripts they import and on through what that module
+// imports (moduleImports). Each path outside tools/slicing-gate must make the
+// Decide step run the gate tests.
+// Known limits (PR #227 review, round 2): the scan does not see, and does not
+// throw on, a read built with resolve(ROOT, ...), a template string such as
+// `${ROOT}/x` or string concatenation; a join whose arguments hold a call, such
+// as join(ROOT, "apps", pick(x)); require or createRequire; a repo-root file
+// named with no slash in a cwd: step script (package.json, .node-version,
+// pnpm-lock.yaml); or a read other than an import in a gate script outside
+// test/, as only the tests are scanned for reads and the scripts only for
+// their imports. A gate test or script that reads a file outside the gate in
+// one of these forms must add it to the tests list in ci.yml by hand.
+const GATE_DIR = join(ROOT, "tools", "slicing-gate");
+const GATE_TEST_DIR = join(GATE_DIR, "test");
+const insideGate = (p) => p === GATE_DIR || p.startsWith(`${GATE_DIR}/`);
+const repoPath = (p) => relative(ROOT, p).split("\\").join("/");
+// The helpers that run a workflow step with a cwd: option, and the workflow
+// each one runs its step from.
+const STEP_RUNNERS = { runSlicerStep: join(ROOT, ".github", "workflows", "slicer-image.yml") };
+
+function gateTestFiles(dir = GATE_TEST_DIR) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? gateTestFiles(join(dir, e.name)) : e.name.endsWith(".mjs") ? [join(dir, e.name)] : [],
+  );
+}
+
+// The paths one source file builds from import.meta.url: bases maps each
+// const X = dirname(fileURLToPath(import.meta.url)) or const X = join(Y, "a",
+// ...) to its absolute path; at gives the file:line of an index in src; and
+// resolveJoin resolves join(<base>, "a", "b", ...) to an absolute path, or null
+// when the base is not one tracked here. resolveJoin throws when a non-literal
+// argument follows a base outside the gate, as its file cannot be known.
+function sourcePaths(file, src) {
+  const at = (index) => `${repoPath(file)}:${src.slice(0, index).split("\n").length}`;
+  const bases = new Map();
+  const baseOf = (expr) =>
+    /^dirname\(fileURLToPath\(import\.meta\.url\)\)$/.test(expr.trim()) ? dirname(file) : bases.get(expr.trim());
+  const resolveJoin = (args, index) => {
+    const parts = args.split(/,(?![^(]*\))/).map((a) => a.trim());
+    const base = baseOf(parts[0]);
+    if (base === undefined) return null;
+    let p = base;
+    for (const a of parts.slice(1)) {
+      const lit = a.match(/^"([^"]*)"$/);
+      if (!lit) {
+        if (!insideGate(p)) throw new Error(`${at(index)}: join(${args}) builds a path outside tools/slicing-gate the scan cannot resolve`);
+        return null;
+      }
+      p = resolve(p, lit[1]);
+    }
+    return p;
+  };
+  for (const m of src.matchAll(/\bconst (\w+) = (dirname\(fileURLToPath\(import\.meta\.url\)\))|\bconst (\w+) = join\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *"[^"]*")*)\);/g)) {
+    if (m[1]) bases.set(m[1], dirname(file));
+    else {
+      const p = resolveJoin(m[4], m.index);
+      if (p !== null) bases.set(m[3], p);
+    }
+  }
+  return { at, bases, resolveJoin };
+}
+
+// Every module the gate tests load, followed from the test files through
+// static imports, export ... from and dynamic imports into the gate scripts,
+// and on into any module outside tools/slicing-gate and the modules it loads.
+// Returns visited, every module reached, and outside, each one outside the
+// gate as a repo-relative path with every place it is imported from. A .js
+// import with no .js file but a .ts one is taken as the .ts file. Throws on an
+// import it cannot follow: a package (a bare name that is not a Node builtin),
+// a dynamic import whose argument is neither a string literal nor a path
+// sourcePaths tracks, and a file that does not exist. readSource gives a
+// file's text, or null when there is no such file.
+const SOURCE_EXT = /\.(?:mjs|cjs|js|mts|cts|ts)$/;
+const readIfExists = (f) => (existsSync(f) ? readFileSync(f, "utf8") : null);
+function moduleImports(entries, readSource = readIfExists) {
+  const outside = new Map();
+  const visited = new Set();
+  const queue = [...entries];
+  while (queue.length > 0) {
+    const file = queue.shift();
+    if (visited.has(file)) continue;
+    visited.add(file);
+    if (!SOURCE_EXT.test(file)) continue;
+    const src = readSource(file) ?? "";
+    const { at, bases } = sourcePaths(file, src);
+    const loadPath = (abs, index) => {
+      let target = abs;
+      if (readSource(target) === null && target.endsWith(".js") && readSource(target.replace(/\.js$/, ".ts")) !== null) {
+        target = target.replace(/\.js$/, ".ts");
+      }
+      if (readSource(target) === null) throw new Error(`${at(index)}: imports ${repoPath(target)}, which does not exist`);
+      if (!insideGate(target)) {
+        const rel = repoPath(target);
+        outside.set(rel, [...(outside.get(rel) ?? []), at(index)]);
+      }
+      queue.push(target);
+    };
+    const load = (spec, index) => {
+      if (spec.startsWith("node:") || builtinModules.includes(spec)) return;
+      if (!/^\.{0,2}\//.test(spec)) {
+        throw new Error(`${at(index)}: imports "${spec}", a package the scan cannot follow; teach moduleImports where it resolves`);
+      }
+      loadPath(resolve(dirname(file), spec), index);
+    };
+    // Static imports and re-exports start a line, so a string or a comment
+    // naming one is not taken for one.
+    for (const m of src.matchAll(/^[ \t]*(?:import|export)\b(?:[^"';]*?\bfrom)?\s*["']([^"']+)["']/gm)) load(m[1], m.index);
+    // A dynamic import directly after a quote is text in a string (gate.mjs
+    // writes OpenSCAD import calls), and one on a comment line is skipped.
+    for (const m of src.matchAll(/(?<![\w$.'"`])import\(/g)) {
+      const line = src.slice(src.lastIndexOf("\n", m.index) + 1, m.index);
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;
+      // The argument runs to the parenthesis that closes this one.
+      let end = m.index + m[0].length;
+      for (let depth = 1; end < src.length; end++) {
+        if (src[end] === "(") depth++;
+        else if (src[end] === ")" && --depth === 0) break;
+      }
+      const arg = src.slice(m.index + m[0].length, end).trim();
+      const lit = arg.match(/^(["'])([^"'`\\]*)\1$/);
+      if (lit) load(lit[2], m.index);
+      else if (bases.has(arg)) loadPath(bases.get(arg), m.index);
+      else throw new Error(`${at(m.index)}: a dynamic import of ${arg}, which the scan cannot resolve`);
+    }
+  }
+  return { visited, outside };
+}
+
+// Every path outside tools/slicing-gate the gate tests read, as repo-relative
+// paths, each with every place it was found. Throws on a read it cannot
+// resolve.
+function gateTestReads() {
+  const reads = new Map();
+  const add = (abs, where) => {
+    if (insideGate(abs)) return;
+    const rel = repoPath(abs);
+    reads.set(rel, [...(reads.get(rel) ?? []), where]);
+  };
+  for (const [rel, where] of moduleImports(gateTestFiles()).outside) reads.set(rel, [...(reads.get(rel) ?? []), ...where]);
+  for (const file of gateTestFiles()) {
+    const src = readFileSync(file, "utf8");
+    const { at, bases, resolveJoin } = sourcePaths(file, src);
+    for (const m of src.matchAll(/\bjoin\(((?:dirname\(fileURLToPath\(import\.meta\.url\)\)|\w+)(?:, *[^()]+?)*)\)/g)) {
+      const p = resolveJoin(m[1], m.index);
+      if (p !== null && p !== ROOT) add(p, at(m.index));
+    }
+    for (const m of src.matchAll(/new URL\(\s*"([^"]+)",\s*import\.meta\.url\s*\)/g)) add(resolve(dirname(file), m[1]), at(m.index));
+    // A step run with its cwd at the repo root reads the repo files its script
+    // names, relative to that root.
+    for (const m of src.matchAll(/\bcwd: (\w+)/g)) {
+      const cwd = bases.get(m[1]);
+      if (cwd === undefined || insideGate(cwd)) continue;
+      const call = [...src.slice(0, m.index).matchAll(/\b(\w+)\(\s*"([^"]+)",\s*"([^"]+)"/g)].at(-1);
+      const workflow = call && STEP_RUNNERS[call[1]];
+      if (!workflow) throw new Error(`${at(m.index)}: cwd: ${m[1]} runs something outside tools/slicing-gate the scan does not know; add its helper to STEP_RUNNERS`);
+      add(workflow, at(m.index));
+      const script = stepScript(jobBlock(readFileSync(workflow, "utf8"), call[2]), call[3]);
+      for (const t of script.matchAll(/(?<![\w$./{}-])([\w.-]+(?:\/[\w.-]+)+)/g)) {
+        const p = resolve(cwd, t[1]);
+        if (existsSync(p)) add(p, `${at(m.index)} (${call[2]} / ${call[3]})`);
+      }
+    }
+  }
+  return reads;
+}
+
+test("gate jobs decision: every file the gate tests read outside tools/slicing-gate runs the gate tests (PR #227 review)", () => {
+  const reads = gateTestReads();
+  // The scan still sees the reads known today, the Orca pins step's included,
+  // so a broken scan cannot pass by finding nothing.
+  for (const known of [
+    ".github/workflows/ci.yml",
+    ".node-version",
+    ".github/workflows/release.yml",
+    ".github/workflows/slicer-image.yml",
+    "docker/app.Dockerfile",
+    "apps/slicer/Dockerfile",
+    "apps/slicer/test/container/smoke.test.ts",
+    "apps/slicer/test/container/support/slicer.ts",
+    "README.md",
+    "CHANGELOG.md",
+  ]) {
+    assert.ok(reads.has(known), `the scan finds ${known}: ${[...reads.keys()].join(", ")}`);
+  }
+  for (const [file, where] of reads) {
+    assert.equal(
+      decideGate({ event: "pull_request", prBase: SHA, changed: [file] }).tests,
+      "true",
+      `${where.join(", ")} reads ${file}, but a PR changing only it skips the gate tests: add it to the tests list in ci.yml`,
+    );
+  }
+});
+
+// PR #227 review, round 2: an import from outside tools/slicing-gate is a read
+// too, and the likeliest one, as gate modules are due to move to
+// packages/threemf (Task 6). The sources below are fakes handed to the scan.
+// Each is one line with \n escapes, and the dynamic import is built by
+// dynImport, so that the scan, reading this file, does not take them for real
+// imports of its own.
+const dynImport = (arg) => `${"import"}(${arg})`;
+const fakeSources = (sources) => (f) => sources[repoPath(f)] ?? null;
+
+test("gate jobs decision: the import scan follows imports out of tools/slicing-gate (PR #227 review)", () => {
+  const entry = join(GATE_TEST_DIR, "fake.test.mjs");
+  const { outside } = moduleImports(
+    [entry],
+    fakeSources({
+      "tools/slicing-gate/test/fake.test.mjs": [
+        'import {\n  openZip,\n} from "../../../packages/threemf/src/zip.mjs";',
+        'import "node:fs";\nimport { join } from "path";',
+        `const m = await ${dynImport('"../../../apps/server/src/load.mjs"')};`,
+        'import { gate } from "../lib/fake.mjs";',
+      ].join("\n"),
+      // Followed on from a module outside the gate, its .js import naming a .ts file.
+      "packages/threemf/src/zip.mjs": 'export { parse } from "./parse.js";\n',
+      "packages/threemf/src/parse.ts": "export const parse = 1;\n",
+      "apps/server/src/load.mjs": "",
+      // A gate script outside test/ that imports from outside the gate.
+      "tools/slicing-gate/lib/fake.mjs": "import { x } from '../../../packages/other/x.mjs';\n",
+      "packages/other/x.mjs": "",
+    }),
+  );
+  assert.deepEqual([...outside.keys()].sort(), [
+    "apps/server/src/load.mjs",
+    "packages/other/x.mjs",
+    "packages/threemf/src/parse.ts",
+    "packages/threemf/src/zip.mjs",
+  ]);
+  assert.deepEqual(outside.get("packages/threemf/src/zip.mjs"), ["tools/slicing-gate/test/fake.test.mjs:1"]);
+});
+
+test("gate jobs decision: the import scan throws on an import it cannot follow (PR #227 review)", () => {
+  const entry = join(GATE_TEST_DIR, "fake.test.mjs");
+  const scan = (src) => () => moduleImports([entry], fakeSources({ "tools/slicing-gate/test/fake.test.mjs": src }));
+  assert.throws(scan('import { unzip } from "fflate";\n'), /fake\.test\.mjs:1: imports "fflate", a package/);
+  assert.throws(scan(`const m = await ${dynImport("pick(x)")};\n`), /cannot resolve/);
+  assert.throws(scan(`const m = await ${dynImport("`${ROOT}/x.mjs`")};\n`), /cannot resolve/);
+  assert.throws(scan('import { x } from "../../../packages/gone.mjs";\n'), /packages\/gone\.mjs, which does not exist/);
+});
+
+test("gate jobs decision: the import scan reaches the gate scripts the tests load", () => {
+  const visited = new Set([...moduleImports(gateTestFiles()).visited].map(repoPath));
+  // smoke-gate.mjs is loaded only through a dynamic import of a joined path,
+  // and lib/zip.mjs only through lib/threemf.mjs.
+  for (const f of ["tools/slicing-gate/smoke-gate.mjs", "tools/slicing-gate/lib/zip.mjs", "tools/slicing-gate/gate.mjs"]) {
+    assert.ok(visited.has(f), `the import scan reaches ${f}`);
+  }
+});
+
+test("gate jobs decision: the scan finds the file the Orca pins step reads from its cwd: at the repo root", () => {
+  const where = gateTestReads().get("apps/slicer/Dockerfile") ?? [];
+  assert.ok(
+    where.some((w) => w.endsWith("(detect / Resolve the Orca pins)")),
+    `apps/slicer/Dockerfile is found through the Orca pins step: ${where.join(", ")}`,
+  );
+});
+
+// One sample path per alternative of a Decide step regex: ^(a|b(c|d)\.e$|f/)
+// gives a, bc.e, bd.e and f/x. Throws on any regex syntax beyond literals,
+// escapes, groups, | and the two anchors, so a new form cannot pass unseen.
+function regexSamples(re) {
+  let i = 0;
+  const alternation = () => {
+    const out = [];
+    let seq = [""];
+    while (i < re.length && re[i] !== ")") {
+      const c = re[i++];
+      if (c === "|") {
+        out.push(...seq);
+        seq = [""];
+      } else if (c === "(") {
+        const inner = alternation();
+        assert.equal(re[i++], ")", `unclosed group in ${re}`);
+        seq = seq.flatMap((s) => inner.map((x) => s + x));
+      } else if (c === "\\") {
+        const next = re[i++];
+        seq = seq.map((s) => s + next);
+      }
+      else if (c === "^" && i === 1) continue;
+      else if (c === "$") seq = seq.map((s) => `${s}\0`);
+      else if (".[]*+?{}".includes(c)) throw new Error(`cannot sample ${c} in ${re}`);
+      else seq = seq.map((s) => s + c);
+    }
+    return [...out, ...seq];
+  };
+  const all = alternation();
+  assert.equal(i, re.length, `unbalanced ) in ${re}`);
+  return all.map((s) => (s.endsWith("\0") ? s.slice(0, -1) : s.endsWith("/") ? `${s}x` : s));
+}
+
+test("regexSamples gives one path per alternative", () => {
+  assert.deepEqual(regexSamples("^(a|b(c|d)\\.e$|f/)"), ["a", "bc.e", "bd.e", "f/x"]);
+  assert.throws(() => regexSamples("^(a.*)"), /cannot sample/);
+});
+
+// PR #227 review: the gate image job runs only after the gate tests job passed,
+// so a path on the image list but not the tests list would set image=true and
+// tests=false, skip both jobs and go green with no image built. Every path
+// that makes the Decide step build the image must also make it run the tests.
+test("gate jobs decision: every path that runs the gate image build also runs the gate tests (PR #227 review)", () => {
+  const script = stepScript(text(), "Decide whether the gate jobs run");
+  const lists = Object.fromEntries(
+    [...script.matchAll(/if grep -Eq '([^']+)' <<<"\$changed"; then\n[\s\S]*?\n\s*else\n\s*(tests|image)=false\n/g)].map((m) => [m[2], m[1]]),
+  );
+  assert.ok(lists.tests && lists.image, `the step has a tests list and an image list:\n${script}`);
+  const samples = regexSamples(lists.image);
+  assert.ok(samples.length > 0);
+  for (const file of samples) {
+    const got = decideGate({ event: "pull_request", prBase: SHA, changed: [file] });
+    assert.equal(got.image, "true", `${file} is on the image list`);
+    assert.equal(got.tests, "true", `${file} runs the gate image build but not the gate tests, so the image job would skip: add it to the tests list`);
+  }
+});
 
 // Runs one test job's step in bash with pnpm stubbed: the stub writes the given
 // vitest JSON report (or none) and exits with the given status.
