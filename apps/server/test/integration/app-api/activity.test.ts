@@ -334,6 +334,7 @@ describe("an empty library", () => {
       orca: ORCA,
       openscad: OPENSCAD,
       printerId: P1S,
+      printerName: "Bambu Lab P1S, 0.4 mm nozzle",
     });
   });
 });
