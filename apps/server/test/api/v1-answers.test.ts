@@ -276,8 +276,9 @@ describe("GET /api/v1/models", () => {
   });
 
   test("externalRef with another field is 400", async () => {
-    expect(await answer("GET", "/api/v1/models?externalRef=manyfold:42&q=clip"))
-      .toMatchInlineSnapshot(`
+    expect(
+      await answer("GET", "/api/v1/models?externalRef=manyfold:42&q=clip"),
+    ).toMatchInlineSnapshot(`
         {
           "auth": undefined,
           "body": "{"error":"bad_request","message":"externalRef cannot be combined with other fields"}",
@@ -562,7 +563,7 @@ describe("a file's bytes", () => {
   });
 
   test.each([
-    ["the store is down", new StoreUnavailable("GetObject")],
+    ["the store is down", new StoreUnavailable("GetObject", "ECONNREFUSED")],
     ["the blob is missing", new BlobNotFound("GetObject")],
   ])("%s: 503", async (_name, error) => {
     behaviour.storeFails = error;

@@ -32,6 +32,7 @@ import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { bossUploadQueue, createUploads, type Uploads } from "../../../src/uploads/tus.js";
+import { type OpenApiDoc, problems } from "../../api/support/openapi-rules.js";
 import { meta, OCTET, TUS } from "../../uploads/support/http.js";
 import { ASCII_STL, build3mf, type IngestEnv, startIngestEnv } from "../support/ingest.js";
 import { marker } from "../support/library.js";
@@ -760,6 +761,10 @@ describe("the OpenAPI document", () => {
     for (const path of Object.keys(doc.paths)) {
       expect(registered.has(path), path).toBe(true);
     }
+
+    // Every operation of the whole app is documented in full: summary,
+    // description, parameters, examples and its error answers.
+    expect(problems(doc as unknown as OpenApiDoc)).toEqual([]);
   });
 });
 

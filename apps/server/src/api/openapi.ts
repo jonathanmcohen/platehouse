@@ -10,9 +10,25 @@
 //   /healthz, the UI's uploads) is hidden from it. The tus upload routes are
 //   registered by uploads/tus.ts with no schema, so their operations are
 //   described here (TUS_DOCS) by method and path.
-// - HEAD routes are listed too, the tus resume check among them.
+// - HEAD routes are listed too, the tus resume check among them. A HEAD that
+//   Fastify answers for a GET route is described as headers only: the GET's
+//   summary and description, said to have no body, and its answers without
+//   their bodies (headOnly).
 // - Every operation needs the bearer token (the bearer security scheme) and
-//   lists its 401.
+//   lists its 401, the 503 a token check gives while the database is down,
+//   and the 500 of anything unexpected.
+// - Everything here is documentation: summaries, descriptions, examples and
+//   response descriptions. The shared response objects below are also part
+//   of the v1 routes' response schemas, which Fastify serializes with, so
+//   they may only gain annotations (description, examples), never change a
+//   type, a property or what is required. test/api/v1-answers.test.ts pins
+//   the answers byte for byte.
+// - A plate's numbers are serialized by v1.ts's NUMBERS, an open object, so
+//   their bytes never depend on a schema; the document shows the shape they
+//   take (PLATE_NUMBERS_DOC) in its place, swapped in by describeRoute where
+//   a schema carries the PLATE_NUMBERS marker.
+// - Every example uses https://platehouse.example.com and no token-shaped
+//   value (test/api/openapi.test.ts checks both).
 // - Nothing here registers a route: GET /api/v1/openapi.json is v1.ts's,
 //   and it is bearer-class like every other v1 route.
 import fastifySwagger from "@fastify/swagger";
@@ -21,115 +37,581 @@ import type { FastifyInstance, FastifySchema } from "fastify";
 /** Where the API is mounted; also the path part of servers[0].url. */
 const API_PREFIX = "/api/v1";
 
+/** The groups the reference shows the operations in, in this order. */
+export const API_TAGS = [
+  {
+    name: "Models",
+    description:
+      "Search the library, read a model with its files, plates and estimates, and make an " +
+      "empty model to upload files into.",
+  },
+  {
+    name: "Files",
+    description: "Read one file's details, or download its bytes.",
+  },
+  {
+    name: "Tags and collections",
+    description:
+      "Add a tag to a model or take it off, and put a model in a collection or take it " +
+      "out. A tag or collection is made on first use.",
+  },
+  {
+    name: "Uploads",
+    description:
+      "Send a file with the tus 1.0.0 resumable upload protocol " +
+      "(https://tus.io/protocols/resumable-upload): start the upload, send its bytes in one " +
+      "request or in chunks, resume after a cut-off, then read what became of it.",
+  },
+  {
+    name: "About the API",
+    description: "This document, in OpenAPI 3.0 JSON.",
+  },
+] as const;
+
+/** The marker v1.ts puts on a plate's numbers; describeRoute swaps in PLATE_NUMBERS_DOC. */
+export const PLATE_NUMBERS = "x-platehouse-plate-numbers";
+
+/** An id in the examples: a UUIDv7, as Platehouse makes them. */
+export const EXAMPLE_IDS = Object.freeze({
+  model: "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+  file: "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+  plate: "0193a5c2-7d58-7d20-9b22-3c4d5e6f7a81",
+  estimate: "0193a5c2-8001-7e30-8c33-4d5e6f7a8b92",
+  upload: "0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b",
+});
+
 /** The answer every operation gives a request without a live token. */
 export const UNAUTHORIZED_DOC = {
-  description: "No token, or not a live one (missing, malformed, unknown or revoked).",
+  description:
+    "No token, or not a live one: missing, malformed, unknown or revoked. The answer " +
+    "carries WWW-Authenticate: Bearer. Cookies are never read.",
   type: "object",
   properties: { error: { type: "string", enum: ["unauthorized"] } },
   required: ["error"],
+  headers: {
+    "WWW-Authenticate": { type: "string", enum: ["Bearer"], description: "Always Bearer" },
+  },
+  examples: [{ error: "unauthorized" }],
 } as const;
 
-const ERROR_DOC = {
+/** The JSON every error answers with: a code word, and sometimes a sentence. */
+export const ERROR_DOC = {
   type: "object",
-  properties: { error: { type: "string" }, message: { type: "string" } },
+  properties: {
+    error: {
+      type: "string",
+      description:
+        "A short code word: bad_request, not_found, exists, unauthorized, unavailable " +
+        "or internal",
+    },
+    message: {
+      type: "string",
+      description: "A sentence a person can read, when there is more to say",
+    },
+  },
   required: ["error"],
 } as const;
 
-const TUS_RESUMABLE = { type: "string", enum: ["1.0.0"], description: "tus protocol version" };
+/** 400: the request itself is wrong; the message says how. */
+export const BAD_REQUEST_DOC = {
+  ...ERROR_DOC,
+  description:
+    "The request is not valid: a parameter or body field outside its limits, an unknown " +
+    "field, or JSON that does not parse. message says what is wrong.",
+  examples: [{ error: "bad_request", message: "querystring/limit must be <= 200" }],
+} as const;
+
+/** 404: no such live model or file. */
+export const NOT_FOUND_DOC = {
+  ...ERROR_DOC,
+  description:
+    "No such live model or file: the id is unknown, or the model is in the trash. A model " +
+    "in the trash is invisible to the API.",
+  examples: [{ error: "not_found" }],
+} as const;
+
+/** 500: anything unexpected; the cause is logged, never sent. */
+export const INTERNAL_DOC = {
+  ...ERROR_DOC,
+  description:
+    "Something unexpected went wrong. The cause is in Platehouse's log and never in the " +
+    "answer. Retrying may work.",
+  examples: [{ error: "internal" }],
+} as const;
+
+/** 503: the database or the file store cannot be reached right now. */
+export const UNAVAILABLE_DOC = {
+  ...ERROR_DOC,
+  description:
+    "Platehouse cannot answer right now: its database or file store is unreachable, or " +
+    "the token could not be checked. Nothing was changed. Try again shortly.",
+  examples: [{ error: "unavailable" }],
+} as const;
+
+const NULLABLE_STRING = { type: "string", nullable: true } as const;
+
+const FILAMENT_DOC = {
+  type: "object",
+  description: "One filament slot's use on the plate",
+  properties: {
+    slot: { type: "integer", description: "The AMS slot, from 1" },
+    type: { type: "string", description: "The filament type, such as PLA or PETG" },
+    color: { ...NULLABLE_STRING, description: "The colour as #RRGGBB, when known" },
+    grams: { type: "number", nullable: true, description: "Grams of this filament" },
+    profile: {
+      ...NULLABLE_STRING,
+      description: "The filament preset the slicer used; null for the file's own numbers",
+    },
+    profileSource: {
+      type: "string",
+      nullable: true,
+      enum: ["bambu", "generic", "file", null],
+      description:
+        "Where that preset came from: Bambu's own preset, OrcaSlicer's Generic one, or the " +
+        "file's own filament kept; null for the file's own numbers",
+    },
+  },
+  required: ["slot", "type", "color", "grams", "profile", "profileSource"],
+} as const;
+
+const NUMBER_SET_PROPERTIES = {
+  source: {
+    type: "string",
+    enum: ["file", "platehouse"],
+    description: "file for the numbers saved in the .3mf, platehouse for an OrcaSlicer estimate",
+  },
+  estimateId: { type: "string" },
+  printerId: {
+    type: "string",
+    description: "The printer these numbers are for, such as Bambu Lab P1S 0.4 nozzle",
+  },
+  printerLabel: { type: "string", description: "The name the UI shows for that printer" },
+  slicer: { ...NULLABLE_STRING, description: "The slicer that made the numbers" },
+  slicerVersion: NULLABLE_STRING,
+  processProfile: { ...NULLABLE_STRING, description: "The process (quality) preset" },
+  timeSeconds: { type: "number", nullable: true, description: "Print time in seconds" },
+  weightGrams: { type: "number", nullable: true, description: "Total filament in grams" },
+  filaments: { type: "array", items: FILAMENT_DOC },
+} as const;
+
+const NUMBER_SET_REQUIRED = [
+  "source",
+  "estimateId",
+  "printerId",
+  "printerLabel",
+  "slicer",
+  "slicerVersion",
+  "processProfile",
+  "timeSeconds",
+  "weightGrams",
+  "filaments",
+] as const;
+
+/** What a plate's numbers look like; shown in place of v1.ts's open NUMBERS object. */
+export const PLATE_NUMBERS_DOC = {
+  type: "object",
+  description:
+    "The plate's print time, weight and filaments for the printer selected in Settings. " +
+    "Each set is there only when it applies, so the object can be empty.",
+  properties: {
+    file: {
+      type: "object",
+      description:
+        "Bambu's own numbers, saved in the .3mf when it was sliced, labelled with the printer " +
+        "it was sliced for",
+      properties: NUMBER_SET_PROPERTIES,
+      required: NUMBER_SET_REQUIRED,
+    },
+    platehouse: {
+      type: "object",
+      description:
+        "Platehouse's own OrcaSlicer estimate for the selected printer, made when the file " +
+        "has no numbers for it. Rough numbers.",
+      properties: {
+        ...NUMBER_SET_PROPERTIES,
+        state: {
+          type: "string",
+          enum: ["current", "estimating", "stale"],
+          description:
+            "current: for the selected printer. estimating: being made, nothing older to " +
+            "show. stale: a new one is being made and this older one is shown meanwhile.",
+        },
+        staleFor: {
+          type: "string",
+          description: "For a stale set: the printer, or OrcaSlicer version, it was made for",
+        },
+      },
+      required: [...NUMBER_SET_REQUIRED, "state"],
+    },
+    failure: {
+      type: "object",
+      description: "Why the estimate for the selected printer failed",
+      properties: {
+        estimateId: { type: "string" },
+        reason: {
+          type: "string",
+          enum: [
+            "process_not_compatible",
+            "machine_not_supported",
+            "bed_too_small",
+            "nozzle_mismatch",
+            "filament_temperature",
+            "toolpath_conflict",
+            "timeout",
+            "slicer_error",
+          ],
+        },
+        words: { type: "string", description: "The reason in plain words" },
+        detail: { ...NULLABLE_STRING, description: "The slicer's own message" },
+      },
+      required: ["estimateId", "reason", "words", "detail"],
+    },
+  },
+} as const;
+
+/** A plate's numbers, as an example. */
+export const EXAMPLE_NUMBERS = {
+  file: {
+    source: "file",
+    estimateId: EXAMPLE_IDS.estimate,
+    printerId: "Bambu Lab P1S 0.4 nozzle",
+    printerLabel: "Bambu Lab P1S 0.4 nozzle",
+    slicer: "BambuStudio",
+    slicerVersion: "02.03.00.70",
+    processProfile: "0.20mm Standard @BBL X1C",
+    timeSeconds: 3720,
+    weightGrams: 21.5,
+    filaments: [
+      {
+        slot: 1,
+        type: "PLA",
+        color: "#00AE42",
+        grams: 21.5,
+        profile: null,
+        profileSource: null,
+      },
+    ],
+  },
+} as const;
+
+/** The text/plain answers tus gives. */
+function text(description: string, example: string) {
+  return {
+    description,
+    content: { "text/plain": { schema: { type: "string" }, example } },
+  };
+}
+
+/** The JSON answers the upload mount gives, outside tus. */
+function json(description: string, example: Record<string, unknown>) {
+  return {
+    description,
+    content: { "application/json": { schema: ERROR_DOC, example } },
+  };
+}
+
+const TUS_RESUMABLE = {
+  type: "string",
+  enum: ["1.0.0"],
+  description: "The tus protocol version; always 1.0.0",
+  examples: ["1.0.0"],
+};
+
+const UPLOAD_ID_PARAM = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      description: "The upload's id: the last segment of the Location that POST /uploads answered",
+      examples: [EXAMPLE_IDS.upload],
+    },
+  },
+  required: ["id"],
+};
+
+const TUS_412 = text("The Tus-Resumable header is missing", "Tus-Resumable Required\n");
+const TUS_500 = text(
+  "Something unexpected went wrong while handling the bytes. Resume with HEAD.",
+  "Something went wrong with that request\n",
+);
+const UNAUTHORIZED_RESPONSE = {
+  description: UNAUTHORIZED_DOC.description,
+  headers: { "WWW-Authenticate": { description: "Always Bearer", schema: { type: "string" } } },
+  content: {
+    "application/json": {
+      schema: {
+        type: "object",
+        properties: UNAUTHORIZED_DOC.properties,
+        required: UNAUTHORIZED_DOC.required,
+      },
+      example: { error: "unauthorized" },
+    },
+  },
+};
 
 /** The tus upload routes' operations, by method and path (Public API v1 contract). */
 const TUS_DOCS: Record<string, FastifySchema> = {
   [`POST ${API_PREFIX}/uploads`]: {
-    summary: "Start an upload (tus 1.0.0 creation)",
+    summary: "Start an upload",
     description:
-      "Creates a resumable upload of a known size, at most 536870912 bytes. Upload-Metadata " +
-      "must carry filename (.3mf, .stl, .step, .stp or .scad), and may carry modelId to add " +
-      "the file to an existing model, or batch with combine to group files into one model. " +
-      "Without either the file becomes a model of its own. Send the bytes with PATCH to the " +
-      "Location answered, then read GET /uploads/{id}/result.",
+      "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in " +
+      "Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, " +
+      "whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId " +
+      "to put the file into an existing model, or batch (and combine) to group several " +
+      "uploads; with neither, the file becomes a model of its own, named after the file.\n\n" +
+      "The answer's Location is the upload's address. Send the bytes there with PATCH, then " +
+      "poll GET /uploads/{id}/result until it says done or failed. The body of this request " +
+      "may already carry the first bytes, or the whole file, when it is sent with " +
+      "Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\n" +
+      "Nothing is stored until the last byte arrives, and an upload left unfinished for 24 " +
+      "hours is deleted.",
+    tags: ["Uploads"],
+    operationId: "createUpload",
     headers: {
       type: "object",
       properties: {
         "tus-resumable": TUS_RESUMABLE,
-        "upload-length": { type: "integer", minimum: 0, maximum: 536870912 },
+        "upload-length": {
+          type: "integer",
+          minimum: 0,
+          maximum: 536870912,
+          description: "The file's size in bytes, at most 536870912",
+          examples: [5242880],
+        },
         "upload-metadata": {
           type: "string",
           description:
-            "tus Upload-Metadata: comma-separated keys, each followed by a space and its " +
-            "base64 value: filename (required), modelId, batch, combine (1, 0, true or false)",
+            "tus Upload-Metadata: comma-separated pairs, each a key, a space and the value in " +
+            "base64. filename is required. modelId adds the file to that live model. batch " +
+            "(1 to 200 characters) groups the uploads that share it; with combine 1 or true " +
+            "they become one model, with combine 0, false or left out each is its own model. " +
+            "modelId cannot be sent with batch or combine. Other keys are ignored.",
+          examples: [
+            "filename Y2FibGUtY2xpcC4zbWY=,modelId " +
+              "MDE5M2E1YzItN2Q0ZS03YjIxLTlmMDAtM2M1YTFlMmI0ZDZm",
+          ],
         },
       },
       required: ["tus-resumable", "upload-length", "upload-metadata"],
     },
     response: {
-      201: { description: "Created; Location is /api/v1/uploads/{id}", type: "null" },
-      400: { description: "Missing length, filename or bad metadata", type: "string" },
-      401: UNAUTHORIZED_DOC,
-      404: { description: "modelId names no live model (unknown or in the trash)", ...ERROR_DOC },
-      413: { description: "Over 536870912 bytes", type: "string" },
-      415: { description: "Not a file type Platehouse takes", type: "string" },
+      201: {
+        description:
+          "Created. Location is the upload's address, /api/v1/uploads/{id}; send the bytes " +
+          "there. With creation-with-upload, Upload-Offset says how many bytes were taken.",
+        headers: {
+          Location: {
+            description: "The upload's address, relative to the server",
+            schema: { type: "string", example: `/api/v1/uploads/${EXAMPLE_IDS.upload}` },
+          },
+          "Tus-Resumable": { description: "1.0.0", schema: { type: "string" } },
+          "Upload-Offset": {
+            description: "Bytes taken so far, with creation-with-upload",
+            schema: { type: "integer" },
+          },
+        },
+        type: "null",
+      },
+      400: text(
+        "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, or " +
+          "breaks a rule above. The body says which.",
+        "Upload-Metadata must carry the file's name as filename\n",
+      ),
+      401: UNAUTHORIZED_RESPONSE,
+      404: json("modelId names no live model: unknown, or in the trash", { error: "not_found" }),
+      412: TUS_412,
+      413: text("Upload-Length is over 536870912 bytes", "Maximum size exceeded\n"),
+      415: text(
+        "The file name's extension is not one Platehouse takes",
+        "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved\n",
+      ),
+      500: TUS_500,
+      501: text(
+        "A tus extension Platehouse does not offer: Upload-Defer-Length or Upload-Concat",
+        "creation-defer-length extension is not (yet) supported.\n",
+      ),
+      503: {
+        description:
+          "The model named by modelId could not be checked (the database is unreachable, " +
+          "JSON), the token could not be checked (JSON), or a creation that carried the " +
+          "whole file could not be queued for import (text; nothing was saved). Try again.",
+        content: {
+          "application/json": { schema: ERROR_DOC, example: { error: "unavailable" } },
+          "text/plain": {
+            schema: { type: "string" },
+            example: "The upload could not be queued; nothing was saved. Try again.\n",
+          },
+        },
+      },
     },
   },
   [`HEAD ${API_PREFIX}/uploads/:id`]: {
     summary: "Where to resume an upload",
-    description: "Upload-Offset says how many bytes have arrived; resume from there with PATCH.",
+    description:
+      "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. " +
+      "Use it after a cut-off, such as a network change. Once the file has been imported, " +
+      "Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed " +
+      "with nothing saved, the answer is 410 and the file can be sent again from the start.",
+    tags: ["Uploads"],
+    operationId: "resumeUpload",
     headers: {
       type: "object",
       properties: { "tus-resumable": TUS_RESUMABLE },
       required: ["tus-resumable"],
     },
-    params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    params: UPLOAD_ID_PARAM,
     response: {
-      200: { description: "Upload-Offset and Upload-Length headers", type: "null" },
-      401: UNAUTHORIZED_DOC,
+      200: {
+        description: "Upload-Offset and Upload-Length; no body",
+        headers: {
+          "Upload-Offset": { description: "Bytes received", schema: { type: "integer" } },
+          "Upload-Length": { description: "The upload's size", schema: { type: "integer" } },
+        },
+        type: "null",
+      },
+      401: { description: UNAUTHORIZED_DOC.description, type: "null" },
       404: { description: "No such upload", type: "null" },
-      410: { description: "The upload is gone; nothing was saved, send it again", type: "null" },
+      410: {
+        description: "The upload is gone and nothing was saved; send the file again",
+        type: "null",
+      },
+      412: { description: "The Tus-Resumable header is missing", type: "null" },
+      500: { description: "Something unexpected went wrong", type: "null" },
+      503: { description: UNAVAILABLE_DOC.description, type: "null" },
     },
   },
   [`PATCH ${API_PREFIX}/uploads/:id`]: {
-    summary: "Send bytes of an upload",
+    summary: "Send an upload's bytes",
     description:
-      "Appends the body at Upload-Offset. One PATCH may carry the whole file, or the file " +
-      "may be sent in chunks. When the last byte lands the file is queued for import.",
+      "Appends the request body to the upload at Upload-Offset, which must equal the bytes " +
+      "received so far (0 for the first request). One PATCH may carry the whole file, as " +
+      "curl does, or the file may be sent in chunks of any size, each starting where the " +
+      "last ended. After a cut-off, ask HEAD /uploads/{id} for the offset and carry on.\n\n" +
+      "When the last byte lands, the file is queued for import; read " +
+      "GET /uploads/{id}/result for the outcome. A single request may take up to about 72 " +
+      "minutes, enough for 512 MiB at 1 Mbit/s.",
+    tags: ["Uploads"],
+    operationId: "sendUploadBytes",
     consumes: ["application/offset+octet-stream"],
     headers: {
       type: "object",
       properties: {
         "tus-resumable": TUS_RESUMABLE,
-        "upload-offset": { type: "integer", minimum: 0 },
-        "content-type": { type: "string", enum: ["application/offset+octet-stream"] },
+        "upload-offset": {
+          type: "integer",
+          minimum: 0,
+          description: "Where this body starts: the bytes received so far",
+          examples: [0],
+        },
+        "content-type": {
+          type: "string",
+          enum: ["application/offset+octet-stream"],
+          description: "Always application/offset+octet-stream",
+          examples: ["application/offset+octet-stream"],
+        },
       },
       required: ["tus-resumable", "upload-offset", "content-type"],
     },
-    params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    params: UPLOAD_ID_PARAM,
+    body: {
+      type: "string",
+      format: "binary",
+      description: "The file's bytes from Upload-Offset on: all of them, or the next chunk",
+    },
     response: {
-      204: { description: "Bytes taken; Upload-Offset is the new offset", type: "null" },
-      401: UNAUTHORIZED_DOC,
-      404: { description: "No such upload", type: "string" },
-      409: { description: "Upload-Offset does not match the bytes received", type: "string" },
-      410: { description: "The upload is gone", type: "string" },
+      204: {
+        description: "Taken; Upload-Offset is the new offset",
+        headers: {
+          "Upload-Offset": {
+            description: "Bytes received, this body included",
+            schema: { type: "integer" },
+          },
+        },
+        type: "null",
+      },
+      400: text("A tus header is malformed", "Invalid upload-offset\n"),
+      401: UNAUTHORIZED_RESPONSE,
+      403: text(
+        "Upload-Offset or the Content-Type application/offset+octet-stream is missing",
+        "Content-Type header required\n",
+      ),
+      404: text("No such upload", "The file for this url was not found\n"),
+      409: text(
+        "Upload-Offset is not the number of bytes received; ask HEAD for it",
+        "Upload-Offset conflict\n",
+      ),
+      410: text(
+        "The upload is gone: finished and imported, or deleted after 24 hours untouched",
+        "The file for this url no longer exists\n",
+      ),
+      412: TUS_412,
+      413: text("The body runs past Upload-Length", "upload's size exceeded\n"),
+      500: TUS_500,
+      503: {
+        description:
+          "The last byte arrived but the file could not be queued for import; nothing was " +
+          "saved, so send it again (text). Or the token could not be checked (JSON).",
+        content: {
+          "text/plain": {
+            schema: { type: "string" },
+            example: "The upload could not be queued; nothing was saved. Try again.\n",
+          },
+          "application/json": { schema: ERROR_DOC, example: { error: "unavailable" } },
+        },
+      },
     },
   },
   [`GET ${API_PREFIX}/uploads/:id/result`]: {
     summary: "What became of an upload",
-    params: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    description:
+      "pending while the upload is still arriving or being imported; done with the model " +
+      "and file it made or joined; failed with a sentence saying why. Poll every second or " +
+      "two until it is not pending. A result is kept for 24 hours.",
+    tags: ["Uploads"],
+    operationId: "getUploadResult",
+    params: UPLOAD_ID_PARAM,
     response: {
       200: {
-        description:
-          "pending while uploading or importing; done with the model and file; " +
-          "or failed with a message",
-        type: "object",
-        properties: {
-          status: { type: "string", enum: ["pending", "done", "failed"] },
-          modelId: { type: "string" },
-          fileId: { type: "string" },
-          error: { type: "string" },
+        description: "The upload's state",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                status: { type: "string", enum: ["pending", "done", "failed"] },
+                modelId: { type: "string", description: "With done: the model" },
+                fileId: { type: "string", description: "With done: the new file" },
+                error: { type: "string", description: "With failed: why, in a sentence" },
+              },
+              required: ["status"],
+            },
+            examples: {
+              done: {
+                summary: "Imported",
+                value: { status: "done", modelId: EXAMPLE_IDS.model, fileId: EXAMPLE_IDS.file },
+              },
+              pending: { summary: "Still arriving or importing", value: { status: "pending" } },
+              failed: {
+                summary: "Not imported",
+                value: {
+                  status: "failed",
+                  error:
+                    "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved",
+                },
+              },
+            },
+          },
         },
-        required: ["status"],
       },
-      401: UNAUTHORIZED_DOC,
-      404: { description: "No such upload", ...ERROR_DOC },
-      503: { description: "The result cannot be read right now; try again", ...ERROR_DOC },
+      401: UNAUTHORIZED_RESPONSE,
+      404: json("No such upload, or its result is more than 24 hours old", {
+        error: "not_found",
+      }),
+      500: json(INTERNAL_DOC.description, { error: "internal" }),
+      503: json("The result cannot be read right now; try again shortly", {
+        error: "unavailable",
+        message: "The upload's result cannot be read right now. Try again shortly.",
+      }),
     },
   },
 };
@@ -141,6 +623,41 @@ const TUS_DOCS: Record<string, FastifySchema> = {
  */
 export function documentedUrl(url: string): string {
   return url.length > 1 ? url.replace(/\/+$/, "") : url;
+}
+
+/** A copy of value with every subschema carrying the PLATE_NUMBERS marker swapped for the doc. */
+function withPlateNumbers(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withPlateNumbers);
+  if (value === null || typeof value !== "object") return value;
+  if (Object.hasOwn(value, PLATE_NUMBERS)) return structuredClone(PLATE_NUMBERS_DOC);
+  return Object.fromEntries(
+    Object.entries(value).map(([key, inner]) => [key, withPlateNumbers(inner)]),
+  );
+}
+
+/**
+ * A HEAD that Fastify answers for a GET route: the GET's documentation, said
+ * to be headers only, with every answer's body taken off. HEAD gets its own
+ * operationId from @fastify/swagger (the GET's with -head).
+ */
+function headOnly(get: FastifySchema): FastifySchema {
+  const doc = get as FastifySchema & {
+    summary?: string;
+    description?: string;
+    response?: Record<string, { description?: string }>;
+  };
+  const response = Object.fromEntries(
+    Object.entries(doc.response ?? {}).map(([code, answer]) => [
+      code,
+      { description: answer.description ?? "", type: "null" },
+    ]),
+  );
+  return {
+    ...doc,
+    summary: `${doc.summary ?? ""} (headers only)`,
+    description: `The same status and headers as the GET, with no body. ${doc.description ?? ""}`,
+    response,
+  } as FastifySchema;
 }
 
 /**
@@ -155,11 +672,19 @@ export function describeRoute(
   const own = schema ?? {};
   if (!url.startsWith(`${API_PREFIX}/`)) return { ...own, hide: true };
   const pattern = documentedUrl(url).replace(/\(.*$/, "");
-  // Fastify answers HEAD for every GET route; it is described as the GET is.
   const tus =
     TUS_DOCS[`${method} ${pattern}`] ??
     (method === "HEAD" ? TUS_DOCS[`GET ${pattern}`] : undefined);
-  return tus ?? own;
+  if (tus !== undefined) {
+    if (method !== "HEAD" || TUS_DOCS[`HEAD ${pattern}`] !== undefined) return tus;
+    // The tus routes have no schema, so @fastify/swagger cannot give their
+    // HEAD its -head operationId as it does a v1 route's; it is set here.
+    const { operationId } = tus as { operationId?: string };
+    return { ...headOnly(tus), operationId: `${operationId}-head` } as FastifySchema;
+  }
+  const documented = withPlateNumbers(own) as FastifySchema;
+  // Fastify answers HEAD for every GET route with the GET's schema.
+  return method === "HEAD" ? headOnly(documented) : documented;
 }
 
 /** Registers the document's generator on the root app; call it before any route. */
@@ -174,18 +699,30 @@ export async function registerOpenApi(
         title: "Platehouse API",
         version: "1.0.0",
         description:
-          "The Platehouse public API: upload files, search the library, read models, files, " +
-          "plates and estimates, and add or remove tags and collection memberships. It never " +
-          "deletes, trashes or purges anything, and a model in the trash is invisible to it. " +
-          "Every request needs an API token as a bearer token; cookies are ignored.",
+          "The Platehouse public API, for scripts and tools such as Claude Code: upload " +
+          "files, search the library, read models, files, plates and their print estimates, " +
+          "and add or remove tags and collection memberships.\n\n" +
+          "It never deletes, trashes or purges anything, and a model in the trash is " +
+          "invisible to it.\n\n" +
+          "Every request needs an API token, made in Settings, sent as " +
+          "Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS " +
+          "headers, so a web page on another site cannot call it.\n\n" +
+          "Errors answer JSON with an error code word and, often, a message sentence. JSON " +
+          "bodies are at most 1 MiB; uploads are at most 512 MiB. The guide is docs/api.md " +
+          "in the Platehouse repository.",
       },
-      servers: [{ url: opts.serverUrl }],
+      servers: [{ url: opts.serverUrl, description: "This Platehouse server" }],
+      tags: API_TAGS.map((tag) => ({ ...tag })),
       components: {
         securitySchemes: {
           bearer: {
             type: "http",
             scheme: "bearer",
-            description: "An API token from Platehouse's settings: ph_ and 43 characters.",
+            bearerFormat: "ph_ token",
+            description:
+              "An API token, made in Settings > API tokens and shown once. It starts with " +
+              "ph_. Send it on every request as Authorization: Bearer <token>. Revoking it " +
+              "in Settings stops it at once and leaves other tokens working.",
           },
         },
       },
