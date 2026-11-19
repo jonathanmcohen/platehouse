@@ -10,9 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import fastifyCookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
-import { patternClass } from "../../src/auth/gate.js";
+import { installGate, patternClass, routeClass } from "../../src/auth/gate.js";
 import {
   defaultWebDir,
   parseShellTemplate,
@@ -346,6 +347,70 @@ describe("the icon files at the root", () => {
       expect((await app.inject({ method: "GET", url: "/favicon.ico" })).statusCode).toBe(404);
       expect((await app.inject({ method: "GET", url: "/favicon.svg" })).statusCode).toBe(200);
     });
+  });
+
+  // Public in the Route classes table (Jon, 2026-11-19, decision A-1), so
+  // the browser loads them without a session: on the auth pages, before the
+  // login redirect returns, and for the manifest, which browsers fetch
+  // without cookies.
+  test.each(FILES)("%s is public-class, as a route and as a raw path", (path) => {
+    expect(patternClass(path)).toBe("public");
+    expect(routeClass(path)).toBe("public");
+  });
+
+  test.each([
+    "/favicon.ico/",
+    "/favicon.ico/x",
+    "/favicon.icox",
+    "/Favicon.ico",
+    "/icon-1024.png",
+    "/x/favicon.svg",
+    "/favicon.%69co",
+  ])("%s, a near miss, stays session-class", (path) => {
+    expect(patternClass(path)).toBe("session");
+    expect(routeClass(path)).toBe("session");
+  });
+
+  test("with the gate installed, a signed-out browser gets each file; a page still needs a session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "platehouse-web-icons-gate-"));
+    const app = Fastify();
+    try {
+      await mkdir(join(dir, "assets"), { recursive: true });
+      await writeFile(
+        join(dir, "index.html"),
+        '<html lang="en" data-theme="dark"><meta name="color-scheme" content="dark" />',
+      );
+      for (const [path] of FILES) await writeFile(join(dir, path.slice(1)), `bytes of ${path}`);
+      await app.register(fastifyCookie);
+      installGate(app, {
+        sessions: {
+          start: async () => {
+            throw new Error("not used");
+          },
+          find: async () => undefined,
+          end: async () => {},
+        },
+        publicOrigin: "https://platehouse.test",
+        absoluteUrl: (path) => `https://platehouse.test${path}`,
+      });
+      await registerWeb(app, { dir });
+      for (const [path, type] of FILES) {
+        const response = await app.inject({
+          method: "GET",
+          url: path,
+          headers: { accept: "image/avif,image/webp,*/*" },
+        });
+        expect(response.statusCode, path).toBe(200);
+        expect(response.headers["content-type"], path).toBe(type);
+      }
+      // The control: the same gate sends a signed-out page request to the login.
+      const page = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } });
+      expect(page.statusCode).toBe(302);
+      expect(page.headers.location).toBe("https://platehouse.test/auth/login");
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("the cache lifetime is a day, public", () => {

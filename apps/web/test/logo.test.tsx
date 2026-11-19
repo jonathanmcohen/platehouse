@@ -161,6 +161,14 @@ describe("index.html links the icons and the manifest", () => {
     expect(links.some((link) => parts.every((part) => link.includes(part)))).toBe(true);
   });
 
+  // The icon files are public-class on the server, so the manifest needs no
+  // cookie and its link does not ask to send one.
+  test("the manifest link sends no credentials", () => {
+    const manifest = links.find((link) => link.includes('rel="manifest"'));
+    expect(manifest).toBeDefined();
+    expect(manifest).not.toContain("crossorigin");
+  });
+
   test("every linked file is in public/", () => {
     for (const link of links) {
       const href = /\shref="\/([^"]+)"/.exec(link)?.[1];

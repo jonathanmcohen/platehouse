@@ -22,10 +22,9 @@
 //   their root paths from the root of dist/, where Vite copies
 //   apps/web/public/, each with its own content type and cached for a day,
 //   since their names do not change when they are regenerated. They are
-//   session-class like any other path the Route classes table does not list:
-//   a signed-in browser sends its cookie with each request (the manifest
-//   link asks for credentials, as a manifest is fetched without them
-//   otherwise), and a signed-out one gets the gate's 401.
+//   public-class at exactly these paths (auth/gate.ts, Jon's decision A-1):
+//   a signed-out browser loads them on the auth pages, and the manifest,
+//   which browsers fetch without cookies, loads with no session.
 //
 // index.html is read when the app is built, and again on a page request
 // while it is missing, so a server started before the web app was built
