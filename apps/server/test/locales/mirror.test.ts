@@ -35,6 +35,7 @@ import {
   UNCONFIRMED_REASON,
   UNREMOVED_REASON,
 } from "../../src/inbox/watch.js";
+import { duplicateMessage } from "../../src/ingest/duplicates.js";
 import {
   INGEST_FAILED_MESSAGE,
   MODEL_NOT_FOUND_MESSAGE,
@@ -142,6 +143,21 @@ describe("inbox reasons (inbox/watch.ts)", () => {
     ["inbox.reason.nonUtf8", NON_UTF8_REASON],
   ])("%s", (key, sentence) => {
     expect(en(key)).toBe(sentence);
+  });
+});
+
+describe("a duplicate inbox file (ingest/duplicates.ts duplicateMessage, as the reason file says it)", () => {
+  const id = "0198f0c4-0000-7000-8000-00000000000a";
+  const first = { modelId: id, modelName: "Clip", fileId: "f1", fileName: "Clip.stl" };
+  const other = (n: number) => ({ ...first, modelId: `0198f0c4-0000-7000-8000-00000000001${n}` });
+  test.each([
+    [0, [first]],
+    [1, [first, other(1)]],
+    [2, [first, other(1), other(2)]],
+  ])("inbox.reason.duplicate with %s others", (others, matches) => {
+    expect(en("inbox.reason.duplicate", { name: "Clip", id, others })).toBe(
+      `${duplicateMessage(matches)}.`,
+    );
   });
 });
 

@@ -37,6 +37,7 @@ import { derivedParts } from "../derived/client.js";
 import { printerName } from "../estimates/display.js";
 import { isReason, reasonWords } from "../estimates/reasons.js";
 import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
+import { parseDuplicateMessage } from "../ingest/duplicates.js";
 
 /** A render event's message split into codes and detail (derived/client.ts). */
 function renderParts(message: string | null): {
@@ -133,6 +134,13 @@ export type ActivityEvent =
       reason: string;
       /** That code (changed, too_large, ...; inbox/watch.ts reasonCode), or null for a file with none. */
       reasonCode: string | null;
+      /**
+       * For a duplicate, the model the reason names and how many others
+       * hold the file, read back from the sentence (ingest/duplicates.ts
+       * parseDuplicateMessage) for the page to say it in its language; absent
+       * for any other reason, or a sentence that cannot be read back.
+       */
+      duplicate?: { name: string; id: string; others: number };
     }
   | {
       type: "estimate_failed";
@@ -348,12 +356,17 @@ export async function readInboxFailures(
     // A reason file starts with its code (inbox/watch.ts reasonFileText); an
     // older one holds the sentence alone.
     const parsed = parseReasonFile(reason);
+    const shown = scrubText(parsed.reason) || "No reason was recorded.";
+    // Read back from the scrubbed sentence, so the page's words name the
+    // model exactly as the English sentence it replaces does.
+    const duplicate = parsed.code === "duplicate" ? parseDuplicateMessage(shown) : undefined;
     items.push({
       type: "inbox_failed",
       at: new Date(mtime).toISOString(),
       name: name.slice(0, -REASON_SUFFIX.length),
-      reason: scrubText(parsed.reason) || "No reason was recorded.",
+      reason: shown,
       reasonCode: parsed.code,
+      ...(duplicate === undefined ? {} : { duplicate }),
     });
   }
   return { readable: true, items };

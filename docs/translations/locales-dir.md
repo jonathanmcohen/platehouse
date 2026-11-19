@@ -50,13 +50,18 @@ If the folder cannot be read, for example a typo in the path or a volume that wa
 Platehouse offers its built-in languages only until it can, and writes one line to the log:
 
 ```
-platehouse: locales: LOCALES_DIR cannot be read, so the languages last read from it are offered {"code":"ENOENT"}
+platehouse: locales: LOCALES_DIR cannot be read, so only the built-in languages are offered {"code":"ENOENT"}
 ```
 
-A network mount that hangs or takes longer than 5 seconds to answer is logged the same way, with
-`{"readLimitMs":5000}` in place of an error code; the languages from the last read that worked stay
-on offer meanwhile. Nothing more is logged while the folder stays that way, however many times it
-is read. When a read works again within the limit, the log says so once:
+A network mount that hangs or takes longer than 5 seconds to answer keeps the languages from the
+last read that worked on offer meanwhile, and writes a different line:
+
+```
+platehouse: locales: LOCALES_DIR is slow to read, so the languages last read from it are offered {"readLimitMs":5000}
+```
+
+If that slow read then fails, the "cannot be read" line follows it. Nothing more is logged while the
+folder stays that way, however many times it is read. When a read works again within the limit, the log says so once:
 `locales: LOCALES_DIR can be read again`.
 
 ## Fixing words in a built-in language

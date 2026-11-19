@@ -63,6 +63,8 @@ export type ActivityEvent =
       reason: string;
       /** The code the reason file starts with; null for an older file with none. */
       reasonCode?: string | null;
+      /** For a duplicate: the model the reason names and how many others hold the file. */
+      duplicate?: { name: string; id: string; others: number };
     }
   | {
       type: "estimate_failed";

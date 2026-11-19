@@ -24,7 +24,8 @@ const SOURCE_WORDS: Readonly<Record<ModelSource, MessageKey>> = {
 /**
  * The words for each fixed reason an inbox file goes to failed with, by the
  * code its reason file starts with (apps/server/src/inbox/watch.ts). A
- * reason that quotes an error has no fixed words and is shown as it is.
+ * reason that quotes an error has no fixed words and is shown as it is. A
+ * duplicate names its model, so it is said by inboxReasonIn below.
  */
 const INBOX_REASON_KEYS: Readonly<Record<string, MessageKey>> = {
   changed: "inbox.reason.changed",
@@ -49,6 +50,26 @@ function reasonIn(
   words: string,
 ): string {
   return serverText(i18n, words, code === null || code === undefined ? undefined : keys[code]);
+}
+
+/**
+ * An inbox file's reason in the shown language: a duplicate in the catalog's
+ * words with the model the server read back from its sentence, any other by
+ * its code; else as the server wrote it.
+ */
+export function inboxReasonIn(
+  i18n: Pick<I18n, "t" | "locale">,
+  event: {
+    reason: string;
+    reasonCode?: string | null;
+    duplicate?: { name: string; id: string; others: number };
+  },
+): string {
+  if (event.reasonCode === "duplicate" && event.duplicate !== undefined) {
+    const { name, id, others } = event.duplicate;
+    return serverText(i18n, event.reason, "inbox.reason.duplicate", { name, id, others });
+  }
+  return reasonIn(i18n, INBOX_REASON_KEYS, event.reasonCode, event.reason);
 }
 
 function When({ at }: { at: string }) {
@@ -163,7 +184,7 @@ function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () =
           </div>
           <p className="ph-activity-line">{event.name}</p>
           <p className="ph-activity-line ph-activity-detail studio-muted">
-            {reasonIn(i18n, INBOX_REASON_KEYS, event.reasonCode, event.reason)}
+            {inboxReasonIn(i18n, event)}
           </p>
         </>
       );

@@ -170,6 +170,7 @@
   "groups.tags.all": "All tags",
   "groups.tags.empty": "No tags yet. Add a tag to a model to make one.",
   "inbox.reason.changed": "This file changed while Platehouse was importing it, so it was kept here; check the new model in the library before adding it again.",
+  "inbox.reason.duplicate": "{others, plural, =0 {This file is already in the library, in the model \"{name}\" (id {id}), so it was skipped; nothing was saved.} one {This file is already in the library, in the model \"{name}\" (id {id}) and # other model, so it was skipped; nothing was saved.} other {This file is already in the library, in the model \"{name}\" (id {id}) and # other models, so it was skipped; nothing was saved.}}",
   "inbox.reason.held": "Platehouse stopped while it was deleting this file after an import, so it was kept here; check the library before adding it again.",
   "inbox.reason.nonUtf8": "Platehouse could not import this file because its name is not valid UTF-8; rename it and add it again.",
   "inbox.reason.putBackFailed": "This file was put in the inbox under the name of a file Platehouse had just imported, and it could not be put back under its name, so it was kept here and not imported; add it again.",

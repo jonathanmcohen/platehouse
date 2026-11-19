@@ -77,7 +77,8 @@ async function started(options: LocalesOptions = {}): Promise<Locales> {
   return locales;
 }
 
-const BAD = "locales: LOCALES_DIR cannot be read, so the languages last read from it are offered";
+const BAD = "locales: LOCALES_DIR cannot be read, so only the built-in languages are offered";
+const SLOW = "locales: LOCALES_DIR is slow to read, so the languages last read from it are offered";
 const GOOD = "locales: LOCALES_DIR can be read again";
 
 let dir: string;
@@ -275,12 +276,13 @@ describe("LOCALES_DIR", () => {
     expect((await locales.translator("de")).t("shell.nav.library")).toBe("Bibliothek");
     expect(await settlesWithin(locales.list(), 50)).toBe(true);
     // Past the read limit the log says so, once, however many reads are asked for.
-    await vi.waitFor(() => expect(warnings.filter((w) => w.message === BAD)).toHaveLength(1));
+    await vi.waitFor(() => expect(warnings.filter((w) => w.message === SLOW)).toHaveLength(1));
     void locales.refresh();
     void locales.refresh();
-    expect(warnings.filter((w) => w.message === BAD)).toEqual([
-      { details: { readLimitMs: 20 }, message: BAD },
+    expect(warnings.filter((w) => w.message === SLOW)).toEqual([
+      { details: { readLimitMs: 20 }, message: SLOW },
     ]);
+    expect(warnings.filter((w) => w.message === BAD)).toHaveLength(0);
   });
 
   test("a read that is slow but finishes delays no request and is logged once", async () => {
@@ -296,12 +298,35 @@ describe("LOCALES_DIR", () => {
     }
     // Slow at every read: one line when it went slow, none per read, and no
     // "can be read again" for a read that only finished late.
-    expect(warnings.filter((w) => w.message === BAD)).toHaveLength(1);
+    expect(warnings.filter((w) => w.message === SLOW)).toHaveLength(1);
+    expect(warnings.filter((w) => w.message === BAD)).toHaveLength(0);
     expect(warnings.filter((w) => w.message === GOOD)).toHaveLength(0);
     // Quick again: said once.
     disk.gate.delayMs = 0;
     await locales.refresh();
     expect(warnings.filter((w) => w.message === GOOD)).toHaveLength(1);
+  });
+
+  test("a slow read that then finds the folder gone says the built-in languages only are offered", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const disk = testFs();
+    const locales = await started({ dir, log, fs: disk.fs, readLimitMs: 15 });
+    expect(await locales.available()).toContain("de");
+    await rm(dir, { recursive: true });
+    disk.gate.delayMs = 40;
+    await locales.refresh();
+    // Slow first (the last read kept), then gone (built-in only): each said once.
+    expect(warnings.filter((w) => w.message === SLOW)).toEqual([
+      { details: { readLimitMs: 15 }, message: SLOW },
+    ]);
+    expect(warnings.filter((w) => w.message === BAD)).toEqual([
+      { details: { code: "ENOENT" }, message: BAD },
+    ]);
+    expect(await locales.available()).not.toContain("de");
+    // Still gone, still slow: nothing more.
+    await locales.refresh();
+    expect(warnings.filter((w) => w.message === SLOW)).toHaveLength(1);
+    expect(warnings.filter((w) => w.message === BAD)).toHaveLength(1);
   });
 
   test("a change is picked up by the background read on its timer", async () => {

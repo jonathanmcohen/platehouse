@@ -8,10 +8,11 @@
 // one read at a time. Every request (the shell pages, the login pages and
 // GET /app/api/locales) reads only the languages last read, in memory, and
 // never touches the filesystem, so a hung network mount cannot hold a page.
-// A folder that cannot be read (missing, unreadable, or a read slower than
-// readLimitMs) is logged once when it goes bad and once when it can be read
-// again, never once per read. Each file must be named <code>.json for a locale code
-// (es, pt-BR), be a regular file (a symlink is refused, as the inbox does),
+// A folder that cannot be read (missing, unreadable) offers the built-in
+// languages only; a read slower than readLimitMs keeps the languages last
+// read. Each is its own log line, said once when the folder goes bad, and
+// once more when it can be read again, never once per read. Each file must
+// be named <code>.json for a locale code (es, pt-BR), be a regular file (a symlink is refused, as the inbox does),
 // be at most MAX_LOCALE_BYTES, and hold a JSON object. Its messages are
 // checked against English with @platehouse/i18n's checkCatalog, lenient: a
 // message that passes is used, one that does not (markup, a placeholder
@@ -206,23 +207,37 @@ export function createLocales(options: LocalesOptions = {}): Locales {
   };
   /** The read of the folder in flight; at most one at a time. */
   let inFlight: Promise<void> | undefined;
-  /** Whether the folder is in a bad state (unreadable or too slow), logged once until it recovers. */
-  let bad = false;
+  /**
+   * The folder's bad state, logged once until it recovers: slow (a read
+   * outlasted readLimitMs, the languages last read are kept) or unreadable
+   * (the read failed, the built-in languages only are offered). A slow read
+   * that then fails is logged again, as unreadable; nothing else is.
+   */
+  let bad: "slow" | "unreadable" | undefined;
   let closed = false;
   let timer: ReturnType<typeof setInterval> | undefined;
 
-  function goneBad(details: Record<string, unknown>): void {
-    if (bad) return;
-    bad = true;
+  function goneSlow(details: Record<string, unknown>): void {
+    if (bad !== undefined) return;
+    bad = "slow";
     log?.warn(
       details,
-      "locales: LOCALES_DIR cannot be read, so the languages last read from it are offered",
+      "locales: LOCALES_DIR is slow to read, so the languages last read from it are offered",
+    );
+  }
+
+  function goneUnreadable(details: Record<string, unknown>): void {
+    if (bad === "unreadable") return;
+    bad = "unreadable";
+    log?.warn(
+      details,
+      "locales: LOCALES_DIR cannot be read, so only the built-in languages are offered",
     );
   }
 
   function recovered(): void {
-    if (!bad) return;
-    bad = false;
+    if (bad === undefined) return;
+    bad = undefined;
     log?.warn({}, "locales: LOCALES_DIR can be read again");
   }
 
@@ -331,19 +346,19 @@ export function createLocales(options: LocalesOptions = {}): Locales {
 
   /**
    * One read of the folder, or the read already in flight. A read that
-   * outlasts readLimitMs puts the folder in the bad state (logged once) and
+   * outlasts readLimitMs puts the folder in the slow state (logged once) and
    * is left to finish in the background: its result is still used when it
    * lands, but only a read that finishes within the limit counts as the
    * folder recovering, so a mount that is always slow logs once, not once
    * per read. A folder that cannot be read offers no local languages until
-   * it can be again.
+   * it can be again, and is logged as unreadable, even after a slow line.
    */
   function readFolder(folder: string): Promise<void> {
     if (inFlight !== undefined) return inFlight;
     let slow = false;
     const limit = setTimeout(() => {
       slow = true;
-      goneBad({ readLimitMs });
+      goneSlow({ readLimitMs });
     }, readLimitMs);
     unrefTimer(limit);
     inFlight = (async () => {
@@ -355,7 +370,7 @@ export function createLocales(options: LocalesOptions = {}): Locales {
         if (!slow) recovered();
       } catch (error) {
         local = { signature: "", byCode: new Map() };
-        goneBad({
+        goneUnreadable({
           code: error instanceof FolderUnreadable ? error.code : (error as Error).name,
         });
       }

@@ -13,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { scheduleIn } from "../src/activity/ActivityPage";
+import { inboxReasonIn } from "../src/activity/Events";
 import { formatCount } from "../src/activity/format";
 import { loadInitialMessages, loadMessages, OVERLAY_LIST_TIMEOUT_MS } from "../src/i18n/catalogs";
 import { I18nProvider, useI18n } from "../src/i18n/I18n";
@@ -668,6 +669,29 @@ describe("every other place that shows server text follows the same rule", () =>
       translator("fr").t("activity.when.minutes", { count: 15, zone: "Etc/UTC" }),
     );
     expect(scheduleIn(translator("fr"), "17 */3 * * 1 (UTC)")).toBe("17 */3 * * 1 (UTC)");
+  });
+
+  test("an inbox file refused as a duplicate is the server's own in English and the catalog's in Spanish, never server English", () => {
+    const id = "0198f0c4-0000-7000-8000-00000000000a";
+    const event = {
+      reason: `This file is already in the library, in the model "Clip" (id ${id}) and 1 other model, so it was skipped; nothing was saved.`,
+      reasonCode: "duplicate",
+      duplicate: { name: "Clip", id, others: 1 },
+    };
+    expect(inboxReasonIn(translator("en"), event)).toBe(event.reason);
+    const spanish = inboxReasonIn(translator("es"), event);
+    expect(spanish).toBe(
+      translator("es").t("inbox.reason.duplicate", { name: "Clip", id, others: 1 }),
+    );
+    expect(spanish).toContain("Clip");
+    expect(spanish).not.toBe(event.reason);
+    expect(inboxReasonIn(translator("fr"), event)).not.toBe(event.reason);
+    // An older file whose words the server could not read back: shown as it is.
+    expect(inboxReasonIn(translator("es"), { reason: SAID, reasonCode: "duplicate" })).toBe(SAID);
+    // A fixed reason by its code, as before.
+    expect(inboxReasonIn(translator("es"), { reason: SAID, reasonCode: "changed" })).toBe(
+      translator("es").t("inbox.reason.changed"),
+    );
   });
 
   test("a printer name is the server's own in English, even in a form the catalog writes differently", () => {
