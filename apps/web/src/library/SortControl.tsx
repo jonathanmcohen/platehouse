@@ -6,21 +6,24 @@
 // order works with Back and Forward and a shared link. The server orders the
 // models. Print time and filament weight are totals for the selected
 // printer, and models without them come last either way, which the note
-// under the menu says.
+// under the menu says, naming the printer in the shown language
+// (printerNameIn).
 import { useId } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useI18n } from "../i18n/I18n";
+import { printerNameIn } from "../i18n/printers";
 import { type LibrarySort, SORT_OPTIONS, sortFrom, sortHref } from "./paging";
 
 export interface SortControlProps {
   /** The active search, which decides whether best match is offered. */
   q: string;
-  /** The selected printer the times and weights are for; empty while unknown. */
+  /** The selected printer's name as the server sends it (English); empty while unknown. */
   printer: string;
 }
 
 export function SortControl({ q, printer }: SortControlProps) {
-  const { t } = useI18n();
+  const i18n = useI18n();
+  const { t } = i18n;
   const id = useId();
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -36,7 +39,9 @@ export function SortControl({ q, printer }: SortControlProps) {
               ? "library.sort.noteTimeSelected"
               : "library.sort.noteWeightSelected",
           )
-        : t(measure === "time" ? "library.sort.noteTime" : "library.sort.noteWeight", { printer });
+        : t(measure === "time" ? "library.sort.noteTime" : "library.sort.noteWeight", {
+            printer: printerNameIn(i18n, printer),
+          });
   return (
     <div className="ph-sort">
       <label htmlFor={id}>{t("library.sort.label")}</label>

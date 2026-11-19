@@ -21,6 +21,7 @@ import { languageCookie, readLanguage, savedLanguage } from "../src/i18n/languag
 import { printerNameIn } from "../src/i18n/printers";
 import { serverText } from "../src/i18n/serverText";
 import { ModelCard } from "../src/library/ModelCard";
+import { SortControl } from "../src/library/SortControl";
 import { derivedMessageIn } from "../src/model/FilesTab";
 import { PlateNumbersView } from "../src/model/Numbers";
 import { sentenceFor } from "../src/settings/api";
@@ -182,6 +183,42 @@ describe("plurals and numbers", () => {
   });
 });
 
+describe("the sort note under the library's Sort menu", () => {
+  const SERVER_NAME = "Bambu Lab P1S, 0.4 mm nozzle";
+
+  function renderSort(locale: string, sort: string) {
+    act(() => {
+      root.render(
+        <I18nProvider
+          locale={locale}
+          messages={CATALOGS[locale] as Messages}
+          load={async (code) => CATALOGS[code] as Messages}
+        >
+          <MemoryRouter initialEntries={[`/?sort=${sort}`]}>
+            <SortControl q="" printer={SERVER_NAME} />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    return container.querySelector("p")?.textContent ?? "";
+  }
+
+  test("names the printer the server's way on an English page", () => {
+    expect(renderSort("en", "time-asc")).toBe(
+      `Models without a print time for ${SERVER_NAME} are listed last.`,
+    );
+  });
+
+  test.each([
+    ["es", "time-asc", "Bambu Lab P1S, boquilla de 0,4 mm"],
+    ["fr", "weight-desc", "Bambu Lab P1S, buse de 0,4 mm"],
+  ])("names the printer in the language in %s", (locale, sort, name) => {
+    const note = renderSort(locale, sort);
+    expect(note).toContain(name);
+    expect(note).not.toContain("nozzle");
+  });
+});
+
 describe("dates and counts on an English page (issue 292)", () => {
   const ISO = "2026-11-19T13:52:00Z";
   const as = (locale: string) =>
@@ -235,6 +272,21 @@ describe("the language menu", () => {
     expect(container.querySelector("h2")?.textContent).toBe("Idioma");
     expect(document.documentElement.getAttribute("lang")).toBe("es");
     expect(savedLanguage(document)).toBe("es");
+  });
+
+  test.each([
+    ["before the list answers", () => new Promise<ListedLocale[]>(() => {})],
+    ["when the list cannot be read", () => Promise.reject(new Error("503"))],
+  ])("marks the bundled machine drafts %s", async (_when, list) => {
+    render("en", <LanguagePicker list={list} />);
+    await act(async () => {});
+    const note = (label: string) =>
+      [...container.querySelectorAll("label")]
+        .find((l) => l.querySelector("span")?.textContent === label)
+        ?.textContent?.includes("machine translation, not yet reviewed");
+    expect(note("Espa\u00f1ol")).toBe(true);
+    expect(note("Fran\u00e7ais")).toBe(true);
+    expect(note("English")).toBe(false);
   });
 
   test("Browser language follows the browser's own list and clears the cookie", async () => {
@@ -453,5 +505,19 @@ describe("every other place that shows server text follows the same rule", () =>
     const body = { error: "bad_request", code: "stale_trash", message: SAID };
     expect(sentenceFor(400, body, translator("en"))).toBe(SAID);
     expect(sentenceFor(400, body, translator("es"))).toBe(translator("es").t("api.staleTrash"));
+  });
+
+  test("a 503 that names its code is the server's sentence in English and the code's words in French", () => {
+    const body = { error: "unavailable", code: "slicer_unavailable", message: SAID };
+    expect(sentenceFor(503, body, translator("en"))).toBe(SAID);
+    expect(sentenceFor(503, body, translator("fr"))).toBe(
+      translator("fr").t("api.slicerUnavailable"),
+    );
+    // A 5xx with no code the page knows still says the plain line, never the server's words.
+    const plain = { error: "unavailable", message: SAID };
+    expect(sentenceFor(503, plain, translator("en"))).toBe(translator("en").t("api.unavailable"));
+    expect(sentenceFor(500, { error: "internal", message: SAID }, translator("en"))).toBe(
+      translator("en").t("api.failed"),
+    );
   });
 });

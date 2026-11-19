@@ -9,7 +9,7 @@
 // name, and so does a language that covers only part of the app.
 import { languageName, resolveLocale, SOURCE_LOCALE } from "@platehouse/i18n";
 import { useEffect, useId, useState } from "react";
-import { builtinLocales } from "./catalogs";
+import { builtinLocales, isBuiltinMachineDraft } from "./catalogs";
 import { useI18n } from "./I18n";
 import { savedLanguage } from "./language";
 
@@ -27,13 +27,17 @@ export interface ListedLocale {
   overlay?: boolean;
 }
 
-/** The built-in languages as the bundle knows them, for when the list cannot be read. */
+/**
+ * The built-in languages as the bundle knows them, for when the list cannot
+ * be read, each machine draft marked from its catalog's $meta as the server
+ * marks it.
+ */
 function bundled(): ListedLocale[] {
   return builtinLocales().map((code) => ({
     code,
     name: languageName(code),
     source: "built-in",
-    machineDraft: false,
+    machineDraft: isBuiltinMachineDraft(code),
     complete: true,
   }));
 }

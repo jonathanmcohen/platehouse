@@ -55,7 +55,9 @@ const CODE_KEYS: Readonly<Record<string, MessageKey>> = {
  * The sentence for a refused call, in a language. An English page shows the
  * server's own sentence for the page, word for word. Another language shows a
  * known code's words, else a line for the status: a server sentence is
- * English, so it never reaches a page in another language.
+ * English, so it never reaches a page in another language. At 5xx only a
+ * known code's sentence is shown (such as slicer_unavailable's 503); any
+ * other 5xx message stays behind the plain line for the status.
  */
 export function sentenceFor(status: number, body: unknown, i18n: Words = ENGLISH_I18N): string {
   const { t } = i18n;
@@ -72,10 +74,10 @@ export function sentenceFor(status: number, body: unknown, i18n: Words = ENGLISH
     (typeof fields.code === "string" ? CODE_KEYS[fields.code] : undefined) ??
     (typeof fields.error === "string" ? CODE_KEYS[fields.error] : undefined);
   const known = () =>
-    key === undefined || status >= 500
+    key === undefined
       ? undefined
       : t(key, typeof fields.max === "number" ? { max: fields.max } : {});
-  if (status < 500 && typeof message === "string" && message !== "") {
+  if ((status < 500 || key !== undefined) && typeof message === "string" && message !== "") {
     // The server's own sentence for the page (serverTextWith's rule); its
     // code's words, else a plain line, in another language.
     return serverTextWith(i18n, message, () => known() ?? t("api.refused"));

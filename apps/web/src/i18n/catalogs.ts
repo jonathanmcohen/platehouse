@@ -25,9 +25,34 @@ for (const [path, load] of Object.entries(BUILTIN)) {
   if (code !== undefined) builtinLoaders.set(code, load);
 }
 
+/**
+ * Each built-in catalog's $meta, read at build time so the language menu can
+ * mark a machine draft before (or without) the server's list. The query
+ * makes each a module of its own that keeps only $meta, so the messages stay
+ * in each language's own chunk (without it the build pulls every catalog into
+ * the main bundle); its "lang.json" ending keeps the id a JSON module to
+ * Vite 8, which rejects a JSON file with any other query.
+ */
+const BUILTIN_META = import.meta.glob<{ status?: unknown } | undefined>(
+  "../../../../packages/i18n/locales/*.json",
+  { eager: true, import: "$meta", query: "?meta&lang.json" },
+);
+
+const builtinDrafts = new Set<string>();
+for (const [path, meta] of Object.entries(BUILTIN_META)) {
+  const file = path.slice(path.lastIndexOf("/") + 1).replace(/\?.*$/, "");
+  const code = canonicalLocale(file.slice(0, -".json".length));
+  if (code !== undefined && meta?.status === "machine-draft") builtinDrafts.add(code);
+}
+
 /** The built-in languages' codes, English included. */
 export function builtinLocales(): string[] {
   return [...builtinLoaders.keys()].sort();
+}
+
+/** Whether a built-in language is a machine translation nobody has reviewed yet ($meta.status "machine-draft"). */
+export function isBuiltinMachineDraft(code: string): boolean {
+  return builtinDrafts.has(code);
 }
 
 /** What GET /app/api/locales/:code answers. */
