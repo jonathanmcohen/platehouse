@@ -201,14 +201,22 @@ describe("the shell renders data-theme from the cookie, with dark as the default
   );
 
   test("changes nothing but the html element's data-theme and the color-scheme meta", () => {
-    const html = shell.render("light");
-    expect(html).toBe(
-      TEMPLATE.replace('data-theme="dark"', 'data-theme="light"').replace(
-        '<meta name="color-scheme" content="dark" />',
-        '<meta name="color-scheme" content="light" />',
-      ),
+    // With no accent cookie the default replaces the template's data-accent,
+    // so the template here already carries the default.
+    const template = TEMPLATE.replace(
+      'data-accent="bambu-green"',
+      `data-accent="${DEFAULT_ACCENT}"`,
     );
-    expect(shell.render(undefined)).toBe(TEMPLATE);
+    const plain = parseShellTemplate(template);
+    expect(plain.render("light")).toBe(
+      template
+        .replace('data-theme="dark"', 'data-theme="light"')
+        .replace(
+          '<meta name="color-scheme" content="dark" />',
+          '<meta name="color-scheme" content="light" />',
+        ),
+    );
+    expect(plain.render(undefined)).toBe(template);
   });
 
   test("leaves the same words elsewhere in the page alone", () => {
@@ -335,8 +343,8 @@ describe("constants", () => {
     expect(web.fallback).toBe(DEFAULT_ACCENT);
   });
 
-  test("the default accent is Bambu green, today's colour", () => {
-    expect(DEFAULT_ACCENT).toBe("bambu-green");
+  test("the default accent is Blueprint indigo (Jon, 2026-11-19)", () => {
+    expect(DEFAULT_ACCENT).toBe("blueprint-indigo");
   });
 
   test.each([

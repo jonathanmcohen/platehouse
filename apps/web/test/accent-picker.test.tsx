@@ -151,7 +151,7 @@ describe("the keyboard", () => {
   test("forward from the last wraps to the first, and back from the first to the last", () => {
     renderPicker("lime");
     key(radio("lime"), "ArrowRight");
-    expect(checked()).toEqual(["Bambu green"]);
+    expect(checked()).toEqual(["Green"]);
     key(radio("bambu-green"), "ArrowLeft");
     expect(checked()).toEqual(["Lime"]);
     expect(document.activeElement).toBe(radio("lime"));
@@ -162,7 +162,7 @@ describe("the keyboard", () => {
     key(radio("coral"), "End");
     expect(checked()).toEqual(["Lime"]);
     key(radio("lime"), "Home");
-    expect(checked()).toEqual(["Bambu green"]);
+    expect(checked()).toEqual(["Green"]);
     expect(document.activeElement).toBe(radio("bambu-green"));
   });
 

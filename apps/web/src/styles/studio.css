@@ -73,11 +73,13 @@
 /* ---- Accent schemes ----
    Each block gives its scheme's colours for both themes; the palettes pick
    the theme's. :root carries the default's colours too, for a page served
-   without the server (vite dev), which writes no data-accent. The values,
-   and where each comes from, are in src/shell/accent.ts. */
+   without the server (vite dev), which writes no data-accent. It is
+   :where(:root), which has no specificity, so any [data-accent] block wins
+   over it wherever the two sit in this file; a plain :root on the default's
+   block would beat every scheme listed before it. The values, and where
+   each comes from, are in src/shell/accent.ts. */
 
-/* Bambu green */
-:root,
+/* Green */
 [data-accent="bambu-green"] {
   --scheme-light-accent: #00873a;
   --scheme-light-text: #007a2f;
@@ -121,7 +123,8 @@
   --scheme-dark-soft: #192e34;
 }
 
-/* Blueprint indigo */
+/* Blueprint indigo, the default (Jon, 2026-11-19) */
+:where(:root),
 [data-accent="blueprint-indigo"] {
   --scheme-light-accent: #3d47c4;
   --scheme-light-text: #3d47c4;

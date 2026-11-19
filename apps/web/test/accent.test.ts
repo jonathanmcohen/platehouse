@@ -100,8 +100,8 @@ describe("the schemes", () => {
     expect(SCHEMES.map((s) => s.id)).toEqual(IDS);
   });
 
-  test("Bambu green, today's colour, is the default", () => {
-    expect(DEFAULT_ACCENT).toBe("bambu-green");
+  test("Blueprint indigo is the default (Jon, 2026-11-19)", () => {
+    expect(DEFAULT_ACCENT).toBe("blueprint-indigo");
     expect(ACCENTS).toContain(DEFAULT_ACCENT);
   });
 
@@ -115,7 +115,7 @@ describe("the schemes", () => {
 
   test("each scheme has its name, and the twelve names are the ones Jon gave", () => {
     expect(ACCENTS.map((id) => ACCENT_NAMES[id])).toEqual([
-      "Bambu green",
+      "Green",
       "Workshop green",
       "Filament orange",
       "Spool teal",
@@ -140,7 +140,7 @@ describe("the schemes", () => {
     }
   });
 
-  test("the default's dark tokens are today's dark palette, exactly", () => {
+  test("Green's dark tokens are the studio dark palette's, exactly", () => {
     const green = SCHEMES.find((s) => s.id === "bambu-green");
     expect(green?.dark).toEqual({
       accent: "#00ae42",
@@ -150,7 +150,7 @@ describe("the schemes", () => {
     });
   });
 
-  test("the default's light text and soft are today's, and its fill is Jon's button green", () => {
+  test("Green's light text and soft are the studio palette's, and its fill is Jon's button green", () => {
     const green = SCHEMES.find((s) => s.id === "bambu-green");
     expect(green?.light).toEqual({
       accent: "#00873a",

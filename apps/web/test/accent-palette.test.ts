@@ -262,21 +262,32 @@ describe("the scheme blocks", () => {
     expect(ids).toEqual([...ACCENTS]);
   });
 
-  test("a page with no data-accent still has a complete scheme from :root", () => {
+  test("a page with no data-accent still has a complete scheme from :root, the default's", () => {
     const fallback = rules(TOP).filter(
-      (r) => r.selectors.includes(":root") && "--scheme-dark-accent" in r.decls,
+      (r) => r.selectors.includes(":where(:root)") && "--scheme-dark-accent" in r.decls,
     );
     expect(fallback).toHaveLength(1);
     expect(Object.keys((fallback[0] as Rule).decls)).toHaveLength(7);
+    expect((fallback[0] as Rule).selectors).toContain(`[data-accent="${DEFAULT_ACCENT}"]`);
   });
 
-  test("the default scheme's dark tokens are today's dark palette", () => {
+  // A plain :root has the same specificity as [data-accent="id"], so on a
+  // block after the first it would beat every scheme listed before it (Green,
+  // for one). :where(:root) has none, so any data-accent wins wherever it is.
+  test("the fallback is :where(:root), never a plain :root that would beat a scheme", () => {
+    const plain = rules(TOP).filter(
+      (r) => r.selectors.includes(":root") && "--scheme-dark-accent" in r.decls,
+    );
+    expect(plain).toHaveLength(0);
+  });
+
+  test("the default scheme's dark tokens are Blueprint indigo's", () => {
     expect(tokens("dark", DEFAULT_ACCENT)).toMatchObject({
-      "--accent": "#00ae42",
-      "--accent-text": "#33d17a",
-      "--accent-soft": "#173027",
-      "--chip-active-bg": "#00ae42",
-      "--focus": "#33d17a",
+      "--accent": "#596eec",
+      "--accent-text": "#9aa2ff",
+      "--accent-soft": "#22263c",
+      "--chip-active-bg": "#596eec",
+      "--focus": "#9aa2ff",
     });
   });
 });
@@ -353,7 +364,7 @@ describe("contrast", () => {
   });
 
   test("the contrast check fails a pairing below the bar", () => {
-    // The check itself, on a pair known to fail: today's green on white is
+    // The check itself, on a pair known to fail: Green's #00ae42 on white is
     // 2.94:1, which is why the light theme fills with Jon's button colour.
     expect(contrast("#00ae42", "#ffffff")).toBeLessThan(3);
     expect(contrast("#ffffff", "#00873a")).toBeGreaterThanOrEqual(4.5);

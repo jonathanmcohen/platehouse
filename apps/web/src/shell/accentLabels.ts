@@ -4,7 +4,7 @@
 import type { AccentId } from "./accent";
 
 export const ACCENT_NAMES: Readonly<Record<AccentId, string>> = {
-  "bambu-green": "Bambu green",
+  "bambu-green": "Green",
   "workshop-green": "Workshop green",
   "filament-orange": "Filament orange",
   "spool-teal": "Spool teal",

@@ -16,12 +16,13 @@ import { ORIGIN } from "../support/env.js";
 const CASES = [
   // Coral in light: logo #f0644a, fill #b25b46.
   { theme: "light", accent: "coral", brand: "rgb(240, 100, 74)", fill: "rgb(178, 91, 70)" },
-  // Blueprint indigo in dark: logo and fill #596eec.
+  // Green in dark: logo and fill #00ae42. Not Blueprint indigo, the default,
+  // which an ignored cookie would paint too.
   {
     theme: "dark",
-    accent: "blueprint-indigo",
-    brand: "rgb(89, 110, 236)",
-    fill: "rgb(89, 110, 236)",
+    accent: "bambu-green",
+    brand: "rgb(0, 174, 66)",
+    fill: "rgb(0, 174, 66)",
   },
 ] as const;
 
@@ -55,6 +56,10 @@ test("an unknown ph_accent gets the default scheme", async ({ page, context }) =
   ]);
   const res = await page.goto(`${ORIGIN}/`, { waitUntil: "load" });
   expect(res?.status()).toBe(200);
-  expect(await res?.text()).toContain('data-accent="bambu-green"');
-  await expect(page.locator(".studio-brand-dot")).toHaveCSS("background-color", "rgb(0, 174, 66)");
+  // Blueprint indigo, the default (Jon, 2026-11-19): #596eec in dark.
+  expect(await res?.text()).toContain('data-accent="blueprint-indigo"');
+  await expect(page.locator(".studio-brand-dot")).toHaveCSS(
+    "background-color",
+    "rgb(89, 110, 236)",
+  );
 });

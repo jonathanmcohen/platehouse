@@ -3,10 +3,12 @@
 // palettes are read out of studio.css itself, so a colour edited there is
 // checked here: every text and background pair meets WCAG AA (4.5:1) in both
 // palettes, the alert edges meet 3:1, System's light copy equals Light, the
-// default accent is Bambu green, and the palettes, radii and breakpoints are
-// the ones manyfold-studio shipped at 4076a67. The palettes take their accent
-// tokens from the accent scheme (Jon, 2026-11-19); here they are read with
-// the default scheme filled in, and accent-palette.test.ts checks all twelve.
+// default accent is Blueprint indigo, and the palettes, radii and breakpoints
+// are the ones manyfold-studio shipped at 4076a67. The palettes take their
+// accent tokens from the accent scheme (Jon, 2026-11-19); here they are read
+// with the default scheme filled in, or with Green, the studio's own colour,
+// where they are compared with 4076a67. accent-palette.test.ts checks all
+// twelve.
 //
 // Not ported: the picture stacking tests, which pin the restyling of
 // Manyfold's PreviewFrame markup (.card-img-top and its blurred backdrop).
@@ -20,7 +22,9 @@ const CSS = readFileSync(new URL("../src/styles/studio.css", import.meta.url), "
 const DARK = ':root,\n[data-theme="dark"]';
 const LIGHT = '[data-theme="light"]';
 /** The default accent scheme's block, which :root also carries (accent-palette.test.ts checks all twelve). */
-const ROOT_SCHEME = ':root,\n[data-accent="bambu-green"]';
+const ROOT_SCHEME = ':where(:root),\n[data-accent="blueprint-indigo"]';
+/** Green's block: the accent manyfold-studio shipped at 4076a67. */
+const GREEN_SCHEME = '[data-accent="bambu-green"]';
 
 type Palette = Record<string, string>;
 
@@ -41,19 +45,20 @@ function hexColours(block: string): Palette {
 }
 
 /**
- * The colours of the block for selector, with the default scheme's colours
- * for its var(--scheme-*) tokens: what the page paints with no accent chosen.
+ * The colours of the block for selector, with a scheme's colours for its
+ * var(--scheme-*) tokens. The default scheme gives what the page paints with
+ * no accent chosen.
  */
-function palette(selector: string): Palette {
-  return declaredColours(blockFor(selector));
+function palette(selector: string, schemeSelector: string = ROOT_SCHEME): Palette {
+  return declaredColours(blockFor(selector), schemeSelector);
 }
 
-function declaredColours(block: string): Palette {
-  const scheme = hexColours(blockFor(ROOT_SCHEME));
+function declaredColours(block: string, schemeSelector: string = ROOT_SCHEME): Palette {
+  const scheme = hexColours(blockFor(schemeSelector));
   const colours = hexColours(block);
   for (const m of block.matchAll(/(--[a-z-]+)\s*:\s*var\((--scheme-[a-z-]+)\)\s*;/g)) {
     const value = scheme[m[2] as string];
-    expect(value, `${m[1]}: ${m[2]} is not in the default scheme`).toBeDefined();
+    expect(value, `${m[1]}: ${m[2]} is not in the scheme`).toBeDefined();
     colours[m[1] as string] = value as string;
   }
   return colours;
@@ -122,8 +127,8 @@ const PAIRS: Array<[string, string]> = [
   ["--chip-text", "--surface"],
 ];
 
-// The palettes of manyfold-studio's studio.css at 4076a67, with the default
-// accent scheme (Bambu green) filled in. --brand, the logo's colour, was
+// The palettes of manyfold-studio's studio.css at 4076a67, with its accent,
+// the Green scheme, filled in. --brand, the logo's colour, was
 // added with the accent schemes (Jon, 2026-11-19).
 const STUDIO_DARK: Palette = {
   "--bg": "#121418",
@@ -227,17 +232,17 @@ describe("palettes", () => {
     }
   });
 
-  test("dark with the default accent is the studio dark palette at 4076a67, plus the logo colour", () => {
-    expect(palette(DARK)).toEqual(STUDIO_DARK);
+  test("dark with Green is the studio dark palette at 4076a67, plus the logo colour", () => {
+    expect(palette(DARK, GREEN_SCHEME)).toEqual(STUDIO_DARK);
   });
 
-  test("light with the default accent is the studio light palette, with Jon's button green as the fill", () => {
-    expect(palette(LIGHT)).toEqual(STUDIO_LIGHT);
+  test("light with Green is the studio light palette, with Jon's button green as the fill", () => {
+    expect(palette(LIGHT, GREEN_SCHEME)).toEqual(STUDIO_LIGHT);
   });
 
-  test("the plan's colours are the ones in use", () => {
-    const dark = palette(DARK);
-    const light = palette(LIGHT);
+  test("the plan's colours are the ones in use, with Green", () => {
+    const dark = palette(DARK, GREEN_SCHEME);
+    const light = palette(LIGHT, GREEN_SCHEME);
     expect(dark).toMatchObject({
       "--bg": "#121418",
       "--surface": "#1a1d23",
@@ -257,11 +262,14 @@ describe("palettes", () => {
     });
   });
 
-  test("the default accent is Bambu green: #00ae42 in dark and in the logo, #00873a as the light fill", () => {
-    expect(palette(DARK)["--accent"]).toBe("#00ae42");
-    expect(palette(DARK)["--brand"]).toBe("#00ae42");
-    expect(palette(LIGHT)["--accent"]).toBe("#00873a");
-    expect(palette(LIGHT)["--brand"]).toBe("#00ae42");
+  // Jon, 2026-11-19: the default is Blueprint indigo. Its dark fill and logo
+  // are #596eec, not #5560e0, which is 3.83:1 under the dark button text
+  // (src/shell/accent.ts); #5560e0 is the light logo.
+  test("the default accent is Blueprint indigo: #596eec in dark and in the dark logo, #3d47c4 as the light fill, #5560e0 as the light logo", () => {
+    expect(palette(DARK)["--accent"]).toBe("#596eec");
+    expect(palette(DARK)["--brand"]).toBe("#596eec");
+    expect(palette(LIGHT)["--accent"]).toBe("#3d47c4");
+    expect(palette(LIGHT)["--brand"]).toBe("#5560e0");
   });
 
   test("dark is the default: it is the :root block", () => {

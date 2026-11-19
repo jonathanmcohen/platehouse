@@ -17,13 +17,13 @@
 // come from:
 // - light: accent is Jon's "button" colour, the fill behind white button
 //   text, which is also what progress bars and selected borders draw with
-//   (the raw accent is under 3:1 on white for seven of the twelve, today's
-//   green included); accentText and accentSoft are Jon's; brand, the logo, is
+//   (the raw accent is under 3:1 on white for seven of the twelve, Green
+//   included); accentText and accentSoft are Jon's; brand, the logo, is
 //   Jon's accent.
 // - dark: accent is Jon's accent, the fill behind the dark palette's
 //   near-black button text; accentText is Jon's dark value; accentSoft is the
-//   accent laid 13% over the dark surface (#1a1d23), which is how today's
-//   dark green soft was made; brand is the dark accent.
+//   accent laid 13% over the dark surface (#1a1d23), which is how the studio
+//   palette's dark green soft was made; brand is the dark accent.
 // - A colour that missed a bar was moved to the nearest colour (CIEDE2000)
 //   that meets them all: 4.5:1 for text, 3:1 for fills and focus rings, at
 //   least 10 from the theme's danger colour, and no closer to another
@@ -52,8 +52,8 @@ export const ACCENTS = [
 
 export type AccentId = (typeof ACCENTS)[number];
 
-/** The scheme a browser with no choice gets: today's green, until Jon picks one. */
-export const DEFAULT_ACCENT: AccentId = "bambu-green";
+/** The scheme a browser with no choice gets: Blueprint indigo (Jon, 2026-11-19). */
+export const DEFAULT_ACCENT: AccentId = "blueprint-indigo";
 
 export const ACCENT_COOKIE = "ph_accent";
 

@@ -115,7 +115,7 @@ export const ACCENTS = [
 export type Accent = (typeof ACCENTS)[number];
 
 /** The scheme a browser with no choice gets; keep it the web app's DEFAULT_ACCENT. */
-export const DEFAULT_ACCENT: Accent = "bambu-green";
+export const DEFAULT_ACCENT: Accent = "blueprint-indigo";
 
 /** The cookie the web app's accent picker writes. */
 export const ACCENT_COOKIE = "ph_accent";
