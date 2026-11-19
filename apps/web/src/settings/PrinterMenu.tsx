@@ -357,8 +357,8 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       {unread ? (
         <div role="alert" className="studio-alert studio-alert-alert">
           <p>
-            The change was saved, but the list could not be read again, so the buttons wait until
-            it is.
+            The change was saved, but the list could not be read again, so the buttons wait until it
+            is.
           </p>
           <button
             type="button"

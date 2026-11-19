@@ -956,9 +956,7 @@ describe("the model page's printer switch", () => {
     expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBe(X1C);
 
     const before = requests.length;
-    const retry = [...container.querySelectorAll("button")].find(
-      (b) => text(b) === "Try again",
-    );
+    const retry = [...container.querySelectorAll("button")].find((b) => text(b) === "Try again");
     await act(async () => retry?.click());
     await settle();
     expect(requests.slice(before)).toEqual([
