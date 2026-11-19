@@ -7,7 +7,7 @@
 // shown beyond the message the server wrote for the page. A .tsx module
 // like the pages that use it: useAppApi is a React hook.
 
-import { formatDateTime, SOURCE_LOCALE } from "@platehouse/i18n";
+import { SOURCE_LOCALE } from "@platehouse/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 
@@ -224,9 +224,4 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
   }, [path]);
 
   return { data, error, set, reload };
-}
-
-/** A date for display, in a language (the shown one, through useI18n's fmt.date). */
-export function formatDate(iso: string, withTime = false, locale?: string): string {
-  return formatDateTime(locale ?? ENGLISH_I18N.locale, iso, withTime);
 }

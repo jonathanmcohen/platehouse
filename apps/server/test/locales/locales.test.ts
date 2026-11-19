@@ -55,6 +55,7 @@ describe("LOCALES_DIR", () => {
       name: "Deutsch",
       source: "local",
       machineDraft: false,
+      overlay: false,
       complete: false,
     });
     expect(await locales.messages("de")).toEqual({ "shell.nav.library": "Bibliothek" });
@@ -121,6 +122,12 @@ describe("LOCALES_DIR", () => {
     const locales = createLocales({ dir, log });
     const t = await locales.translator("es");
     expect(t.t("shell.nav.library")).toBe("Mi biblioteca");
+    // The web app bundles es, so the list tells it to ask for the overlay.
+    expect((await locales.list()).find((l) => l.code === "es")).toMatchObject({
+      source: "built-in",
+      overlay: true,
+    });
+    expect((await createLocales().list()).find((l) => l.code === "es")?.overlay).toBe(false);
     expect(t.t("shell.nav.trash")).toBe("Papelera");
   });
 
@@ -132,6 +139,20 @@ describe("LOCALES_DIR", () => {
     const later = new Date(Date.now() + 5_000);
     await utimes(dir, later, later);
     expect(await locales.available()).toContain("it");
+  });
+
+  test("a file rewritten in place is read again, with the folder's time left as it was", async () => {
+    await file("de.json", { "shell.nav.library": "Bibliothek" });
+    const before = new Date(Date.now() - 60_000);
+    await utimes(dir, before, before);
+    const locales = createLocales({ dir, log });
+    expect((await locales.translator("de")).t("shell.nav.library")).toBe("Bibliothek");
+    // An editor saving over the file: new words, a later time, the folder untouched.
+    await file("de.json", { "shell.nav.library": "Meine Bibliothek" });
+    const later = new Date(Date.now() + 5_000);
+    await utimes(join(dir, "de.json"), later, later);
+    await utimes(dir, before, before);
+    expect((await locales.translator("de")).t("shell.nav.library")).toBe("Meine Bibliothek");
   });
 
   test("a missing folder offers the built-in languages only", async () => {

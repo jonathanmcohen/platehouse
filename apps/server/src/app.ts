@@ -491,6 +491,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     prefix: UPLOAD_PREFIXES.app,
     authHook: requireSession,
     uploads: deps.uploads,
+    // The web app shows a failure by its code, in its language.
+    resultCodes: "all",
   });
   await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerModelApi(app, deps.model ?? emptyAppModel);

@@ -121,7 +121,9 @@
 //   every pass.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
-//   holding one plain sentence. failed/ is made when missing, and refused
+//   holding one line: a stable code, a colon and a space, then one plain
+//   sentence, such as "changed: This file changed while ..." (reasonFileText
+//   and reasonCode below; Jon, 2026-11-19). failed/ is made when missing, and refused
 //   when it is anything but a real folder (a symlink copied in by rsync -a,
 //   say): nothing moves through it, and each file that would have is logged
 //   and left in the inbox, as a file that cannot be moved is (below), or,

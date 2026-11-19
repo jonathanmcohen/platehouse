@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatDecimal, formatList, languageName } from "../src/format.js";
 import {
   canonicalLocale,
+  formatLocale,
   matchLocale,
   parseAcceptLanguage,
   resolveLocale,
@@ -49,6 +50,22 @@ describe("matchLocale and resolveLocale", () => {
     expect(resolveLocale({ saved: "de", wanted: ["es"], available })).toBe("es");
     expect(resolveLocale({ saved: undefined, wanted: ["de"], available })).toBe("en");
     expect(resolveLocale({ saved: "../x", wanted: [], available })).toBe("en");
+  });
+});
+
+describe("formatLocale", () => {
+  it("takes the browser's full tag when its language is the one shown", () => {
+    expect(formatLocale("en", ["en-GB", "en"])).toBe("en-GB");
+    expect(formatLocale("es", ["es-MX", "es"])).toBe("es-MX");
+    expect(formatLocale("en", ["de-DE", "en-AU"])).toBe("en-AU");
+    expect(formatLocale("pt-BR", ["pt-PT", "pt-BR"])).toBe("pt-BR");
+    expect(formatLocale("pt-BR", ["pt-PT"])).toBe("pt-BR");
+  });
+
+  it("keeps the shown language when the browser has none of it (a de browser that chose English)", () => {
+    expect(formatLocale("en", ["de-DE", "de"])).toBe("en");
+    expect(formatLocale("fr", [])).toBe("fr");
+    expect(formatLocale("en", ["not a tag"])).toBe("en");
   });
 });
 

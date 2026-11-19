@@ -27,6 +27,7 @@ export {
 } from "./message.js";
 export {
   canonicalLocale,
+  formatLocale,
   LANG_COOKIE,
   matchLocale,
   parseAcceptLanguage,

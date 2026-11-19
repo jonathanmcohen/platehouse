@@ -155,12 +155,33 @@ export function uploadsDir(tmpDir: string): string {
  */
 export type AuthHook = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 
-/** What GET <prefix>/:id/result answers (Public API v1 contract). */
+/**
+ * What the ingest queue reports for an upload, and GET <prefix>/:id/result
+ * answers. On /api/v1/uploads the answer is the Public API v1 contract: a
+ * failure carries a code only when it is a skipped duplicate (publicResult
+ * removes every other code). On /app/uploads, the web app's own mount, a
+ * failure also carries the ingest's own code (unsupported_type,
+ * model_not_found, storage_unavailable, ingest_failed, upload_failed), so
+ * the page can say it in its language (Jon, 2026-11-19).
+ */
 export type UploadResult =
   | { status: "pending" }
   | { status: "done"; modelId: string; fileId: string; duplicates: DuplicateMatch[] }
   | { status: "failed"; error: string }
+  | { status: "failed"; error: string; code: string }
   | { status: "failed"; error: string; code: "duplicate"; duplicates: DuplicateMatch[] };
+
+/**
+ * A result as the Public API v1 answers it: a failed upload keeps its code
+ * only when it is "duplicate", exactly as the published OpenAPI document
+ * says; every other code, which only the web app's mount sends, is removed.
+ */
+export function publicResult(result: UploadResult): UploadResult {
+  if (result.status !== "failed" || !("code" in result) || result.code === "duplicate") {
+    return result;
+  }
+  return { status: "failed", error: result.error };
+}
 
 /** The ingest queue as the uploads see it. */
 export interface UploadQueue {
@@ -666,9 +687,20 @@ async function sendTusResponse(reply: FastifyReply, response: Response): Promise
  */
 export async function registerTus(
   app: FastifyInstance,
-  opts: { prefix: string; authHook: AuthHook; uploads: Uploads },
+  opts: {
+    prefix: string;
+    authHook: AuthHook;
+    uploads: Uploads;
+    /**
+     * "all": a failed result carries every ingest code (the web app's mount,
+     * /app/uploads). "public", the default: only "duplicate", as the Public
+     * API v1 document says (publicResult).
+     */
+    resultCodes?: "all" | "public";
+  },
 ): Promise<void> {
   const { authHook, uploads } = opts;
+  const allCodes = opts.resultCodes === "all";
   const prefix = opts.prefix.replace(/\/+$/, "");
 
   const shared = {
@@ -769,7 +801,7 @@ export async function registerTus(
             .code(503)
             .send({ error: "unavailable", message: RESULT_UNAVAILABLE_MESSAGE });
         }
-        if (result !== undefined) return reply.send(result);
+        if (result !== undefined) return reply.send(allCodes ? result : publicResult(result));
         // Still uploading: its info file is there and nothing is queued yet.
         try {
           await stat(join(uploads.dir, `${id}.json`));

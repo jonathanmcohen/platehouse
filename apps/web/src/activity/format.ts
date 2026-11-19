@@ -6,9 +6,9 @@ import { ENGLISH_I18N, type I18n } from "../i18n/I18n";
 
 type Words = Pick<I18n, "t" | "locale" | "fmt">;
 
-/** A count with the language's digit grouping: 1,200. */
+/** A count with the digit grouping of the locale the page formats in (fmt.locale): 1,200. */
 export function formatCount(n: number, i18n: Words = ENGLISH_I18N): string {
-  return new Intl.NumberFormat(i18n.locale).format(n);
+  return new Intl.NumberFormat(i18n.fmt.locale()).format(n);
 }
 
 /** A size: 684 B, 120.6 KB, 89.4 MB, 4.5 GB, 1.2 TB (powers of 1000, as the Files tab). */

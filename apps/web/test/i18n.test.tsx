@@ -12,6 +12,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { formatCount } from "../src/activity/format";
 import { loadMessages } from "../src/i18n/catalogs";
 import { I18nProvider, useI18n } from "../src/i18n/I18n";
 import { LanguagePicker, type ListedLocale } from "../src/i18n/LanguagePicker";
@@ -19,6 +20,7 @@ import { languageCookie, readLanguage, savedLanguage } from "../src/i18n/languag
 import { printerNameIn } from "../src/i18n/printers";
 import { ModelCard } from "../src/library/ModelCard";
 import { Shell } from "../src/shell/Shell";
+import { Sidebar } from "../src/shell/Sidebar";
 import { TrashList } from "../src/trash/TrashList";
 import { UploadDialog } from "../src/upload/UploadDialog";
 
@@ -82,6 +84,16 @@ function rawKeys(): string[] {
   const text = shownText().join("\n");
   return KEYS.filter((key) =>
     new RegExp(`(^|[^\\w.])${key.replaceAll(".", "\\.")}($|[^\\w.])`).test(text),
+  );
+}
+
+/** A date and a count, as an English page writes them. */
+function DateAndCount({ iso }: { iso: string }) {
+  const i18n = useI18n();
+  return (
+    <span>
+      {i18n.fmt.date(iso, true)} | {formatCount(1200, i18n)}
+    </span>
   );
 }
 
@@ -164,6 +176,31 @@ describe("plurals and numbers", () => {
   });
 });
 
+describe("dates and counts on an English page (issue 292)", () => {
+  const ISO = "2026-11-19T13:52:00Z";
+  const as = (locale: string) =>
+    `${new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ISO))} | ${new Intl.NumberFormat(locale).format(1200)}`;
+
+  test("follow an en-GB browser's own format, the words still English", () => {
+    vi.stubGlobal("navigator", { ...navigator, languages: ["en-GB", "en"] });
+    render("en", <DateAndCount iso={ISO} />);
+    expect(as("en-GB")).not.toBe(as("en"));
+    expect(container.textContent).toBe(as("en-GB"));
+  });
+
+  test("fall back to plain English for a de browser that chose English", () => {
+    vi.stubGlobal("navigator", { ...navigator, languages: ["de-DE", "de"] });
+    render("en", <DateAndCount iso={ISO} />);
+    expect(container.textContent).toBe(as("en"));
+  });
+
+  test("follow an es-MX browser on a Spanish page", () => {
+    vi.stubGlobal("navigator", { ...navigator, languages: ["es-MX", "es"] });
+    render("es", <DateAndCount iso={ISO} />);
+    expect(container.textContent).toBe(as("es-MX"));
+  });
+});
+
 describe("the language menu", () => {
   const LIST: ListedLocale[] = [
     { code: "en", name: "English", source: "built-in", machineDraft: false, complete: true },
@@ -217,6 +254,86 @@ describe("the language cookie and the html lang", () => {
     expect(languageCookie("../x", false)).toContain("Max-Age=0");
     document.documentElement.removeAttribute("lang");
     expect(readLanguage(document)).toBe("en");
+  });
+});
+
+describe("a self-hoster's changes to a built-in language", () => {
+  test("reach the app: picking Spanish shows the LOCALES_DIR word over the bundled one", async () => {
+    const list = [
+      {
+        code: "en",
+        name: "English",
+        source: "built-in",
+        machineDraft: false,
+        overlay: false,
+        complete: true,
+      },
+      {
+        code: "es",
+        name: "Espanol",
+        source: "built-in",
+        machineDraft: true,
+        overlay: true,
+        complete: true,
+      },
+    ];
+    const merged = { ...(CATALOGS.es as Messages), "shell.nav.library": "Mi biblioteca" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url === "/app/api/locales/es"
+          ? new Response(JSON.stringify({ code: "es", messages: merged }))
+          : new Response(JSON.stringify({ locales: list })),
+      ),
+    );
+    // The provider's own loader: the bundled chunk, then the server's overlay.
+    act(() => {
+      root.render(
+        <I18nProvider locale="en" messages={CATALOGS.en as Messages}>
+          <MemoryRouter>
+            <Sidebar />
+            <LanguagePicker list={async () => list as ListedLocale[]} />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {});
+    const espanol = [...container.querySelectorAll("label")].find((l) =>
+      l.textContent?.startsWith("Espanol"),
+    );
+    await act(async () => {
+      espanol?.querySelector("input")?.click();
+    });
+    // The chunk import and the two requests take a few turns; wait for the switch.
+    for (let i = 0; i < 50 && document.documentElement.getAttribute("lang") !== "es"; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(document.documentElement.getAttribute("lang")).toBe("es");
+    const links = [...container.querySelectorAll("nav a")].map((a) => a.textContent);
+    expect(links).toContain("Mi biblioteca");
+    // The rest stays the bundled Spanish.
+    expect(links).toContain((CATALOGS.es as Messages)["shell.nav.trash"]);
+  });
+
+  test("fall back to the bundled language when the overlay cannot be read", async () => {
+    const fetcher = vi.fn(async (url: string) =>
+      url === "/app/api/locales"
+        ? new Response(JSON.stringify({ locales: [{ code: "es", overlay: true }] }))
+        : new Response("", { status: 503 }),
+    );
+    const messages = await loadMessages("es", fetcher as unknown as typeof fetch);
+    expect(messages["shell.nav.library"]).toBe((CATALOGS.es as Messages)["shell.nav.library"]);
+  });
+
+  test("ask nothing more when the server lists no overlay", async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ locales: [{ code: "es", overlay: false }] })),
+    );
+    await loadMessages("es", fetcher as unknown as typeof fetch);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith("/app/api/locales", expect.anything());
   });
 });
 

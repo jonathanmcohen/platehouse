@@ -23,6 +23,8 @@ export interface ListedLocale {
   machineDraft: boolean;
   /** Whether it has a message for every English key. */
   complete: boolean;
+  /** A built-in language a LOCALES_DIR file changes (catalogs.ts merges it). */
+  overlay?: boolean;
 }
 
 /** The built-in languages as the bundle knows them, for when the list cannot be read. */

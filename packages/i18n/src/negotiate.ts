@@ -71,6 +71,23 @@ export function matchLocale(
   return undefined;
 }
 
+/**
+ * The locale dates and numbers are formatted in (Jon, 2026-11-19, issue
+ * 292): the browser's own full tag when its language is the one shown, so
+ * an en-GB browser on English writes 19 Nov 2026, 13:52 and an es-MX browser
+ * on Spanish writes Mexican dates; else the shown language itself (a de
+ * browser that chose English formats as en). The words always come from the
+ * shown language's catalog. A catalog for a bare language (en, es) takes
+ * the browser's first tag in that language, in the browser's own order; a
+ * catalog for a region (pt-BR) keeps its region, since its words are that
+ * region's.
+ */
+export function formatLocale(shown: string, wanted: readonly string[]): string {
+  if (shown.includes("-")) return shown;
+  const tags = wanted.map((w) => canonicalLocale(w)).filter((w): w is string => w !== undefined);
+  return tags.find((t) => base(t) === base(shown)) ?? shown;
+}
+
 /** The language to show: the saved choice when available, else the browser's, else English. */
 export function resolveLocale(input: {
   saved?: string | undefined;

@@ -47,6 +47,12 @@ export interface ListedLocale {
   source: "built-in" | "local";
   /** A machine translation nobody has reviewed yet ($meta.status "machine-draft"). */
   machineDraft: boolean;
+  /**
+   * A built-in language a LOCALES_DIR file changes: the web app, which
+   * bundles the built-in catalogs, then asks GET /app/api/locales/:code for
+   * the merged messages. False for every other language.
+   */
+  overlay: boolean;
   /** Whether it has a message for every English key. */
   complete: boolean;
 }
@@ -102,6 +108,7 @@ function builtinLocales(): Map<string, Loaded> {
         name: nameOf(checked.meta, code),
         source: "built-in",
         machineDraft: checked.meta.status === "machine-draft",
+        overlay: false,
         complete: checked.missing.length === 0,
       },
       messages: checked.messages,
@@ -126,7 +133,33 @@ export function createLocales(options: LocalesOptions = {}): Locales {
   const english = englishMessages();
   const log = options.log;
   /** The local languages and the folder's modification time when they were read. */
-  let local: { mtimeMs: number; byCode: Map<string, Loaded> } | undefined;
+  let local: { signature: string; byCode: Map<string, Loaded> } | undefined;
+
+  /**
+   * What the folder holds now, as one string: the folder's modification
+   * time, and each JSON entry's name, modification time and size. An entry
+   * added, removed or renamed changes the folder's time; a file rewritten in
+   * place (an editor, or cp onto an existing name) changes only its own, so
+   * each file's time and size are part of it too. "" for a folder that
+   * cannot be read.
+   */
+  async function signatureOf(dir: string): Promise<string> {
+    try {
+      const parts = [String((await stat(dir)).mtimeMs)];
+      const names = (await readdir(dir)).filter((n) => n.endsWith(".json")).sort();
+      for (const name of names.slice(0, MAX_LOCALE_FILES)) {
+        try {
+          const info = await lstat(join(dir, name));
+          parts.push(`${name}:${info.mtimeMs}:${info.size}`);
+        } catch {
+          parts.push(`${name}:gone`);
+        }
+      }
+      return parts.join("|");
+    } catch {
+      return "";
+    }
+  }
 
   async function readLocal(dir: string): Promise<Map<string, Loaded>> {
     const byCode = new Map<string, Loaded>();
@@ -195,6 +228,7 @@ export function createLocales(options: LocalesOptions = {}): Locales {
           code,
           name: nameOf(checked.meta, code),
           source: builtin === undefined ? "local" : "built-in",
+          overlay: builtin !== undefined,
           machineDraft:
             checked.meta.status === "machine-draft" ||
             (builtin?.listed.machineDraft === true && checked.meta.status === undefined),
@@ -210,14 +244,9 @@ export function createLocales(options: LocalesOptions = {}): Locales {
     const out = new Map(builtinLocales());
     const dir = options.dir;
     if (dir !== undefined) {
-      let mtimeMs = -1;
-      try {
-        mtimeMs = (await stat(dir)).mtimeMs;
-      } catch {
-        mtimeMs = -1;
-      }
-      if (local === undefined || local.mtimeMs !== mtimeMs) {
-        local = { mtimeMs, byCode: mtimeMs < 0 ? new Map() : await readLocal(dir) };
+      const signature = await signatureOf(dir);
+      if (local === undefined || local.signature !== signature) {
+        local = { signature, byCode: signature === "" ? new Map() : await readLocal(dir) };
       }
       for (const [code, loaded] of local.byCode) out.set(code, loaded);
     }

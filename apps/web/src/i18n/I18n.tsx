@@ -15,6 +15,7 @@ import {
   formatDateTime,
   formatDecimal,
   formatList,
+  formatLocale,
   type Messages,
   type MessageValues,
   type Translator,
@@ -51,6 +52,13 @@ export interface Formatters {
   list(items: readonly string[]): string;
   /** A number with at most maxFraction decimals and no grouping. */
   decimal(value: number, maxFraction: number): string;
+  /**
+   * The locale numbers and dates are written in: the browser's own tag when
+   * its language is the one shown (en-GB on an English page), else the shown
+   * language (formatLocale in @platehouse/i18n). The words come from the
+   * catalog either way.
+   */
+  locale(): string;
 }
 
 export interface I18n {
@@ -66,9 +74,17 @@ export interface I18n {
   setLanguage(choice: string | null, shown: string): Promise<void>;
 }
 
+/** The browser's languages, best first; none where there is no browser. */
+function browserLanguages(): readonly string[] {
+  if (typeof navigator === "undefined") return [];
+  return navigator.languages ?? (navigator.language ? [navigator.language] : []);
+}
+
 function makeFormatters(translator: Translator): Formatters {
-  const { locale } = translator;
   const t = (key: MessageKey, values: MessageValues) => translator.t(key, values);
+  // Read at each call, so a page made before the browser's list is known
+  // (English outside the provider) still follows it.
+  const fl = () => formatLocale(translator.locale, browserLanguages());
   return {
     duration(seconds) {
       const minutes = Math.max(1, Math.round(seconds / 60));
@@ -79,34 +95,35 @@ function makeFormatters(translator: Translator): Formatters {
     },
     weight(grams) {
       if (grams >= 1000) {
-        return t("format.weight.kilograms", { value: formatDecimal(locale, grams / 1000, 2) });
+        return t("format.weight.kilograms", { value: formatDecimal(fl(), grams / 1000, 2) });
       }
-      return t("format.weight.grams", { value: formatDecimal(locale, grams, 1) });
+      return t("format.weight.grams", { value: formatDecimal(fl(), grams, 1) });
     },
     size(bytes) {
-      if (bytes < 1000) return t("format.size.bytes", { value: formatDecimal(locale, bytes, 0) });
+      if (bytes < 1000) return t("format.size.bytes", { value: formatDecimal(fl(), bytes, 0) });
       if (bytes < 1_000_000) {
-        return t("format.size.kilobytes", { value: formatDecimal(locale, bytes / 1000, 1) });
+        return t("format.size.kilobytes", { value: formatDecimal(fl(), bytes / 1000, 1) });
       }
       if (bytes < 1_000_000_000) {
-        return t("format.size.megabytes", { value: formatDecimal(locale, bytes / 1_000_000, 1) });
+        return t("format.size.megabytes", { value: formatDecimal(fl(), bytes / 1_000_000, 1) });
       }
       return t("format.size.gigabytes", {
-        value: formatDecimal(locale, bytes / 1_000_000_000, 2),
+        value: formatDecimal(fl(), bytes / 1_000_000_000, 2),
       });
     },
     percent(value) {
-      return t("format.percent", { value: formatDecimal(locale, value, 0) });
+      return t("format.percent", { value: formatDecimal(fl(), value, 0) });
     },
     date(iso, withTime = false) {
-      return formatDateTime(locale, iso, withTime);
+      return formatDateTime(fl(), iso, withTime);
     },
     list(items) {
-      return formatList(locale, items);
+      return formatList(fl(), items);
     },
     decimal(value, maxFraction) {
-      return formatDecimal(locale, value, maxFraction);
+      return formatDecimal(fl(), value, maxFraction);
     },
+    locale: fl,
   };
 }
 
