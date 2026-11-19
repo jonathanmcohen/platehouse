@@ -39,7 +39,7 @@ const sidebars = {
     },
     "security",
     "backups-and-upgrades",
-    "api-guide",
+    "api",
     "troubleshooting",
     "changelog",
   ],

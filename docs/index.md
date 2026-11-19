@@ -13,8 +13,8 @@ STEP and OpenSCAD files.
   name, filaments (type, colour and grams), print time and weight.
 - **Estimates every plate.** When a file carries Bambu's own slice numbers, Platehouse shows
   them, labelled with the printer they were sliced for. When it does not, or when they were made
-  for another printer, Platehouse slices the plate in the background with OrcaSlicer for the
-  printer you picked in Settings, and shows that estimate beside them.
+  for another printer, Platehouse slices the plate in the background with OrcaSlicer for each
+  printer in **My printers** in Settings, and shows that estimate beside them.
 - **Opens a file in your slicer.** Every `.3mf` has Open in Bambu Studio and Open in OrcaSlicer
   buttons. They work through a short-lived link, so the slicer needs no login.
 - **Keeps the files in object storage.** Model files, thumbnails and renders live in an

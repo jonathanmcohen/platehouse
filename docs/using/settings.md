@@ -19,10 +19,19 @@ While the bucket's versioning is off or suspended, a red banner reads "Bucket ve
 Turn it on at your storage provider and keep old versions for 30 days." See
 [Storage](../storage.md#turn-on-versioning).
 
-## Printer
+## My printers
 
-Pick your printer and nozzle and press **Save printer**. Estimates are made for this printer. See
-[Printers and estimates](./printers-and-estimates.md).
+The printers you own, in your order, with one marked **Default**. Platehouse estimates every plate
+for each of them.
+
+- Pick a printer and nozzle in **Add a printer** and press **Add printer**. Adding a printer queues
+  every plate in the library for it, and the page says how many and about how long that takes.
+- **Up** and **Down** set the order, and **Make default** picks the printer shown first on the
+  library and model pages.
+- **Remove** asks first and drops the estimates still waiting for that printer. The default cannot
+  be removed until another printer is made the default.
+
+See [Printers and estimates](./printers-and-estimates.md#my-printers).
 
 ## API tokens
 

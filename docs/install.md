@@ -125,7 +125,7 @@ library once you sign in. If sign-in is refused, the page says why; see
 
 Then, in **Settings**:
 
-- pick your printer and nozzle, so estimates are made for it;
+- add your printers under **My printers** and make one the default, so estimates are made for them;
 - check that there is no red banner about bucket versioning (see [Storage](./storage.md));
 - create an API token if you want to use the API.
 

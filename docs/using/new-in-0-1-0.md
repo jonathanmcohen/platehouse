@@ -27,14 +27,13 @@ points to the features added late in the release, and lists the few still to com
   addresses and tokens taken out on the model page and in the API, as on the Activity page.
 - **Rotate and flip** buttons under a plate's large image. See
   [Models, files and plates](./models-files-plates.md#turning-a-plate-image).
+- **Several printers**: My printers in Settings lists every printer you own, with one default, and
+  every plate is estimated for each of them. The library header and the model page's Plates tab
+  get a printer switch. See [Printers and estimates](./printers-and-estimates.md#my-printers).
 
 ## Coming in 0.1.0
 
 These are still being finished. Each section will be filled in once its change is merged.
-
-### Several printers
-
-Coming in 0.1.0. Estimates for more than one printer.
 
 ### Sorting and bulk select
 

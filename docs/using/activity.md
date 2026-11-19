@@ -8,7 +8,7 @@ did not turn out as expected.
 
 - **Library**: how many models are in the library and in the trash, files by kind, plates, the
   number and total size of stored objects, and when the last import happened.
-- **Estimates**: progress for your selected printer, as a progress bar with a rough time left.
+- **Estimates**: progress for your default printer, as a progress bar with a rough time left.
 - **Queues**: the background job queues (imports, the slicer queue and maintenance) and what is
   waiting or running in each.
 - **Scheduled jobs**: the daily and regular jobs, such as the trash purge and the cleanup, with

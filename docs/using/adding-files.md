@@ -4,7 +4,7 @@ Platehouse takes `.3mf`, `.stl`, `.step`, `.stp` and `.scad` files, up to 512 Mi
 checked by its contents as well as its name: a `.3mf` must really be a zip, a `.scad` must be
 text, and so on. Anything else is refused with a message, and nothing is stored.
 
-There are three ways in: the browser, the inbox folder, and the [API](../api-guide.md). Each
+There are three ways in: the browser, the inbox folder, and the [API](../api.md). Each
 handles a file the library already holds differently; see [Duplicate files](#duplicate-files).
 
 ## Uploading in the browser

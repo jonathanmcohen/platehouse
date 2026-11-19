@@ -1,16 +1,49 @@
 # Printers and estimates
 
-Every plate of every `.3mf` gets a print time, a weight and grams per filament for the printer you
-picked, even when the file was never sliced.
+Every plate of every `.3mf` gets a print time, a weight and grams per filament for each printer in
+**My printers**, even when the file was never sliced.
 
-## Picking your printer
+## My printers
 
-In **Settings**, pick your printer and nozzle and press **Save printer**. The menu lists every
-Bambu Lab printer and nozzle that the slicer's OrcaSlicer version has a profile for, grouped by
-printer. The default is the P1S with a 0.4 mm nozzle.
+**My printers**, in **Settings**, is the list of printers you own. Platehouse estimates every
+plate for every printer in it. A new install starts with one printer, the P1S with a 0.4 mm
+nozzle, as the default. Every printer is named in full, such as "Bambu Lab P1S, 0.4 mm nozzle".
 
-Saving a new printer re-estimates the whole library in the background. Until a plate's new
-estimate is ready, its old numbers stay on screen, marked as made for the previous printer.
+- **Add a printer**: pick a printer and nozzle in the **Add a printer** menu and press **Add
+  printer**. The menu lists every Bambu Lab printer and nozzle that the slicer's OrcaSlicer version
+  has a profile for, grouped by printer model. Choosing in the menu saves nothing until you press
+  **Add printer**.
+- **Adding a printer queues the whole library.** Every plate in the library is queued for the new
+  printer, except plates whose file already carries Bambu's own numbers for it. The slicer does one
+  plate at a time, at about 3 plates a minute, so a large library takes hours (463 plates is about
+  2 hours and 35 minutes). The page says how many plates were queued and about how long they will
+  take, counting any other work already queued ahead of them. Each printer in the list shows the
+  plates it still has waiting.
+- **The order**: **Up** and **Down** move a printer in the list. The list order is the order the
+  printer switch offers them in.
+- **One default**: one printer is marked **Default**. Its numbers are shown first on the library
+  and model pages, and the Activity page and the API answer for it. **Make default** on another
+  printer changes it. Changing the order or the default starts no slicing.
+- **Remove** asks first, in a dialog that says how many plates are still waiting for that printer.
+  Removing a printer drops the estimates still waiting for it; numbers already made for it are
+  kept. The default printer cannot be removed: make another printer the default first, so the list
+  is never empty.
+
+If you change My printers in another browser window while this one is open, a change from the
+older window is refused and nothing is saved. The page reads the list again and says so; make the
+change again from the list as it is now.
+
+A printer in the list that the slicer no longer offers (for example after an OrcaSlicer update
+renamed its profile) stays in the list, marked as one nothing can be estimated for.
+
+## The printer switch
+
+The library header and the model page's **Plates** tab say which printer the times and weights
+are for. With more than one printer in My printers, that line is a menu, **Times and weights for**,
+that switches the page to another printer's numbers. The switch only shows numbers that already
+exist or are on their way; it never starts slicing. Your browser remembers the choice, so the
+library and the model page show the same printer, and a reload keeps it. If the chosen printer is
+removed from My printers, the pages go back to the default.
 
 ## Where the numbers come from
 

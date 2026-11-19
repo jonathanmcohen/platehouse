@@ -41,4 +41,4 @@ You can also rename a model, and any of its files, from its row on the **Tags**,
 ## From the API
 
 The API can search, add and remove tags, and add a model to or remove it from a collection. It
-cannot delete or trash anything. See the [API guide](../api-guide.md).
+cannot delete or trash anything. See the [API guide](../api.md).
