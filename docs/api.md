@@ -336,6 +336,7 @@ give_up() {
   case $STATUS in
     3??) echo "Hint: a redirect. Use the https:// address in PLATEHOUSE, or a proxy is redirecting API calls (to a login page?) and must let /api/v1/ through." >&2 ;;
     413) echo "Hint: a proxy in front of Platehouse refused the body size. Raise its limit (for nginx, client_max_body_size) or set CHUNK smaller." >&2 ;;
+    410) echo "Hint: the upload expired, or its import already failed. If it failed, GET ${UPLOAD:-<upload address>}/result says why; sending the same file again would fail the same way." >&2 ;;
   esac
   exit 1
 }
@@ -344,7 +345,10 @@ give_up() {
 # headers in $TMP/headers, its body in $TMP/body and its status in STATUS.
 # Returns 0 on the EXPECTED status. On no answer, 409 or a 5xx it waits 5
 # seconds and returns 1, so the caller asks again (a PATCH asks HEAD for the
-# offset first); after TRIES of those in a row it stops. Anything else stops.
+# offset first); after TRIES of those with no progress between them it
+# stops. Anything else stops. Progress is the expected answer to anything but
+# HEAD: a HEAD only reads the offset, so one that answers between two failed
+# PATCHes does not reset the count.
 call() {
   expected=$1 method=$2 url=$3
   shift 3
@@ -362,13 +366,16 @@ call() {
   # Only a 100 Continue before the connection dropped is not an answer either.
   case ${STATUS:-000} in 1??) STATUS=000 ;; esac
   case ${STATUS:-000} in
-    "$expected") FAILED=0; return 0 ;;
+    "$expected")
+      if [ "$method" != HEAD ]; then FAILED=0; fi
+      return 0
+      ;;
     000 | 409 | 5??) ;;
     *) give_up ;;
   esac
   FAILED=$((FAILED + 1))
   if [ "${STATUS:-000}" = 000 ]; then why="no answer"; else why=$STATUS; fi
-  if [ "$FAILED" -gt "$TRIES" ]; then echo "Stopping: $why again after $TRIES retries." >&2; exit 1; fi
+  if [ "$FAILED" -gt "$TRIES" ]; then echo "Stopping: $why after $TRIES retries with no progress." >&2; exit 1; fi
   echo "retrying after $why ($FAILED/$TRIES)" >&2
   sleep 5
   return 1
@@ -393,7 +400,11 @@ while :; do
   tail -c +"$((OFFSET + 1))" "$FILE" | head -c "$CHUNK" >"$TMP/chunk"
   call 204 PATCH "$UPLOAD" -H "Upload-Offset: $OFFSET" \
     -H "Content-Type: application/offset+octet-stream" --data-binary @"$TMP/chunk" || continue
-  echo "Sent $(header upload-offset) of $SIZE bytes" >&2
+  OFFSET=$(header upload-offset)
+  echo "Sent $OFFSET of $SIZE bytes" >&2
+  # The last byte is in: read the result now, not HEAD first. Once an import
+  # has failed with nothing saved, HEAD answers 410, which would hide why.
+  if [ "$OFFSET" = "$SIZE" ]; then break; fi
 done
 
 # 3. Wait for the import and print its result.
@@ -416,11 +427,11 @@ sh platehouse-upload.sh cable-clip.3mf
 Every request goes through `call`, which reads the answer's status and does one of three
 things:
 
-| Answer                                                                        | What the script does                                                                                                                                                               |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The one it wants: 201 to start, 200 to HEAD, 204 to PATCH, 200 for the result | Carries on.                                                                                                                                                                        |
-| No answer, `409` or a `5xx`                                                   | Prints `retrying after 502 (1/60)` (or `no answer`), waits 5 seconds and asks again; a failed PATCH asks HEAD for the offset first. It stops after 60 of these in a row.           |
-| Anything else                                                                 | Stops and prints the status line and any `Location`: a redirect, `401`, `403`, `404` or `410` (the upload is gone), `412`, `413`, `415`. A redirect and a `413` get a hint, below. |
+| Answer                                                                        | What the script does                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The one it wants: 201 to start, 200 to HEAD, 204 to PATCH, 200 for the result | Carries on.                                                                                                                                                                                                                                                                                                                    |
+| No answer, `409` or a `5xx`                                                   | Prints `retrying after 502 (1/60)` (or `no answer`), waits 5 seconds and asks again; a failed PATCH asks HEAD for the offset first. It stops after 60 of these with no progress between them. A HEAD that answers is not progress, so a PATCH that keeps failing still stops.                                                  |
+| Anything else                                                                 | Stops and prints the status line and any `Location`: a redirect, `401`, `403`, `404`, `410`, `412`, `413`, `415`. A redirect and a `413` get a hint, below. A `410` means the upload expired, or its import failed after the last PATCH's answer was lost; the script then prints the result's address, whose answer says why. |
 
 Two of those usually come from a proxy in front of Platehouse rather than from Platehouse:
 
