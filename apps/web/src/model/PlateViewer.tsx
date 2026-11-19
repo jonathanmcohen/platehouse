@@ -1,7 +1,10 @@
 // A .3mf in the viewer area (build plan Task 20, AC-051): the selected
 // plate's thumbnail large, with the plate strip under it. A .3mf never gets
-// a 3D view, so nothing here loads three.js.
+// a 3D view, so nothing here loads three.js. The large image has buttons to
+// turn and flip it on screen (PlateImage). It is keyed by file and plate, so
+// a turn lasts only while that plate of that file is shown.
 import type { ModelFile } from "./ModelPage";
+import { PlateImage } from "./PlateImage";
 import { PlateStrip, plateLabel } from "./PlateStrip";
 
 export interface PlateViewerProps {
@@ -16,19 +19,21 @@ export function PlateViewer({ file, selected, onSelect }: PlateViewerProps) {
   const shown = plates.find((p) => p.index === selected) ?? plates[0];
   return (
     <>
-      <div className="studio-viewer-frame">
-        {shown === undefined ? (
+      {shown === undefined ? (
+        <div className="studio-viewer-frame">
           <p className="studio-placeholder">This file has no plate thumbnails.</p>
-        ) : shown.thumbnail === null ? (
+        </div>
+      ) : shown.thumbnail === null ? (
+        <div className="studio-viewer-frame">
           <p className="studio-placeholder">No thumbnail for {plateLabel(shown)}.</p>
-        ) : (
-          <img
-            className="studio-plate-large"
-            src={shown.thumbnail}
-            alt={`Plate ${shown.index}: ${plateLabel(shown)}`}
-          />
-        )}
-      </div>
+        </div>
+      ) : (
+        <PlateImage
+          key={`${file.id}:${shown.index}`}
+          src={shown.thumbnail}
+          alt={`Plate ${shown.index}: ${plateLabel(shown)}`}
+        />
+      )}
       <PlateStrip plates={plates} selected={shown?.index ?? 0} onSelect={onSelect} />
     </>
   );
