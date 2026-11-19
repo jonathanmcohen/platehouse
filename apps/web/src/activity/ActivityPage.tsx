@@ -12,7 +12,7 @@
 // at once when the tab is shown again. A failed refresh keeps the page on
 // screen with a notice and keeps asking; a signed-out answer stops it, since
 // asking again will not change that. Refresh asks at once.
-import { useCallback, useEffect, useId, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import { AppApiError, appApi, formatDate } from "../settings/api";
 import { Events } from "./Events";
 import { formatCount, formatDuration, formatRate, formatSize } from "./format";
@@ -195,7 +195,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   const id = useId();
   return (
     <section className="ph-section ph-activity-section" aria-labelledby={id}>

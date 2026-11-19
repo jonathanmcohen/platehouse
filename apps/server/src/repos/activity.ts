@@ -98,9 +98,6 @@ export interface FailedDerived {
 
 const FILE_KINDS: readonly FileKind[] = ["3mf", "stl", "step", "scad"];
 
-/** The live job states pg-boss's partial index job_i14 covers. */
-const LIVE_STATES = ["created", "retry", "active", "failed"] as const;
-
 export function activityRepo(db: Kysely<DB>) {
   const job = sql.id(BOSS_SCHEMA, "job");
 
@@ -203,7 +200,9 @@ export function activityRepo(db: Kysely<DB>) {
                count(*)::int as n
           from ${job}
          where name = any(${[...queues]}::text[])
-           and state::text = any(${[...LIVE_STATES]}::text[])
+           -- Written as pg-boss writes its partial index's predicate (the
+           -- job_state enum, not text), so the planner can use job_i14.
+           and state in ('created', 'retry', 'active', 'failed')
          group by 1, 2, 3
       `.execute(db);
       return rows;
@@ -219,7 +218,7 @@ export function activityRepo(db: Kysely<DB>) {
           from ${job}
          where name = ${queue}
            and completed_on is not null
-           and state::text in ('completed', 'failed')
+           and state in ('completed', 'failed')
            and data->>'task' is not null
          order by data->>'task', completed_on desc
       `.execute(db);
