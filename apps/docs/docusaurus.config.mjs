@@ -16,6 +16,10 @@ const config = {
   url: "https://platehouse.example.com",
   baseUrl: "/",
   trailingSlash: false,
+  // The logo and favicon are the app's own, in docs/assets (PR #236), served
+  // from there so there is one copy of each.
+  staticDirectories: ["../../docs/assets"],
+  favicon: "favicon.svg",
   onBrokenLinks: "throw",
   onBrokenAnchors: "throw",
   onDuplicateRoutes: "throw",
@@ -74,6 +78,7 @@ const config = {
       },
       navbar: {
         title: "Platehouse",
+        logo: { alt: "Platehouse logo", src: "logo.svg" },
         items: [{ type: "docSidebar", sidebarId: "docs", position: "left", label: "Docs" }],
       },
       footer: {
