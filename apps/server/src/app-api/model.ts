@@ -1,9 +1,14 @@
 // The model page's app API (build plan Task 20; AC-030, AC-032 to AC-034
 // display, AC-040, AC-050, AC-051, AC-072), for the web app's model page:
 //
-//   GET  /app/api/models/:id            ModelView: the model, its files in
+//   GET  /app/api/models/:id?printer    ModelView: the model, its files in
 //                                       upload order, each .3mf's plates in
-//                                       plate order with their numbers
+//                                       plate order with their numbers, for
+//                                       printer (the page's printer switch)
+//                                       when it is one of My printers, else
+//                                       the default printer, with the
+//                                       switch's choices; reading never
+//                                       queues a slice
 //   POST /app/api/estimates/:id/retry   202 {queued: true}: a failed estimate
 //                                       is queued again (Task 12's
 //                                       retryEstimate, from the stored file)
@@ -45,6 +50,12 @@
 //   never leave a stale set beside estimatePending false, which would stop
 //   the page's polling with the finished estimate never shown. The plates
 //   are read one after another on that transaction's connection.
+// - A file's render or conversion message (files.derived_message, OpenSCAD's
+//   or the STEP converter's own text) is cleaned by scrubDerivedMessage
+//   (src/scrub.ts; issue #260) as it is read, so no slicer temp path or
+//   address reaches the page; the whole stored message is kept, and a longer
+//   one keeps its end, where the program's error line is. The stored row is
+//   left as it is.
 // - Answers are JSON and never cached. Errors carry no detail from the
 //   database.
 
@@ -54,10 +65,16 @@ import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
-import { type DisplayContext, type PlateNumbers, plateNumbers } from "../estimates/display.js";
+import {
+  type DisplayContext,
+  type PlateNumbers,
+  plateNumbers,
+  printerName,
+} from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
 import type { TitleNamePlan } from "../repos/models.js";
-import { BLOB_PREFIX } from "./library.js";
+import { scrubDerivedMessage } from "../scrub.js";
+import { BLOB_PREFIX, forPrinter, type PrinterChoice, printerChoices } from "./library.js";
 
 /** A "Use file titles" planId: the SHA-256 of the plan's renames, in hex. */
 const PLAN_ID = /^[0-9a-f]{64}$/;
@@ -101,6 +118,7 @@ export interface ModelFileView {
   size: number;
   parseStatus: ParseStatus;
   derivedStatus: string | null;
+  /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
   /** Task 17's download route for the file. */
   download: string;
@@ -134,14 +152,22 @@ export interface ModelView {
   makerWorldUrl: string | null;
   tags: string[];
   collections: string[];
-  /** The selected printer the numbers are for. */
+  /** The printer the numbers are for: the default printer, or the switch's choice. */
   printer: string;
+  /** That printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  printerName: string;
+  /** The printer switch's choices: My printers, in order. */
+  printers: PrinterChoice[];
   files: ModelFileView[];
 }
 
 export interface AppModel {
-  /** The model page's data; undefined for a trashed, unknown or malformed id. */
-  get(id: string): Promise<ModelView | undefined>;
+  /**
+   * The model page's data, with each plate's numbers for printer when it is
+   * one of My printers, else for the default printer; undefined for a
+   * trashed, unknown or malformed id.
+   */
+  get(id: string, printer?: string): Promise<ModelView | undefined>;
   /** Queues a failed estimate again; false when it is not one that can be. */
   retry(estimateId: string): Promise<boolean>;
   /** The "Use file titles" preview: what it would rename, and what it skips and why. */
@@ -178,10 +204,10 @@ export function createAppModel(deps: AppModelDeps): AppModel {
   const repos = createRepos(db);
 
   return {
-    async get(id) {
+    async get(id, printer) {
       const model = await repos.models.get(id);
       if (model === undefined) return undefined;
-      const [ctx, tagRows, collectionRows, files] = await Promise.all([
+      const [read, tagRows, collectionRows, files] = await Promise.all([
         deps.displayContext(),
         db
           .selectFrom("modelTags")
@@ -219,6 +245,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
           .orderBy("id")
           .execute(),
       ]);
+      const ctx = forPrinter(read, printer);
       const fileIds = files.map((f) => f.id);
 
       // The stored blobs of this model a file may name, by id.
@@ -317,6 +344,8 @@ export function createAppModel(deps: AppModelDeps): AppModel {
         tags: tagRows.map((t) => t.name),
         collections: collectionRows.map((c) => c.name),
         printer: ctx.printerId,
+        printerName: printerName(ctx.printerId, ctx.printers),
+        printers: printerChoices(ctx),
         files: files.map((f): ModelFileView => {
           const viewFrom = VIEW_BLOB[f.kind];
           const viewSource =
@@ -336,7 +365,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             size: Number(f.size),
             parseStatus: f.parseStatus,
             derivedStatus: f.derivedStatus,
-            derivedMessage: f.derivedMessage,
+            derivedMessage: scrubDerivedMessage(f.derivedMessage),
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null
@@ -390,6 +419,12 @@ export const emptyAppModel: AppModel = Object.freeze({
   useTitleNames: async (planId: string) => (planId === EMPTY_PLAN_ID ? { renamed: 0 } : null),
 });
 
+/** printer is the page's printer switch: one of My printers. */
+const MODEL_QUERY = {
+  type: "object",
+  properties: { printer: { type: "string", maxLength: 200 } },
+} as const;
+
 /** Registers the model page's routes on the root app, after the gate. */
 export async function registerModelApi(app: FastifyInstance, model: AppModel): Promise<void> {
   await app.register(async (scope) => {
@@ -403,11 +438,17 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
       return reply.code(500).send({ error: "internal" });
     });
 
-    scope.get<{ Params: { id: string } }>("/app/api/models/:id", async (request, reply) => {
-      const found = isUuid(request.params.id) ? await model.get(request.params.id) : undefined;
-      if (found === undefined) return reply.code(404).send({ error: "not_found" });
-      return found;
-    });
+    scope.get<{ Params: { id: string }; Querystring: { printer?: string } }>(
+      "/app/api/models/:id",
+      { schema: { querystring: MODEL_QUERY } },
+      async (request, reply) => {
+        const found = isUuid(request.params.id)
+          ? await model.get(request.params.id, request.query.printer)
+          : undefined;
+        if (found === undefined) return reply.code(404).send({ error: "not_found" });
+        return found;
+      },
+    );
 
     // Registered beside /app/api/models/:id; Fastify matches the fixed
     // segment first, so "title-names" never reaches the id route.

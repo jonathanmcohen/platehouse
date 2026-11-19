@@ -5,7 +5,7 @@
 // without a link. A failed estimate has the model page's own retry, through
 // the existing POST /app/api/estimates/:id/retry. Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
-// out of it (app-api/activity.ts scrubText).
+// out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
 import { useState } from "react";
 import { Link } from "react-router";
 import { appApi, formatDate, segment } from "../settings/api";

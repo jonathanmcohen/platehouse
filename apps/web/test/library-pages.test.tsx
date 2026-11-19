@@ -95,6 +95,8 @@ function stubServer(all: LibraryCard[]) {
       const page = Math.min(Math.max(asked, 1), pageCount);
       return json({
         printer: PRINTER,
+        printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+        printers: [{ id: PRINTER, name: "Bambu Lab P1S, 0.4 mm nozzle" }],
         models: matches.slice((page - 1) * pageSize, page * pageSize),
         nextCursor: null,
         page,

@@ -9,6 +9,7 @@ import {
   filePrinterLabel,
   OTHER_PRINTER_LABEL,
   printerForFile,
+  printerName,
   profileSourceOf,
 } from "../../src/estimates/display.js";
 import { STUB_PRINTERS } from "../support/slicer-stub.js";
@@ -84,5 +85,33 @@ describe("filePrinterLabel", () => {
     for (const [file, menu] of cases) {
       expect(filePrinterLabel(printerForFile(file, menu))).toBe(OTHER_PRINTER_LABEL);
     }
+  });
+});
+
+// Jon, 2026-11-19: the printer menu showed only "0.4 mm nozzle" once closed,
+// so the chosen printer could not be told apart. Every place that names a
+// printer names it in full: the model and the nozzle.
+describe("printerName", () => {
+  test("a menu printer is named by its model and nozzle", () => {
+    expect(printerName("Bambu Lab P1S 0.4 nozzle", STUB_PRINTERS)).toBe(
+      "Bambu Lab P1S, 0.4 mm nozzle",
+    );
+    expect(printerName("Bambu Lab X1 Carbon 0.4 nozzle", STUB_PRINTERS)).toBe(
+      "Bambu Lab X1 Carbon, 0.4 mm nozzle",
+    );
+  });
+
+  test("without the menu (the slicer is down) the name is read from the preset name", () => {
+    expect(printerName("Bambu Lab A1 mini 0.4 nozzle", [])).toBe(
+      "Bambu Lab A1 mini, 0.4 mm nozzle",
+    );
+    expect(printerName("Bambu Lab H2D 0.6 nozzle", STUB_PRINTERS)).toBe(
+      "Bambu Lab H2D, 0.6 mm nozzle",
+    );
+  });
+
+  test("a preset name of any other shape is shown as it is", () => {
+    expect(printerName("Some Printer", [])).toBe("Some Printer");
+    expect(printerName("nozzle", [])).toBe("nozzle");
   });
 });

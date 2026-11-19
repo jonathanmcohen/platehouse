@@ -32,6 +32,8 @@ function view(overrides: Partial<ModelView> = {}): ModelView {
     tags: [],
     collections: [],
     printer: "Bambu Lab P1S 0.4 nozzle",
+    printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+    printers: [{ id: "Bambu Lab P1S 0.4 nozzle", name: "Bambu Lab P1S, 0.4 mm nozzle" }],
     files: [],
     ...overrides,
   };

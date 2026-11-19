@@ -34,10 +34,19 @@ import { LibraryPage } from "../src/library/LibraryPage";
 import type { LibraryCard } from "../src/library/ModelCard";
 import { SORT_OPTIONS, sortFrom } from "../src/library/paging";
 import { describeBulk, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
+import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const PRINTER = "Bambu Lab P1S 0.4 nozzle";
+const PRINTER_NAME = "Bambu Lab P1S, 0.4 mm nozzle";
+const A1 = "Bambu Lab A1 0.4 nozzle";
+const A1_NAME = "Bambu Lab A1, 0.4 mm nozzle";
+/** My printers as the server answers them (PR #240): the default first. */
+const MY_PRINTERS = [
+  { id: PRINTER, name: PRINTER_NAME },
+  { id: A1, name: A1_NAME },
+];
 
 function id(i: number): string {
   return `0198f0c4-0000-7000-8000-${String(i).padStart(12, "0")}`;
@@ -118,8 +127,13 @@ function stubServer(all: LibraryCard[]) {
       const pageSize = Number(url.searchParams.get("limit") ?? 48);
       const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
       const page = Math.min(Math.max(asked, 1), pageCount);
+      // The printer switch's choice when it is one of My printers, else the default.
+      const shown =
+        MY_PRINTERS.find((m) => m.id === url.searchParams.get("printer")) ?? MY_PRINTERS[0];
       return json({
-        printer: PRINTER,
+        printer: shown?.id,
+        printerName: shown?.name,
+        printers: MY_PRINTERS,
         models: matches.slice((page - 1) * pageSize, page * pageSize),
         nextCursor: null,
         page,
@@ -295,6 +309,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 describe("the sort control", () => {
@@ -390,14 +405,31 @@ describe("the sort control", () => {
     stubServer(cards(5));
     await render("/?sort=time-asc");
     expect(container.textContent).toContain(
-      `Models without a print time for ${PRINTER} are listed last.`,
+      `Models without a print time for ${PRINTER_NAME} are listed last.`,
     );
     await choose(sortMenu(), "weight-desc");
     expect(container.textContent).toContain(
-      `Models without a filament weight for ${PRINTER} are listed last.`,
+      `Models without a filament weight for ${PRINTER_NAME} are listed last.`,
     );
     await choose(sortMenu(), "name-asc");
     expect(container.textContent).not.toContain("are listed last");
+  });
+
+  test("with another of My printers chosen, the time order and Select all matching are for it", async () => {
+    localStorage.setItem(PRINTER_CHOICE_KEY, A1);
+    stubServer(cards(5));
+    await render("/?sort=time-desc");
+    expect(lastLibraryQuery().get("printer")).toBe(A1);
+    expect(lastLibraryQuery().get("sort")).toBe("time-desc");
+    expect(container.textContent).toContain(
+      `Models without a print time for ${A1_NAME} are listed last.`,
+    );
+    await selectMode();
+    await click(button("Select all 5 matching"));
+    const asked = requests.filter((r) => r.startsWith("GET /app/api/library/ids")).at(-1);
+    const params = new URL(asked?.slice(4) ?? "", "https://platehouse.test").searchParams;
+    expect(params.get("printer")).toBe(A1);
+    expect(params.get("sort")).toBe("time-desc");
   });
 });
 

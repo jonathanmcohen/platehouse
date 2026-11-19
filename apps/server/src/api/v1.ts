@@ -35,6 +35,11 @@
 //   after the bearer hook, so a refused request's body is never read; the
 //   gate releases it. Errors answer JSON with no detail from the database or
 //   the store.
+// - A file's derivedMessage (files.derived_message, OpenSCAD's or the STEP
+//   converter's own text) is cleaned by scrubDerivedMessage (src/scrub.ts;
+//   issue #260) as it is read, so no slicer temp path or address is
+//   answered; the whole stored message is kept, and a longer one keeps its
+//   end, where the program's error line is. The stored row is left as it is.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
 // - A file's content is named and sized here once for every route that
@@ -58,6 +63,7 @@ import { createSearch, InvalidCursor, type LibrarySearch } from "../library/sear
 import { createTags } from "../library/tags.js";
 import { createRepos } from "../repos/index.js";
 import type { Model } from "../repos/models.js";
+import { scrubDerivedMessage } from "../scrub.js";
 import {
   BlobNotFound,
   type BlobStore,
@@ -112,6 +118,7 @@ export interface ApiFile {
   sha256: string;
   parseStatus: ParseStatus;
   derivedStatus: string | null;
+  /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
   createdAt: string;
   updatedAt: string;
@@ -330,7 +337,7 @@ function sqlState(error: unknown): string | undefined {
 export function createApiLibrary(deps: {
   db: Kysely<DB>;
   store: Pick<BlobStore, "getBlobStream" | "headBlob">;
-  /** Task 12's plateNumbers for the selected printer (estimates.plateNumbers). */
+  /** Task 12's plateNumbers for the default printer of My printers (estimates.plateNumbers). */
   plateNumbers(plateId: string): Promise<PlateNumbers>;
 }): ApiLibrary {
   const { db, store } = deps;
@@ -397,7 +404,7 @@ export function createApiLibrary(deps: {
       sha256: file.sha256.toString("hex"),
       parseStatus: file.parseStatus,
       derivedStatus: file.derivedStatus,
-      derivedMessage: file.derivedMessage,
+      derivedMessage: scrubDerivedMessage(file.derivedMessage),
       createdAt: iso(file.createdAt),
       updatedAt: iso(file.updatedAt),
       plates: await Promise.all(
@@ -621,10 +628,13 @@ const NUMBERS = {
   type: "object",
   additionalProperties: true,
   description:
-    "The plate's numbers for the selected printer: file (Bambu's own, from the .3mf, " +
-    "labelled with the printer it was sliced for), platehouse (an OrcaSlicer estimate, " +
-    "with state current, estimating or stale) and failure (why the estimate failed). " +
-    "Each set has timeSeconds, weightGrams and per-filament grams.",
+    "The plate's numbers for the default printer of My printers (Settings): file " +
+    "(Bambu's own, from the .3mf, labelled with the printer it was sliced for), " +
+    "platehouse (an OrcaSlicer estimate, with state current, estimating or stale) and " +
+    "failure (why the estimate failed). Each set has timeSeconds, weightGrams and " +
+    "per-filament grams, and names its printer by printerId (the Orca preset name), " +
+    "printerLabel and printerName (the printer in full, such as " +
+    '"Bambu Lab P1S, 0.4 mm nozzle"; added with My printers).',
 } as const;
 
 const FILE = {

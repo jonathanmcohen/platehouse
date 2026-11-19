@@ -146,12 +146,6 @@
   font-weight: 600;
 }
 
-.ph-estimate-mark {
-  margin-left: 6px;
-  padding: 0 8px;
-  font-size: 0.75rem;
-}
-
 .ph-filaments {
   display: grid;
   gap: 2px;

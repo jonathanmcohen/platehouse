@@ -261,6 +261,29 @@ describe("print time, weight and plate count", () => {
     }
   });
 
+  test("with the header switched to another of My printers, time is totalled for that printer", async () => {
+    // PR #240's switch: ?printer= one of My printers. E's file was sliced for
+    // the X1C (1000 s); A, B and C were sliced for the P1S, so for the X1C
+    // they have no numbers, and with the P1S shown B led.
+    context = { ...CONTEXT, myPrinters: [P1S.id, X1C.id] };
+    try {
+      const shown = await page({ q: word, page: 1, sort: "time-desc", printer: X1C.id });
+      expect(shown.printer).toBe(X1C.id);
+      const byId = Object.fromEntries(Object.entries(ids).map(([k, v]) => [v, k]));
+      expect(shown.models.map((m) => byId[m.id])).toEqual(["E", "A", "B", "C", "D"]);
+      expect(shown.models.map((c) => c.timeSeconds)).toEqual([1000, null, null, null, null]);
+      // Select all matching is ordered the same way.
+      const all = await libraryWith().ids({ q: word, sort: "time-desc", printer: X1C.id });
+      expect(all.ids).toEqual(shown.models.map((m) => m.id));
+      // A printer that is not one of My printers shows the default's order.
+      const fallback = await page({ q: word, page: 1, sort: "time-desc", printer: "Nope" });
+      expect(fallback.printer).toBe(P1S.id);
+      expect(fallback.models.map((m) => byId[m.id])).toEqual(["B", "A", "E", "C", "D"]);
+    } finally {
+      context = CONTEXT;
+    }
+  });
+
   test("a time sort with no models to total is still a page, never an error", async () => {
     const none = await page({ q: marker(), page: 1, sort: "time-desc" });
     expect([none.total, none.models.length]).toEqual([0, 0]);
@@ -302,7 +325,7 @@ describe("Select all matching", () => {
   });
 });
 
-test("the sort indexes exist on live models (migration 0007)", async () => {
+test("the sort indexes exist on live models (migration 0008)", async () => {
   const { rows } = await sql<{ indexname: string; indexdef: string }>`
     select indexname, indexdef from pg_indexes
     where tablename = 'models' and indexname in ('models_live_created', 'models_live_name')

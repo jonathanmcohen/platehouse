@@ -146,16 +146,17 @@ describe("models a person named before name_source existed (0006)", () => {
   /**
    * A database migrated only to 0005, as a library that ran 0005 but not
    * 0006 is, then the models of the test, then the rest of the migrations.
-   * Every migration after 0005 is left out of the copy, not just 0006: the
-   * migrator refuses a gap, so a later one (0007 and on) left in would stop
-   * the run before it applied anything.
    */
   async function upTo0005(): Promise<{ t: TestDatabase; repos: Repos }> {
     const t = await pgc.freshDatabase();
     const dir = await mkdtemp(join(tmpdir(), "ph-title-names-"));
     try {
       await cp(MIGRATIONS_DIR, dir, { recursive: true });
-      const later = (await readdir(dir)).filter((name) => /^\d{4}_/.test(name) && name > "0006");
+      // Every migration after 0005, not just 0006: the folder must stay
+      // numbered without gaps, and later migrations (0007 My printers) follow.
+      const later = (await readdir(dir)).filter(
+        (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 5,
+      );
       expect(later).toContain("0006_model_name_source_user.sql");
       for (const name of later) await rm(join(dir, name));
       await migrateFrom(t.db, dir);
