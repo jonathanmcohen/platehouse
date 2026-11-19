@@ -1,13 +1,20 @@
 #!/usr/bin/env node
-// platehouse-import [--apply] [--model <id>] (build plan Task 23; AC-001 to
-// AC-004): the one-time import of Jon's Manyfold library into Platehouse.
+// platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]
+// (build plan Task 23; AC-001 to AC-004): the one-time import of Jon's
+// Manyfold library into Platehouse.
 //
 //   claude-env Manyfold username MANYFOLD_CLIENT_ID -- \
 //   claude-env Manyfold password MANYFOLD_CLIENT_SECRET -- \
 //   claude-env <Platehouse token item> <field> PLATEHOUSE_TOKEN -- \
-//   node apps/importer/dist/src/cli.js [--apply] [--model <id>]
+//   node apps/importer/dist/src/cli.js \
+//     --manyfold https://manyfold.example.com \
+//     --platehouse https://platehouse.example.com [--apply] [--model <id>]
 //
 // (build first with pnpm --filter @platehouse/importer build.)
+//
+// The two addresses have no default: each comes from its flag, or when the
+// flag is not given from MANYFOLD_BASE or PLATEHOUSE_BASE, and must be an
+// https origin (both clients send requests to the origin only).
 //
 // It reads Manyfold with one read-scoped token and writes to Platehouse only
 // through the Public API v1, with a Platehouse API token. A dry run is the
@@ -34,9 +41,10 @@
 // file (report.ts).
 //
 // Exit codes: 0 every model handled, 1 at least one model failed, 2 the run
-// could not start (arguments, credentials, either side refusing the token or
-// unreachable, Manyfold granting more than read, Manyfold's lists
-// unreadable), or an error was raised outside run() (onFatal). The credentials come only from
+// could not start (arguments, a missing or bad address, credentials, either
+// side refusing the token or unreachable, Manyfold granting more than read,
+// Manyfold's lists unreadable), or an error was raised outside run()
+// (onFatal). The credentials come only from
 // the environment and are never printed: every line goes through one
 // redactor that knows them, the Manyfold token and each signed query (AC-003).
 import { createHash } from "node:crypto";
@@ -57,20 +65,46 @@ import {
   summaryLines,
 } from "./report.js";
 
-export const MANYFOLD_BASE = "https://manyfold.local.jonco.dev";
-export const PLATEHOUSE_BASE = "https://platehouse.local.jonco.dev";
+/**
+ * The two addresses: a flag, or the variable when the flag is not given. No
+ * default, so the command never points at any one network.
+ */
+const ADDRESSES = [
+  { flag: "manyfold", variable: "MANYFOLD_BASE", what: "Manyfold" },
+  { flag: "platehouse", variable: "PLATEHOUSE_BASE", what: "Platehouse" },
+] as const;
 
 /** The variables claude-env sets: the Manyfold client id and secret, the Platehouse token. */
 const CREDENTIALS = ["MANYFOLD_CLIENT_ID", "MANYFOLD_CLIENT_SECRET", "PLATEHOUSE_TOKEN"] as const;
 
 export const USAGE = [
-  "usage: platehouse-import [--apply] [--model <id>]",
+  "usage: platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]",
+  "  --manyfold and --platehouse are the https addresses of Manyfold and Platehouse;",
+  "  without a flag, MANYFOLD_BASE or PLATEHOUSE_BASE is read. Neither has a default.",
   "  Run it under claude-env, which sets MANYFOLD_CLIENT_ID and MANYFOLD_CLIENT_SECRET",
   "  from the 1Password item Manyfold, and PLATEHOUSE_TOKEN.",
   "  A dry run is the default; --apply writes to Platehouse. --model <id> runs one model.",
 ].join("\n");
 
 const MODEL_ID = /^[A-Za-z0-9_-]{1,100}$/;
+
+/** An https origin, given with no path, query, fragment or credentials, or null. */
+export function httpsOrigin(value: string): string | null {
+  const url = URL.parse(value);
+  if (
+    url === null ||
+    url.protocol !== "https:" ||
+    url.hostname === "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    return null;
+  }
+  return url.origin;
+}
 
 export interface RunOptions {
   argv: readonly string[];
@@ -79,8 +113,6 @@ export interface RunOptions {
   stderr: (line: string) => void;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
-  manyfoldBase?: string;
-  platehouseBase?: string;
   /**
    * The redactor every line goes through; the command passes the one its
    * process-level handlers use (onFatal), so they know the credentials too.
@@ -358,15 +390,30 @@ export async function run(options: RunOptions): Promise<RunResult> {
 
   let report: Report | null = null;
   try {
-    let args: { apply: boolean; model: string | undefined };
+    let args: {
+      apply: boolean;
+      model: string | undefined;
+      manyfold: string | undefined;
+      platehouse: string | undefined;
+    };
     try {
       const { values } = parseArgs({
         args: [...options.argv],
-        options: { apply: { type: "boolean", default: false }, model: { type: "string" } },
+        options: {
+          apply: { type: "boolean", default: false },
+          model: { type: "string" },
+          manyfold: { type: "string" },
+          platehouse: { type: "string" },
+        },
         strict: true,
         allowPositionals: false,
       });
-      args = { apply: values.apply, model: values.model };
+      args = {
+        apply: values.apply,
+        model: values.model,
+        manyfold: values.manyfold,
+        platehouse: values.platehouse,
+      };
     } catch (error) {
       err(message(error));
       usage();
@@ -377,6 +424,34 @@ export async function run(options: RunOptions): Promise<RunResult> {
       usage();
       return { code: 2, report: null };
     }
+
+    // The addresses: the flag, else the variable. A value is never echoed, in
+    // case it carries credentials.
+    const bases: string[] = [];
+    const problems: string[] = [];
+    for (const { flag, variable, what } of ADDRESSES) {
+      const fromFlag = args[flag];
+      const given = fromFlag ?? (options.env[variable] ?? "").trim();
+      if (given === "") {
+        problems.push(`no ${what} address: give --${flag} <https address> or set ${variable}`);
+        continue;
+      }
+      const base = httpsOrigin(given);
+      if (base === null) {
+        const source = fromFlag === undefined ? variable : `--${flag}`;
+        problems.push(
+          `${source} must be an https address with no path, query, fragment or credentials`,
+        );
+        continue;
+      }
+      bases.push(base);
+    }
+    if (problems.length > 0) {
+      for (const line of problems) err(line);
+      usage();
+      return { code: 2, report: null };
+    }
+    const [manyfoldBase, platehouseBase] = bases as [string, string];
 
     // Each credential is normalized once, control characters out and then
     // trimmed, and that one value is what is checked, sent and redacted. A
@@ -400,8 +475,6 @@ export async function run(options: RunOptions): Promise<RunResult> {
     if (bearer.startsWith("ph_") && bearer.length > 19) redactor.add(bearer.slice(3));
 
     const mode: Mode = args.apply ? "apply" : "dry run";
-    const manyfoldBase = options.manyfoldBase ?? MANYFOLD_BASE;
-    const platehouseBase = options.platehouseBase ?? PLATEHOUSE_BASE;
     const common = {
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),

@@ -406,7 +406,7 @@ beforeEach(() => {
     tokens: [
       {
         id: "t0",
-        name: "Claude Code on mba",
+        name: "Office desktop",
         prefix: "ph_Ab3dE",
         createdAt: "2026-11-01T09:00:00.000Z",
         lastUsedAt: "2026-11-11T08:30:00.000Z",
@@ -850,7 +850,7 @@ describe("the settings page", () => {
 
   test("new token is shown once and never again", async () => {
     await show("/settings", <SettingsPage />);
-    await type(labelled<HTMLInputElement>("Token name"), "Claude Code on mini01");
+    await type(labelled<HTMLInputElement>("Token name"), "Build server script");
     await click(button("Create token"));
     expect(callsTo("POST", "/app/api/tokens")).toHaveLength(1);
     const token = issued[0] as string;
@@ -871,7 +871,7 @@ describe("the settings page", () => {
     expect(dialog()).toBeNull();
     expect(text()).not.toContain(token);
     expect(text()).not.toContain(token.slice(3));
-    expect(text()).toContain("Claude Code on mini01");
+    expect(text()).toContain("Build server script");
     expect(text()).toContain(token.slice(0, 8));
     expect(text()).toContain(", never used");
     expect(text()).not.toContain("Never used");
@@ -886,26 +886,26 @@ describe("the settings page", () => {
 
   test("the token list shows each token's prefix and last use, and revoke asks first", async () => {
     await show("/settings", <SettingsPage />);
-    expect(text()).toContain("Claude Code on mba");
+    expect(text()).toContain("Office desktop");
     expect(text()).toContain("ph_Ab3dE");
     expect(document.querySelector('time[datetime="2026-11-11T08:30:00.000Z"]')).not.toBeNull();
 
-    await click(button("Revoke Claude Code on mba"));
+    await click(button("Revoke Office desktop"));
     const ask = dialog();
     expect(ask?.textContent).toContain("Revoke");
     await click(button("Cancel", ask as HTMLElement));
     expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(0);
 
-    await click(button("Revoke Claude Code on mba"));
+    await click(button("Revoke Office desktop"));
     await click(button("Revoke", dialog() as HTMLElement));
     expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(1);
-    expect(text()).not.toContain("Claude Code on mba");
+    expect(text()).not.toContain("Office desktop");
   });
 
   test("a revoke in flight cannot be cancelled: Cancel and Escape wait for the answer", async () => {
     await show("/settings", <SettingsPage />);
     const release = hold("DELETE /app/api/tokens/t0");
-    await click(button("Revoke Claude Code on mba"));
+    await click(button("Revoke Office desktop"));
     await click(button("Revoke", dialog() as HTMLElement));
     expect(callsTo("DELETE", "/app/api/tokens/t0")).toHaveLength(1);
 
@@ -917,7 +917,7 @@ describe("the settings page", () => {
 
     await release();
     expect(dialog()).toBeNull();
-    expect(text()).not.toContain("Claude Code on mba");
+    expect(text()).not.toContain("Office desktop");
   });
 
   test("the settings page holds the trash", async () => {
@@ -1506,7 +1506,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
     failing.add("POST /app/api/tokens");
     const release = hold("POST /app/api/tokens");
     const input = labelled<HTMLInputElement>("Token name");
-    await type(input, "Claude Code on mini01");
+    await type(input, "Build server script");
     const create = button("Create token");
     create.focus();
     await click(create);
@@ -1548,19 +1548,19 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
   test("success: after a revoke, focus goes to the next token's Revoke", async () => {
     state.tokens.push({
       id: "t9",
-      name: "Claude Code on mini02",
+      name: "Backup job",
       prefix: "ph_Zy9xW",
       createdAt: "2026-11-02T09:00:00.000Z",
       lastUsedAt: null,
     });
     await show("/settings", <SettingsPage />);
-    const revoke = button("Revoke Claude Code on mba");
+    const revoke = button("Revoke Office desktop");
     revoke.focus();
     await click(revoke);
     await click(button("Revoke", dialog() as HTMLElement));
     expect(dialog()).toBeNull();
     expect(revoke.isConnected).toBe(false);
-    expect(focusedNotBody()).toBe(button("Revoke Claude Code on mini02"));
+    expect(focusedNotBody()).toBe(button("Revoke Backup job"));
   });
 
   test("success: after a chip remove, focus goes to the next chip's remove button", async () => {
@@ -1609,7 +1609,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
 
   test("last row: revoking the only token moves focus to Create token", async () => {
     await show("/settings", <SettingsPage />);
-    const revoke = button("Revoke Claude Code on mba");
+    const revoke = button("Revoke Office desktop");
     revoke.focus();
     await click(revoke);
     await click(button("Revoke", dialog() as HTMLElement));
@@ -1696,7 +1696,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
 
   test("dialog: Cancel on a revoke puts focus back on that Revoke button", async () => {
     await show("/settings", <SettingsPage />);
-    const revoke = button("Revoke Claude Code on mba");
+    const revoke = button("Revoke Office desktop");
     revoke.focus();
     await click(revoke);
     await click(button("Cancel", dialog() as HTMLElement));
@@ -1706,7 +1706,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
 
   test("dialog: closing the new token dialog puts focus on Create token", async () => {
     await show("/settings", <SettingsPage />);
-    await type(labelled<HTMLInputElement>("Token name"), "Claude Code on mini01");
+    await type(labelled<HTMLInputElement>("Token name"), "Build server script");
     const create = button("Create token");
     create.focus();
     await click(create);
@@ -1720,7 +1720,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
   test("dialog: a revoke that fails keeps focus in the dialog, and Cancel returns it to Revoke", async () => {
     await show("/settings", <SettingsPage />);
     failing.add("DELETE /app/api/tokens/t0");
-    const revoke = button("Revoke Claude Code on mba");
+    const revoke = button("Revoke Office desktop");
     revoke.focus();
     await click(revoke);
     const ask = dialog() as HTMLElement;
