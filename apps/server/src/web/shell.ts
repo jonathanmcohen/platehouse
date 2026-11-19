@@ -22,6 +22,13 @@
 //   for the login redirect's return without a session, and each file is
 //   cached for a year: its name changes when its bytes do. Nothing outside
 //   dist/assets/ is reachable through it, and dotfiles are refused.
+// - The favicons, app icons and web manifest (ROOT_FILES) are answered at
+//   their root paths from the root of dist/, where Vite copies
+//   apps/web/public/, each with its own content type and cached for a day,
+//   since their names do not change when they are regenerated. They are
+//   public-class at exactly these paths (auth/gate.ts, Jon's decision A-1):
+//   a signed-out browser loads them on the auth pages, and the manifest,
+//   which browsers fetch without cookies, loads with no session.
 //
 // index.html is read when the app is built, and again on a page request
 // while it is missing, so a server started before the web app was built
@@ -77,6 +84,27 @@ export const ASSETS_PREFIX = "/assets/";
 
 /** A hashed asset's Cache-Control: its name changes whenever its bytes do. */
 export const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
+/**
+ * The favicons, app icons and web manifest, each with its content type.
+ * Vite copies apps/web/public/ into the root of the build, and each file is
+ * answered at its root path. A test checks this is exactly public/'s list.
+ */
+export const ROOT_FILES: Readonly<Record<string, string>> = Object.freeze({
+  "/favicon.ico": "image/x-icon",
+  "/favicon.svg": "image/svg+xml",
+  "/apple-touch-icon.png": "image/png",
+  "/icon-192.png": "image/png",
+  "/icon-512.png": "image/png",
+  "/icon-maskable-512.png": "image/png",
+  "/site.webmanifest": "application/manifest+json",
+});
+
+/**
+ * A root file's Cache-Control. Its name stays the same when it is
+ * regenerated (a new accent), so it is cached for a day, not for a year.
+ */
+export const ROOT_FILE_CACHE_CONTROL = "public, max-age=86400";
 
 /** What a shell page says while the web app is not built. */
 export const NOT_BUILT = "The Platehouse web app is not built.";
@@ -298,6 +326,22 @@ export async function registerWeb(app: FastifyInstance, deps: WebDeps): Promise<
   }
 
   for (const url of SHELL_PAGES) app.get(url, shell);
+
+  // Read on each request, so a rebuilt icon is served without a restart; a
+  // file the build lacks is a plain 404.
+  for (const [url, type] of Object.entries(ROOT_FILES)) {
+    const path = join(deps.dir, url.slice(1));
+    app.get(url, async (_request, reply) => {
+      let body: Buffer;
+      try {
+        body = await readFile(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.callNotFound();
+        throw error;
+      }
+      return reply.header("cache-control", ROOT_FILE_CACHE_CONTROL).type(type).send(body);
+    });
+  }
 
   await app.register(fastifyStatic, {
     root: join(deps.dir, "assets"),

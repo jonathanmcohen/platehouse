@@ -4,21 +4,24 @@
 // from the ph_theme cookie; Dark is the default and anything that is not
 // dark, light or system is dark. Only those two places change.
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import fastifyCookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { describe, expect, test } from "vitest";
-import { patternClass } from "../../src/auth/gate.js";
+import { installGate, patternClass, routeClass } from "../../src/auth/gate.js";
 import {
   ACCENT_COOKIE,
   ACCENTS,
   DEFAULT_ACCENT,
   defaultWebDir,
   parseShellTemplate,
+  ROOT_FILE_CACHE_CONTROL,
+  ROOT_FILES,
   registerWeb,
   resolveAccent,
   resolveTheme,
@@ -280,6 +283,9 @@ describe("parseShellTemplate", () => {
       // is now a hashed file under /assets/.
       expect(built).not.toContain("/src/main.tsx");
       expect(built).toMatch(/src="\/assets\/[^"]+\.js"/);
+      // public/ is copied to the root of the build, where ROOT_FILES serves it.
+      const written = readdirSync(out);
+      for (const path of Object.keys(ROOT_FILES)) expect(written, path).toContain(path.slice(1));
       const shell = parseShellTemplate(built);
       // The build carries no data-accent; render adds it after data-theme
       // and changes nothing else.
@@ -445,5 +451,189 @@ describe("registerWeb without a web build", () => {
       await writeFile(join(dir, "index.html"), "<html><body></body></html>");
       expect(await web.built()).toBe(false);
     });
+  });
+});
+
+// The favicons, app icons and web manifest (the logo, Jon's icon A). Vite
+// copies apps/web/public/ into the root of dist/, and the server answers each
+// file at its root path with its own content type. They are not hashed, so
+// they are cached for a day, not for a year: a regenerated icon (a new
+// accent) reaches browsers by the next day.
+describe("the icon files at the root", () => {
+  const FILES: Array<[string, string]> = [
+    ["/favicon.ico", "image/x-icon"],
+    ["/favicon.svg", "image/svg+xml"],
+    ["/apple-touch-icon.png", "image/png"],
+    ["/icon-192.png", "image/png"],
+    ["/icon-512.png", "image/png"],
+    ["/icon-maskable-512.png", "image/png"],
+    ["/site.webmanifest", "application/manifest+json"],
+  ];
+
+  async function withBuild(
+    run: (args: { app: ReturnType<typeof Fastify>; dir: string }) => Promise<void>,
+  ) {
+    const dir = await mkdtemp(join(tmpdir(), "platehouse-web-icons-"));
+    const app = Fastify();
+    try {
+      await mkdir(join(dir, "assets"), { recursive: true });
+      await writeFile(
+        join(dir, "index.html"),
+        '<html lang="en" data-theme="dark"><meta name="color-scheme" content="dark" />',
+      );
+      for (const [path] of FILES) await writeFile(join(dir, path.slice(1)), `bytes of ${path}`);
+      await registerWeb(app, { dir });
+      await run({ app, dir });
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("ROOT_FILES lists each file with its content type", () => {
+    expect(Object.entries(ROOT_FILES)).toEqual(FILES);
+  });
+
+  test.each(FILES)("GET %s answers the file as %s, cached for a day", async (path, type) => {
+    await withBuild(async ({ app }) => {
+      const response = await app.inject({ method: "GET", url: path });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toBe(type);
+      expect(response.headers["cache-control"]).toBe(ROOT_FILE_CACHE_CONTROL);
+      expect(response.body).toBe(`bytes of ${path}`);
+    });
+  });
+
+  test("HEAD answers the headers without the body", async () => {
+    await withBuild(async ({ app }) => {
+      const response = await app.inject({ method: "HEAD", url: "/favicon.svg" });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toBe("image/svg+xml");
+      expect(response.body).toBe("");
+    });
+  });
+
+  test("a file the build lacks is a 404, and the other files still answer", async () => {
+    await withBuild(async ({ app, dir }) => {
+      await rm(join(dir, "favicon.ico"));
+      expect((await app.inject({ method: "GET", url: "/favicon.ico" })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: "/favicon.svg" })).statusCode).toBe(200);
+    });
+  });
+
+  // Public in the Route classes table (Jon, 2026-11-19, decision A-1), so
+  // the browser loads them without a session: on the auth pages, before the
+  // login redirect returns, and for the manifest, which browsers fetch
+  // without cookies.
+  test.each(FILES)("%s is public-class, as a route and as a raw path", (path) => {
+    expect(patternClass(path)).toBe("public");
+    expect(routeClass(path)).toBe("public");
+  });
+
+  test.each([
+    "/favicon.ico/",
+    "/favicon.ico/x",
+    "/favicon.icox",
+    "/Favicon.ico",
+    "/icon-1024.png",
+    "/x/favicon.svg",
+    "/favicon.%69co",
+  ])("%s, a near miss, stays session-class", (path) => {
+    expect(patternClass(path)).toBe("session");
+    expect(routeClass(path)).toBe("session");
+  });
+
+  test("with the gate installed, a signed-out browser gets each file; a page still needs a session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "platehouse-web-icons-gate-"));
+    const app = Fastify();
+    try {
+      await mkdir(join(dir, "assets"), { recursive: true });
+      await writeFile(
+        join(dir, "index.html"),
+        '<html lang="en" data-theme="dark"><meta name="color-scheme" content="dark" />',
+      );
+      for (const [path] of FILES) await writeFile(join(dir, path.slice(1)), `bytes of ${path}`);
+      await app.register(fastifyCookie);
+      installGate(app, {
+        sessions: {
+          start: async () => {
+            throw new Error("not used");
+          },
+          find: async () => undefined,
+          end: async () => {},
+        },
+        publicOrigin: "https://platehouse.test",
+        absoluteUrl: (path) => `https://platehouse.test${path}`,
+      });
+      await registerWeb(app, { dir });
+      for (const [path, type] of FILES) {
+        const response = await app.inject({
+          method: "GET",
+          url: path,
+          headers: { accept: "image/avif,image/webp,*/*" },
+        });
+        expect(response.statusCode, path).toBe(200);
+        expect(response.headers["content-type"], path).toBe(type);
+      }
+      // The control: the same gate sends a signed-out page request to the login.
+      const page = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } });
+      expect(page.statusCode).toBe(302);
+      expect(page.headers.location).toBe("https://platehouse.test/auth/login");
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the cache lifetime is a day, public", () => {
+    expect(ROOT_FILE_CACHE_CONTROL).toBe("public, max-age=86400");
+  });
+
+  // Every file Vite copies to the root of dist/ must be answered, or the
+  // browser's request for it is a 404; and every file the server lists must
+  // be in public/, or it always is.
+  test("ROOT_FILES is exactly the web app's public/ folder", () => {
+    const listed = readdirSync(new URL("../../../web/public/", import.meta.url)).filter(
+      (name) => !name.startsWith("."),
+    );
+    expect(listed.sort()).toEqual(
+      Object.keys(ROOT_FILES)
+        .map((path) => path.slice(1))
+        .sort(),
+    );
+  });
+
+  // The app image builds the web app from its own context, not this
+  // checkout: without public/ in that context and copied into the build
+  // stage, vite build writes none of these files and every one answers 404
+  // in production, while the tests above still pass. Docker is not run
+  // here; these read the image's build files, and docker/test-app-image.sh
+  // requests each file from the running image in CI.
+  test("the app image copies public/ into its build and checks every file it ships", () => {
+    const root = new URL("../../../../docker/", import.meta.url);
+    const lines = (name: string) =>
+      readFileSync(new URL(name, root), "utf8")
+        .split("\n")
+        .map((line) => line.trim());
+    const ignore = lines("app.Dockerfile.dockerignore");
+    expect(ignore).toContain("!apps/web/public");
+    const dockerfile = readFileSync(new URL("app.Dockerfile", root), "utf8");
+    // The runtime stage is the last FROM.
+    const runtimeAt = dockerfile.lastIndexOf("\nFROM ");
+    expect(runtimeAt).toBeGreaterThan(-1);
+    const build = dockerfile.slice(0, runtimeAt);
+    const runtime = dockerfile.slice(runtimeAt);
+    expect(build).toContain("\nCOPY apps/web/public apps/web/public\n");
+    // The web app's sources go after the build, public/ with them.
+    expect(build).toMatch(/\n {6}apps\/web\/src [^\n]*apps\/web\/public[^\n]*\n/);
+    const script = readFileSync(new URL("test-app-image.sh", root), "utf8");
+    for (const path of Object.keys(ROOT_FILES)) {
+      expect(build, path).toContain(` test -f apps/web/dist${path}`);
+      expect(runtime, path).toContain(` test -r /app/apps/web/dist${path}`);
+    }
+    // The running image is asked for exactly these files.
+    const requested = /\nroot_files=\(\n((?: +\S+\n)+)\)\n/.exec(script)?.[1];
+    expect(requested, "a root_files=( ... ) list, one path per line").toBeDefined();
+    expect(requested?.trim().split(/\s+/).sort()).toEqual(Object.keys(ROOT_FILES).sort());
   });
 });

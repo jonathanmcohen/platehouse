@@ -32,7 +32,7 @@
 //   of Pocket ID itself is not part of it.
 //
 // Every answer is Cache-Control: no-store, and the pages are plain HTML with
-// a link to try again. Nothing here logs a code, a token or a cookie, and
+// the Platehouse logo above the heading and a link to try again. Nothing here logs a code, a token or a cookie, and
 // the request log records the path without the query (app.ts), so the
 // callback's code and state stay out of it too.
 import { hkdfSync } from "node:crypto";
@@ -123,14 +123,21 @@ function escapeHtml(text: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/** A plain page: a heading, a sentence and a link to try again. */
+/**
+ * The logo above each page's heading: the favicon file, public-class
+ * (gate.ts), so it loads without a session, and named Platehouse, since no
+ * other text on the page names the app.
+ */
+const LOGO = '<img src="/favicon.svg" alt="Platehouse" width="48" height="48">';
+
+/** A plain page: the logo, a heading, a sentence and a link to try again. */
 function page(title: string, message: string): string {
   return [
     "<!doctype html>",
     '<html lang="en">',
     '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(title)} - Platehouse</title></head>`,
-    `<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`,
+    `<body><main>${LOGO}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`,
     '<p><a href="/auth/login">Try again</a></p></main></body>',
     "</html>",
     "",
