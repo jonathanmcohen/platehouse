@@ -4,7 +4,7 @@
 // from the ph_theme cookie; Dark is the default and anything that is not
 // dark, light or system is dark. Only those two places change.
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,8 @@ import { patternClass } from "../../src/auth/gate.js";
 import {
   defaultWebDir,
   parseShellTemplate,
+  ROOT_FILE_CACHE_CONTROL,
+  ROOT_FILES,
   registerWeb,
   resolveTheme,
   SHELL_PAGES,
@@ -139,6 +141,9 @@ describe("parseShellTemplate", () => {
       // is now a hashed file under /assets/.
       expect(built).not.toContain("/src/main.tsx");
       expect(built).toMatch(/src="\/assets\/[^"]+\.js"/);
+      // public/ is copied to the root of the build, where ROOT_FILES serves it.
+      const written = readdirSync(out);
+      for (const path of Object.keys(ROOT_FILES)) expect(written, path).toContain(path.slice(1));
       const shell = parseShellTemplate(built);
       expect(shell.render(undefined)).toBe(built);
       for (const [cookie, theme, scheme] of [
@@ -273,5 +278,91 @@ describe("registerWeb without a web build", () => {
       await writeFile(join(dir, "index.html"), "<html><body></body></html>");
       expect(await web.built()).toBe(false);
     });
+  });
+});
+
+// The favicons, app icons and web manifest (the logo, Jon's icon A). Vite
+// copies apps/web/public/ into the root of dist/, and the server answers each
+// file at its root path with its own content type. They are not hashed, so
+// they are cached for a day, not for a year: a regenerated icon (a new
+// accent) reaches browsers by the next day.
+describe("the icon files at the root", () => {
+  const FILES: Array<[string, string]> = [
+    ["/favicon.ico", "image/x-icon"],
+    ["/favicon.svg", "image/svg+xml"],
+    ["/apple-touch-icon.png", "image/png"],
+    ["/icon-192.png", "image/png"],
+    ["/icon-512.png", "image/png"],
+    ["/icon-maskable-512.png", "image/png"],
+    ["/site.webmanifest", "application/manifest+json"],
+  ];
+
+  async function withBuild(
+    run: (args: { app: ReturnType<typeof Fastify>; dir: string }) => Promise<void>,
+  ) {
+    const dir = await mkdtemp(join(tmpdir(), "platehouse-web-icons-"));
+    const app = Fastify();
+    try {
+      await mkdir(join(dir, "assets"), { recursive: true });
+      await writeFile(
+        join(dir, "index.html"),
+        '<html lang="en" data-theme="dark"><meta name="color-scheme" content="dark" />',
+      );
+      for (const [path] of FILES) await writeFile(join(dir, path.slice(1)), `bytes of ${path}`);
+      await registerWeb(app, { dir });
+      await run({ app, dir });
+    } finally {
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("ROOT_FILES lists each file with its content type", () => {
+    expect(Object.entries(ROOT_FILES)).toEqual(FILES);
+  });
+
+  test.each(FILES)("GET %s answers the file as %s, cached for a day", async (path, type) => {
+    await withBuild(async ({ app }) => {
+      const response = await app.inject({ method: "GET", url: path });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toBe(type);
+      expect(response.headers["cache-control"]).toBe(ROOT_FILE_CACHE_CONTROL);
+      expect(response.body).toBe(`bytes of ${path}`);
+    });
+  });
+
+  test("HEAD answers the headers without the body", async () => {
+    await withBuild(async ({ app }) => {
+      const response = await app.inject({ method: "HEAD", url: "/favicon.svg" });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toBe("image/svg+xml");
+      expect(response.body).toBe("");
+    });
+  });
+
+  test("a file the build lacks is a 404, and the other files still answer", async () => {
+    await withBuild(async ({ app, dir }) => {
+      await rm(join(dir, "favicon.ico"));
+      expect((await app.inject({ method: "GET", url: "/favicon.ico" })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: "/favicon.svg" })).statusCode).toBe(200);
+    });
+  });
+
+  test("the cache lifetime is a day, public", () => {
+    expect(ROOT_FILE_CACHE_CONTROL).toBe("public, max-age=86400");
+  });
+
+  // Every file Vite copies to the root of dist/ must be answered, or the
+  // browser's request for it is a 404; and every file the server lists must
+  // be in public/, or it always is.
+  test("ROOT_FILES is exactly the web app's public/ folder", () => {
+    const listed = readdirSync(new URL("../../../web/public/", import.meta.url)).filter(
+      (name) => !name.startsWith("."),
+    );
+    expect(listed.sort()).toEqual(
+      Object.keys(ROOT_FILES)
+        .map((path) => path.slice(1))
+        .sort(),
+    );
   });
 });

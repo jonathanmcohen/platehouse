@@ -6,7 +6,11 @@
 // listed paths (SHELL_PAGES in
 // apps/server/src/web/shell.ts); a server test checks every section here is
 // one of them, or a reload of that section would be a 404.
+//
+// The brand at the top is the logo (Logo.tsx, aria-hidden beside the name)
+// and the name, linking to the library.
 import { Link, NavLink } from "react-router";
+import { Logo } from "./Logo";
 
 export const SECTIONS: ReadonlyArray<{ label: string; to: string }> = [
   { label: "Library", to: "/" },
@@ -29,7 +33,7 @@ export function Sidebar({ menu = false, onNavigate }: SidebarProps) {
     <nav className={menu ? "studio-menu-nav" : "studio-sidebar"} aria-label="Main">
       {menu ? null : (
         <Link to="/" className="studio-brand">
-          <span className="studio-brand-dot" aria-hidden="true" />
+          <Logo />
           Platehouse
         </Link>
       )}
