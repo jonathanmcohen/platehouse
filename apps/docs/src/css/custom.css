@@ -1,0 +1,24 @@
+/* Platehouse docs accent: Blueprint indigo #5560e0. The darker and lighter
+ * shades follow Docusaurus's own scale for its primary colour. */
+:root {
+  --ifm-color-primary: #5560e0;
+  --ifm-color-primary-dark: #3f4bdc;
+  --ifm-color-primary-darker: #3440da;
+  --ifm-color-primary-darkest: #2330c4;
+  --ifm-color-primary-light: #6b75e4;
+  --ifm-color-primary-lighter: #7680e6;
+  --ifm-color-primary-lightest: #979fec;
+  --ifm-link-color: #3f4bdc;
+  --ifm-code-font-size: 95%;
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #8a92ec;
+  --ifm-color-primary-dark: #737ce8;
+  --ifm-color-primary-darker: #6770e6;
+  --ifm-color-primary-darkest: #444fdf;
+  --ifm-color-primary-light: #a1a8f0;
+  --ifm-color-primary-lighter: #adb3f2;
+  --ifm-color-primary-lightest: #d0d3f7;
+  --ifm-link-color: #a1a8f0;
+}

@@ -76,6 +76,30 @@ check it. Its tests use Node's own test runner and need no install:
 node --test 'tools/slicing-gate/test/**/*.test.mjs'
 ```
 
+## Documentation
+
+The user documentation is a Docusaurus site. The pages are Markdown files in `docs/`; the site
+that builds them is the workspace package `apps/docs`. Example deployment files the pages refer
+to are in `examples/`.
+
+After `pnpm install --frozen-lockfile` (above), preview the site with live reload at
+http://localhost:3000 (add `--port 3001` or another port if 3000 is taken):
+
+```sh
+pnpm --filter @platehouse/docs start
+```
+
+Build it the way CI does, which fails on a broken link or anchor, and serve the result:
+
+```sh
+pnpm --filter @platehouse/docs build
+pnpm --filter @platehouse/docs serve
+```
+
+The built site loads nothing from another site: no analytics, no external fonts or scripts, and
+search is a local index made at build time. CI builds it when `docs/`, `apps/docs` or the
+workspace files change. Nothing deploys it yet.
+
 ## Slicer image
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
