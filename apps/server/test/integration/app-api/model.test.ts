@@ -46,6 +46,7 @@ import type { DB } from "../../../src/db/types.js";
 import { createDeliveryLibrary } from "../../../src/delivery/download.js";
 import { type DisplayContext, plateNumbers } from "../../../src/estimates/display.js";
 import { REASON_WORDS } from "../../../src/estimates/reasons.js";
+import { createRename } from "../../../src/library/rename.js";
 import { createUploads } from "../../../src/uploads/tus.js";
 import {
   ASCII_STL,
@@ -110,7 +111,10 @@ async function get(url: string, cookie: string | null = session) {
   });
 }
 
-async function post(url: string, opts: { cookie?: string | null; origin?: string | null } = {}) {
+async function post(
+  url: string,
+  opts: { cookie?: string | null; origin?: string | null; body?: unknown } = {},
+) {
   const cookie = opts.cookie === undefined ? session : opts.cookie;
   const origin = opts.origin === undefined ? TEST_ORIGIN : opts.origin;
   return app.inject({
@@ -118,6 +122,7 @@ async function post(url: string, opts: { cookie?: string | null; origin?: string
     url,
     headers: { accept: "application/json", ...(origin === null ? {} : { origin }) },
     ...(cookie === null ? {} : { cookies: { [SESSION_COOKIE]: cookie } }),
+    ...(opts.body === undefined ? {} : { payload: opts.body as Record<string, unknown> }),
   });
 }
 
@@ -233,7 +238,11 @@ afterAll(async () => {
 
 describe("the model page's routes", () => {
   test("are session-class: without a session the model is 401 JSON", async () => {
-    expect(MODEL_API_PATHS).toEqual(["/app/api/models/:id", "/app/api/estimates/:id/retry"]);
+    expect(MODEL_API_PATHS).toEqual([
+      "/app/api/models/:id",
+      "/app/api/estimates/:id/retry",
+      "/app/api/models/title-names",
+    ]);
     const { modelId } = await ingest(`Gate ${marker()}.stl`, ASCII_STL);
     const res = await get(`/app/api/models/${modelId}`, null);
     expect(res.statusCode).toBe(401);
@@ -792,6 +801,49 @@ describe("the model's details (About)", () => {
   });
 });
 
+describe("View on MakerWorld", () => {
+  test("a model whose .3mf carried a design ID links to its MakerWorld page", async () => {
+    const { modelId } = await ingest(
+      `Linked ${marker()}.3mf`,
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title: "Linked Kit", designId: "1234567" },
+      }),
+    );
+    expect((await modelView(modelId)).makerWorldUrl).toBe("https://makerworld.com/models/1234567");
+  });
+
+  test("a URL in the file is never passed through: only the ID of a MakerWorld model URL is used", async () => {
+    const { modelId } = await ingest(
+      `From URL ${marker()}.3mf`,
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: {
+          designer: "Synthetic Designer",
+          designId: "https://makerworld.com/en/models/7654321-kit?utm=x#profileId-1",
+        },
+      }),
+    );
+    expect((await modelView(modelId)).makerWorldUrl).toBe("https://makerworld.com/models/7654321");
+  });
+
+  test("no design ID, or one that is not valid, shows no link", async () => {
+    const plain = await ingest(`No link ${marker()}.stl`, ASCII_STL);
+    expect((await modelView(plain.modelId)).makerWorldUrl).toBeNull();
+    const bad = await ingest(
+      `Bad link ${marker()}.3mf`,
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", designId: "https://evil.example/models/1" },
+      }),
+    );
+    expect((await modelView(bad.modelId)).makerWorldUrl).toBeNull();
+  });
+});
+
 describe("opening a file in a slicer from the model page (AC-040)", () => {
   test("a name with spaces, a slash, quotes and non-ASCII: the link is encoded exactly once and opens the file", async () => {
     const bytes = build3mf({ plates: 1, sliced: [1] });
@@ -829,5 +881,102 @@ describe("opening a file in a slicer from the model page (AC-040)", () => {
     const fetched = await app.inject({ method: "GET", url: link.url.slice(TEST_ORIGIN.length) });
     expect(fetched.statusCode).toBe(200);
     expect(fetched.rawPayload.equals(bytes)).toBe(true);
+  });
+});
+
+// Last in the file: applying renames every eligible model in this file's
+// database, so it runs after every test that reads a name.
+describe("Use file titles (GET and POST /app/api/models/title-names)", () => {
+  async function namedAfterItsFile() {
+    const { modelId } = await ingest(`Title_backfill_${marker()}.stl`, ASCII_STL);
+    await env.db
+      .updateTable("models")
+      .set({ caption: `Backfill Title ${marker()}` })
+      .where("id", "=", modelId)
+      .execute();
+    const model = await env.repos.models.get(modelId);
+    if (model === undefined) throw new Error("the model just made is gone");
+    return model;
+  }
+
+  async function previewPlan() {
+    const res = await get("/app/api/models/title-names");
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json() as {
+      planId: string;
+      renames: Array<{ id: string; from: string; to: string }>;
+      skipped: Record<string, number>;
+    };
+  }
+
+  test("are session-class, and running it needs the same origin", async () => {
+    expect((await get("/app/api/models/title-names", null)).statusCode).toBe(401);
+    const url = "/app/api/models/title-names";
+    const body = { planId: (await previewPlan()).planId };
+    expect((await post(url, { cookie: null, body })).statusCode).toBe(401);
+    expect((await post(url, { origin: "https://evil.test", body })).statusCode).toBe(403);
+    expect((await post(url, { origin: null, body })).statusCode).toBe(403);
+  });
+
+  test("the preview lists the rename and changes nothing", async () => {
+    const model = await namedAfterItsFile();
+    const res = await get("/app/api/models/title-names");
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const plan = res.json() as {
+      planId: string;
+      renames: Array<{ id: string; from: string; to: string }>;
+      skipped: Record<string, number>;
+    };
+    expect(plan.planId).toMatch(/^[0-9a-f]{64}$/);
+    expect(plan.renames).toContainEqual({ id: model.id, from: model.name, to: model.caption });
+    expect(Object.keys(plan.skipped).sort()).toEqual([
+      "captionNotFromFile",
+      "imported",
+      "nameNotFromFile",
+      "namedFromTitle",
+      "noTitle",
+      "renamedByUser",
+      "sameName",
+    ]);
+    expect((await env.repos.models.get(model.id))?.name).toBe(model.name);
+  });
+
+  test("running it without the preview's plan id is refused and renames nothing", async () => {
+    const model = await namedAfterItsFile();
+    const url = "/app/api/models/title-names";
+    for (const body of [undefined, {}, { planId: 7 }, { planId: "not-a-plan" }]) {
+      const res = await post(url, { body });
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+      expect(res.json()).toMatchObject({ error: "bad_request" });
+    }
+    expect((await modelView(model.id)).name).toBe(model.name);
+  });
+
+  test("a preview the library has moved past renames nothing and says so", async () => {
+    const model = await namedAfterItsFile();
+    const { planId } = await previewPlan();
+    // A model that qualifies after the preview was read: it was never shown.
+    const later = await namedAfterItsFile();
+    const res = await post("/app/api/models/title-names", { body: { planId } });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "plan_changed" });
+    expect((res.json() as { message: string }).message).toContain("nothing was renamed");
+    expect((await modelView(model.id)).name).toBe(model.name);
+    expect((await modelView(later.id)).name).toBe(later.name);
+  });
+
+  test("running it renames the model from its title, and leaves a renamed one alone", async () => {
+    const model = await namedAfterItsFile();
+    const kept = await namedAfterItsFile();
+    // The rename the organising route makes (this app is built without the
+    // organising routes, so their call is made directly).
+    expect(await createRename(env.db).renameModel(kept.id, "Named by hand")).toBe(true);
+    const { planId } = await previewPlan();
+    const res = await post("/app/api/models/title-names", { body: { planId } });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { renamed: number }).renamed).toBeGreaterThanOrEqual(1);
+    expect((await modelView(model.id)).name).toBe(model.caption);
+    expect((await modelView(kept.id)).name).toBe("Named by hand");
   });
 });

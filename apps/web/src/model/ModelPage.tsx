@@ -42,6 +42,13 @@
 //   opens Task 19's upload dialog aimed at this model, where the Combine
 //   switch is not shown. refreshKey changes when an upload round finishes,
 //   and the page loads the model again.
+// - The page head's name is renamed in place with the collections pages'
+//   InlineRename, saved through PATCH /app/api/models/:id (the same route
+//   and 500-character limit), shown at once and then read back from the
+//   server. A rename makes the name the user's, so no title from a later
+//   upload replaces it. Beside the creator, View on MakerWorld opens the
+//   model's MakerWorld page in a new tab, only when the server named one
+//   and it is a makerworld.com model page (AboutTab's MakerWorldLink).
 // - Add files, a button in the page head, calls onFiles with no files and
 //   this model's id, which opens the same dialog with the rows it already
 //   has. It is the keyboard route to this model's dialog (the top bar's Add
@@ -50,10 +57,12 @@
 //   the progress of a hidden upload, are there without dropping a file.
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
+import { InlineRename } from "../collections/InlineRename";
+import { appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
 import "./model.css";
-import { AboutTab } from "./AboutTab";
+import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
 import { FilesTab, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
@@ -148,6 +157,8 @@ export interface ModelView {
   creator: string | null;
   license: string | null;
   licenseNote: string | null;
+  /** The design's MakerWorld page, or null; only a makerworld.com model page is linked. */
+  makerWorldUrl?: string | null;
   tags: string[];
   collections: string[];
   /** The printer the numbers are for: the default printer, or the switch's choice. */
@@ -315,6 +326,20 @@ export function ModelPage({
     return true;
   }
 
+  /**
+   * Saves a new name through the app API (PATCH /app/api/models/:id, the
+   * collections pages' route and limits) and shows it at once; the model is
+   * then asked for again, so the page shows what was stored. Rejects with
+   * the server's sentence, which the rename form shows.
+   */
+  async function rename(name: string): Promise<void> {
+    await appApi("PATCH", `/models/${encodeURIComponent(id)}`, { name });
+    setLoad((was) =>
+      was.id === id && was.status === "ready" ? { ...was, model: { ...was.model, name } } : was,
+    );
+    setReload((n) => n + 1);
+  }
+
   const current: Load = load.id === id ? load : { id, status: "loading" };
 
   if (current.status === "loading") {
@@ -363,6 +388,7 @@ export function ModelPage({
         onRetry={retry}
         onChoosePrinter={printer.choose}
         chosenPrinter={choice}
+        onRename={rename}
         loadThree={loadThree}
         navigateTo={navigateTo}
         platform={platform}
@@ -379,6 +405,8 @@ interface ModelDetailProps {
   onChoosePrinter(printerId: string): void;
   /** The switch's stored choice, which may still be loading. */
   chosenPrinter: string | null;
+  /** Saves a new model name; rejects with what went wrong. */
+  onRename(name: string): Promise<void>;
   loadThree?: ThreeLoader | undefined;
   navigateTo?: ((url: string) => void) | undefined;
   platform?: Platform | undefined;
@@ -398,6 +426,7 @@ function ModelDetail({
   onRetry,
   onChoosePrinter,
   chosenPrinter,
+  onRename,
   loadThree,
   navigateTo,
   platform,
@@ -462,8 +491,20 @@ function ModelDetail({
         <p className="studio-breadcrumb">
           <Link to="/">Library</Link>
         </p>
-        <h1>{model.name}</h1>
-        {model.creator === null ? null : <p className="studio-byline">by {model.creator}</p>}
+        <InlineRename
+          heading
+          value={model.name}
+          buttonLabel={`Rename ${model.name}`}
+          inputLabel={`New name for ${model.name}`}
+          onSave={onRename}
+        />
+        {model.creator === null && makerWorldHref(model.makerWorldUrl) === null ? null : (
+          <p className="studio-byline">
+            {model.creator === null ? null : `by ${model.creator}`}
+            {model.creator === null || makerWorldHref(model.makerWorldUrl) === null ? null : " - "}
+            <MakerWorldLink url={model.makerWorldUrl} />
+          </p>
+        )}
         {onAddFiles === undefined ? null : (
           <button type="button" className="studio-button" onClick={onAddFiles}>
             Add files

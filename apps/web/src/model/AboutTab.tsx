@@ -1,5 +1,6 @@
 // The About tab (build plan Task 20; AC-022 display): the caption, the
-// creator, the licence with the stored licence note beside it (so a
+// creator, the MakerWorld page when the model's .3mf named one (View on
+// MakerWorld, also beside the creator in the page head), the licence with the stored licence note beside it (so a
 // MakerWorld-only licence such as the Standard Digital File License shows
 // even when the description was already set and ingest left it alone; Jon,
 // 2026-11-08, PR #49), the tags and collections, and the description.
@@ -14,6 +15,34 @@ import { useEffect, useState } from "react";
 import type { ModelView } from "./ModelPage";
 
 type Rendered = { markdown: string; html: string | null };
+
+/**
+ * The only address "View on MakerWorld" ever opens: a MakerWorld model page,
+ * https://makerworld.com/models/<digits>, as the server builds it from the
+ * design ID the .3mf carried (packages/threemf makerWorldUrl). The server
+ * never passes a URL from a file through; this check makes sure the page
+ * cannot either.
+ */
+const MAKERWORLD_MODEL = /^https:\/\/makerworld\.com\/models\/[1-9][0-9]{0,14}$/;
+
+/** The address to link, or null when it is not a MakerWorld model page. */
+export function makerWorldHref(url: string | null | undefined): string | null {
+  return typeof url === "string" && MAKERWORLD_MODEL.test(url) ? url : null;
+}
+
+/**
+ * "View on MakerWorld", opened in a new tab with rel="noopener noreferrer";
+ * nothing when the model has no MakerWorld page.
+ */
+export function MakerWorldLink({ url }: { url: string | null | undefined }) {
+  const href = makerWorldHref(url);
+  if (href === null) return null;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      View on MakerWorld
+    </a>
+  );
+}
 
 function Description({ markdown }: { markdown: string }) {
   const [rendered, setRendered] = useState<Rendered | null>(null);
@@ -57,6 +86,14 @@ export function AboutTab({ model }: { model: ModelView }) {
       <dl className="studio-dl">
         <dt>Creator</dt>
         <dd>{model.creator ?? "Not known"}</dd>
+        {makerWorldHref(model.makerWorldUrl) === null ? null : (
+          <>
+            <dt>Source</dt>
+            <dd>
+              <MakerWorldLink url={model.makerWorldUrl} />
+            </dd>
+          </>
+        )}
         <dt>Licence</dt>
         <dd>{licence.length === 0 ? "Not set" : licence.join(" - ")}</dd>
         <dt>Tags</dt>

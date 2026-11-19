@@ -1,4 +1,4 @@
--- Platehouse schema 0005: My printers, the list of printers Jon owns.
+-- Platehouse schema 0007: My printers, the list of printers Jon owns.
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
 -- once applied anywhere: a change is a new file.
 --

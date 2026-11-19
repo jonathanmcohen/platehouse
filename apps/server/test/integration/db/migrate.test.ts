@@ -44,7 +44,9 @@ const SHIPPED = [
   "0002_purge_started.sql",
   "0003_estimate_filament_profiles.sql",
   "0004_files_sha256.sql",
-  "0005_my_printers.sql",
+  "0005_model_name_source.sql",
+  "0006_model_name_source_user.sql",
+  "0007_my_printers.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -217,10 +219,10 @@ describe("migrate with a changed migrations folder", () => {
   });
 });
 
-// Migration 0005 turns the one printer setting into My printers. It runs on
+// Migration 0007 turns the one printer setting into My printers. It runs on
 // Jon's live database, which has the schema before it, one selected printer and
 // estimates keyed by printer_id; all of that must come through as it is.
-describe("0005 My printers", () => {
+describe("0007 My printers", () => {
   const P1S = "Bambu Lab P1S 0.4 nozzle";
   const A1_MINI = "Bambu Lab A1 mini 0.4 nozzle";
   const X1C = "Bambu Lab X1 Carbon 0.4 nozzle";
@@ -229,7 +231,7 @@ describe("0005 My printers", () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
     await cp(MIGRATIONS_DIR, dir, { recursive: true });
-    await rm(join(dir, "0005_my_printers.sql"));
+    await rm(join(dir, "0007_my_printers.sql"));
   });
 
   afterEach(async () => {
@@ -237,7 +239,7 @@ describe("0005 My printers", () => {
   });
 
   /**
-   * A database migrated up to 0004, as Jon's will be: printerId selected, one plate, and two
+   * A database migrated up to 0006, as Jon's will be: printerId selected, one plate, and two
    * finished estimates for it (one for printerId, one for the P1S on an older
    * Orca), as a printer change and an Orca update leave behind.
    */

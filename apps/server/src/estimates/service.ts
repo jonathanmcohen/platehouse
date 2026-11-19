@@ -2,7 +2,7 @@
 // AC-031 to AC-034, AC-036; Review Focus 2 and 3).
 //
 // - The printer menu is /v1/profiles' printer list, read once per Orca
-//   version (listPrinters). My printers (migration 0005) are the printers
+//   version (listPrinters). My printers (migration 0007) are the printers
 //   Jon owns, picked from that menu, in his order; one of them is the
 //   default (settings.printer_id, P1S 0.4 on a fresh database). Every
 //   estimate is made for each of My printers, not just the default.

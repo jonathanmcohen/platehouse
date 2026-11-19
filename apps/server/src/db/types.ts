@@ -20,6 +20,7 @@ export type EstimateSource = "file" | "platehouse";
 export type EstimateStatus = "pending" | "running" | "ok" | "failed";
 export type BucketVersioning = "enabled" | "suspended" | "off" | "unknown";
 export type FilamentProfileSource = "bambu" | "generic" | "file";
+export type NameSource = "file" | "title" | "user";
 
 type CreatedAt = Generated<Date>;
 // A timestamp the app may also set on update.
@@ -49,6 +50,10 @@ export interface ModelsTable {
   trashedAt: Date | null;
   /** Set when a purge of the trashed model began (0002); restore then refuses it. */
   purgeStartedAt: Date | null;
+  /** Who named the model (0005): its file, its .3mf's title, or a person. */
+  nameSource: Generated<NameSource>;
+  /** The MakerWorld design ID its .3mf carries, digits only (0005). */
+  makerworldDesignId: string | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;
 }
@@ -162,7 +167,7 @@ export interface EstimateFilamentsTable {
 
 export interface SettingsTable {
   id: Generated<boolean>;
-  /** The default printer (0005): one of My printers (userPrinters). */
+  /** The default printer (0007): one of My printers (userPrinters). */
   printerId: Generated<string>;
   lastOrcaVersion: string | null;
   bucketVersioning: Generated<BucketVersioning>;
@@ -170,7 +175,7 @@ export interface SettingsTable {
 }
 
 /**
- * My printers (0005): the printers Jon owns, in display order. The default
+ * My printers (0007): the printers Jon owns, in display order. The default
  * is settings.printerId, which must be one of them.
  */
 export interface UserPrintersTable {

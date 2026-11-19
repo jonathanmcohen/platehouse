@@ -13,10 +13,21 @@
 //                                       is queued again (Task 12's
 //                                       retryEstimate, from the stored file)
 //                                       409 {error: "not_retryable"}
+//   GET  /app/api/models/title-names    TitleNamePlan: the "Use file titles"
+//                                       preview (repos/models.ts), which
+//                                       changes nothing, with its planId
+//   POST /app/api/models/title-names    {planId} -> {renamed}: runs the
+//                                       previewed plan. 409 {error:
+//                                       "plan_changed"} when the plan is no
+//                                       longer that one, and nothing is
+//                                       renamed; 400 without a planId. Only
+//                                       the Settings page's button calls it,
+//                                       after its own confirmation; nothing
+//                                       runs it on its own
 //
-// - Both routes are session-class (the Route classes contract: /app/api is
+// - Every route is session-class (the Route classes contract: /app/api is
 //   unlisted, so session); the gate (auth/gate.ts) refuses a request without
-//   a session before these handlers run, and the retry, which changes state,
+//   a session before these handlers run, and each POST, which changes state,
 //   also needs Origin to be PUBLIC_ORIGIN. The Open buttons mint their link
 //   at Task 17's POST /app/api/files/:id/slicer-link, not here.
 // - A trashed, unknown or malformed model is 404, as is a malformed
@@ -41,6 +52,9 @@
 //   are read one after another on that transaction's connection.
 // - Answers are JSON and never cached. Errors carry no detail from the
 //   database.
+
+import { createHash } from "node:crypto";
+import { makerWorldUrl } from "@platehouse/threemf";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
@@ -52,12 +66,23 @@ import {
   printerName,
 } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
+import type { TitleNamePlan } from "../repos/models.js";
 import { BLOB_PREFIX, forPrinter, type PrinterChoice, printerChoices } from "./library.js";
+
+/** A "Use file titles" planId: the SHA-256 of the plan's renames, in hex. */
+const PLAN_ID = /^[0-9a-f]{64}$/;
+
+/** The largest body POST /app/api/models/title-names reads: {planId} is under 100 bytes. */
+const PLAN_BODY_LIMIT = 1024;
+
+/** The planId of a plan with no renames (the SHA-256 of "[]"). */
+const EMPTY_PLAN_ID = createHash("sha256").update("[]").digest("hex");
 
 /** The model page's routes, every one session-class (the Route classes contract). */
 export const MODEL_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/models/:id",
   "/app/api/estimates/:id/retry",
+  "/app/api/models/title-names",
 ]);
 
 export interface ModelPlate {
@@ -110,6 +135,13 @@ export interface ModelView {
   license: string | null;
   /** The stored licence note, such as a MakerWorld-only licence. */
   licenseNote: string | null;
+  /**
+   * The design's MakerWorld page, https://makerworld.com/models/<id>, built
+   * from the stored design ID alone (packages/threemf makerWorldUrl); null
+   * when the model's .3mf carried no valid one. No URL text from a file is
+   * ever passed through.
+   */
+  makerWorldUrl: string | null;
   tags: string[];
   collections: string[];
   /** The printer the numbers are for: the default printer, or the switch's choice. */
@@ -130,6 +162,14 @@ export interface AppModel {
   get(id: string, printer?: string): Promise<ModelView | undefined>;
   /** Queues a failed estimate again; false when it is not one that can be. */
   retry(estimateId: string): Promise<boolean>;
+  /** The "Use file titles" preview: what it would rename, and what it skips and why. */
+  titleNames(): Promise<TitleNamePlan>;
+  /**
+   * Runs the "Use file titles" plan the preview with this planId showed;
+   * null, renaming nothing, when the plan has changed since. Only ever from
+   * the user's own action in Settings.
+   */
+  useTitleNames(planId: string): Promise<{ renamed: number } | null>;
 }
 
 export interface AppModelDeps {
@@ -292,6 +332,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
         creator: model.creator,
         license: model.licenseSpdx,
         licenseNote: model.licenseNote,
+        makerWorldUrl: makerWorldUrl(model.makerworldDesignId),
         tags: tagRows.map((t) => t.name),
         collections: collectionRows.map((c) => c.name),
         printer: ctx.printerId,
@@ -343,6 +384,10 @@ export function createAppModel(deps: AppModelDeps): AppModel {
     },
 
     retry: (estimateId) => deps.retryEstimate(estimateId),
+
+    titleNames: () => repos.models.titleNamePlan(),
+
+    useTitleNames: (planId) => repos.models.applyTitleNames(planId),
   };
 }
 
@@ -350,6 +395,20 @@ export function createAppModel(deps: AppModelDeps): AppModel {
 export const emptyAppModel: AppModel = Object.freeze({
   get: async () => undefined,
   retry: async () => false,
+  titleNames: async () => ({
+    planId: EMPTY_PLAN_ID,
+    renames: [],
+    skipped: {
+      renamedByUser: 0,
+      namedFromTitle: 0,
+      noTitle: 0,
+      sameName: 0,
+      nameNotFromFile: 0,
+      imported: 0,
+      captionNotFromFile: 0,
+    },
+  }),
+  useTitleNames: async (planId: string) => (planId === EMPTY_PLAN_ID ? { renamed: 0 } : null),
 });
 
 /** printer is the page's printer switch: one of My printers. */
@@ -382,6 +441,48 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
         return found;
       },
     );
+
+    // Registered beside /app/api/models/:id; Fastify matches the fixed
+    // segment first, so "title-names" never reaches the id route.
+    scope.get("/app/api/models/title-names", async () => model.titleNames());
+
+    // The one route here with a body. The gate removes every body parser
+    // from the root app, so this context alone reads small JSON bodies; a
+    // body it cannot read is a 4xx, never the scope's 500.
+    await scope.register(async (json) => {
+      json.removeAllContentTypeParsers();
+      json.addContentTypeParser(
+        "application/json",
+        { parseAs: "string", bodyLimit: PLAN_BODY_LIMIT },
+        json.getDefaultJsonParser("error", "error"),
+      );
+      json.setErrorHandler(async (error, request, reply) => {
+        const status = (error as { statusCode?: number }).statusCode;
+        if (status !== undefined && status >= 400 && status < 500) {
+          return reply.code(status).send({ error: "bad_request" });
+        }
+        request.log.error({ err: error }, "model: the request failed");
+        return reply.code(500).send({ error: "internal" });
+      });
+      json.post("/app/api/models/title-names", async (request, reply) => {
+        const planId = (request.body as { planId?: unknown } | null | undefined)?.planId;
+        if (typeof planId !== "string" || !PLAN_ID.test(planId)) {
+          return reply.code(400).send({
+            error: "bad_request",
+            message: "Press Use file titles to see the list first.",
+          });
+        }
+        const done = await model.useTitleNames(planId);
+        if (done === null) {
+          return reply.code(409).send({
+            error: "plan_changed",
+            message:
+              "The library changed after this preview, so nothing was renamed. Cancel, then press Use file titles again to see the new list.",
+          });
+        }
+        return done;
+      });
+    });
 
     scope.post<{ Params: { id: string } }>(
       "/app/api/estimates/:id/retry",

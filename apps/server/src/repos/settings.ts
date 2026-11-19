@@ -3,7 +3,7 @@ import { inTransaction } from "../db/kysely.js";
 import type { BucketVersioning, DB } from "../db/types.js";
 
 // The single settings row, seeded by migration 0001, and My printers
-// (migration 0005): the printers Jon owns, in display order. settings
+// (migration 0007): the printers Jon owns, in display order. settings
 // .printer_id is the default printer, and must be one of My printers.
 
 export interface Settings {
