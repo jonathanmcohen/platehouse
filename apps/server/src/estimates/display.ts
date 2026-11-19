@@ -16,7 +16,11 @@
 //                 (AC-031: "its old one stays visible, marked as for the
 //                 previous printer").
 // A failed estimate for the selected printer gives failure: the slicer's
-// reason, its plain words and Orca's detail for the Details toggle.
+// reason, its plain words and Orca's detail for the Details toggle. The
+// detail is stored as the slicer sent it, so it is cleaned here, as it is
+// read (scrubDetail, src/scrub.ts; issue #239): the model page and the
+// Public API v1 both read it from here, and the Activity page cleans it
+// with the same function, so all three show the same text.
 //
 // Each filament line names the preset that produced its grams and where the
 // preset came from: "bambu" (Bambu's own preset for the printer), "generic"
@@ -30,6 +34,7 @@ import type { Printer, Reason } from "@platehouse/slicer-contract";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB, EstimateSource } from "../db/types.js";
+import { scrubDetail } from "../scrub.js";
 import { isReason, reasonWords } from "./reasons.js";
 
 export type ProfileSource = "bambu" | "generic" | "file";
@@ -81,7 +86,7 @@ export interface PlateFailure {
   estimateId: string;
   reason: Reason;
   words: string;
-  /** Orca's own message, for the Details toggle. */
+  /** Orca's own message for the Details toggle, cleaned of paths, addresses and tokens. */
   detail: string | null;
 }
 
@@ -295,7 +300,7 @@ export async function plateNumbers(
       estimateId: wanted.id,
       reason: isReason(wanted.failureReason) ? wanted.failureReason : "slicer_error",
       words: reasonWords(wanted.failureReason),
-      detail: wanted.failureDetail,
+      detail: scrubDetail(wanted.failureDetail),
     };
   }
   // The newest finished estimate made for an older Orca on this printer, or
