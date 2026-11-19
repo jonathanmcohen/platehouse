@@ -11,7 +11,10 @@
 // - estimates/display.ts plateNumbers: the failure detail on the model page
 //   and in the Public API v1 (both read plate numbers from it);
 // - app-api/activity.ts: the Activity page's failed estimates, renders and
-//   inbox files.
+//   inbox files;
+// - app-api/model.ts and api/v1.ts: a file's render or conversion message
+//   (files.derived_message) on the model page's Files tab and in the Public
+//   API v1 (issue #260).
 
 /** Longest cleaned text shown, before "...". */
 export const SCRUB_MAX_CHARS = 1_000;

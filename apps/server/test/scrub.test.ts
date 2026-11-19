@@ -1,7 +1,9 @@
 // The one cleaning step for error text the app stored and shows to a user
 // (src/scrub.ts; issue #239): Orca's failure detail on the model page, the
-// Activity page and the Public API v1, and OpenSCAD's message and the inbox
-// reason on the Activity page.
+// Activity page and the Public API v1, OpenSCAD's or the STEP converter's
+// message on the Activity page, the model page and the Public API v1 (issue
+// #260; test/app-api/derived-message.test.ts), and the inbox reason on the
+// Activity page.
 //
 // - scrubText: the stored text with any file system path, address, host
 //   name or token taken out, keeping the words around them.

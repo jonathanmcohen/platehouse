@@ -42,6 +42,7 @@ import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { type DisplayContext, type PlateNumbers, plateNumbers } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
+import { scrubDetail } from "../scrub.js";
 import { BLOB_PREFIX } from "./library.js";
 
 /** The model page's routes, every one session-class (the Route classes contract). */
@@ -76,6 +77,7 @@ export interface ModelFileView {
   size: number;
   parseStatus: ParseStatus;
   derivedStatus: string | null;
+  /** The render or conversion message, cleaned by scrubDetail (issue #260); null with none. */
   derivedMessage: string | null;
   /** Task 17's download route for the file. */
   download: string;
@@ -295,7 +297,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             size: Number(f.size),
             parseStatus: f.parseStatus,
             derivedStatus: f.derivedStatus,
-            derivedMessage: f.derivedMessage,
+            derivedMessage: scrubDetail(f.derivedMessage),
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null
