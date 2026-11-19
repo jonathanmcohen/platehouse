@@ -421,26 +421,6 @@ describe("the settings page", () => {
     expect(res.status).toBe(404);
     expect((await env.repos.settings.get()).printerId).toBe(P1S);
   });
-
-  test("the printer switch's list names My printers and the default, and changes nothing", async () => {
-    await call("PUT", "/app/api/settings/printers", {
-      json: { printers: [P1S, X1C], defaultId: P1S },
-    });
-    await drain();
-    const calls = stub.calls.length;
-    const res = await call("GET", "/app/api/printers");
-    expect(res.status, res.text).toBe(200);
-    expect(res.headers["cache-control"]).toBe("no-store");
-    expect(res.json()).toEqual({
-      defaultId: P1S,
-      printers: [
-        { id: P1S, name: "Bambu Lab P1S, 0.4 mm nozzle" },
-        { id: X1C, name: "Bambu Lab X1 Carbon, 0.4 mm nozzle" },
-      ],
-    });
-    await sleep(300);
-    expect(stub.calls.length).toBe(calls);
-  });
 });
 
 describe("API tokens", () => {

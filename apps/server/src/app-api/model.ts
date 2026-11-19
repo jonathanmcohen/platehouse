@@ -6,7 +6,8 @@
 //                                       plate order with their numbers, for
 //                                       printer (the page's printer switch)
 //                                       when it is one of My printers, else
-//                                       the default printer; reading never
+//                                       the default printer, with the
+//                                       switch's choices; reading never
 //                                       queues a slice
 //   POST /app/api/estimates/:id/retry   202 {queued: true}: a failed estimate
 //                                       is queued again (Task 12's
@@ -51,7 +52,7 @@ import {
   printerName,
 } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
-import { BLOB_PREFIX, forPrinter } from "./library.js";
+import { BLOB_PREFIX, forPrinter, type PrinterChoice, printerChoices } from "./library.js";
 
 /** The model page's routes, every one session-class (the Route classes contract). */
 export const MODEL_API_PATHS: readonly string[] = Object.freeze([
@@ -115,6 +116,8 @@ export interface ModelView {
   printer: string;
   /** That printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
   printerName: string;
+  /** The printer switch's choices: My printers, in order. */
+  printers: PrinterChoice[];
   files: ModelFileView[];
 }
 
@@ -293,6 +296,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
         collections: collectionRows.map((c) => c.name),
         printer: ctx.printerId,
         printerName: printerName(ctx.printerId, ctx.printers),
+        printers: printerChoices(ctx),
         files: files.map((f): ModelFileView => {
           const viewFrom = VIEW_BLOB[f.kind];
           const viewSource =

@@ -878,6 +878,8 @@ describe("My printers", () => {
     expect(expected).toBeGreaterThanOrEqual(2);
 
     const held = stub.hold();
+    // The stub's call log holds every earlier test's calls too.
+    const before = stub.calls.length;
     try {
       const saved = await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
       expect(saved).toEqual({ added: [{ printerId: A1, queued: expected }], removed: [] });
@@ -888,7 +890,7 @@ describe("My printers", () => {
       // The queue shows the work: every one of those plates waits for the A1.
       await until(
         () => stub.calls.length,
-        (n) => n > 0,
+        (n) => n > before,
       );
       expect((await estimates.waitingByPrinter()).get(A1)).toBe(expected);
       expect((await estimates.waitingByPrinter()).has(P1S)).toBe(false);
@@ -925,6 +927,8 @@ describe("My printers", () => {
     await drain();
     expect(await unestimated(A1)).toBeGreaterThanOrEqual(2);
     const held = stub.hold();
+    // The stub's call log holds every earlier test's calls too.
+    const before = stub.calls.length;
     let first = 0;
     try {
       // Library work for the A1: the first slice is held in the slicer, the
@@ -932,9 +936,11 @@ describe("My printers", () => {
       await estimates.savePrinters({ printers: [P1S, A1], defaultId: P1S });
       await until(
         () => stub.calls.length,
-        (n) => n > 0,
+        (n) => n > before,
       );
       first = stub.calls.length;
+      expect(first).toBe(before + 1);
+      expect(stub.calls[before]).toMatchObject({ printer: A1, plate: 1 });
       // A new three-plate file arrives meanwhile.
       const { plates } = await upload({ plates: 3 });
       await until(
@@ -984,12 +990,14 @@ describe("My printers", () => {
     ]);
 
     const held = stub.hold();
+    // The stub's call log holds every earlier test's calls too.
+    const before = stub.calls.length;
     let plates: Array<{ id: string; index: number }> = [];
     try {
       ({ plates } = await upload({ plates: 3 }));
       await until(
         () => stub.calls.length,
-        (n) => n > 0,
+        (n) => n > before,
       );
       await until(
         async () => (await queuedJobs()).filter((j) => j.data.printerId === A1).length,

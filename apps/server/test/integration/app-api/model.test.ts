@@ -479,6 +479,10 @@ describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
       expect(asDefault).toMatchObject({
         printer: P1S.id,
         printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+        printers: [
+          { id: P1S.id, name: "Bambu Lab P1S, 0.4 mm nozzle" },
+          { id: X1C.id, name: "Bambu Lab X1 Carbon, 0.4 mm nozzle" },
+        ],
       });
       expect(asDefault.files[0]?.plates[0]?.estimatePending).toBe(true);
 

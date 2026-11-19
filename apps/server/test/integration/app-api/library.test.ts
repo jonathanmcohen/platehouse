@@ -392,7 +392,15 @@ describe("the printer switch", () => {
       build3mf({ plates: 2, sliced: [1, 2], printerModelId: X1C.modelId }),
     );
     const before = await library(`?q=${word}`);
-    expect(before).toMatchObject({ printer: P1S.id, printerName: "Bambu Lab P1S, 0.4 mm nozzle" });
+    expect(before).toMatchObject({
+      printer: P1S.id,
+      printerName: "Bambu Lab P1S, 0.4 mm nozzle",
+      // The switch's choices come in the same answer.
+      printers: [
+        { id: P1S.id, name: "Bambu Lab P1S, 0.4 mm nozzle" },
+        { id: X1C.id, name: "Bambu Lab X1 Carbon, 0.4 mm nozzle" },
+      ],
+    });
     expect(card(before, other.modelId)).toMatchObject({ timeSeconds: null, partial: true });
 
     const switched = await library(`?q=${word}&printer=${encodeURIComponent(X1C.id)}`);

@@ -9,8 +9,6 @@
 //   PUT /app/api/settings/printers  {printers, defaultId} -> 200 SavedPrinters
 //                                   | 400 refused (a sentence in message) |
 //                                   503 the slicer cannot be asked
-//   GET /app/api/printers           PrinterChoices: My printers and the
-//                                   default, for the pages' printer switch
 //
 // - The printer menu is Task 12's listPrinters (the slicer's /v1/profiles),
 //   grouped by printer model with each model's nozzle choices, in the order
@@ -24,11 +22,9 @@
 //   library (SLICES_PER_MINUTE), and a removed one has its waiting work
 //   dropped. Each listed printer says how many plate estimates it still has
 //   waiting, and whether the slicer still offers it.
-// - GET /app/api/printers is the light read behind the library's and the
-//   model page's printer switch: My printers named in full and the default.
-//   It waits for the slicer's menu at most DISPLAY_MENU_TIMEOUT_MS and
-//   names a printer from its preset name without it. Switching printers on
-//   a page reads numbers only; nothing here or there starts a slice.
+// - The library's and the model page's printer switch read their choices
+//   from those pages' own answers (app-api/library.ts printerChoices), and
+//   switching reads numbers only; nothing there starts a slice.
 // - bucketVersioning is settings.bucket_versioning, which recordVersioning
 //   writes at startup from Task 5's readVersioning (main.ts calls it). A
 //   store that cannot be reached leaves the last state recorded, and the
@@ -56,7 +52,6 @@ import {
 } from "../estimates/service.js";
 import type { SettingsRepo } from "../repos/settings.js";
 import { type BlobStore, StoreUnavailable } from "../storage/s3.js";
-import { DISPLAY_MENU_TIMEOUT_MS } from "./library.js";
 
 /** Where the web app's own JSON API is mounted. */
 export const APP_API_PREFIX = "/app/api";
@@ -100,13 +95,6 @@ export interface SettingsView {
   /** SLICES_PER_MINUTE, for the page's "this will take about" sentence. */
   slicesPerMinute: number;
   bucketVersioning: BucketVersioning;
-}
-
-/** What GET /app/api/printers answers: the choices of the pages' printer switch. */
-export interface PrinterChoices {
-  defaultId: string;
-  /** My printers, in order. */
-  printers: Array<{ id: string; name: string }>;
 }
 
 export interface SettingsApiDeps {
@@ -188,31 +176,17 @@ export function groupPrinters(printers: readonly Printer[]): PrinterGroup[] {
   return [...groups.values()];
 }
 
-/**
- * The printer menu, or null when the slicer cannot be asked. With waitMs, a
- * menu not read by then is null for this answer, and the request goes on,
- * so its answer is cached for the next one.
- */
+/** The printer menu, or null when the slicer cannot be asked. */
 async function menuOrNull(
   estimates: Pick<Estimates, "listPrinters">,
   log: (error: unknown) => void,
-  waitMs?: number,
 ): Promise<Printer[] | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const read = estimates.listPrinters();
-    if (waitMs === undefined) return await read;
-    read.catch(() => {});
-    const late = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), waitMs);
-    });
-    return await Promise.race([read, late]);
+    return await estimates.listPrinters();
   } catch (error) {
     if (!isSlicerProblem(error)) throw error;
     log(error);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -264,7 +238,7 @@ const PRINTERS_BODY = {
   required: ["printers", "defaultId"],
 } as const;
 
-/** Registers the settings routes: GET /settings, PUT /settings/printers and GET /printers. */
+/** Registers the settings routes: GET /settings and PUT /settings/printers. */
 export async function registerSettingsApi(
   app: FastifyInstance,
   deps: SettingsApiDeps | undefined,
@@ -326,22 +300,5 @@ export async function registerSettingsApi(
         }
       },
     );
-
-    scope.get("/printers", async (request): Promise<PrinterChoices> => {
-      const { settings, estimates } = need(deps);
-      const [current, menu] = await Promise.all([
-        settings.get(),
-        menuOrNull(
-          estimates,
-          (error) =>
-            request.log.warn({ err: error }, "app api: the slicer's printer list is unavailable"),
-          DISPLAY_MENU_TIMEOUT_MS,
-        ),
-      ]);
-      return {
-        defaultId: current.printerId,
-        printers: current.myPrinters.map((id) => ({ id, name: printerName(id, menu ?? []) })),
-      };
-    });
   });
 }

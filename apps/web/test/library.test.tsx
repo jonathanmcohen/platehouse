@@ -33,6 +33,7 @@ import {
   type LibraryCard,
   ModelCard,
 } from "../src/library/ModelCard";
+import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { Shell } from "../src/shell/Shell";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import {
@@ -57,6 +58,15 @@ import {
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const PRINTER = "Bambu Lab P1S 0.4 nozzle";
+const PRINTER_NAME = "Bambu Lab P1S, 0.4 mm nozzle";
+const A1_MINI = "Bambu Lab A1 mini 0.4 nozzle";
+const A1_MINI_NAME = "Bambu Lab A1 mini, 0.4 mm nozzle";
+/** The printer fields of a library answer with one printer in My printers. */
+const ONE_PRINTER = {
+  printer: PRINTER,
+  printerName: PRINTER_NAME,
+  printers: [{ id: PRINTER, name: PRINTER_NAME }],
+};
 
 function makeCard(overrides: Partial<LibraryCard> & { id: string; name: string }): LibraryCard {
   return {
@@ -150,7 +160,7 @@ function stubServer(
           (collection === null ||
             (collections[c.id] ?? []).some((n) => n.toLowerCase() === collection.toLowerCase())),
       );
-      return json({ printer: PRINTER, models, nextCursor: null });
+      return json({ ...ONE_PRINTER, models, nextCursor: null });
     }
     return new Response("not found", { status: 404 });
   });
@@ -260,9 +270,9 @@ describe("library render requests no model file", () => {
         if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
         if (url.searchParams.get("cursor") === "c-1") {
           if (nextFails) return new Response("busy", { status: 503 });
-          return json({ printer: PRINTER, models: [STL], nextCursor: null });
+          return json({ ...ONE_PRINTER, models: [STL], nextCursor: null });
         }
-        return json({ printer: PRINTER, models: [PLATED, PARTIAL], nextCursor: "c-1" });
+        return json({ ...ONE_PRINTER, models: [PLATED, PARTIAL], nextCursor: "c-1" });
       }),
     );
     await render(libraryAt("/"));
@@ -362,6 +372,111 @@ describe("card shows time and weight only when every plate is known", () => {
     expect(formatWeight(31)).toBe("31 g");
     expect(formatWeight(41.37)).toBe("41.4 g");
     expect(formatWeight(1250)).toBe("1.25 kg");
+  });
+});
+
+// The library header's printer switch (Jon, 2026-11-19): My printers in a
+// small menu that changes whose times and weights the cards show. It only
+// reads: it asks for the library again, never anything that slices.
+describe("the header's printer switch", () => {
+  /** A server whose My printers are the P1S (default) and the A1 mini. */
+  function twoPrinters(calls: Array<{ url: string; method: string }>) {
+    const fetchStub = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input), "https://platehouse.test");
+      calls.push({ url: `${url.pathname}${url.search}`, method: init.method ?? "GET" });
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
+      // As the server does: a printer outside My printers shows the default.
+      const asked = url.searchParams.get("printer");
+      const shown = asked === A1_MINI ? A1_MINI : PRINTER;
+      return json({
+        printer: shown,
+        printerName: shown === A1_MINI ? A1_MINI_NAME : PRINTER_NAME,
+        printers: [
+          { id: PRINTER, name: PRINTER_NAME },
+          { id: A1_MINI, name: A1_MINI_NAME },
+        ],
+        models: [{ ...PLATED, timeSeconds: shown === A1_MINI ? 9000 : 5400 }],
+        nextCursor: null,
+      });
+    });
+    vi.stubGlobal("fetch", fetchStub);
+  }
+
+  /** The switch: the select its label names. */
+  function printerSwitch(): HTMLSelectElement {
+    const label = [...container.querySelectorAll("label")].find(
+      (l) => l.textContent?.trim() === "Times and weights for",
+    );
+    const select = label ? document.getElementById(label.getAttribute("for") ?? "") : null;
+    if (!(select instanceof HTMLSelectElement)) throw new Error("no printer switch");
+    return select;
+  }
+
+  async function choose(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(select, value);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+  }
+
+  test("with one printer, the header names it in full and offers no menu", async () => {
+    stubServer([PLATED]);
+    await render(libraryAt("/"));
+    expect(container.textContent).toContain(`Times and weights for ${PRINTER_NAME}`);
+    expect(container.querySelector(".studio-page-head select")).toBeNull();
+  });
+
+  test("with several printers, the menu lists My printers in full and switches the numbers", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    twoPrinters(calls);
+    await render(libraryAt("/"));
+    const select = printerSwitch();
+    expect([...select.options].map((o) => [o.value, o.textContent])).toEqual([
+      [PRINTER, PRINTER_NAME],
+      [A1_MINI, A1_MINI_NAME],
+    ]);
+    expect(select.value).toBe(PRINTER);
+    expect(container.textContent).toContain("1h 30m");
+
+    await choose(select, A1_MINI);
+    expect(printerSwitch().value).toBe(A1_MINI);
+    expect(container.textContent).toContain("2h 30m");
+    expect(calls.map((c) => c.url)).toContain(
+      `/app/api/library?printer=${encodeURIComponent(A1_MINI).replace(/%20/g, "+")}`,
+    );
+    // Switching only reads: every request is a GET of the library's own routes.
+    expect(calls.every((c) => c.method === "GET" && c.url.startsWith("/app/api/library"))).toBe(
+      true,
+    );
+  });
+
+  test("the choice is kept for the next visit, and a printer since removed falls back", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    twoPrinters(calls);
+    await render(libraryAt("/"));
+    await choose(printerSwitch(), A1_MINI);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    calls.length = 0;
+    await render(libraryAt("/"));
+    expect(calls[0]?.url).toContain("printer=");
+    expect(printerSwitch().value).toBe(A1_MINI);
+
+    // A stored printer the server no longer lists: it shows the default, and
+    // the page forgets the old choice.
+    localStorage.setItem(PRINTER_CHOICE_KEY, "Bambu Lab H2D 0.4 nozzle");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render(libraryAt("/"));
+    expect(printerSwitch().value).toBe(PRINTER);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
   });
 });
 
@@ -539,9 +654,9 @@ describe("creator and collection filters", () => {
           });
         if (url.pathname === "/app/api/library/tags") return json({ tags: [] });
         if (url.searchParams.get("cursor") === "c-1") {
-          return json({ printer: PRINTER, models: [CLIP], nextCursor: null });
+          return json({ ...ONE_PRINTER, models: [CLIP], nextCursor: null });
         }
-        return json({ printer: PRINTER, models: [PLATED], nextCursor: "c-1" });
+        return json({ ...ONE_PRINTER, models: [PLATED], nextCursor: "c-1" });
       }),
     );
     await render(

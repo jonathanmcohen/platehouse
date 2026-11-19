@@ -9,6 +9,10 @@
 // - An active creator or collection filter is shown above the grid, each
 //   with a Clear link (a studio.css chip, so Tab reaches it and the focus
 //   ring draws on it) to the same address without that filter.
+// - The header says which printer the times and weights are for, in full.
+//   With more than one of My printers it is a menu (PrinterSwitch) that
+//   asks for the grid again with ?printer=; it reads only, and starts no
+//   slicing. The choice is kept per browser.
 // - The page asks the server for nothing but /app/api: the cards and the tag
 //   list. The only images are the /blobs/<id> plate thumbnails the API names
 //   (ModelCard), so rendering the library never downloads a model file.
@@ -20,6 +24,7 @@
 //   the same next page again.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
+import { type PrinterChoice, PrinterSwitch, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
 import { Filters } from "./Filters";
 import { type LibraryCard, ModelCard } from "./ModelCard";
@@ -32,15 +37,16 @@ export interface LibraryPageProps {
 }
 
 interface LibraryAnswer {
+  /** The printer the numbers are for. */
   printer: string;
+  printerName: string;
+  /** The printer switch's choices: My printers. */
+  printers: PrinterChoice[];
   models: LibraryCard[];
   nextCursor: string | null;
 }
 
-type Load =
-  | { state: "loading" }
-  | { state: "failed" }
-  | { state: "ready"; printer: string; models: LibraryCard[]; nextCursor: string | null };
+type Load = { state: "loading" } | { state: "failed" } | ({ state: "ready" } & LibraryAnswer);
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, {
@@ -64,6 +70,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const [moreFailed, setMoreFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const generation = useRef(0);
+  const printer = usePrinterChoice();
+  const { choice, settle: settlePrinter } = printer;
 
   const query = useCallback(
     (cursor?: string) => {
@@ -73,10 +81,11 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       if (creator !== "") search.set("creator", creator);
       if (collection !== "") search.set("collection", collection);
       if (cursor !== undefined) search.set("cursor", cursor);
+      if (choice !== null) search.set("printer", choice);
       const text = search.toString();
       return text === "" ? "/app/api/library" : `/app/api/library?${text}`;
     },
-    [q, tag, creator, collection],
+    [q, tag, creator, collection, choice],
   );
 
   /** The library's own address without one of its filters. */
@@ -101,7 +110,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     setMoreFailed(false);
     getJson<LibraryAnswer>(query(), controller.signal)
       .then((answer) => {
-        if (mine === generation.current) setLoad({ state: "ready", ...answer });
+        if (mine !== generation.current) return;
+        setLoad({ state: "ready", ...answer });
+        settlePrinter(answer.printer);
       })
       .catch(() => {
         if (!controller.signal.aborted && mine === generation.current) setLoad({ state: "failed" });
@@ -129,10 +140,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       const answer = await getJson<LibraryAnswer>(query(load.nextCursor));
       if (mine !== generation.current) return;
       setLoad({
+        ...answer,
         state: "ready",
-        printer: answer.printer,
         models: [...load.models, ...answer.models],
-        nextCursor: answer.nextCursor,
       });
     } catch {
       if (mine === generation.current) setMoreFailed(true);
@@ -148,7 +158,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       <div className="studio-page-head">
         <h1>{heading}</h1>
         {load.state === "ready" && load.printer !== "" ? (
-          <p className="studio-muted">Times and weights for {load.printer}</p>
+          <PrinterSwitch
+            printer={load.printer}
+            printerName={load.printerName}
+            printers={load.printers}
+            onChoose={printer.choose}
+          />
         ) : null}
       </div>
       {active.length === 0 ? null : (

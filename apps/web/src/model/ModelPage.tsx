@@ -29,6 +29,10 @@
 //   load clears the notice; otherwise (a reload after an upload or a Retry)
 //   it is not asked again. A 401 ends the asking either way and says the
 //   user is signed out.
+// - The Plates tab's printer switch (PrinterSwitch) picks which of My
+//   printers' numbers the plates show: the page asks for the model again
+//   with ?printer=, and only reads; no slicing starts. The choice is kept
+//   per browser, shared with the library.
 // - Retry on a failed plate posts to /app/api/estimates/:id/retry (the
 //   gate's Origin check passes a same-origin fetch) and loads the model
 //   again, which starts the polling while the plate estimates.
@@ -44,6 +48,7 @@
 //   the progress of a hidden upload, are there without dropping a file.
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
+import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
 import "./model.css";
 import { AboutTab } from "./AboutTab";
@@ -71,6 +76,8 @@ export interface Numbers {
   estimateId: string;
   printerId: string;
   printerLabel: string;
+  /** The printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  printerName: string;
   slicer: string | null;
   slicerVersion: string | null;
   processProfile: string | null;
@@ -141,7 +148,12 @@ export interface ModelView {
   licenseNote: string | null;
   tags: string[];
   collections: string[];
+  /** The printer the numbers are for: the default printer, or the switch's choice. */
   printer: string;
+  /** That printer in full. */
+  printerName: string;
+  /** The printer switch's choices: My printers. */
+  printers: PrinterChoice[];
   files: ModelFile[];
 }
 
@@ -219,6 +231,9 @@ export function ModelPage({
   const polling = useRef(false);
   /** Why the model on screen could not be refreshed, for that model's id. */
   const [notice, setNotice] = useState<{ id: string; kind: "failed" | "signed-out" } | null>(null);
+  /** The printer switch's choice: whose numbers the plates show. */
+  const printer = usePrinterChoice();
+  const { choice, settle: settlePrinter } = printer;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload and refreshKey are triggers: a change of either loads the model again.
   useEffect(() => {
@@ -248,11 +263,14 @@ export function ModelPage({
     async function fetchModel() {
       timer = undefined;
       try {
-        const res = await fetch(`/app/api/models/${encodeURIComponent(id)}`, {
-          credentials: "same-origin",
-          headers: { accept: "application/json" },
-          signal: controller.signal,
-        });
+        const res = await fetch(
+          `/app/api/models/${encodeURIComponent(id)}${printerQuery(choice)}`,
+          {
+            credentials: "same-origin",
+            headers: { accept: "application/json" },
+            signal: controller.signal,
+          },
+        );
         if (cancelled) return;
         if (res.status === 404) {
           setLoad({ id, status: "missing" });
@@ -268,6 +286,7 @@ export function ModelPage({
         polling.current = needsPolling(model);
         setNotice(null);
         setLoad({ id, status: "ready", model });
+        settlePrinter(model.printer);
         if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
       } catch {
         if (cancelled) return;
@@ -281,7 +300,7 @@ export function ModelPage({
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [id, reload, refreshKey]);
+  }, [id, reload, refreshKey, choice]);
 
   async function retry(estimateId: string): Promise<boolean> {
     const res = await fetch(`/app/api/estimates/${encodeURIComponent(estimateId)}/retry`, {
@@ -340,6 +359,7 @@ export function ModelPage({
         key={model.id}
         model={model}
         onRetry={retry}
+        onChoosePrinter={printer.choose}
         loadThree={loadThree}
         navigateTo={navigateTo}
         platform={platform}
@@ -352,6 +372,8 @@ export function ModelPage({
 interface ModelDetailProps {
   model: ModelView;
   onRetry(estimateId: string): Promise<boolean>;
+  /** The printer switch: shows another printer's numbers. */
+  onChoosePrinter(printerId: string): void;
   loadThree?: ThreeLoader | undefined;
   navigateTo?: ((url: string) => void) | undefined;
   platform?: Platform | undefined;
@@ -369,6 +391,7 @@ function firstShown(model: ModelView): string | null {
 function ModelDetail({
   model,
   onRetry,
+  onChoosePrinter,
   loadThree,
   navigateTo,
   platform,
@@ -485,6 +508,7 @@ function ModelDetail({
                 <PlatesTab
                   model={model}
                   onRetry={onRetry}
+                  onChoosePrinter={onChoosePrinter}
                   navigateTo={navigateTo}
                   platform={platform}
                 />

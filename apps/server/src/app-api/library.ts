@@ -2,7 +2,7 @@
 // web app's library page:
 //
 //   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
-//       { printer, printerName, models: LibraryCard[], nextCursor }
+//       { printer, printerName, printers, models: LibraryCard[], nextCursor }
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
@@ -21,8 +21,10 @@
 // - printer= is the header's printer switch: one of My printers, whose
 //   numbers the cards show instead of the default printer's. Anything else
 //   (a printer removed since the browser stored its choice) shows the
-//   default; printer and printerName say which printer the numbers are for.
-//   Switching reads numbers only and never queues a slice.
+//   default; printer and printerName say which printer the numbers are for,
+//   and printers lists the switch's choices (My printers, named in full), so
+//   the page needs no second request. Switching reads numbers only and never
+//   queues a slice.
 // - Time and weight are for that printer (settings.printer_id when no
 //   switch is given; "the selected printer" below), from
 //   Task 12's plateNumbers per plate: a plate has numbers for that printer
@@ -157,6 +159,22 @@ export function forPrinter(ctx: DisplayContext, printerId: string | undefined): 
   return { ...ctx, printerId };
 }
 
+/** One choice of a page's printer switch. */
+export interface PrinterChoice {
+  id: string;
+  /** The printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
+  name: string;
+}
+
+/**
+ * The printer switch's choices: My printers in order, each named in full;
+ * the shown printer alone when the context has no list.
+ */
+export function printerChoices(ctx: DisplayContext): PrinterChoice[] {
+  const ids = ctx.myPrinters ?? [ctx.printerId];
+  return ids.map((id) => ({ id, name: printerName(id, ctx.printers) }));
+}
+
 /** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
 export const BLOB_PREFIX = "/blobs/";
 
@@ -191,6 +209,8 @@ export interface AppLibraryPage {
   printer: string;
   /** That printer in full, such as "Bambu Lab P1S, 0.4 mm nozzle". */
   printerName: string;
+  /** The printer switch's choices: My printers, in order. */
+  printers: PrinterChoice[];
   models: LibraryCard[];
   nextCursor: string | null;
 }
@@ -342,6 +362,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       return {
         printer: ctx.printerId,
         printerName: printerName(ctx.printerId, ctx.printers),
+        printers: printerChoices(ctx),
         models: await cards(page.models, ctx),
         nextCursor: page.nextCursor,
       };
@@ -370,7 +391,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
 
 /** The library when the server is given none: empty, so the routes still answer. */
 export const emptyAppLibrary: AppLibrary = Object.freeze({
-  list: async () => ({ printer: "", printerName: "", models: [], nextCursor: null }),
+  list: async () => ({ printer: "", printerName: "", printers: [], models: [], nextCursor: null }),
   tags: async () => [],
 });
 
