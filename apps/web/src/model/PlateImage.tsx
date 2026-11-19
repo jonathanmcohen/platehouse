@@ -14,15 +14,35 @@
 // first and a turn of -q (M R(q) = R(-q) M), so a flip negates the turn.
 //
 // studio.css gives the viewer frame aspect-ratio 4 / 3 and the image
-// width and height 100% with object-fit: contain. A quarter-turned 4:3 box
-// is 3:4, so it is scaled by 3/4 (QUARTER_TURN_SCALE) to fit back inside
-// the frame. A transform never changes layout, so nothing around it moves.
+// width and height 100% with object-fit: contain, so the picture is drawn
+// as large as fits inside the frame. A quarter turn scales it down only as
+// much as it then needs to fit (quarterTurnScale): not at all for a square
+// or tall picture (plate_N.png is usually square), by its height over its
+// width up to 4:3, and by 3/4 for anything wider. The picture's shape is
+// read when it loads; until then a quarter turn uses 3/4, which fits any
+// shape. The image element itself can poke past the frame after a turn,
+// but the part outside is empty and the frame clips it. A transform never
+// changes layout, so nothing around it moves.
 // The buttons are the 3D view's pattern (Viewer3d): a fieldset with a
 // hidden legend, text studio-buttons, studio.css's focus ring and tokens.
 import { useState } from "react";
 
 /** Height over width of studio.css's .studio-viewer-frame (aspect-ratio: 4 / 3). */
-export const QUARTER_TURN_SCALE = 3 / 4;
+export const FRAME_RATIO = 3 / 4;
+
+/**
+ * How much a quarter turn scales the picture so it stays inside the frame,
+ * from the picture's height over its width (null before it has loaded).
+ *
+ * The frame is W wide and H = 3/4 W high. A picture no wider than 4:3 is
+ * drawn H high and H/ratio wide; turned, it is H/ratio high, so it fits at
+ * scale ratio (never above 1). A wider picture is drawn W wide; turned, it
+ * is W high, so it fits at 3/4.
+ */
+export function quarterTurnScale(ratio: number | null): number {
+  if (ratio === null || !Number.isFinite(ratio) || ratio <= 0) return FRAME_RATIO;
+  return Math.min(1, Math.max(FRAME_RATIO, ratio));
+}
 
 export interface PlateTransform {
   /** Quarter turns clockwise, 0 to 3. */
@@ -53,13 +73,17 @@ export function flipVertical(t: PlateTransform): PlateTransform {
   return { ...t, turns: quarter(-t.turns), flipY: !t.flipY };
 }
 
-/** The CSS transform for a state; an empty string when the image is as stored. */
-export function cssTransform(t: PlateTransform): string {
+/**
+ * The CSS transform for a state and the picture's height over its width
+ * (null before it has loaded); an empty string when the image is as stored.
+ */
+export function cssTransform(t: PlateTransform, ratio: number | null): string {
   const parts: string[] = [];
   if (t.turns !== 0) parts.push(`rotate(${t.turns * 90}deg)`);
   if (t.flipX) parts.push("scaleX(-1)");
   if (t.flipY) parts.push("scaleY(-1)");
-  if (t.turns % 2 === 1) parts.push(`scale(${QUARTER_TURN_SCALE})`);
+  const scale = quarterTurnScale(ratio);
+  if (t.turns % 2 === 1 && scale !== 1) parts.push(`scale(${scale})`);
   return parts.join(" ");
 }
 
@@ -70,7 +94,9 @@ export interface PlateImageProps {
 
 export function PlateImage({ src, alt }: PlateImageProps) {
   const [transform, setTransform] = useState<PlateTransform>(UNTURNED);
-  const css = cssTransform(transform);
+  /** The picture's height over its width, once it has loaded. */
+  const [ratio, setRatio] = useState<number | null>(null);
+  const css = cssTransform(transform, ratio);
   return (
     <>
       <div className="studio-viewer-frame">
@@ -79,6 +105,10 @@ export function PlateImage({ src, alt }: PlateImageProps) {
           src={src}
           alt={alt}
           style={css === "" ? undefined : { transform: css }}
+          onLoad={(event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget;
+            setRatio(naturalWidth > 0 && naturalHeight > 0 ? naturalHeight / naturalWidth : null);
+          }}
         />
       </div>
       <fieldset className="studio-actions ph-viewer-controls ph-plate-controls">

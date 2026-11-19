@@ -1286,6 +1286,20 @@ describe("the large plate image can be rotated and flipped, on screen only", () 
     await click(button(label, controls()));
   }
 
+  /**
+   * jsdom loads no images, so until this runs the picture has no size and a
+   * quarter turn uses the safe 3/4. This gives the large image a natural
+   * size and fires its load event, as a browser does once the picture is in.
+   */
+  async function loadPicture(width: number, height: number) {
+    const img = large();
+    Object.defineProperty(img, "naturalWidth", { configurable: true, value: width });
+    Object.defineProperty(img, "naturalHeight", { configurable: true, value: height });
+    await act(async () => {
+      img.dispatchEvent(new Event("load"));
+    });
+  }
+
   test("five real buttons with names, in a labelled group under the image, all in the Tab order", async () => {
     await render(pageAt(MODEL_ID));
     const group = controls();
@@ -1320,7 +1334,7 @@ describe("the large plate image can be rotated and flipped, on screen only", () 
     ["rotate right", /^rotate right$/i, "rotate(90deg) scale(0.75)"],
     ["flip horizontal", /^flip horizontal$/i, "scaleX(-1)"],
     ["flip vertical", /^flip vertical$/i, "scaleY(-1)"],
-  ])("%s applies %s's transform, and Reset clears it", async (_name, label, transform) => {
+  ])("%s applies its transform, and Reset clears it", async (_name, label, transform) => {
     await render(pageAt(MODEL_ID));
     await press(label);
     expect(large().style.transform).toBe(transform);
@@ -1328,7 +1342,33 @@ describe("the large plate image can be rotated and flipped, on screen only", () 
     expect(large().style.transform).toBe("");
   });
 
-  test("a quarter turn shrinks the image to 3/4 so it stays inside the 4:3 frame; a half turn does not", async () => {
+  test.each([
+    ["a square picture", 512, 512, "rotate(90deg)"],
+    ["a tall picture", 400, 800, "rotate(90deg)"],
+    ["a 5:4 picture", 1000, 800, "rotate(90deg) scale(0.8)"],
+    ["a 4:3 picture", 800, 600, "rotate(90deg) scale(0.75)"],
+    ["a 2:1 picture", 1024, 512, "rotate(90deg) scale(0.75)"],
+  ])(
+    "%s (%i x %i) is scaled only as much as it needs to fit after a quarter turn",
+    async (_name, width, height, transform) => {
+      await render(pageAt(MODEL_ID));
+      await loadPicture(width, height);
+      await press(/^rotate right$/i);
+      expect(large().style.transform).toBe(transform);
+      await press(/^rotate right$/i);
+      expect(large().style.transform).toBe("rotate(180deg)");
+    },
+  );
+
+  test("a picture that loads after a quarter turn takes its own scale then", async () => {
+    await render(pageAt(MODEL_ID));
+    await press(/^rotate left$/i);
+    expect(large().style.transform).toBe("rotate(270deg) scale(0.75)");
+    await loadPicture(512, 512);
+    expect(large().style.transform).toBe("rotate(270deg)");
+  });
+
+  test("a quarter turn uses the safe 3/4 scale until the picture has loaded; a half turn needs none", async () => {
     await render(pageAt(MODEL_ID));
     await press(/^rotate right$/i);
     expect(large().style.transform).toContain("scale(0.75)");
