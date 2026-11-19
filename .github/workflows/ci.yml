@@ -9,15 +9,19 @@
 # did.
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
-# run), the chain above, gate-image (Slicing gate tests and image build),
-# slicer-image (Slicer image and container tests) and app-image (App image
-# (amd64) and App image (arm64), build plan Task 24: the image build, its
-# healthy and unhealthy checks, then the release workflow's Trivy gate).
+# run), the chain above, gate-tests (Slicing gate tests), gate-image (Slicing
+# gate image build), slicer-image (Slicer image and container tests) and
+# app-image (App image (amd64) and App image (arm64), build plan Task 24: the
+# image build, its healthy and unhealthy checks, then the release workflow's
+# Trivy gate).
 #
-# The slicing gate job builds a large image, so it keeps its own path scoping:
-# the changes job decides whether tools/slicing-gate, this file or .node-version
-# (the gate job's Node version) changed, and the gate job runs only then. Nothing depends on the gate job, so its skip
-# reaches no other job. The slicer job (build plan Task 11) is scoped the same
+# The two slicing gate jobs keep their own path scoping, decided by the changes
+# job (issue #222). The gate tests are quick, so they run when tools/slicing-gate
+# or any file they read changes (the list is at that step). The gate image is
+# large, so its build runs only when tools/slicing-gate, this file or
+# .node-version (the gate jobs' Node version) changes, and only after the gate
+# tests passed. Nothing else depends on either gate job, so their skips
+# reach no other job. The slicer job (build plan Task 11) is scoped the same
 # way, by the same changes job: it builds the slicer image and runs the
 # container tests against it, and nothing depends on it either. Nothing is
 # pushed anywhere, no image is published (Task 25 does that) and no secret is
@@ -52,7 +56,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      gate: ${{ steps.diff.outputs.gate }}
+      gate_tests: ${{ steps.diff.outputs.tests }}
+      gate_image: ${{ steps.diff.outputs.image }}
       slicer: ${{ steps.slicer.outputs.slicer }}
     steps:
       - name: Check out
@@ -63,11 +68,27 @@ jobs:
 
       # A pull request is compared with its base commit, a push with the commit
       # the branch pointed at before it. With no usable base (a new branch, or
-      # a force-push whose old commit is gone) the gate job runs, to be safe.
+      # a force-push whose old commit is gone) both gate jobs run, to be safe.
       # --no-renames lists both paths of a move: with rename detection on (git's
       # default) only the new path is listed, so a file moved out of the gate
-      # would leave no gate path in the list and skip the job.
-      - name: Decide whether the gate job runs
+      # would leave no gate path in the list and skip the jobs.
+      # The tests list holds tools/slicing-gate and every file the gate tests
+      # read from outside it (issue #222), all in
+      # tools/slicing-gate/test/ciworkflow.test.mjs: this workflow,
+      # .node-version, release.yml, slicer-image.yml, docker/app.Dockerfile,
+      # apps/slicer/Dockerfile, two slicer container test files, README.md and
+      # CHANGELOG.md. A gate test that starts reading another file outside
+      # tools/slicing-gate adds it here, or a PR changing only that file skips
+      # the test and still goes green. ciworkflow.test.mjs scans the gate tests,
+      # and the modules they import, for such reads and fails on one missing
+      # here, but only for the read forms it knows; the forms it misses (a path
+      # built with resolve or a template string, among others) are listed with
+      # the scan and must be added here by hand. The image list is what
+      # the gate image and its smoke checks are built from: tools/slicing-gate,
+      # this workflow and .node-version. Every image-list path must also be on
+      # the tests list (the gate image job needs a passed tests job), and
+      # ciworkflow.test.mjs fails if one is not.
+      - name: Decide whether the gate jobs run
         id: diff
         env:
           EVENT: ${{ github.event_name }}
@@ -75,21 +96,29 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
           if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
-          gate=true
+          tests=true
+          image=true
           if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "No usable base commit (${base:-none}); the gate job runs."
+            echo "No usable base commit (${base:-none}); the gate tests and the gate image build run."
           else
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
-              echo "The slicing gate, this workflow or .node-version changed; the gate job runs."
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image)\.yml$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+              echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
-              gate=false
-              echo "Neither the slicing gate, this workflow nor .node-version changed; the gate job is skipped."
+              tests=false
+              echo "Neither the slicing gate nor any file its tests read changed; the gate tests are skipped."
+            fi
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The slicing gate, this workflow or .node-version changed; the gate image build runs."
+            else
+              image=false
+              echo "Neither the slicing gate, this workflow nor .node-version changed; the gate image build is skipped."
             fi
           fi
-          echo "gate=${gate}" >>"$GITHUB_OUTPUT"
+          echo "tests=${tests}" >>"$GITHUB_OUTPUT"
+          echo "image=${image}" >>"$GITHUB_OUTPUT"
 
       # The same rule for the slicer job (build plan Task 11), with the same
       # base commit and the same safe default. It runs when apps/slicer or
@@ -356,19 +385,14 @@ jobs:
         if: ${{ always() && env.E2E_ENV_FILE != '' }}
         run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" down -v
 
-  # The slicing gate's tests and a build of the gate image, so an image build
-  # failure is found here and not on Hades (the second Hades run, 2026-11-08,
-  # failed while building the image). Runs only when the changes job says the
-  # gate, this workflow or .node-version changed.
-  gate-image:
-    name: Slicing gate tests and image build
+  # The slicing gate's tests (node:test, no install, no Docker). Runs only when
+  # the changes job says the gate or a file its tests read changed (#222).
+  gate-tests:
+    name: Slicing gate tests
     needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate_tests == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      IMAGE: platehouse-gate:ci
-      BUILDKIT_PROGRESS: plain
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@v7.0.1
@@ -392,6 +416,35 @@ jobs:
             echo "::error::No gate tests ran"
             exit 1
           fi
+
+  # A build of the gate image and its smoke checks, so an image build failure
+  # is found here and not on Hades (the second Hades run, 2026-11-08, failed
+  # while building the image). Runs only when the changes job says the gate,
+  # this workflow or .node-version changed, and only after the gate tests
+  # passed, as when both were one job. Every change that runs this job also
+  # runs the tests (the image list is part of the tests list, pinned by
+  # ciworkflow.test.mjs), and the explicit condition builds only on a passed
+  # tests job, never a failed or skipped one.
+  gate-image:
+    name: Slicing gate image build
+    needs: [changes, gate-tests]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate_image == 'true' && needs.gate-tests.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IMAGE: platehouse-gate:ci
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # The smoke step compares its two results with smoke-gate.mjs on the runner.
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
 
       # Every RUN step and build check in the Dockerfile runs here, as on Hades.
       - name: Build the gate image
