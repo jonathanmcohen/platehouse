@@ -22,7 +22,7 @@
 // next model's Restore, else the previous one's, else the status line
 // (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
-import { AppApiError, appApi, errorText, segment, useAppApi } from "../settings/api";
+import { appApi, AppApiError, segment, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { useRowFocus } from "../settings/focus";
@@ -70,6 +70,7 @@ interface TrashListing {
 }
 
 export function TrashList() {
+  const errorText = useErrorText();
   const i18n = useI18n();
   const { t, rich } = i18n;
   const trash = useAppApi<TrashListing>("/trash");

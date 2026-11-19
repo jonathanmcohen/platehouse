@@ -22,7 +22,7 @@
 //   reloads to show the change.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
-import { AppApiError, appApi, errorText, useAppApi } from "../settings/api";
+import { appApi, AppApiError, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog, Dialog } from "../settings/Dialog";
 import {
   type BulkAction,
@@ -93,6 +93,7 @@ function DialogActions({
 
 /** Runs a change for a dialog: busy while it runs, its failure kept to show. */
 function useRun(onCancel: () => void) {
+  const errorText = useErrorText();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   async function run(change: () => Promise<void>) {
@@ -311,6 +312,7 @@ export function SelectBar({
 }: SelectBarProps) {
   const i18n = useI18n();
   const { t } = i18n;
+  const errorText = useErrorText();
   const [open, setOpenState] = useState<Open>(null);
   const [result, setResult] = useState<{ done: string; failed: string | null } | null>(null);
   const [note, setNote] = useState<string | null>(null);

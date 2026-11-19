@@ -14,7 +14,7 @@
 // to the next row's Move to trash, else the previous row's, else the status
 // line saying what happened (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
-import { appApi, errorText, nameQuery, segment } from "../settings/api";
+import { appApi, nameQuery, segment, useErrorText } from "../settings/api";
 import { useI18n } from "../i18n/I18n";
 import { type RowFocus, useRowFocus } from "../settings/focus";
 import { ChipEditor } from "./ChipEditor";
@@ -53,6 +53,7 @@ function ModelRow({
   onTrashed(): void;
   focus: RowFocus;
 }) {
+  const errorText = useErrorText();
   const { t } = useI18n();
   const [error, setError] = useState<string | undefined>(undefined);
   const [trashing, setTrashing] = useState(false);

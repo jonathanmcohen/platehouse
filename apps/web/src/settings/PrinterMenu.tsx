@@ -55,9 +55,11 @@
 //   it. While the slicer cannot be reached the list still shows, and the
 //   add menu says why it is missing.
 import { useEffect, useId, useRef, useState } from "react";
-import { AppApiError, appApi, errorText } from "./api";
+import { appApi, AppApiError, useErrorText } from "./api";
 import { ConfirmDialog } from "./Dialog";
 import type { MyPrinterView, SettingsView } from "./SettingsPage";
+import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { printerNameIn } from "../i18n/printers";
 
 /** How often the page reads the waiting counts again while a printer has any. */
 export const WAITING_POLL_MS = 15_000;
@@ -69,18 +71,17 @@ interface SavedPrinters {
   removed: string[];
 }
 
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
+/** Builds the sentences in a language; English when left out. */
+type Words = Pick<I18n, "t" | "fmt">;
 
 /** About how long plates take at perMinute, in plain words: "about 2 hours and 35 minutes". */
-export function howLong(plates: number, perMinute: number): string {
+export function howLong(plates: number, perMinute: number, i18n: Words = ENGLISH_I18N): string {
   const minutes = Math.max(1, Math.ceil(plates / perMinute));
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  if (hours === 0) return `about ${plural(rest, "minute", "minutes")}`;
-  if (rest === 0) return `about ${plural(hours, "hour", "hours")}`;
-  return `about ${plural(hours, "hour", "hours")} and ${plural(rest, "minute", "minutes")}`;
+  if (hours === 0) return i18n.t("printers.about.minutes", { minutes: rest });
+  if (rest === 0) return i18n.t("printers.about.hours", { hours });
+  return i18n.t("printers.about.hoursMinutes", { hours, minutes: rest });
 }
 
 /**
@@ -94,18 +95,25 @@ export function addedMessage(
   queued: number,
   perMinute: number,
   through = queued,
+  i18n: Words = ENGLISH_I18N,
 ): string {
-  if (queued === 0) return `Added ${name}. Every plate already has numbers for it.`;
-  const start =
-    `Added ${name}. Platehouse is now estimating ${plural(queued, "plate", "plates")} for it, ` +
-    `one at a time, at about ${plural(perMinute, "plate", "plates")} a minute`;
+  const shown = printerNameIn(i18n, name);
+  if (queued === 0) return i18n.t("printers.added.none", { name: shown });
   const ahead = through - queued;
-  const wait =
-    ahead > 0
-      ? `. The slicer has ${plural(ahead, "other plate or render", "other plates and renders")} queued ahead ` +
-        `of them, so this takes ${howLong(through, perMinute)}.`
-      : `, so this takes ${howLong(queued, perMinute)}.`;
-  return `${start}${wait} Its numbers show on each plate as they land, and the other printers' numbers stay as they are.`;
+  return ahead > 0
+    ? i18n.t("printers.added.ahead", {
+        name: shown,
+        queued,
+        perMinute,
+        ahead,
+        time: howLong(through, perMinute, i18n),
+      })
+    : i18n.t("printers.added.direct", {
+        name: shown,
+        queued,
+        perMinute,
+        time: howLong(queued, perMinute, i18n),
+      });
 }
 
 /**
@@ -113,19 +121,21 @@ export function addedMessage(
  * one lands, counting the plates for other printers, and the renders, the
  * one slicer does ahead of them (through).
  */
-export function waitingLine(waiting: number, through: number, perMinute: number): string {
-  const head = `${plural(waiting, "plate", "plates")} waiting to be estimated, ${howLong(
-    Math.max(through, waiting),
-    perMinute,
-  )} left`;
+export function waitingLine(
+  waiting: number,
+  through: number,
+  perMinute: number,
+  i18n: Words = ENGLISH_I18N,
+): string {
+  const time = howLong(Math.max(through, waiting), perMinute, i18n);
   const ahead = through - waiting;
   return ahead > 0
-    ? `${head}, counting ${plural(ahead, "other plate or render", "other plates and renders")} queued ahead of them.`
-    : `${head}.`;
+    ? i18n.t("printers.waitingAhead", { waiting, time, ahead })
+    : i18n.t("printers.waiting", { waiting, time });
 }
 
 /** The sentence a refused save ends with once the page has read the list again. */
-export const REREAD_SHOWS_CHANGE = "The list now shows them as they are; make the change again.";
+export const REREAD_SHOWS_CHANGE = ENGLISH_I18N.t("printers.reread");
 
 /**
  * A refused save whose re-read failed: the page's own locked-list notice says
@@ -154,6 +164,9 @@ export interface PrinterMenuProps {
 type Move = "up" | "down";
 
 export function PrinterMenu({ view, reload }: PrinterMenuProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const errorText = useErrorText();
   const id = useId();
   const listRef = useRef<HTMLOListElement>(null);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
@@ -235,8 +248,8 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
         throw new RefusedUnread();
       }
       // The list on screen is the stored one again: say so after the server's sentence.
-      const said = failure instanceof AppApiError ? failure.message : "";
-      throw new AppApiError(409, `${said} ${REREAD_SHOWS_CHANGE}`.trim(), null);
+      const said = failure instanceof AppApiError ? errorText(failure) : "";
+      throw new AppApiError(409, `${said} ${i18n.t("printers.reread")}`.trim(), null);
     }
     if (!(await reload())) setUnread("saved");
     return saved;
@@ -276,14 +289,14 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       const saved = await save([...listed, printerId], view.printerId);
       const mine = saved.added.find((a) => a.printerId === printerId);
       const queued = mine?.queued ?? 0;
-      return addedMessage(name, queued, view.slicesPerMinute, mine?.through ?? queued);
+      return addedMessage(name, queued, view.slicesPerMinute, mine?.through ?? queued, i18n);
     });
   }
 
   function makeDefault(printer: MyPrinterView) {
     void run(async () => {
       await save(listed, printer.id);
-      return `${printer.name} is now the default printer. No slicing was started.`;
+      return t("printers.madeDefault", { name: printerNameIn(i18n, printer.name) });
     });
   }
 
@@ -297,7 +310,9 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
     void run(async () => {
       await save(next, view.printerId);
       setFocusAfter({ key: `${printer.id} ${direction}`, order: next.join("\n") });
-      return `Moved ${printer.name} ${direction}. No slicing was started.`;
+      return t(direction === "up" ? "printers.movedUp" : "printers.movedDown", {
+        name: printerNameIn(i18n, printer.name),
+      });
     });
   }
 
@@ -305,7 +320,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
     if (locked) return;
     if (printer.id === view.printerId) {
       setError(undefined);
-      setStatus("Make another printer the default before removing this one.");
+      setStatus(t("printers.defaultFirst"));
       return;
     }
     setRemoving(printer);
@@ -329,19 +344,18 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
     setRemovedId(printer.id);
     setRemoving(null);
     setError(undefined);
-    setStatus(`Removed ${printer.name}. Its waiting estimates were dropped.`);
+    setStatus(t("printers.removed", { name: printerNameIn(i18n, printer.name) }));
   }
 
   return (
     <div className="ph-field">
       <p className="studio-muted">
-        Times and weights are estimated for every printer here. The default is shown first on the
-        library and model pages; the printer switch there shows the others.
+        {t("printers.intro")}
       </p>
       <ol
         ref={listRef}
         className="studio-list ph-my-printers"
-        aria-label="My printers"
+        aria-label={t("settings.myPrinters")}
         tabIndex={-1}
       >
         {view.myPrinters.map((printer, at) => {
@@ -349,17 +363,17 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
           return (
             <li key={printer.id} className="studio-list-item" data-my-printer="">
               <div className="ph-printer-line">
-                <span className="ph-printer-name">{printer.name}</span>
-                {isDefault ? <span className="studio-chip">Default</span> : null}
+                <span className="ph-printer-name">{printerNameIn(i18n, printer.name)}</span>
+                {isDefault ? <span className="studio-chip">{t("printers.default")}</span> : null}
               </div>
               {printer.waiting > 0 ? (
                 <p className="studio-muted">
-                  {waitingLine(printer.waiting, printer.through, view.slicesPerMinute)}
+                  {waitingLine(printer.waiting, printer.through, view.slicesPerMinute, i18n)}
                 </p>
               ) : null}
               {printer.offered === false ? (
                 <p className="studio-alert studio-alert-alert">
-                  The slicer no longer offers this printer, so nothing can be estimated for it.
+                  {t("printers.notOffered")}
                 </p>
               ) : null}
               <div className="studio-actions">
@@ -367,41 +381,41 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                   <button
                     type="button"
                     className="studio-button"
-                    aria-label={`Make ${printer.name} the default`}
+                    aria-label={t("printers.makeDefaultLabel", { name: printerNameIn(i18n, printer.name) })}
                     aria-disabled={locked}
                     onClick={() => makeDefault(printer)}
                   >
-                    Make default
+                    {t("printers.makeDefault")}
                   </button>
                 )}
                 <button
                   ref={buttonRef(`${printer.id} up`)}
                   type="button"
                   className="studio-button"
-                  aria-label={`Move ${printer.name} up`}
+                  aria-label={t("printers.upLabel", { name: printerNameIn(i18n, printer.name) })}
                   aria-disabled={locked || at === 0}
                   onClick={() => move(printer, "up")}
                 >
-                  Up
+                  {t("printers.up")}
                 </button>
                 <button
                   ref={buttonRef(`${printer.id} down`)}
                   type="button"
                   className="studio-button"
-                  aria-label={`Move ${printer.name} down`}
+                  aria-label={t("printers.downLabel", { name: printerNameIn(i18n, printer.name) })}
                   aria-disabled={locked || at === view.myPrinters.length - 1}
                   onClick={() => move(printer, "down")}
                 >
-                  Down
+                  {t("printers.down")}
                 </button>
                 <button
                   type="button"
                   className="studio-button"
-                  aria-label={`Remove ${printer.name}`}
+                  aria-label={t("printers.removeLabel", { name: printerNameIn(i18n, printer.name) })}
                   aria-disabled={locked || isDefault}
                   onClick={() => askRemove(printer)}
                 >
-                  Remove
+                  {t("printers.remove")}
                 </button>
               </div>
             </li>
@@ -410,11 +424,11 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       </ol>
       {view.printers === null ? (
         <p className="studio-muted">
-          The slicer cannot be reached, so no printer can be added right now.
+          {t("printers.unreachable")}
         </p>
       ) : (
         <>
-          <label htmlFor={id}>Add a printer</label>
+          <label htmlFor={id}>{t("printers.addLabel")}</label>
           <div className="ph-inline-form ph-printer-add">
             <select
               id={id}
@@ -429,7 +443,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
                 <optgroup key={group.model} label={group.model}>
                   {group.printers.map((p) => (
                     <option key={p.id} value={p.id} disabled={listed.includes(p.id)}>
-                      {p.name}
+                      {printerNameIn(i18n, p.name)}
                     </option>
                   ))}
                 </optgroup>
@@ -441,7 +455,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
               onClick={add}
               aria-disabled={locked || toAdd === ""}
             >
-              Add printer
+              {t("printers.add")}
             </button>
           </div>
         </>
@@ -451,8 +465,8 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
         <div role="alert" className="studio-alert studio-alert-alert">
           <p>
             {unread === "saved"
-              ? "The change was saved, but the list could not be read again, so the buttons wait until it is."
-              : "My printers or the default printer were changed somewhere else, so nothing was saved, and the list could not be read again, so the buttons wait until it is."}
+              ? t("printers.unread.saved")
+              : t("printers.unread.refused")}
           </p>
           <button
             type="button"
@@ -460,7 +474,7 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
             aria-disabled={busy}
             onClick={() => void readAgain()}
           >
-            Read the list again
+            {t("printers.readAgain")}
           </button>
         </div>
       )}
@@ -471,15 +485,12 @@ export function PrinterMenu({ view, reload }: PrinterMenuProps) {
       )}
       {removing === null ? null : (
         <ConfirmDialog
-          title={`Remove ${removing.name}?`}
-          message={
-            `${removing.name} leaves My printers. ` +
-            (removing.waiting > 0
-              ? `The ${plural(removing.waiting, "plate", "plates")} still waiting to be estimated for it are dropped.`
-              : "Nothing is waiting to be estimated for it.") +
-            " Numbers already made for it are kept."
-          }
-          confirmLabel="Remove"
+          title={t("printers.removeTitle", { name: printerNameIn(i18n, removing.name) })}
+          message={t("printers.removeMessage", {
+            name: printerNameIn(i18n, removing.name),
+            waiting: removing.waiting,
+          })}
+          confirmLabel={t("printers.remove")}
           onConfirm={() => remove(removing)}
           onCancel={() => setRemoving(null)}
         />

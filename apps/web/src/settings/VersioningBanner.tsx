@@ -5,24 +5,24 @@
 // the plan's exact sentence. When the state could not be read (unknown) it
 // says so in a quiet line instead, since it cannot claim versioning is off.
 import type { BucketVersioning } from "./SettingsPage";
+import { ENGLISH_I18N, useI18n } from "../i18n/I18n";
 
 /** The red banner's words when bucket versioning is not on (the plan's exact sentence). */
-export const VERSIONING_OFF_WARNING =
-  "Bucket versioning is off. Turn it on at your storage provider and keep old versions for 30 days.";
+export const VERSIONING_OFF_WARNING = ENGLISH_I18N.t("settings.versioning.off");
 
 export function VersioningBanner({ state }: { state: BucketVersioning }) {
+  const { t } = useI18n();
   if (state === "off" || state === "suspended") {
     return (
       <p role="alert" className="studio-alert studio-alert-alert">
-        {VERSIONING_OFF_WARNING}
+        {t("settings.versioning.off")}
       </p>
     );
   }
   if (state === "unknown") {
     return (
       <p className="studio-muted">
-        Platehouse could not read the bucket's versioning state when it started, so it cannot say
-        whether old versions are kept.
+        {t("settings.versioning.unknown")}
       </p>
     );
   }

@@ -12,8 +12,9 @@
 // Create token button (useRowFocus in ./focus).
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
 import { Link } from "react-router";
-import { appApi, errorText, formatDate, segment, useAppApi } from "./api";
+import { appApi, segment, useAppApi, useErrorText } from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
+import { useI18n } from "../i18n/I18n";
 import { useRowFocus } from "./focus";
 
 /** A live token as the list shows it. */
@@ -44,6 +45,7 @@ function NewToken({
   onDone(): void;
   returnFocusTo: RefObject<HTMLElement | null>;
 }) {
+  const { t } = useI18n();
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
 
   async function copyValue() {
@@ -56,22 +58,19 @@ function NewToken({
   }
 
   return (
-    <Dialog title="New API token" onClose={onDone} returnFocusTo={returnFocusTo}>
-      <p>
-        This is the only time the token for {name} is shown. Copy it now and keep it somewhere safe,
-        such as 1Password.
-      </p>
+    <Dialog title={t("tokens.newTitle")} onClose={onDone} returnFocusTo={returnFocusTo}>
+      <p>{t("tokens.showOnce", { name })}</p>
       <code className="ph-token-value">{value}</code>
       <p role="status">
-        {copy === "copied" ? "Copied." : null}
-        {copy === "failed" ? "Copy did not work here. Select the token and copy it by hand." : null}
+        {copy === "copied" ? t("tokens.copied") : null}
+        {copy === "failed" ? t("tokens.copyFailed") : null}
       </p>
       <div className="studio-actions">
         <button type="button" className="studio-button studio-button-primary" onClick={copyValue}>
-          {copy === "copied" ? "Copied" : "Copy"}
+          {copy === "copied" ? t("tokens.copiedButton") : t("tokens.copy")}
         </button>
         <button type="button" className="studio-button" onClick={onDone}>
-          Done
+          {t("tokens.done")}
         </button>
       </div>
     </Dialog>
@@ -79,6 +78,8 @@ function NewToken({
 }
 
 export function Tokens() {
+  const { t, rich, fmt } = useI18n();
+  const errorText = useErrorText();
   const nameId = useId();
   const list = useAppApi<{ tokens: ListedToken[] }>("/tokens");
   const [name, setName] = useState("");
@@ -100,7 +101,7 @@ export function Tokens() {
     if (busy) return;
     const trimmed = name.trim();
     if (trimmed === "") {
-      setError("Give the token a name, such as the machine it is for.");
+      setError(t("tokens.nameNeeded"));
       return;
     }
     setBusy(true);
@@ -135,25 +136,23 @@ export function Tokens() {
 
   return (
     <div className="ph-section">
-      <h2>API tokens</h2>
+      <h2>{t("tokens.heading")}</h2>
       <p className="studio-muted">
-        Each app or script that uses the API gets its own token. A token is shown once, when it is
-        made. The <Link to="/settings?view=api">API reference</Link> shows what a token can do and
-        how to use it.
+        {rich("tokens.intro", {}, { link: (children) => <Link to="/settings?view=api">{children}</Link> })}
       </p>
       <form className="ph-inline-form" onSubmit={create}>
-        <label htmlFor={nameId}>Token name</label>
+        <label htmlFor={nameId}>{t("tokens.nameLabel")}</label>
         <input
           id={nameId}
           className="studio-input"
           value={name}
           maxLength={MAX_NAME}
           autoComplete="off"
-          placeholder="e.g. Laptop script"
+          placeholder={t("tokens.namePlaceholder")}
           onChange={(event) => setName(event.currentTarget.value)}
         />
         <button ref={createButton} type="submit" className="studio-button" aria-disabled={busy}>
-          Create token
+          {t("tokens.create")}
         </button>
       </form>
       {error === undefined ? null : (
@@ -165,10 +164,10 @@ export function Tokens() {
         <p className="studio-alert studio-alert-alert">{list.error}</p>
       )}
       {list.data === undefined && list.error === undefined ? (
-        <p className="studio-muted">Loading the tokens.</p>
+        <p className="studio-muted">{t("tokens.loading")}</p>
       ) : null}
       {list.data !== undefined && rows.length === 0 ? (
-        <p className="studio-empty">No API tokens yet.</p>
+        <p className="studio-empty">{t("tokens.none")}</p>
       ) : null}
       {rows.length > 0 ? (
         <ul className="studio-list">
@@ -180,28 +179,40 @@ export function Tokens() {
                   ref={focus.control(item.id)}
                   type="button"
                   className="studio-button ph-small ph-button-danger"
-                  aria-label={`Revoke ${item.name}`}
+                  aria-label={t("tokens.revokeLabel", { name: item.name })}
                   onClick={() => {
                     revokeReturn.current = focus.get(item.id);
                     setRevoking(item);
                   }}
                 >
-                  Revoke
+                  {t("tokens.revoke")}
                 </button>
               </div>
               <span className="studio-muted">
-                <code>{item.prefix}</code>
-                {"... made "}
-                <time dateTime={item.createdAt}>{formatDate(item.createdAt)}</time>
-                {", "}
-                {item.lastUsedAt === null ? (
-                  "never used"
-                ) : (
-                  <>
-                    {"last used "}
-                    <time dateTime={item.lastUsedAt}>{formatDate(item.lastUsedAt, true)}</time>
-                  </>
-                )}
+                {item.lastUsedAt === null
+                  ? rich(
+                      "tokens.rowNeverUsed",
+                      { prefix: item.prefix, made: fmt.date(item.createdAt) },
+                      {
+                        code: (children) => <code>{children}</code>,
+                        made: (children) => <time dateTime={item.createdAt}>{children}</time>,
+                      },
+                    )
+                  : rich(
+                      "tokens.rowUsed",
+                      {
+                        prefix: item.prefix,
+                        made: fmt.date(item.createdAt),
+                        used: fmt.date(item.lastUsedAt, true),
+                      },
+                      {
+                        code: (children) => <code>{children}</code>,
+                        made: (children) => <time dateTime={item.createdAt}>{children}</time>,
+                        used: (children) => (
+                          <time dateTime={item.lastUsedAt as string}>{children}</time>
+                        ),
+                      },
+                    )}
               </span>
             </li>
           ))}
@@ -217,9 +228,9 @@ export function Tokens() {
       )}
       {revoking === null ? null : (
         <ConfirmDialog
-          title="Revoke this token?"
-          message={`${revoking.name} stops working at once. Anything that uses it is refused until it has a new token.`}
-          confirmLabel="Revoke"
+          title={t("tokens.revokeTitle")}
+          message={t("tokens.revokeMessage", { name: revoking.name })}
+          confirmLabel={t("tokens.revoke")}
           onConfirm={() => revoke(revoking)}
           onCancel={() => setRevoking(null)}
           returnFocusTo={revokeReturn}

@@ -18,6 +18,8 @@ import { lazy, Suspense, useEffect, useRef } from "react";
 import { useNavigationType, useSearchParams } from "react-router";
 import { TrashList } from "../trash/TrashList";
 import { AccentPicker } from "./AccentPicker";
+import { LanguagePicker } from "../i18n/LanguagePicker";
+import { useI18n } from "../i18n/I18n";
 import { useAppApi } from "./api";
 import { PrinterMenu } from "./PrinterMenu";
 import { TitleNames } from "./TitleNames";
@@ -73,12 +75,13 @@ export const API_VIEW = "api";
 const ApiReference = lazy(() => import("../api-docs/ApiReference"));
 
 export function SettingsPage() {
+  const { t } = useI18n();
   const [params] = useSearchParams();
   // A link changed the view: the new view's heading takes focus.
   const focusHeading = useNavigationType() !== "POP";
   if (params.get("view") === API_VIEW) {
     return (
-      <Suspense fallback={<p className="studio-muted">Loading the API reference.</p>}>
+      <Suspense fallback={<p className="studio-muted">{t("settings.loadingReference")}</p>}>
         <ApiReference focusHeading={focusHeading} />
       </Suspense>
     );
@@ -87,6 +90,7 @@ export function SettingsPage() {
 }
 
 function SettingsMain({ focusHeading }: { focusHeading: boolean }) {
+  const { t } = useI18n();
   const settings = useAppApi<SettingsView>("/settings");
   const heading = useRef<HTMLHeadingElement>(null);
 
@@ -100,22 +104,23 @@ function SettingsMain({ focusHeading }: { focusHeading: boolean }) {
     <>
       <div className="studio-page-head">
         <h1 ref={heading} tabIndex={-1}>
-          Settings
+          {t("shell.nav.settings")}
         </h1>
       </div>
       <AccentPicker />
+      <LanguagePicker />
       {settings.error === undefined ? null : (
         <p className="studio-alert studio-alert-alert">{settings.error}</p>
       )}
       {settings.data === undefined ? (
         settings.error === undefined ? (
-          <p className="studio-muted">Loading the settings.</p>
+          <p className="studio-muted">{t("settings.loading")}</p>
         ) : null
       ) : (
         <>
           <VersioningBanner state={settings.data.bucketVersioning} />
           <div className="ph-section">
-            <h2>My printers</h2>
+            <h2>{t("settings.myPrinters")}</h2>
             <PrinterMenu view={settings.data} reload={settings.reload} />
           </div>
         </>
@@ -123,7 +128,7 @@ function SettingsMain({ focusHeading }: { focusHeading: boolean }) {
       <Tokens />
       <TitleNames />
       <div className="ph-section">
-        <h2>Trash</h2>
+        <h2>{t("shell.nav.trash")}</h2>
         <TrashList />
       </div>
     </>
