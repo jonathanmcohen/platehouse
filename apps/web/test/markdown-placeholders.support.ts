@@ -1,6 +1,19 @@
 // The bare-placeholder check of markdown-placeholders.test.ts, apart from
 // vitest so a script can run it over other text too (a PR body before it is
 // posted). Plain TypeScript that Node runs as it is (type stripping).
+//
+// The Markdown is parsed, not matched with regexes (issue #308): a
+// CommonMark parser with GitHub's extensions (mdast-util-from-markdown with
+// micromark-extension-gfm and mdast-util-gfm) builds the same tree GitHub
+// renders from, and every raw HTML node in it is reported. GitHub drops raw
+// HTML it does not allow, so a placeholder written bare, such as <id> or
+// <run number>, is an html node and is lost on the page. Text inside a code
+// span or a code block is code, never html, wherever the span starts and ends
+// (across lines, list items and headings alike), and an autolink such as
+// <https://example.com> parses as a link, so neither needs a rule here.
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
 
 /**
  * HTML tags a tracked Markdown file uses on purpose, by tag name, each with
@@ -10,54 +23,49 @@ export const ALLOWED_TAGS: Record<string, string> = {
   img: "README.md's first line shows the logo at a fixed size, which Markdown image syntax cannot set",
 };
 
-/** The text GitHub shows as prose: fenced code blocks and code spans taken out, line numbers kept. */
-export function proseOnly(markdown: string): string {
-  const lines = markdown.split("\n");
-  const out: string[] = [];
-  let fence: string | null = null;
-  for (const line of lines) {
-    const open = line.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (fence === null && open) {
-      fence = open[1] as string;
-      out.push("");
-      continue;
-    }
-    if (fence !== null) {
-      const close = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
-      if (close && close[1]?.[0] === fence[0] && (close[1]?.length ?? 0) >= fence.length)
-        fence = null;
-      out.push("");
-      continue;
-    }
-    out.push(line);
-  }
-  // A code span is a run of backticks closed by a run of the same length; it
-  // may hold shorter runs. Spans can cross a line break inside a paragraph,
-  // but CommonMark ends a span at the end of its paragraph, so the text is cut
-  // at each blank line (a fenced block, blanked above, is one too) and spans
-  // are matched one paragraph at a time: a stray backtick never pairs with
-  // one in a later paragraph and hides the prose between them.
-  return out
-    .join("\n")
-    .split(/(\n[ \t]*\n)/)
-    .map((part) => part.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (m) => m.replace(/[^\n]/g, " ")))
-    .join("");
+/** One raw HTML node: its line and its text (the first line, for a block). */
+export interface HtmlNode {
+  line: number;
+  html: string;
+  /** The tag name, lowercased, or "" for a comment or other markup. */
+  tag: string;
 }
 
-const TAG = /<\/?[A-Za-z][^<>]*>/g;
-const AUTOLINK = /^<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>$/;
+interface TreeNode {
+  type: string;
+  value?: string;
+  position?: { start: { line: number; column: number } };
+  children?: TreeNode[];
+}
 
-/** Each bare tag in a Markdown text, as "label:line: <tag>". */
+/** Every raw HTML node GitHub's Markdown parser finds in a text, in document order. */
+export function htmlNodes(markdown: string): HtmlNode[] {
+  const tree = fromMarkdown(markdown, {
+    extensions: [gfm()],
+    mdastExtensions: [gfmFromMarkdown()],
+  }) as TreeNode;
+  const found: Array<HtmlNode & { column: number }> = [];
+  const walk = (node: TreeNode) => {
+    if (node.type === "html") {
+      const html = (node.value ?? "").split("\n")[0]?.trim() ?? "";
+      found.push({
+        line: node.position?.start.line ?? 0,
+        column: node.position?.start.column ?? 0,
+        html,
+        tag: html.match(/^<\/?([A-Za-z][A-Za-z0-9-]*)/)?.[1]?.toLowerCase() ?? "",
+      });
+    }
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(tree);
+  return found
+    .sort((a, b) => a.line - b.line || a.column - b.column)
+    .map(({ line, html, tag }) => ({ line, html, tag }));
+}
+
+/** Each raw HTML node GitHub would strip from a Markdown text, as "label:line: <tag>". */
 export function barePlaceholders(label: string, markdown: string): string[] {
-  const prose = proseOnly(markdown);
-  const hits: string[] = [];
-  for (const m of prose.matchAll(TAG)) {
-    const tag = m[0];
-    if (AUTOLINK.test(tag)) continue;
-    const name = tag.match(/^<\/?([A-Za-z][A-Za-z0-9-]*)/)?.[1]?.toLowerCase() ?? "";
-    if (name in ALLOWED_TAGS) continue;
-    const line = prose.slice(0, m.index).split("\n").length;
-    hits.push(`${label}:${line}: ${tag}`);
-  }
-  return hits;
+  return htmlNodes(markdown)
+    .filter((n) => !(n.tag in ALLOWED_TAGS))
+    .map((n) => `${label}:${n.line}: ${n.html}`);
 }
