@@ -13,7 +13,8 @@
 //            may hold a subfolder path, since folders are scanned recursively
 //            ("Sub Folder/part.3mf"); a name with a line break is skipped and
 //            reported. README step 2 copies the list with tar -T, which keeps
-//            the path, so each file lands at in/sample/<name> on Hades.
+//            the path, so each file lands at in/sample/<name> on the test
+//            server.
 import { readdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { isMain } from "./lib/is-main.mjs";

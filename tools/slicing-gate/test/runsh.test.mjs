@@ -267,7 +267,7 @@ test("run.sh refuses a GATE_DIR with a .. segment before --clean deletes anythin
   assert.match(trailing.stderr, /GATE_DIR must not contain a \.\. segment/);
 });
 
-// The closing hint is copied by hand on Hades, where the first run found the
+// The closing hint is copied by hand on the test server, where the first run found the
 // scripts without their execute bits, so it names bash rather than the path
 // alone.
 test("run.sh's closing hint runs --clean through bash", () => {

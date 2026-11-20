@@ -3938,7 +3938,8 @@ describe("names that are not UTF-8", () => {
     } catch (error) {
       // Written reason for the skip: APFS (macOS) refuses a name that is not
       // UTF-8 with EILSEQ, so no such file can exist there to test. ext4 on
-      // Hades and the ubuntu CI runner take any bytes, and this test runs there.
+      // a Linux server and the ubuntu CI runner take any bytes, and this test
+      // runs there.
       if ((error as { code?: string }).code === "EILSEQ") return ctx.skip();
       throw error;
     }

@@ -2,8 +2,8 @@
 # and 6). Traefik v3 terminates TLS for two hosts and routes them with its
 # file provider: platehouse.e2e.test to the app and id.e2e.test to the mock
 # OIDC issuer. The Platehouse router carries no middleware at all, so no
-# proxy login (oidc-auth) can cover /api/v1/ or /s/, which is what Hades will
-# run (Task 26). The specs reach the app only through Traefik.
+# proxy login (oidc-auth) can cover /api/v1/ or /s/, which is what the
+# reference server runs (Task 26). The specs reach the app only through Traefik.
 #
 # The app is the real server from this checkout, started the way the
 # integration tests start it (apps/server/test/integration/app/shutdown.test.ts):
@@ -43,7 +43,7 @@ services:
     networks:
       e2e:
         # The app reaches the issuer at https://id.e2e.test through Traefik,
-        # the way the Hades app reaches Pocket ID through its proxy.
+        # the way a deployed app reaches its OIDC provider through its proxy.
         aliases:
           - platehouse.e2e.test
           - id.e2e.test

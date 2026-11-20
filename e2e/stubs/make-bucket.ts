@@ -1,6 +1,6 @@
 // Makes the app's bucket on the S3 test server for the end-to-end stack
 // (build plan Task 22), retrying while the server starts, then exits 0. The
-// app does not make its bucket itself; on Hades the bucket already exists.
+// app does not make its bucket itself; in a deployment the bucket already exists.
 // The AWS SDK is the server package's own dependency, loaded from there.
 import { createRequire } from "node:module";
 import { setTimeout as sleep } from "node:timers/promises";

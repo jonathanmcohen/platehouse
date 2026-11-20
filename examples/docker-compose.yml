@@ -5,10 +5,17 @@
 # it in, and read the Install page of the documentation first.
 #
 # Three services:
-#   app     the Platehouse server and web app, behind your reverse proxy
-#   slicer  OrcaSlicer, OpenSCAD and the STEP converter; it opens untrusted
-#           files, so it is locked down below
-#   db      Postgres 17
+#   platehouse         the Platehouse server and web app, behind your
+#                      reverse proxy
+#   platehouse-slicer  OrcaSlicer, OpenSCAD and the STEP converter; it opens
+#                      untrusted files, so it is locked down below
+#   platehouse-db      Postgres 17
+#
+# Each service is named like its container, never app, slicer or db: Docker
+# registers a service name as a DNS alias on every network the service joins,
+# so a generic name could reach another project's container on a shared
+# network. Use these names in compose commands, for example
+# docker compose logs platehouse.
 #
 # Before the first start, create the three networks (all external, so compose
 # never creates or removes them):
@@ -28,7 +35,7 @@
 #   sudo chown 1000:1000 data/inbox data/tmp
 
 services:
-  app:
+  platehouse:
     container_name: platehouse
     image: ghcr.io/jonathanmcohen/platehouse:0.1.0
     restart: unless-stopped
@@ -36,7 +43,7 @@ services:
     # would kill it partway through.
     stop_grace_period: 40s
     depends_on:
-      db:
+      platehouse-db:
         condition: service_healthy
     networks:
       - proxy
@@ -81,7 +88,7 @@ services:
     # The image has its own health check: /healthz answers 200 only while
     # the database, the job queues and the web app are all up.
 
-  slicer:
+  platehouse-slicer:
     container_name: platehouse-slicer
     # Pin an orca-X.Y.Z tag, or follow "stable", which moves to a new
     # OrcaSlicer release only after it has passed a test slice.
@@ -112,7 +119,7 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  db:
+  platehouse-db:
     container_name: platehouse-db
     image: postgres:17-alpine
     restart: unless-stopped

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build-time shared-library check, run by the Dockerfile so a library missing
-# from the image fails the build, not every plate on Hades.
+# from the image fails the build, not every plate on the test server.
 #
 # Usage: check-libs.sh <elf binary> [<library path>]
 #   <library path> is set as LD_LIBRARY_PATH for ldd, the way the program's

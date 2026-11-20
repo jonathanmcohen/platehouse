@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Platehouse slicing gate (build plan Task 1), run on Hades by platform-sre
-# after Jon approves. Builds the throwaway image, runs every plate slice in a
+# Platehouse slicing gate (build plan Task 1), run on the test server after
+# Jon approves. Builds the throwaway image, runs every plate slice in a
 # fresh network-less, read-only container, then the OpenSCAD, landrun and STEP
 # checks, then writes the report.
 #
@@ -10,8 +10,8 @@
 #   bash tools/slicing-gate/run.sh --clean  delete the scratch dir and the image, and verify
 #
 # Inputs, under GATE_DIR (default /tmp/platehouse-gate):
-#   in/selection.json   from select-sample.mjs --json on mini01
-#   in/sample/          the selected .3mf files, copied from mini01 over scp
+#   in/selection.json   from select-sample.mjs --json on your workstation
+#   in/sample/          the selected .3mf files, copied from your workstation
 # Outputs, under GATE_DIR/out: result.json (machine-readable), summary.txt.
 # Exit status: 0 PASS, 1 FAIL, 3 NEEDS-DECISION, 2 the gate could not run.
 {

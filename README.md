@@ -103,7 +103,7 @@ workspace files change. Nothing deploys it yet.
 ## Slicer image
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
-`ghcr.io/jonathanmcohen/platehouse-slicer`. Hades runs its `stable` tag.
+`ghcr.io/jonathanmcohen/platehouse-slicer`. The reference server runs its `stable` tag.
 
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
@@ -143,7 +143,7 @@ docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse-slicer:stable
 docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse-slicer:orca-<previous> --format '{{.Manifest.Digest}}'
 ```
 
-Watchtower on Hades then pulls the image `stable` now names. Every build also keeps its own
+A deployment that follows `stable` (for example with Watchtower) then pulls the image it now names. Every build also keeps its own
 `orca-X.Y.Z-r<run number>` tag, so if a slicer change broke the image at the same Orca version,
 point `stable` at the previous `-r` tag of that version instead.
 

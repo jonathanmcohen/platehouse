@@ -1,7 +1,7 @@
 # End-to-end suite
 
 Build plan Task 22. Playwright specs that drive the real Platehouse server
-through a real Traefik v3, the way Hades will serve it, with axe-core for
+through a real Traefik v3, the way the reference server serves it, with axe-core for
 accessibility. CI runs them in the e2e job of `.github/workflows/ci.yml`.
 
 ## What it checks
@@ -31,7 +31,7 @@ file and no real credential is used anywhere.
 
 ## Running it
 
-It needs Docker, so it does not run on mini01; CI is where it runs. On a
+It needs Docker, so it does not run on a machine without it; CI is where it runs. On a
 machine with Docker:
 
 ```sh

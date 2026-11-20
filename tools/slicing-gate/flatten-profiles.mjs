@@ -314,7 +314,7 @@ export function writeRecipe(index, outDir, { printers, types, companions = false
  * loads <resources>/profiles/BBL/process_full/<default_print_profile>.json.
  * The resources dir is the binary's ../../resources and no flag moves it,
  * and the AppImage ships no process_full folder, so the switch failed with
- * code -3 (Hades run 3, 79 plates). The file must be flattened:
+ * code -3 (gate run 3, 79 plates). The file must be flattened:
  * load_config_file resolves an inherits chain only through a vendor
  * manifest (BBL.json) beside the vendor folder, which the AppImage does not
  * ship, and the switch rejects a file whose type is not "process" or whose

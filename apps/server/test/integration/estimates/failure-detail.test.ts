@@ -54,7 +54,7 @@ const TOKEN_IN_DETAIL = ["ph", randomBytes(43).toString("base64url").slice(0, 43
 const DIRTY_DETAIL =
   "Orca exited with -3 slicing /work/job-0198f0c4-7a1e/input.3mf " +
   "(profiles under /srv/platehouse/orca/BBL) via http://slicer:8080/v1/slice " +
-  `at 10.1.50.105 with token ${TOKEN_IN_DETAIL}: the object exceeds the plate`;
+  `at 192.0.2.10 with token ${TOKEN_IN_DETAIL}: the object exceeds the plate`;
 
 /** What every surface shows for it. */
 const CLEAN_DETAIL =
@@ -69,7 +69,7 @@ const HIDDEN = [
   "/srv/",
   "http://",
   "slicer:8080",
-  "10.1.50.105",
+  "192.0.2.10",
   TOKEN_IN_DETAIL,
   TOKEN_IN_DETAIL.slice(3),
 ];

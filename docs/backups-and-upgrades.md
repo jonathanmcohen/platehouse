@@ -32,9 +32,9 @@ secret values.
 To restore into an empty database:
 
 ```bash
-docker compose stop app
+docker compose stop platehouse
 docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --clean --if-exists < platehouse-2026-01-01.dump
-docker compose start app
+docker compose start platehouse
 ```
 
 ### The bucket
@@ -54,14 +54,14 @@ Platehouse follows semantic versioning. Read the [changelog](./changelog.md) bef
 3. Pull and recreate the app alone:
 
    ```bash
-   docker compose pull app
-   docker compose up -d --no-deps app
+   docker compose pull platehouse
+   docker compose up -d --no-deps platehouse
    ```
 
    `--no-deps` recreates only the app. A plain `docker compose up -d` also recreates any other
    service whose settings changed, the database included, which you may not want mid-upgrade.
-4. Check it came up: `docker compose ps` shows the app `healthy`, and `docker compose logs app`
-   shows no errors.
+4. Check it came up: `docker compose ps` shows the app `healthy`, and
+   `docker compose logs platehouse` shows no errors.
 
 The app applies any database changes itself when it starts. They only move forward, so to go back
 to an older version, restore the database dump you took in step 1.
@@ -73,8 +73,8 @@ points to the newest one that has passed a test slice. To move to a new OrcaSlic
 the tag and recreate the slicer:
 
 ```bash
-docker compose pull slicer
-docker compose up -d --no-deps slicer
+docker compose pull platehouse-slicer
+docker compose up -d --no-deps platehouse-slicer
 ```
 
 When the slicer's OrcaSlicer version changes, Platehouse re-estimates the library in the

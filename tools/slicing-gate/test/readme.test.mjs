@@ -1,6 +1,6 @@
-// Pins the README's run steps against what went wrong on the first Hades run
-// (2026-11-08): scp -r over Tailscale SSH dropped the scripts' execute bits,
-// so step 3's /tmp/platehouse-gate/tool/run.sh failed with exit 126.
+// Pins the README's run steps against what went wrong on the first gate run on
+// the test server (2026-11-08): scp -r dropped the scripts' execute bits, so
+// step 3's /tmp/platehouse-gate/tool/run.sh failed with exit 126.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -49,7 +49,7 @@ test("every run.sh call goes through bash, so it works without the execute bit",
 // (tool/slicing-gate), so a re-run would start the old run.sh. The tool dir is
 // removed before the copy, in the same ssh call that makes the sample dir.
 test("an old copy of the tool is removed before the new one is copied", () => {
-  const prep = commands.findIndex((c) => c.startsWith("ssh Hades") && c.includes("rm -rf /tmp/platehouse-gate/tool"));
+  const prep = commands.findIndex((c) => c.startsWith("ssh TestServer") && c.includes("rm -rf /tmp/platehouse-gate/tool"));
   const copy = commands.findIndex((c) => c.startsWith("scp -rp "));
   assert.ok(prep !== -1, "an ssh step removes /tmp/platehouse-gate/tool");
   assert.ok(prep < copy, "and it runs before the copy");
@@ -67,7 +67,7 @@ const sampleCopy = () => commands.find((c) => c.includes("-T /tmp/platehouse-nam
 test("the sample is copied by name list in one tar stream that keeps relative paths", () => {
   const c = sampleCopy();
   assert.ok(c, "a step reads /tmp/platehouse-names.txt");
-  assert.match(c, /\| ssh Hades 'tar -xf - -C \/tmp\/platehouse-gate\/in\/sample'$/);
+  assert.match(c, /\| ssh TestServer 'tar -xf - -C \/tmp\/platehouse-gate\/in\/sample'$/);
   assert.ok(!commands.some((x) => /while .*read .*scp/.test(x)), "no per-file scp loop");
   assert.doesNotMatch(readme, /top-level file names/);
   const select = readFileSync(join(HERE, "select-sample.mjs"), "utf8");
@@ -76,11 +76,12 @@ test("the sample is copied by name list in one tar stream that keeps relative pa
 });
 
 // Runs README step 2's sample copy as written, with the ssh hop replaced by a
-// local bash and the Hades folder by a scratch one. bsdtar's flags in that
-// line are macOS ones, and step 2 runs on mini01, so this runs on macOS only.
+// local bash and the test server's folder by a scratch one. bsdtar's flags in
+// that line are macOS ones, and step 2 runs on your workstation, which the
+// README says is a Mac, so this runs on macOS only.
 test(
   "README step 2's sample copy, run as written, lands each name at sample/<name>",
-  { skip: process.platform !== "darwin" && "step 2 runs on mini01, and its tar flags are bsdtar's (macOS)" },
+  { skip: process.platform !== "darwin" && "step 2 runs on your workstation, and its tar flags are bsdtar's (macOS)" },
   () => {
     const root = mkdtempSync(join(tmpdir(), "gate-copy-"));
     made.push(root);
@@ -95,7 +96,7 @@ test(
     writeFileSync(list, `${names.join("\n")}\n`);
     const line = sampleCopy()
       .replaceAll("/tmp/platehouse-names.txt", list)
-      .replace("ssh Hades '", "bash -c '")
+      .replace("ssh TestServer '", "bash -c '")
       .replace("/tmp/platehouse-gate/in/sample", dest);
     const r = spawnSync("bash", ["-c", line], { cwd: src, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
@@ -104,7 +105,7 @@ test(
     const all = readdirSync(dest, { recursive: true });
     assert.ok(!all.some((f) => f.split("/").pop().startsWith("._")), `no AppleDouble files: ${all.join(", ")}`);
     // With an extended attribute on a file, plain bsdtar writes it as a
-    // LIBARCHIVE.xattr pax header, which GNU tar on Hades warns about; the
+    // LIBARCHIVE.xattr pax header, which GNU tar on the test server warns about; the
     // step's flags keep it out. The create half of the line, run alone:
     spawnSync("xattr", ["-w", "com.platehouse.test", "1", join(src, names[0])]);
     const create = line.slice(0, line.indexOf(" | "));
@@ -116,10 +117,12 @@ test(
   },
 );
 
-// Hades run 2 (2026-11-08): the ssh alias on mini01 is Hades, and OpenSSH
-// matches Host patterns case-sensitively, so "ssh hades" missed the alias and
-// failed with "Host key verification failed" until the operator typed Hades.
-// Every ssh and scp target in any README command must be the alias exactly.
+// Gate run 2 (2026-11-08): the workstation's ssh alias for the test server had
+// a capital letter, and OpenSSH matches Host patterns case-sensitively, so the
+// alias typed in lower case missed it and failed with "Host key verification
+// failed" until the operator typed it exactly. The README writes the alias as
+// TestServer, and every ssh and scp target in any README command must be that
+// alias exactly, never in another case.
 const allCommands = [...readme.matchAll(/```sh\n([\s\S]*?)```/g)].flatMap((m) =>
   m[1]
     .split("\n")
@@ -127,15 +130,15 @@ const allCommands = [...readme.matchAll(/```sh\n([\s\S]*?)```/g)].flatMap((m) =>
     .filter((l) => l && !l.startsWith("#")),
 );
 
-test("every ssh and scp in the README targets the alias Hades, spelled exactly", () => {
+test("every ssh and scp in the README targets the alias TestServer, spelled exactly", () => {
   const ssh = allCommands.flatMap((c) => [...c.matchAll(/\bssh\s+([^\s']+)/g)].map((m) => m[1]));
   const scp = allCommands
     .filter((c) => /\bscp\b/.test(c))
     .flatMap((c) => [...c.matchAll(/(?:^|\s)([A-Za-z][\w.-]*):\//g)].map((m) => m[1]));
   assert.ok(ssh.length >= 2 && scp.length >= 2, `found ssh ${ssh.join(",")} scp ${scp.join(",")}`);
-  for (const host of [...ssh, ...scp]) assert.equal(host, "Hades", `host alias in a README command: ${host}`);
-  assert.doesNotMatch(readme, /\b(ssh|scp)\b[^\n`]*\bhades\b/, "no lower-case hades in an ssh or scp line");
-  assert.doesNotMatch(readme, /\bhades:/, "no lower-case hades: scp target");
+  for (const host of [...ssh, ...scp]) assert.equal(host, "TestServer", `host alias in a README command: ${host}`);
+  assert.doesNotMatch(readme, /\b(ssh|scp)\b[^\n`]*\btestserver\b/, "no lower-case testserver in an ssh or scp line");
+  assert.doesNotMatch(readme, /\btestserver:/, "no lower-case testserver: scp target");
 });
 
 // Run 2's operator started run.sh detached by hand, so a dropped ssh session
@@ -196,7 +199,7 @@ test("step 3's tail, run as written before run.log exists, keeps waiting and the
 
 // Runs step 3's detached line as written, with run.sh replaced by a stub that
 // prints a line and exits 3 and the scratch dir by a temporary one. setsid is
-// util-linux, so this runs on Linux (CI and Hades), not on macOS.
+// util-linux, so this runs on Linux (CI and the test server), not on macOS.
 test(
   "step 3's detached line, run as written, records the run's output and exit code",
   { skip: spawnSync("bash", ["-c", "command -v setsid"]).status !== 0 && "setsid is not installed (util-linux, Linux only)" },
@@ -307,7 +310,7 @@ test("the README pass rule lists -101 and -62 as legitimate refusals by Jon's de
 
 // PR #11 review: the production slicer image (build plan Task 11) builds from
 // the same Orca 2.5.0 AppImage, so without the process_full folder its first
-// cross-printer slice would fail with code -3 as Hades run 3 did. The
+// cross-printer slice would fail with code -3 as gate run 3 did. The
 // process_full section binds Task 11 and the daily Orca update workflow to
 // generate that folder the same way, with the same build checks, as the
 // profile-source section binds them to its pin.
