@@ -3,8 +3,9 @@
 // 1. The shipped web app and server (PR #230). Platehouse is published as
 //    public images, so text a user sees, such as a placeholder or a help line,
 //    must be generic. Every non-comment line of apps/web/src,
-//    apps/web/index.html and apps/server/src is checked. Comment lines are
-//    left out here: guard 2 covers them.
+//    apps/web/index.html, apps/server/src, packages/i18n/src and the
+//    translation catalogs in packages/i18n/locales is checked. Comment lines
+//    are left out here: guard 2 covers them.
 // 2. The whole tracked tree (git ls-files), comments, docs, CI, fixtures and
 //    file paths included, because the 0.1.0 tree becomes the public
 //    repository. It looks for his hosts, addresses, domains and paths. A line
@@ -79,17 +80,27 @@ describe("no machine or home-network name in shipped text", () => {
     ]);
   });
 
-  test("apps/web and apps/server name none", () => {
+  test("apps/web, apps/server and the translation catalogs name none", () => {
     const web = fileURLToPath(new URL("../src", import.meta.url));
     const server = fileURLToPath(new URL("../../server/src", import.meta.url));
+    // Since the translations (PR #287) the text a user sees lives in the
+    // catalogs, so they and the i18n package's code are shipped text too.
+    const i18n = fileURLToPath(new URL("../../../packages/i18n/src", import.meta.url));
+    const locales = fileURLToPath(new URL("../../../packages/i18n/locales", import.meta.url));
     const files = [
       ...sourceFiles(web),
       ...sourceFiles(server),
+      ...sourceFiles(i18n),
+      ...readdirSync(locales)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => join(locales, name)),
       fileURLToPath(new URL("../index.html", import.meta.url)),
     ];
-    // Both trees were read: a file from each is in the list.
+    // Every tree was read: a file from each is in the list.
     expect(files.some((f) => f.endsWith(join("settings", "Tokens.tsx")))).toBe(true);
     expect(files.some((f) => f.endsWith(join("server", "src", "config.ts")))).toBe(true);
+    expect(files.some((f) => f.endsWith(join("i18n", "src", "translator.ts")))).toBe(true);
+    expect(files.some((f) => f.endsWith(join("locales", "en.json")))).toBe(true);
     const found = files.flatMap((file) => personalLines(file, readFileSync(file, "utf8")));
     expect(found).toEqual([]);
   });
