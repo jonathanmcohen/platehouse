@@ -16,13 +16,21 @@ in both themes.
 ## Language
 
 Platehouse speaks English, Spanish and French, plus any language your server adds (see
-[Translations](../translations/index.md)). **Browser language** follows your browser's own
-language list; any other choice shows that language. A pick applies at once and is kept in this
-browser only, in a cookie, so each browser or device can have its own.
+[Translations](../translations/index.md)). Pick one from the list:
 
-Spanish and French are machine translations in 0.1.0 that nobody fluent has reviewed yet; the menu
-says so beside their names. A language your server adds that covers only part of the app is
-marked as partly translated, and the rest shows in English.
+- **Browser language** (the default) follows your browser's own language list, and names the
+  language it picked. A browser language Platehouse does not have shows English.
+- Any other choice shows that language, whatever the browser asks for.
+
+A pick applies at once, with no reload, and is kept in this browser only, in a cookie, so each
+browser or device can have its own. If a language cannot be loaded, the page says so and stays as
+it was.
+
+Spanish and French are machine translations in 0.1.0 that nobody fluent has reviewed yet, so the
+list shows "machine translation, not yet reviewed" beside their names. A language your server adds
+that covers only part of the app shows "partly translated, the rest in English", and the rest of
+the app shows in English. To add a language, or to review one, see
+[Translations](../translations/index.md).
 
 ## Bucket versioning warning
 

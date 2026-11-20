@@ -103,7 +103,8 @@ workspace files change. Nothing deploys it yet.
 ## Slicer image
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
-`ghcr.io/jonathanmcohen/platehouse-slicer`. The reference server runs its `stable` tag.
+`ghcr.io/jonathanmcohen/platehouse-slicer`. A deployment pins an `orca-X.Y.Z` tag, as
+`examples/docker-compose.yml` does, or follows the `stable` tag.
 
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
