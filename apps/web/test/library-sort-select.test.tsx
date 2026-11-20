@@ -1080,6 +1080,36 @@ describe("describeBulk", () => {
     ).toBe("The model already had PLA and PETG.");
   });
 
+  test("with some unchanged and some failed, counts instead of saying All or The model (issue #306)", () => {
+    const mixed = {
+      changed: [] as string[],
+      unchanged: [id(1), id(2)],
+      failed: [{ id: id(3), reason: "in_trash" as const }],
+    };
+    const many = new Map([...names, [id(3), "Peg"]]);
+    const addTags = describeBulk(
+      { action: "add-tags", tags: ["PLA"] },
+      { ...mixed, tags: ["PLA"] },
+      many,
+    );
+    expect(addTags.done).toBe("No model was changed. 2 already had it.");
+    expect(addTags.failed).toBe("1 model could not be changed: Peg is in the trash.");
+    expect(
+      describeBulk({ action: "remove-tag", tag: "pla" }, { ...mixed, tag: "PLA" }, many).done,
+    ).toBe("No model was changed. 2 did not have it.");
+    expect(
+      describeBulk(
+        { action: "add-to-collection", collection: "desk" },
+        { ...mixed, collection: "Desk" },
+        many,
+      ).done,
+    ).toBe("No model was changed. 2 were already in it.");
+    const one = { changed: [] as string[], unchanged: [id(1)], failed: mixed.failed };
+    expect(
+      describeBulk({ action: "add-tags", tags: ["PLA"] }, { ...one, tags: ["PLA"] }, many).done,
+    ).toBe("No model was changed. 1 already had it.");
+  });
+
   test("says no model was changed when every selected model failed", () => {
     const answer = {
       changed: [] as string[],
