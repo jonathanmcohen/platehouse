@@ -32,8 +32,16 @@ export function proseOnly(markdown: string): string {
     out.push(line);
   }
   // A code span is a run of backticks closed by a run of the same length; it
-  // may hold shorter runs. Spans can cross a line break inside a paragraph.
-  return out.join("\n").replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (m) => m.replace(/[^\n]/g, " "));
+  // may hold shorter runs. Spans can cross a line break inside a paragraph,
+  // but CommonMark ends a span at the end of its paragraph, so the text is cut
+  // at each blank line (a fenced block, blanked above, is one too) and spans
+  // are matched one paragraph at a time: a stray backtick never pairs with
+  // one in a later paragraph and hides the prose between them.
+  return out
+    .join("\n")
+    .split(/(\n[ \t]*\n)/)
+    .map((part) => part.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (m) => m.replace(/[^\n]/g, " ")))
+    .join("");
 }
 
 const TAG = /<\/?[A-Za-z][^<>]*>/g;

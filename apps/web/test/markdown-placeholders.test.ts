@@ -57,6 +57,23 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
     ]);
   });
 
+  test("a stray backtick does not hide a placeholder in a later paragraph", () => {
+    // CommonMark ends a code span at the end of its paragraph, so a lone
+    // backtick never pairs with one past a blank line.
+    const sample = [
+      "press the ` key",
+      "",
+      "models/<id> is bare",
+      "",
+      "and `code` here",
+      "   ",
+      "a blank line of spaces ` ends one too",
+      "\t",
+      "so <this> is bare as well, and `<x>` is code",
+    ].join("\n");
+    expect(barePlaceholders("sample", sample)).toEqual(["sample:3: <id>", "sample:9: <this>"]);
+  });
+
   test("no tracked Markdown file outside docs/ writes one bare", () => {
     const files = renderedMarkdown();
     // The list really is the tree: files from several places are in it, and docs/ is not.
