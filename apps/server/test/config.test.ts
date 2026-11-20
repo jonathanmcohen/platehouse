@@ -187,7 +187,7 @@ describe("loadConfig", () => {
     const config = loadConfig(validEnv());
     expect(config.port).toBe(3000);
     expect(config.oidc.group).toBe("platehouse");
-    expect(config.slicer).toEqual({ url: "http://slicer:8080", plateSeconds: 120 });
+    expect(config.slicer).toEqual({ url: "http://platehouse-slicer:8080", plateSeconds: 120 });
     expect(config.inbox.dir).toBe("/data/inbox");
     expect(config.inbox.settleSeconds).toBe(15);
     expect(config.tmpDir).toBe("/data/tmp");
@@ -236,7 +236,7 @@ describe("loadConfig", () => {
 
   it("SLICER_CONCURRENCY is not read: slices run one at a time (Jon, 2026-11-08, PR #49)", () => {
     const config = loadConfig(withValue(validEnv(), "SLICER_CONCURRENCY", "0"));
-    expect(config.slicer).toEqual({ url: "http://slicer:8080", plateSeconds: 120 });
+    expect(config.slicer).toEqual({ url: "http://platehouse-slicer:8080", plateSeconds: 120 });
   });
 
   it("S3_FORCE_PATH_STYLE true parses as true", () => {
