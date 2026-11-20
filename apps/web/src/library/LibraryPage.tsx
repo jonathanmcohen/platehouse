@@ -274,11 +274,14 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // can show and the selection keeps only those; the toolbar says how many
   // left. An empty selection has nothing to check, except after an action,
   // whose cards stay shown until the grid's reload is in: the answer then
-  // stops one of them being selected (refused). Until the answer is in the
-  // actions wait, and a failed check keeps them waiting until Try again works.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: changedKey, refreshKey and checkAttempt only trigger a check.
+  // stops one of them being selected (refused). That holds for as long as
+  // those cards are shown (staleCards), so leaving Select mode and entering
+  // it again before the reload is in checks again rather than going idle.
+  // Until the answer is in the actions wait, and a failed check keeps them
+  // waiting until Try again works.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changedKey, refreshKey and checkAttempt only trigger a check; staleCards is read when one runs, and the reload that ends it needs no check.
   useEffect(() => {
-    const afterAction = checkedAfter.current !== changedKey;
+    const afterAction = checkedAfter.current !== changedKey || staleCards;
     checkedAfter.current = changedKey;
     if (!selecting || (selectedNow.current.size === 0 && !afterAction)) {
       setCheck({ state: "idle" });

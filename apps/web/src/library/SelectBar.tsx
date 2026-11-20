@@ -27,7 +27,7 @@
 //   matching answer for a search or filter that has since changed is
 //   dropped, as is one asked for before an action that ran while it was
 //   on its way, since the action can change which models match.
-import { type FormEvent, useId, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
 import { type MessageKey, useI18n } from "../i18n/I18n";
 import { AppApiError, appApi, useAppApi, useErrorText } from "../settings/api";
@@ -346,6 +346,18 @@ export function SelectBar({
   matchingNow.current = matching.toString();
   /** Counts actions started and finished, so a Select all matching answer that spans one is told apart. */
   const actionsRun = useRef(0);
+  /**
+   * The toolbar is on screen. Leaving Select mode unmounts it, after which
+   * matchingNow and actionsRun stop following the page, so a Select all
+   * matching answer still on its way is for a session that has ended.
+   */
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   function setOpen(next: Open, from?: HTMLButtonElement) {
     if (from !== undefined) opener.current = from;
@@ -376,8 +388,15 @@ export function SelectBar({
       // another view's matches, so none of them is selected. Likewise if an
       // action ran meanwhile: it can take models out of the view (Remove tag
       // of the filtered tag, Move to trash) with the search unchanged, and
-      // this answer may predate it.
-      if (matchingNow.current !== asked || actionsRun.current !== actionsBefore) return;
+      // this answer may predate it. And if Select mode was left meanwhile:
+      // the selection it would add to has gone with that session.
+      if (
+        !mounted.current ||
+        matchingNow.current !== asked ||
+        actionsRun.current !== actionsBefore
+      ) {
+        return;
+      }
       const names = new Map(shown.map((c) => [c.id, c.name]));
       add(answer.ids.map((id) => [id, names.get(id) ?? null]));
       if (answer.capped) {

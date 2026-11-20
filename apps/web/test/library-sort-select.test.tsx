@@ -1314,6 +1314,51 @@ describe("the selection holds only models the search and filters show (0.1.0-rc.
     expect(checkboxes()).toHaveLength(4);
   });
 
+  test("leaving and re-entering Select mode while the grid reloads after an action still refuses a card it no longer shows", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    // The grid's reload is held: Model 001 and Model 002 are still shown,
+    // though only Model 002 still has PLA.
+    expect(checkboxes()).toHaveLength(2);
+    await key(checkbox("Model 001"), "Escape");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+    await click(checkbox("Model 002"));
+    expect(statusText()).toBe("1 model selected");
+    // Clicking Select twice is the same as Escape.
+    await click(button("Select"));
+    await selectMode();
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+    expect(posted).toHaveLength(1);
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(1);
+  });
+
+  test("Select all matching answered after Select mode was left and entered again selects nothing", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    holdingIds = true;
+    await click(button("Select all 5 matching"));
+    await key(button("Select"), "Escape");
+    await click(tagChip("PLA"));
+    await selectMode();
+    await releaseIds();
+    expect(statusText()).toBe("No models selected");
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+  });
+
   test("once the grid's reload after an action is in, a model added since can be selected on another page", async () => {
     const all = cards(50);
     stubServer(all);
