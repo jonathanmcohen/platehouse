@@ -1055,6 +1055,52 @@ describe("describeBulk", () => {
     ).toBe("Added 1 model to Desk. 1 was already in it.");
   });
 
+  test("says so plainly when nothing changed because every model was already so (issue #256)", () => {
+    const both = { changed: [] as string[], unchanged: [id(1), id(2)], failed: [] };
+    expect(
+      describeBulk({ action: "add-tags", tags: ["PLA"] }, { ...both, tags: ["PLA"] }, names).done,
+    ).toBe("All 2 models already had PLA.");
+    expect(
+      describeBulk({ action: "remove-tag", tag: "pla" }, { ...both, tag: "PLA" }, names).done,
+    ).toBe("None of the 2 models had PLA.");
+    expect(
+      describeBulk(
+        { action: "add-to-collection", collection: "desk" },
+        { ...both, collection: "Desk" },
+        names,
+      ).done,
+    ).toBe("All 2 models were already in Desk.");
+    const one = { changed: [] as string[], unchanged: [id(1)], failed: [] };
+    expect(
+      describeBulk(
+        { action: "add-tags", tags: ["PLA", "PETG"] },
+        { ...one, tags: ["PLA", "PETG"] },
+        names,
+      ).done,
+    ).toBe("The model already had PLA and PETG.");
+  });
+
+  test("says no model was changed when every selected model failed", () => {
+    const answer = {
+      changed: [] as string[],
+      unchanged: [] as string[],
+      failed: [{ id: id(1), reason: "in_trash" as const }],
+    };
+    for (const action of [
+      { action: "add-tags" as const, tags: ["PLA"] },
+      { action: "remove-tag" as const, tag: "PLA" },
+      { action: "add-to-collection" as const, collection: "Desk" },
+    ]) {
+      const text = describeBulk(
+        action,
+        { ...answer, tags: ["PLA"], tag: "PLA", collection: "Desk" },
+        names,
+      );
+      expect(text.done, action.action).toBe("No model was changed.");
+      expect(text.failed).toBe("1 model could not be changed: Hook is in the trash.");
+    }
+  });
+
   test("names at most five failed models, then how many more", () => {
     const failed = Array.from({ length: 7 }, (_, i) => ({
       id: id(10 + i),

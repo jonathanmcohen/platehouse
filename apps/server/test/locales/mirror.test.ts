@@ -43,7 +43,7 @@ import {
   UNSUPPORTED_MESSAGE,
 } from "../../src/ingest/ingest.js";
 import { MAINTENANCE_TASKS } from "../../src/jobs/queues.js";
-import { QUEUE_FAILED_MESSAGE, UPLOAD_FAILED_MESSAGE } from "../../src/uploads/tus.js";
+import { UPLOAD_FAILED_MESSAGE } from "../../src/uploads/tus.js";
 
 const EN = JSON.parse(readFileSync(`${builtinLocalesDir()}/en.json`, "utf8")) as Record<
   string,
@@ -80,7 +80,6 @@ describe("upload results (ingest/ingest.ts and uploads/tus.ts)", () => {
     ["upload.result.modelNotFound", MODEL_NOT_FOUND_MESSAGE],
     ["upload.result.ingestFailed", INGEST_FAILED_MESSAGE],
     ["upload.result.uploadFailed", UPLOAD_FAILED_MESSAGE],
-    ["upload.result.queueFailed", QUEUE_FAILED_MESSAGE],
   ])("%s", (key, sentence) => {
     expect(en(key)).toBe(sentence);
   });

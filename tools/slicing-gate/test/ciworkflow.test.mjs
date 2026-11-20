@@ -810,10 +810,14 @@ for (const [file, want] of [
 // `${ROOT}/x` or string concatenation; a join whose arguments hold a call, such
 // as join(ROOT, "apps", pick(x)); require or createRequire; a repo-root file
 // named with no slash in a cwd: step script (package.json, .node-version,
-// pnpm-lock.yaml); or a read other than an import in a gate script outside
+// pnpm-lock.yaml); a read other than an import in a gate script outside
 // test/, as only the tests are scanned for reads and the scripts only for
-// their imports. A gate test or script that reads a file outside the gate in
-// one of these forms must add it to the tests list in ci.yml by hand.
+// their imports; or a read other than an import in a module outside
+// tools/slicing-gate that the tests import (issue #229), such as
+// readFileSync(new URL("./table.bin", import.meta.url)) in packages/threemf,
+// as moduleImports follows those modules for their imports only. A gate test,
+// script or imported module that reads a file outside the gate in one of
+// these forms must add it to the tests list in ci.yml by hand.
 const GATE_DIR = join(ROOT, "tools", "slicing-gate");
 const GATE_TEST_DIR = join(GATE_DIR, "test");
 const insideGate = (p) => p === GATE_DIR || p.startsWith(`${GATE_DIR}/`);
@@ -930,6 +934,37 @@ function moduleImports(entries, readSource = readIfExists) {
   return { visited, outside };
 }
 
+// The step-runner call a cwd: option at index belongs to: { runner, job, step }.
+// It is the call whose argument list holds the option, found by walking back
+// from index by bracket depth to the "(" still open there (issue #232); an
+// object or array literal open around the option is passed over. Throws
+// unless that call is a STEP_RUNNERS helper named with its job and step as
+// string literals; at gives the file:line of an index. Brackets inside a
+// string are counted too, so an unbalanced one there makes it find the wrong
+// "(", which then fails the literal check and throws rather than passing.
+function stepRunnerCall(src, index, at) {
+  const name = src.slice(index).match(/^cwd: (\w+)/)?.[1];
+  let open = -1;
+  for (let i = index - 1, depth = 0; i >= 0; i--) {
+    const c = src[i];
+    if (c === ")" || c === "]" || c === "}") depth++;
+    else if (c === "(" || c === "[" || c === "{") {
+      if (depth > 0) depth--;
+      else if (c === "(") {
+        open = i;
+        break;
+      }
+    }
+  }
+  const runner = open < 0 ? undefined : src.slice(0, open).match(/\b(\w+)\s*$/)?.[1];
+  const args = open < 0 ? null : src.slice(open + 1).match(/^\s*"([^"]+)",\s*"([^"]+)"/);
+  const call = runner && args ? [null, runner, args[1], args[2]] : undefined;
+  if (!call || !STEP_RUNNERS[call[1]]) {
+    throw new Error(`${at(index)}: cwd: ${name} runs something outside tools/slicing-gate the scan does not know; add its helper to STEP_RUNNERS`);
+  }
+  return { runner: call[1], job: call[2], step: call[3] };
+}
+
 // Every path outside tools/slicing-gate the gate tests read, as repo-relative
 // paths, each with every place it was found. Throws on a read it cannot
 // resolve.
@@ -954,14 +989,13 @@ function gateTestReads() {
     for (const m of src.matchAll(/\bcwd: (\w+)/g)) {
       const cwd = bases.get(m[1]);
       if (cwd === undefined || insideGate(cwd)) continue;
-      const call = [...src.slice(0, m.index).matchAll(/\b(\w+)\(\s*"([^"]+)",\s*"([^"]+)"/g)].at(-1);
-      const workflow = call && STEP_RUNNERS[call[1]];
-      if (!workflow) throw new Error(`${at(m.index)}: cwd: ${m[1]} runs something outside tools/slicing-gate the scan does not know; add its helper to STEP_RUNNERS`);
+      const call = stepRunnerCall(src, m.index, at);
+      const workflow = STEP_RUNNERS[call.runner];
       add(workflow, at(m.index));
-      const script = stepScript(jobBlock(readFileSync(workflow, "utf8"), call[2]), call[3]);
+      const script = stepScript(jobBlock(readFileSync(workflow, "utf8"), call.job), call.step);
       for (const t of script.matchAll(/(?<![\w$./{}-])([\w.-]+(?:\/[\w.-]+)+)/g)) {
         const p = resolve(cwd, t[1]);
-        if (existsSync(p)) add(p, `${at(m.index)} (${call[2]} / ${call[3]})`);
+        if (existsSync(p)) add(p, `${at(m.index)} (${call.job} / ${call.step})`);
       }
     }
   }
@@ -1057,6 +1091,39 @@ test("gate jobs decision: the scan finds the file the Orca pins step reads from 
     where.some((w) => w.endsWith("(detect / Resolve the Orca pins)")),
     `apps/slicer/Dockerfile is found through the Orca pins step: ${where.join(", ")}`,
   );
+});
+
+// Issue #232: a cwd: belongs to the call whose argument list holds it, not to
+// the last literal step-runner call earlier in the file. The cwd option is
+// built by cwdAt, so that the scan, reading this file, does not take these
+// fake sources for steps of its own.
+const cwdAt = (name) => `${"cwd"}: ${name}`;
+const cwdCallIn = (src) => stepRunnerCall(src, src.indexOf(cwdAt("ROOT")), (i) => `fake:${i}`);
+
+test("gate jobs decision: a cwd: is credited to the step-runner call that holds it (issue #232)", () => {
+  const call = cwdCallIn(
+    [
+      'runSlicerStep("detect", "Old step", {});',
+      'const r = runSlicerStep("detect", "Resolve the Orca pins", {',
+      `  ${cwdAt("ROOT")},`,
+      '  stubs: [...STUB, f(["a", "b"])],',
+      '  env: { VERSION: version, ...env },',
+      "});",
+    ].join("\n"),
+  );
+  assert.deepEqual(call, { runner: "runSlicerStep", job: "detect", step: "Resolve the Orca pins" });
+});
+
+test("gate jobs decision: a cwd: on any other call throws, even after a literal step-runner call (issue #232)", () => {
+  const earlier = 'runSlicerStep("detect", "Resolve the Orca pins", { env: {} });\n';
+  for (const [name, later] of [
+    ["a spawnSync with an array", `spawnSync("bash", ["-c", script], { ${cwdAt("ROOT")} });`],
+    ["a helper given variables", `runReleaseStep(job, step, { ${cwdAt("ROOT")} });`],
+    ["a step runner given variables", `runSlicerStep(job, "Resolve the Orca pins", { ${cwdAt("ROOT")} });`],
+    ["an unknown helper given literals", `runOtherStep("detect", "Resolve the Orca pins", { ${cwdAt("ROOT")} });`],
+  ]) {
+    assert.throws(() => cwdCallIn(earlier + later), new RegExp(`fake:\\d+: ${cwdAt("ROOT")} runs something`), name);
+  }
 });
 
 // One sample path per alternative of a Decide step regex: ^(a|b(c|d)\.e$|f/)

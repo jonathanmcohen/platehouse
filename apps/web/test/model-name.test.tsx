@@ -173,7 +173,11 @@ describe("renaming the model from its page", () => {
     });
     await settle();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("That name is too long.");
-    expect(container.querySelector("h1")).toBeNull();
+    // The page keeps its h1 while the name is edited, for screen readers
+    // (issue #253): the stored name, hidden on screen beside the form.
+    const h1 = container.querySelector("h1");
+    expect(h1?.textContent).toBe("Cable clip PETG");
+    expect(h1?.classList.contains("studio-visually-hidden")).toBe(true);
     expect(container.querySelector<HTMLInputElement>("input")?.value).toBe("Another name");
   });
 });

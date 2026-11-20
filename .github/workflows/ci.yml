@@ -90,7 +90,8 @@ jobs:
       # the test and still goes green. ciworkflow.test.mjs scans the gate tests,
       # and the modules they import, for such reads and fails on one missing
       # here, but only for the read forms it knows; the forms it misses (a path
-      # built with resolve or a template string, among others) are listed with
+      # built with resolve or a template string, or a file read by a module
+      # outside the gate that the tests import, among others) are listed with
       # the scan and must be added here by hand. The image list is what
       # the gate image and its smoke checks are built from: tools/slicing-gate,
       # this workflow and .node-version. Every image-list path must also be on
@@ -372,8 +373,22 @@ jobs:
         run: pnpm exec tsc -p e2e/tsconfig.json
       - name: Build the web app
         run: pnpm --filter @platehouse/web build
+      # Chromium's system libraries come from Ubuntu's mirrors, which can answer
+      # 503 for a while, and one failed fetch used to fail the job with no test
+      # run (issue #264). As in the image builds, apt retries each download 10
+      # times; on top of that the whole install is tried 3 times, 30 seconds
+      # apart, within the job's own timeout.
       - name: Install Chromium for Playwright
-        run: pnpm exec playwright install --with-deps chromium
+        run: |
+          printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80retries > /dev/null
+          for attempt in 1 2 3; do
+            if pnpm exec playwright install --with-deps chromium; then exit 0; fi
+            echo "Installing Chromium failed (attempt $attempt of 3)."
+            if [ "$attempt" -lt 3 ]; then sleep 30; fi
+          done
+          echo "::error::Chromium for Playwright could not be installed after 3 attempts."
+          exit 1
       - name: Map the e2e host names to Traefik
         run: echo "127.0.0.1 platehouse.e2e.test id.e2e.test" | sudo tee -a /etc/hosts
       - name: Start the e2e stack

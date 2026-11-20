@@ -160,7 +160,9 @@ describe("Use file titles", () => {
     expect(text).toContain("3 models will be renamed from their file's title.");
     expect(text).toContain('"File_name_1" becomes "Title 1"');
     expect(text).toContain("17 are left as they are");
-    expect(text).toContain("2 renamed by you");
+    // Models made through the API are stored as named by a person too (issue #253).
+    expect(text).toContain("2 named by you or through the API");
+    expect(text).not.toContain("renamed by you");
     expect(text).toContain("3 whose name is not a file name");
     expect(text).toContain("4 with no title");
     expect(text).toContain("1 already named from a title");

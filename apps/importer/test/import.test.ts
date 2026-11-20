@@ -480,8 +480,17 @@ describe("exit code 2: the run could not start", () => {
     const s = setup(library());
     const r = await s.run(["--apply"], { ...ENV, MANYFOLD_CLIENT_ID: " " });
     expect(r.code).toBe(2);
-    expect(r.stderr[0]).toBe("MANYFOLD_CLIENT_ID not set; run it under claude-env.");
+    expect(r.stderr[0]).toBe("MANYFOLD_CLIENT_ID not set; set it in the environment.");
     expect(seen).toHaveLength(0);
+  });
+
+  it("names every missing credential in one line", async () => {
+    const s = setup(library());
+    const r = await s.run(["--apply"], { ...ENV, MANYFOLD_CLIENT_ID: "", PLATEHOUSE_TOKEN: "" });
+    expect(r.code).toBe(2);
+    expect(r.stderr[0]).toBe(
+      "MANYFOLD_CLIENT_ID, PLATEHOUSE_TOKEN not set; set them in the environment.",
+    );
   });
 
   it("on an unknown flag", async () => {

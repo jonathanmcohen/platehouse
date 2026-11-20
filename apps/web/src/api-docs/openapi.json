@@ -3783,7 +3783,7 @@
             }
           },
           "400": {
-            "description": "A tus header is malformed",
+            "description": "A tus header is malformed, or another request on this upload took it over (ask HEAD for the offset and carry on)",
             "content": {
               "text/plain": {
                 "schema": {

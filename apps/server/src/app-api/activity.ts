@@ -38,6 +38,11 @@ import { printerName } from "../estimates/display.js";
 import { isReason, reasonWords } from "../estimates/reasons.js";
 import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
+import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
+import { activityRepo, type QueueCount } from "../repos/activity.js";
+import { settingsRepo } from "../repos/settings.js";
+import { scrubDerivedMessage, scrubDetail, scrubText } from "../scrub.js";
+import { appApiScope, need } from "./settings.js";
 
 /** A render event's message split into codes and detail (derived/client.ts). */
 function renderParts(message: string | null): {
@@ -47,12 +52,6 @@ function renderParts(message: string | null): {
   const { derivedCodes, derivedDetail } = derivedParts(message);
   return { messageCodes: derivedCodes, messageDetail: derivedDetail };
 }
-
-import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
-import { activityRepo, type QueueCount } from "../repos/activity.js";
-import { settingsRepo } from "../repos/settings.js";
-import { scrubDerivedMessage, scrubDetail, scrubText } from "../scrub.js";
-import { appApiScope, need } from "./settings.js";
 
 /** The Activity page's route, session-class (the Route classes contract). */
 export const ACTIVITY_API_PATHS: readonly string[] = Object.freeze(["/app/api/activity"]);

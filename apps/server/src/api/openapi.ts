@@ -605,7 +605,10 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         },
         type: "null",
       },
-      400: text("A tus header is malformed", "Invalid upload-offset\n"),
+      400: text(
+        "A tus header is malformed, or another request on this upload took it over (ask HEAD for the offset and carry on)",
+        "Invalid upload-offset\n",
+      ),
       401: UNAUTHORIZED_RESPONSE,
       403: text(
         "Upload-Offset or the Content-Type application/offset+octet-stream is missing",

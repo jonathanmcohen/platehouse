@@ -74,15 +74,14 @@ const ADDRESSES = [
   { flag: "platehouse", variable: "PLATEHOUSE_BASE", what: "Platehouse" },
 ] as const;
 
-/** The variables claude-env sets: the Manyfold client id and secret, the Platehouse token. */
+/** The credentials, read from the environment: the Manyfold client id and secret, the Platehouse token. */
 const CREDENTIALS = ["MANYFOLD_CLIENT_ID", "MANYFOLD_CLIENT_SECRET", "PLATEHOUSE_TOKEN"] as const;
 
 export const USAGE = [
   "usage: platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]",
   "  --manyfold and --platehouse are the https addresses of Manyfold and Platehouse;",
   "  without a flag, MANYFOLD_BASE or PLATEHOUSE_BASE is read. Neither has a default.",
-  "  Run it under claude-env, which sets MANYFOLD_CLIENT_ID and MANYFOLD_CLIENT_SECRET",
-  "  from the 1Password item Manyfold, and PLATEHOUSE_TOKEN.",
+  "  Set MANYFOLD_CLIENT_ID, MANYFOLD_CLIENT_SECRET and PLATEHOUSE_TOKEN in the environment.",
   "  A dry run is the default; --apply writes to Platehouse. --model <id> runs one model.",
 ].join("\n");
 
@@ -465,7 +464,9 @@ export async function run(options: RunOptions): Promise<RunResult> {
     for (const v of values) redactor.add(v);
     const missing = CREDENTIALS.filter((_, i) => (values[i] ?? "") === "");
     if (missing.length > 0) {
-      err(`${missing.join(", ")} not set; run it under claude-env.`);
+      err(
+        `${missing.join(", ")} not set; set ${missing.length === 1 ? "it" : "them"} in the environment.`,
+      );
       usage();
       return { code: 2, report: null };
     }

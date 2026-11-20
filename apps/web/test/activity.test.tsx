@@ -439,6 +439,34 @@ describe("the page", () => {
     expect(text(est)).toContain("roughly 1h 0m left");
   });
 
+  test("shows 100% only when every plate is settled (issue #238)", async () => {
+    answer = () => {
+      const v = busyView();
+      v.estimates.done = 462;
+      v.estimates.failed = 0;
+      v.estimates.pending = 1;
+      v.estimates.running = 0;
+      v.estimates.total = 463;
+      return v;
+    };
+    await render();
+    const est = section("Estimates");
+    expect(text(est)).toContain("462 of 463 plates settled (99%)");
+    const fill = est.querySelector<HTMLElement>(".ph-activity-progress-fill");
+    expect(fill?.style.width).toBe("99%");
+  });
+
+  test("rounds an exact percent to itself, not one below it", async () => {
+    // 29 / 100 * 100 is 28.999... in floating point.
+    answer = () => {
+      const v = busyView();
+      Object.assign(v.estimates, { done: 29, failed: 0, pending: 71, running: 0, total: 100 });
+      return v;
+    };
+    await render();
+    expect(text(section("Estimates"))).toContain("29 of 100 plates settled (29%)");
+  });
+
   test("says when there is too little recent progress for a time left", async () => {
     answer = () => {
       const v = busyView();

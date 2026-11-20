@@ -331,7 +331,14 @@ export function createLocales(options: LocalesOptions = {}): Locales {
     }
     for (const name of files.slice(0, MAX_LOCALE_FILES)) {
       const code = localeOfFileName(name);
-      if (code === undefined || code === SOURCE_LOCALE) {
+      if (code === SOURCE_LOCALE) {
+        log?.warn(
+          { file: name },
+          "locales: en.json in LOCALES_DIR cannot replace English, so it is skipped",
+        );
+        continue;
+      }
+      if (code === undefined) {
         log?.warn(
           { file: name },
           "locales: a file in LOCALES_DIR is not named <code>.json for a language",

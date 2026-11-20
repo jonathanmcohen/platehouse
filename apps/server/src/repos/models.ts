@@ -83,7 +83,11 @@ export interface TitleNamePlan {
   planId: string;
   renames: TitleRename[];
   skipped: {
-    /** Renamed by a person (name_source 'user'). */
+    /**
+     * name_source 'user': renamed by a person, or made through the public
+     * API's create-model (the Manyfold import among them), which stores
+     * 'user' too, so the page says "named by you or through the API".
+     */
     renamedByUser: number;
     /** Already named from a title. */
     namedFromTitle: number;

@@ -281,11 +281,6 @@ const PRINTERS_BODY = {
   required: ["printers", "defaultId", "version"],
 } as const;
 
-/**
- * The sentence for a 409 printers_changed. It says only what the server
- * knows: the page adds that the list now shows the change once its own
- * read of the list has worked.
- */
 /** What a printer the slicer's menu lacks says (400 unknown_printer). */
 export const UNKNOWN_PRINTER_MESSAGE = "That printer is not in the slicer's printer list.";
 
@@ -293,6 +288,11 @@ export const UNKNOWN_PRINTER_MESSAGE = "That printer is not in the slicer's prin
 export const SLICER_UNAVAILABLE_MESSAGE =
   "The slicer cannot be reached, so a printer cannot be added right now.";
 
+/**
+ * The sentence for a 409 printers_changed. It says only what the server
+ * knows: the page adds that the list now shows the change once its own
+ * read of the list has worked.
+ */
 export const PRINTERS_CHANGED =
   "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.";
 

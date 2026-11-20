@@ -163,7 +163,9 @@ smoke slice passes.
 - `tools/slicing-gate` - the Task 1 slicing gate harness; see its README.
 - `tools/brand` - writes the logo's static files (the favicons, app icons and web manifest in
   `apps/web/public`, and `docs/assets/logo.svg` and `favicon.svg`) from the art in
-  `apps/web/src/shell/logoArt.ts` and the one `ACCENT` in `tools/brand/icons.ts`. After changing
-  either, run `node tools/brand/generate.ts` and commit what it writes; the PNGs are drawn by
-  Playwright's Chromium (`pnpm exec playwright install chromium` the first time). The app itself
-  draws the logo in the colour scheme's accent, so only these files carry a fixed colour.
+  `apps/web/src/shell/logoArt.ts` and the two colours in `tools/brand/icons.ts`: `ACCENT`, and
+  `ICON_TILE`, the app icons' tile, which nothing derives from `ACCENT`, so change both together.
+  After changing any of them, run `node tools/brand/generate.ts` and commit what it writes; the
+  PNGs are drawn by Playwright's Chromium (`pnpm exec playwright install chromium` the first
+  time). The app itself draws the logo in the colour scheme's accent, so only these files carry a
+  fixed colour.

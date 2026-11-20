@@ -88,12 +88,15 @@ describe("makerWorldDesignId", () => {
     expect(makerWorldDesignId(prefix(`1${"0".repeat(400)}`))).toBeNull();
   });
 
-  it("time grows linearly on a prefix of unclosed DesignId tags", () => {
-    const unit = '<metadata name="DesignId">1';
+  it("time grows linearly on a prefix of many metadata tags that are not DesignId", () => {
+    // Every unit starts a <metadata tag the scan has to look at and pass over.
+    // A DesignId unit would not do: the first one ends the scan at once,
+    // whatever the input size (issue #253).
+    const unit = '<metadata name="Other">x';
     const time = (n: number) => {
       const xml = unit.repeat(n);
       const start = performance.now();
-      makerWorldDesignId(xml);
+      expect(makerWorldDesignId(xml)).toBeNull();
       return performance.now() - start;
     };
     time(1000);

@@ -105,6 +105,29 @@ export function describeBulk(
   const changed = answer.changed.length;
   const unchanged = answer.unchanged.length;
   let done: string;
+  // Nothing changed (issue #256): every model was already so, or every one
+  // failed. Trash has its own sentence for that below.
+  if (
+    changed === 0 &&
+    action.action !== "trash" &&
+    !(action.action === "remove-tag" && answer.tag === null)
+  ) {
+    if (unchanged === 0) done = t("library.bulk.changedNone");
+    else if (action.action === "add-tags") {
+      done = t("library.bulk.allHad", {
+        count: unchanged,
+        tags: list(i18n, answer.tags ?? action.tags),
+      });
+    } else if (action.action === "remove-tag") {
+      done = t("library.bulk.noneHad", { count: unchanged, tag: answer.tag ?? action.tag });
+    } else {
+      done = t("library.bulk.allIn", {
+        count: unchanged,
+        collection: answer.collection ?? action.collection,
+      });
+    }
+    return { done, failed: failureText(i18n, answer.failed, names) };
+  }
   switch (action.action) {
     case "add-tags": {
       const tags = answer.tags ?? action.tags;
