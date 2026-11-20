@@ -104,7 +104,8 @@ The grid then reloads in place to show the change. Models moved to the trash lea
 **When some models fail.** A selected model that has been moved to the trash, or deleted, since you
 selected it (for example from another tab) is not changed. The toolbar names it, or counts it if
 the page never showed it, with the reason, and it leaves the selection. Every other selected model
-is still changed. If the server cannot be reached, or answers with an error, nothing is changed:
-the dialog stays open with the error so you can try again. Trying again is safe even if the
-connection dropped after the server had made the change: models that already changed are then
-reported as already as asked (or, for Move to trash, as already in the trash), not changed twice.
+is still changed. If the server cannot be reached, or answers with an error, the dialog stays open
+with the error. The page cannot tell then whether the change was made, for example when the
+connection dropped after the server had made it. Trying again is safe either way: models that
+already changed are reported as already done (or, for Move to trash, as already in the trash), not
+changed twice.
