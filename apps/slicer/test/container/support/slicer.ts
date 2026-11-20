@@ -1,4 +1,4 @@
-// Builds the slicer image and runs it the way the reference server does
+// Builds the slicer image and runs it the way examples/docker-compose.yml does
 // (AC-035): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
 // nodev (nothing in a job folder is ever run; examples/docker-compose.yml
 // carries the same options), 4 CPUs
@@ -73,7 +73,7 @@ export interface RunningSlicer {
 }
 
 /**
- * The reference server gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
+ * examples/docker-compose.yml gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
  * host's count, and GitHub's runner for this private repo has 2, so the
  * tests ask for 4 or as many as the host has, whichever is fewer.
  */

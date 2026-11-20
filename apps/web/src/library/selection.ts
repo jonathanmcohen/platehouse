@@ -105,6 +105,44 @@ export function describeBulk(
   const changed = answer.changed.length;
   const unchanged = answer.unchanged.length;
   let done: string;
+  // Nothing changed (issue #256): every model was already so ("All 2 models
+  // already had PLA."), every one failed, or some were already so and the
+  // rest failed. Trash has its own sentence for that below.
+  if (
+    changed === 0 &&
+    action.action !== "trash" &&
+    !(action.action === "remove-tag" && answer.tag === null)
+  ) {
+    if (unchanged === 0) done = t("library.bulk.changedNone");
+    else if (answer.failed.length > 0) {
+      // Some failed too, so "All 2 models" would read as if only 2 were
+      // selected (issue #306): say nothing changed, then count what was
+      // already so, as a partly changed answer does.
+      const already =
+        action.action === "add-tags"
+          ? t("library.bulk.alreadyHad", {
+              count: unchanged,
+              tags: (answer.tags ?? action.tags).length,
+            })
+          : action.action === "remove-tag"
+            ? t("library.bulk.didNotHave", { count: unchanged })
+            : t("library.bulk.alreadyIn", { count: unchanged });
+      done = `${t("library.bulk.changedNone")} ${already}`;
+    } else if (action.action === "add-tags") {
+      done = t("library.bulk.allHad", {
+        count: unchanged,
+        tags: list(i18n, answer.tags ?? action.tags),
+      });
+    } else if (action.action === "remove-tag") {
+      done = t("library.bulk.noneHad", { count: unchanged, tag: answer.tag ?? action.tag });
+    } else {
+      done = t("library.bulk.allIn", {
+        count: unchanged,
+        collection: answer.collection ?? action.collection,
+      });
+    }
+    return { done, failed: failureText(i18n, answer.failed, names) };
+  }
   switch (action.action) {
     case "add-tags": {
       const tags = answer.tags ?? action.tags;

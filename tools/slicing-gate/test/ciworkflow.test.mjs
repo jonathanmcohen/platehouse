@@ -810,10 +810,14 @@ for (const [file, want] of [
 // `${ROOT}/x` or string concatenation; a join whose arguments hold a call, such
 // as join(ROOT, "apps", pick(x)); require or createRequire; a repo-root file
 // named with no slash in a cwd: step script (package.json, .node-version,
-// pnpm-lock.yaml); or a read other than an import in a gate script outside
+// pnpm-lock.yaml); a read other than an import in a gate script outside
 // test/, as only the tests are scanned for reads and the scripts only for
-// their imports. A gate test or script that reads a file outside the gate in
-// one of these forms must add it to the tests list in ci.yml by hand.
+// their imports; or a read other than an import in a module outside
+// tools/slicing-gate that the tests import (issue #229), such as
+// readFileSync(new URL("./table.bin", import.meta.url)) in packages/threemf,
+// as moduleImports follows those modules for their imports only. A gate test,
+// script or imported module that reads a file outside the gate in one of
+// these forms must add it to the tests list in ci.yml by hand.
 const GATE_DIR = join(ROOT, "tools", "slicing-gate");
 const GATE_TEST_DIR = join(GATE_DIR, "test");
 const insideGate = (p) => p === GATE_DIR || p.startsWith(`${GATE_DIR}/`);
@@ -930,6 +934,37 @@ function moduleImports(entries, readSource = readIfExists) {
   return { visited, outside };
 }
 
+// The step-runner call a cwd: option at index belongs to: { runner, job, step }.
+// It is the call whose argument list holds the option, found by walking back
+// from index by bracket depth to the "(" still open there (issue #232); an
+// object or array literal open around the option is passed over. Throws
+// unless that call is a STEP_RUNNERS helper named with its job and step as
+// string literals; at gives the file:line of an index. Brackets inside a
+// string are counted too, so an unbalanced one there makes it find the wrong
+// "(", which then fails the literal check and throws rather than passing.
+function stepRunnerCall(src, index, at) {
+  const name = src.slice(index).match(/^cwd: (\w+)/)?.[1];
+  let open = -1;
+  for (let i = index - 1, depth = 0; i >= 0; i--) {
+    const c = src[i];
+    if (c === ")" || c === "]" || c === "}") depth++;
+    else if (c === "(" || c === "[" || c === "{") {
+      if (depth > 0) depth--;
+      else if (c === "(") {
+        open = i;
+        break;
+      }
+    }
+  }
+  const runner = open < 0 ? undefined : src.slice(0, open).match(/\b(\w+)\s*$/)?.[1];
+  const args = open < 0 ? null : src.slice(open + 1).match(/^\s*"([^"]+)",\s*"([^"]+)"/);
+  const call = runner && args ? [null, runner, args[1], args[2]] : undefined;
+  if (!call || !STEP_RUNNERS[call[1]]) {
+    throw new Error(`${at(index)}: cwd: ${name} runs something outside tools/slicing-gate the scan does not know; add its helper to STEP_RUNNERS`);
+  }
+  return { runner: call[1], job: call[2], step: call[3] };
+}
+
 // Every path outside tools/slicing-gate the gate tests read, as repo-relative
 // paths, each with every place it was found. Throws on a read it cannot
 // resolve.
@@ -954,14 +989,13 @@ function gateTestReads() {
     for (const m of src.matchAll(/\bcwd: (\w+)/g)) {
       const cwd = bases.get(m[1]);
       if (cwd === undefined || insideGate(cwd)) continue;
-      const call = [...src.slice(0, m.index).matchAll(/\b(\w+)\(\s*"([^"]+)",\s*"([^"]+)"/g)].at(-1);
-      const workflow = call && STEP_RUNNERS[call[1]];
-      if (!workflow) throw new Error(`${at(m.index)}: cwd: ${m[1]} runs something outside tools/slicing-gate the scan does not know; add its helper to STEP_RUNNERS`);
+      const call = stepRunnerCall(src, m.index, at);
+      const workflow = STEP_RUNNERS[call.runner];
       add(workflow, at(m.index));
-      const script = stepScript(jobBlock(readFileSync(workflow, "utf8"), call[2]), call[3]);
+      const script = stepScript(jobBlock(readFileSync(workflow, "utf8"), call.job), call.step);
       for (const t of script.matchAll(/(?<![\w$./{}-])([\w.-]+(?:\/[\w.-]+)+)/g)) {
         const p = resolve(cwd, t[1]);
-        if (existsSync(p)) add(p, `${at(m.index)} (${call[2]} / ${call[3]})`);
+        if (existsSync(p)) add(p, `${at(m.index)} (${call.job} / ${call.step})`);
       }
     }
   }
@@ -1057,6 +1091,39 @@ test("gate jobs decision: the scan finds the file the Orca pins step reads from 
     where.some((w) => w.endsWith("(detect / Resolve the Orca pins)")),
     `apps/slicer/Dockerfile is found through the Orca pins step: ${where.join(", ")}`,
   );
+});
+
+// Issue #232: a cwd: belongs to the call whose argument list holds it, not to
+// the last literal step-runner call earlier in the file. The cwd option is
+// built by cwdAt, so that the scan, reading this file, does not take these
+// fake sources for steps of its own.
+const cwdAt = (name) => `${"cwd"}: ${name}`;
+const cwdCallIn = (src) => stepRunnerCall(src, src.indexOf(cwdAt("ROOT")), (i) => `fake:${i}`);
+
+test("gate jobs decision: a cwd: is credited to the step-runner call that holds it (issue #232)", () => {
+  const call = cwdCallIn(
+    [
+      'runSlicerStep("detect", "Old step", {});',
+      'const r = runSlicerStep("detect", "Resolve the Orca pins", {',
+      `  ${cwdAt("ROOT")},`,
+      '  stubs: [...STUB, f(["a", "b"])],',
+      '  env: { VERSION: version, ...env },',
+      "});",
+    ].join("\n"),
+  );
+  assert.deepEqual(call, { runner: "runSlicerStep", job: "detect", step: "Resolve the Orca pins" });
+});
+
+test("gate jobs decision: a cwd: on any other call throws, even after a literal step-runner call (issue #232)", () => {
+  const earlier = 'runSlicerStep("detect", "Resolve the Orca pins", { env: {} });\n';
+  for (const [name, later] of [
+    ["a spawnSync with an array", `spawnSync("bash", ["-c", script], { ${cwdAt("ROOT")} });`],
+    ["a helper given variables", `runReleaseStep(job, step, { ${cwdAt("ROOT")} });`],
+    ["a step runner given variables", `runSlicerStep(job, "Resolve the Orca pins", { ${cwdAt("ROOT")} });`],
+    ["an unknown helper given literals", `runOtherStep("detect", "Resolve the Orca pins", { ${cwdAt("ROOT")} });`],
+  ]) {
+    assert.throws(() => cwdCallIn(earlier + later), new RegExp(`fake:\\d+: ${cwdAt("ROOT")} runs something`), name);
+  }
 });
 
 // One sample path per alternative of a Decide step regex: ^(a|b(c|d)\.e$|f/)
@@ -1772,8 +1839,41 @@ const DIGEST = `sha256:${sha("d")}`;
 const tagRun = (env) =>
   runSlicerStep("build", "Tag the image and move stable", {
     stubs: DOCKER_TAG_STUB,
-    env: { VERSION: "2.5.1", RUN_NUMBER: "42", MOVE_STABLE: "true", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_STABLE: "true", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
   });
+
+// Issue #221: a re-run keeps github.run_number, so attempt 1 keeps
+// orca-X.Y.Z-r<run> (the format existing tags and pins use) and a later
+// attempt tags orca-X.Y.Z-r<run>.<attempt>, leaving the first attempt's tag on
+// the image it named.
+test("slicer-image tag: a re-run tags orca-X.Y.Z-r<run>.<attempt>, never the first attempt's tag (issue #221)", () => {
+  const r = tagRun({ RUN_ATTEMPT: "2" });
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n").slice(0, 3), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42.2 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42.2 --format {{.Manifest.Digest}}`,
+  ]);
+  assert.doesNotMatch(r.calls, /orca-2\.5\.1-r42 /, "the first attempt's tag is not touched");
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.2, stable");
+  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\.2, stable/);
+  assert.equal(tagRun({ RUN_ATTEMPT: "10" }).outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.10, stable");
+});
+
+test("slicer-image tag: a missing or malformed run attempt tags nothing", () => {
+  for (const attempt of ["", "0", "x", "2;y", "02"]) {
+    const r = tagRun({ RUN_ATTEMPT: attempt });
+    assert.notEqual(r.status, 0, `attempt '${attempt}' fails`);
+    assert.match(r.log, /::error::/);
+    assert.equal(r.calls.trim(), "", `attempt '${attempt}' calls no docker`);
+    assert.equal(r.outputs.tagged, undefined);
+  }
+});
+
+test("slicer-image tag: the step reads the run attempt from github.run_attempt", () => {
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  assert.match(tag, /\n {10}RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}\n/);
+});
 
 test("slicer-image tag: version tags, then stable, every one a carbon copy of the tested digest", () => {
   const r = tagRun({});
@@ -2048,14 +2148,60 @@ test("slicer-image issue: a failure after stable was tagged says stable may have
   assert.match(body, /Rolling the slicer back/);
 });
 
-test("slicer-image issue: a prerelease tag's failure after tagging says a re-run leaves stable alone", () => {
+test("slicer-image issue: a prerelease tag's failure after tagging says Re-run failed jobs, which leaves stable alone", () => {
   const r = reportRun({ EVENT: "push", TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "false" }, TAG_FAIL);
   assert.equal(r.status, 0, r.log);
   const body = r.files["posted.md"];
-  assert.match(body, /Re-run all jobs/);
+  assert.match(body, /\(Re-run failed jobs\)/);
   assert.match(body, /a run by hand would move stable/);
   assert.doesNotMatch(body, /let the next daily run retry/);
+  // The tag step failing means detect succeeded. Re-run failed jobs re-runs
+  // build and keeps detect's outputs (version, pins, stable=false), so it
+  // builds 2.5.1 itself and leaves stable alone (PR #302 review).
+  assert.match(body, /keeps detect's outputs, so it builds 2\.5\.1 again and leaves stable alone/);
+  // Issue #221: Re-run all jobs runs detect again, which reads Orca's latest
+  // release, so the body warns against it.
+  assert.match(body, /not Re-run all jobs/);
+  assert.match(body, /reads OrcaSlicer's latest release again/);
+  // A hand run is no longer the way to fix the named version, so the body has
+  // no hand-run-and-roll-back steps.
+  assert.doesNotMatch(body, /run the workflow by hand for 2\.5\.1 instead/);
+  assert.doesNotMatch(body, /roll stable back/);
+  // The re-run builds 2.5.1, so its tag is named for 2.5.1, inside a code span
+  // so GitHub keeps the <run> placeholder (issue #306).
+  assert.match(body, /its own `orca-2\.5\.1-r<run>\.<attempt>` tag/);
 });
+
+// GitHub renders the issue body as markdown and strips a bare <word> as an
+// unknown HTML tag, so a placeholder such as <run> would vanish from the
+// issue. Outside a code block or code span the body has no angle-bracket word.
+const proseOnly = (md) => md.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+// A bare tag as GitHub strips it, a placeholder with a space in it (<run
+// number>, read as a tag with an attribute) included, as the repo-wide rule in
+// apps/web/test/markdown-placeholders.test.ts has it (issue #306).
+const BARE_TAG = /<\/?[A-Za-z][^<>]*>/;
+test("slicer-image issue: the bare-tag check catches a spaced placeholder and leaves code alone", () => {
+  for (const bare of ["tags -r<run number> now", "tags -r<run>.<attempt>", "a </closing> tag"]) {
+    assert.match(proseOnly(bare), BARE_TAG, bare);
+  }
+  for (const fine of ["tags `-r<run number>` now", "```text\n<tail>\n```", "a < b > c"]) {
+    assert.doesNotMatch(proseOnly(fine), BARE_TAG, fine);
+  }
+});
+for (const [name, env, tails] of [
+  ["a daily failure", {}, { "build.txt": "step: Smoke slice\n<tail>\n" }],
+  ["a failure after tagging", { TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL],
+  ["a failure after stable was tagged", { TAGGED: "orca-2.5.1, orca-2.5.1-r42, stable", STABLE: "true" }, TAG_FAIL],
+  ["a prerelease failure after tagging", { EVENT: "push", TAGGED: "orca-2.5.1, orca-2.5.1-r42", STABLE: "false" }, TAG_FAIL],
+  ["a run by hand", { EVENT: "workflow_dispatch" }, {}],
+  ["a run with no version", { EVENT: "workflow_dispatch", VERSION: "", INPUT_VERSION: "" }, {}],
+]) {
+  test(`slicer-image issue: ${name} has no bare <word> GitHub would strip`, () => {
+    const r = reportRun(env, tails);
+    assert.equal(r.status, 0, r.log);
+    assert.doesNotMatch(proseOnly(r.files["posted.md"]), BARE_TAG);
+  });
+}
 
 test("slicer-image issue: a failed run that was not daily does not promise a daily retry", () => {
   const r = reportRun({ EVENT: "workflow_dispatch" }, { "build.txt": "step: Smoke slice\nx\n" });
@@ -2139,5 +2285,16 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
   assert.match(section, /lists the tags it had already pointed at the new digest/);
   assert.match(section, /first published by a prerelease tag/);
+  // Issue #221: the run tag rule, in both README sections.
+  assert.match(section, /`orca-X\.Y\.Z-r<run number>\.<attempt>`/);
+  assert.match(section, /reads OrcaSlicer's latest release again/);
+  // A prerelease tag's tag-step failure is fixed with Re-run failed jobs,
+  // which keeps the failed version and leaves stable alone (PR #302 review);
+  // no hand run, so no rolling stable back.
+  assert.match(section, /the issue suggests Re-run failed jobs/);
+  assert.match(section, /warns against Re-run all jobs/);
+  assert.doesNotMatch(section, /roll `stable` back/);
+  const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("## Layout"));
+  assert.match(rollback, /`orca-X\.Y\.Z-r<run number>` tag, or `orca-X\.Y\.Z-r<run number>\.<attempt>` for a re-run/);
   assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
 });

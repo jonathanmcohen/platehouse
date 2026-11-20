@@ -25,7 +25,8 @@ export interface InlineRenameProps {
   maxLength?: number;
   /**
    * Shows the name as the page's h1 (the model page head), with the Rename
-   * button beside the heading rather than inside it.
+   * button beside the heading rather than inside it. While the name is
+   * edited the h1 stays, visually hidden, beside the form.
    */
   heading?: boolean;
 }
@@ -121,7 +122,7 @@ export function InlineRename({
     );
   }
 
-  return (
+  const form = (
     <form className="ph-inline-form" onSubmit={save}>
       <label htmlFor={id} className="studio-visually-hidden">
         {inputLabel}
@@ -148,5 +149,15 @@ export function InlineRename({
         </span>
       )}
     </form>
+  );
+  // The page keeps its h1 while the name is edited (issue #253): the stored
+  // name, hidden on screen, so a screen reader still finds the heading.
+  return heading ? (
+    <>
+      <h1 className="studio-visually-hidden">{value}</h1>
+      {form}
+    </>
+  ) : (
+    form
   );
 }

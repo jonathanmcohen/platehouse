@@ -120,7 +120,7 @@ export function sliceTimeoutMs(plateSeconds: number): number {
 }
 
 export interface SlicerClientOptions {
-  /** SLICER_URL, e.g. http://slicer:8080. */
+  /** SLICER_URL, e.g. http://platehouse-slicer:8080. */
   url: string;
   /** SLICE_PLATE_SECONDS, the --mstpp the slicer runs with. */
   plateSeconds: number;

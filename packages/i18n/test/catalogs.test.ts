@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error -- a plain .mjs script with no type declarations.
 import { canonicalCatalog } from "../scripts/format.mjs";
+import { formatMessage } from "../src/message.js";
 import { builtinLocalesDir, readBuiltinCatalogs } from "../src/node.js";
 import { checkCatalog, checkEnglish, type Messages, messagesOf } from "../src/validate.js";
 
@@ -52,5 +53,17 @@ describe("the built-in catalogs", () => {
     es["not.a.key"] = "x";
     const keys = checkCatalog("es", es, english, { strict: true }).problems.map((p) => p.key);
     expect(keys).toEqual(expect.arrayContaining([first, "not.a.key"]));
+  });
+});
+
+describe("English wording", () => {
+  it("one plate waiting for a removed printer takes a singular verb (issue #288)", () => {
+    const message = english["printers.removeMessage"] as string;
+    expect(formatMessage("en", message, { waiting: 1, name: "A1 mini" })).toBe(
+      "A1 mini leaves My printers. The 1 plate still waiting to be estimated for it is dropped. Numbers already made for it are kept.",
+    );
+    expect(formatMessage("en", message, { waiting: 2, name: "A1 mini" })).toContain(
+      "The 2 plates still waiting to be estimated for it are dropped.",
+    );
   });
 });

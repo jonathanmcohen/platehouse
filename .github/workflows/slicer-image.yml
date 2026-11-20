@@ -5,7 +5,7 @@
 #   detect: pick the Orca version -> resolve its pins -> check the registry
 #   build:  build (load) -> smoke slice -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
-#           -> tag orca-X.Y.Z and orca-X.Y.Z-r<run number> -> move stable
+#           -> tag orca-X.Y.Z and the run tag -> move stable
 #   report-failure: when detect or build failed, open an issue (or comment on
 #           the open one with the same title)
 #
@@ -17,7 +17,7 @@
 #   the daily run asks the registry.
 # - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
 #   the slicer wrapper ships with the release. It always builds. A prerelease
-#   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and orca-X.Y.Z-r<run number> but
+#   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and its run tag but
 #   leaves stable alone (Jon, 2026-11-15); a plain vX.Y.Z tag moves it. The
 #   daily run never promotes such a version, as its orca-X.Y.Z exists; the
 #   run's summary says so.
@@ -38,7 +38,7 @@
 # re-uploaded asset or a moved tag fails the run instead of replacing a
 # reviewed pin.
 #
-# The smoke slice runs the built image the way the reference server does (read-only root,
+# The smoke slice runs the built image the way examples/docker-compose.yml does (read-only root,
 # noexec tmpfs at /work, every capability dropped, no-new-privileges) through
 # the container test harness, and slices every plate of
 # buildSliceable({plates: 2, filaments: 2}) and buildSliceable({plates: 3,
@@ -50,7 +50,9 @@
 # the image a second time, by digest and with no tag, and its manifest digest
 # (docker/build-push-action's digest output, never imageid; PR #217) must
 # equal the tested build's, or the job fails before any tag. Then orca-X.Y.Z
-# and orca-X.Y.Z-r<run number> are pointed at that digest and read back, and
+# and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
+# on a re-run, which keeps the run number; issue #221), are pointed at that
+# digest and read back, and
 # only then stable (not on a prerelease tag). Before any push a Trivy scan
 # reports fixable HIGH and CRITICAL findings in the job log; it is a report
 # and never fails the job. imagetools create runs with --prefer-index=false so each
@@ -519,6 +521,7 @@ jobs:
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
           RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
           MOVE_STABLE: ${{ needs.detect.outputs.stable }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
@@ -527,10 +530,15 @@ jobs:
               echo "::error::the push returned no digest (${DIGEST:-none})"
               exit 1
             fi
-            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$RUN_NUMBER" =~ ^[0-9]+$ ]]; then
-              echo "::error::version '${VERSION}' or run number '${RUN_NUMBER}' is malformed"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$RUN_NUMBER" =~ ^[0-9]+$ || ! "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::version '${VERSION}', run number '${RUN_NUMBER}' or run attempt '${RUN_ATTEMPT}' is malformed"
               exit 1
             fi
+            # A re-run keeps the run number (issue #221), so attempt 1 tags
+            # orca-X.Y.Z-r<run> and a later attempt orca-X.Y.Z-r<run>.<attempt>,
+            # leaving the first attempt's tag on the image it named.
+            run_tag="orca-${VERSION}-r${RUN_NUMBER}"
+            if [ "$RUN_ATTEMPT" -gt 1 ]; then run_tag="${run_tag}.${RUN_ATTEMPT}"; fi
             if [ "$MOVE_STABLE" != "true" ] && [ "$MOVE_STABLE" != "false" ]; then
               echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
               exit 1
@@ -539,7 +547,7 @@ jobs:
             # tagged: the tags this step has pointed, or is pointing, at the
             # digest, for the failure issue. Written before each create, so a
             # create or readback that fails part way still names its tags.
-            tags="orca-${VERSION}, orca-${VERSION}-r${RUN_NUMBER}"
+            tags="orca-${VERSION}, ${run_tag}"
             echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
             readback() {
               local got
@@ -550,9 +558,9 @@ jobs:
               fi
             }
             docker buildx imagetools create --prefer-index=false \
-              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}" "$src"
+              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:${run_tag}" "$src"
             readback "${IMAGE}:orca-${VERSION}"
-            readback "${IMAGE}:orca-${VERSION}-r${RUN_NUMBER}"
+            readback "${IMAGE}:${run_tag}"
             if [ "$MOVE_STABLE" = "true" ]; then
               tags="${tags}, stable"
               echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
@@ -697,7 +705,12 @@ jobs:
             echo '```'
             echo ""
             if [ -n "$TAGGED" ] && [ "$STABLE" = "false" ]; then
-              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run all jobs), which leaves stable alone; a run by hand would move stable. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+              # The placeholder sits in a code span, single-quoted so bash keeps
+              # the backticks: bare, GitHub would strip <run> as an HTML tag.
+              # Only the tag step sets TAGGED, so detect succeeded. Re-run failed jobs
+              # re-runs build and the jobs after it and keeps detect's outputs
+              # (version, pins, stable=false); Re-run all jobs would run detect again.
+              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and leaves stable alone; a run by hand would move stable. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
             elif [ -n "$TAGGED" ]; then
               echo "To fix: read the run's log, fix the cause, then run the workflow by hand (Actions, slicer-image, Run workflow, orca_version ${version}). The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date and never moves stable to this version."
             elif [ "$EVENT" = "schedule" ]; then

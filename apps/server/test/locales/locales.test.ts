@@ -245,6 +245,12 @@ describe("LOCALES_DIR", () => {
     await file("en.json", { "shell.nav.library": "Hijacked" });
     const locales = await started({ dir, log });
     expect((await locales.translator("en")).t("shell.nav.library")).toBe("Library");
+    // The log says why, not that the file is misnamed (issue #288).
+    expect(warnings).toContainEqual({
+      details: { file: "en.json" },
+      message: "locales: en.json in LOCALES_DIR cannot replace English, so it is skipped",
+    });
+    expect(JSON.stringify(warnings)).not.toContain("is not named");
   });
 
   test("a file for a built-in language overlays it key by key", async () => {

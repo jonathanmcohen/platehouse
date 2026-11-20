@@ -289,7 +289,9 @@ function rateWords(e: ActivityView["estimates"], i18n: I18n): string {
 function Estimates({ estimates }: { estimates: ActivityView["estimates"] }) {
   const labelId = useId();
   const settled = estimates.done + estimates.failed;
-  const percent = estimates.total === 0 ? 0 : Math.round((settled / estimates.total) * 100);
+  // Rounded down, so 100% means every plate is settled (issue #238); the
+  // product comes first so an exact percent is not 0.999... below itself.
+  const percent = estimates.total === 0 ? 0 : Math.floor((settled * 100) / estimates.total);
   const i18n = useI18n();
   const { t } = i18n;
   const printer = printerNameIn(i18n, estimates.printerName);

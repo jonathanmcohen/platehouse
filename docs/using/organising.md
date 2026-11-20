@@ -10,8 +10,9 @@ Add and remove tags on a model from its row on the **Tags**, **Creators** or **C
 pages, or through the API. To tag many models at once, use Select mode's **Add tags** and
 **Remove tag** (see [Selecting several models](./index.md#selecting-several-models)). Tags ignore
 case: adding `PLA` when `pla` exists uses the name already stored. Filter the library by a tag with
-the tag chips above the cards. The **Tags** page lists every tag that at least one model has, with
-its number of models; a tag no model has is not listed.
+the tag chips above the cards. The **Tags** page lists every tag that at least one model outside
+the trash has, with its number of models; a tag that only trashed models have, or that no model
+has, is not listed.
 
 ## Collections
 

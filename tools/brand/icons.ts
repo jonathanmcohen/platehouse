@@ -4,10 +4,11 @@
 // this module (rasterising the PNGs in Chromium); apps/web/test/logo.test.tsx
 // checks the committed files against it.
 //
-// ACCENT is the one place the static files' colour is set. The app itself
-// draws the logo in var(--accent), so it follows the colour scheme; these
-// files cannot, so they use the default scheme's accent. To change it, edit
-// ACCENT and run: node tools/brand/generate.ts
+// ACCENT and ICON_TILE are the two places the static files' colours are set.
+// The app itself draws the logo in var(--brand), so it follows the colour
+// scheme; these files cannot, so they use the default scheme's colours. To
+// change them, edit ACCENT and ICON_TILE together (nothing ties the two) and
+// run: node tools/brand/generate.ts
 //
 // Plain TypeScript that Node runs as it is (type stripping): no enums, no
 // parameter properties, and imports name their .ts files.
@@ -26,7 +27,8 @@ export const ACCENT = "#5560e0";
  * a deeper shade of the accent, with the art drawn in white on it. Of the two
  * tiles offered on 2026-11-19 (this one, or the accent art on the dark
  * background) it reads better: on the dark tile the faintest layer goes
- * muddy. Change it with ACCENT.
+ * muddy. Nothing derives it from ACCENT: change it by hand beside ACCENT, or
+ * the apple-touch icon and the 192, 512 and maskable PNGs keep the old tile.
  */
 export const ICON_TILE = "#3d47c4";
 
@@ -143,7 +145,8 @@ export function manifestText(): string {
 export const TEXT_OUTPUTS: Readonly<Record<string, string>> = {
   [`${PUBLIC_DIR}/favicon.svg`]: iconSvg(FULL_ART, ACCENT),
   [`${PUBLIC_DIR}/site.webmanifest`]: manifestText(),
-  // For the mkdocs site; the docs job wires them into mkdocs.yml.
+  // For the docs: the README shows logo.svg, and the Docusaurus site in
+  // apps/docs serves both from docs/assets, favicon.svg as its favicon.
   "docs/assets/logo.svg": iconSvg(FULL_ART, ACCENT),
   "docs/assets/favicon.svg": iconSvg(FULL_ART, ACCENT),
 };

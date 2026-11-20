@@ -1,7 +1,7 @@
 # Traefik's file provider for the end-to-end stack (build plan Task 22).
 # platehouse.e2e.test goes to the app with no middleware: no oidc-auth, no
 # compress, no buffering, so the cookieless routes (/api/v1/ and /s/) reach
-# the app as they do on the reference server. id.e2e.test goes to the mock OIDC issuer.
+# the app as the reverse proxy guide in docs/reverse-proxy requires. id.e2e.test goes to the mock OIDC issuer.
 # The certificate is made per run by e2e/up.sh and covers both names.
 http:
   routers:

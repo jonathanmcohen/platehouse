@@ -427,6 +427,13 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     countText = t("library.count.page", { whole, page: ready.page, pages: ready.pageCount });
   }
   const pastEnd = ready !== null && !viewAll && ready.total > 0 && page > ready.page;
+  /**
+   * The page the address asked for, as the past-the-end note names it: page
+   * is clamped to PAGE_MAX for the request, so the note reads ?page= itself
+   * (issue #241), as a number while one holds it exactly, else as its digits.
+   */
+  const askedDigits = (params.get("page") ?? "").replace(/^0+(?=[0-9])/, "");
+  const askedPage = Number.isSafeInteger(Number(askedDigits)) ? Number(askedDigits) : askedDigits;
   const viewAllFull =
     ready !== null &&
     viewAll &&
@@ -529,7 +536,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           </p>
         ) : null}
         {pastEnd ? (
-          <p className="studio-muted">{t("library.pastEnd", { page, last: ready?.page ?? 1 })}</p>
+          <p className="studio-muted">
+            {t("library.pastEnd", { page: askedPage, last: ready?.page ?? 1 })}
+          </p>
         ) : null}
         {capNote === null ? null : <p className="studio-muted">{capNote}</p>}
       </div>

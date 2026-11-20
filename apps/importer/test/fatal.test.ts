@@ -4,7 +4,7 @@
 // Each goes through the redactor and exits 2 when the run had not started.
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { onFatal, run } from "../src/cli.js";
+import { onFatal, run, USAGE } from "../src/cli.js";
 import { createRedactor, REDACTED } from "../src/redact.js";
 import { ENV, FAKE_BEARER, FAKE_KEY, setup, useServer } from "./support/harness.js";
 import { library } from "./support/library.js";
@@ -121,5 +121,15 @@ describe("errors raised outside run()", () => {
     h.fail(new Error(`late failure with ${FAKE_BEARER}`));
     expect(h.lines).toEqual([`platehouse-import: unexpected error: late failure with ${REDACTED}`]);
     expect(h.exits).toEqual([2]);
+  });
+});
+
+describe("the usage text (issue #244)", () => {
+  it("names the three credential variables and no personal tooling", () => {
+    for (const name of ["MANYFOLD_CLIENT_ID", "MANYFOLD_CLIENT_SECRET", "PLATEHOUSE_TOKEN"]) {
+      expect(USAGE).toContain(name);
+    }
+    expect(USAGE).toMatch(/in the environment/);
+    expect(USAGE).not.toMatch(/claude-env|1Password/);
   });
 });

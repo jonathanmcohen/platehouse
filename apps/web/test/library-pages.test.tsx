@@ -364,8 +364,18 @@ describe("numbered pages", () => {
     expect(lastLibraryQuery().get("page")).toBe(String(PAGE_MAX));
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(cardNames()[0]).toBe("Model 145");
+    // The note names the page the address asked for, not the clamped one (issue #241).
     expect(container.textContent).toContain(
-      `There is no page ${PAGE_MAX}. This is the last page, page 4.`,
+      "There is no page 2000000. This is the last page, page 4.",
+    );
+  });
+
+  test("a page past the end names the asked page as written, however long, without leading zeros", async () => {
+    stubServer(cards(171));
+    await render(libraryAt("/?page=0099999999999999999999"));
+    expect(lastLibraryQuery().get("page")).toBe(String(PAGE_MAX));
+    expect(container.textContent).toContain(
+      "There is no page 99999999999999999999. This is the last page, page 4.",
     );
   });
 

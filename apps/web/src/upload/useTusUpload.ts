@@ -347,7 +347,6 @@ const RESULT_KEYS: Readonly<Record<string, MessageKey>> = {
   model_not_found: "upload.result.modelNotFound",
   ingest_failed: "upload.result.ingestFailed",
   upload_failed: "upload.result.uploadFailed",
-  queue_failed: "upload.result.queueFailed",
   // The page's own codes (makeFetchUploadResult), which carry no server sentence.
   sent_session_ended: "upload.sentSessionEnded",
   not_confirmed: "upload.notConfirmed",

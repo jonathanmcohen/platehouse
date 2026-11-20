@@ -643,7 +643,7 @@ describe("sandbox self-test", () => {
 });
 
 // The self-test also refuses renders on a kernel whose Landlock ABI is below
-// 6 (Jon, 2026-11-11; the reference server runs kernel 6.17). landrun runs best effort, so
+// 6 (Jon, 2026-11-11; the maintainer's test machine runs kernel 6.17). landrun runs best effort, so
 // it would sandbox OpenSCAD with whatever an old kernel offers; ABI 6 is the
 // first with every right this sandbox counts on (signal and abstract socket
 // scoping, on top of TCP and the filesystem rules). landrun reports the ABI

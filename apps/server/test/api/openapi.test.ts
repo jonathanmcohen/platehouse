@@ -396,6 +396,9 @@ describe("docs/api.md", () => {
       expect(meaning(request, "404"), request).toMatch(/24 hours/);
     }
     expect(meaning("PATCH /uploads/{id}", "503")).toMatch(/upload was removed/);
+    // @tus/server also answers 400 when another request takes this upload's
+    // lock mid-PATCH (@tus/utils ERRORS.ABORTED), which is not a bad header (issue #261).
+    expect(meaning("PATCH /uploads/{id}", "400")).toMatch(/another request on this upload/);
   });
 
   test("its limit rows give the upload cap tus enforces, MAX_UPLOAD_BYTES", () => {

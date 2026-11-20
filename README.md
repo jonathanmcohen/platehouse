@@ -109,8 +109,9 @@ workspace files change. Nothing deploys it yet.
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
 for that version and smoke-slices generated plates in the built image. Only when every plate
-slices does it push `orca-X.Y.Z` and `orca-X.Y.Z-r<run number>` and move `stable` to the same
-digest. It also runs on every release tag, at the latest Orca release, so a change to the slicer
+slices does it push `orca-X.Y.Z` and a run tag, `orca-X.Y.Z-r<run number>`, and move `stable` to
+the same digest. A re-run of a run (Re-run all jobs or Re-run failed jobs) keeps its run number, so its run tag is
+`orca-X.Y.Z-r<run number>.<attempt>` and the first attempt's tag stays on the image it named. It also runs on every release tag, at the latest Orca release, so a change to the slicer
 ships with the release, and it can be run by hand from the Actions tab (a version, or a forced
 failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the two
 `orca-` tags but leaves `stable` alone; a plain `vX.Y.Z` tag moves it. Before anything is pushed,
@@ -123,7 +124,13 @@ A failure before tagging creates or moves no tag, and `stable` stays where it wa
 while tagging (a readback that does not match, or a passing GHCR error) can leave `orca-X.Y.Z`,
 and `stable` if it had got that far, at the new digest; the issue then
 lists the tags it had already pointed at the new digest. Once `orca-X.Y.Z` exists the daily run
-will not retry that version, so the issue says to run the workflow by hand.
+will not retry that version, so the issue says to run the workflow by hand. For a prerelease
+tag's run the issue suggests Re-run failed jobs instead, as a run by hand would move `stable`. It
+re-runs the build job with the first attempt's version and pins, so it builds the failed version
+again and leaves `stable` alone. The issue warns against Re-run all jobs, which runs the
+detect job again and so reads OrcaSlicer's latest release again: if Orca has shipped a newer
+version since, that re-run builds the newer one and leaves the failed version as the first
+attempt left it.
 
 ### Rolling the slicer back
 
@@ -145,8 +152,9 @@ docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse-slicer:orca-<
 ```
 
 A deployment that follows `stable` (for example with Watchtower) then pulls the image it now names. Every build also keeps its own
-`orca-X.Y.Z-r<run number>` tag, so if a slicer change broke the image at the same Orca version,
-point `stable` at the previous `-r` tag of that version instead.
+`orca-X.Y.Z-r<run number>` tag, or `orca-X.Y.Z-r<run number>.<attempt>` for a re-run, so if a
+slicer change broke the image at the same Orca version, point `stable` at the previous `-r` tag of
+that version instead.
 
 The daily run leaves a rollback alone: it builds only when an Orca release has no `orca-X.Y.Z`
 tag yet. A plain release tag or a run by hand always builds, and moves `stable` again when its
@@ -164,7 +172,9 @@ smoke slice passes.
 - `tools/slicing-gate` - the Task 1 slicing gate harness; see its README.
 - `tools/brand` - writes the logo's static files (the favicons, app icons and web manifest in
   `apps/web/public`, and `docs/assets/logo.svg` and `favicon.svg`) from the art in
-  `apps/web/src/shell/logoArt.ts` and the one `ACCENT` in `tools/brand/icons.ts`. After changing
-  either, run `node tools/brand/generate.ts` and commit what it writes; the PNGs are drawn by
-  Playwright's Chromium (`pnpm exec playwright install chromium` the first time). The app itself
-  draws the logo in the colour scheme's accent, so only these files carry a fixed colour.
+  `apps/web/src/shell/logoArt.ts` and the two colours in `tools/brand/icons.ts`: `ACCENT`, and
+  `ICON_TILE`, the app icons' tile, which nothing derives from `ACCENT`, so change both together.
+  After changing any of them, run `node tools/brand/generate.ts` and commit what it writes; the
+  PNGs are drawn by Playwright's Chromium (`pnpm exec playwright install chromium` the first
+  time). The app itself draws the logo in the colour scheme's accent, so only these files carry a
+  fixed colour.

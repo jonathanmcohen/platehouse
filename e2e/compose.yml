@@ -2,8 +2,8 @@
 # and 6). Traefik v3 terminates TLS for two hosts and routes them with its
 # file provider: platehouse.e2e.test to the app and id.e2e.test to the mock
 # OIDC issuer. The Platehouse router carries no middleware at all, so no
-# proxy login (oidc-auth) can cover /api/v1/ or /s/, which is what the
-# reference server runs (Task 26). The specs reach the app only through Traefik.
+# proxy login (oidc-auth) can cover /api/v1/ or /s/, as the reverse proxy
+# guide in docs/reverse-proxy requires (Task 26). The specs reach the app only through Traefik.
 #
 # The app is the real server from this checkout, started the way the
 # integration tests start it (apps/server/test/integration/app/shutdown.test.ts):
