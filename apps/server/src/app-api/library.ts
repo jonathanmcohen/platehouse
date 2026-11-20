@@ -87,7 +87,10 @@
 //   cursor page has its own order, best match; any other sort with it is 400.
 // - /app/api/library/ids answers every match's id in the sort's order, up to
 //   the same cap View all stops at, and whether there are more: the library's
-//   Select all matching.
+//   Select all matching. Which models a search and filters hold is viewOf's
+//   and the models repository's rule (viewQuery), shared with the bulk
+//   actions, which change only the posted models the view holds when they
+//   run (app-api/organise.ts).
 // - Answers are JSON and never cached; an invalid cursor is 400, and so is a
 //   page with a cursor. Errors carry no detail from the database.
 import type { Printer } from "@platehouse/slicer-contract";
@@ -106,6 +109,7 @@ import {
   defaultSort,
   LIBRARY_SORTS,
   type LibrarySort,
+  type LibraryView,
   modelsRepo,
   type SortPrinter,
 } from "../repos/models.js";
@@ -436,6 +440,24 @@ function filter(value: string | undefined): string | undefined {
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
+/**
+ * The view a library request's search and filters make, as the models
+ * repository matches it: a blank search lists everything and a blank
+ * filter is no filter. The pages, View all, Select all matching
+ * (/app/api/library/ids) and the bulk actions (app-api/organise.ts) all
+ * read it from here, so they agree on which models a view holds.
+ */
+export function viewOf(
+  query: Pick<LibrarySearch, "q" | "tag" | "collection" | "creator">,
+): LibraryView {
+  return {
+    q: query.q ?? "",
+    tag: filter(query.tag),
+    collection: filter(query.collection),
+    creator: filter(query.creator),
+  };
+}
+
 /** The numbers a plate has for the selected printer, if any: time and weight both known. */
 export function numbersFor(
   numbers: PlateNumbers,
@@ -476,12 +498,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
    * display context first.
    */
   async function matches(query: AppLibraryQuery, sort: LibrarySort, ctx?: DisplayContext) {
-    const where = {
-      q: query.q ?? "",
-      tag: filter(query.tag),
-      collection: filter(query.collection),
-      creator: filter(query.creator),
-    };
+    const where = viewOf(query);
     // Only id, name, creator and rank: up to matchCap rows are read to slice
     // one page and count it, and View all reads them once per chunk (up to
     // five times for 1000 models), so no row carries its description.

@@ -193,11 +193,14 @@ describe("the bulk routes refuse a bad request before anything runs", () => {
   const ids = (n: number) =>
     Array.from({ length: n }, (_, i) => `0198f0c4-0000-7000-8000-${String(i).padStart(12, "0")}`);
 
+  /** The library's view the selection was made in: here the whole library. */
+  const view = {};
+
   const ROUTES: Array<[string, Record<string, unknown>]> = [
-    ["/app/api/bulk/add-tags", { tags: ["PLA"] }],
-    ["/app/api/bulk/remove-tag", { tag: "PLA" }],
-    ["/app/api/bulk/add-to-collection", { collection: "Desk" }],
-    ["/app/api/bulk/trash", {}],
+    ["/app/api/bulk/add-tags", { tags: ["PLA"], view }],
+    ["/app/api/bulk/remove-tag", { tag: "PLA", view }],
+    ["/app/api/bulk/add-to-collection", { collection: "Desk", view }],
+    ["/app/api/bulk/trash", { view }],
   ];
 
   test("each route takes up to the cap and refuses one more, or none", async () => {
@@ -211,23 +214,50 @@ describe("the bulk routes refuse a bad request before anything runs", () => {
     }
   });
 
+  // The server, not the browser, keeps Select mode to the models the user
+  // can see (Jon, 2026-11-20): every bulk request names the search and
+  // filters it was made in, and one that does not is refused.
+  test("each route refuses a request without a view, or with a view that is not one", async () => {
+    for (const [url, rest] of ROUTES) {
+      const { view: _view, ...withoutView } = rest;
+      const missing = await post(url, { ids: [A], ...withoutView });
+      expect(missing.statusCode, url).toBe(400);
+      expect(missing.json(), url).toMatchObject({ error: "bad_request" });
+      for (const bad of [
+        null,
+        "tag=PLA",
+        ["PLA"],
+        { tag: "x".repeat(101) },
+        { q: "x".repeat(201) },
+      ]) {
+        const res = await post(url, { ids: [A], ...withoutView, view: bad });
+        expect(res.statusCode, `${url} ${JSON.stringify(bad)}`).toBe(400);
+      }
+      const full = { q: "benchy", tag: "PLA", collection: "Desk", creator: "Jon", printer: "P1S" };
+      expect((await post(url, { ids: [A], ...withoutView, view: full })).statusCode, url).toBe(503);
+    }
+  });
+
   test("tags: at least one, at most 20, none blank or over 100 characters", async () => {
     const url = "/app/api/bulk/add-tags";
     const one = [A];
-    expect((await post(url, { ids: one, tags: [] })).statusCode).toBe(400);
+    expect((await post(url, { ids: one, tags: [], view })).statusCode).toBe(400);
     expect(
-      (await post(url, { ids: one, tags: Array.from({ length: 21 }, (_, i) => `t${i}`) }))
+      (await post(url, { ids: one, tags: Array.from({ length: 21 }, (_, i) => `t${i}`), view }))
         .statusCode,
     ).toBe(400);
-    expect((await post(url, { ids: one, tags: ["  "] })).statusCode).toBe(400);
-    expect((await post(url, { ids: one, tags: ["x".repeat(101)] })).statusCode).toBe(400);
-    expect((await post(url, { ids: one })).statusCode).toBe(400);
+    expect((await post(url, { ids: one, tags: ["  "], view })).statusCode).toBe(400);
+    expect((await post(url, { ids: one, tags: ["x".repeat(101)], view })).statusCode).toBe(400);
+    expect((await post(url, { ids: one, view })).statusCode).toBe(400);
   });
 
   test("remove a tag and add to a collection need a name that is not blank", async () => {
-    expect((await post("/app/api/bulk/remove-tag", { ids: [A], tag: " " })).statusCode).toBe(400);
+    expect((await post("/app/api/bulk/remove-tag", { ids: [A], tag: " ", view })).statusCode).toBe(
+      400,
+    );
     expect(
-      (await post("/app/api/bulk/add-to-collection", { ids: [A], collection: "" })).statusCode,
+      (await post("/app/api/bulk/add-to-collection", { ids: [A], collection: "", view }))
+        .statusCode,
     ).toBe(400);
   });
 });

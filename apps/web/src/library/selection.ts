@@ -36,15 +36,38 @@ export interface BulkAnswer {
   tag?: string | null;
   /** Add to collection: the collection as stored. */
   collection?: string;
+  /**
+   * Live models the server left alone because the view the request named
+   * (its search and filters) no longer shows them. Always sent; left out
+   * only by older answers, read as none.
+   */
+  notInView?: string[];
+}
+
+/**
+ * The library view a bulk request names, from the page's search, filters,
+ * printer and sort (LibraryPage's matching): the server changes only the
+ * posted models this view shows when the action runs (Jon, 2026-11-20).
+ * The sort and the paging do not change which models a view holds, so they
+ * are not sent.
+ */
+export function viewOf(matching: URLSearchParams): Record<string, string> {
+  const view: Record<string, string> = {};
+  for (const key of ["q", "tag", "collection", "creator", "printer"]) {
+    const value = matching.get(key);
+    if (value !== null) view[key] = value;
+  }
+  return view;
 }
 
 /**
  * The selection cut down to the models the view can show (shown: the ids
  * GET /app/api/library/ids answers for the search, filters and sort, which
  * are exactly the matches the pages and View all reach), in the selection's
- * order with their names, and how many left it. The selection never holds a
- * model the view cannot show (0.1.0-rc.2 live check), so an action never
- * acts on one.
+ * order with their names, and how many left it. The page keeps the
+ * selection to what the view shows so its count is true (0.1.0-rc.2 live
+ * check); that no action changes a model the view hides is the server's
+ * guarantee (each bulk request names its view), not this one's.
  */
 export function keepShown<T>(
   selected: ReadonlyMap<string, T>,
@@ -54,10 +77,14 @@ export function keepShown<T>(
   return { kept, left: selected.size - kept.size };
 }
 
-/** The request body for an action on these ids. */
-export function bulkBody(action: BulkAction, ids: string[]): Record<string, unknown> {
+/** The request body for an action on these ids, made in this view (viewOf). */
+export function bulkBody(
+  action: BulkAction,
+  ids: string[],
+  view: Record<string, string>,
+): Record<string, unknown> {
   const { action: _name, ...rest } = action;
-  return { ids, ...rest };
+  return { ids, ...rest, view };
 }
 
 /** Builds the sentences in a language; English when left out. */
@@ -110,14 +137,20 @@ function failureText(
     : t("library.bulk.failed", values);
 }
 
-/** The sentences for an answer: what was done, and the failures (null when none). */
+/**
+ * The sentences for an answer: what was done, the failures (null when none)
+ * and how many the server left alone because the view no longer shows them
+ * (null when none).
+ */
 export function describeBulk(
   action: BulkAction,
   answer: BulkAnswer,
   names: ReadonlyMap<string, string>,
   i18n: Words = ENGLISH_I18N,
-): { done: string; failed: string | null } {
+): { done: string; failed: string | null; notInView: string | null } {
   const { t } = i18n;
+  const hidden = answer.notInView?.length ?? 0;
+  const notInView = hidden === 0 ? null : t("library.bulk.notInView", { count: hidden });
   const changed = answer.changed.length;
   const unchanged = answer.unchanged.length;
   let done: string;
@@ -161,7 +194,7 @@ export function describeBulk(
         collection: answer.collection ?? action.collection,
       });
     }
-    return { done, failed: failureText(i18n, answer.failed, names) };
+    return { done, failed: failureText(i18n, answer.failed, names), notInView };
   }
   switch (action.action) {
     case "add-tags": {
@@ -199,5 +232,5 @@ export function describeBulk(
           : t("library.bulk.trashed", { models: models(i18n, changed), count: changed });
       break;
   }
-  return { done, failed: failureText(i18n, answer.failed, names) };
+  return { done, failed: failureText(i18n, answer.failed, names), notInView };
 }

@@ -247,6 +247,26 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
    * after it is not in yet, so a card can show a model the view no longer has.
    */
   const staleCards = load.state === "ready" && load.changed !== changedKey;
+  /**
+   * The latest view check and stale-card state, for selection writes that
+   * land after the render that started them (refused reads these, never a
+   * render's own copy, issue #315).
+   */
+  const checkNow = useRef(check);
+  checkNow.current = check;
+  const staleNow = useRef(staleCards);
+  staleNow.current = staleCards;
+  /**
+   * Which view a late selection write was asked for in: the count moves on
+   * whenever Select mode starts or ends, the search, filters, sort or
+   * printer change, or an action finishes. Select all matching passes the
+   * count it was asked in, and an answer from an earlier one is dropped:
+   * its ids are another view's, or predate an action that may have taken
+   * some of them out of the view.
+   */
+  const viewTurn = `${selecting}|${matchKey}|${changedKey}`;
+  const era = useRef({ turn: viewTurn, n: 0 });
+  if (era.current.turn !== viewTurn) era.current = { turn: viewTurn, n: era.current.n + 1 };
 
   const query = useCallback(
     (at: number, limit: number) => {
@@ -307,25 +327,54 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
    * A card drawn before the last action whose model the check after it says
    * the view no longer shows. Only while the grid's reload after the action
    * is on its way: once it is in, every card is the view's own, so a model
-   * added since the check (from another tab, say) can be selected.
+   * added since the check (from another tab, say) can be selected. Read
+   * from the latest check, so a write that lands late sees it.
    */
   function refused(id: string): boolean {
-    return staleCards && check.state === "done" && !check.shown.has(id);
+    const latest = checkNow.current;
+    return staleNow.current && latest.state === "done" && !latest.shown.has(id);
+  }
+
+  // Every selection write goes through these, as an update of the selection
+  // as it is when the write lands, never a copy taken when it started: a
+  // view check that took a model out meanwhile is kept (issue #315). Since
+  // the server refuses to act on a model the view hides (each bulk request
+  // names its view), these keep the count true; they are not the guard.
+
+  /**
+   * Adds models (a name, or null when the page never showed the card),
+   * leaving out cards refused. asked is the era the write was started in;
+   * a write from an earlier one is dropped. Answers whether it was taken.
+   */
+  function addToSelection(entries: Array<[string, string | null]>, asked: number): boolean {
+    if (asked !== era.current.n) return false;
+    setSelected((now) => {
+      const next = new Map(now);
+      for (const [id, name] of entries) {
+        if (refused(id)) continue;
+        if (!next.has(id) || (next.get(id) === null && name !== null)) next.set(id, name);
+      }
+      return next;
+    });
+    return true;
+  }
+
+  /** Takes models out of the selection: ones an action trashed, failed on or left alone. */
+  function removeFromSelection(ids: Iterable<string>) {
+    const gone = new Set(ids);
+    setSelected((now) => new Map([...now].filter(([id]) => !gone.has(id))));
   }
 
   /**
-   * Replaces the selection, leaving out cards refused. Emptied, it has
-   * nothing left to check or to report; but a failed check after an action
-   * stays failed while that action's old cards are shown, so the actions
-   * stay off for one of them selected again until Try again gets an answer.
+   * Clear selection. Emptied, it has nothing left to check or to report;
+   * but a failed check after an action stays failed while that action's old
+   * cards are shown, so the actions stay off for one of them selected again
+   * until Try again gets an answer.
    */
-  function changeSelection(next: Map<string, string | null>) {
-    const fitted = new Map([...next].filter(([id]) => !refused(id)));
-    setSelected(fitted);
-    if (fitted.size === 0) {
-      setLeft(0);
-      if (check.state === "failed" && !staleCards) setCheck({ state: "idle" });
-    }
+  function clearSelection() {
+    setSelected(new Map());
+    setLeft(0);
+    if (check.state === "failed" && !staleCards) setCheck({ state: "idle" });
   }
 
   // Escape leaves Select mode, unless a dialog is open: Escape is the dialog's then.
@@ -612,7 +661,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           check={check.state === "checking" || check.state === "failed" ? check.state : null}
           left={left}
           onCheckAgain={() => setCheckAttempt((n) => n + 1)}
-          onChange={changeSelection}
+          era={() => era.current.n}
+          onAdd={addToSelection}
+          onRemove={removeFromSelection}
+          onClear={clearSelection}
           onChanged={() => {
             setChangedKey((n) => n + 1);
             setTagsKey((n) => n + 1);

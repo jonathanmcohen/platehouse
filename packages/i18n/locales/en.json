@@ -205,6 +205,7 @@
   "library.bulk.failedMore": "{models} could not be changed: {items}, and {more} more.",
   "library.bulk.noTag": "No model has the tag {tag}.",
   "library.bulk.noneHad": "{count, plural, one {The model did not have {tag}.} other {None of the # models had {tag}.}}",
+  "library.bulk.notInView": "{count, plural, one {# selected model was left unchanged because the search and filters no longer show it.} other {# selected models were left unchanged because the search and filters no longer show them.}}",
   "library.bulk.removedTag": "Removed {tag} from {models}.",
   "library.bulk.trashed": "Moved {models} to the trash. Restore {count, plural, one {it} other {them}} from the trash within 30 days.",
   "library.bulk.trashedNone": "No model was moved to the trash.",

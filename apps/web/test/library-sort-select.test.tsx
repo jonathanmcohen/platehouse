@@ -45,8 +45,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { LibraryPage } from "../src/library/LibraryPage";
 import type { LibraryCard } from "../src/library/ModelCard";
 import { SORT_OPTIONS, sortFrom } from "../src/library/paging";
-import * as selection from "../src/library/selection";
-import { describeBulk, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
+import { describeBulk, keepShown, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { MenuButton } from "../src/shell/MenuButton";
 import { UploadDialog } from "../src/upload/UploadDialog";
@@ -336,6 +335,17 @@ async function releaseIds() {
   const waiting = heldIds;
   heldIds = [];
   for (const go of waiting) go();
+  await settle();
+}
+
+/**
+ * Lets the oldest held /app/api/library/ids request answer, and only it, so
+ * a test sets the order two answers arrive in. Later ones stay held.
+ */
+async function releaseOneIds() {
+  const go = heldIds.shift();
+  if (go === undefined) throw new Error("no ids request is held");
+  go();
   await settle();
 }
 
@@ -708,7 +718,10 @@ describe("bulk actions", () => {
     const before = libraryQueries().length;
     await click(dialogButton("Add tags"));
     expect(posted).toEqual([
-      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA", "Kitchen"] } },
+      {
+        url: "/app/api/bulk/add-tags",
+        body: { ids: [id(1), id(2)], tags: ["PLA", "Kitchen"], view: {} },
+      },
     ]);
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain("Added PLA and Kitchen to 2 models.");
@@ -779,7 +792,7 @@ describe("bulk actions", () => {
     expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("false");
     await click(dialogButton("Add tags"));
     expect(posted).toEqual([
-      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA"] } },
+      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA"], view: {} } },
     ]);
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain("Added PLA to 2 models.");
@@ -912,7 +925,7 @@ describe("bulk actions", () => {
     await choose(menu, "PLA");
     await click(dialogButton("Remove tag"));
     expect(posted).toEqual([
-      { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "PLA" } },
+      { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "PLA", view: {} } },
     ]);
     expect(container.textContent).toContain("Removed PLA from 2 models.");
   });
@@ -928,7 +941,7 @@ describe("bulk actions", () => {
     expect(posted).toEqual([
       {
         url: "/app/api/bulk/add-to-collection",
-        body: { ids: [id(1), id(2)], collection: "Garage" },
+        body: { ids: [id(1), id(2)], collection: "Garage", view: {} },
       },
     ]);
     expect(container.textContent).toContain("Added 2 models to Garage.");
@@ -951,7 +964,9 @@ describe("bulk actions", () => {
     await twoSelected();
     await click(button("Move to trash"));
     await click(dialogButton("Move to trash"));
-    expect(posted).toEqual([{ url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)] } }]);
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)], view: {} } },
+    ]);
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain(
       "Moved 2 models to the trash. Restore them from the trash within 30 days.",
@@ -1071,7 +1086,9 @@ describe("the selection holds only models the search and filters show (0.1.0-rc.
     await click(button("Move to trash"));
     expect(dialog()?.textContent).toContain("Move 2 models to the trash?");
     await click(dialogButton("Move to trash"));
-    expect(posted).toEqual([{ url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)] } }]);
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)], view: { tag: "PLA" } } },
+    ]);
   });
 
   test("two or more that leave are counted in the plural", async () => {
@@ -1243,7 +1260,9 @@ describe("the selection holds only models the search and filters show (0.1.0-rc.
     );
     await releaseIds();
     await click(dialogButton("Move to trash"));
-    expect(posted).toEqual([{ url: "/app/api/bulk/trash", body: { ids: [id(1)] } }]);
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(1)], view: { tag: "PLA" } } },
+    ]);
   });
 
   test("Select all matching answered after an action selects nothing, even under the same filter", async () => {
@@ -1385,13 +1404,130 @@ describe("the selection holds only models the search and filters show (0.1.0-rc.
     expect(statusText()).toBe("4 models selected");
   });
 
+  /** The Select all matching button, whatever count it names now. */
+  function selectAllMatching(): HTMLButtonElement {
+    const found = [...container.querySelectorAll("button")].find((b) =>
+      /^Select (all|the first) \d+ matching$/.test(b.textContent?.trim() ?? ""),
+    );
+    if (found === undefined) throw new Error("no Select all matching button");
+    return found;
+  }
+
+  // Issue #315: the view check after an action answers first and takes a
+  // model out; a Select all matching asked for meanwhile answers later. The
+  // late answer is added to the selection as it is then, so the model the
+  // check took out stays out.
+  test("after an action, a Select all matching answer that arrives after the view check does not put back what the check took out (issue #315)", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holdingIds = true;
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    // The view check after the action is held; Select all matching is asked for behind it.
+    expect(heldIds).toHaveLength(1);
+    await click(selectAllMatching());
+    expect(heldIds).toHaveLength(2);
+    await releaseOneIds();
+    expect(statusText()).toBe("No models selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    await releaseOneIds();
+    expect(statusText()).toBe("1 model selected");
+    expect(checkbox("Model 002").checked).toBe(true);
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted.at(-1)).toEqual({
+      url: "/app/api/bulk/trash",
+      body: { ids: [id(2)], view: { tag: "PLA" } },
+    });
+  });
+
+  test("after a new filter, a Select all matching answer that arrives after the view check does not put back what the check took out (issue #315)", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 004"));
+    holdingIds = true;
+    await click(tagChip("PLA"));
+    expect(heldIds).toHaveLength(1);
+    await click(selectAllMatching());
+    expect(heldIds).toHaveLength(2);
+    await releaseOneIds();
+    expect(statusText()).toBe("1 model selected");
+    await releaseOneIds();
+    expect(statusText()).toBe("2 models selected");
+    expect(checkbox("Model 001").checked).toBe(true);
+    expect(checkbox("Model 002").checked).toBe(true);
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted.at(-1)?.body.ids).toEqual([id(1), id(2)]);
+  });
+
+  test("each action names the view it was made in: the search, filters and printer, not the sort", async () => {
+    localStorage.setItem(PRINTER_CHOICE_KEY, A1);
+    stubServer(cards(5, 2));
+    await render("/?q=Model&tag=PLA&sort=name-asc");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted.at(-1)?.body.view).toEqual({ q: "Model", tag: "PLA", printer: A1 });
+  });
+
+  test("models the server left alone because the view no longer shows them are named in a count and leave the selection", async () => {
+    stubServer(cards(5));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 002"));
+    await click(checkbox("Model 003"));
+    bulkAnswer = (_url, body) =>
+      json({
+        changed: [id(1)],
+        unchanged: [],
+        failed: [],
+        notInView: (body.ids as string[]).filter((x) => x !== id(1)),
+        tags: body.tags,
+      });
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "PLA");
+    await click(dialogButton("Add tags"));
+    expect(container.textContent).toContain("Added PLA to 1 model.");
+    expect(container.textContent).toContain(
+      "2 selected models were left unchanged because the search and filters no longer show them.",
+    );
+    expect(statusText()).toBe("1 model selected");
+    expect(checkbox("Model 001").checked).toBe(true);
+    expect(checkbox("Model 002").checked).toBe(false);
+  });
+
+  test("one model left alone because the view no longer shows it is named in the singular", async () => {
+    stubServer(cards(5));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    bulkAnswer = () => json({ changed: [], unchanged: [], failed: [], notInView: [id(1)] });
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(container.textContent).toContain(
+      "1 selected model was left unchanged because the search and filters no longer show it.",
+    );
+    expect(statusText()).toBe("No models selected");
+  });
+
   test("keepShown keeps the selected models the view shows, with their names, and counts the rest", () => {
     const chosen = new Map<string, string | null>([
       [id(1), "Model 001"],
       [id(2), null],
       [id(3), "Model 003"],
     ]);
-    const out = selection.keepShown(chosen, new Set([id(3), id(1), id(9)]));
+    const out = keepShown(chosen, new Set([id(3), id(1), id(9)]));
     expect([...out.kept]).toEqual([
       [id(1), "Model 001"],
       [id(3), "Model 003"],
@@ -1461,7 +1597,7 @@ describe("describeBulk", () => {
         { changed: [id(1)], unchanged: [id(2)], failed: [], tags: ["PLA"] },
         names,
       ),
-    ).toEqual({ done: "Added PLA to 1 model. 1 already had it.", failed: null });
+    ).toEqual({ done: "Added PLA to 1 model. 1 already had it.", failed: null, notInView: null });
     expect(
       describeBulk(
         { action: "remove-tag", tag: "pla" },

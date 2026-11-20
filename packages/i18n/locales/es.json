@@ -212,6 +212,7 @@
   "library.bulk.failedMore": "No se pudieron cambiar {models}: {items} y {more} m\u00e1s.",
   "library.bulk.noTag": "Ning\u00fan modelo tiene la etiqueta {tag}.",
   "library.bulk.noneHad": "{count, plural, one {El modelo no ten\u00eda {tag}.} many {Ninguno de los # modelos ten\u00eda {tag}.} other {Ninguno de los # modelos ten\u00eda {tag}.}}",
+  "library.bulk.notInView": "{count, plural, one {# modelo seleccionado no se ha cambiado porque la b\u00fasqueda y los filtros ya no lo muestran.} many {# modelos seleccionados no se han cambiado porque la b\u00fasqueda y los filtros ya no los muestran.} other {# modelos seleccionados no se han cambiado porque la b\u00fasqueda y los filtros ya no los muestran.}}",
   "library.bulk.removedTag": "Se quit\u00f3 {tag} de {models}.",
   "library.bulk.trashed": "Se movieron {models} a la papelera. {count, plural, one {Puedes restaurarlo} many {Puedes restaurarlos} other {Puedes restaurarlos}} desde la papelera durante 30 d\u00edas.",
   "library.bulk.trashedNone": "No se movi\u00f3 ning\u00fan modelo a la papelera.",

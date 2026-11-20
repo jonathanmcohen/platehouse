@@ -145,6 +145,13 @@ export interface RankedSearchQuery {
 }
 
 /**
+ * What decides which live models a library view shows: its search and its
+ * tag, collection and creator filters. Its order (sort) and the printer
+ * whose numbers it shows do not change which models are in it.
+ */
+export type LibraryView = Pick<RankedSearchQuery, "q" | "tag" | "collection" | "creator">;
+
+/**
  * The library's orders (Jon, 2026-11-19). relevance is best match first;
  * the others are by date added, name ignoring case, total print time or
  * weight for the selected printer, and plate count. Every order ends with
@@ -326,36 +333,15 @@ export function modelsRepo(db: Kysely<DB>) {
   }
 
   /**
-   * The ranked search's query without its columns, and its rank expression:
-   * the matches for query in the result order, at most query.limit.
-   * searchRanked and searchRankedCards each add their own columns.
+   * The live models a view shows, as a query from models left-joined to
+   * creators with no columns, order or limit: the search (name, caption,
+   * creator or a tag, ignoring case; blank matches every live model) and
+   * the tag, collection and creator filters. The ranked search and inView
+   * both start from it, so a bulk action decides which models a view holds
+   * exactly as the library page lists them.
    */
-  function rankedQuery(query: RankedSearchQuery, maxLimit = MAX_RANKED_LIMIT) {
-    const q = query.q.trim();
-    const limit = Math.trunc(query.limit);
-    if (!(limit >= 1 && limit <= maxLimit)) {
-      throw new RangeError(`searchRanked takes a limit from 1 to ${maxLimit}`);
-    }
-    const sort = query.sort ?? "relevance";
-    if (query.after !== undefined && sort !== "relevance") {
-      throw new RangeError("A cursor pages only the relevance order");
-    }
-    const { printer } = query;
-    const byTotal = sort.startsWith("time-") || sort.startsWith("weight-");
-    if (byTotal && printer === undefined) {
-      throw new RangeError(`The ${sort} sort needs the selected printer`);
-    }
-    const pattern = containsPattern(q);
-    const rank = sql<number>`round(greatest(
-        similarity(models.name, ${q}),
-        similarity(coalesce(models.caption, ''), ${q}),
-        similarity(coalesce(creators.name, ''), ${q}),
-        coalesce((
-          select max(similarity(t.name, ${q}))
-          from model_tags mt join tags t on t.id = mt.tag_id
-          where mt.model_id = models.id), 0)
-      ) * ${SEARCH_RANK_MAX})::integer`;
-
+  function viewQuery(view: LibraryView) {
+    const pattern = containsPattern(view.q.trim());
     let select = db
       .selectFrom("models")
       .leftJoin("creators", "creators.id", "models.creatorId")
@@ -375,7 +361,7 @@ export function modelsRepo(db: Kysely<DB>) {
           ),
         ]),
       );
-    const { tag, collection, creator, after } = query;
+    const { tag, collection, creator } = view;
     if (tag !== undefined) {
       select = select.where(({ exists, selectFrom }) =>
         exists(
@@ -401,6 +387,57 @@ export function modelsRepo(db: Kysely<DB>) {
     if (creator !== undefined) {
       select = select.where("creators.name", "=", creator.trim());
     }
+    return select;
+  }
+
+  /**
+   * Of these ids (well-formed, lowercase), the ones the view shows now, in
+   * the order given: live models that match its search and filters. The
+   * sort and the paged match cap play no part, so this is every match, not
+   * only the first 1000 a page can reach.
+   */
+  async function inView(view: LibraryView, ids: readonly string[]): Promise<string[]> {
+    if (ids.length === 0) return [];
+    const rows = await viewQuery(view)
+      .select("models.id")
+      .where("models.id", "in", [...ids])
+      .execute();
+    const found = new Set(rows.map((r) => r.id));
+    return ids.filter((id) => found.has(id));
+  }
+
+  /**
+   * The ranked search's query without its columns, and its rank expression:
+   * the matches for query in the result order, at most query.limit.
+   * searchRanked and searchRankedCards each add their own columns.
+   */
+  function rankedQuery(query: RankedSearchQuery, maxLimit = MAX_RANKED_LIMIT) {
+    const q = query.q.trim();
+    const limit = Math.trunc(query.limit);
+    if (!(limit >= 1 && limit <= maxLimit)) {
+      throw new RangeError(`searchRanked takes a limit from 1 to ${maxLimit}`);
+    }
+    const sort = query.sort ?? "relevance";
+    if (query.after !== undefined && sort !== "relevance") {
+      throw new RangeError("A cursor pages only the relevance order");
+    }
+    const { printer } = query;
+    const byTotal = sort.startsWith("time-") || sort.startsWith("weight-");
+    if (byTotal && printer === undefined) {
+      throw new RangeError(`The ${sort} sort needs the selected printer`);
+    }
+    const rank = sql<number>`round(greatest(
+        similarity(models.name, ${q}),
+        similarity(coalesce(models.caption, ''), ${q}),
+        similarity(coalesce(creators.name, ''), ${q}),
+        coalesce((
+          select max(similarity(t.name, ${q}))
+          from model_tags mt join tags t on t.id = mt.tag_id
+          where mt.model_id = models.id), 0)
+      ) * ${SEARCH_RANK_MAX})::integer`;
+
+    let select = viewQuery(query);
+    const { after } = query;
     if (after !== undefined) {
       // The rows after the cursor in the order below: rank down, then name
       // and id up.
@@ -744,6 +781,13 @@ export function modelsRepo(db: Kysely<DB>) {
      * each model's rank for the page cursor. Trashed models never appear.
      */
     searchRanked,
+
+    /**
+     * Of some models, the ones a library view shows now: its search and
+     * filters, the ranked search's own rule (repos/bulk.ts keeps a bulk
+     * action to them). Trashed models never appear.
+     */
+    inView,
 
     /**
      * searchRanked's matches with only id, name, creator and rank, for a

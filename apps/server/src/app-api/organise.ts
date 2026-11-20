@@ -14,17 +14,28 @@
 //   GET    /app/api/trash                             {models: [... purgeAt], readAt}
 //   POST   /app/api/trash/:id/restore                 204 | 404 | 409 purge began
 //   POST   /app/api/trash/empty  {cutoff}             {purged}
-//   POST   /app/api/bulk/add-tags {ids, tags}         {changed, unchanged, failed, tags}
-//   POST   /app/api/bulk/remove-tag {ids, tag}        {changed, unchanged, failed, tag}
-//   POST   /app/api/bulk/add-to-collection {ids, collection}
-//                                                     {changed, unchanged, failed, collection}
-//   POST   /app/api/bulk/trash {ids}                  {changed, unchanged, failed}
+//   POST   /app/api/bulk/add-tags {ids, tags, view}   {changed, unchanged, failed, notInView, tags}
+//   POST   /app/api/bulk/remove-tag {ids, tag, view}  {changed, unchanged, failed, notInView, tag}
+//   POST   /app/api/bulk/add-to-collection {ids, collection, view}
+//                                                     {changed, unchanged, failed, notInView, collection}
+//   POST   /app/api/bulk/trash {ids, view}            {changed, unchanged, failed, notInView}
 //
 // The bulk routes are the library's Select mode (Jon, 2026-11-19): up to
 // MAX_BULK_IDS models (1000, as View all) a request, in one transaction, and
 // a model that is in the trash or not found is reported in failed with its
 // reason while the others change (repos/bulk.ts). Bulk trash is the same
 // soft delete as Move to trash: restorable for 30 days, never a purge.
+//
+// The server keeps Select mode to the models the user can see (Jon,
+// 2026-11-20, after the 0.1.0-rc.2 live checks): every bulk request carries
+// view, the library view the selection was made in, with the same q, tag,
+// collection, creator and printer fields as GET /app/api/library/ids (read
+// by library.ts's viewOf, so a blank one is no filter; printer, like the
+// sort, does not change which models a view holds). Only the posted models
+// that view holds when the action runs are changed; the others come back in
+// notInView, untouched. A request without a view is refused (400). These
+// routes are the web app's own session API: the public API (v1) has no bulk
+// routes, and its description and docs do not change.
 //
 // Every change calls what Task 14 built: renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
@@ -82,6 +93,7 @@ import {
   TRASH_RETENTION_DAYS,
 } from "../library/trash.js";
 import { bulkRepo, MAX_BULK_IDS, MAX_BULK_TAGS } from "../repos/bulk.js";
+import { viewOf } from "./library.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
 /** The model rows one request of /app/api/organise/models answers at most. */
@@ -137,6 +149,22 @@ const ROWS_QUERY = {
   },
 } as const;
 
+/**
+ * The library view a bulk action's selection was made in: the fields
+ * GET /app/api/library/ids takes for which models match, with its limits.
+ * Each may be left out; an empty object is the whole library.
+ */
+const BULK_VIEW = {
+  type: "object",
+  properties: {
+    q: { type: "string", maxLength: 200 },
+    tag: { type: "string", maxLength: 100 },
+    collection: { type: "string", maxLength: 100 },
+    creator: { type: "string", maxLength: 300 },
+    printer: { type: "string", maxLength: 200 },
+  },
+} as const;
+
 /** The selected models of a bulk action: 1 to MAX_BULK_IDS ids. */
 const BULK_IDS = {
   type: "array",
@@ -149,23 +177,24 @@ const BULK_TAGS_BODY = {
   properties: {
     ids: BULK_IDS,
     tags: { type: "array", minItems: 1, maxItems: MAX_BULK_TAGS, items: LABEL },
+    view: BULK_VIEW,
   },
-  required: ["ids", "tags"],
+  required: ["ids", "tags", "view"],
 } as const;
 const BULK_TAG_BODY = {
   type: "object",
-  properties: { ids: BULK_IDS, tag: LABEL },
-  required: ["ids", "tag"],
+  properties: { ids: BULK_IDS, tag: LABEL, view: BULK_VIEW },
+  required: ["ids", "tag", "view"],
 } as const;
 const BULK_COLLECTION_BODY = {
   type: "object",
-  properties: { ids: BULK_IDS, collection: LABEL },
-  required: ["ids", "collection"],
+  properties: { ids: BULK_IDS, collection: LABEL, view: BULK_VIEW },
+  required: ["ids", "collection", "view"],
 } as const;
 const BULK_TRASH_BODY = {
   type: "object",
-  properties: { ids: BULK_IDS },
-  required: ["ids"],
+  properties: { ids: BULK_IDS, view: BULK_VIEW },
+  required: ["ids", "view"],
 } as const;
 
 const CUTOFF_BODY = {
@@ -193,6 +222,14 @@ type CutoffBody = { cutoff: string };
 type NameQuery = { name: string };
 type NameBody = { name: string };
 type RowsQuery = { creator?: string; collection?: string; tag?: string; cursor?: string };
+/** A bulk request's view, as BULK_VIEW lets it through. */
+type BulkView = {
+  q?: string;
+  tag?: string;
+  collection?: string;
+  creator?: string;
+  printer?: string;
+};
 
 /** Names with how many live models carry each, in alphabetical order ignoring case. */
 async function creatorCounts(db: Kysely<DB>) {
@@ -463,32 +500,44 @@ export async function registerOrganiseApi(
     );
 
     // Bulk actions on the library's selection: one request, one transaction
-    // (repos/bulk.ts). Each answers what changed, what was left as it was
-    // and which models failed and why; a model in the trash or not found is
-    // a failure, never a 404 for the whole request.
-    scope.post<{ Body: { ids: string[]; tags: string[] } }>(
+    // (repos/bulk.ts), on the posted models the request's view holds. Each
+    // answers what changed, what was left as it was, which models failed and
+    // why, and which the view no longer holds; a model in the trash or not
+    // found is a failure, never a 404 for the whole request.
+    scope.post<{ Body: { ids: string[]; tags: string[]; view: BulkView } }>(
       "/bulk/add-tags",
       { schema: { body: BULK_TAGS_BODY } },
-      async (request) => bulkRepo(need(deps).db).addTags(request.body.ids, request.body.tags),
+      async (request) => {
+        const { ids, tags, view } = request.body;
+        return bulkRepo(need(deps).db).addTags(ids, tags, viewOf(view));
+      },
     );
 
-    scope.post<{ Body: { ids: string[]; tag: string } }>(
+    scope.post<{ Body: { ids: string[]; tag: string; view: BulkView } }>(
       "/bulk/remove-tag",
       { schema: { body: BULK_TAG_BODY } },
-      async (request) => bulkRepo(need(deps).db).removeTag(request.body.ids, request.body.tag),
+      async (request) => {
+        const { ids, tag, view } = request.body;
+        return bulkRepo(need(deps).db).removeTag(ids, tag, viewOf(view));
+      },
     );
 
-    scope.post<{ Body: { ids: string[]; collection: string } }>(
+    scope.post<{ Body: { ids: string[]; collection: string; view: BulkView } }>(
       "/bulk/add-to-collection",
       { schema: { body: BULK_COLLECTION_BODY } },
-      async (request) =>
-        bulkRepo(need(deps).db).addToCollection(request.body.ids, request.body.collection),
+      async (request) => {
+        const { ids, collection, view } = request.body;
+        return bulkRepo(need(deps).db).addToCollection(ids, collection, viewOf(view));
+      },
     );
 
-    scope.post<{ Body: { ids: string[] } }>(
+    scope.post<{ Body: { ids: string[]; view: BulkView } }>(
       "/bulk/trash",
       { schema: { body: BULK_TRASH_BODY } },
-      async (request) => bulkRepo(need(deps).db).trash(request.body.ids),
+      async (request) => {
+        const { ids, view } = request.body;
+        return bulkRepo(need(deps).db).trash(ids, viewOf(view));
+      },
     );
 
     scope.get("/trash", async () => trashListing(need(deps).db));
