@@ -443,9 +443,10 @@ cut-off.
 FILE=cable-clip.3mf
 SIZE=$(wc -c < "$FILE" | tr -d ' ')
 NAME=$(printf '%s' "$FILE" | base64 | tr -d '\n')
+HEADERS=$(mktemp)
 
 # 1. Create the upload with the whole file as its body; no -L, so a redirect is reported.
-STATUS=$(curl -sS -o /dev/null -D headers.txt -w '%{http_code}' -X POST "$PLATEHOUSE/api/v1/uploads" \
+STATUS=$(curl -sS -o /dev/null -D "$HEADERS" -w '%{http_code}' -X POST "$PLATEHOUSE/api/v1/uploads" \
   -H "Authorization: Bearer $PLATEHOUSE_TOKEN" \
   -H "Tus-Resumable: 1.0.0" \
   -H "Upload-Length: $SIZE" \
@@ -456,9 +457,10 @@ echo "HTTP $STATUS"
 
 # 2. When it was 201, ask what became of it; run this again while it says pending.
 if [ "$STATUS" = 201 ]; then
-  LOCATION=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "location:" { print $2 }')
+  LOCATION=$(tr -d '\r' < "$HEADERS" | awk 'tolower($1) == "location:" { print $2 }')
   curl -sS "$PLATEHOUSE$LOCATION/result" -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
 fi
+rm -f "$HEADERS"
 ```
 
 When the import is done, the result names the model and the file, and lists any copies of the

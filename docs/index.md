@@ -22,8 +22,10 @@ STEP and OpenSCAD files.
   temporary files.
 - **Takes files in three ways:** drag and drop in the browser, an inbox folder it watches, or
   its token API.
-- **Organises the library** with tags, collections, creators, search and a trash with a 30-day
-  purge.
+- **Organises the library** with tags, collections, creators, search, sorting and a trash with a
+  30-day purge. Select mode tags, collects or trashes many models at once.
+- **Speaks your language**: English, Spanish and French built in, and any other language you add
+  to your server. See [Translations](./translations/index.md).
 - **Shows STL, STEP and OpenSCAD files** in a 3D viewer. An OpenSCAD file is rendered to an STL
   and a preview image for you.
 - **Works on a phone.** Every page works from 375 pixels wide, in dark, light or system theme.
