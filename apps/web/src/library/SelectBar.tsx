@@ -25,7 +25,8 @@
 //   fails, the actions wait and the toolbar says why, with Try again for a
 //   failure; models it takes out are counted in a note. A Select all
 //   matching answer for a search or filter that has since changed is
-//   dropped.
+//   dropped, as is one asked for before an action that ran while it was
+//   on its way, since the action can change which models match.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
 import { type MessageKey, useI18n } from "../i18n/I18n";
@@ -343,6 +344,8 @@ export function SelectBar({
   /** The search, filters and sort now, so an answer for earlier ones is told apart. */
   const matchingNow = useRef("");
   matchingNow.current = matching.toString();
+  /** Counts actions started and finished, so a Select all matching answer that spans one is told apart. */
+  const actionsRun = useRef(0);
 
   function setOpen(next: Open, from?: HTMLButtonElement) {
     if (from !== undefined) opener.current = from;
@@ -363,14 +366,18 @@ export function SelectBar({
     setPicking(true);
     setNote(null);
     const asked = matching.toString();
+    const actionsBefore = actionsRun.current;
     try {
       const answer = await appApi<{ ids: string[]; capped: boolean }>(
         "GET",
         `/library/ids?${asked}`,
       );
       // The search or a filter changed while it was asked for: these are
-      // another view's matches, so none of them is selected.
-      if (matchingNow.current !== asked) return;
+      // another view's matches, so none of them is selected. Likewise if an
+      // action ran meanwhile: it can take models out of the view (Remove tag
+      // of the filtered tag, Move to trash) with the search unchanged, and
+      // this answer may predate it.
+      if (matchingNow.current !== asked || actionsRun.current !== actionsBefore) return;
       const names = new Map(shown.map((c) => [c.id, c.name]));
       add(answer.ids.map((id) => [id, names.get(id) ?? null]));
       if (answer.capped) {
@@ -391,11 +398,13 @@ export function SelectBar({
     if (ids.length > MAX_SELECTED) {
       throw new AppApiError(0, t("library.select.tooMany", { max: MAX_SELECTED }));
     }
-    const answer = await appApi<BulkAnswer>(
-      "POST",
-      `/bulk/${action.action}`,
-      bulkBody(action, ids),
-    );
+    actionsRun.current += 1;
+    let answer: BulkAnswer;
+    try {
+      answer = await appApi<BulkAnswer>("POST", `/bulk/${action.action}`, bulkBody(action, ids));
+    } finally {
+      actionsRun.current += 1;
+    }
     const names = new Map([...selected].filter((e): e is [string, string] => e[1] !== null));
     setResult(describeBulk(action, answer, names, i18n));
     const gone = new Set(answer.failed.map((f) => f.id));

@@ -1246,6 +1246,100 @@ describe("the selection holds only models the search and filters show (0.1.0-rc.
     expect(posted).toEqual([{ url: "/app/api/bulk/trash", body: { ids: [id(1)] } }]);
   });
 
+  test("Select all matching answered after an action selects nothing, even under the same filter", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holdingIds = true;
+    await click(button("Select all 2 matching"));
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    expect(posted).toHaveLength(1);
+    // Held: Select all matching's answer (asked before the action, so it
+    // still names Model 001), then the check that follows the action.
+    expect(heldIds).toHaveLength(2);
+    const [selectAll, check] = heldIds;
+    holdingIds = false;
+    heldIds = [];
+    check?.();
+    await settle();
+    expect(statusText()).toBe("No models selected");
+    selectAll?.();
+    await settle();
+    expect(statusText()).toBe("No models selected");
+    await click(checkbox("Model 002"));
+    expect(statusText()).toBe("1 model selected");
+  });
+
+  test("Clear selection after a failed check that followed an action keeps the actions off", async () => {
+    const all = cards(5);
+    stubServer(all);
+    bulkAnswer = (_url, body) => {
+      const ids = body.ids as string[];
+      for (const gone of ids)
+        all.splice(
+          all.findIndex((c) => c.id === gone),
+          1,
+        );
+      return json({ changed: ids, unchanged: [], failed: [] });
+    };
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    failingIds = true;
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    // The grid's reload is held, so the trashed model's card is still shown,
+    // and the check after the action failed.
+    expect(checkboxes()).toHaveLength(5);
+    await click(button("Clear selection"));
+    await click(checkbox("Model 001"));
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+    await click(button("Move to trash"));
+    expect(dialog()).toBeNull();
+    expect(container.querySelector('.ph-select-bar [role="alert"]')?.textContent).toBe(
+      "Could not check which selected models the search and filters show, so the actions are paused.",
+    );
+    failingIds = false;
+    await click(button("Try again"));
+    expect(statusText()).toBe("No models selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    expect(posted).toHaveLength(1);
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(4);
+  });
+
+  test("once the grid's reload after an action is in, a model added since can be selected on another page", async () => {
+    const all = cards(50);
+    stubServer(all);
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "Desk");
+    await submit(input.form);
+    await click(dialogButton("Add tags"));
+    expect(statusText()).toBe("1 model selected");
+    // Another tab uploads a model, then page 2 shows it.
+    all.push({ ...cards(51)[50], name: "Model 051" } as LibraryCard);
+    const next = [...container.querySelectorAll('nav[aria-label="Library pages"] a')].find(
+      (a) => (a.getAttribute("aria-label") ?? a.textContent?.trim()) === "Next",
+    );
+    await click(next as HTMLElement);
+    expect(location).toBe("/?page=2");
+    await click(checkbox("Model 051"));
+    expect(statusText()).toBe("2 models selected");
+    await click(checkbox("Model 051"));
+    await click(button("Select all on this page"));
+    expect(statusText()).toBe("4 models selected");
+  });
+
   test("keepShown keeps the selected models the view shows, with their names, and counts the rest", () => {
     const chosen = new Map<string, string | null>([
       [id(1), "Model 001"],

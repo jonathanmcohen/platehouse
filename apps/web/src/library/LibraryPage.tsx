@@ -143,6 +143,11 @@ interface Ready extends Answer {
   nextChunk: number | null;
   /** View all: the last chunk failed; the models shown are kept. */
   restFailed: boolean;
+  /**
+   * The changedKey these cards were asked for: behind changedKey while the
+   * grid's quiet reload after an action is still on its way.
+   */
+  changed: number;
 }
 
 type Load = { state: "loading" } | { state: "failed" } | Ready;
@@ -237,6 +242,11 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   selectedNow.current = selected;
   /** The changedKey the last check ran for, so a check after an action is told apart. */
   const checkedAfter = useRef(changedKey);
+  /**
+   * The cards on screen were drawn before the last action: the grid's reload
+   * after it is not in yet, so a card can show a model the view no longer has.
+   */
+  const staleCards = load.state === "ready" && load.changed !== changedKey;
 
   const query = useCallback(
     (at: number, limit: number) => {
@@ -264,8 +274,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // can show and the selection keeps only those; the toolbar says how many
   // left. An empty selection has nothing to check, except after an action,
   // whose cards stay shown until the grid's reload is in: the answer then
-  // stops one of them being selected. Until the answer is in the actions
-  // wait, and a failed check keeps them waiting until Try again works.
+  // stops one of them being selected (refused). Until the answer is in the
+  // actions wait, and a failed check keeps them waiting until Try again works.
   // biome-ignore lint/correctness/useExhaustiveDependencies: changedKey, refreshKey and checkAttempt only trigger a check.
   useEffect(() => {
     const afterAction = checkedAfter.current !== changedKey;
@@ -291,15 +301,27 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   }, [selecting, matchKey, changedKey, refreshKey, checkAttempt]);
 
   /**
-   * Replaces the selection, keeping only models the view shows once a check
-   * has said which. Emptied, it has nothing left to check or to report.
+   * A card drawn before the last action whose model the check after it says
+   * the view no longer shows. Only while the grid's reload after the action
+   * is on its way: once it is in, every card is the view's own, so a model
+   * added since the check (from another tab, say) can be selected.
+   */
+  function refused(id: string): boolean {
+    return staleCards && check.state === "done" && !check.shown.has(id);
+  }
+
+  /**
+   * Replaces the selection, leaving out cards refused. Emptied, it has
+   * nothing left to check or to report; but a failed check after an action
+   * stays failed while that action's old cards are shown, so the actions
+   * stay off for one of them selected again until Try again gets an answer.
    */
   function changeSelection(next: Map<string, string | null>) {
-    const fitted = check.state === "done" ? keepShown(next, check.shown).kept : next;
+    const fitted = new Map([...next].filter(([id]) => !refused(id)));
     setSelected(fitted);
     if (fitted.size === 0) {
       setLeft(0);
-      if (check.state === "failed") setCheck({ state: "idle" });
+      if (check.state === "failed" && !staleCards) setCheck({ state: "idle" });
     }
   }
 
@@ -324,7 +346,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
       if (next.has(card.id)) next.delete(card.id);
       // A card the view no longer shows (still drawn while the grid reloads
       // after an action) is not added.
-      else if (check.state !== "done" || check.shown.has(card.id)) next.set(card.id, card.name);
+      else if (!refused(card.id)) next.set(card.id, card.name);
       return next;
     });
   }
@@ -423,6 +445,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           ...answer,
           nextChunk: viewAll ? chunkAfter(1, answer, answer.models.length) : null,
           restFailed: false,
+          changed: changedKey,
         };
         if (ready.nextChunk === null) setLoad(ready);
         else {
