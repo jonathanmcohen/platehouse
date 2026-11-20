@@ -454,13 +454,13 @@ STATUS=$(curl -sS -o /dev/null -D "$HEADERS" -w '%{http_code}' -X POST "$PLATEHO
   -H "Content-Type: application/offset+octet-stream" \
   --data-binary @"$FILE")
 echo "HTTP $STATUS"
+LOCATION=$(tr -d '\r' < "$HEADERS" | awk 'tolower($1) == "location:" { print $2 }')
+rm -f "$HEADERS"
 
 # 2. When it was 201, ask what became of it; run this again while it says pending.
 if [ "$STATUS" = 201 ]; then
-  LOCATION=$(tr -d '\r' < "$HEADERS" | awk 'tolower($1) == "location:" { print $2 }')
   curl -sS "$PLATEHOUSE$LOCATION/result" -H "Authorization: Bearer $PLATEHOUSE_TOKEN"
 fi
-rm -f "$HEADERS"
 ```
 
 When the import is done, the result names the model and the file, and lists any copies of the
