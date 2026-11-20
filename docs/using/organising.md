@@ -7,9 +7,11 @@ The search box in the top bar searches model names, captions, creators and tags,
 ## Tags
 
 Add and remove tags on a model from its row on the **Tags**, **Creators** or **Collections**
-pages, or through the API. Tags ignore case: adding `PLA` when `pla` exists uses the name already
-stored. Filter the library by a tag with the tag chips above the cards. The **Tags** page lists
-every tag with its number of models.
+pages, or through the API. To tag many models at once, use Select mode's **Add tags** and
+**Remove tag** (see [Selecting several models](./index.md#selecting-several-models)). Tags ignore
+case: adding `PLA` when `pla` exists uses the name already stored. Filter the library by a tag with
+the tag chips above the cards. The **Tags** page lists every tag that at least one model has, with
+its number of models; a tag no model has is not listed.
 
 ## Collections
 

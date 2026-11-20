@@ -90,8 +90,9 @@ The toolbar's actions work on every selected model at once, up to 1000 in one ac
 
 - **Add tags**: type a tag and press Enter, or pick one of the library's, up to 20 tags in one go.
   Tags a model already has are kept, and a new tag is made the first time it is used.
-- **Remove tag**: pick one of the library's tags to take off the selected models. The tag itself
-  stays in the library.
+- **Remove tag**: pick one of the library's tags to take off the selected models. The tag is not
+  deleted, but once no model has it, it is no longer listed on the **Tags** page, in the tag chips
+  or in the tag pickers.
 - **Add to collection**: pick a collection, or type a new name to make one.
 - **Move to trash**: asks first, then moves the models to the trash, where they can be restored for
   30 days. See [The trash](./trash.md).
