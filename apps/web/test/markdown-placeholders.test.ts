@@ -1,12 +1,14 @@
-// GitHub renders every tracked Markdown file outside the docs site, and it
-// drops raw HTML it does not allow. A placeholder written bare, such as
-// models/<modelId>/<blobId> or orca-X.Y.Z-r<run number>, is raw HTML to the
-// Markdown parser, so it shows on GitHub as "models//" or "orca-X.Y.Z-r" and
-// the text it was written to explain is lost. pr-review found this three
-// times in a row on PR #302 (issues #306 and #307), so this guards the class,
-// not one line: every tracked .md file that is not under docs/ (the
-// Docusaurus site, which is MDX, and whose build already fails on a bare tag)
-// must keep each placeholder in a code span or a code block.
+// GitHub renders every tracked Markdown file, and it drops raw HTML it does
+// not allow. A placeholder written bare, such as models/<modelId>/<blobId> or
+// orca-X.Y.Z-r<run number>, is raw HTML to the Markdown parser, so it shows
+// on GitHub as "models//" or "orca-X.Y.Z-r" and the text it was written to
+// explain is lost. pr-review found this three times in a row on PR #302
+// (issues #306 and #307), so this guards the class, not one line: every
+// tracked .md file must keep each placeholder in a code span or a code block.
+// docs/ is included. Its pages are .md files, which the Docusaurus site reads
+// as CommonMark, not MDX (markdown.format is "detect" in
+// apps/docs/docusaurus.config.mjs), so nothing there fails on a bare tag, and
+// GitHub strips one from a docs page as it does anywhere else.
 //
 // How: each file is parsed with a CommonMark parser plus GitHub's
 // extensions (markdown-placeholders.support.ts), and every raw HTML node in
@@ -24,11 +26,11 @@ import { ALLOWED_TAGS, barePlaceholders, htmlNodes } from "./markdown-placeholde
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 
-/** Every tracked .md file GitHub renders outside the docs site. */
+/** Every tracked .md file GitHub renders, docs/ included. */
 function renderedMarkdown(): string[] {
   return execFileSync("git", ["ls-files", "-z", "--", "*.md"], { cwd: ROOT, encoding: "utf8" })
     .split("\0")
-    .filter((f) => f !== "" && !f.startsWith("docs/") && existsSync(join(ROOT, f)));
+    .filter((f) => f !== "" && existsSync(join(ROOT, f)));
 }
 
 describe("no bare placeholder in Markdown that GitHub renders", () => {
@@ -97,9 +99,9 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
     expect(barePlaceholders("sample", sample)).toEqual(["sample:3: <stripped>"]);
   });
 
-  test("no tracked Markdown file outside docs/ writes one bare", () => {
+  test("no tracked Markdown file writes one bare, docs/ included", () => {
     const files = renderedMarkdown();
-    // The list really is the tree: files from several places are in it, and docs/ is not.
+    // The list really is the tree: files from several places are in it, docs/ among them.
     for (const f of [
       "CHANGELOG.md",
       "README.md",
@@ -108,7 +110,7 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
     ]) {
       expect(files).toContain(f);
     }
-    expect(files.some((f) => f.startsWith("docs/"))).toBe(false);
+    expect(files.some((f) => f.startsWith("docs/"))).toBe(true);
     const found = files.flatMap((f) => barePlaceholders(f, readFileSync(join(ROOT, f), "utf8")));
     expect(found).toEqual([]);
   });
