@@ -2169,6 +2169,18 @@ test("slicer-image issue: a prerelease tag's failure after tagging says a re-run
 // unknown HTML tag, so a placeholder such as <run> would vanish from the
 // issue. Outside a code block or code span the body has no angle-bracket word.
 const proseOnly = (md) => md.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+// A bare tag as GitHub strips it, a placeholder with a space in it (<run
+// number>, read as a tag with an attribute) included, as the repo-wide rule in
+// apps/web/test/markdown-placeholders.test.ts has it (issue #306).
+const BARE_TAG = /<\/?[A-Za-z][^<>]*>/;
+test("slicer-image issue: the bare-tag check catches a spaced placeholder and leaves code alone", () => {
+  for (const bare of ["tags -r<run number> now", "tags -r<run>.<attempt>", "a </closing> tag"]) {
+    assert.match(proseOnly(bare), BARE_TAG, bare);
+  }
+  for (const fine of ["tags `-r<run number>` now", "```text\n<tail>\n```", "a < b > c"]) {
+    assert.doesNotMatch(proseOnly(fine), BARE_TAG, fine);
+  }
+});
 for (const [name, env, tails] of [
   ["a daily failure", {}, { "build.txt": "step: Smoke slice\n<tail>\n" }],
   ["a failure after tagging", { TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL],
@@ -2180,7 +2192,7 @@ for (const [name, env, tails] of [
   test(`slicer-image issue: ${name} has no bare <word> GitHub would strip`, () => {
     const r = reportRun(env, tails);
     assert.equal(r.status, 0, r.log);
-    assert.doesNotMatch(proseOnly(r.files["posted.md"]), /<\/?[A-Za-z][^<>\s]*>/);
+    assert.doesNotMatch(proseOnly(r.files["posted.md"]), BARE_TAG);
   });
 }
 
