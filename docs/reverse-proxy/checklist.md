@@ -103,6 +103,11 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X DELETE -H "Authorization: Bearer $P
 Expect `204` both times, and the tag `proxy/check` to appear on the model between the two. A `404`
 means the proxy decoded or refused the `%2F`.
 
+Removing a tag takes it off the model, but the tag itself stays in the database: Platehouse 0.1.0
+has no way to delete a tag. A tag no live model has is not listed on the **Tags** page, in the
+library's tag chips or in the tag pickers, so the leftover `proxy/check` is not seen anywhere. Each
+run of this check reuses the same tag rather than adding another.
+
 ## 5. A slicer link with a `/` in the file name works
 
 In the library, rename a `.3mf` file so its name holds a slash, for example `left/right.3mf`. On its
@@ -140,4 +145,5 @@ Expect `not compressed`.
 ## 7. Clean up
 
 Delete `big-test.stl` and `slicer-test.3mf`, empty the test model from the trash if you like, and
-`unset PH_TOKEN`. If you made a token only for these checks, revoke it in **Settings**.
+`unset PH_TOKEN`. If you made a token only for these checks, revoke it in **Settings**. The
+`proxy/check` tag from check 4 stays in the database but is not shown anywhere (see check 4).

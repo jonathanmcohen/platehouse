@@ -1,7 +1,7 @@
 # New in 0.1.0
 
 0.1.0 is the first release of Platehouse, so everything in these docs is new in it. This page
-points to the features added late in the release, and lists the few still to come before it ships.
+points to the features added late in the release.
 
 ## Added late in 0.1.0
 
@@ -30,15 +30,11 @@ points to the features added late in the release, and lists the few still to com
 - **Several printers**: My printers in Settings lists every printer you own, with one default, and
   every plate is estimated for each of them. The library header and the model page's Plates tab
   get a printer switch. See [Printers and estimates](./printers-and-estimates.md#my-printers).
-
-## Coming in 0.1.0
-
-These are still being finished. Each section will be filled in once its change is merged.
-
-### Sorting and bulk select
-
-Coming in 0.1.0. Sorting the library, and selecting several models to act on them together.
-
-### Translations
-
-Coming in 0.1.0. The interface in English, Spanish and French.
+- **Sorting the library** by date added, name, print time, filament weight or plate count, and by
+  best match while searching. See [Using Platehouse](./index.md#sorting).
+- **Select mode**: select several models, or every match, and add tags, remove a tag, add them to a
+  collection or move them to the trash in one go. See
+  [Using Platehouse](./index.md#selecting-several-models).
+- **Translations**: the interface in English, Spanish and French, with a Language menu in Settings,
+  and your own languages through `LOCALES_DIR`. Spanish and French are machine translations in
+  0.1.0. See [Settings](./settings.md#language) and [Translations](../translations/index.md).
