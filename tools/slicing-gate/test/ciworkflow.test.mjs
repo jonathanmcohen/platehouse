@@ -2160,7 +2160,9 @@ test("slicer-image issue: a prerelease tag's failure after tagging says a re-run
   assert.match(body, /A re-run reads OrcaSlicer's latest release again/);
   assert.match(body, /newer than 2\.5\.1/);
   assert.match(body, /run the workflow by hand for 2\.5\.1 instead \(Actions, slicer-image, Run workflow, orca_version 2\.5\.1\)/);
-  assert.match(body, /orca-2\.5\.1-r<run>\.<attempt>/);
+  // The re-run may build a newer version, so its tag is not named for 2.5.1 (issue #306).
+  assert.match(body, /its own -r<run>\.<attempt> tag for the version it builds/);
+  assert.doesNotMatch(body, /orca-2\.5\.1-r<run>\.<attempt>/);
 });
 
 test("slicer-image issue: a failed run that was not daily does not promise a daily retry", () => {

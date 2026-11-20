@@ -59,7 +59,7 @@ const REASON_KEYS = [
   ["captionNotFromFile", "titles.reason.captionNotFromFile"],
 ] as const satisfies ReadonlyArray<readonly [keyof TitleNamePlan["skipped"], MessageKey]>;
 
-/** leftCount with the reasons: "N are left as they are: 2 renamed by you, ...", or "". */
+/** leftCount with the reasons: "N are left as they are: 2 named by you or through the API, ...", or "". */
 function leftAlone(t: Words["t"], skipped: TitleNamePlan["skipped"]): string {
   const count = leftCount(t, skipped);
   if (count === "") return "";

@@ -5,7 +5,7 @@
 #   detect: pick the Orca version -> resolve its pins -> check the registry
 #   build:  build (load) -> smoke slice -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
-#           -> tag orca-X.Y.Z and orca-X.Y.Z-r<run number> -> move stable
+#           -> tag orca-X.Y.Z and the run tag -> move stable
 #   report-failure: when detect or build failed, open an issue (or comment on
 #           the open one with the same title)
 #
@@ -705,7 +705,7 @@ jobs:
             echo '```'
             echo ""
             if [ -n "$TAGGED" ] && [ "$STABLE" = "false" ]; then
-              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run all jobs), which leaves stable alone; a run by hand would move stable. The re-run tags its own orca-${version}-r<run>.<attempt> and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run all jobs), which leaves stable alone; a run by hand would move stable. The re-run gets its own -r<run>.<attempt> tag for the version it builds and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
               echo ""
               echo "A re-run reads OrcaSlicer's latest release again. If Orca has shipped a version newer than ${version} since this run, the re-run builds that one and leaves orca-${version} as this run left it. To fix ${version} itself, run the workflow by hand for ${version} instead (Actions, slicer-image, Run workflow, orca_version ${version}); that run also moves stable to ${version} once its smoke slice passes."
             elif [ -n "$TAGGED" ]; then
