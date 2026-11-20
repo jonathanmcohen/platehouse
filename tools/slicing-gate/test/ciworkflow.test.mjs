@@ -1839,8 +1839,41 @@ const DIGEST = `sha256:${sha("d")}`;
 const tagRun = (env) =>
   runSlicerStep("build", "Tag the image and move stable", {
     stubs: DOCKER_TAG_STUB,
-    env: { VERSION: "2.5.1", RUN_NUMBER: "42", MOVE_STABLE: "true", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_STABLE: "true", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, ...env },
   });
+
+// Issue #221: a re-run keeps github.run_number, so attempt 1 keeps
+// orca-X.Y.Z-r<run> (the format existing tags and pins use) and a later
+// attempt tags orca-X.Y.Z-r<run>.<attempt>, leaving the first attempt's tag on
+// the image it named.
+test("slicer-image tag: a re-run tags orca-X.Y.Z-r<run>.<attempt>, never the first attempt's tag (issue #221)", () => {
+  const r = tagRun({ RUN_ATTEMPT: "2" });
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n").slice(0, 3), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42.2 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42.2 --format {{.Manifest.Digest}}`,
+  ]);
+  assert.doesNotMatch(r.calls, /orca-2\.5\.1-r42 /, "the first attempt's tag is not touched");
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.2, stable");
+  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\.2, stable/);
+  assert.equal(tagRun({ RUN_ATTEMPT: "10" }).outputs.tagged, "orca-2.5.1, orca-2.5.1-r42.10, stable");
+});
+
+test("slicer-image tag: a missing or malformed run attempt tags nothing", () => {
+  for (const attempt of ["", "0", "x", "2;y", "02"]) {
+    const r = tagRun({ RUN_ATTEMPT: attempt });
+    assert.notEqual(r.status, 0, `attempt '${attempt}' fails`);
+    assert.match(r.log, /::error::/);
+    assert.equal(r.calls.trim(), "", `attempt '${attempt}' calls no docker`);
+    assert.equal(r.outputs.tagged, undefined);
+  }
+});
+
+test("slicer-image tag: the step reads the run attempt from github.run_attempt", () => {
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  assert.match(tag, /\n {10}RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}\n/);
+});
 
 test("slicer-image tag: version tags, then stable, every one a carbon copy of the tested digest", () => {
   const r = tagRun({});
@@ -2122,6 +2155,12 @@ test("slicer-image issue: a prerelease tag's failure after tagging says a re-run
   assert.match(body, /Re-run all jobs/);
   assert.match(body, /a run by hand would move stable/);
   assert.doesNotMatch(body, /let the next daily run retry/);
+  // Issue #221: a re-run reads Orca's latest release again, so it can build a
+  // newer version and leave 2.5.1 half-tagged; the body says what to do then.
+  assert.match(body, /A re-run reads OrcaSlicer's latest release again/);
+  assert.match(body, /newer than 2\.5\.1/);
+  assert.match(body, /run the workflow by hand for 2\.5\.1 instead \(Actions, slicer-image, Run workflow, orca_version 2\.5\.1\)/);
+  assert.match(body, /orca-2\.5\.1-r<run>\.<attempt>/);
 });
 
 test("slicer-image issue: a failed run that was not daily does not promise a daily retry", () => {
@@ -2206,5 +2245,10 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
   assert.match(section, /lists the tags it had already pointed at the new digest/);
   assert.match(section, /first published by a prerelease tag/);
+  // Issue #221: the run tag rule, in both README sections.
+  assert.match(section, /`orca-X\.Y\.Z-r<run number>\.<attempt>`/);
+  assert.match(section, /reads OrcaSlicer's latest release again/);
+  const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("## Layout"));
+  assert.match(rollback, /`orca-X\.Y\.Z-r<run number>` tag, or `orca-X\.Y\.Z-r<run number>\.<attempt>` for a re-run/);
   assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
 });
