@@ -6,6 +6,7 @@
   },
   "include": ["src", "test"],
   "references": [
+    { "path": "../../packages/i18n" },
     { "path": "../../packages/makerworld" },
     { "path": "../../packages/slicer-contract" },
     { "path": "../../packages/threemf" }

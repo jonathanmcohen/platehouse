@@ -13,7 +13,10 @@
 // screen with a notice and keeps asking; a signed-out answer stops it, since
 // asking again will not change that. Refresh asks at once.
 import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
-import { AppApiError, appApi, formatDate } from "../settings/api";
+import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { printerNameIn } from "../i18n/printers";
+import { serverText, serverTextWith } from "../i18n/serverText";
+import { AppApiError, appApi } from "../settings/api";
 import { Events } from "./Events";
 import { formatCount, formatDuration, formatRate, formatSize } from "./format";
 import "../settings/organise.css";
@@ -53,7 +56,16 @@ export type ActivityEvent =
       model: { id: string; name: string; trashed: boolean };
       source: ModelSource;
     }
-  | { type: "inbox_failed"; at: string; name: string; reason: string }
+  | {
+      type: "inbox_failed";
+      at: string;
+      name: string;
+      reason: string;
+      /** The code the reason file starts with; null for an older file with none. */
+      reasonCode?: string | null;
+      /** For a duplicate: the model the reason names and how many others hold the file. */
+      duplicate?: { name: string; id: string; others: number };
+    }
   | {
       type: "estimate_failed";
       at: string;
@@ -62,6 +74,8 @@ export type ActivityEvent =
       plate: { index: number; name: string | null };
       code: number | null;
       reason: string;
+      /** The contract's reason (slicer_error, bed_too_small, ...), for the words in another language. */
+      reasonCode?: string;
       detail: string | null;
     }
   | {
@@ -71,6 +85,10 @@ export type ActivityEvent =
       model: { id: string; name: string };
       file: { id: string; name: string };
       message: string | null;
+      /** Platehouse's own sentences at the start of message, by code; absent from an older answer. */
+      messageCodes?: string[];
+      /** What message holds after those sentences. */
+      messageDetail?: string | null;
     };
 
 export interface ActivityView {
@@ -210,56 +228,77 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function Library({ library }: { library: ActivityView["library"] }) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const count = (n: number) => formatCount(n, i18n);
   const empty = library.models.live + library.models.trashed === 0;
   return (
-    <Section title="Library">
-      {empty ? (
-        <p className="studio-empty">
-          The library is empty. Add files with Add, or put them in the inbox folder.
-        </p>
-      ) : null}
+    <Section title={t("activity.library.title")}>
+      {empty ? <p className="studio-empty">{t("activity.library.empty")}</p> : null}
       <dl className="ph-activity-stats">
-        <Stat label="Models" value={formatCount(library.models.live)} />
-        <Stat label="In the trash" value={formatCount(library.models.trashed)} />
-        <Stat label="Plates" value={formatCount(library.plates)} />
-        <Stat label="3MF files" value={formatCount(library.files["3mf"])} />
-        <Stat label="STL files" value={formatCount(library.files.stl)} />
-        <Stat label="STEP files" value={formatCount(library.files.step)} />
-        <Stat label="SCAD files" value={formatCount(library.files.scad)} />
-        <Stat label="Stored objects" value={formatCount(library.blobs.count)} />
-        <Stat label="Stored size" value={formatSize(library.blobs.bytes)} />
+        <Stat label={t("activity.library.models")} value={count(library.models.live)} />
+        <Stat label={t("activity.library.trashed")} value={count(library.models.trashed)} />
+        <Stat label={t("activity.library.plates")} value={count(library.plates)} />
         <Stat
-          label="Last import"
-          value={library.lastImportAt === null ? "Never" : formatDate(library.lastImportAt, true)}
+          label={t("activity.library.files", { kind: "3MF" })}
+          value={count(library.files["3mf"])}
+        />
+        <Stat
+          label={t("activity.library.files", { kind: "STL" })}
+          value={count(library.files.stl)}
+        />
+        <Stat
+          label={t("activity.library.files", { kind: "STEP" })}
+          value={count(library.files.step)}
+        />
+        <Stat
+          label={t("activity.library.files", { kind: "SCAD" })}
+          value={count(library.files.scad)}
+        />
+        <Stat label={t("activity.library.objects")} value={count(library.blobs.count)} />
+        <Stat label={t("activity.library.size")} value={formatSize(library.blobs.bytes, i18n)} />
+        <Stat
+          label={t("activity.library.lastImport")}
+          value={
+            library.lastImportAt === null
+              ? t("activity.library.never")
+              : i18n.fmt.date(library.lastImportAt, true)
+          }
         />
       </dl>
     </Section>
   );
 }
 
-function rateWords(e: ActivityView["estimates"]): string {
+function rateWords(e: ActivityView["estimates"], i18n: I18n): string {
+  const { t } = i18n;
   const left = e.pending + e.running;
-  if (e.total === 0) return "No estimates for this printer yet.";
+  if (e.total === 0) return t("activity.rate.none");
   if (left === 0) {
     return e.perMinute === null
-      ? "Nothing is waiting."
-      : `Nothing is waiting. About ${formatRate(e.perMinute)} plates a minute recently.`;
+      ? t("activity.rate.idle")
+      : t("activity.rate.idleRecent", { rate: formatRate(e.perMinute, i18n) });
   }
-  if (e.perMinute === null || e.secondsLeft === null) {
-    return "Not enough recent progress to estimate the time left.";
-  }
-  return `About ${formatRate(e.perMinute)} plates a minute; roughly ${formatDuration(e.secondsLeft)} left.`;
+  if (e.perMinute === null || e.secondsLeft === null) return t("activity.rate.unknown");
+  return t("activity.rate.left", {
+    rate: formatRate(e.perMinute, i18n),
+    time: formatDuration(e.secondsLeft, i18n),
+  });
 }
 
 function Estimates({ estimates }: { estimates: ActivityView["estimates"] }) {
   const labelId = useId();
   const settled = estimates.done + estimates.failed;
   const percent = estimates.total === 0 ? 0 : Math.round((settled / estimates.total) * 100);
+  const i18n = useI18n();
+  const { t } = i18n;
+  const printer = printerNameIn(i18n, estimates.printerName);
   return (
-    <Section title="Estimates">
+    <Section title={t("activity.estimates.title")}>
       <p id={labelId}>
-        Estimates for {estimates.printerName}
-        {estimates.orcaVersion === null ? null : ` with OrcaSlicer ${estimates.orcaVersion}`}
+        {estimates.orcaVersion === null
+          ? t("activity.estimates.for", { printer })
+          : t("activity.estimates.forWith", { printer, version: estimates.orcaVersion })}
       </p>
       {estimates.total === 0 ? null : (
         <>
@@ -270,79 +309,129 @@ function Estimates({ estimates }: { estimates: ActivityView["estimates"] }) {
             aria-valuemin={0}
             aria-valuemax={estimates.total}
             aria-valuenow={settled}
-            aria-valuetext={`${settled} of ${estimates.total} plates settled`}
+            aria-valuetext={t("activity.estimates.valueText", { settled, total: estimates.total })}
           >
             <div className="ph-activity-progress-fill" style={{ width: `${percent}%` }} />
           </div>
           <p className="studio-muted">
-            {formatCount(settled)} of {formatCount(estimates.total)} plates settled ({percent}%),
-            counting failures.
+            {t("activity.estimates.settled", {
+              settled: formatCount(settled, i18n),
+              total: formatCount(estimates.total, i18n),
+              percent: i18n.fmt.percent(percent),
+            })}
           </p>
         </>
       )}
       <dl className="ph-activity-stats">
-        <Stat label="Done" value={formatCount(estimates.done)} />
-        <Stat label="Waiting" value={formatCount(estimates.pending)} />
-        <Stat label="Slicing" value={formatCount(estimates.running)} />
-        <Stat label="Failed" value={formatCount(estimates.failed)} />
+        <Stat label={t("activity.estimates.done")} value={formatCount(estimates.done, i18n)} />
+        <Stat
+          label={t("activity.estimates.waiting")}
+          value={formatCount(estimates.pending, i18n)}
+        />
+        <Stat
+          label={t("activity.estimates.slicing")}
+          value={formatCount(estimates.running, i18n)}
+        />
+        <Stat label={t("activity.estimates.failed")} value={formatCount(estimates.failed, i18n)} />
       </dl>
-      <p>{rateWords(estimates)}</p>
+      <p>{rateWords(estimates, i18n)}</p>
     </Section>
   );
 }
 
+/** The words for each queue row, by its id; the server's label otherwise. */
+const QUEUE_KEYS: Readonly<Record<string, MessageKey>> = {
+  ingest: "activity.queue.ingest",
+  estimates: "activity.queue.estimates",
+  renders: "activity.queue.renders",
+  step: "activity.queue.step",
+  scheduled: "activity.queue.scheduled",
+  other: "activity.queue.other",
+};
+
+/** The words for each scheduled job, by its key; the server's label otherwise. */
+const SCHEDULE_KEYS: Readonly<Record<string, MessageKey>> = {
+  "purge-expired": "activity.schedule.purgeExpired",
+  "sweep-orphans": "activity.schedule.sweepOrphans",
+  "purge-sessions": "activity.schedule.purgeSessions",
+  "sweep-uploads": "activity.schedule.sweepUploads",
+  "poll-orca": "activity.schedule.pollOrca",
+  "check-renders": "activity.schedule.checkRenders",
+};
+
+/**
+ * A schedule in the shown language. The server writes it in English
+ * (apps/server/src/app-api/activity.ts scheduleText, then the time zone in
+ * brackets); its three plain forms are written again here, and anything
+ * else (a cron line it could not put in words) is shown as it is.
+ */
+export function scheduleIn(i18n: Pick<I18n, "t" | "locale">, schedule: string): string {
+  return serverTextWith(i18n, schedule, () => {
+    const m = /^(.*) \(([^()]+)\)$/.exec(schedule);
+    if (m === null) return undefined;
+    const [, when = "", zone = ""] = m;
+    let every = /^Every (\d+) minutes$/.exec(when);
+    if (every !== null) return i18n.t("activity.when.minutes", { count: Number(every[1]), zone });
+    if (when === "Every hour") return i18n.t("activity.when.hour", { zone });
+    every = /^Daily at (\d\d:\d\d)$/.exec(when);
+    if (every !== null) return i18n.t("activity.when.daily", { time: every[1] as string, zone });
+    return undefined;
+  });
+}
+
 function Queues({ queues }: { queues: QueueRow[] }) {
+  const i18n = useI18n();
+  const { t } = i18n;
   return (
-    <Section title="Queues">
+    <Section title={t("activity.queues.title")}>
       <table className="ph-activity-table">
-        <caption className="studio-visually-hidden">
-          Background jobs by queue: waiting, running and failed
-        </caption>
+        <caption className="studio-visually-hidden">{t("activity.queues.caption")}</caption>
         <thead>
           <tr>
-            <th scope="col">Queue</th>
-            <th scope="col">Waiting</th>
-            <th scope="col">Running</th>
-            <th scope="col">Failed</th>
+            <th scope="col">{t("activity.queues.queue")}</th>
+            <th scope="col">{t("activity.estimates.waiting")}</th>
+            <th scope="col">{t("activity.queues.running")}</th>
+            <th scope="col">{t("activity.estimates.failed")}</th>
           </tr>
         </thead>
         <tbody>
           {queues.map((q) => (
             <tr key={q.id}>
-              <th scope="row">{q.label}</th>
-              <td>{formatCount(q.waiting)}</td>
-              <td>{formatCount(q.active)}</td>
-              <td>{formatCount(q.failed)}</td>
+              <th scope="row">{serverText(i18n, q.label, QUEUE_KEYS[q.id])}</th>
+              <td>{formatCount(q.waiting, i18n)}</td>
+              <td>{formatCount(q.active, i18n)}</td>
+              <td>{formatCount(q.failed, i18n)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="studio-muted ph-activity-note">
-        Failed jobs are kept for 7 days. A failed estimate or render is also listed under Recent
-        events.
-      </p>
+      <p className="studio-muted ph-activity-note">{t("activity.queues.note")}</p>
     </Section>
   );
 }
 
-function lastRunWords(s: ScheduleRow): string {
-  if (s.lastRunAt === null) return "No run recorded in the last 7 days";
-  const how = s.lastState === "failed" ? "failed" : "finished";
-  return `Last ran ${formatDate(s.lastRunAt, true)}, ${how}`;
+function lastRunWords(s: ScheduleRow, i18n: I18n): string {
+  if (s.lastRunAt === null) return i18n.t("activity.schedules.noRun");
+  const at = i18n.fmt.date(s.lastRunAt, true);
+  return s.lastState === "failed"
+    ? i18n.t("activity.schedules.lastFailed", { at })
+    : i18n.t("activity.schedules.lastFinished", { at });
 }
 
 function Schedules({ schedules }: { schedules: ScheduleRow[] }) {
+  const i18n = useI18n();
+  const { t } = i18n;
   return (
-    <Section title="Scheduled jobs">
+    <Section title={t("activity.queue.scheduled")}>
       {schedules.length === 0 ? (
-        <p className="studio-empty">No scheduled jobs are registered.</p>
+        <p className="studio-empty">{t("activity.schedules.none")}</p>
       ) : (
         <ul className="studio-list">
           {schedules.map((s) => (
             <li key={s.key} className="studio-list-item">
               <div className="studio-row">
-                <strong>{s.label}</strong>
-                <span className="studio-muted">{s.schedule}</span>
+                <strong>{serverText(i18n, s.label, SCHEDULE_KEYS[s.key])}</strong>
+                <span className="studio-muted">{scheduleIn(i18n, s.schedule)}</span>
               </div>
               <p
                 className={
@@ -351,7 +440,7 @@ function Schedules({ schedules }: { schedules: ScheduleRow[] }) {
                     : "ph-activity-line"
                 }
               >
-                {lastRunWords(s)}
+                {lastRunWords(s, i18n)}
               </p>
             </li>
           ))}
@@ -362,27 +451,27 @@ function Schedules({ schedules }: { schedules: ScheduleRow[] }) {
 }
 
 function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
+  const i18n = useI18n();
+  const { t } = i18n;
   const status = !slicer.reachable
-    ? "Not reachable"
+    ? t("activity.slicer.down")
     : slicer.busy
-      ? "Reachable, slicing now"
-      : "Reachable, idle";
+      ? t("activity.slicer.busy")
+      : t("activity.slicer.idle");
   return (
-    <Section title="Slicer">
+    <Section title={t("model.numbers.slicer")}>
       {slicer.reachable ? null : (
-        <p className="studio-alert studio-alert-alert">
-          The slicer is not answering. Estimates and renders wait until it is back.
-        </p>
+        <p className="studio-alert studio-alert-alert">{t("activity.slicer.notAnswering")}</p>
       )}
       <dl className="studio-dl">
-        <dt>Status</dt>
+        <dt>{t("activity.slicer.status")}</dt>
         <dd>{status}</dd>
         <dt>OrcaSlicer</dt>
-        <dd>{slicer.orca ?? "Unknown"}</dd>
+        <dd>{slicer.orca ?? t("activity.slicer.unknown")}</dd>
         <dt>OpenSCAD</dt>
-        <dd>{slicer.openscad ?? "Unknown"}</dd>
-        <dt>Default printer</dt>
-        <dd>{slicer.printerName}</dd>
+        <dd>{slicer.openscad ?? t("activity.slicer.unknown")}</dd>
+        <dt>{t("activity.slicer.defaultPrinter")}</dt>
+        <dd>{printerNameIn(i18n, slicer.printerName)}</dd>
       </dl>
     </Section>
   );
@@ -392,39 +481,38 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
 
 export function ActivityPage() {
   const { view, problem, refresh } = useActivity();
+  const { t, fmt } = useI18n();
 
   return (
     <>
       <div className="studio-page-head">
-        <h1>Activity</h1>
+        <h1>{t("shell.nav.activity")}</h1>
         <div className="ph-activity-head">
           {view === undefined ? null : (
-            <span className="studio-muted">Updated {formatDate(view.generatedAt, true)}</span>
+            <span className="studio-muted">
+              {t("activity.updated", { at: fmt.date(view.generatedAt, true) })}
+            </span>
           )}
           <button type="button" className="studio-button ph-small" onClick={refresh}>
-            Refresh
+            {t("activity.refresh")}
           </button>
         </div>
       </div>
       {problem === "signed-out" ? (
         <div role="alert" className="studio-alert studio-alert-alert">
-          <p>You are signed out. Reload the page to sign in again.</p>
+          <p>{t("common.signedOut")}</p>
         </div>
       ) : problem === "failed" ? (
         <div role="alert" className="studio-alert studio-alert-alert">
-          <p>
-            {view === undefined
-              ? "The activity could not be loaded right now."
-              : "The activity could not be refreshed right now. What is shown may be out of date."}
-          </p>
+          <p>{view === undefined ? t("activity.loadFailed") : t("activity.refreshFailed")}</p>
           <button type="button" className="studio-button" onClick={refresh}>
-            Try again
+            {t("common.tryAgain")}
           </button>
         </div>
       ) : null}
       {view === undefined ? (
         problem === null ? (
-          <p className="studio-muted">Loading the activity.</p>
+          <p className="studio-muted">{t("activity.loading")}</p>
         ) : null
       ) : (
         <>
@@ -433,7 +521,7 @@ export function ActivityPage() {
           <Queues queues={view.queues} />
           <Schedules schedules={view.schedules} />
           <Slicer slicer={view.slicer} />
-          <Section title="Recent events">
+          <Section title={t("activity.events.title")}>
             <Events
               items={view.events.items}
               limit={view.events.limit}

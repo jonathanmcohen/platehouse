@@ -8,6 +8,7 @@
 // back to the button. A press outside closes it and leaves focus where that
 // press put it.
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n/I18n";
 import { Sidebar } from "./Sidebar";
 
 const PANEL_ID = "ph-menu";
@@ -28,6 +29,7 @@ export interface MenuButtonProps {
 }
 
 export function MenuButton({ onNavigate }: MenuButtonProps) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -66,7 +68,7 @@ export function MenuButton({ onNavigate }: MenuButtonProps) {
         aria-controls={PANEL_ID}
         onClick={() => setOpen((was) => !was)}
       >
-        Menu
+        {t("shell.menu")}
       </button>
       <div id={PANEL_ID} className="studio-menu-panel" hidden={!open}>
         <Sidebar

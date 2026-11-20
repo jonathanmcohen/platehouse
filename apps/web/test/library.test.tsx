@@ -47,6 +47,7 @@ import {
   isSupportedFile,
   MAX_UPLOAD_BYTES,
   NOT_CONFIRMED_TEXT,
+  resultMessage,
   SENT_SESSION_ENDED_TEXT,
   type StartUpload,
   UPLOAD_ENDPOINT,
@@ -1080,10 +1081,9 @@ describe("the result check after the last byte", () => {
 
   test("401 (the session ended during ingest) fails the row: the file was sent, sign in and check", async () => {
     answer(401, { error: "unauthorized" });
-    expect(await fetchUploadResult(UPLOAD)).toEqual({
-      status: "failed",
-      error: SENT_SESSION_ENDED_TEXT,
-    });
+    const result = await fetchUploadResult(UPLOAD);
+    expect(result).toEqual({ status: "failed", code: "sent_session_ended" });
+    expect(resultMessage(result)).toBe(SENT_SESSION_ENDED_TEXT);
     expect(SENT_SESSION_ENDED_TEXT).toMatch(/sent/i);
     expect(SENT_SESSION_ENDED_TEXT).toMatch(/session has ended/i);
     expect(SENT_SESSION_ENDED_TEXT).toMatch(/sign in/i);
@@ -1092,10 +1092,9 @@ describe("the result check after the last byte", () => {
 
   test("404 (an upload the server no longer knows) says it could not be confirmed, at once", async () => {
     answer(404, { error: "not_found" });
-    expect(await fetchUploadResult(UPLOAD)).toEqual({
-      status: "failed",
-      error: NOT_CONFIRMED_TEXT,
-    });
+    const result = await fetchUploadResult(UPLOAD);
+    expect(result).toEqual({ status: "failed", code: "not_confirmed" });
+    expect(resultMessage(result)).toBe(NOT_CONFIRMED_TEXT);
     expect(NOT_CONFIRMED_TEXT).toBe(
       "The upload could not be confirmed; check the library before sending it again.",
     );
@@ -1106,7 +1105,7 @@ describe("the result check after the last byte", () => {
       answer(status, { error: "x" });
       expect(await fetchUploadResult(UPLOAD), String(status)).toEqual({
         status: "failed",
-        error: NOT_CONFIRMED_TEXT,
+        code: "not_confirmed",
       });
     }
   });

@@ -27,9 +27,13 @@ import { type ReactNode, StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
 import "./styles/studio.css";
+import type { Messages } from "@platehouse/i18n";
 import { ActivityPage } from "./activity/ActivityPage";
 import { CollectionsPage } from "./collections/CollectionsPage";
 import { CreatorsPage } from "./creators/CreatorsPage";
+import { ENGLISH, loadInitialMessages } from "./i18n/catalogs";
+import { I18nProvider, useI18n } from "./i18n/I18n";
+import { readLanguage } from "./i18n/language";
 import { LibraryPage } from "./library/LibraryPage";
 import { ModelPage } from "./model/ModelPage";
 import { SettingsPage } from "./settings/SettingsPage";
@@ -41,10 +45,11 @@ import { TrashPage } from "./trash/TrashPage";
 import { UploadDialog } from "./upload/UploadDialog";
 
 function Section({ title }: { title: string }) {
+  const { t } = useI18n();
   return (
     <>
       <h1>{title}</h1>
-      <p className="studio-empty">Nothing here yet.</p>
+      <p className="studio-empty">{t("shell.nothingHere")}</p>
     </>
   );
 }
@@ -66,6 +71,7 @@ const PAGES: Readonly<Record<string, ReactNode>> = {
 };
 
 function App() {
+  const { t } = useI18n();
   /** The open dialog's key: NEW_MODELS or a model id; null when none is open. */
   const [openFor, setOpenFor] = useState<string | null>(null);
   /**
@@ -95,10 +101,10 @@ function App() {
           path="/models/:id"
           element={<ModelPage onFiles={openWith} refreshKey={refreshKey} />}
         />
-        {SECTIONS.filter(({ to }) => to !== "/").map(({ label, to }) => (
-          <Route key={to} path={to} element={PAGES[to] ?? <Section title={label} />} />
+        {SECTIONS.filter(({ to }) => to !== "/").map(({ key, to }) => (
+          <Route key={to} path={to} element={PAGES[to] ?? <Section title={t(key)} />} />
         ))}
-        <Route path="*" element={<Section title="Page not found" />} />
+        <Route path="*" element={<Section title={t("shell.notFound")} />} />
       </Routes>
       {targets.map((key) => (
         <UploadDialog
@@ -116,11 +122,30 @@ function App() {
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("index.html has no #root element");
+const rootElement = root;
 
-createRoot(root).render(
-  <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </StrictMode>,
+// The language is the one the server wrote into the html element's lang (the
+// ph_lang cookie, else the browser's languages; apps/server/src/web/shell.ts).
+// Its messages load before the first render, so no English flashes first; a
+// language that cannot be loaded is shown in English. A built-in language
+// renders from its bundled chunk without waiting on the server's language
+// list, and a self-hoster's LOCALES_DIR changes to it are merged in when
+// they arrive (PR 287 review).
+const wanted = readLanguage(document);
+loadInitialMessages(wanted).then(
+  ({ messages, later }) => start(wanted, messages, later),
+  () => start("en", ENGLISH),
 );
+
+function start(locale: string, messages: Messages, later?: Promise<Messages | undefined>) {
+  document.documentElement.setAttribute("lang", locale);
+  createRoot(rootElement).render(
+    <StrictMode>
+      <I18nProvider locale={locale} messages={messages} {...(later === undefined ? {} : { later })}>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </I18nProvider>
+    </StrictMode>,
+  );
+}

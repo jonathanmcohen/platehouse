@@ -22,7 +22,8 @@
 //   reloads to show the change.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
-import { AppApiError, appApi, errorText, useAppApi } from "../settings/api";
+import { type MessageKey, useI18n } from "../i18n/I18n";
+import { AppApiError, appApi, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog, Dialog } from "../settings/Dialog";
 import {
   type BulkAction,
@@ -57,10 +58,6 @@ export interface SelectBarProps {
 
 type Open = "add-tags" | "remove-tag" | "add-to-collection" | "trash" | null;
 
-function models(n: number): string {
-  return n === 1 ? "1 model" : `${n} models`;
-}
-
 /** The buttons under a dialog's fields: go ahead, and Cancel. */
 function DialogActions({
   label,
@@ -75,6 +72,7 @@ function DialogActions({
   onGo(): void;
   onCancel(): void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="studio-actions">
       <button
@@ -86,7 +84,7 @@ function DialogActions({
         {label}
       </button>
       <button type="button" className="studio-button" aria-disabled={busy} onClick={onCancel}>
-        Cancel
+        {t("common.cancel")}
       </button>
     </div>
   );
@@ -94,6 +92,7 @@ function DialogActions({
 
 /** Runs a change for a dialog: busy while it runs, its failure kept to show. */
 function useRun(onCancel: () => void) {
+  const errorText = useErrorText();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   async function run(change: () => Promise<void>) {
@@ -131,6 +130,7 @@ function AddTagsDialog({
   onSubmit(tags: string[]): Promise<void>;
   onCancel(): void;
 }) {
+  const { t } = useI18n();
   const [pending, setPending] = useState<string[]>([]);
   /** Text typed in the tag input but not yet added to the list (issue #257). */
   const [draft, setDraft] = useState("");
@@ -143,32 +143,33 @@ function AddTagsDialog({
   const full = pending.length >= MAX_TAGS;
   const tooMany = toSend.length > MAX_TAGS;
   return (
-    <Dialog title={`Add tags to ${models(count)}`} onClose={close}>
-      <p>Type a tag and press Enter, or pick one of the library's. Tags they have are kept.</p>
+    <Dialog
+      title={t("library.select.addTagsTitle", { models: t("library.count.models", { count }) })}
+      onClose={close}
+    >
+      <p>{t("library.select.addTagsIntro")}</p>
       <ChipEditor
         values={pending}
-        addLabel="Tag to add"
-        addButton="Add to the list"
-        removeLabel={(tag) => `Take ${tag} off the list`}
+        addLabel={t("library.select.tagToAdd")}
+        addButton={t("library.select.addToList")}
+        removeLabel={(tag) => t("library.select.takeOff", { tag })}
         suggestions={tags}
         onDraft={setDraft}
         onAdd={async (tag) => {
           // Thrown, the ChipEditor keeps the typed tag and shows why it was not added.
           if (withTag(pending, tag).length > MAX_TAGS) {
-            throw new AppApiError(0, "The list is full.");
+            throw new AppApiError(0, t("library.select.listFull"));
           }
           setPending((list) => withTag(list, tag));
         }}
         onRemove={async (tag) => setPending((list) => list.filter((t) => t !== tag))}
       />
       {full ? (
-        <p className="studio-muted">
-          One action adds at most {MAX_TAGS} tags. Take one off the list to add another.
-        </p>
+        <p className="studio-muted">{t("library.select.tagsMax", { max: MAX_TAGS })}</p>
       ) : null}
       {alert}
       <DialogActions
-        label="Add tags"
+        label={t("library.select.addTags")}
         busy={busy}
         blocked={toSend.length === 0 || tooMany}
         onGo={() => {
@@ -198,16 +199,20 @@ function RemoveTagDialog({
   onSubmit(tag: string): Promise<void>;
   onCancel(): void;
 }) {
+  const { t } = useI18n();
   const id = useId();
   const [tag, setTag] = useState(tags[0] ?? "");
   const { busy, run, close, alert } = useRun(onCancel);
   return (
-    <Dialog title={`Remove a tag from ${models(count)}`} onClose={close}>
+    <Dialog
+      title={t("library.select.removeTagTitle", { models: t("library.count.models", { count }) })}
+      onClose={close}
+    >
       {tags.length === 0 ? (
-        <p>No model has a tag yet.</p>
+        <p>{t("library.select.noTags")}</p>
       ) : (
         <div className="ph-field">
-          <label htmlFor={id}>Tag to remove</label>
+          <label htmlFor={id}>{t("library.select.tagToRemove")}</label>
           <select
             id={id}
             className="ph-select"
@@ -224,7 +229,7 @@ function RemoveTagDialog({
       )}
       {alert}
       <DialogActions
-        label="Remove tag"
+        label={t("library.select.removeTag")}
         busy={busy}
         blocked={tag === ""}
         onGo={() => {
@@ -245,6 +250,7 @@ function CollectionDialog({
   onSubmit(collection: string): Promise<void>;
   onCancel(): void;
 }) {
+  const { t } = useI18n();
   const id = useId();
   const [name, setName] = useState("");
   const existing = useAppApi<{ collections: Array<{ name: string }> }>("/collections");
@@ -254,7 +260,10 @@ function CollectionDialog({
     if (value !== "") void run(() => onSubmit(value));
   };
   return (
-    <Dialog title={`Add ${models(count)} to a collection`} onClose={close}>
+    <Dialog
+      title={t("library.select.collectionTitle", { models: t("library.count.models", { count }) })}
+      onClose={close}
+    >
       <form
         className="ph-field"
         onSubmit={(event: FormEvent<HTMLFormElement>) => {
@@ -262,7 +271,7 @@ function CollectionDialog({
           go();
         }}
       >
-        <label htmlFor={id}>Collection, existing or new</label>
+        <label htmlFor={id}>{t("library.select.collectionLabel")}</label>
         <input
           id={id}
           className="studio-input"
@@ -280,7 +289,7 @@ function CollectionDialog({
       </form>
       {alert}
       <DialogActions
-        label="Add to collection"
+        label={t("library.select.addToCollection")}
         busy={busy}
         blocked={name.trim() === ""}
         onGo={go}
@@ -301,6 +310,9 @@ export function SelectBar({
   onChanged,
   onDialog,
 }: SelectBarProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const errorText = useErrorText();
   const [open, setOpenState] = useState<Open>(null);
   const [result, setResult] = useState<{ done: string; failed: string | null } | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -335,9 +347,7 @@ export function SelectBar({
       const names = new Map(shown.map((c) => [c.id, c.name]));
       add(answer.ids.map((id) => [id, names.get(id) ?? null]));
       if (answer.capped) {
-        setNote(
-          `Only the first ${answer.ids.length} matching models can be selected at once. Narrow the search or pick a tag to select the rest.`,
-        );
+        setNote(t("library.select.capped", { count: answer.ids.length }));
       }
     } catch (failure) {
       setNote(errorText(failure));
@@ -349,10 +359,7 @@ export function SelectBar({
   async function run(action: BulkAction) {
     const ids = [...selected.keys()];
     if (ids.length > MAX_SELECTED) {
-      throw new AppApiError(
-        0,
-        `One action takes at most ${MAX_SELECTED} models. Clear some of the selection and try again.`,
-      );
+      throw new AppApiError(0, t("library.select.tooMany", { max: MAX_SELECTED }));
     }
     const answer = await appApi<BulkAnswer>(
       "POST",
@@ -360,7 +367,7 @@ export function SelectBar({
       bulkBody(action, ids),
     );
     const names = new Map([...selected].filter((e): e is [string, string] => e[1] !== null));
-    setResult(describeBulk(action, answer, names));
+    setResult(describeBulk(action, answer, names, i18n));
     const gone = new Set(answer.failed.map((f) => f.id));
     if (action.action === "trash") for (const id of answer.changed) gone.add(id);
     onChange(new Map([...selected].filter(([id]) => !gone.has(id))));
@@ -368,7 +375,7 @@ export function SelectBar({
     onChanged();
   }
 
-  function action(name: Exclude<Open, null>, label: string, danger = false) {
+  function action(name: Exclude<Open, null>, label: MessageKey, danger = false) {
     return (
       <button
         type="button"
@@ -380,20 +387,20 @@ export function SelectBar({
           setOpen(name, event.currentTarget);
         }}
       >
-        {label}
+        {t(label)}
       </button>
     );
   }
 
   const cancel = () => setOpen(null);
   const allLabel = totalCapped
-    ? `Select the first ${total} matching`
-    : `Select all ${total} matching`;
+    ? t("library.select.firstMatching", { count: total })
+    : t("library.select.allMatching", { count: total });
 
   return (
-    <section className="ph-select-bar" aria-label="Selection">
+    <section className="ph-select-bar" aria-label={t("library.select.label")}>
       <p id="ph-selection-count" role="status" className="ph-select-count">
-        {none ? "No models selected" : `${models(count)} selected`}
+        {none ? t("library.select.none") : t("library.select.count", { count })}
       </p>
       <div className="studio-actions">
         <button
@@ -401,7 +408,7 @@ export function SelectBar({
           className="studio-button ph-small"
           onClick={() => add(shown.map((c) => [c.id, c.name]))}
         >
-          Select all on this page
+          {t("library.select.page")}
         </button>
         <button
           type="button"
@@ -419,14 +426,14 @@ export function SelectBar({
             setNote(null);
           }}
         >
-          Clear selection
+          {t("library.select.clear")}
         </button>
       </div>
       <div className="studio-actions">
-        {action("add-tags", "Add tags")}
-        {action("remove-tag", "Remove tag")}
-        {action("add-to-collection", "Add to collection")}
-        {action("trash", "Move to trash", true)}
+        {action("add-tags", "library.select.addTags")}
+        {action("remove-tag", "library.select.removeTag")}
+        {action("add-to-collection", "library.select.addToCollection")}
+        {action("trash", "library.select.trash", true)}
       </div>
       {note === null ? null : <p className="studio-muted">{note}</p>}
       {result === null ? null : <p className="studio-muted">{result.done}</p>}
@@ -460,13 +467,9 @@ export function SelectBar({
       ) : null}
       {open === "trash" ? (
         <ConfirmDialog
-          title={`Move ${models(count)} to the trash?`}
-          message={
-            count === 1
-              ? "It can be restored from the trash for 30 days."
-              : "They can be restored from the trash for 30 days."
-          }
-          confirmLabel="Move to trash"
+          title={t("library.select.trashTitle", { models: t("library.count.models", { count }) })}
+          message={t("library.select.trashMessage", { count })}
+          confirmLabel={t("library.select.trash")}
           onConfirm={() => run({ action: "trash" })}
           onCancel={cancel}
           returnFocusTo={opener}

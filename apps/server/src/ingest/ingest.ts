@@ -100,7 +100,8 @@ export const STORAGE_UNAVAILABLE_MESSAGE = "Storage is unavailable right now; no
 export const UNSUPPORTED_MESSAGE =
   "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved";
 
-const MODEL_NOT_FOUND_MESSAGE = "That model does not exist or is in the trash; nothing was saved";
+export const MODEL_NOT_FOUND_MESSAGE =
+  "That model does not exist or is in the trash; nothing was saved";
 
 /**
  * What an upload shows when it failed for a reason that is not Jon's to fix

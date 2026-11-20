@@ -940,6 +940,7 @@ describe("the trash", () => {
       expect(res.json()).toEqual({
         error: "incomplete",
         purged: 1,
+        failed: 1,
         message: "1 model could not be deleted and stays in the trash; the next purge tries again.",
       });
       expect((await rowCounts(env.db, done.model.id)).models).toBe(0);

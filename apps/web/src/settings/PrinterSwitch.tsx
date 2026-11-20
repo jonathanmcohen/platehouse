@@ -17,7 +17,10 @@
 // - The menu's label is the sentence it completes, "Times and weights for",
 //   so a screen reader announces "Times and weights for, Bambu Lab P1S,
 //   0.4 mm nozzle, menu". Each option is the printer in full.
+
 import { useCallback, useId, useState } from "react";
+import { useI18n } from "../i18n/I18n";
+import { printerNameIn } from "../i18n/printers";
 import "./organise.css";
 
 /** Where the browser keeps the printer switch's choice. */
@@ -94,14 +97,19 @@ export interface PrinterSwitchProps {
 }
 
 export function PrinterSwitch({ printer, printerName, printers, onChoose }: PrinterSwitchProps) {
+  const i18n = useI18n();
   const id = useId();
   if (printers.length < 2) {
-    return <p className="studio-muted">Times and weights for {printerName}</p>;
+    return (
+      <p className="studio-muted">
+        {i18n.t("printers.switch.single", { printer: printerNameIn(i18n, printerName) })}
+      </p>
+    );
   }
   return (
     <div className="ph-printer-switch">
       <label htmlFor={id} className="studio-muted">
-        Times and weights for
+        {i18n.t("printers.switch.label")}
       </label>{" "}
       <select
         id={id}
@@ -111,7 +119,7 @@ export function PrinterSwitch({ printer, printerName, printers, onChoose }: Prin
       >
         {printers.map((p) => (
           <option key={p.id} value={p.id}>
-            {p.name}
+            {printerNameIn(i18n, p.name)}
           </option>
         ))}
       </select>

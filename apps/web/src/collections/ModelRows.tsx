@@ -14,7 +14,8 @@
 // to the next row's Move to trash, else the previous row's, else the status
 // line saying what happened (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
-import { appApi, errorText, nameQuery, segment } from "../settings/api";
+import { useI18n } from "../i18n/I18n";
+import { appApi, nameQuery, segment, useErrorText } from "../settings/api";
 import { type RowFocus, useRowFocus } from "../settings/focus";
 import { ChipEditor } from "./ChipEditor";
 import { InlineRename } from "./InlineRename";
@@ -52,6 +53,8 @@ function ModelRow({
   onTrashed(): void;
   focus: RowFocus;
 }) {
+  const errorText = useErrorText();
+  const { t } = useI18n();
   const [error, setError] = useState<string | undefined>(undefined);
   const [trashing, setTrashing] = useState(false);
   const id = segment(model.id);
@@ -75,8 +78,8 @@ function ModelRow({
         <div className="ph-model-name">
           <InlineRename
             value={model.name}
-            buttonLabel={`Rename ${model.name}`}
-            inputLabel={`New name for ${model.name}`}
+            buttonLabel={t("common.renameLabel", { name: model.name })}
+            inputLabel={t("common.newNameLabel", { name: model.name })}
             onSave={async (name) => {
               await appApi("PATCH", `/models/${id}`, { name });
               update((m) => ({ ...m, name }));
@@ -87,27 +90,29 @@ function ModelRow({
           ref={focus.control(model.id)}
           type="button"
           className="studio-button ph-small ph-button-danger"
-          aria-label={`Move ${model.name} to the trash`}
+          aria-label={t("rows.trashLabel", { name: model.name })}
           aria-disabled={trashing}
           onClick={trash}
         >
-          Move to trash
+          {t("library.select.trash")}
         </button>
       </div>
-      {model.creator === null ? null : <span className="studio-muted">By {model.creator}</span>}
+      {model.creator === null ? null : (
+        <span className="studio-muted">{t("rows.by", { creator: model.creator })}</span>
+      )}
       {error === undefined ? null : (
         <p role="alert" className="studio-alert studio-alert-alert">
           {error}
         </p>
       )}
       {model.files.length === 0 ? null : (
-        <ul className="studio-list" aria-label={`Files of ${model.name}`}>
+        <ul className="studio-list" aria-label={t("rows.filesOf", { name: model.name })}>
           {model.files.map((file) => (
             <li key={file.id}>
               <InlineRename
                 value={file.name}
-                buttonLabel={`Rename ${file.name}`}
-                inputLabel={`New name for ${file.name}`}
+                buttonLabel={t("common.renameLabel", { name: file.name })}
+                inputLabel={t("common.newNameLabel", { name: file.name })}
                 onSave={async (name) => {
                   await appApi("PATCH", `/files/${segment(file.id)}`, { name });
                   update((m) => ({
@@ -120,12 +125,12 @@ function ModelRow({
           ))}
         </ul>
       )}
-      <span className="studio-filaments-label">Tags</span>
+      <span className="studio-filaments-label">{t("model.about.tags")}</span>
       <ChipEditor
         values={model.tags}
-        addLabel={`Add a tag to ${model.name}`}
-        addButton="Add tag"
-        removeLabel={(tag) => `Remove tag ${tag} from ${model.name}`}
+        addLabel={t("rows.addTagLabel", { name: model.name })}
+        addButton={t("rows.addTag")}
+        removeLabel={(tag) => t("rows.removeTag", { tag, name: model.name })}
         onAdd={async (tag) => {
           const { name } = await appApi<StoredName>("PUT", `/models/${id}/tags${nameQuery(tag)}`);
           update((m) =>
@@ -137,12 +142,12 @@ function ModelRow({
           update((m) => ({ ...m, tags: m.tags.filter((t) => t !== tag) }));
         }}
       />
-      <span className="studio-filaments-label">Collections</span>
+      <span className="studio-filaments-label">{t("model.about.collections")}</span>
       <ChipEditor
         values={model.collections}
-        addLabel={`Add ${model.name} to a collection`}
-        addButton="Add"
-        removeLabel={(name) => `Remove ${model.name} from collection ${name}`}
+        addLabel={t("rows.addCollectionLabel", { name: model.name })}
+        addButton={t("shell.add")}
+        removeLabel={(name) => t("rows.removeCollection", { name: model.name, collection: name })}
         onAdd={async (typed) => {
           const { name } = await appApi<StoredName>(
             "PUT",
@@ -170,6 +175,7 @@ export interface ModelRowsProps {
 }
 
 export function ModelRows({ models, update }: ModelRowsProps) {
+  const { t } = useI18n();
   const [status, setStatus] = useState("");
   const statusLine = useRef<HTMLParagraphElement>(null);
   const focus = useRowFocus(
@@ -182,7 +188,7 @@ export function ModelRows({ models, update }: ModelRowsProps) {
       <p ref={statusLine} role="status" tabIndex={-1}>
         {status}
       </p>
-      {models.length === 0 ? <p className="studio-empty">No models here.</p> : null}
+      {models.length === 0 ? <p className="studio-empty">{t("rows.empty")}</p> : null}
       {models.length === 0 ? null : (
         <ul className="studio-list">
           {models.map((model) => (
@@ -195,9 +201,7 @@ export function ModelRows({ models, update }: ModelRowsProps) {
               }
               onTrashed={() => {
                 update((list) => list.filter((m) => m.id !== model.id));
-                setStatus(
-                  `Moved ${model.name} to the trash. Restore it from the trash within 30 days.`,
-                );
+                setStatus(t("rows.trashed", { name: model.name }));
               }}
             />
           ))}

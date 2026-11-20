@@ -11,7 +11,8 @@
 // touched; the server decides that (apps/server/src/repos/models.ts
 // titleNamePlan).
 import { useRef, useState } from "react";
-import { appApi, errorText } from "./api";
+import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { appApi, useErrorText } from "./api";
 import { ConfirmDialog } from "./Dialog";
 import "./organise.css";
 
@@ -35,47 +36,58 @@ export interface TitleNamePlan {
 /** How many renames the dialog shows as examples. */
 const EXAMPLES = 5;
 
-const models = (n: number) => (n === 1 ? "1 model" : `${n} models`);
+/** Builds the sentences in a language. */
+type Words = Pick<I18n, "t">;
+
+const models = (t: Words["t"], n: number) => t("library.count.models", { count: n });
 
 /** "N are left as they are", or "" when none is. */
-function leftCount(skipped: TitleNamePlan["skipped"]): string {
+function leftCount(t: Words["t"], skipped: TitleNamePlan["skipped"]): string {
   const total = Object.values(skipped).reduce((sum, n) => sum + n, 0);
   if (total === 0) return "";
-  return total === 1 ? "1 is left as it is" : `${total} are left as they are`;
+  return t("titles.left", { count: total });
 }
 
+/** The words for each reason a model keeps its name, by its field in skipped. */
+const REASON_KEYS = [
+  ["renamedByUser", "titles.reason.renamedByUser"],
+  ["nameNotFromFile", "titles.reason.nameNotFromFile"],
+  ["noTitle", "titles.reason.noTitle"],
+  ["namedFromTitle", "titles.reason.namedFromTitle"],
+  ["sameName", "titles.reason.sameName"],
+  ["imported", "titles.reason.imported"],
+  ["captionNotFromFile", "titles.reason.captionNotFromFile"],
+] as const satisfies ReadonlyArray<readonly [keyof TitleNamePlan["skipped"], MessageKey]>;
+
 /** leftCount with the reasons: "N are left as they are: 2 renamed by you, ...", or "". */
-function leftAlone(skipped: TitleNamePlan["skipped"]): string {
-  const count = leftCount(skipped);
+function leftAlone(t: Words["t"], skipped: TitleNamePlan["skipped"]): string {
+  const count = leftCount(t, skipped);
   if (count === "") return "";
-  const reasons = [
-    [skipped.renamedByUser, "renamed by you"],
-    [skipped.nameNotFromFile, "whose name is not a file name"],
-    [skipped.noTitle, "with no title"],
-    [skipped.namedFromTitle, "already named from a title"],
-    [skipped.sameName, "already named as their title"],
-    [skipped.imported, "imported from another library"],
-    [skipped.captionNotFromFile, "whose caption was not read from a .3mf"],
-  ] as const;
-  const listed = reasons.filter(([n]) => n > 0).map(([n, why]) => `${n} ${why}`);
-  return `${count}: ${listed.join(", ")}.`;
+  const listed = REASON_KEYS.filter(([field]) => skipped[field] > 0).map(([field, key]) =>
+    t(key, { count: skipped[field] }),
+  );
+  return t("titles.leftAlone", { left: count, reasons: listed.join(", ") });
 }
 
 /** The dialog's message: how many, a few examples, and what is left alone. */
-function previewMessage(plan: TitleNamePlan): string {
+function previewMessage(t: Words["t"], plan: TitleNamePlan): string {
   const n = plan.renames.length;
-  const head =
-    n === 1
-      ? "1 model will be renamed from its file's title."
-      : `${n} models will be renamed from their file's title.`;
-  const shown = plan.renames.slice(0, EXAMPLES).map((r) => `"${r.from}" becomes "${r.to}"`);
-  const more = n > EXAMPLES ? `; and ${n - EXAMPLES} more` : "";
-  const examples = ` For example: ${shown.join("; ")}${more}.`;
-  const rest = leftAlone(plan.skipped);
-  return `${head}${examples}${rest === "" ? "" : ` ${rest}`} A model can still be renamed by hand afterwards.`;
+  const head = t("titles.head", { count: n });
+  const shown = plan.renames
+    .slice(0, EXAMPLES)
+    .map((r) => t("titles.example", { from: r.from, to: r.to }))
+    .join("; ");
+  const examples =
+    n > EXAMPLES
+      ? t("titles.examplesMore", { list: shown, more: n - EXAMPLES })
+      : t("titles.examples", { list: shown });
+  const rest = leftAlone(t, plan.skipped);
+  return `${head} ${examples}${rest === "" ? "" : ` ${rest}`} ${t("titles.byHand")}`;
 }
 
 export function TitleNames() {
+  const { t } = useI18n();
+  const errorText = useErrorText();
   const [plan, setPlan] = useState<TitleNamePlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -92,8 +104,12 @@ export function TitleNames() {
     try {
       const answer = await appApi<TitleNamePlan>("GET", "/models/title-names");
       if (answer.renames.length === 0) {
-        const rest = leftCount(answer.skipped);
-        setStatus(`No model needs a new name.${rest === "" ? "" : ` ${rest}.`}`);
+        const rest = leftCount(t, answer.skipped);
+        setStatus(
+          rest === ""
+            ? t("titles.noneNeeded")
+            : `${t("titles.noneNeeded")} ${t("titles.leftSentence", { left: rest })}`,
+        );
       } else {
         returnTo.current = start.current;
         setPlan(answer);
@@ -115,18 +131,14 @@ export function TitleNames() {
     // The result goes where focus goes; the dialog has nothing left to do.
     returnTo.current = statusLine.current;
     setPlan(null);
-    setStatus(`Renamed ${models(answer.renamed)}.`);
+    setStatus(t("titles.renamed", { models: models(t, answer.renamed) }));
   }
 
   return (
     <div className="ph-section">
-      <h2>Model names</h2>
+      <h2>{t("titles.heading")}</h2>
       <div className="studio-panel">
-        <p className="studio-muted">
-          Name the models nobody has renamed after the title in their .3mf file, such as a
-          MakerWorld title, instead of the file name. You see how many first, and a model you
-          renamed is never changed.
-        </p>
+        <p className="studio-muted">{t("titles.intro")}</p>
         <div className="studio-actions">
           <button
             ref={start}
@@ -135,7 +147,7 @@ export function TitleNames() {
             aria-disabled={busy}
             onClick={preview}
           >
-            Use file titles
+            {t("titles.button")}
           </button>
         </div>
         <p ref={statusLine} role="status" tabIndex={-1}>
@@ -149,9 +161,9 @@ export function TitleNames() {
       </div>
       {plan === null ? null : (
         <ConfirmDialog
-          title="Use file titles?"
-          message={previewMessage(plan)}
-          confirmLabel={`Rename ${models(plan.renames.length)}`}
+          title={t("titles.confirmTitle")}
+          message={previewMessage(t, plan)}
+          confirmLabel={t("titles.renameCount", { models: models(t, plan.renames.length) })}
           onConfirm={run}
           onCancel={() => setPlan(null)}
           returnFocusTo={returnTo}

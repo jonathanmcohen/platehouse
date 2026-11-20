@@ -22,7 +22,9 @@
 // next model's Restore, else the previous one's, else the status line
 // (useRowFocus in ../settings/focus).
 import { useRef, useState } from "react";
-import { AppApiError, appApi, errorText, formatDate, segment, useAppApi } from "../settings/api";
+import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
+import { AppApiError, appApi, segment, useAppApi, useErrorText } from "../settings/api";
 import { ConfirmDialog } from "../settings/Dialog";
 import { useRowFocus } from "../settings/focus";
 
@@ -35,8 +37,8 @@ export interface TrashedModel {
   purgeStarted: boolean;
 }
 
-function deletedSentence(purged: number): string {
-  return `Deleted ${purged} ${purged === 1 ? "model" : "models"} for good.`;
+function deletedSentence(purged: number, i18n: Pick<I18n, "t"> = ENGLISH_I18N): string {
+  return i18n.t("trash.deleted", { count: purged });
 }
 
 /**
@@ -45,14 +47,26 @@ function deletedSentence(purged: number): string {
  * sentence for the page (apps/server/src/app-api/organise.ts). Any other
  * failure is left as it is.
  */
-function incompleteFailure(failure: unknown): unknown {
+function incompleteFailure(
+  failure: unknown,
+  i18n: Pick<I18n, "t" | "locale"> = ENGLISH_I18N,
+): unknown {
   if (!(failure instanceof AppApiError)) return failure;
-  const body = failure.body as { error?: unknown; purged?: unknown; message?: unknown } | null;
+  const body = failure.body as {
+    error?: unknown;
+    purged?: unknown;
+    failed?: unknown;
+    message?: unknown;
+  } | null;
   if (body?.error !== "incomplete" || typeof body.message !== "string") return failure;
   const done = typeof body.purged === "number" && body.purged > 0;
-  const sentence = done
-    ? `${deletedSentence(body.purged as number)} ${body.message}`
-    : body.message;
+  // The server's own sentence on an English page; in another language, its
+  // count in the catalog's words (an older answer, with no count, as it is).
+  const failed = body.failed;
+  const rest = serverTextWith(i18n, body.message, () =>
+    typeof failed === "number" ? i18n.t("trash.incomplete", { count: failed }) : undefined,
+  );
+  const sentence = done ? `${deletedSentence(body.purged as number, i18n)} ${rest}` : rest;
   return new AppApiError(failure.status, sentence, failure.body);
 }
 
@@ -63,6 +77,9 @@ interface TrashListing {
 }
 
 export function TrashList() {
+  const errorText = useErrorText();
+  const i18n = useI18n();
+  const { t, rich } = i18n;
   const trash = useAppApi<TrashListing>("/trash");
   /**
    * What Empty trash asks to delete, from when the dialog opened: how many
@@ -100,7 +117,7 @@ export function TrashList() {
     try {
       await appApi("POST", `/trash/${segment(model.id)}/restore`);
       trash.set((prev) => ({ ...prev, models: prev.models.filter((m) => m.id !== model.id) }));
-      setStatus("Restored. The model is back in the library with its files, tags and collections.");
+      setStatus(t("trash.restored"));
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -119,10 +136,10 @@ export function TrashList() {
       // The result goes where focus goes; Empty trash has nothing left to do.
       emptyReturn.current = statusLine.current;
       setAsking(null);
-      setStatus(deletedSentence(answer.purged));
+      setStatus(deletedSentence(answer.purged, i18n));
     } catch (failure) {
       // The dialog shows this; the list below is read again either way.
-      throw incompleteFailure(failure);
+      throw incompleteFailure(failure, i18n);
     } finally {
       trash.reload();
     }
@@ -130,10 +147,7 @@ export function TrashList() {
 
   return (
     <div className="studio-panel">
-      <p className="studio-muted">
-        A model in the trash is deleted for good 30 days after it was trashed. Restore brings it
-        back with its files, tags and collections.
-      </p>
+      <p className="studio-muted">{t("trash.intro")}</p>
       <div className="studio-actions">
         <button
           ref={emptyButton}
@@ -146,7 +160,7 @@ export function TrashList() {
             setAsking({ count: models.length, cutoff: trash.data.readAt });
           }}
         >
-          Empty trash
+          {t("trash.empty")}
         </button>
       </div>
       <p ref={statusLine} role="status" tabIndex={-1}>
@@ -161,10 +175,10 @@ export function TrashList() {
         <p className="studio-alert studio-alert-alert">{trash.error}</p>
       )}
       {trash.data === undefined && trash.error === undefined ? (
-        <p className="studio-muted">Loading the trash.</p>
+        <p className="studio-muted">{t("trash.loading")}</p>
       ) : null}
       {trash.data !== undefined && models.length === 0 ? (
-        <p className="studio-empty">The trash is empty.</p>
+        <p className="studio-empty">{t("trash.isEmpty")}</p>
       ) : null}
       {models.length > 0 ? (
         <ul className="studio-list">
@@ -176,23 +190,22 @@ export function TrashList() {
                   ref={focus.control(model.id)}
                   type="button"
                   className="studio-button ph-small"
-                  aria-label={`Restore ${model.name}`}
+                  aria-label={t("trash.restoreLabel", { name: model.name })}
                   aria-disabled={model.purgeStarted || restoring.has(model.id)}
                   onClick={() => restore(model)}
                 >
-                  Restore
+                  {t("trash.restore")}
                 </button>
               </div>
               <span className="studio-muted">
-                {model.creator === null ? null : `By ${model.creator}. `}
-                {model.purgeStarted ? (
-                  "It is being deleted now and cannot be restored."
-                ) : (
-                  <>
-                    {"Deleted for good after "}
-                    <time dateTime={model.purgeAt}>{formatDate(model.purgeAt)}</time>.
-                  </>
-                )}
+                {model.creator === null ? null : `${t("trash.by", { creator: model.creator })} `}
+                {model.purgeStarted
+                  ? t("trash.purging")
+                  : rich(
+                      "trash.purgeAfter",
+                      { date: i18n.fmt.date(model.purgeAt) },
+                      { time: (children) => <time dateTime={model.purgeAt}>{children}</time> },
+                    )}
               </span>
             </li>
           ))}
@@ -200,13 +213,9 @@ export function TrashList() {
       ) : null}
       {asking !== null ? (
         <ConfirmDialog
-          title="Empty the trash?"
-          message={
-            asking.count === 1
-              ? "The 1 model listed here is deleted for good, with its files. This cannot be undone."
-              : `The ${asking.count} models listed here are deleted for good, with their files. This cannot be undone.`
-          }
-          confirmLabel="Empty trash"
+          title={t("trash.confirmTitle")}
+          message={t("trash.confirmMessage", { count: asking.count })}
+          confirmLabel={t("trash.empty")}
           onConfirm={emptyTrash}
           onCancel={() => setAsking(null)}
           returnFocusTo={emptyReturn}

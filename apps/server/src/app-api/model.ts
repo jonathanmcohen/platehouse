@@ -65,6 +65,7 @@ import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
+import { derivedParts } from "../derived/client.js";
 import {
   type DisplayContext,
   type PlateNumbers,
@@ -75,6 +76,13 @@ import { createRepos } from "../repos/index.js";
 import type { TitleNamePlan } from "../repos/models.js";
 import { scrubDerivedMessage } from "../scrub.js";
 import { BLOB_PREFIX, forPrinter, type PrinterChoice, printerChoices } from "./library.js";
+
+/** What Use file titles says when it is run with no preview (400, code titles_not_previewed). */
+export const TITLES_NOT_PREVIEWED_MESSAGE = "Press Use file titles to see the list first.";
+
+/** What Use file titles says when the library changed after its preview (409 plan_changed). */
+export const PLAN_CHANGED_MESSAGE =
+  "The library changed after this preview, so nothing was renamed. Cancel, then press Use file titles again to see the new list.";
 
 /** A "Use file titles" planId: the SHA-256 of the plan's renames, in hex. */
 const PLAN_ID = /^[0-9a-f]{64}$/;
@@ -120,6 +128,14 @@ export interface ModelFileView {
   derivedStatus: string | null;
   /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
+  /**
+   * The sentences Platehouse wrote at the start of derivedMessage, by code
+   * (derived/client.ts splitDerivedMessage), for the page to show in its
+   * language (Jon, 2026-11-19); empty when it holds none.
+   */
+  derivedCodes: string[];
+  /** What derivedMessage holds after those sentences (the program's own words), or null. */
+  derivedDetail: string | null;
   /** Task 17's download route for the file. */
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
@@ -366,6 +382,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             parseStatus: f.parseStatus,
             derivedStatus: f.derivedStatus,
             derivedMessage: scrubDerivedMessage(f.derivedMessage),
+            ...derivedParts(scrubDerivedMessage(f.derivedMessage)),
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null
@@ -477,15 +494,15 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
         if (typeof planId !== "string" || !PLAN_ID.test(planId)) {
           return reply.code(400).send({
             error: "bad_request",
-            message: "Press Use file titles to see the list first.",
+            message: TITLES_NOT_PREVIEWED_MESSAGE,
+            code: "titles_not_previewed",
           });
         }
         const done = await model.useTitleNames(planId);
         if (done === null) {
           return reply.code(409).send({
             error: "plan_changed",
-            message:
-              "The library changed after this preview, so nothing was renamed. Cancel, then press Use file titles again to see the new list.",
+            message: PLAN_CHANGED_MESSAGE,
           });
         }
         return done;

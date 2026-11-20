@@ -13,7 +13,7 @@
 // (useRowFocus in ../settings/focus); a remove that fails leaves focus on
 // its button.
 import { type FormEvent, useId, useRef, useState } from "react";
-import { errorText } from "../settings/api";
+import { useErrorText } from "../settings/api";
 import { useRowFocus } from "../settings/focus";
 import "../settings/organise.css";
 
@@ -50,6 +50,7 @@ export function ChipEditor({
   suggestions,
   onDraft,
 }: ChipEditorProps) {
+  const errorText = useErrorText();
   const id = useId();
   const [draft, setDraftState] = useState("");
   const setDraft = (next: string) => {

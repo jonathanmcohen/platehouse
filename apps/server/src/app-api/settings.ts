@@ -145,8 +145,21 @@ export function need<T>(deps: T | undefined): T {
 }
 
 /** An answer with no detail: an error word and, for the page, a plain sentence. */
-export function refuse(reply: FastifyReply, status: number, error: string, message?: string) {
-  return reply.code(status).send(message === undefined ? { error } : { error, message });
+export function refuse(
+  reply: FastifyReply,
+  status: number,
+  error: string,
+  message?: string,
+  /**
+   * A finer code (and its values) the web app shows the refusal by in a
+   * language other than English (Jon, 2026-11-19); message stays the English
+   * sentence an English page and an API client read.
+   */
+  extra?: { code: string } & Record<string, string | number>,
+) {
+  return reply
+    .code(status)
+    .send(message === undefined ? { error, ...extra } : { error, message, ...extra });
 }
 
 /**
@@ -273,7 +286,14 @@ const PRINTERS_BODY = {
  * knows: the page adds that the list now shows the change once its own
  * read of the list has worked.
  */
-const PRINTERS_CHANGED =
+/** What a printer the slicer's menu lacks says (400 unknown_printer). */
+export const UNKNOWN_PRINTER_MESSAGE = "That printer is not in the slicer's printer list.";
+
+/** What a printer save says while the slicer cannot be asked (503, code slicer_unavailable). */
+export const SLICER_UNAVAILABLE_MESSAGE =
+  "The slicer cannot be reached, so a printer cannot be added right now.";
+
+export const PRINTERS_CHANGED =
   "My printers or the default printer were changed somewhere else after this page read them, so nothing was saved.";
 
 /** Registers the settings routes: GET /settings and PUT /settings/printers. */
@@ -323,21 +343,13 @@ export async function registerSettingsApi(
             return refuse(reply, 409, "printers_changed", PRINTERS_CHANGED);
           }
           if (error instanceof UnknownPrinter) {
-            return refuse(
-              reply,
-              400,
-              "unknown_printer",
-              "That printer is not in the slicer's printer list.",
-            );
+            return refuse(reply, 400, "unknown_printer", UNKNOWN_PRINTER_MESSAGE);
           }
           if (isSlicerProblem(error)) {
             request.log.warn({ err: error }, "app api: the slicer's printer list is unavailable");
-            return refuse(
-              reply,
-              503,
-              "unavailable",
-              "The slicer cannot be reached, so a printer cannot be added right now.",
-            );
+            return refuse(reply, 503, "unavailable", SLICER_UNAVAILABLE_MESSAGE, {
+              code: "slicer_unavailable",
+            });
           }
           throw error;
         }

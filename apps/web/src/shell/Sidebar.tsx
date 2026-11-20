@@ -11,18 +11,28 @@
 // The brand at the top is the logo (Logo.tsx, aria-hidden beside the name)
 // and the name, linking to the library.
 import { Link, NavLink } from "react-router";
+import { ENGLISH_I18N, type MessageKey, useI18n } from "../i18n/I18n";
 import { Logo } from "./Logo";
 
-export const SECTIONS: ReadonlyArray<{ label: string; to: string }> = [
-  { label: "Library", to: "/" },
-  { label: "Creators", to: "/creators" },
-  { label: "Collections", to: "/collections" },
-  { label: "Tags", to: "/tags" },
+/**
+ * The sections: each one's message key, its English name (for code that is
+ * not shown, such as the tests) and its path. A server test reads the paths
+ * from this literal list.
+ */
+export const SECTIONS: ReadonlyArray<{ key: MessageKey; label: string; to: string }> = [
+  { key: "shell.nav.library", label: ENGLISH_I18N.t("shell.nav.library"), to: "/" },
+  { key: "shell.nav.creators", label: ENGLISH_I18N.t("shell.nav.creators"), to: "/creators" },
+  {
+    key: "shell.nav.collections",
+    label: ENGLISH_I18N.t("shell.nav.collections"),
+    to: "/collections",
+  },
+  { key: "shell.nav.tags", label: ENGLISH_I18N.t("shell.nav.tags"), to: "/tags" },
   // Task 21: the trash and settings pages.
-  { label: "Trash", to: "/trash" },
+  { key: "shell.nav.trash", label: ENGLISH_I18N.t("shell.nav.trash"), to: "/trash" },
   // What Platehouse is doing and holds: numbers, jobs, the slicer, events.
-  { label: "Activity", to: "/activity" },
-  { label: "Settings", to: "/settings" },
+  { key: "shell.nav.activity", label: ENGLISH_I18N.t("shell.nav.activity"), to: "/activity" },
+  { key: "shell.nav.settings", label: ENGLISH_I18N.t("shell.nav.settings"), to: "/settings" },
 ];
 
 export interface SidebarProps {
@@ -32,8 +42,9 @@ export interface SidebarProps {
 }
 
 export function Sidebar({ menu = false, onNavigate }: SidebarProps) {
+  const { t } = useI18n();
   return (
-    <nav className={menu ? "studio-menu-nav" : "studio-sidebar"} aria-label="Main">
+    <nav className={menu ? "studio-menu-nav" : "studio-sidebar"} aria-label={t("shell.nav.label")}>
       {menu ? null : (
         <Link to="/" className="studio-brand">
           <Logo />
@@ -41,10 +52,10 @@ export function Sidebar({ menu = false, onNavigate }: SidebarProps) {
         </Link>
       )}
       <ul className="studio-nav-list">
-        {SECTIONS.map(({ label, to }) => (
+        {SECTIONS.map(({ key, to }) => (
           <li key={to}>
             <NavLink to={to} end={to === "/"} onClick={onNavigate}>
-              {label}
+              {t(key)}
             </NavLink>
           </li>
         ))}
