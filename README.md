@@ -110,7 +110,7 @@ Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. Wh
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
 for that version and smoke-slices generated plates in the built image. Only when every plate
 slices does it push `orca-X.Y.Z` and a run tag, `orca-X.Y.Z-r<run number>`, and move `stable` to
-the same digest. A re-run of a run (Re-run all jobs) keeps its run number, so its run tag is
+the same digest. A re-run of a run (Re-run all jobs or Re-run failed jobs) keeps its run number, so its run tag is
 `orca-X.Y.Z-r<run number>.<attempt>` and the first attempt's tag stays on the image it named. It also runs on every release tag, at the latest Orca release, so a change to the slicer
 ships with the release, and it can be run by hand from the Actions tab (a version, or a forced
 failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the two
@@ -125,13 +125,12 @@ while tagging (a readback that does not match, or a passing GHCR error) can leav
 and `stable` if it had got that far, at the new digest; the issue then
 lists the tags it had already pointed at the new digest. Once `orca-X.Y.Z` exists the daily run
 will not retry that version, so the issue says to run the workflow by hand. For a prerelease
-tag's run the issue suggests a re-run, which leaves `stable` alone, and warns that a re-run
-reads OrcaSlicer's latest release again: if Orca has shipped a newer version since, the re-run
-builds that one, so the issue says to run the workflow by hand for the failed version instead.
-That run moves `stable` too, so check which version `stable` points at first: by then the daily
-run has usually built the newer version and moved `stable` to it, and a run by hand for the
-failed version would roll `stable` back. If `stable` is already on a newer version, skip the run
-by hand, or point `stable` back at the newer version afterwards (Rolling the slicer back).
+tag's run the issue suggests Re-run failed jobs instead, as a run by hand would move `stable`. It
+re-runs the build job with the first attempt's version and pins, so it builds the failed version
+again and leaves `stable` alone. The issue warns against Re-run all jobs, which runs the
+detect job again and so reads OrcaSlicer's latest release again: if Orca has shipped a newer
+version since, that re-run builds the newer one and leaves the failed version as the first
+attempt left it.
 
 ### Rolling the slicer back
 
