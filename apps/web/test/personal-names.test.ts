@@ -111,6 +111,7 @@ describe("no machine or home-network name in shipped text", () => {
 /** What the tree must not name, each as a case-insensitive pattern. */
 const HOMELAB: { what: string; pattern: string }[] = [
   { what: "his workstations", pattern: j("\\bmini", "0[12]\\b") },
+  { what: "his laptop", pattern: j("\\bm", "ba\\b") },
   { what: "his server", pattern: j("\\bha", "des\\b") },
   { what: "his domain", pattern: j("\\bjon", "co\\b") },
   { what: "his LAN", pattern: j("\\b10\\.1", "\\.50\\.") },
@@ -153,6 +154,7 @@ describe("no homelab name anywhere in the tracked tree", () => {
     const named = [
       `ssh ${MINI} uptime`,
       `copied from ${j("mini", "02")}`,
+      `token for ${j("m", "ba")}`,
       `runs on ${SERVER}`,
       `https://id.local.${DOMAIN}`,
       `/(?:local|lan|${j("jon", "co\\.dev")})/`,
@@ -167,7 +169,7 @@ describe("no homelab name anywhere in the tracked tree", () => {
       `mail ${j("techser", "vicez")}`,
     ];
     const lookAlikes = [
-      `${j("sha", "des")}, minimal, scenario, Marion, ${j("dns", "010")}, 10.1.500.1, ${j("1100.", "64.1.1")}`,
+      `${j("sha", "des")}, minimal, ambassador, scenario, Marion,${j("dns", "010")}, 10.1.500.1, ${j("1100.", "64.1.1")}`,
       "192.0.2.10, 198.51.100.7, 10.0.0.5, platehouse.example.com, /opt/orca",
     ];
     expect(homelabLines("sample", [...named, ...lookAlikes].join("\n"))).toEqual(

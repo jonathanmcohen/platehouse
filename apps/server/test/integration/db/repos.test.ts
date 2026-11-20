@@ -318,7 +318,7 @@ describe("tokens", () => {
       tokenHash: hashOf(firstRaw),
     });
     const second = await repos.tokens.create({
-      name: "Claude Code on mba",
+      name: "Upload script on a desktop",
       prefix: prefixOf(secondRaw),
       tokenHash: hashOf(secondRaw),
     });
