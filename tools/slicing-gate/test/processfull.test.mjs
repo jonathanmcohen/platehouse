@@ -1,4 +1,4 @@
-// Hades run 3 (2026-11-08): 79 plates failed with Orca code -3 when a file was
+// Gate run 3 (2026-11-08): 79 plates failed with Orca code -3 when a file was
 // sliced on a printer other than its own. Orca's CLI (src/OrcaSlicer.cpp at
 // v2.5.0, the machine_switch block) then loads the new printer's default
 // process from <resources>/profiles/BBL/process_full/<default_print_profile>.json,
@@ -105,7 +105,7 @@ test("a default process whose parent is not in the bundle fails, naming both, an
 // The rule (PR #11 review, issue #13): every instantiable BBL machine preset
 // ends with its default process written to process_full, or the build fails
 // naming the machine and why. A machine left out means code -3 at slice time
-// on Hades when a file is switched to that printer, which is the failure this
+// on the test server when a file is switched to that printer, which is the failure this
 // folder exists to prevent, so nothing is skipped and listed instead.
 
 const machine = (root, name, fields) =>

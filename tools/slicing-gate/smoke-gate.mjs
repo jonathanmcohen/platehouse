@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CI smoke checks for the two gate-tool bugs of Hades run 3 (2026-11-08), run
+// CI smoke checks for the two gate-tool bugs of gate run 3 (2026-11-08), run
 // inside the built gate image with the gate's own hardening (no network,
 // read-only root, a tmpfs /work, no capabilities). No designer file is used:
 // the only model is a 20 mm cube this script writes.
@@ -8,7 +8,7 @@
 //       Orca writes two crafted two-plate cube projects, one saved for P1S
 //       (process 0.20mm Standard @BBL X1C) and one saved for A1, from the
 //       pinned presets. The gate then plans and slices them exactly as on
-//       Hades (gate.mjs plan and slice, every plate on P1S, X1 Carbon and
+//       the test server (gate.mjs plan and slice, every plate on P1S, X1 Carbon and
 //       A1). Passes when every plate gets a time and a weight above zero.
 //       With --control (CI hides Orca's process_full folder with a tmpfs,
 //       which is the image as it was for run 3), it passes only when the

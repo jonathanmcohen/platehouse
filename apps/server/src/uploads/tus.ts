@@ -16,7 +16,7 @@
 //      A refused creation (400, 413, 415) writes nothing.
 //   2. PATCH <prefix>/<id> appends bytes at Upload-Offset; HEAD <prefix>/<id>
 //      tells a client where to resume after a cut-off (a phone switching from
-//      the LAN to Tailscale, a backgrounded tab). One PATCH may carry the
+//      the LAN to a VPN, a backgrounded tab). One PATCH may carry the
 //      whole file (curl), or a client may send chunks.
 //   3. When the last byte lands, the upload is queued for ingest on the
 //      ingest queue (Task 8) under the upload's own id, and ingestFile runs

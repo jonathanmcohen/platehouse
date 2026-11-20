@@ -193,7 +193,7 @@ describe("resumable uploads", () => {
       };
 
       // First attempt: cut off part way, as a phone switching from the LAN to
-      // Tailscale would be.
+      // a VPN would be.
       let uploadUrl: string | null = null;
       const first = new Upload(ninety, {
         ...options,

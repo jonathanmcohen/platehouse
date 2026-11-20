@@ -1,5 +1,5 @@
 // Minimal read-only zip reader for the slicing gate. No dependencies, so the
-// gate tools run with plain Node on mini01 and in the gate image.
+// gate tools run with plain Node on your workstation and in the gate image.
 //
 // It opens the archive for random access, lists the central directory, and
 // reads an entry only by exact name. Every read is capped on the bytes
