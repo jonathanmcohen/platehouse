@@ -589,10 +589,10 @@ describe("the settings page", () => {
 
 describe("API tokens", () => {
   test("new token is shown once and never again", async () => {
-    const { res, created } = await makeToken("Claude Code on mini01");
+    const { res, created } = await makeToken("Upload script on a laptop");
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(TOKEN_PATTERN.test(created.token)).toBe(true);
-    expect(created.name).toBe("Claude Code on mini01");
+    expect(created.name).toBe("Upload script on a laptop");
     expect(created.prefix).toBe(created.token.slice(0, 8));
 
     // The list shows the prefix and last used, never the token.
@@ -605,7 +605,7 @@ describe("API tokens", () => {
     );
     expect(listed).toEqual({
       id: created.id,
-      name: "Claude Code on mini01",
+      name: "Upload script on a laptop",
       prefix: created.prefix,
       createdAt: created.createdAt,
       lastUsedAt: null,

@@ -54,7 +54,7 @@ const runs = () =>
 
 const need = (script) => spawnSync("bash", ["-euo", "pipefail", "-c", `source "${join(HERE, "need.sh")}"; ${script}`], { encoding: "utf8" });
 
-// On Hades (2026-11-08) the Orca step passed its sha256 check and then exited 1
+// On the test server (2026-11-08) the Orca step passed its sha256 check and then exited 1
 // with no text, because a bare `test -f` failed. need names the check instead.
 test("need passes silently when its test holds", () => {
   const r = need(`need -d "${HERE}" && echo after`);
@@ -216,7 +216,7 @@ const NODE_CALL = /(^RUN|&&|;|\$\()\s*(\/opt\/node\/bin\/node|node)\s/;
 // A stage runs Node when a RUN calls node or the image's default command does.
 const runsNode = (stage) => stage.runs.some((r) => NODE_CALL.test(r)) || stage.lines.some((l) => /^CMD \["node"/.test(l));
 
-// Hades run 2 (2026-11-08): the fetch stage's first Node call, the profile
+// Gate run 2 (2026-11-08): the fetch stage's first Node call, the profile
 // version check, died with "libatomic.so.1: cannot open shared object file"
 // (exit 127). The Node 26 linux-x64 binary links libatomic.so.1, which the
 // ubuntu:24.04 base image does not carry.
@@ -263,7 +263,7 @@ test("every stage that runs Node checks /opt/node/bin/node's libraries before it
 
 // CI run 42489171613 (PR #7, 2026-11-08): the image built, then the smoke
 // check failed with "/opt/orca/AppRun: line 29: /opt/orca/libexec/orca-slicer-env:
-// Permission denied". The gate runs as uid 10001 (and on Hades as the caller's
+// Permission denied". The gate runs as uid 10001 (and on the test server as the caller's
 // uid), but the AppImage trees keep the modes they were extracted with, and the
 // build's need -x checks ran as root, which passes -x on any execute bit.
 test("both AppImage trees are made readable, and executable where they already are, for every user", () => {
@@ -294,7 +294,7 @@ test("the execute and read checks are repeated as the gate user, after USER", ()
   assert.match(asUser, /source \/usr\/local\/lib\/need\.sh/);
 });
 
-// Hades run 3 (2026-11-08): 79 cross-printer plates failed with Orca code -3,
+// Gate run 3 (2026-11-08): 79 cross-printer plates failed with Orca code -3,
 // "can not find setting file: /opt/orca/resources/profiles/BBL/process_full/
 // 0.20mm Standard @BBL A1.json". Orca's CLI builds that path from its
 // resources dir (canonical binary path ../../resources, no flag moves it), so
@@ -337,7 +337,7 @@ test("the gate user can read the process_full files", () => {
 });
 
 // Issue #8: check-libs.sh was copied in before the downloads, so editing it
-// invalidated every download layer and Hades fetched everything again. It is
+// invalidated every download layer and the test server fetched everything again. It is
 // copied after the last download and still runs before the first Node call
 // (the test above, "every stage that runs Node checks ...").
 test("the fetch stage copies check-libs.sh after its last download", () => {

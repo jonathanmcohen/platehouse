@@ -4,7 +4,7 @@
 // bed too small, nozzle or extruder mismatch), which is reported. A crash, a
 // timeout or an unexplained slicer error on any plate fails the gate.
 // Jon, 2026-11-08: -101 (G-code path conflicts) and -62 (filament
-// temperatures too far apart), both hit in Hades run 3, are legitimate
+// temperatures too far apart), both hit in gate run 3, are legitimate
 // refusals too, reported with Orca's reason, and do not fail the gate.
 //
 // Return codes are OrcaSlicer v2.5.0's, from src/libslic3r/Utils.hpp, with the

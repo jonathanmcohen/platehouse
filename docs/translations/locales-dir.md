@@ -7,11 +7,11 @@ rebuilding anything: put translation files in a folder and set `LOCALES_DIR`.
 
 1. Make a folder on the host for the files, for example `/opt/platehouse/locales`.
 2. Mount it into the app container, read-only, and set `LOCALES_DIR` to where it is inside the
-   container. In `docker-compose.yml`, on the `app` service:
+   container. In `docker-compose.yml`, on the `platehouse` service:
 
    ```yaml
    services:
-     app:
+     platehouse:
        volumes:
          - /opt/platehouse/locales:/data/locales:ro
        environment:

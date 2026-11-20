@@ -1,5 +1,5 @@
 // OpenSCAD's sandbox (AC-052): landrun v0.1.17 around every render. The
-// slicing gate proved two things on Hades (run 4, 2026-11-08):
+// slicing gate proved two things on the test server (run 4, 2026-11-08):
 // - paths a binary runs from need --rox; the plan's form with --ro on the
 //   OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--", or it reads OpenSCAD's own -o as a
@@ -198,7 +198,7 @@ describe("landrun arguments", () => {
   // landrun v0.1.17 asks for Landlock ABI 9 unless it runs best effort, and
   // refuses an older kernel outright: GitHub's runner has ABI 8 (CI run
   // 42530006914, "Got Landlock ABI v8, wanted Landlock V9"). The gate proved
-  // this form on Hades. The server's sandbox self-test (server.test.ts)
+  // this form on the test server. The server's sandbox self-test (server.test.ts)
   // refuses every render when the kernel's Landlock ABI is below 6 or the
   // sandbox does not actually block a read outside the job folder.
   test("landrun runs best effort, as the gate proved it", () => {

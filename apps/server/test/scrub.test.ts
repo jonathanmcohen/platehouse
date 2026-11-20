@@ -65,18 +65,14 @@ describe("scrubText", () => {
   });
 
   test("takes out IP addresses and host:port pairs", () => {
-    expect(scrubText("connect ECONNREFUSED 10.1.50.105:5432")).toBe(
-      "connect ECONNREFUSED [address]",
-    );
+    expect(scrubText("connect ECONNREFUSED 10.0.0.5:5432")).toBe("connect ECONNREFUSED [address]");
     expect(scrubText("no answer from slicer:8080")).toBe("no answer from [address]");
     expect(scrubText("db at platehouse-db:5432 refused")).toBe("db at [address] refused");
   });
 
   test("takes out internal host names", () => {
-    expect(scrubText("could not reach platehouse.local.jonco.dev")).toBe(
-      "could not reach [address]",
-    );
-    expect(scrubText("hades.lan is down")).toBe("[address] is down");
+    expect(scrubText("could not reach platehouse.home.arpa")).toBe("could not reach [address]");
+    expect(scrubText("server.lan is down")).toBe("[address] is down");
   });
 
   test("takes out tokens and credentials", () => {
@@ -140,7 +136,7 @@ describe("scrubDetail", () => {
     const detail =
       "Orca exited with -3 slicing /work/job-0198f0c4-7a1e/input.3mf " +
       "(profiles under /srv/platehouse/orca/BBL) via http://slicer:8080/v1/slice " +
-      `at 10.1.50.105 with token ${token}: the object exceeds the plate`;
+      `at 192.0.2.10 with token ${token}: the object exceeds the plate`;
     const out = scrubDetail(detail);
     expect(out).toBe(
       "Orca exited with -3 slicing [path] (profiles under [path]) via [address] " +
@@ -152,7 +148,7 @@ describe("scrubDetail", () => {
       "/srv/",
       "http://",
       "slicer:8080",
-      "10.1.50.105",
+      "192.0.2.10",
       token,
     ]) {
       expect(out).not.toContain(secret);

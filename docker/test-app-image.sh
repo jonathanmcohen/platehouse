@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the app image (docker/app.Dockerfile) the way Hades will, against a
+# Runs the app image (docker/app.Dockerfile) the way a deployment does, against a
 # throwaway Postgres 17 and the S3 test server on a private Docker network,
 # and checks what it reports (build plan Task 24; AC-093, issues #31, #162).
 #
