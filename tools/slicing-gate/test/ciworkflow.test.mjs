@@ -2161,9 +2161,28 @@ test("slicer-image issue: a prerelease tag's failure after tagging says a re-run
   assert.match(body, /newer than 2\.5\.1/);
   assert.match(body, /run the workflow by hand for 2\.5\.1 instead \(Actions, slicer-image, Run workflow, orca_version 2\.5\.1\)/);
   // The re-run may build a newer version, so its tag is not named for 2.5.1 (issue #306).
-  assert.match(body, /its own -r<run>\.<attempt> tag for the version it builds/);
+  assert.match(body, /its own `-r<run>\.<attempt>` tag for the version it builds/);
   assert.doesNotMatch(body, /orca-2\.5\.1-r<run>\.<attempt>/);
 });
+
+// GitHub renders the issue body as markdown and strips a bare <word> as an
+// unknown HTML tag, so a placeholder such as <run> would vanish from the
+// issue. Outside a code block or code span the body has no angle-bracket word.
+const proseOnly = (md) => md.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+for (const [name, env, tails] of [
+  ["a daily failure", {}, { "build.txt": "step: Smoke slice\n<tail>\n" }],
+  ["a failure after tagging", { TAGGED: "orca-2.5.1, orca-2.5.1-r42", DIGEST: `sha256:${sha("d")}`, STABLE: "true" }, TAG_FAIL],
+  ["a failure after stable was tagged", { TAGGED: "orca-2.5.1, orca-2.5.1-r42, stable", STABLE: "true" }, TAG_FAIL],
+  ["a prerelease failure after tagging", { EVENT: "push", TAGGED: "orca-2.5.1, orca-2.5.1-r42", STABLE: "false" }, TAG_FAIL],
+  ["a run by hand", { EVENT: "workflow_dispatch" }, {}],
+  ["a run with no version", { EVENT: "workflow_dispatch", VERSION: "", INPUT_VERSION: "" }, {}],
+]) {
+  test(`slicer-image issue: ${name} has no bare <word> GitHub would strip`, () => {
+    const r = reportRun(env, tails);
+    assert.equal(r.status, 0, r.log);
+    assert.doesNotMatch(proseOnly(r.files["posted.md"]), /<\/?[A-Za-z][^<>\s]*>/);
+  });
+}
 
 test("slicer-image issue: a failed run that was not daily does not promise a daily retry", () => {
   const r = reportRun({ EVENT: "workflow_dispatch" }, { "build.txt": "step: Smoke slice\nx\n" });
