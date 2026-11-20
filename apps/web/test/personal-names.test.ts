@@ -8,7 +8,8 @@
 //    are left out here: guard 2 covers them.
 // 2. The whole tracked tree (git ls-files), comments, docs, CI, fixtures and
 //    file paths included, because the 0.1.0 tree becomes the public
-//    repository. It looks for his hosts, addresses, domains and paths. A line
+//    repository. It looks for his hosts, addresses, domains and paths, and
+//    for a stand-in name for his server that the public repo never defines. A line
 //    is also checked with its backslashes removed, so a regex-escaped name
 //    (a dot written as backslash-dot) is still found. ALLOWED lists what must
 //    stay, each with its reason.
@@ -120,6 +121,8 @@ const HOMELAB: { what: string; pattern: string }[] = [
   { what: "his DNS servers", pattern: j("\\bdns", "0[12]\\b") },
   { what: "his other hosts", pattern: j("\\b(?:lui", "gi|mar", "io)\\b") },
   { what: "his company", pattern: j("techser", "vicez") },
+  // A stand-in for his server that nothing in the public repo defines (issue #305).
+  { what: "an undefined server name", pattern: j("\\brefer", "ence server\\b") },
 ];
 const HOMELAB_RE = new RegExp(HOMELAB.map((h) => `(?:${h.pattern})`).join("|"), "i");
 
@@ -167,6 +170,7 @@ describe("no homelab name anywhere in the tracked tree", () => {
       `Pocket ID on ${j("Mar", "io")}`,
       `${j("lui", "gi")} backs up`,
       `mail ${j("techser", "vicez")}`,
+      `run it the way the ${j("Reference", " server")} does`,
     ];
     const lookAlikes = [
       `${j("sha", "des")}, minimal, ambassador, scenario, Marion,${j("dns", "010")}, 10.1.500.1, ${j("1100.", "64.1.1")}`,

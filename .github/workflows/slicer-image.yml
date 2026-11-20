@@ -38,7 +38,7 @@
 # re-uploaded asset or a moved tag fails the run instead of replacing a
 # reviewed pin.
 #
-# The smoke slice runs the built image the way the reference server does (read-only root,
+# The smoke slice runs the built image the way examples/docker-compose.yml does (read-only root,
 # noexec tmpfs at /work, every capability dropped, no-new-privileges) through
 # the container test harness, and slices every plate of
 # buildSliceable({plates: 2, filaments: 2}) and buildSliceable({plates: 3,

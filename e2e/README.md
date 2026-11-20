@@ -1,7 +1,7 @@
 # End-to-end suite
 
 Build plan Task 22. Playwright specs that drive the real Platehouse server
-through a real Traefik v3, the way the reference server serves it, with axe-core for
+through a real Traefik v3, set up as the reverse proxy guide in `docs/reverse-proxy` asks, with axe-core for
 accessibility. CI runs them in the e2e job of `.github/workflows/ci.yml`.
 
 ## What it checks

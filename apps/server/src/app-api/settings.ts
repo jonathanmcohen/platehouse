@@ -76,8 +76,8 @@ export const APP_API_PREFIX = "/app/api";
 export const APP_API_BODY_LIMIT = 64 * 1024;
 
 /**
- * Plates the slicer estimates a minute, as measured on the reference server
- * (Jon, about 3 a minute): the page uses it to say how long a printer it just added will
+ * Plates the slicer estimates a minute, as measured on the maintainer's own
+ * test machine running the example compose file (Jon, about 3 a minute): the page uses it to say how long a printer it just added will
  * take. The slicer runs one plate at a time, so this is the whole rate.
  */
 export const SLICES_PER_MINUTE = 3;

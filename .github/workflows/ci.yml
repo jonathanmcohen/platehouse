@@ -551,7 +551,7 @@ jobs:
           node tools/slicing-gate/smoke-gate.mjs compare "$results/fixed.json" "$results/control.json"
 
   # The slicer image (build plan Task 11): the container tests build
-  # apps/slicer/Dockerfile and run it the way the reference server does (read-only root,
+  # apps/slicer/Dockerfile and run it the way examples/docker-compose.yml does (read-only root,
   # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract v1 over
   # HTTP: a real slice of buildSliceable's plates, OpenSCAD renders and the
   # landrun sandbox, STEP to GLB, health and the printer menu. Runs only when
