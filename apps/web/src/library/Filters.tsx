@@ -7,6 +7,7 @@
 // number (?page=), so a new tag starts again at page 1. The current choice is marked
 // aria-current="true", which studio.css draws as the active chip.
 import { Link, useSearchParams } from "react-router";
+import { useI18n } from "../i18n/I18n";
 
 /** What a tag chip keeps of the library's address: the search, the other filters, View all and the sort. */
 const KEPT = ["q", "creator", "collection", "view", "sort"] as const;
@@ -17,6 +18,7 @@ export interface FiltersProps {
 }
 
 export function Filters({ tags }: FiltersProps) {
+  const { t } = useI18n();
   const [params] = useSearchParams();
   const active = params.get("tag");
   if (tags.length === 0) return null;
@@ -36,7 +38,7 @@ export function Filters({ tags }: FiltersProps) {
     tag === null ? active === null || active === "" : active?.toLowerCase() === tag.toLowerCase();
 
   return (
-    <nav aria-label="Filter by tag">
+    <nav aria-label={t("library.tags.label")}>
       <ul className="studio-chips">
         {[null, ...tags].map((tag) => (
           <li key={tag ?? ""}>
@@ -45,7 +47,7 @@ export function Filters({ tags }: FiltersProps) {
               className="studio-chip"
               {...(isActive(tag) ? { "aria-current": "true" as const } : {})}
             >
-              {tag ?? "All"}
+              {tag ?? t("library.tags.all")}
             </Link>
           </li>
         ))}

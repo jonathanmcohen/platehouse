@@ -6,28 +6,87 @@
 // carrying one plain sentence for the page to show; no server detail is
 // shown beyond the message the server wrote for the page. A .tsx module
 // like the pages that use it: useAppApi is a React hook.
+
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
+
+/** Builds the sentences in a language; English when left out. */
+type Words = Pick<I18n, "t" | "locale">;
 
 export class AppApiError extends Error {
   readonly status: number;
   /** The answer's JSON body, or null; a page reads a route's own fields from it. */
   readonly body: unknown;
 
-  constructor(status: number, message: string, body: unknown = null) {
+  /**
+   * Whether message is appApi's own sentence for status and body, which
+   * errorText says again in the shown language; false for an error a page
+   * built with its own, already translated, words.
+   */
+  readonly fromServer: boolean;
+
+  constructor(status: number, message: string, body: unknown = null, fromServer = false) {
     super(message);
     this.name = "AppApiError";
     this.status = status;
     this.body = body;
+    this.fromServer = fromServer;
   }
 }
 
-function sentenceFor(status: number, body: unknown): string {
-  if (status === 401) return "You are signed out. Reload the page to sign in again.";
-  const message = (body as { message?: unknown } | null)?.message;
-  if (status < 500 && typeof message === "string" && message !== "") return message;
-  if (status === 503) return "This is unavailable right now. Try again in a moment.";
-  if (status === 404) return "That is no longer there. Reload the page to see the latest.";
-  return "Something went wrong. Try again.";
+/**
+ * The words for each refusal the app API names by code (its error, or a finer
+ * code beside it). The English words are the server's own sentences, so an
+ * English page reads exactly what the server wrote.
+ */
+const CODE_KEYS: Readonly<Record<string, MessageKey>> = {
+  unknown_printer: "api.unknownPrinter",
+  printers_changed: "api.printersChanged",
+  slicer_unavailable: "api.slicerUnavailable",
+  purge_started: "api.purgeStarted",
+  stale_trash: "api.staleTrash",
+  token_name_length: "api.tokenNameLength",
+  titles_not_previewed: "api.titlesNotPreviewed",
+  plan_changed: "api.planChanged",
+};
+
+/**
+ * The sentence for a refused call, in a language. An English page shows the
+ * server's own sentence for the page, word for word. Another language shows a
+ * known code's words, else a line for the status: a server sentence is
+ * English, so it never reaches a page in another language. At 5xx only a
+ * known code's sentence is shown (such as slicer_unavailable's 503); any
+ * other 5xx message stays behind the plain line for the status.
+ */
+export function sentenceFor(status: number, body: unknown, i18n: Words = ENGLISH_I18N): string {
+  const { t } = i18n;
+  if (status === 0) return t("api.unreachable");
+  if (status === 401) return t("common.signedOut");
+  const fields = (body ?? {}) as {
+    error?: unknown;
+    code?: unknown;
+    message?: unknown;
+    max?: unknown;
+  };
+  const message = fields.message;
+  const key =
+    (typeof fields.code === "string" ? CODE_KEYS[fields.code] : undefined) ??
+    (typeof fields.error === "string" ? CODE_KEYS[fields.error] : undefined);
+  const known = () =>
+    key === undefined
+      ? undefined
+      : t(key, typeof fields.max === "number" ? { max: fields.max } : {});
+  if ((status < 500 || key !== undefined) && typeof message === "string" && message !== "") {
+    // The server's own sentence for the page (serverTextWith's rule); its
+    // code's words, else a plain line, in another language.
+    return serverTextWith(i18n, message, () => known() ?? t("api.refused"));
+  }
+  const words = known();
+  if (words !== undefined) return words;
+  if (status === 503) return t("api.unavailable");
+  if (status === 404) return t("api.gone");
+  return t("api.failed");
 }
 
 /** One call to /app/api; resolves with the JSON answer, or undefined for 204. */
@@ -46,7 +105,7 @@ export async function appApi<T = undefined>(
   try {
     res = await fetch(`/app/api${path}`, init);
   } catch {
-    throw new AppApiError(0, "Platehouse cannot be reached. Check the connection and try again.");
+    throw new AppApiError(0, sentenceFor(0, null), null, true);
   }
   if (res.status === 204) return undefined as T;
   let data: unknown = null;
@@ -55,7 +114,7 @@ export async function appApi<T = undefined>(
   } catch {
     data = null;
   }
-  if (!res.ok) throw new AppApiError(res.status, sentenceFor(res.status, data), data);
+  if (!res.ok) throw new AppApiError(res.status, sentenceFor(res.status, data), data, true);
   return data as T;
 }
 
@@ -74,9 +133,16 @@ export function nameQuery(name: string): string {
   return `?name=${encodeURIComponent(name)}`;
 }
 
-/** The sentence to show for a failed call. */
-export function errorText(error: unknown): string {
-  return error instanceof AppApiError ? error.message : "Something went wrong. Try again.";
+/** The sentence to show for a failed call, in a language; English when left out. */
+export function errorText(error: unknown, i18n: Words = ENGLISH_I18N): string {
+  if (!(error instanceof AppApiError)) return i18n.t("api.failed");
+  return error.fromServer ? sentenceFor(error.status, error.body, i18n) : error.message;
+}
+
+/** errorText in the shown language, for a component. */
+export function useErrorText(): (error: unknown) => string {
+  const i18n = useI18n();
+  return (error) => errorText(error, i18n);
 }
 
 export interface Loaded<T> {
@@ -103,6 +169,9 @@ export interface Loaded<T> {
 
 /** GETs path when the component mounts (and when path changes). */
 export function useAppApi<T>(path: string | null): Loaded<T> {
+  const i18n = useI18n();
+  const words = useRef<Words>(i18n);
+  words.current = i18n;
   const [data, setData] = useState<T | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   /** The path now shown, so a reload's answer for an earlier path is dropped. */
@@ -126,7 +195,7 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
         setData(value);
       },
       (failure: unknown) => {
-        if (live) setError(errorText(failure));
+        if (live) setError(errorText(failure, words.current));
       },
     );
     return () => {
@@ -156,18 +225,10 @@ export function useAppApi<T>(path: string | null): Loaded<T> {
       setError(undefined);
       return true;
     } catch (failure) {
-      if (current.current === path) setError(errorText(failure));
+      if (current.current === path) setError(errorText(failure, words.current));
       return false;
     }
   }, [path]);
 
   return { data, error, set, reload };
-}
-
-/** A date for display, in the browser's own language. */
-export function formatDate(iso: string, withTime = false): string {
-  const options: Intl.DateTimeFormatOptions = withTime
-    ? { dateStyle: "medium", timeStyle: "short" }
-    : { dateStyle: "medium" };
-  return new Intl.DateTimeFormat(undefined, options).format(new Date(iso));
 }

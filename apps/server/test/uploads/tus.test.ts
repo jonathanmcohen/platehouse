@@ -483,6 +483,64 @@ describe("tus routes", () => {
     });
   });
 
+  test("the /api/v1 result keeps a failure's code only for a duplicate, as its OpenAPI document says", async () => {
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body);
+    queue.results.set(id, {
+      status: "failed",
+      error: "This file is not a supported file; nothing was saved",
+      code: "unsupported_type",
+    });
+    expect(await resultOf(id)).toEqual({
+      status: 200,
+      body: { status: "failed", error: "This file is not a supported file; nothing was saved" },
+    });
+  });
+
+  test("the /api/v1 result sends code duplicate only with the duplicates it matched (PR 287 review)", async () => {
+    // An older or malformed job: an IngestError with code duplicate and no
+    // list. The OpenAPI document promises the matches with that code, so the
+    // public answer is a plain failure.
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body);
+    const error = "Already there; nothing was saved";
+    queue.results.set(id, { status: "failed", error, code: "duplicate" });
+    expect(await resultOf(id)).toEqual({ status: 200, body: { status: "failed", error } });
+    queue.results.set(id, { status: "failed", error, code: "duplicate", duplicates: [] });
+    expect(await resultOf(id)).toEqual({ status: 200, body: { status: "failed", error } });
+  });
+
+  test("the /app result carries a failure's ingest code, for the page to say in its language", async () => {
+    const both = await startApp(async (app) => {
+      await registerTus(app, {
+        prefix: "/app/uploads",
+        authHook: keyHook,
+        uploads,
+        resultCodes: "all",
+      });
+      await registerTus(app, { prefix: PREFIX, authHook: keyHook, uploads });
+    });
+    try {
+      const body = randomBinaryStl(5);
+      const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+      await patch(id, 0, body);
+      const failed = {
+        status: "failed" as const,
+        error: "This file is not a supported file; nothing was saved",
+        code: "unsupported_type",
+      };
+      queue.results.set(id, failed);
+      const app = await send(both.base, "GET", `/app/uploads/${id}/result`, { headers: KEY });
+      expect(JSON.parse(app.body)).toEqual(failed);
+      const api = await send(both.base, "GET", `${PREFIX}/${id}/result`, { headers: KEY });
+      expect(JSON.parse(api.body)).toEqual({ status: "failed", error: failed.error });
+    } finally {
+      await both.close();
+    }
+  });
+
   test("the result route answers 503 in plain words when the queue cannot be read", async () => {
     const body = randomBinaryStl(5);
     const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);

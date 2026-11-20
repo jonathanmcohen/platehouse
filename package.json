@@ -10,7 +10,8 @@
   "scripts": {
     "check": "biome check .",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "i18n:format": "node packages/i18n/scripts/format.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

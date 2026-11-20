@@ -58,12 +58,13 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { InlineRename } from "../collections/InlineRename";
+import { type MessageKey, useI18n } from "../i18n/I18n";
 import { appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
 import "./model.css";
 import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
-import { FilesTab, viewable } from "./FilesTab";
+import { derivedMessageIn, FilesTab, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
 import { PlateViewer } from "./PlateViewer";
@@ -141,6 +142,13 @@ export interface ModelFile {
   parseStatus: ParseStatus;
   derivedStatus: string | null;
   derivedMessage: string | null;
+  /**
+   * The sentences of derivedMessage that Platehouse wrote, by code, for the
+   * page to show in its language (app API only); absent from an older answer.
+   */
+  derivedCodes?: string[];
+  /** What derivedMessage holds after those sentences: the program's own words. */
+  derivedDetail?: string | null;
   download: string;
   view: { kind: "stl" | "glb"; url: string } | null;
   preview: string | null;
@@ -226,7 +234,11 @@ type Load =
 
 type TabName = "plates" | "files" | "about";
 
-const TAB_LABEL: Record<TabName, string> = { plates: "Plates", files: "Files", about: "About" };
+const TAB_LABEL: Record<TabName, MessageKey> = {
+  plates: "model.tab.plates",
+  files: "model.tab.files",
+  about: "model.tab.about",
+};
 
 export function ModelPage({
   loadThree,
@@ -235,6 +247,7 @@ export function ModelPage({
   onFiles,
   refreshKey = 0,
 }: ModelPageProps) {
+  const { t } = useI18n();
   const { id = "" } = useParams();
   const [load, setLoad] = useState<Load>({ id, status: "loading" });
   const [reload, setReload] = useState(0);
@@ -343,15 +356,15 @@ export function ModelPage({
   const current: Load = load.id === id ? load : { id, status: "loading" };
 
   if (current.status === "loading") {
-    return <p className="studio-muted">Loading the model...</p>;
+    return <p className="studio-muted">{t("model.loading")}</p>;
   }
   if (current.status === "missing") {
     return (
       <>
-        <h1>Model not found</h1>
-        <p>This model is not in the library. It may have been moved to the trash.</p>
+        <h1>{t("model.missing.title")}</h1>
+        <p>{t("model.missing.text")}</p>
         <p>
-          <Link to="/">Back to the library</Link>
+          <Link to="/">{t("model.missing.back")}</Link>
         </p>
       </>
     );
@@ -359,9 +372,9 @@ export function ModelPage({
   if (current.status === "failed") {
     return (
       <div role="alert" className="studio-alert studio-alert-alert">
-        <p>The model could not be loaded right now.</p>
+        <p>{t("model.loadFailed")}</p>
         <button type="button" className="studio-button" onClick={() => setReload((n) => n + 1)}>
-          Try again
+          {t("common.tryAgain")}
         </button>
       </div>
     );
@@ -372,13 +385,13 @@ export function ModelPage({
     <DropZone onFiles={(files) => onFiles?.(files, model.id)}>
       {notice?.id !== model.id ? null : notice.kind === "signed-out" ? (
         <div role="alert" className="studio-alert studio-alert-alert">
-          <p>You are signed out. Reload the page to sign in again.</p>
+          <p>{t("common.signedOut")}</p>
         </div>
       ) : (
         <div role="alert" className="studio-alert studio-alert-alert">
-          <p>The model could not be refreshed right now.</p>
+          <p>{t("model.refreshFailed")}</p>
           <button type="button" className="studio-button" onClick={() => setReload((n) => n + 1)}>
-            Try again
+            {t("common.tryAgain")}
           </button>
         </div>
       )}
@@ -432,6 +445,7 @@ function ModelDetail({
   platform,
   onAddFiles,
 }: ModelDetailProps) {
+  const { t } = useI18n();
   const base = useId();
   const has3mf = model.files.some((f) => f.kind === "3mf");
   const tabNames: TabName[] = has3mf ? ["plates", "files", "about"] : ["files", "about"];
@@ -489,30 +503,30 @@ function ModelDetail({
     <article>
       <div className="studio-page-head">
         <p className="studio-breadcrumb">
-          <Link to="/">Library</Link>
+          <Link to="/">{t("library.title")}</Link>
         </p>
         <InlineRename
           heading
           value={model.name}
-          buttonLabel={`Rename ${model.name}`}
-          inputLabel={`New name for ${model.name}`}
+          buttonLabel={t("common.renameLabel", { name: model.name })}
+          inputLabel={t("common.newNameLabel", { name: model.name })}
           onSave={onRename}
         />
         {model.creator === null && makerWorldHref(model.makerWorldUrl) === null ? null : (
           <p className="studio-byline">
-            {model.creator === null ? null : `by ${model.creator}`}
+            {model.creator === null ? null : t("model.byline", { creator: model.creator })}
             {model.creator === null || makerWorldHref(model.makerWorldUrl) === null ? null : " - "}
             <MakerWorldLink url={model.makerWorldUrl} />
           </p>
         )}
         {onAddFiles === undefined ? null : (
           <button type="button" className="studio-button" onClick={onAddFiles}>
-            Add files
+            {t("model.addFiles")}
           </button>
         )}
       </div>
       <div className="studio-model">
-        <section className="studio-viewer" aria-label="Viewer">
+        <section className="studio-viewer" aria-label={t("model.viewer")}>
           <ViewerArea
             file={shown}
             plateIndex={plateIndex}
@@ -521,7 +535,7 @@ function ModelDetail({
           />
         </section>
         <div className="studio-model-info">
-          <div className="studio-tabs" role="tablist" aria-label="Model details">
+          <div className="studio-tabs" role="tablist" aria-label={t("model.details")}>
             {tabNames.map((name, at) => (
               <button
                 key={name}
@@ -538,7 +552,7 @@ function ModelDetail({
                 onClick={() => choose(name, false)}
                 onKeyDown={(event) => onTabKey(event, at)}
               >
-                {TAB_LABEL[name]}
+                {t(TAB_LABEL[name])}
               </button>
             ))}
           </div>
@@ -587,10 +601,13 @@ interface ViewerAreaProps {
 }
 
 function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const derived = file === null ? null : derivedMessageIn(i18n, file);
   if (file === null) {
     return (
       <div className="studio-viewer-frame">
-        <p className="studio-placeholder">This model has no files.</p>
+        <p className="studio-placeholder">{t("model.noFiles")}</p>
       </div>
     );
   }
@@ -610,7 +627,11 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
   if (file.preview !== null) {
     return (
       <div className="studio-viewer-frame">
-        <img className="studio-plate-large" src={file.preview} alt={`Preview of ${file.name}`} />
+        <img
+          className="studio-plate-large"
+          src={file.preview}
+          alt={t("model.previewOf", { name: file.name })}
+        />
       </div>
     );
   }
@@ -620,17 +641,15 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
     return (
       <div className="studio-viewer-frame">
         <div className="studio-placeholder ph-viewer-failed">
-          <p>{`${file.name} could not be rendered.`}</p>
-          {file.derivedMessage === null ? null : (
-            <pre className="ph-detail">{file.derivedMessage}</pre>
-          )}
+          <p>{t("model.renderFailed", { name: file.name })}</p>
+          {derived === null ? null : <pre className="ph-detail">{derived}</pre>}
         </div>
       </div>
     );
   }
   return (
     <div className="studio-viewer-frame">
-      <p className="studio-placeholder">{`No view of ${file.name} yet.`}</p>
+      <p className="studio-placeholder">{t("model.noViewYet", { name: file.name })}</p>
     </div>
   );
 }

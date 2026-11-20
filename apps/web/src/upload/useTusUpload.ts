@@ -36,8 +36,14 @@
 //
 // useTusUpload holds one dialog's files and their progress; the start and
 // result calls can be replaced, which the tests do.
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type HttpResponse, Upload, type UploadOptions } from "tus-js-client";
+import { ENGLISH_I18N, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { serverTextWith } from "../i18n/serverText";
+
+/** Builds the sentences in a language; English when left out. */
+type Words = Pick<I18n, "t" | "locale">;
 
 /** Task 9's tus handler for the UI: the path on this page's own origin. */
 export const UPLOAD_ENDPOINT = "/app/uploads";
@@ -61,19 +67,19 @@ export const SUPPORTED_EXTENSIONS: readonly string[] = [".3mf", ".stl", ".step",
 export const ACCEPT = SUPPORTED_EXTENSIONS.join(",");
 
 /** Shown on a row whose file is not a supported type; it is never sent. */
-export const UNSUPPORTED_TEXT = "Not a supported file type: use .3mf, .stl, .step, .stp or .scad";
+export const UNSUPPORTED_TEXT = ENGLISH_I18N.t("upload.unsupported");
 
 /** The largest file the server takes: 512 MiB (uploads/tus.ts MAX_UPLOAD_BYTES). */
 export const MAX_UPLOAD_BYTES = 536_870_912;
 
 /** Shown on a row whose file is over MAX_UPLOAD_BYTES; it is never sent. */
-export const TOO_LARGE_TEXT = "The file is too large: Platehouse takes files up to 512 MiB";
+export const TOO_LARGE_TEXT = ENGLISH_I18N.t("upload.tooLarge");
 
 /** Longest server reason shown as it is; a longer body gets the status line. */
 const REASON_CHARS = 300;
 
 /** Shown on a row whose upload the session gate refused with 401. */
-export const SESSION_ENDED_TEXT = "Your session has ended. Sign in again, then add the file again.";
+export const SESSION_ENDED_TEXT = ENGLISH_I18N.t("upload.sessionEnded");
 
 /** Whether a body parses as JSON (the session gate answers in JSON). */
 function isJson(body: string): boolean {
@@ -111,7 +117,8 @@ function plainReason(response: HttpResponse): string | undefined {
  * one, as the tus handler's 400 and 415 refusals are, and otherwise a short
  * line for the status. A DetailedError with no answer lost the connection.
  */
-export function failureMessage(error: Error): string {
+export function failureMessage(error: Error, i18n: Words = ENGLISH_I18N): string {
+  const { t } = i18n;
   const detailed = error as Error & {
     originalRequest?: unknown;
     originalResponse?: HttpResponse | null;
@@ -119,17 +126,26 @@ export function failureMessage(error: Error): string {
   const response = detailed.originalResponse ?? null;
   if (response !== null) {
     const status = response.getStatus();
-    if (status === 413) return `${TOO_LARGE_TEXT}.`;
-    if (status === 401) return SESSION_ENDED_TEXT;
-    if (status >= 500) {
-      return `The server could not take the upload right now (HTTP ${status}). Try again shortly.`;
-    }
+    if (status === 413) return t("upload.tooLargeSentence");
+    if (status === 401) return t("upload.sessionEnded");
+    if (status >= 500) return t("upload.serverBusy", { status });
+    // The tus handler's own reason is an English line: shown as it is in
+    // English, and in another language replaced by a line for the status.
     const reason = status === 403 ? undefined : plainReason(response);
-    if (reason !== undefined) return `The upload was refused: ${reason}`;
-    return `The server refused the upload (HTTP ${status}).`;
+    if (reason !== undefined) {
+      return serverTextWith(i18n, t("upload.refusedReason", { reason }), () =>
+        status === 415 ? t("upload.refusedType") : t("upload.refusedStatus", { status }),
+      );
+    }
+    return t("upload.refusedStatus", { status });
   }
-  if (detailed.originalRequest !== undefined) return "The upload failed: the connection was lost.";
-  return `The upload failed: ${error.message || "the connection was lost"}.`;
+  if (detailed.originalRequest !== undefined || error.message === "") {
+    return t("upload.connectionLost");
+  }
+  // tus-js-client's own English words: as they are in English, else the plain line.
+  return serverTextWith(i18n, t("upload.failedBecause", { reason: error.message }), () =>
+    t("upload.connectionLost"),
+  );
 }
 
 /** How often a finished upload's result is asked for while its ingest runs. */
@@ -139,12 +155,10 @@ export const RESULT_POLL_MS = 1_000;
 export const RESULT_TIMEOUT_MS = 10 * 60 * 1_000;
 
 /** Shown when a sent file's ingest outcome cannot be known. */
-export const NOT_CONFIRMED_TEXT =
-  "The upload could not be confirmed; check the library before sending it again.";
+export const NOT_CONFIRMED_TEXT = ENGLISH_I18N.t("upload.notConfirmed");
 
 /** Shown when the session ended after the last byte, while the ingest ran. */
-export const SENT_SESSION_ENDED_TEXT =
-  "The file was sent, but your session has ended. Sign in again, then check the library before adding it again.";
+export const SENT_SESSION_ENDED_TEXT = ENGLISH_I18N.t("upload.sentSessionEnded");
 
 /** Whether the server skips a file already in the library or stores it anyway. */
 export type DuplicatePolicy = "skip" | "allow";
@@ -310,13 +324,45 @@ export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
  * in and check the library. Any other refusal, such as the 404 for an upload
  * the server no longer knows, will not change by asking again.
  */
-export const fetchUploadResult: FetchResult = async (uploadUrl) => {
-  const res = await fetch(`${uploadUrl}/result`, { headers: { accept: "application/json" } });
-  if (res.status === 503) return { status: "pending" };
-  if (res.status === 401) return { status: "failed", error: SENT_SESSION_ENDED_TEXT };
-  if (!res.ok) return { status: "failed", error: NOT_CONFIRMED_TEXT };
-  return (await res.json()) as UploadResult;
+export function makeFetchUploadResult(): FetchResult {
+  return async (uploadUrl) => {
+    const res = await fetch(`${uploadUrl}/result`, { headers: { accept: "application/json" } });
+    if (res.status === 503) return { status: "pending" };
+    // These two are the page's own outcomes, not the server's words, so they
+    // carry a code and no error: resultMessage then says them in the shown
+    // language every time, never as server English (issue 295).
+    if (res.status === 401) return { status: "failed", code: "sent_session_ended" };
+    if (!res.ok) return { status: "failed", code: "not_confirmed" };
+    return (await res.json()) as UploadResult;
+  };
+}
+
+/** GET <upload>/result. */
+export const fetchUploadResult: FetchResult = makeFetchUploadResult();
+
+/** The words for each code a failed upload's result carries (uploads/tus.ts). */
+const RESULT_KEYS: Readonly<Record<string, MessageKey>> = {
+  unsupported_type: "upload.result.unsupportedType",
+  storage_unavailable: "upload.result.storageUnavailable",
+  model_not_found: "upload.result.modelNotFound",
+  ingest_failed: "upload.result.ingestFailed",
+  upload_failed: "upload.result.uploadFailed",
+  queue_failed: "upload.result.queueFailed",
+  // The page's own codes (makeFetchUploadResult), which carry no server sentence.
+  sent_session_ended: "upload.sentSessionEnded",
+  not_confirmed: "upload.notConfirmed",
 };
+
+/**
+ * A failed result's sentence in the shown language: the server's own English
+ * sentence on an English page, never en.json's copy of it; on another, by its
+ * code when the page knows it, else the plain "The upload failed.".
+ */
+export function resultMessage(result: UploadResult, i18n: Words = ENGLISH_I18N): string {
+  const key = result.code === undefined ? undefined : RESULT_KEYS[result.code];
+  const words = () => (key === undefined ? i18n.t("upload.failed") : i18n.t(key));
+  return result.error === undefined ? words() : serverTextWith(i18n, result.error, words);
+}
 
 export type UploadStatus =
   | "ready"
@@ -365,12 +411,12 @@ export interface UseTusUploadOptions {
 
 let keyCounter = 0;
 
-function itemFor(file: File): UploadItem {
+function itemFor(file: File, i18n: Words): UploadItem {
   keyCounter += 1;
   const refused = !isSupportedFile(file.name)
-    ? UNSUPPORTED_TEXT
+    ? i18n.t("upload.unsupported")
     : file.size > MAX_UPLOAD_BYTES
-      ? TOO_LARGE_TEXT
+      ? i18n.t("upload.tooLarge")
       : undefined;
   return {
     key: `u${keyCounter}`,
@@ -387,6 +433,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The files of one upload dialog and how far each has got. */
 export function useTusUpload(opts: UseTusUploadOptions = {}) {
   const start = opts.start ?? startTusUpload;
+  const i18n = useI18n();
+  const words = useRef(i18n);
+  words.current = i18n;
   const fetchResult = opts.fetchResult ?? fetchUploadResult;
   const delay = opts.resultDelayMs ?? RESULT_POLL_MS;
   const [items, setItems] = useState<UploadItem[]>([]);
@@ -434,7 +483,7 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
               i.file.lastModified === f.lastModified,
           ),
       );
-      return [...list, ...fresh.map(itemFor)];
+      return [...list, ...fresh.map((f) => itemFor(f, words.current))];
     });
   }, []);
 
@@ -470,11 +519,11 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
           update(key, { status: "duplicate", duplicates });
           return;
         }
-        update(key, { status: "failed", message: result.error ?? "The upload failed." });
+        update(key, { status: "failed", message: resultMessage(result, words.current) });
         return;
       }
       if (Date.now() > until) {
-        update(key, { status: "failed", message: NOT_CONFIRMED_TEXT });
+        update(key, { status: "failed", message: words.current.t("upload.notConfirmed") });
         return;
       }
       await sleep(delay);
@@ -495,7 +544,7 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
         },
         onError: (error) => {
           handles.current.delete(item.key);
-          update(item.key, { status: "failed", message: failureMessage(error) });
+          update(item.key, { status: "failed", message: failureMessage(error, words.current) });
         },
       },
       duplicates,

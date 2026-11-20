@@ -12,6 +12,7 @@
 // and DOMPurify) is imported on first use, so it stays out of the bundle
 // every page loads.
 import { useEffect, useState } from "react";
+import { useI18n } from "../i18n/I18n";
 import type { ModelView } from "./ModelPage";
 
 type Rendered = { markdown: string; html: string | null };
@@ -35,16 +36,18 @@ export function makerWorldHref(url: string | null | undefined): string | null {
  * nothing when the model has no MakerWorld page.
  */
 export function MakerWorldLink({ url }: { url: string | null | undefined }) {
+  const { t } = useI18n();
   const href = makerWorldHref(url);
   if (href === null) return null;
   return (
     <a href={href} target="_blank" rel="noopener noreferrer">
-      View on MakerWorld
+      {t("model.about.makerWorld")}
     </a>
   );
 }
 
 function Description({ markdown }: { markdown: string }) {
+  const { t } = useI18n();
   const [rendered, setRendered] = useState<Rendered | null>(null);
 
   useEffect(() => {
@@ -63,10 +66,10 @@ function Description({ markdown }: { markdown: string }) {
   }, [markdown]);
 
   if (rendered === null || rendered.markdown !== markdown) {
-    return <p className="studio-muted">Loading the description...</p>;
+    return <p className="studio-muted">{t("model.about.loadingDescription")}</p>;
   }
   const { html } = rendered;
-  if (html === null) return <p className="studio-muted">The description could not be shown.</p>;
+  if (html === null) return <p className="studio-muted">{t("model.about.descriptionFailed")}</p>;
   return (
     <div
       className="studio-prose"
@@ -77,6 +80,7 @@ function Description({ markdown }: { markdown: string }) {
 }
 
 export function AboutTab({ model }: { model: ModelView }) {
+  const { t, fmt } = useI18n();
   const licence = [model.license, model.licenseNote].filter(
     (v): v is string => v !== null && v.trim() !== "",
   );
@@ -84,25 +88,27 @@ export function AboutTab({ model }: { model: ModelView }) {
     <>
       {model.caption === null ? null : <p className="studio-caption">{model.caption}</p>}
       <dl className="studio-dl">
-        <dt>Creator</dt>
-        <dd>{model.creator ?? "Not known"}</dd>
+        <dt>{t("model.about.creator")}</dt>
+        <dd>{model.creator ?? t("model.about.notKnown")}</dd>
         {makerWorldHref(model.makerWorldUrl) === null ? null : (
           <>
-            <dt>Source</dt>
+            <dt>{t("model.about.source")}</dt>
             <dd>
               <MakerWorldLink url={model.makerWorldUrl} />
             </dd>
           </>
         )}
-        <dt>Licence</dt>
-        <dd>{licence.length === 0 ? "Not set" : licence.join(" - ")}</dd>
-        <dt>Tags</dt>
-        <dd>{model.tags.length === 0 ? "None" : model.tags.join(", ")}</dd>
-        <dt>Collections</dt>
-        <dd>{model.collections.length === 0 ? "None" : model.collections.join(", ")}</dd>
+        <dt>{t("model.about.licence")}</dt>
+        <dd>{licence.length === 0 ? t("model.about.notSet") : licence.join(" - ")}</dd>
+        <dt>{t("model.about.tags")}</dt>
+        <dd>{model.tags.length === 0 ? t("model.about.none") : fmt.list(model.tags)}</dd>
+        <dt>{t("model.about.collections")}</dt>
+        <dd>
+          {model.collections.length === 0 ? t("model.about.none") : fmt.list(model.collections)}
+        </dd>
       </dl>
       {model.description === null || model.description.trim() === "" ? (
-        <p className="studio-muted">No description.</p>
+        <p className="studio-muted">{t("model.about.noDescription")}</p>
       ) : (
         <Description markdown={model.description} />
       )}

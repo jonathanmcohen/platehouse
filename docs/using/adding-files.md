@@ -66,7 +66,8 @@ share or a sync tool.
 - After the file is stored and its stored copy is checked (size and SHA-256), it is deleted from
   the inbox.
 - A file that cannot be imported moves to `inbox/failed/`, with a text file beside it,
-  `name.reason.txt`, that says why in one sentence. See
+  `name.reason.txt`, that says why: a stable code, a colon, then one English sentence, such as
+  `too_large: Platehouse could not import this file because ...`. See
   [Troubleshooting](../troubleshooting.md#the-inbox). Failed inbox files also show on the
   [Activity](./activity.md) page.
 

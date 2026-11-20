@@ -177,7 +177,16 @@ const CUTOFF_BODY = {
 /** The form Date.prototype.toISOString writes, which readAt is sent in. */
 const ISO_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-const STALE_TRASH = "The trash list is out of date. Reload the page and try again.";
+export const STALE_TRASH = "The trash list is out of date. Reload the page and try again.";
+
+/** What a restore of a model whose purge has begun says (409 purge_started). */
+export const PURGE_STARTED_MESSAGE =
+  "Deleting this model for good has already begun, so it cannot be restored.";
+
+/** What an Empty trash that left n models says (500 incomplete). */
+export function incompleteMessage(n: number): string {
+  return `${n} ${n === 1 ? "model" : "models"} could not be deleted and ${n === 1 ? "stays" : "stay"} in the trash; the next purge tries again.`;
+}
 
 type IdParams = { id: string };
 type CutoffBody = { cutoff: string };
@@ -493,12 +502,7 @@ export async function registerOrganiseApi(
           return done ? reply.code(204).send() : refuse(reply, 404, "not_found");
         } catch (error) {
           if (error instanceof PurgeStarted) {
-            return refuse(
-              reply,
-              409,
-              "purge_started",
-              "Deleting this model for good has already begun, so it cannot be restored.",
-            );
+            return refuse(reply, 409, "purge_started", PURGE_STARTED_MESSAGE);
           }
           throw error;
         }
@@ -515,10 +519,10 @@ export async function registerOrganiseApi(
         // Only readAt's own form: a date alone, an offset, or a day that
         // Date rolls over (February 30) is refused, not guessed at.
         if (!ISO_MILLIS.test(cutoff) || Number.isNaN(at) || new Date(at).toISOString() !== cutoff) {
-          return refuse(reply, 400, "bad_request", STALE_TRASH);
+          return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
         if (at > (await databaseNow(db)).getTime()) {
-          return refuse(reply, 400, "bad_request", STALE_TRASH);
+          return refuse(reply, 400, "bad_request", STALE_TRASH, { code: "stale_trash" });
         }
         try {
           const { purged } = await emptyTrashBefore(trash, new Date(at));
@@ -530,7 +534,8 @@ export async function registerOrganiseApi(
             return reply.code(500).send({
               error: "incomplete",
               purged: error.purged.length,
-              message: `${n} ${n === 1 ? "model" : "models"} could not be deleted and ${n === 1 ? "stays" : "stay"} in the trash; the next purge tries again.`,
+              failed: n,
+              message: incompleteMessage(n),
             });
           }
           throw error;

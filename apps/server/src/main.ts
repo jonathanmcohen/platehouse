@@ -90,6 +90,7 @@ import { createOrphanSweep } from "./ingest/orphans.js";
 import { createBoss } from "./jobs/boss.js";
 import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
 import { createTrash } from "./library/trash.js";
+import { createLocales } from "./locales/locales.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
 import { bossUploadQueue, createUploads } from "./uploads/tus.js";
@@ -443,6 +444,18 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         settings: () => repos.settings.get(),
         listPrinters: () => estimates.listPrinters(),
       });
+    // The languages: the built-in catalogs and LOCALES_DIR (Jon, 2026-11-19).
+    // LOCALES_DIR is read once here, waiting at most LOCALES_READ_LIMIT_MS,
+    // then again in the background; no request ever waits on it (issue 297).
+    // A dropped file is logged by name and key only, never by its words.
+    const locales = createLocales({
+      dir: config.localesDir,
+      log: {
+        warn: (details, message) =>
+          console.warn(`platehouse: ${message} ${JSON.stringify(details)}`),
+      },
+    });
+    await locales.ready();
     const startedApp = await buildApp({
       health: {
         database: () => sql`select 1`.execute(db),
@@ -493,6 +506,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         slicer,
         inboxDir: config.inbox.dir,
       }),
+      locales,
       ...(options.web === undefined ? {} : { web: options.web }),
       logger: true,
     });

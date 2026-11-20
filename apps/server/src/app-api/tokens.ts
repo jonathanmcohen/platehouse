@@ -25,6 +25,9 @@ import { MAX_TOKEN_NAME_LENGTH, type Tokens } from "../api/tokens.js";
 import type { ApiToken, DB } from "../db/types.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
+/** What a token name out of bounds says (400, code token_name_length). */
+export const TOKEN_NAME_LENGTH_MESSAGE = `A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters.`;
+
 /** A live token as the list shows it: never the token itself. */
 export type ListedToken = Pick<ApiToken, "id" | "name" | "prefix" | "createdAt" | "lastUsedAt">;
 
@@ -92,12 +95,10 @@ export async function registerTokensApi(
           created = await tokens.createToken(request.body.name);
         } catch (error) {
           if (error instanceof RangeError) {
-            return refuse(
-              reply,
-              400,
-              "bad_request",
-              `A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters.`,
-            );
+            return refuse(reply, 400, "bad_request", TOKEN_NAME_LENGTH_MESSAGE, {
+              code: "token_name_length",
+              max: MAX_TOKEN_NAME_LENGTH,
+            });
           }
           throw error;
         }

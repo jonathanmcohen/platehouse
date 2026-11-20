@@ -20,7 +20,9 @@
 //   beside the plate.
 // Times and weights are formatted as the library's cards format them.
 import { useId, useState } from "react";
-import { formatDuration, formatWeight } from "../library/ModelCard";
+import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
+import { printerNameIn } from "../i18n/printers";
+import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
 import type {
   FilamentNumbers,
   Numbers,
@@ -43,13 +45,26 @@ export function Swatch({ color }: { color: string | null }) {
   );
 }
 
-const SOURCE_WORDS: Record<NonNullable<FilamentNumbers["profileSource"]>, string> = {
-  bambu: "Bambu preset",
-  generic: "Generic preset",
-  file: "the file's own filament",
+const SOURCE_WORDS: Record<NonNullable<FilamentNumbers["profileSource"]>, MessageKey> = {
+  bambu: "model.numbers.source.bambu",
+  generic: "model.numbers.source.generic",
+  file: "model.numbers.source.file",
 };
 
+/**
+ * A failure's words in the shown language: the server's own words on an
+ * English page, never en.json's copy of them; on another, by its reason,
+ * else the server's words.
+ */
+function failureWords(
+  i18n: Pick<I18n, "t" | "locale">,
+  failure: { reason: string; words: string },
+): string {
+  return serverText(i18n, failure.words, ESTIMATE_REASON_KEYS[failure.reason]);
+}
+
 function FilamentList({ filaments }: { filaments: Array<FilamentNumbers | ProjectFilament> }) {
+  const { t, fmt } = useI18n();
   if (filaments.length === 0) return null;
   return (
     <ul className="ph-filaments">
@@ -60,12 +75,13 @@ function FilamentList({ filaments }: { filaments: Array<FilamentNumbers | Projec
         return (
           <li key={f.slot}>
             <Swatch color={f.color} /> {f.type}
-            {grams === null ? null : <> {formatWeight(grams)}</>}
+            {grams === null ? null : <> {fmt.weight(grams)}</>}
             {profile === null ? null : (
               <span className="studio-muted">
                 {" "}
-                ({profile}
-                {source === null ? "" : `, ${SOURCE_WORDS[source]}`})
+                {source === null
+                  ? t("model.numbers.profile", { profile })
+                  : t("model.numbers.profileSource", { profile, source: t(SOURCE_WORDS[source]) })}
               </span>
             )}
           </li>
@@ -82,26 +98,31 @@ function slicerText(n: Numbers): string | null {
 
 /** Time, weight, and the facts the numbers came from. */
 function Facts({ numbers, printerWord }: { numbers: Numbers; printerWord: string }) {
+  const i18n = useI18n();
+  const { t, fmt } = i18n;
   const slicer = slicerText(numbers);
   return (
     <>
       {numbers.timeSeconds === null || numbers.weightGrams === null ? null : (
         <p className="ph-numbers-main">
-          {formatDuration(numbers.timeSeconds)}, {formatWeight(numbers.weightGrams)}
+          {t("model.numbers.main", {
+            time: fmt.duration(numbers.timeSeconds),
+            weight: fmt.weight(numbers.weightGrams),
+          })}
         </p>
       )}
       <dl className="studio-dl ph-numbers-facts">
         <dt>{printerWord}</dt>
-        <dd>{numbers.printerName}</dd>
+        <dd>{printerNameIn(i18n, numbers.printerName)}</dd>
         {slicer === null ? null : (
           <>
-            <dt>Slicer</dt>
+            <dt>{t("model.numbers.slicer")}</dt>
             <dd>{slicer}</dd>
           </>
         )}
         {numbers.processProfile === null ? null : (
           <>
-            <dt>Process</dt>
+            <dt>{t("model.numbers.process")}</dt>
             <dd>{numbers.processProfile}</dd>
           </>
         )}
@@ -112,10 +133,11 @@ function Facts({ numbers, printerWord }: { numbers: Numbers; printerWord: string
 }
 
 function FileNumbers({ numbers }: { numbers: Numbers }) {
+  const { t } = useI18n();
   return (
     <div className="ph-numbers">
-      <p className="ph-numbers-source">Bambu, in the file</p>
-      <Facts numbers={numbers} printerWord="Sliced for" />
+      <p className="ph-numbers-source">{t("model.numbers.fromFile")}</p>
+      <Facts numbers={numbers} printerWord={t("model.numbers.slicedFor")} />
     </div>
   );
 }
@@ -132,24 +154,29 @@ function EstimateNumbers({
   /** Whether a new estimate for the shown printer is queued or slicing. */
   pending: boolean;
 }) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const shownName = printerNameIn(i18n, printerName);
   return (
     <div className="ph-numbers">
-      <p className="ph-numbers-source">Platehouse estimate</p>
+      <p className="ph-numbers-source">{t("model.numbers.estimate")}</p>
       {numbers.state === "estimating" ? (
-        <p className="studio-muted">
-          Estimating for {printerName}. The numbers show here when the slice finishes.
-        </p>
+        <p className="studio-muted">{t("model.numbers.estimating", { printer: shownName })}</p>
       ) : (
         <>
           {numbers.state === "stale" ? (
             <p className="studio-muted">
               {numbers.printerId === printer
-                ? `Made with the previous slicer version, ${numbers.staleFor ?? "unknown"}.`
-                : `Made for the previous printer, ${numbers.printerName}.`}
-              {pending ? ` A new estimate for ${printerName} is on its way.` : null}
+                ? t("model.numbers.staleSlicer", {
+                    version: numbers.staleFor ?? t("model.numbers.unknownVersion"),
+                  })
+                : t("model.numbers.stalePrinter", {
+                    printer: printerNameIn(i18n, numbers.printerName),
+                  })}
+              {pending ? ` ${t("model.numbers.onItsWay", { printer: shownName })}` : null}
             </p>
           ) : null}
-          <Facts numbers={numbers} printerWord="Printer" />
+          <Facts numbers={numbers} printerWord={t("model.numbers.printer")} />
         </>
       )}
     </div>
@@ -178,6 +205,8 @@ export function PlateNumbersView({
   pending,
   onRetry,
 }: PlateNumbersViewProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
   const detailId = useId();
   const [showDetail, setShowDetail] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -190,10 +219,10 @@ export function PlateNumbersView({
     setRetryError(null);
     try {
       if (!(await onRetry(failure.estimateId))) {
-        setRetryError("This plate could not be retried right now. Try again later.");
+        setRetryError(t("model.numbers.retryFailed"));
       }
     } catch {
-      setRetryError("This plate could not be retried right now. Try again later.");
+      setRetryError(t("model.numbers.retryFailed"));
     } finally {
       setRetrying(false);
     }
@@ -212,8 +241,10 @@ export function PlateNumbersView({
       )}
       {failure === undefined ? null : (
         <div className="ph-numbers ph-failure">
-          <p className="ph-numbers-source">Platehouse estimate for {printerName}</p>
-          <p>{failure.words}</p>
+          <p className="ph-numbers-source">
+            {t("model.numbers.estimateFor", { printer: printerNameIn(i18n, printerName) })}
+          </p>
+          <p>{failureWords(i18n, failure)}</p>
           <div className="studio-actions">
             {failure.detail === null ? null : (
               <button
@@ -223,7 +254,7 @@ export function PlateNumbersView({
                 {...(showDetail ? { "aria-controls": detailId } : {})}
                 onClick={() => setShowDetail((v) => !v)}
               >
-                Details
+                {t("model.numbers.details")}
               </button>
             )}
             <button
@@ -232,7 +263,7 @@ export function PlateNumbersView({
               aria-disabled={retrying}
               onClick={() => void retry()}
             >
-              Retry
+              {t("model.numbers.retry")}
             </button>
           </div>
           {failure.detail === null || !showDetail ? null : (
@@ -249,10 +280,12 @@ export function PlateNumbersView({
       )}
       {file === undefined && platehouse === undefined && failure === undefined ? (
         <>
-          <p className="studio-muted">No numbers for this plate yet.</p>
+          <p className="studio-muted">{t("model.numbers.none")}</p>
           {projectFilaments.length === 0 ? null : (
             <>
-              <p className="studio-filaments-label studio-muted">Project filaments</p>
+              <p className="studio-filaments-label studio-muted">
+                {t("model.numbers.projectFilaments")}
+              </p>
               <FilamentList filaments={projectFilaments} />
             </>
           )}

@@ -46,7 +46,12 @@ import {
 } from "../../src/app-api/activity.js";
 import type { DB } from "../../src/db/types.js";
 import { PREVIOUS_RENDERS_SENTENCE } from "../../src/derived/client.js";
+import { reasonFileText } from "../../src/inbox/watch.js";
+import { duplicateMessage } from "../../src/ingest/duplicates.js";
 import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
+
+const DUP_MODEL = "0198f0c4-0000-7000-8000-00000000000a";
+const DUP_OTHER = "0198f0c4-0000-7000-8000-00000000000b";
 
 describe("scheduleText", () => {
   test("says each schedule the app uses in plain words", () => {
@@ -153,7 +158,7 @@ describe("progressOf", () => {
 
 describe("mergeEvents", () => {
   function inbox(at: string, name: string): ActivityEvent {
-    return { type: "inbox_failed", at, name, reason: "x" };
+    return { type: "inbox_failed", at, name, reason: "x", reasonCode: null };
   }
 
   test("puts the newest first across every kind", () => {
@@ -213,21 +218,50 @@ describe("readInboxFailures", () => {
         at: new Date(3_000_000).toISOString(),
         name: "new.stl",
         reason: "The upload failed: EACCES: permission denied, open '[path]'",
+        reasonCode: null,
       },
       {
         type: "inbox_failed",
         at: new Date(2_000_000).toISOString(),
         name: "gone.scad",
         reason: "Gone.",
+        reasonCode: null,
       },
       {
         type: "inbox_failed",
         at: new Date(1_000_000).toISOString(),
         name: "old.3mf",
         reason: "This file is not a supported file.",
+        reasonCode: null,
       },
     ]);
     for (const item of items) expect(JSON.stringify(item)).not.toContain(dir);
+  });
+
+  test("a duplicate's reason carries the matched model's name, id and others for the page's language", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const sentence = `${duplicateMessage([
+      { modelId: DUP_MODEL, modelName: "Clip", fileId: "f1", fileName: "Clip.stl" },
+      { modelId: DUP_OTHER, modelName: "Other", fileId: "f2", fileName: "Clip.stl" },
+    ])}.`;
+    await writeFile(join(failed, "a.stl.reason.txt"), reasonFileText(sentence, "duplicate"));
+    // Another code's reason, and an older duplicate file whose words do not parse: no detail.
+    await writeFile(
+      join(failed, "b.stl.reason.txt"),
+      reasonFileText("This file is not a supported file.", "unsupported_type"),
+    );
+    await writeFile(join(failed, "c.stl.reason.txt"), "duplicate: Something else.\n");
+    const { items } = await readInboxFailures(dir, 10);
+    const byName = new Map(items.map((i) => [i.type === "inbox_failed" ? i.name : "", i]));
+    expect(byName.get("a.stl")).toMatchObject({
+      reason: sentence,
+      reasonCode: "duplicate",
+      duplicate: { name: "Clip", id: DUP_MODEL, others: 1 },
+    });
+    expect(byName.get("b.stl")).not.toHaveProperty("duplicate");
+    expect(byName.get("c.stl")).toMatchObject({ reasonCode: "duplicate" });
+    expect(byName.get("c.stl")).not.toHaveProperty("duplicate");
   });
 
   test("keeps only the newest limit", async () => {

@@ -22,6 +22,7 @@ import {
 } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { DB } from "../../src/db/types.js";
+import { parseDuplicateMessage } from "../../src/ingest/duplicates.js";
 import {
   createIngest,
   DuplicateFile,
@@ -161,6 +162,38 @@ describe("duplicateMessage", () => {
   test("a very long model name is cut short", () => {
     const text = duplicateMessage([match({ modelName: "x".repeat(500) })]);
     expect(text).toContain(`"${"x".repeat(100)}..."`);
+  });
+});
+
+describe("parseDuplicateMessage", () => {
+  const match = (over: Partial<DuplicateMatch> = {}): DuplicateMatch => ({ ...LIVE_ROW, ...over });
+
+  test("reads back the first model's name and id and the others counted, with or without a full stop", () => {
+    const one = duplicateMessage([match()]);
+    expect(parseDuplicateMessage(one)).toEqual({ name: "Clip", id: MODEL_A, others: 0 });
+    expect(parseDuplicateMessage(`${one}.`)).toEqual({ name: "Clip", id: MODEL_A, others: 0 });
+    const two = duplicateMessage([match(), match({ modelId: MODEL_B, modelName: "Other" })]);
+    expect(parseDuplicateMessage(`${two}.`)).toEqual({ name: "Clip", id: MODEL_A, others: 1 });
+    const three = duplicateMessage([
+      match(),
+      match({ modelId: MODEL_B }),
+      match({ modelId: "0198f0c4-0000-7000-8000-00000000000c" }),
+    ]);
+    expect(parseDuplicateMessage(`${three}.`)).toEqual({ name: "Clip", id: MODEL_A, others: 2 });
+  });
+
+  test('a name with quotes or "(id ...)" in it is read back whole', () => {
+    const name = 'The "Best" clip (id 1) and 2 other models';
+    expect(parseDuplicateMessage(`${duplicateMessage([match({ modelName: name })])}.`)).toEqual({
+      name,
+      id: MODEL_A,
+      others: 0,
+    });
+  });
+
+  test("any other sentence is not read as a duplicate", () => {
+    expect(parseDuplicateMessage("This file is not a supported file.")).toBeUndefined();
+    expect(parseDuplicateMessage("")).toBeUndefined();
   });
 });
 

@@ -61,6 +61,7 @@ import {
   NON_UTF8_REASON,
   PUT_BACK_FAILED_REASON,
   REASON_SUFFIX,
+  reasonFileText,
   repeatedErrorReason,
   STILL_WRITING_REASON,
   STRIKES,
@@ -514,7 +515,7 @@ describe("after ingest", () => {
     expect(pass.failed).toEqual([{ name: "changing.stl", reason: CHANGED_REASON }]);
     expect(await exists(join(inbox, "changing.stl"))).toBe(false);
     expect(await readFile(join(inbox, FAILED_DIR, `changing.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${CHANGED_REASON}\n`,
+      reasonFileText(CHANGED_REASON),
     );
     await tick(w, 15_000);
     expect(fake.calls).toEqual(["changing.stl"]);
@@ -885,7 +886,7 @@ describe("a file put under an imported file's name while it is checked", () => {
     expect(pass.failed).toEqual([{ name: "part.stl", reason: SWAPPED_REASON }]);
     expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
     expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${SWAPPED_REASON}\n`,
+      reasonFileText(SWAPPED_REASON),
     );
     expect(await readFile(path, "utf8")).toBe(THIRD);
     expect((await readdir(inbox)).sort()).toEqual([FAILED_DIR, "part.stl"].sort());
@@ -917,7 +918,7 @@ describe("a file put under an imported file's name while it is checked", () => {
     expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
     expect((await lstat(join(inbox, FAILED_DIR, "part.stl"))).isFIFO()).toBe(true);
     expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${PUT_BACK_FAILED_REASON}\n`,
+      reasonFileText(PUT_BACK_FAILED_REASON),
     );
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
   });
@@ -933,7 +934,7 @@ describe("a file put under an imported file's name while it is checked", () => {
     expect(pass.failed).toEqual([{ name: "left.stl", reason: HELD_REASON }]);
     expect(await readFile(join(inbox, FAILED_DIR, "left.stl"), "utf8")).toBe(FIRST);
     expect(await readFile(join(inbox, FAILED_DIR, `left.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${HELD_REASON}\n`,
+      reasonFileText(HELD_REASON),
     );
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
     expect(fake.calls).toEqual([]);
@@ -964,7 +965,7 @@ describe("a file put under an imported file's name while it is checked", () => {
     const kept = join(inbox, FAILED_DIR, "part.stl");
     expect(await readFile(kept, "utf8")).toBe(SECOND);
     expect((await lstat(kept, { bigint: true })).ino).toBe(before.ino);
-    expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(`${CHANGED_REASON}\n`);
+    expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(reasonFileText(CHANGED_REASON));
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
     expect(lines.some((l) => l.includes("deleted the inbox copy"))).toBe(false);
   });
@@ -1178,7 +1179,7 @@ describe("a file put under an imported file's name during the import", () => {
       const moved = await fixed.pollOnce();
       expect(moved.failed).toEqual([{ name, reason }]);
       expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-        `${reason}\n`,
+        reasonFileText(reason),
       );
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
@@ -1242,7 +1243,7 @@ describe("a file put under an imported file's name during the import", () => {
       const moved = await tick(w, 5_000);
       expect(moved.failed).toEqual([{ name, reason }]);
       expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-        `${reason}\n`,
+        reasonFileText(reason),
       );
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
@@ -1342,7 +1343,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(pass.failed).toEqual([{ name, reason: reason }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
       expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-        `${reason}\n`,
+        reasonFileText(reason),
       );
       // Nothing under the name, no holding folder left, the error logged.
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
@@ -1476,8 +1477,8 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(pass.failed).toEqual([{ name, reason: UNCHECKED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(NEWER);
       const why = await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8");
-      expect(why).toBe(`${UNCHECKED_REASON}\n`);
-      expect(why).not.toBe(`${UNREMOVED_REASON}\n`);
+      expect(why).toBe(reasonFileText(UNCHECKED_REASON));
+      expect(why).not.toBe(reasonFileText(UNREMOVED_REASON));
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
     },
   );
@@ -1498,7 +1499,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
     expect(pass.failed).toEqual([{ name, reason: UNREMOVED_REASON }]);
     expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(TEXT);
     expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-      `${UNREMOVED_REASON}\n`,
+      reasonFileText(UNREMOVED_REASON),
     );
   });
 
@@ -1544,7 +1545,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(pass.failed).toEqual([{ name, reason: UNCHECKED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(expected);
       expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
-        `${UNCHECKED_REASON}\n`,
+        reasonFileText(UNCHECKED_REASON),
       );
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
       // The verdict the import reached is still logged.
@@ -1579,9 +1580,9 @@ describe("an imported file whose check or delete in its holding folder fails", (
       expect(pass.failed).toEqual([{ name, reason: UNCHECKED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, name), "utf8")).toBe(NEWER);
       const why = await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8");
-      expect(why).toBe(`${UNCHECKED_REASON}\n`);
-      expect(why).not.toBe(`${CHANGED_REASON}\n`);
-      expect(why).not.toBe(`${UNCONFIRMED_REASON}\n`);
+      expect(why).toBe(reasonFileText(UNCHECKED_REASON));
+      expect(why).not.toBe(reasonFileText(CHANGED_REASON));
+      expect(why).not.toBe(reasonFileText(UNCONFIRMED_REASON));
       expect(await readdir(inbox)).toEqual([FAILED_DIR]);
     },
   );
@@ -1761,7 +1762,7 @@ describe("putting a file back under its name without hard links", () => {
       expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
       expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
       expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
-        `${PUT_BACK_FAILED_REASON}\n`,
+        reasonFileText(PUT_BACK_FAILED_REASON),
       );
       if (newcomer) {
         // A newcomer is left under the name, whole, never moved or deleted.
@@ -1843,7 +1844,9 @@ describe("putting a file back under its name without hard links", () => {
         expect(pass.failed).toEqual([{ name: "part.stl", reason: STILL_WRITING_REASON }]);
         const kept = join(inbox, FAILED_DIR, "part.stl");
         expect(await readFile(kept, "utf8")).toBe(`${SECOND}${MORE}${LATER}`);
-        expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(`${STILL_WRITING_REASON}\n`);
+        expect(await readFile(`${kept}${REASON_SUFFIX}`, "utf8")).toBe(
+          reasonFileText(STILL_WRITING_REASON),
+        );
         // No copy is left under the name to be imported cut short.
         expect(await readdir(inbox)).toEqual([FAILED_DIR]);
         await tick(w, 15_000);
@@ -1899,7 +1902,7 @@ describe("putting a file back under its name without hard links", () => {
     expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
     expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
     expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${PUT_BACK_FAILED_REASON}\n`,
+      reasonFileText(PUT_BACK_FAILED_REASON),
     );
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);
   });
@@ -1936,7 +1939,7 @@ describe("putting a file back under its name without hard links", () => {
     expect(pass.failed).toEqual([{ name: "part.stl", reason: PUT_BACK_FAILED_REASON }]);
     expect(await readFile(join(inbox, FAILED_DIR, "part.stl"), "utf8")).toBe(SECOND);
     expect(await readFile(join(inbox, FAILED_DIR, `part.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${PUT_BACK_FAILED_REASON}\n`,
+      reasonFileText(PUT_BACK_FAILED_REASON),
     );
     // The real error is in the log, and nothing is left under the name.
     expect(lines.some((l) => l.includes("part.stl") && l.includes("EACCES"))).toBe(true);
@@ -2320,7 +2323,7 @@ describe("failures", () => {
     expect(pass.failed).toEqual([{ name: "notes.txt", reason }]);
     expect(await readFile(join(inbox, FAILED_DIR, "notes.txt"), "utf8")).toBe("not a model\n");
     expect(await readFile(join(inbox, FAILED_DIR, `notes.txt${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason),
     );
   });
 
@@ -2352,7 +2355,7 @@ describe("failures", () => {
       "solid copy\nendsolid copy\n",
     );
     expect(await readFile(join(inbox, FAILED_DIR, `Benchy (2).stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason, "duplicate"),
     );
     expect(await exists(join(inbox, "Benchy (2).stl"))).toBe(false);
     // A duplicate is the file's own fault: no environment check, no strikes.
@@ -2420,7 +2423,7 @@ describe("failures", () => {
     );
     expect(await readFile(join(failed, "bad (3).3mf"), "utf8")).toBe("copy 3\n");
     expect(await readFile(join(failed, `bad (3).3mf${REASON_SUFFIX}`), "utf8")).toBe(
-      "Refused 3.\n",
+      "unsupported_type: Refused 3.\n",
     );
   });
 
@@ -3153,7 +3156,7 @@ describe("telling a bad file from an outage", () => {
     expect(reason).toContain("TypeError: boom in the parser");
     expect(reason.endsWith(".")).toBe(true);
     expect(await readFile(join(inbox, FAILED_DIR, `a.stl${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason),
     );
     expect(fake.calls.filter((n) => n === "a.stl")).toHaveLength(STRIKES);
     // c.stl settled and imported while a.stl was failing.
@@ -3894,7 +3897,7 @@ describe("the size limit", () => {
       reason: TOO_LARGE_REASON,
     });
     expect(await readFile(join(inbox, FAILED_DIR, `big.3mf${REASON_SUFFIX}`), "utf8")).toBe(
-      `${TOO_LARGE_REASON}\n`,
+      reasonFileText(TOO_LARGE_REASON),
     );
     expect(calls).toEqual(["edge.3mf"]);
     // Only edge.3mf was asked about, under the id of its own size and bytes.

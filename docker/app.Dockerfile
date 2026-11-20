@@ -61,6 +61,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/threemf/package.json packages/threemf/
 COPY packages/makerworld/package.json packages/makerworld/
 COPY packages/slicer-contract/package.json packages/slicer-contract/
+COPY packages/i18n/package.json packages/i18n/
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
 RUN pnpm install --frozen-lockfile \
@@ -72,6 +73,9 @@ COPY packages/makerworld/tsconfig.json packages/makerworld/
 COPY packages/makerworld/src packages/makerworld/src
 COPY packages/slicer-contract/tsconfig.json packages/slicer-contract/
 COPY packages/slicer-contract/src packages/slicer-contract/src
+COPY packages/i18n/tsconfig.json packages/i18n/
+COPY packages/i18n/src packages/i18n/src
+COPY packages/i18n/locales packages/i18n/locales
 COPY apps/server/tsconfig.json apps/server/
 COPY apps/server/src apps/server/src
 COPY apps/web/tsconfig.json apps/web/index.html apps/web/vite.config.ts apps/web/
@@ -89,6 +93,8 @@ RUN node_modules/.bin/tsc -b apps/server \
  && cp -R apps/server/src/db/migrations apps/server/dist/src/db/migrations \
  && diff -r apps/server/src/db/migrations apps/server/dist/src/db/migrations \
  && test -f apps/server/dist/src/main.js \
+ && test -f packages/i18n/dist/src/index.js \
+ && test -f packages/i18n/locales/en.json \
  && test -f apps/server/dist/src/db/migrate.js \
  && test -f apps/server/dist/src/db/migrations/0001_init.sql \
  && test -f apps/web/dist/index.html \

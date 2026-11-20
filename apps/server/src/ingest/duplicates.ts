@@ -71,3 +71,26 @@ export function duplicateMessage(matches: readonly DuplicateMatch[]): string {
     `(id ${first.modelId})${more}, so it was skipped; nothing was saved`
   );
 }
+
+/** duplicateMessage's sentence, with or without the full stop the inbox's reason file adds. */
+const DUPLICATE_SENTENCE =
+  /^This file is already in the library, in the model "(.*)" \(id ([^\s()]+)\)(?: and (\d+) other models?)?, so it was skipped; nothing was saved\.?$/;
+
+/**
+ * duplicateMessage's sentence read back: the first model's name (as the
+ * sentence quotes it) and id, and how many other models hold the file; or
+ * undefined for any other text. The Activity page uses it to say an inbox
+ * file refused as a duplicate in the page's language (inbox.reason.duplicate),
+ * since the inbox's reason file keeps only the sentence.
+ */
+export function parseDuplicateMessage(
+  text: string,
+): { name: string; id: string; others: number } | undefined {
+  const m = DUPLICATE_SENTENCE.exec(text);
+  if (m === null) return undefined;
+  return {
+    name: m[1] as string,
+    id: m[2] as string,
+    others: m[3] === undefined ? 0 : Number(m[3]),
+  };
+}

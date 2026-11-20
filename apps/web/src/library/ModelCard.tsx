@@ -13,6 +13,7 @@
 // thumbnail the library's API named (AC-073). It is decorative (the link's
 // text is the name), so its alt is empty.
 import { Link } from "react-router";
+import { ENGLISH_I18N, type Formatters, useI18n } from "../i18n/I18n";
 
 /** A card as GET /app/api/library answers it (apps/server/src/app-api/library.ts). */
 export interface LibraryCard {
@@ -30,17 +31,14 @@ export interface LibraryCard {
   numbersUnavailable: boolean;
 }
 
-/** A print time as the card shows it: 50m, 1h 25m. Never less than 1m. */
-export function formatDuration(seconds: number): string {
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  const hours = Math.floor(minutes / 60);
-  return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+/** A print time as the card shows it: 50m, 1h 25m. Never less than 1m. English when no language is given. */
+export function formatDuration(seconds: number, fmt: Formatters = ENGLISH_I18N.fmt): string {
+  return fmt.duration(seconds);
 }
 
-/** A weight as the card shows it: 31 g, 41.4 g, 1.25 kg. */
-export function formatWeight(grams: number): string {
-  if (grams >= 1000) return `${Number((grams / 1000).toFixed(2))} kg`;
-  return `${Number(grams.toFixed(1))} g`;
+/** A weight as the card shows it: 31 g, 41.4 g, 1.25 kg. English when no language is given. */
+export function formatWeight(grams: number, fmt: Formatters = ENGLISH_I18N.fmt): string {
+  return fmt.weight(grams);
 }
 
 const KIND_LABEL: Record<NonNullable<LibraryCard["fileKind"]>, string> = {
@@ -52,6 +50,7 @@ const KIND_LABEL: Record<NonNullable<LibraryCard["fileKind"]>, string> = {
 
 /** A generic file outline with the file type under it. */
 function FileTypeIcon({ kind }: { kind: LibraryCard["fileKind"] }) {
+  const { t } = useI18n();
   return (
     <span className="studio-placeholder">
       <span>
@@ -69,7 +68,9 @@ function FileTypeIcon({ kind }: { kind: LibraryCard["fileKind"] }) {
           <path d="M14 2.75V7h4.25" />
         </svg>
         <br />
-        {kind === null ? "No files" : `${KIND_LABEL[kind]} file`}
+        {kind === null
+          ? t("library.card.noFiles")
+          : t("library.card.kindFile", { kind: KIND_LABEL[kind] })}
       </span>
     </span>
   );
@@ -82,6 +83,7 @@ export interface CardSelection {
 }
 
 export function ModelCard({ card, selection }: { card: LibraryCard; selection?: CardSelection }) {
+  const { t, fmt } = useI18n();
   const known = card.timeSeconds !== null && card.weightGrams !== null;
   const content = (
     <>
@@ -94,30 +96,23 @@ export function ModelCard({ card, selection }: { card: LibraryCard; selection?: 
       </span>
       <span className="studio-card-body">
         <span className="studio-card-title">{card.name}</span>
-        <span className="studio-card-meta">{card.creator ?? "Unknown creator"}</span>
+        <span className="studio-card-meta">{card.creator ?? t("library.card.unknownCreator")}</span>
         {card.plateCount > 0 ? (
           <span className="studio-card-plates">
-            {card.plateCount === 1 ? "1 plate" : `${card.plateCount} plates`}
+            {t("library.card.plates", { count: card.plateCount })}
           </span>
         ) : null}
         {known ? (
           <span className="studio-card-meta">
-            {formatDuration(card.timeSeconds as number)} -{" "}
-            {formatWeight(card.weightGrams as number)}
+            {fmt.duration(card.timeSeconds as number)} - {fmt.weight(card.weightGrams as number)}
           </span>
         ) : card.numbersUnavailable ? (
-          <span
-            className="studio-card-meta"
-            title="The slicer could not be reached, so this printer's numbers cannot be shown yet"
-          >
-            numbers unavailable
+          <span className="studio-card-meta" title={t("library.card.unavailableTitle")}>
+            {t("library.card.unavailable")}
           </span>
         ) : card.partial ? (
-          <span
-            className="studio-card-meta"
-            title="Some plates have no numbers for this printer yet"
-          >
-            partial
+          <span className="studio-card-meta" title={t("library.card.partialTitle")}>
+            {t("library.card.partial")}
           </span>
         ) : null}
       </span>

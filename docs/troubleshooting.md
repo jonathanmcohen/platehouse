@@ -46,7 +46,11 @@ and never logs a secret, token or slicer link.
 ## The inbox
 
 A file that cannot be imported moves to `inbox/failed/`, with `name.reason.txt` beside it saying
-why. The [Activity](./using/activity.md) page lists failed inbox files too. The common reasons:
+why. The file is one line: a stable code, a colon, then the reason in English, for example
+`changed: This file changed while Platehouse was importing it, ...`. The code lets a script tell
+the reasons apart without reading the sentence. The codes are changed, unconfirmed, unremoved, unchecked, swapped, put_back_failed, still_writing, held, non_utf8, too_large, unsupported_type, model_not_found, duplicate, retries_exhausted and failed. An older reason
+file has the sentence alone. The [Activity](./using/activity.md) page lists failed
+inbox files too. The common reasons:
 
 | Reason                                                                                    | What to do                                                                                                                                                                                                              |
 | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

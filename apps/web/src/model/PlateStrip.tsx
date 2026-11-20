@@ -2,10 +2,16 @@
 // Task 20, AC-051): one 72 px button per plate, in plate order. Pressing one
 // shows that plate large; the shown one is aria-pressed. The buttons are in
 // the Tab order, so the strip works by keyboard.
+import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import type { ModelPlate } from "./ModelPage";
 
-export function plateLabel(plate: Pick<ModelPlate, "index" | "name">): string {
-  return plate.name !== null && plate.name.trim() !== "" ? plate.name : `Plate ${plate.index}`;
+export function plateLabel(
+  plate: Pick<ModelPlate, "index" | "name">,
+  i18n: Pick<I18n, "t"> = ENGLISH_I18N,
+): string {
+  return plate.name !== null && plate.name.trim() !== ""
+    ? plate.name
+    : i18n.t("model.plate.numbered", { index: plate.index });
 }
 
 export interface PlateStripProps {
@@ -16,15 +22,19 @@ export interface PlateStripProps {
 }
 
 export function PlateStrip({ plates, selected, onSelect }: PlateStripProps) {
+  const i18n = useI18n();
   if (plates.length < 2) return null;
   return (
-    <ul className="studio-plate-strip" aria-label="Plates">
+    <ul className="studio-plate-strip" aria-label={i18n.t("model.plate.strip")}>
       {plates.map((plate) => (
         <li key={plate.id}>
           <button
             type="button"
             aria-pressed={plate.index === selected}
-            aria-label={`Show plate ${plate.index}: ${plateLabel(plate)}`}
+            aria-label={i18n.t("model.plate.show", {
+              index: plate.index,
+              label: plateLabel(plate, i18n),
+            })}
             onClick={() => onSelect(plate.index)}
           >
             {plate.thumbnail === null ? (

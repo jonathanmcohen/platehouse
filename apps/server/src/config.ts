@@ -51,6 +51,12 @@ export interface Config {
   };
   readonly tmpDir: string;
   /**
+   * LOCALES_DIR: a folder of translations a self-hoster adds without a
+   * rebuild (locales/locales.ts); undefined when unset, and then only the
+   * built-in languages are offered.
+   */
+  readonly localesDir: string | undefined;
+  /**
    * An absolute URL on the public origin for a path that starts with one "/".
    * It is built from PUBLIC_ORIGIN only, never from a request's Host header.
    */
@@ -153,6 +159,10 @@ const envSchema = z.object({
   INBOX_DIR: optional("/data/inbox", absolutePath, ABSOLUTE),
   TMP_DIR: optional("/data/tmp", absolutePath, ABSOLUTE),
   INBOX_SETTLE_SECONDS: optional("15", positiveInt, WHOLE),
+  // Unset (or empty) means no folder: only the built-in languages.
+  LOCALES_DIR: z
+    .preprocess((v) => (v === "" ? undefined : v), absolutePath.optional())
+    .describe(ABSOLUTE),
 });
 
 type EnvKey = keyof typeof envSchema.shape;
@@ -203,6 +213,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
       settleSeconds: e.INBOX_SETTLE_SECONDS,
     }),
     tmpDir: e.TMP_DIR,
+    localesDir: e.LOCALES_DIR,
     absoluteUrl(path: string): string {
       if (!path.startsWith("/") || path.startsWith("//")) {
         throw new TypeError("absoluteUrl takes a path that starts with a single /");

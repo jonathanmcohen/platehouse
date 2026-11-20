@@ -9,6 +9,8 @@
 // The headings never skip a level under the page's h1 (#206): with one .3mf
 // there is no file heading and the plate names are h2; with several, each
 // file's name is an h2 and its plate names h3.
+
+import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { PrinterSwitch } from "../settings/PrinterSwitch";
 import type { ModelFile, ModelView } from "./ModelPage";
 import { PlateNumbersView } from "./Numbers";
@@ -16,14 +18,17 @@ import { OpenInSlicer, type Platform } from "./OpenInSlicer";
 import { plateLabel } from "./PlateStrip";
 
 /** What a .3mf without plates says, by parse status. */
-export function parseStatusWords(file: Pick<ModelFile, "parseStatus">): string | null {
+export function parseStatusWords(
+  file: Pick<ModelFile, "parseStatus">,
+  i18n: Pick<I18n, "t"> = ENGLISH_I18N,
+): string | null {
   switch (file.parseStatus) {
     case "no_plate_data":
-      return "No Bambu plate data in this file";
+      return i18n.t("model.plates.noData");
     case "unavailable":
-      return "This file's plates could not be read right now.";
+      return i18n.t("model.plates.unavailable");
     case "pending":
-      return "This file's plates are still being read.";
+      return i18n.t("model.plates.reading");
     default:
       return null;
   }
@@ -67,6 +72,7 @@ export function PlatesTab({
   navigateTo,
   platform,
 }: PlatesTabProps) {
+  const i18n = useI18n();
   const files = model.files.filter((f) => f.kind === "3mf");
   const PlateHeading = files.length > 1 ? "h3" : "h2";
   const shown = switchPrinter(model, chosenPrinter);
@@ -79,7 +85,7 @@ export function PlatesTab({
         onChoose={onChoosePrinter}
       />
       {files.map((file) => {
-        const words = parseStatusWords(file);
+        const words = parseStatusWords(file, i18n);
         const plates = [...file.plates].sort((a, b) => a.index - b.index);
         return (
           <section key={file.id} className="ph-file-plates" aria-label={file.name}>
@@ -99,7 +105,9 @@ export function PlatesTab({
                       {plate.thumbnail === null ? null : (
                         <img src={plate.thumbnail} alt="" loading="lazy" />
                       )}
-                      <PlateHeading className="ph-plate-title">{plateLabel(plate)}</PlateHeading>
+                      <PlateHeading className="ph-plate-title">
+                        {plateLabel(plate, i18n)}
+                      </PlateHeading>
                     </div>
                     <PlateNumbersView
                       numbers={plate.numbers}

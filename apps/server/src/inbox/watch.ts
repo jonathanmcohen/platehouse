@@ -121,7 +121,9 @@
 //   every pass.
 // - A file that goes to failed (the rules below) moves to failed/<name> ("<stem> (2)<ext>"
 //   and so on when the name is taken) with <name>.reason.txt beside it,
-//   holding one plain sentence. failed/ is made when missing, and refused
+//   holding one line: a stable code, a colon and a space, then one plain
+//   sentence, such as "changed: This file changed while ..." (reasonFileText
+//   and reasonCode below; Jon, 2026-11-19). failed/ is made when missing, and refused
 //   when it is anything but a real folder (a symlink copied in by rsync -a,
 //   say): nothing moves through it, and each file that would have is logged
 //   and left in the inbox, as a file that cannot be moved is (below), or,
@@ -323,6 +325,8 @@ import {
   type IngestErrorCode,
   IngestOutcomeUnknown,
   type IngestResult,
+  MODEL_NOT_FOUND_MESSAGE,
+  UNSUPPORTED_MESSAGE,
 } from "../ingest/ingest.js";
 import type { ImportedFile, ImportedQuery } from "../repos/files.js";
 import { createRepos } from "../repos/index.js";
@@ -337,6 +341,24 @@ export const FAILED_DIR = "failed";
 
 /** What follows a failed file's name to name its reason file. */
 export const REASON_SUFFIX = ".reason.txt";
+
+/**
+ * A reason file's text (Jon, 2026-11-19): a stable code, a colon, the plain
+ * English sentence, a newline, such as "changed: This file changed while
+ * ...". The code lets a script, or the Activity page in another language,
+ * tell the reasons apart without reading the sentence.
+ */
+export function reasonFileText(reason: string, code: string = reasonCode(reason)): string {
+  return `${code}: ${reason}\n`;
+}
+
+/** A reason file read back: its code, or null for an older file with none, and its sentence. */
+export function parseReasonFile(text: string): { code: string | null; reason: string } {
+  const m = /^([a-z][a-z0-9_]*): ([\s\S]*)$/.exec(text);
+  return m === null
+    ? { code: null, reason: text }
+    : { code: m[1] as string, reason: m[2] as string };
+}
 
 /** Reason when the inbox copy no longer matches what was stored. */
 export const CHANGED_REASON =
@@ -492,6 +514,38 @@ export function tooLargeReason(maxBytes: number): string {
 
 /** Reason when the file is larger than MAX_INBOX_BYTES. */
 export const TOO_LARGE_REASON = tooLargeReason(MAX_INBOX_BYTES);
+
+/** The stable code for each fixed reason a file goes to failed with. */
+const REASON_CODES: ReadonlyArray<readonly [reason: string, code: string]> = [
+  [CHANGED_REASON, "changed"],
+  [UNCONFIRMED_REASON, "unconfirmed"],
+  [UNREMOVED_REASON, "unremoved"],
+  [UNCHECKED_REASON, "unchecked"],
+  [SWAPPED_REASON, "swapped"],
+  [PUT_BACK_FAILED_REASON, "put_back_failed"],
+  [STILL_WRITING_REASON, "still_writing"],
+  [HELD_REASON, "held"],
+  [NON_UTF8_REASON, "non_utf8"],
+  [sentence(UNSUPPORTED_MESSAGE), "unsupported_type"],
+  [sentence(MODEL_NOT_FOUND_MESSAGE), "model_not_found"],
+];
+
+/**
+ * The code a reason is written under: its own for a fixed reason, too_large
+ * for any size refusal, retries_exhausted for a file that failed STRIKES
+ * times (repeatedErrorReason), and failed for anything else.
+ */
+export function reasonCode(reason: string): string {
+  const known = REASON_CODES.find(([text]) => text === reason);
+  if (known !== undefined) return known[1];
+  if (reason.startsWith("Platehouse could not import this file because it is larger than ")) {
+    return "too_large";
+  }
+  if (reason.startsWith(`Platehouse tried to import this file ${STRIKES} times`)) {
+    return "retries_exhausted";
+  }
+  return "failed";
+}
 
 /** Failures in a row, with the checks passing, before a file moves to failed. */
 export const STRIKES = 3;
@@ -1230,7 +1284,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   }
 
   /** Moves the file to failed with its reason file; returns the name it took. */
-  async function moveToFailed(name: string, path: PathLike, reason: string): Promise<string> {
+  async function moveToFailed(
+    name: string,
+    path: PathLike,
+    reason: string,
+    code?: string,
+  ): Promise<string> {
     await failedFolder();
     for (let n = 1; n <= 1000; n += 1) {
       const candidate = failedName(name, n);
@@ -1239,7 +1298,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       if (await exists(target)) continue;
       // Creating the reason file exclusively claims the name.
       try {
-        await writeFile(reasonPath, `${reason}\n`, { flag: "wx" });
+        await writeFile(reasonPath, reasonFileText(reason, code), { flag: "wx" });
       } catch (error) {
         if (codeOf(error) === "EEXIST") continue;
         throw error;
@@ -1262,10 +1321,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     path: PathLike,
     reason: string,
     pass: InboxPass,
+    /** The reason's code, when it is not one reasonCode knows from the words (an ingest refusal's). */
+    code?: string,
   ): Promise<void> {
     seen.delete(key);
     try {
-      const moved = await moveToFailed(name, path, reason);
+      const moved = await moveToFailed(name, path, reason, code);
       pass.failed.push({ name, reason });
       log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
     } catch (error) {
@@ -2103,7 +2164,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
               `${FAILED_DIR}`,
           );
         }
-        await fail(name, name, path, sentence(error.message), pass);
+        await fail(name, name, path, sentence(error.message), pass, error.code);
         return "done";
       }
       // Not the file's fault until shown to be: check the environment.

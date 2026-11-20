@@ -23,6 +23,7 @@
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import "./api-docs.css";
+import { useI18n } from "../i18n/I18n";
 import {
   type ApiDocument,
   examplesOf,
@@ -217,6 +218,7 @@ export interface ApiReferenceProps {
 }
 
 export function ApiReference({ doc = DOC, focusHeading = false }: ApiReferenceProps) {
+  const { t, rich } = useI18n();
   const groups = groupOperations(doc);
   const base = `${window.location.origin}/api/v1`;
   const heading = useRef<HTMLHeadingElement>(null);
@@ -231,29 +233,39 @@ export function ApiReference({ doc = DOC, focusHeading = false }: ApiReferencePr
     <div className="ph-api">
       <div className="studio-page-head">
         <h1 ref={heading} tabIndex={-1}>
-          API reference
+          {t("apiDocs.title")}
         </h1>
-        <Link to="/settings">Back to Settings</Link>
+        <Link to="/settings">{t("apiDocs.back")}</Link>
       </div>
       <div className="studio-prose ph-api-intro">
         <Paragraphs text={doc.info.description ?? ""} />
         <dl className="studio-dl">
-          <dt>Base URL</dt>
+          <dt>{t("apiDocs.baseUrl")}</dt>
           <dd>
             <code>{base}</code>
           </dd>
-          <dt>Token</dt>
+          <dt>{t("apiDocs.token")}</dt>
           <dd>
-            Make one in <Link to="/settings">Settings</Link>, under API tokens, and send it on every
-            request as <code>Authorization: Bearer &lt;token&gt;</code>.
+            {rich(
+              "apiDocs.tokenHow",
+              { header: "Authorization: Bearer <token>" },
+              {
+                link: (children) => <Link to="/settings">{children}</Link>,
+                code: (children) => <code>{children}</code>,
+              },
+            )}
           </dd>
           <dt>OpenAPI</dt>
           <dd>
-            <code>GET {base}/openapi.json</code>, with a token. API version {doc.info.version}.
+            {rich(
+              "apiDocs.openapi",
+              { request: `GET ${base}/openapi.json`, version: doc.info.version },
+              { code: (children) => <code>{children}</code> },
+            )}
           </dd>
         </dl>
       </div>
-      <nav aria-label="API sections">
+      <nav aria-label={t("apiDocs.sections")}>
         <ul className="studio-chips">
           {groups.map((group) => (
             <li key={group.id}>

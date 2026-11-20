@@ -530,6 +530,8 @@ describe("a library with trash, estimates, jobs and failures", () => {
       expect.objectContaining({
         name: "Broken.3mf",
         reason: "This file could not be read: ENOENT [path]",
+        // An older reason file, with no code first.
+        reasonCode: null,
       }),
     ]);
   });

@@ -2,8 +2,11 @@
 // 2026-11-19): what each sends to /app/api/bulk/* (apps/server/src/app-api/
 // organise.ts), what the server answers, and the plain sentences the library
 // shows for an answer: what changed, what was already so, and which models
-// failed and why. A failed model is named when the page knows its name (it
+// failed and why. The sentences come from the catalogs (packages/i18n),
+// in the language shown. A failed model is named when the page knows its name (it
 // was shown on a card); one it does not know is counted instead.
+
+import { ENGLISH_I18N, type I18n } from "../i18n/I18n";
 
 /** Most models one action takes: the server's MAX_BULK_IDS, as View all and Select all matching. */
 export const MAX_SELECTED = 1000;
@@ -41,38 +44,54 @@ export function bulkBody(action: BulkAction, ids: string[]): Record<string, unkn
   return { ids, ...rest };
 }
 
-function models(n: number): string {
-  return n === 1 ? "1 model" : `${n} models`;
+/** Builds the sentences in a language; English when left out. */
+type Words = Pick<I18n, "t">;
+
+function models(i18n: Words, n: number): string {
+  return i18n.t("library.count.models", { count: n });
 }
 
 /** A, B and C. */
-function list(names: string[]): string {
+function list(i18n: Words, names: string[]): string {
   if (names.length <= 1) return names.join("");
-  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return i18n.t("common.list.and", {
+    first: names.slice(0, -1).join(", "),
+    last: names.at(-1) as string,
+  });
 }
 
 const SHOWN_FAILURES = 5;
 
-function failureText(failed: BulkFailure[], names: ReadonlyMap<string, string>): string | null {
+function failureText(
+  i18n: Words,
+  failed: BulkFailure[],
+  names: ReadonlyMap<string, string>,
+): string | null {
   if (failed.length === 0) return null;
+  const { t } = i18n;
   const items: string[] = [];
   const unnamed = { in_trash: 0, not_found: 0 };
   for (const f of failed) {
     const name = names.get(f.id);
     if (name === undefined) unnamed[f.reason] += 1;
-    else items.push(`${name} ${f.reason === "in_trash" ? "is in the trash" : "no longer exists"}`);
+    else
+      items.push(
+        f.reason === "in_trash"
+          ? t("library.bulk.fail.inTrash", { name })
+          : t("library.bulk.fail.gone", { name }),
+      );
   }
   if (unnamed.in_trash > 0) {
-    const n = unnamed.in_trash;
-    items.push(`${n} other ${n === 1 ? "model is" : "models are"} in the trash`);
+    items.push(t("library.bulk.fail.othersInTrash", { count: unnamed.in_trash }));
   }
   if (unnamed.not_found > 0) {
-    const n = unnamed.not_found;
-    items.push(`${n} other ${n === 1 ? "model no longer exists" : "models no longer exist"}`);
+    items.push(t("library.bulk.fail.othersGone", { count: unnamed.not_found }));
   }
   const shown = items.slice(0, SHOWN_FAILURES).join("; ");
-  const more = items.length > SHOWN_FAILURES ? `, and ${items.length - SHOWN_FAILURES} more` : "";
-  return `${models(failed.length)} could not be changed: ${shown}${more}.`;
+  const values = { models: models(i18n, failed.length), items: shown };
+  return items.length > SHOWN_FAILURES
+    ? t("library.bulk.failedMore", { ...values, more: items.length - SHOWN_FAILURES })
+    : t("library.bulk.failed", values);
 }
 
 /** The sentences for an answer: what was done, and the failures (null when none). */
@@ -80,38 +99,47 @@ export function describeBulk(
   action: BulkAction,
   answer: BulkAnswer,
   names: ReadonlyMap<string, string>,
+  i18n: Words = ENGLISH_I18N,
 ): { done: string; failed: string | null } {
+  const { t } = i18n;
   const changed = answer.changed.length;
   const unchanged = answer.unchanged.length;
   let done: string;
   switch (action.action) {
     case "add-tags": {
       const tags = answer.tags ?? action.tags;
-      const them = tags.length === 1 ? "it" : "them";
-      done = `Added ${list(tags)} to ${models(changed)}.`;
-      if (unchanged > 0) done += ` ${unchanged} already had ${them}.`;
+      done = t("library.bulk.addedTags", { tags: list(i18n, tags), models: models(i18n, changed) });
+      if (unchanged > 0) {
+        done += ` ${t("library.bulk.alreadyHad", { count: unchanged, tags: tags.length })}`;
+      }
       break;
     }
     case "remove-tag": {
       if (answer.tag === null) {
-        done = `No model has the tag ${action.tag}.`;
+        done = t("library.bulk.noTag", { tag: action.tag });
         break;
       }
-      done = `Removed ${answer.tag ?? action.tag} from ${models(changed)}.`;
-      if (unchanged > 0) done += ` ${unchanged} did not have it.`;
+      done = t("library.bulk.removedTag", {
+        tag: answer.tag ?? action.tag,
+        models: models(i18n, changed),
+      });
+      if (unchanged > 0) done += ` ${t("library.bulk.didNotHave", { count: unchanged })}`;
       break;
     }
     case "add-to-collection": {
-      done = `Added ${models(changed)} to ${answer.collection ?? action.collection}.`;
-      if (unchanged > 0) done += ` ${unchanged} ${unchanged === 1 ? "was" : "were"} already in it.`;
+      done = t("library.bulk.addedToCollection", {
+        models: models(i18n, changed),
+        collection: answer.collection ?? action.collection,
+      });
+      if (unchanged > 0) done += ` ${t("library.bulk.alreadyIn", { count: unchanged })}`;
       break;
     }
     case "trash":
       done =
         changed === 0
-          ? "No model was moved to the trash."
-          : `Moved ${models(changed)} to the trash. Restore ${changed === 1 ? "it" : "them"} from the trash within 30 days.`;
+          ? t("library.bulk.trashedNone")
+          : t("library.bulk.trashed", { models: models(i18n, changed), count: changed });
       break;
   }
-  return { done, failed: failureText(answer.failed, names) };
+  return { done, failed: failureText(i18n, answer.failed, names) };
 }

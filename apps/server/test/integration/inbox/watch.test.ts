@@ -33,6 +33,7 @@ import {
   inboxProbes,
   POLL_MS,
   REASON_SUFFIX,
+  reasonFileText,
   repeatedErrorReason,
   STRIKES,
 } from "../../../src/inbox/watch.js";
@@ -328,8 +329,9 @@ describe("duplicates (approved for 0.1.0, 2026-11-19)", () => {
     expect(await exists(path)).toBe(false);
     const failed = join(inbox, FAILED_DIR);
     expect((await readFile(join(failed, "Cable tidy (2).3mf"))).equals(bytes)).toBe(true);
+    // The refusal's own code (ingest's duplicate), not one read from the words.
     expect(await readFile(join(failed, `Cable tidy (2).3mf${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason, "duplicate"),
     );
     // Nothing to do with the environment: no checks, and never tried again.
     expect(lines.filter((l) => /outage|checks/.test(l))).toEqual([]);
@@ -396,7 +398,7 @@ describe("failures", () => {
     expect((await readFile(join(failed, "Broken download.3mf"))).equals(bytes)).toBe(true);
     const reason = await readFile(join(failed, "Broken download.3mf.reason.txt"), "utf8");
     expect(reason).toBe(
-      "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved.\n",
+      "unsupported_type: This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved.\n",
     );
 
     // Never retried: later polls leave failed alone and import nothing.
@@ -773,7 +775,7 @@ describe("telling a bad file from an outage", () => {
     const reason = repeatedErrorReason(boom);
     expect(third.failed).toEqual([{ name: "A fails.3mf", reason }]);
     expect(await readFile(join(inbox, FAILED_DIR, `A fails.3mf${REASON_SUFFIX}`), "utf8")).toBe(
-      `${reason}\n`,
+      reasonFileText(reason),
     );
     expect(reason).toContain("boom in a parser nobody expected");
     expect(await readdir(inbox)).toEqual([FAILED_DIR]);

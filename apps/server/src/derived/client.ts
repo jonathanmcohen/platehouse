@@ -83,6 +83,54 @@ export const DERIVED_MESSAGES = {
 } as const;
 
 /**
+ * Every sentence Platehouse writes into files.derived_message, by the code
+ * the app API sends it under (Jon, 2026-11-19): DERIVED_MESSAGES' own keys,
+ * and previousScad and previousStep for PREVIOUS_RENDERS_SENTENCE, which
+ * stands alone while a new render is pending.
+ */
+export const DERIVED_SENTENCES: Readonly<Record<string, string>> = Object.freeze({
+  ...DERIVED_MESSAGES,
+  previousScad: PREVIOUS_RENDERS_SENTENCE.scad,
+  previousStep: PREVIOUS_RENDERS_SENTENCE.step,
+});
+
+/** The sentences longest first, so "... OpenSCAD said:" wins over the sentence it starts with. */
+const BY_LENGTH = Object.entries(DERIVED_SENTENCES).sort((a, b) => b[1].length - a[1].length);
+
+/**
+ * A stored message split into Platehouse's own sentences at its start, by
+ * code, and what follows them (the program's own words), so the page can
+ * write the sentences in its language. A message whose start is no known
+ * sentence (one cut short at its start by the scrub's length limit, or an
+ * older wording) gives no codes, and the page shows it as it is. The codes
+ * and the detail joined with spaces give back the message.
+ */
+export function splitDerivedMessage(message: string): { codes: string[]; detail: string | null } {
+  const codes: string[] = [];
+  let rest = message;
+  for (;;) {
+    const hit = BY_LENGTH.find(([, text]) => rest === text || rest.startsWith(`${text} `));
+    if (hit === undefined) break;
+    codes.push(hit[0]);
+    rest = rest.slice(hit[1].length).replace(/^ /, "");
+    if (rest === "") break;
+  }
+  return { codes, detail: rest === "" ? null : rest };
+}
+
+/** derivedCodes and derivedDetail for an app API answer (no codes for no message). */
+export function derivedParts(message: string | null): {
+  derivedCodes: string[];
+  derivedDetail: string | null;
+} {
+  if (message === null) return { derivedCodes: [], derivedDetail: null };
+  const { codes, detail } = splitDerivedMessage(message);
+  return codes.length === 0
+    ? { derivedCodes: [], derivedDetail: null }
+    : { derivedCodes: codes, derivedDetail: detail };
+}
+
+/**
  * How long a render request may wait for its answer once its body is sent:
  * the slicer's own time cap for a render or a STEP conversion
  * (SCAD_TIMEOUT_SECONDS and STEP_TIMEOUT_SECONDS, both 120 s by default in

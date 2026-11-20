@@ -9,6 +9,7 @@
     "test": "vitest run --root ../.. --project unit apps/web"
   },
   "dependencies": {
+    "@platehouse/i18n": "workspace:*",
     "@platehouse/makerworld": "workspace:*",
     "react": "19.3.1",
     "react-dom": "19.3.1",

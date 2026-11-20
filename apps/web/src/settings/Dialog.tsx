@@ -22,7 +22,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { errorText } from "./api";
+import { useI18n } from "../i18n/I18n";
+import { useErrorText } from "./api";
 import { focusFirst } from "./focus";
 import "./organise.css";
 
@@ -125,6 +126,8 @@ export function ConfirmDialog({
   onCancel,
   returnFocusTo,
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
+  const errorText = useErrorText();
   const cancel = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -176,7 +179,7 @@ export function ConfirmDialog({
           onClick={close}
           aria-disabled={busy}
         >
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
     </Dialog>
