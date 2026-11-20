@@ -94,6 +94,16 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
     expect(barePlaceholders("sample", sample)).toEqual(["sample:2: <id>"]);
   });
 
+  // Issue #309: an HTML block that opens with an allowed tag alone on its
+  // line runs to the next blank line, so text after the tag is part of the
+  // same node. Only a node that is the allowed tag and nothing else passes.
+  test("an allowed tag does not let a placeholder after it in the same block through", () => {
+    const alone = '<img src="logo.svg" width="96">';
+    expect(barePlaceholders("sample", alone)).toEqual([]);
+    const sample = [alone, "models/<id> is where it lives"].join("\n");
+    expect(barePlaceholders("sample", sample)).toEqual([`sample:1: ${alone} ...`]);
+  });
+
   test("a stray backtick does not reach across paragraphs either", () => {
     const sample = ["one ` here", "", "two <stripped> here", "", "three ` here"].join("\n");
     expect(barePlaceholders("sample", sample)).toEqual(["sample:3: <stripped>"]);

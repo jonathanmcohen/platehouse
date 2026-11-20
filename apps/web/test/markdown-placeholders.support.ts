@@ -29,6 +29,12 @@ export interface HtmlNode {
   html: string;
   /** The tag name, lowercased, or "" for a comment or other markup. */
   tag: string;
+  /**
+   * True when the node is one tag and nothing else. An HTML block that opens
+   * with a complete tag alone on its line runs to the next blank line, so it
+   * can carry text, a bare placeholder included, after that first tag.
+   */
+  single: boolean;
 }
 
 interface TreeNode {
@@ -47,8 +53,10 @@ export function htmlNodes(markdown: string): HtmlNode[] {
   const found: Array<HtmlNode & { column: number }> = [];
   const walk = (node: TreeNode) => {
     if (node.type === "html") {
-      const html = (node.value ?? "").split("\n")[0]?.trim() ?? "";
+      const whole = (node.value ?? "").trim();
+      const html = whole.split("\n")[0]?.trim() ?? "";
       found.push({
+        single: /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>$/.test(whole),
         line: node.position?.start.line ?? 0,
         column: node.position?.start.column ?? 0,
         html,
@@ -60,12 +68,12 @@ export function htmlNodes(markdown: string): HtmlNode[] {
   walk(tree);
   return found
     .sort((a, b) => a.line - b.line || a.column - b.column)
-    .map(({ line, html, tag }) => ({ line, html, tag }));
+    .map(({ line, html, tag, single }) => ({ line, html, tag, single }));
 }
 
 /** Each raw HTML node GitHub would strip from a Markdown text, as "label:line: <tag>". */
 export function barePlaceholders(label: string, markdown: string): string[] {
   return htmlNodes(markdown)
-    .filter((n) => !(n.tag in ALLOWED_TAGS))
-    .map((n) => `${label}:${n.line}: ${n.html}`);
+    .filter((n) => !(n.single && n.tag in ALLOWED_TAGS))
+    .map((n) => `${label}:${n.line}: ${n.html}${n.single ? "" : " ..."}`);
 }
