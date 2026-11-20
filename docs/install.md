@@ -104,7 +104,7 @@ show the app and the slicer as `healthy`.
 If the app keeps restarting, read its log:
 
 ```bash
-docker compose logs app
+docker compose logs platehouse
 ```
 
 A configuration problem is named there by key, for example `Invalid configuration: LINK_SECRET
