@@ -1,5 +1,5 @@
 // Profiles (build plan Task 11): the T1 recipe, ported from the slicing gate's
-// flatten-profiles.mjs, which Hades run 4 proved. Presets are flattened
+// flatten-profiles.mjs, which gate run 4 proved. Presets are flattened
 // through inherits at image build; only the machine preset is loaded with
 // --load-settings, one default filament per type with --load-filaments (Bambu's
 // own preset for the printer, else the generic one; filaments.test.ts), and

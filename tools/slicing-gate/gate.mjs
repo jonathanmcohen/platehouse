@@ -374,7 +374,7 @@ function openscadCheck(dir, env) {
  * The four landrun calls of report item (g), each as { name, args, command }:
  * args is landrun's whole argument list, command what landrun must run.
  *
- * landrun's flags end with "--" (Hades run 3, 2026-11-08: all three calls
+ * landrun's flags end with "--" (gate run 3, 2026-11-08: all three calls
  * failed with "flag provided but not defined: -o"). landrun v0.1.17 parses
  * with urfave/cli v3.6.2, which keeps reading flags after the command until
  * it meets "--" (command_parse.go), so OpenSCAD's own -o was taken as a

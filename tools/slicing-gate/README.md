@@ -7,9 +7,10 @@ numbers good enough to show. It also measures what the production slicer
 container needs (CPU, memory, time per plate, scratch space) and checks the
 OpenSCAD, landrun and STEP pieces the slicer image will carry.
 
-It runs on Hades only, by platform-sre (T1b), after Jon approves it. Designer
-files go from mini01 to Hades over ssh and never to GitHub. When the report is
-collected, the scratch dir and the image are deleted.
+It runs on the test server only, a Linux host with Docker, after Jon approves
+it. Designer files go from your workstation to the test server over ssh and
+never to GitHub. When the report is collected, the scratch dir and the image
+are deleted.
 
 If the gate fails, the build plan stops and goes back to Jon with Kiri:Moto as
 the fallback.
@@ -18,22 +19,22 @@ the fallback.
 
 | File | Runs on | What it does |
 |---|---|---|
-| `select-sample.mjs` | mini01 | Reads each .3mf's metadata read-only and picks the sample. Prints names and reasons, never contents. |
+| `select-sample.mjs` | your workstation | Reads each .3mf's metadata read-only and picks the sample. Prints names and reasons, never contents. |
 | `flatten-profiles.mjs` | the image | Flattens Orca's BBL machine and filament profiles through `inherits` into full JSON for `--load-settings` and `--load-filaments`, and writes the recipe. At image build time it also writes Orca's `process_full` folder (see below). |
 | `gate.mjs` | the image | The driver: `plan`, `slice <id>`, `checks`, `report`. |
 | `lib/` | both | Zip and 3MF metadata reader, printer ids, result classifier, GLB writer. |
-| `Dockerfile` | Hades | The throwaway gate image. Every release file it downloads is pinned and sha256-checked; apt packages come from a dated Ubuntu snapshot; ca-certificates and openssl are first installed at their pinned noble release versions to reach it (see Pins). |
+| `Dockerfile` | the test server | The throwaway gate image. Every release file it downloads is pinned and sha256-checked; apt packages come from a dated Ubuntu snapshot; ca-certificates and openssl are first installed at their pinned noble release versions to reach it (see Pins). |
 | `check-libs.sh` | the image | Build-time check: fails the build when ldd fails on a binary or reports a missing shared library. |
 | `need.sh` | the image | Build-time check helper: every path and version check in the Dockerfile goes through `need`, which names the failed check on stderr instead of exiting 1 with no text. |
-| `run.sh` | Hades | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
-| `smoke-gate.mjs` | CI, in the image | The CI smoke checks for the printer switch and landrun (see below). Never run on Hades. |
+| `run.sh` | the test server | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
+| `smoke-gate.mjs` | CI, in the image | The CI smoke checks for the printer switch and landrun (see below). Never run on the test server. |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
 CI (`.github/workflows/ci.yml`) runs these tests, builds this image and
 smoke-checks it on every pull request that touches this folder, `ci.yml` or
 `.node-version` (the Node version the job uses), and on pushes that touch
 them on main and release branches, so a build failure shows up on
-GitHub before anyone copies the tool to Hades. The smoke checks run in the
+GitHub before anyone copies the tool to the test server. The smoke checks run in the
 image with the gate's hardening and use no designer file:
 
 - the gate's landrun checks (report item g), judged as the report reads them;
@@ -41,7 +42,7 @@ image with the gate's hardening and use no designer file:
   and sliced by the image's own `gate.mjs` on the P1S, X1 Carbon and A1; every
   plate must get a time and a weight above zero;
 - the same with the `process_full` folder hidden by an empty tmpfs, which is
-  the image as it was for Hades run 3: it must fail the way run 3 did, and
+  the image as it was for gate run 3: it must fail the way run 3 did, and
   the own-printer slices must match the first run exactly.
 
 ## Where the BBL profiles come from
@@ -70,7 +71,7 @@ pinned and checked the same way.
 
 ## Slicing on another printer: Orca's process_full folder
 
-Hades run 3 (2026-11-08) failed 79 plates with Orca code -3, all of them
+Gate run 3 (2026-11-08) failed 79 plates with Orca code -3, all of them
 files sliced on a printer other than their own. When the printer switch
 changes the extruder variant count (the P1S and X1C presets carry two print
 variants, the A1 one), Orca 2.5.0's CLI loads the new printer's default
@@ -105,7 +106,7 @@ into the same `process_full` path, with the same build checks: every
 instantiable machine gets its file, the folder did not exist before, and no
 `BBL.json` sits beside `BBL.opc`. An image built without it fails with code
 -3 on its first slice that switches between the P1S or X1C and the A1, as
-Hades run 3 did.
+gate run 3 did.
 
 ## The sample rule
 
@@ -131,43 +132,45 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 
 ## How to run it
 
-1. On mini01, read only over the folder; the selection is written to /tmp, never into the folder:
+1. On your workstation, read only over the folder; the selection is written to /tmp, never into the folder:
 
    ```sh
    node tools/slicing-gate/select-sample.mjs "$HOME/Downloads/3D Prints" \
      --json /tmp/platehouse-selection.json --names /tmp/platehouse-names.txt
    ```
 
-2. Copy the selection, the sample and this folder to Hades over ssh.
+2. Copy the selection, the sample and this folder to the test server over ssh.
 
    ```sh
-   ssh Hades 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
-   scp /tmp/platehouse-selection.json Hades:/tmp/platehouse-gate/in/selection.json
+   ssh TestServer 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
+   scp /tmp/platehouse-selection.json TestServer:/tmp/platehouse-gate/in/selection.json
    cd "$HOME/Downloads/3D Prints"
-   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -T /tmp/platehouse-names.txt | ssh Hades 'tar -xf - -C /tmp/platehouse-gate/in/sample'
-   scp -rp /path/to/platehouse/tools/slicing-gate Hades:/tmp/platehouse-gate/tool
+   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -T /tmp/platehouse-names.txt | ssh TestServer 'tar -xf - -C /tmp/platehouse-gate/in/sample'
+   scp -rp /path/to/platehouse/tools/slicing-gate TestServer:/tmp/platehouse-gate/tool
    ```
 
-   `Hades`, with a capital H, is the ssh alias on mini01. OpenSSH matches
-   host aliases case-sensitively, so the name in lower case skips the alias
-   and fails with "Host key verification failed", as it did on the second
-   run (2026-11-08).
+   `TestServer` is the test server's ssh alias in your workstation's
+   `~/.ssh/config`; put your own alias in its place, spelled exactly as it is
+   defined there. OpenSSH matches host aliases case-sensitively, so the name
+   in another case, such as all lower case, skips the alias and fails with
+   "Host key verification failed", as it did on the second run (2026-11-08).
 
    Each line of `/tmp/platehouse-names.txt` is a path relative to the folder.
    `select-sample.mjs` scans subfolders too, so a name may hold a subfolder
    (`Sub Folder/part.3mf`). The tar stream keeps that path, so each file lands
    at `in/sample/<name>`, where `gate.mjs plan` looks for it. Names with spaces
    or a leading dash work. A name with a line break is never written (the
-   selection skips it and says so). `COPYFILE_DISABLE=1` and the two `--no-`
-   flags keep macOS metadata files (`._*`) out of the stream.
+   selection skips it and says so). The tar line is written for a macOS
+   workstation and its bsdtar: `COPYFILE_DISABLE=1` and the two `--no-` flags
+   keep macOS metadata files (`._*`) out of the stream.
 
    For the tool, `-p` keeps the files' modes. Without it, the first run (2026-11-08) found
-   the scripts on Hades without their execute bits. The old copy of the tool
+   the scripts on the test server without their execute bits. The old copy of the tool
    is removed first because `scp -r` into a folder that already exists puts
    the new copy inside it (`tool/slicing-gate`), and a re-run would start the
    old `run.sh`.
 
-3. On Hades, through `bash`, so it runs whether or not the execute bit
+3. On the test server, through `bash`, so it runs whether or not the execute bit
    survived the copy. A full run takes several hours, so start it detached:
    a dropped ssh session then cannot kill it, as the second run's operator
    found. The run's output goes to `run.log` and its exit status to
@@ -202,8 +205,7 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    `run.exit`: 0 PASS, 1 FAIL, 3 NEEDS-DECISION, 2 the gate could not run.
 
 4. Copy `result.json` and `summary.txt` back (and `run.log` if the run
-   did not pass). The main session files the report in Drive under
-   15 - Plans/Platehouse.
+   did not pass) and keep them with the gate report.
 
 5. Delete the scratch dir and the image, and check both are gone:
 
@@ -218,12 +220,12 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 
    `--clean` does not prune Docker's build cache, so the layers of the
    Dockerfile's `fetch` stage (the Orca and OpenSCAD AppImages, landrun, Node,
-   occt-import-js and the NIST zip) stay on Hades. `docker builder prune`
-   clears them, but it clears every project's build cache, so that is
-   platform-sre's call on the day.
+   occt-import-js and the NIST zip) stay on the test server. `docker builder
+   prune` clears them, but it clears every project's build cache, so that is
+   the server owner's call on the day.
 
    Also delete `/tmp/platehouse-selection.json` and
-   `/tmp/platehouse-names.txt` on mini01.
+   `/tmp/platehouse-names.txt` on your workstation.
 
 ## The container
 
@@ -256,7 +258,7 @@ crash, a timeout or an unexplained slicer error on any plate fails the gate.
 The legitimate refusals, by Orca 2.5.0 return code: -15 and -16 (machine not
 supported), -17 (process not compatible), -20, -52 and -102 (bed too small),
 -66 and -68 (nozzle or extruder mismatch), and, by Jon's decision on
-2026-11-08 after Hades run 3 hit them, -101 (G-code path conflicts) and -62
+2026-11-08 after gate run 3 hit them, -101 (G-code path conflicts) and -62
 (filament temperatures too far apart). Each refused plate is reported with
 its code and Orca's meaning for it.
 
@@ -302,20 +304,6 @@ than passed or failed, so Jon decides them.
 
 Per-plate Orca log tails are written to `out/jobs/<id>.log` only; they can
 name objects in a file, so they are not copied into the report.
-
-## Read-only preflight (same job, no approval needed)
-
-On Hades and Mario, read-only, reported with the gate:
-
-- `docker network inspect internal` (is `.Internal` true?)
-- whether Traefik's 443 is reachable from the internet (port-forward and router rule)
-- the LAN and tailnet CIDRs for an ipAllowList
-- how `*.local.jonco.dev` resolves
-- the wildcard certificate in use
-- which networks pgbackweb joins
-- whether the restart-loop script covers every container
-- `${APPDATA}` on Hades
-- Pocket ID's OIDC client setup on Mario
 
 ## Pins
 

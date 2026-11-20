@@ -46,14 +46,14 @@ providers:
 
 ## 2. Labels on the app
 
-Add these labels to the `app` service in your `docker-compose.yml`. Put the app on the network
+Add these labels to the `platehouse` service in your `docker-compose.yml`. Put the app on the network
 Traefik uses (`proxy` in the example Compose file). Change the host name and the certificate
 resolver to yours.
 
 ```yaml
 services:
-  app:
-    # ... the rest of the app service from the example ...
+  platehouse:
+    # ... the rest of the platehouse service from the example ...
     labels:
       traefik.enable: "true"
       traefik.docker.network: proxy

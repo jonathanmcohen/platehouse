@@ -61,7 +61,7 @@ export function scrubText(text: string, options: ScrubOptions = {}): string {
     "[address]",
   );
   out = out.replace(
-    /\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|internal|home|arpa|localdomain|jonco\.dev)\b/gi,
+    /\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|internal|home|arpa|localdomain)\b/gi,
     "[address]",
   );
   out = out.replace(/\blocalhost\b/gi, "[address]");

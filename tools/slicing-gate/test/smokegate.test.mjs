@@ -1,4 +1,4 @@
-// The CI smoke checks that prove, before Hades, the two run 3 gate bugs are
+// The CI smoke checks that prove, before the next gate run, the two run 3 gate bugs are
 // fixed: a crafted cube 3MF saved for one printer and sliced on another
 // (report item a, Orca code -3), and the landrun checks (item g). These
 // tests cover the smoke script's own logic; CI runs it in the built image.

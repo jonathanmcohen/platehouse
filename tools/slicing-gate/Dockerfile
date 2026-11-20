@@ -1,5 +1,5 @@
-# Platehouse slicing gate image (build plan Task 1). Throwaway: platform-sre
-# builds it on Hades for one gate run and deletes it afterwards. amd64 only.
+# Platehouse slicing gate image (build plan Task 1). Throwaway: it is built on
+# the test server for one gate run and deleted afterwards. amd64 only.
 #
 # Every release file fetched below is pinned to an exact version and checked
 # against the sha256 recorded here. The sha256 values were read from the GitHub release
@@ -37,7 +37,7 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 #
 # Both stages run Node, and the Node 26 linux-x64 binary links libatomic.so.1,
 # which the base image does not carry, so both install libatomic1 from the
-# snapshot. Without it the second Hades run (2026-11-08) died at the fetch
+# snapshot. Without it the second gate run (2026-11-08) died at the fetch
 # stage's first Node call with "libatomic.so.1: cannot open shared object
 # file" (exit 127). Each stage runs check-libs.sh on /opt/node/bin/node before
 # it first calls Node, so a missing library fails there, naming the library.
@@ -269,7 +269,7 @@ RUN source /usr/local/lib/need.sh \
  && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.js \
  && need -f /opt/gate/node_modules/occt-import-js/dist/occt-import-js.wasm
 
-# Orca's process_full folder (Hades run 3, 2026-11-08: 79 plates failed with
+# Orca's process_full folder (gate run 3, 2026-11-08: 79 plates failed with
 # code -3). When a file is sliced on another printer and the extruder variant
 # count changes (P1S and X1C presets carry two print variants, A1 one),
 # Orca 2.5.0's CLI (src/OrcaSlicer.cpp, machine_switch) loads

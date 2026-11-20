@@ -1,5 +1,5 @@
 // Pins ci.yml: the CI job that builds the gate image on GitHub, so the next
-// image build failure is found there and not on Hades (run 2, 2026-11-08,
+// image build failure is found there and not on the test server (run 2, 2026-11-08,
 // failed at the fetch stage's first Node call), the changes job that decides
 // when that job runs, and the workspace jobs with their zero-test guard (build
 // plan Task 3). Read as text: the gate has no YAML parser and needs no install
@@ -114,7 +114,7 @@ test("the gate tests job runs the tests, then the image job builds the image and
   }
 });
 
-// The smoke containers run as the gate runs them on Hades, so a check that
+// The smoke containers run as the gate runs them on the test server, so a check that
 // passes here does not lean on a network or a writable root.
 test("the smoke checks run network-less on a read-only root", () => {
   const t = text();
@@ -202,7 +202,7 @@ test("pushes run the workflow only on main and release branches (issue #8)", () 
   assert.doesNotMatch(pr, /branches:/, "pull requests into any branch still run it");
 });
 
-// Run 3's two gate bugs, proved in CI before the next Hades run: a crafted cube
+// Run 3's two gate bugs, proved in CI before the next gate run: a crafted cube
 // saved for one printer and sliced on the others (Orca code -3), with a control
 // run that hides the new process_full folder and must fail the way run 3 did;
 // and the landrun checks of report item (g).

@@ -245,8 +245,9 @@ describe("OpenSCAD in the image", () => {
     expect(r.stdout.trim()).toBe("done");
   });
 
-  // The job folders' tmpfs carries noexec, nosuid and nodev, as Hades mounts
-  // it (Task 26 copies these options into compose); every test in this
+  // The job folders' tmpfs carries noexec, nosuid and nodev, as the reference
+  // server mounts it (examples/docker-compose.yml carries the same options);
+  // every test in this
   // directory runs the image on such a mount.
   test("/work is mounted noexec, nosuid and nodev", () => {
     const mounts = slicer.exec(["cat", "/proc/mounts"]).stdout.split("\n");

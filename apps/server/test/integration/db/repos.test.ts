@@ -313,12 +313,12 @@ describe("tokens", () => {
     const firstRaw = randomBytes(32);
     const secondRaw = randomBytes(32);
     const first = await repos.tokens.create({
-      name: "Claude Code on mini01",
+      name: "Upload script on a laptop",
       prefix: prefixOf(firstRaw),
       tokenHash: hashOf(firstRaw),
     });
     const second = await repos.tokens.create({
-      name: "Claude Code on mba",
+      name: "Upload script on a desktop",
       prefix: prefixOf(secondRaw),
       tokenHash: hashOf(secondRaw),
     });

@@ -1,4 +1,4 @@
-// Hades run 3 (2026-11-08), report item (g): all three landrun calls failed
+// Gate run 3 (2026-11-08), report item (g): all three landrun calls failed
 // with "flag provided but not defined: -o". landrun v0.1.17 parses its
 // arguments with urfave/cli v3.6.2, whose command_parse.go keeps reading flags
 // after the first positional argument and stops only at "--". So OpenSCAD's

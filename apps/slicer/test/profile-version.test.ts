@@ -2,7 +2,8 @@
 // is the same profile version as the BBL.opc preset cache the AppImage ships,
 // so the slicer never flattens profiles from another release than the Orca
 // it runs. Ported from the slicing gate's check-profile-version.mjs, whose
-// check passed in the image on Hades (run 3: BBL 02.08.00.16 = 2.8.0.16).
+// check passed in the image on the test server (gate run 3: BBL 02.08.00.16 =
+// 2.8.0.16).
 // The .opc buffers are crafted; no Orca file is committed.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";

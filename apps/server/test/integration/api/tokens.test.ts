@@ -80,11 +80,11 @@ describe("createToken", () => {
   test("stores the SHA-256 and the first 8 characters, never the token", async () => {
     const store = memoryTokenStore();
     const tokens = createTokens({ store });
-    const created = await tokens.createToken("Claude Code on mini01");
+    const created = await tokens.createToken("Upload script on a laptop");
     expect(TOKEN_PATTERN.test(created.token)).toBe(true);
     const row = store.rows.get(created.id);
     expect(row).toBeDefined();
-    expect(row?.name).toBe("Claude Code on mini01");
+    expect(row?.name).toBe("Upload script on a laptop");
     expect(row?.prefix).toBe(created.token.slice(0, DISPLAY_PREFIX_LENGTH));
     expect(row?.prefix).toHaveLength(8);
     expect(row?.tokenHash.equals(createHash("sha256").update(created.token).digest())).toBe(true);

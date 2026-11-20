@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the app's log: `docker compose logs app`. Platehouse logs what went wrong in plain words,
+Start with the app's log: `docker compose logs platehouse`. Platehouse logs what went wrong in plain words,
 and never logs a secret, token or slicer link.
 
 ## The app will not start
@@ -71,9 +71,9 @@ inbox waits and tries again, and the log says an outage started and ended.
 ## Estimates
 
 - **Plates stay "estimating"**: the slicer may be down or busy. Check `docker compose ps` shows it
-  healthy and `docker compose logs slicer`. Estimates run one plate at a time, so a large library
-  takes a while after you add a printer or the slicer is updated. Changing the default printer or
-  the order of My printers starts no slicing.
+  healthy and `docker compose logs platehouse-slicer`. Estimates run one plate at a time, so a
+  large library takes a while after you add a printer or the slicer is updated. Changing the
+  default printer or the order of My printers starts no slicing.
 - **"The slicer could not slice this plate."** after several tries: the app could not reach the
   slicer, or the slice was lost. Check the slicer, then press **Retry**.
 - **The slicer is unreachable.** Check that the app and the slicer share the `platehouse-slicer`
