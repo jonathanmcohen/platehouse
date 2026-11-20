@@ -128,6 +128,10 @@ will not retry that version, so the issue says to run the workflow by hand. For 
 tag's run the issue suggests a re-run, which leaves `stable` alone, and warns that a re-run
 reads OrcaSlicer's latest release again: if Orca has shipped a newer version since, the re-run
 builds that one, so the issue says to run the workflow by hand for the failed version instead.
+That run moves `stable` too, so check which version `stable` points at first: by then the daily
+run has usually built the newer version and moved `stable` to it, and a run by hand for the
+failed version would roll `stable` back. If `stable` is already on a newer version, skip the run
+by hand, or point `stable` back at the newer version afterwards (Rolling the slicer back).
 
 ### Rolling the slicer back
 

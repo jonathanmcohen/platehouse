@@ -2160,6 +2160,12 @@ test("slicer-image issue: a prerelease tag's failure after tagging says a re-run
   assert.match(body, /A re-run reads OrcaSlicer's latest release again/);
   assert.match(body, /newer than 2\.5\.1/);
   assert.match(body, /run the workflow by hand for 2\.5\.1 instead \(Actions, slicer-image, Run workflow, orca_version 2\.5\.1\)/);
+  // A hand run moves stable, and the daily run has usually moved stable to the
+  // newer version by then, so the hand run would roll it back: the body says
+  // to check stable first, and what to do when it is already newer.
+  assert.match(body, /First check which version stable points at/);
+  assert.match(body, /would roll stable back from that newer version to 2\.5\.1/);
+  assert.match(body, /skip the run by hand, or point stable back at the newer version once it passes \(README\.md, Rolling the slicer back\)/);
   // The re-run may build a newer version, so its tag is not named for 2.5.1 (issue #306).
   assert.match(body, /its own `-r<run>\.<attempt>` tag for the version it builds/);
   assert.doesNotMatch(body, /orca-2\.5\.1-r<run>\.<attempt>/);
@@ -2281,6 +2287,11 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   // Issue #221: the run tag rule, in both README sections.
   assert.match(section, /`orca-X\.Y\.Z-r<run number>\.<attempt>`/);
   assert.match(section, /reads OrcaSlicer's latest release again/);
+  // A hand run for the failed version moves stable, so it rolls stable back
+  // when the daily run has already moved it to a newer version.
+  assert.match(section, /check which version `stable` points at first/);
+  assert.match(section, /roll `stable` back/);
+  assert.match(section, /point `stable` back at the newer version afterwards \(Rolling the slicer back\)/);
   const rollback = readme.slice(readme.indexOf("### Rolling the slicer back"), readme.indexOf("## Layout"));
   assert.match(rollback, /`orca-X\.Y\.Z-r<run number>` tag, or `orca-X\.Y\.Z-r<run number>\.<attempt>` for a re-run/);
   assert.match(changelog, /lists any tag the run had already pointed at the new digest/);
