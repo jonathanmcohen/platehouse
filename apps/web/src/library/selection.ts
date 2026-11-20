@@ -117,16 +117,20 @@ export function describeBulk(
     else if (answer.failed.length > 0) {
       // Some failed too, so "All 2 models" would read as if only 2 were
       // selected (issue #306): say nothing changed, then count what was
-      // already so, as a partly changed answer does.
+      // already so. No earlier sentence names the tag or collection here, so
+      // the count sentence names it ("2 already had PLA."), not "it".
       const already =
         action.action === "add-tags"
-          ? t("library.bulk.alreadyHad", {
+          ? t("library.bulk.alreadyHadTags", {
               count: unchanged,
-              tags: (answer.tags ?? action.tags).length,
+              tags: list(i18n, answer.tags ?? action.tags),
             })
           : action.action === "remove-tag"
-            ? t("library.bulk.didNotHave", { count: unchanged })
-            : t("library.bulk.alreadyIn", { count: unchanged });
+            ? t("library.bulk.didNotHaveTag", { count: unchanged, tag: answer.tag ?? action.tag })
+            : t("library.bulk.alreadyInCollection", {
+                count: unchanged,
+                collection: answer.collection ?? action.collection,
+              });
       done = `${t("library.bulk.changedNone")} ${already}`;
     } else if (action.action === "add-tags") {
       done = t("library.bulk.allHad", {

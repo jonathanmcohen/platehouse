@@ -29,6 +29,10 @@
 //   result is shown, failures name the models and why, and the grid and the
 //   library's tags (the tag filter, Remove tag's choices and Add tags'
 //   suggestions) reload.
+import { createTranslator, messagesOf } from "@platehouse/i18n";
+import en from "@platehouse/i18n/locales/en.json";
+import es from "@platehouse/i18n/locales/es.json";
+import fr from "@platehouse/i18n/locales/fr.json";
 import { act, type ReactNode, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -1080,34 +1084,104 @@ describe("describeBulk", () => {
     ).toBe("The model already had PLA and PETG.");
   });
 
-  test("with some unchanged and some failed, counts instead of saying All or The model (issue #306)", () => {
-    const mixed = {
-      changed: [] as string[],
-      unchanged: [id(1), id(2)],
-      failed: [{ id: id(3), reason: "in_trash" as const }],
-    };
+  // With nothing changed, no earlier sentence names the tag or collection, so
+  // the count sentence names it itself rather than saying "it" (issue #306).
+  describe("with some unchanged and some failed, counts and names the tag or collection (issue #306)", () => {
+    const failed = [{ id: id(3), reason: "in_trash" as const }];
+    const two = { changed: [] as string[], unchanged: [id(1), id(2)], failed };
+    const one = { changed: [] as string[], unchanged: [id(1)], failed };
     const many = new Map([...names, [id(3), "Peg"]]);
-    const addTags = describeBulk(
-      { action: "add-tags", tags: ["PLA"] },
-      { ...mixed, tags: ["PLA"] },
-      many,
-    );
-    expect(addTags.done).toBe("No model was changed. 2 already had it.");
-    expect(addTags.failed).toBe("1 model could not be changed: Peg is in the trash.");
-    expect(
-      describeBulk({ action: "remove-tag", tag: "pla" }, { ...mixed, tag: "PLA" }, many).done,
-    ).toBe("No model was changed. 2 did not have it.");
-    expect(
-      describeBulk(
-        { action: "add-to-collection", collection: "desk" },
-        { ...mixed, collection: "Desk" },
+
+    test("Add tags", () => {
+      const addTags = describeBulk(
+        { action: "add-tags", tags: ["pla"] },
+        { ...two, tags: ["PLA"] },
         many,
-      ).done,
-    ).toBe("No model was changed. 2 were already in it.");
-    const one = { changed: [] as string[], unchanged: [id(1)], failed: mixed.failed };
-    expect(
-      describeBulk({ action: "add-tags", tags: ["PLA"] }, { ...one, tags: ["PLA"] }, many).done,
-    ).toBe("No model was changed. 1 already had it.");
+      );
+      expect(addTags.done).toBe("No model was changed. 2 already had PLA.");
+      expect(addTags.failed).toBe("1 model could not be changed: Peg is in the trash.");
+      expect(
+        describeBulk(
+          { action: "add-tags", tags: ["PLA", "PETG"] },
+          { ...one, tags: ["PLA", "PETG"] },
+          many,
+        ).done,
+      ).toBe("No model was changed. 1 already had PLA and PETG.");
+    });
+
+    test("Remove tag", () => {
+      const removeTag = describeBulk(
+        { action: "remove-tag", tag: "pla" },
+        { ...two, tag: "PLA" },
+        many,
+      );
+      expect(removeTag.done).toBe("No model was changed. 2 did not have PLA.");
+      expect(removeTag.failed).toBe("1 model could not be changed: Peg is in the trash.");
+      expect(
+        describeBulk({ action: "remove-tag", tag: "pla" }, { ...one, tag: "PLA" }, many).done,
+      ).toBe("No model was changed. 1 did not have PLA.");
+    });
+
+    test("Add to collection", () => {
+      const addToCollection = describeBulk(
+        { action: "add-to-collection", collection: "desk" },
+        { ...two, collection: "Desk" },
+        many,
+      );
+      expect(addToCollection.done).toBe("No model was changed. 2 were already in Desk.");
+      expect(addToCollection.failed).toBe("1 model could not be changed: Peg is in the trash.");
+      expect(
+        describeBulk(
+          { action: "add-to-collection", collection: "desk" },
+          { ...one, collection: "Desk" },
+          many,
+        ).done,
+      ).toBe("No model was changed. 1 was already in Desk.");
+    });
+
+    test("in Spanish and French, every action names it too", () => {
+      for (const [locale, messages] of [
+        ["es", es],
+        ["fr", fr],
+      ] as const) {
+        const i18n = createTranslator(locale, messagesOf(messages), messagesOf(en));
+        const addTags = describeBulk(
+          { action: "add-tags", tags: ["pla"] },
+          { ...two, tags: ["PLA", "PETG"] },
+          many,
+          i18n,
+        ).done;
+        const removeTag = describeBulk(
+          { action: "remove-tag", tag: "pla" },
+          { ...two, tag: "PLA" },
+          many,
+          i18n,
+        ).done;
+        const addToCollection = describeBulk(
+          { action: "add-to-collection", collection: "desk" },
+          { ...one, collection: "Desk" },
+          many,
+          i18n,
+        ).done;
+        const none = i18n.t("library.bulk.changedNone");
+        expect(addTags, locale).toBe(
+          `${none} ${i18n.t("library.bulk.alreadyHadTags", { count: 2, tags: i18n.t("common.list.and", { first: "PLA", last: "PETG" }) })}`,
+        );
+        expect(addTags, locale).toContain("PLA");
+        expect(addTags, locale).toContain("PETG");
+        expect(removeTag, locale).toBe(
+          `${none} ${i18n.t("library.bulk.didNotHaveTag", { count: 2, tag: "PLA" })}`,
+        );
+        expect(removeTag, locale).toContain("PLA");
+        expect(addToCollection, locale).toBe(
+          `${none} ${i18n.t("library.bulk.alreadyInCollection", { count: 1, collection: "Desk" })}`,
+        );
+        expect(addToCollection, locale).toContain("Desk");
+        expect(i18n.has("library.bulk.alreadyHadTags"), locale).toBe(true);
+        expect(i18n.has("library.bulk.didNotHaveTag"), locale).toBe(true);
+        expect(i18n.has("library.bulk.alreadyInCollection"), locale).toBe(true);
+      }
+    });
   });
 
   test("says no model was changed when every selected model failed", () => {

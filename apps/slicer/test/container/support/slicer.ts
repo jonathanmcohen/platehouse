@@ -74,8 +74,7 @@ export interface RunningSlicer {
 
 /**
  * examples/docker-compose.yml gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
- * host's count, and GitHub's runner for this private repo has 2, so the
- * tests ask for 4 or as many as the host has, whichever is fewer.
+ * host's count, so the tests ask for 4 or as many as the host has, whichever is fewer.
  */
 export function cpuLimit(hostCpus: number): string {
   return String(Math.min(4, Math.max(1, Math.floor(hostCpus))));
