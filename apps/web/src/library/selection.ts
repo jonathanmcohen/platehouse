@@ -38,6 +38,22 @@ export interface BulkAnswer {
   collection?: string;
 }
 
+/**
+ * The selection cut down to the models the view can show (shown: the ids
+ * GET /app/api/library/ids answers for the search, filters and sort, which
+ * are exactly the matches the pages and View all reach), in the selection's
+ * order with their names, and how many left it. The selection never holds a
+ * model the view cannot show (0.1.0-rc.2 live check), so an action never
+ * acts on one.
+ */
+export function keepShown<T>(
+  selected: ReadonlyMap<string, T>,
+  shown: ReadonlySet<string>,
+): { kept: Map<string, T>; left: number } {
+  const kept = new Map([...selected].filter(([id]) => shown.has(id)));
+  return { kept, left: selected.size - kept.size };
+}
+
 /** The request body for an action on these ids. */
 export function bulkBody(action: BulkAction, ids: string[]): Record<string, unknown> {
   const { action: _name, ...rest } = action;

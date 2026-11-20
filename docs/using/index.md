@@ -83,8 +83,17 @@ Space on it) and a toolbar appears above the grid with the number selected.
 - **Select all on this page** adds the cards shown (every card, in View all). **Select all
   matching** adds every model that matches the search and filters, up to 1000; if more match, the
   toolbar says only the first 1000 were selected. **Clear selection** empties it.
-- The selection is kept while you change page, search or filter, so you can gather models from
-  several places. **Select** again, or Escape, ends Select mode and clears the selection.
+- The selection only ever holds models the current search and filters show, so an action never
+  changes a model you cannot see. It is kept while you change page, switch to View all or choose
+  another sort, so you can gather models from several pages. (With more than 1000 matches, the
+  pages reach only the first 1000 in the chosen order, so a new sort can drop a selected model the
+  pages no longer reach.) A new search or filter keeps the
+  selected models it still shows and drops the rest, and the toolbar says how many left. To gather
+  models from several searches or tags, select them under one view that shows them all, such as
+  the whole library with no search or filter. **Select** again, or Escape, ends Select mode and
+  clears the selection.
+- While the page checks which selected models a new search or filter shows, the actions wait. If
+  that check fails, the toolbar says so and offers **Try again**.
 
 The toolbar's actions work on every selected model at once, up to 1000 in one action:
 
@@ -99,7 +108,9 @@ The toolbar's actions work on every selected model at once, up to 1000 in one ac
 
 When an action finishes, the toolbar says what happened: how many models changed and how many were
 already as asked (they already had the tag, did not have it, or were already in the collection).
-The grid then reloads in place to show the change. Models moved to the trash leave the selection.
+The grid then reloads in place to show the change. Models moved to the trash leave the selection,
+and so does any model the action takes out of the view: remove the tag you are filtering by, for
+example, and those models leave the selection, with a note saying how many.
 
 **When some models fail.** A selected model that has been moved to the trash, or deleted, since you
 selected it (for example from another tab) is not changed. The toolbar names it, or counts it if

@@ -27,8 +27,11 @@
 // - Select mode (Jon, 2026-11-19): the Select button (aria-pressed) turns
 //   the cards into checkboxes (ModelCard; a click or Space toggles one) and
 //   shows the selection toolbar (SelectBar) with the count, the select-all
-//   choices and the bulk actions. The selection is kept across pages and
-//   filters until it is cleared or Select mode ends; Escape or Select again
+//   choices and the bulk actions. The selection holds only models the search
+//   and filters show (0.1.0-rc.2 live check): it is kept across pages, View
+//   all and a new sort, but a new search or filter, or an action that takes
+//   a model out of the view, takes the models the view no longer shows out
+//   of it, and the toolbar says how many. Escape or Select again
 //   ends it, clears the selection and puts focus back on Select. Escape is
 //   left alone while another overlay that takes it is open (otherOverlayOpen):
 //   a modal dialog, the upload dialog among them, or the narrow-screen menu,
@@ -78,6 +81,7 @@ import {
 } from "./paging";
 import { SelectBar } from "./SelectBar";
 import { SortControl } from "./SortControl";
+import { keepShown } from "./selection";
 import "./library.css";
 
 export interface LibraryPageProps {
@@ -142,6 +146,16 @@ interface Ready extends Answer {
 }
 
 type Load = { state: "loading" } | { state: "failed" } | Ready;
+
+/**
+ * Where the check of the selection against the view stands: nothing to
+ * check, asking, failed, or done with the ids the view can show.
+ */
+type ViewCheck =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "failed" }
+  | { state: "done"; shown: ReadonlySet<string> };
 
 /** The header switch's fields from the last answer, kept while the grid reloads. */
 type PrinterHeader = Pick<Answer, "printer" | "printerName" | "printers">;
@@ -213,6 +227,17 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     return search;
   }, [q, tag, creator, collection, choice, sentSort]);
 
+  /** The search, filters, printer and sort as one string: a new one is a new set of matches. */
+  const matchKey = matching().toString();
+  const [check, setCheck] = useState<ViewCheck>({ state: "idle" });
+  const [checkAttempt, setCheckAttempt] = useState(0);
+  /** How many selected models the last check took out of the selection. */
+  const [left, setLeft] = useState(0);
+  const selectedNow = useRef(selected);
+  selectedNow.current = selected;
+  /** The changedKey the last check ran for, so a check after an action is told apart. */
+  const checkedAfter = useRef(changedKey);
+
   const query = useCallback(
     (at: number, limit: number) => {
       const search = matching();
@@ -227,8 +252,56 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const stopSelecting = useCallback(() => {
     setSelecting(false);
     setSelected(new Map());
+    setLeft(0);
     selectButton.current?.focus();
   }, []);
+
+  // The selection against the view (0.1.0-rc.2 live check): the selection
+  // only ever holds models the search and filters show, so an action never
+  // acts on one the user cannot see. After the search, a filter, the sort or
+  // the printer changes (matchKey), after an action (changedKey), after an
+  // upload (refreshKey) and on Try again, the page asks for the ids the view
+  // can show and the selection keeps only those; the toolbar says how many
+  // left. An empty selection has nothing to check, except after an action,
+  // whose cards stay shown until the grid's reload is in: the answer then
+  // stops one of them being selected. Until the answer is in the actions
+  // wait, and a failed check keeps them waiting until Try again works.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changedKey, refreshKey and checkAttempt only trigger a check.
+  useEffect(() => {
+    const afterAction = checkedAfter.current !== changedKey;
+    checkedAfter.current = changedKey;
+    if (!selecting || (selectedNow.current.size === 0 && !afterAction)) {
+      setCheck({ state: "idle" });
+      return;
+    }
+    const controller = new AbortController();
+    setCheck({ state: "checking" });
+    getJson<{ ids: string[] }>(`/app/api/library/ids?${matchKey}`, controller.signal)
+      .then((answer) => {
+        if (controller.signal.aborted) return;
+        const shown = new Set(answer.ids);
+        setLeft(keepShown(selectedNow.current, shown).left);
+        setSelected((now) => keepShown(now, shown).kept);
+        setCheck({ state: "done", shown });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCheck({ state: "failed" });
+      });
+    return () => controller.abort();
+  }, [selecting, matchKey, changedKey, refreshKey, checkAttempt]);
+
+  /**
+   * Replaces the selection, keeping only models the view shows once a check
+   * has said which. Emptied, it has nothing left to check or to report.
+   */
+  function changeSelection(next: Map<string, string | null>) {
+    const fitted = check.state === "done" ? keepShown(next, check.shown).kept : next;
+    setSelected(fitted);
+    if (fitted.size === 0) {
+      setLeft(0);
+      if (check.state === "failed") setCheck({ state: "idle" });
+    }
+  }
 
   // Escape leaves Select mode, unless a dialog is open: Escape is the dialog's then.
   // Select mode's own dialogs remove this listener (dialogOpen); any other
@@ -249,7 +322,9 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     setSelected((prev) => {
       const next = new Map(prev);
       if (next.has(card.id)) next.delete(card.id);
-      else next.set(card.id, card.name);
+      // A card the view no longer shows (still drawn while the grid reloads
+      // after an action) is not added.
+      else if (check.state !== "done" || check.shown.has(card.id)) next.set(card.id, card.name);
       return next;
     });
   }
@@ -508,7 +583,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           totalCapped={ready?.totalCapped ?? false}
           matching={matching()}
           tags={tags}
-          onChange={setSelected}
+          check={check.state === "checking" || check.state === "failed" ? check.state : null}
+          left={left}
+          onCheckAgain={() => setCheckAttempt((n) => n + 1)}
+          onChange={changeSelection}
           onChanged={() => {
             setChangedKey((n) => n + 1);
             setTagsKey((n) => n + 1);

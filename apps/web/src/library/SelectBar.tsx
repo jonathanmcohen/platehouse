@@ -20,6 +20,12 @@
 //   already so, and in an alert the models that failed and why. A failed
 //   model leaves the selection, as does one moved to the trash, and the grid
 //   reloads to show the change.
+// - The selection holds only models the search and filters show (0.1.0-rc.2
+//   live check; LibraryPage checks it): while that check runs, or after it
+//   fails, the actions wait and the toolbar says why, with Try again for a
+//   failure; models it takes out are counted in a note. A Select all
+//   matching answer for a search or filter that has since changed is
+//   dropped.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
 import { type MessageKey, useI18n } from "../i18n/I18n";
@@ -48,6 +54,15 @@ export interface SelectBarProps {
   matching: URLSearchParams;
   /** The library's tags, to pick from. */
   tags: string[];
+  /**
+   * The page is checking which selected models the search and filters show,
+   * or that check failed: the actions wait either way. Null once it is done.
+   */
+  check: "checking" | "failed" | null;
+  /** How many selected models the last check took out, as the view no longer shows them. */
+  left: number;
+  /** Runs a failed check again. */
+  onCheckAgain(): void;
   /** Replaces the selection. */
   onChange(next: Map<string, string | null>): void;
   /** An action changed models: reload the grid. */
@@ -306,6 +321,9 @@ export function SelectBar({
   totalCapped,
   matching,
   tags,
+  check,
+  left,
+  onCheckAgain,
   onChange,
   onChanged,
   onDialog,
@@ -320,6 +338,11 @@ export function SelectBar({
   const opener = useRef<HTMLButtonElement | null>(null);
   const count = selected.size;
   const none = count === 0;
+  /** The actions wait: nothing is selected, or the selection is not yet checked against the view. */
+  const off = none || check !== null;
+  /** The search, filters and sort now, so an answer for earlier ones is told apart. */
+  const matchingNow = useRef("");
+  matchingNow.current = matching.toString();
 
   function setOpen(next: Open, from?: HTMLButtonElement) {
     if (from !== undefined) opener.current = from;
@@ -339,11 +362,15 @@ export function SelectBar({
     if (picking) return;
     setPicking(true);
     setNote(null);
+    const asked = matching.toString();
     try {
       const answer = await appApi<{ ids: string[]; capped: boolean }>(
         "GET",
-        `/library/ids?${matching}`,
+        `/library/ids?${asked}`,
       );
+      // The search or a filter changed while it was asked for: these are
+      // another view's matches, so none of them is selected.
+      if (matchingNow.current !== asked) return;
       const names = new Map(shown.map((c) => [c.id, c.name]));
       add(answer.ids.map((id) => [id, names.get(id) ?? null]));
       if (answer.capped) {
@@ -357,6 +384,9 @@ export function SelectBar({
   }
 
   async function run(action: BulkAction) {
+    // A dialog opened before a check began (Back to another search, say):
+    // the selection may hold a model the view does not show until it ends.
+    if (check !== null) throw new AppApiError(0, t("library.select.checking"));
     const ids = [...selected.keys()];
     if (ids.length > MAX_SELECTED) {
       throw new AppApiError(0, t("library.select.tooMany", { max: MAX_SELECTED }));
@@ -380,9 +410,9 @@ export function SelectBar({
       <button
         type="button"
         className={`studio-button ph-small${danger ? " ph-button-danger" : ""}`}
-        aria-disabled={none}
+        aria-disabled={off}
         onClick={(event) => {
-          if (none) return;
+          if (off) return;
           setResult(null);
           setOpen(name, event.currentTarget);
         }}
@@ -435,8 +465,22 @@ export function SelectBar({
         {action("add-to-collection", "library.select.addToCollection")}
         {action("trash", "library.select.trash", true)}
       </div>
+      {check === "checking" && !none ? (
+        <p className="studio-muted">{t("library.select.checking")}</p>
+      ) : null}
+      {check === "failed" && !none ? (
+        <div className="studio-alert studio-alert-alert">
+          <p role="alert">{t("library.select.checkFailed")}</p>
+          <button type="button" className="studio-button ph-small" onClick={onCheckAgain}>
+            {t("common.tryAgain")}
+          </button>
+        </div>
+      ) : null}
       {note === null ? null : <p className="studio-muted">{note}</p>}
       {result === null ? null : <p className="studio-muted">{result.done}</p>}
+      {left > 0 ? (
+        <p className="studio-muted">{t("library.select.left", { count: left })}</p>
+      ) : null}
       {result?.failed ? (
         <p role="alert" className="studio-alert studio-alert-alert">
           {result.failed}
