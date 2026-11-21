@@ -134,7 +134,13 @@ const unusedStore = {
 
 /** An API library whose context and plate lookups are counted. */
 function countedLibrary() {
-  const seen = { contexts: 0, lookups: 0, inFlight: 0, maxInFlight: 0, printers: new Set<string>() };
+  const seen = {
+    contexts: 0,
+    lookups: 0,
+    inFlight: 0,
+    maxInFlight: 0,
+    printers: new Set<string>(),
+  };
   let reads = 0;
   const library = createApiLibrary({
     db: scriptedDb(),
