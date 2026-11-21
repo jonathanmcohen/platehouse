@@ -35,10 +35,32 @@ export interface ScrubOptions {
   keep?: "start" | "end";
 }
 
+/** One IPv6 group. */
+const H6 = "[0-9A-Fa-f]{1,4}";
+/**
+ * An IPv6 address: eight groups, or fewer with "::" standing for the rest,
+ * which may end in a dotted IPv4 address (::ffff:192.0.2.7).
+ */
+const IPV6 =
+  `(?:(?:${H6}:){7}${H6}` +
+  `|(?:${H6}(?::${H6})*)?::(?:${H6}(?::${H6})*)?(?::?\\d{1,3}(?:\\.\\d{1,3}){3})?)`;
+/** An IPv6 address in brackets, with its zone and port if any: [fe80::1%eth0]:8080. */
+const BRACKETED_IPV6 = new RegExp(`\\[${IPV6}(?:%[\\w.-]+)?\\](?::\\d{1,5})?`, "g");
+/**
+ * A bare IPv6 address, with its zone and a trailing port if any. It holds
+ * a digit and stands alone (not part of a word or a longer run of colons
+ * and dots), so a time (12:30:45) and a C++ name (Slic3r::GCode) stay.
+ */
+const BARE_IPV6 = new RegExp(
+  `(?<![\\w:.])(?=[0-9A-Fa-f:]*\\d)${IPV6}(?:%[\\w.-]+)?(?::\\d{1,5})?(?![\\w:]|\\.\\d)`,
+  "g",
+);
+
 /**
  * Takes out of stored error text everything a user must not be shown:
  * tokens and credentials, URLs (signed ones included), file system paths,
- * IP addresses, host:port pairs and internal host names. The words around
+ * IPv4 and IPv6 addresses (bare, or in brackets with a port), host:port
+ * pairs and internal host names. The words around
  * them stay, so the message still reads. Cut at SCRUB_MAX_CHARS characters
  * (options.maxChars), keeping the start with "..." after it, or with
  * options.keep "end", keeping the end with "..." before it.
@@ -51,10 +73,16 @@ export function scrubText(text: string, options: ScrubOptions = {}): string {
     /\b(passwords?|passwd|secrets?|tokens?|api[_-]?keys?|access[_-]?keys?|credentials?)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi,
     (_m, key: string, sep: string) => `${key}${sep}[redacted]`,
   );
-  out = out.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi, "[address]");
+  // A URL's host may be an IPv6 address in brackets (http://[2001:db8::1]:8080/).
+  out = out.replace(
+    /\b[a-z][a-z0-9+.-]*:\/\/(?:\[[^\]\s]*\][^\s"'<>)\]]*|[^\s"'<>)\]]+)/gi,
+    "[address]",
+  );
+  out = out.replace(BRACKETED_IPV6, "[address]");
   out = out.replace(/\b[A-Za-z]:\\[^\s"'<>)\]]*/g, "[path]");
   out = out.replace(/(^|[\s"'(=,[])~\/[^\s"'<>)\],]*/g, "$1[path]");
   out = out.replace(/(^|[\s"'(=,[])\/[^\s"'<>)\],]+/g, "$1[path]");
+  out = out.replace(BARE_IPV6, "[address]");
   out = out.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[address]");
   out = out.replace(
     /\b(?=[A-Za-z0-9.-]*[A-Za-z])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*:\d{2,5}\b/g,

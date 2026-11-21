@@ -70,6 +70,36 @@ describe("scrubText", () => {
     expect(scrubText("db at platehouse-db:5432 refused")).toBe("db at [address] refused");
   });
 
+  // IPv6 addresses (documentation and link-local ranges only), bare or in
+  // brackets, with or without a port or a zone: none of it is left behind.
+  test("takes out IPv6 addresses, bare or bracketed, with or without a port", () => {
+    expect(scrubText("connect ECONNREFUSED 2001:db8::5:8000")).toBe(
+      "connect ECONNREFUSED [address]",
+    );
+    expect(scrubText("connect ECONNREFUSED 2001:db8:3456::7:9000")).toBe(
+      "connect ECONNREFUSED [address]",
+    );
+    expect(scrubText("connect ECONNREFUSED 2001:db8::7:50051")).toBe(
+      "connect ECONNREFUSED [address]",
+    );
+    expect(scrubText("connect ECONNREFUSED ::1:3000")).toBe("connect ECONNREFUSED [address]");
+    expect(scrubText("no route to 2001:db8:0:0:0:0:0:1 now")).toBe("no route to [address] now");
+    expect(scrubText("no route to 2001:db8::1.")).toBe("no route to [address].");
+    expect(scrubText("peer fe80::1%eth0 left")).toBe("peer [address] left");
+    expect(scrubText("peer ::ffff:192.0.2.7 left")).toBe("peer [address] left");
+    expect(scrubText("dial [fe80::1%eth0]:8080 failed")).toBe("dial [address] failed");
+    expect(scrubText("dial [2001:db8::1] failed")).toBe("dial [address] failed");
+    expect(scrubText("GET http://[2001:db8::1]:8080/v1/slice failed")).toBe("GET [address] failed");
+  });
+
+  test("leaves times, ratios, ranges and C++ names that look a little like IPv6 alone", () => {
+    expect(scrubText("started 12:30:45, layers [1:2]")).toBe("started 12:30:45, layers [1:2]");
+    expect(scrubText("Slic3r::GCode::process_layer failed")).toBe(
+      "Slic3r::GCode::process_layer failed",
+    );
+    expect(scrubText("std::bad_alloc in Model::add")).toBe("std::bad_alloc in Model::add");
+  });
+
   test("takes out internal host names", () => {
     expect(scrubText("could not reach platehouse.home.arpa")).toBe("could not reach [address]");
     expect(scrubText("server.lan is down")).toBe("[address] is down");
