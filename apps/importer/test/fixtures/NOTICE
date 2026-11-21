@@ -22,7 +22,9 @@ Copyright and licence
   License Agreement licensing their code as AGPL-3.0, and its
   CONTRIBUTORS.md lists the contributors.
 
-  The full AGPL-3.0 text, as Manyfold ships it:
+  The full AGPL-3.0 text is in the LICENSE file at the root of this
+  repository, which is licensed under the same licence. Manyfold ships
+  the same text at:
   https://github.com/manyfold3d/manyfold/blob/v0.154.1/LICENSE.md
 
 Changes made here

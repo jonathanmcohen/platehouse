@@ -198,3 +198,9 @@ smoke slice passes.
   PNGs are drawn by Playwright's Chromium (`pnpm exec playwright install chromium` the first
   time). The app itself draws the logo in the colour scheme's accent, so only these files carry a
   fixed colour.
+
+## License
+
+Platehouse is free software, licensed under the GNU Affero General Public License, version 3
+only (AGPL-3.0-only). The full text is in [LICENSE](LICENSE). If you run a modified version of
+Platehouse for other people over a network, the licence requires you to offer them its source.
