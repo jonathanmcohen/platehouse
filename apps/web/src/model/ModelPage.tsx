@@ -111,6 +111,8 @@ export interface PlateFailure {
   reason: string;
   words: string;
   detail: string | null;
+  /** When this failure was recorded (ISO 8601); a retry keeps estimateId, so this tells failures apart. */
+  failedAt: string | null;
 }
 
 export interface PlateNumbers {

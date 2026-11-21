@@ -21,8 +21,10 @@
 //   in a status line that outlives the failure (the page loads the model
 //   again, which usually no longer has it), but not the facts it was about:
 //   it goes when another printer is shown, when a different failure is
-//   shown, or when the refused estimate's failure comes back after it had
-//   gone (it was estimated again and failed again, so Retry works again).
+//   shown, or when the refused estimate fails again (it was estimated again
+//   and failed again, so Retry works again): its failure comes back after
+//   it had gone, or is shown with a later failedAt than the one refused,
+//   as when the reload after the 409 already shows the new failure.
 //   A 401 says the user is signed out; anything else says what the
 //   server's answer means (errorText).
 // Times and weights are formatted as the library's cards format them.
@@ -195,14 +197,19 @@ function EstimateNumbers({
 interface Refused {
   estimateId: string;
   printer: string;
+  /** When the refused failure was recorded (PlateFailure.failedAt). */
+  failedAt: string | null;
   /** Whether a shown answer has had no failure since the refusal. */
   gone: boolean;
 }
 
 /**
  * Whether a refusal still holds for what is shown now: null once another
- * printer or a different failure is shown, or once the refused estimate's
- * failure is back after it had gone (it failed again, and can be retried).
+ * printer or a different failure is shown, or once the refused estimate
+ * has failed again (and can be retried): its failure is back after it had
+ * gone, or shown with another failedAt. A retry keeps the estimate's id,
+ * so the time is what tells a new failure from the refused one, as
+ * notice.at against event.at does on the Activity page.
  * Returns the same object when nothing changed.
  */
 function refusedNow(
@@ -213,6 +220,7 @@ function refusedNow(
   if (printer !== refused.printer) return null;
   if (failure === undefined) return refused.gone ? refused : { ...refused, gone: true };
   if (failure.estimateId !== refused.estimateId || refused.gone) return null;
+  if (failure.failedAt !== refused.failedAt) return null;
   return refused;
 }
 
@@ -273,7 +281,12 @@ export function PlateNumbersView({
       // says the user is signed out, and anything else what the server's
       // answer means (errorText).
       if (refusal instanceof AppApiError && refusal.status === 409) {
-        setRefused({ estimateId: failure.estimateId, printer, gone: false });
+        setRefused({
+          estimateId: failure.estimateId,
+          printer,
+          failedAt: failure.failedAt,
+          gone: false,
+        });
       } else setRetryError(errorText(refusal));
     } finally {
       setRetrying(false);

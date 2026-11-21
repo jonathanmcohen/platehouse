@@ -822,6 +822,7 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
               reason: "bed_too_small",
               words: "The plate is too big for this printer's bed.",
               detail: null,
+              failedAt: "2026-11-13T10:00:00.000Z",
             },
           }),
         ]),
@@ -1105,7 +1106,13 @@ describe("estimating state renders and is replaced when numbers arrive", () => {
 
   test("isEstimating and needsPolling: estimating, or an older estimate shown while the new one runs", () => {
     const STALE = estimate("stale", { staleFor: X1C });
-    const FAILED = { estimateId: EST_FAILED, reason: "bed_too_small", words: "x", detail: null };
+    const FAILED = {
+      estimateId: EST_FAILED,
+      reason: "bed_too_small",
+      words: "x",
+      detail: null,
+      failedAt: "2026-11-13T10:00:00.000Z",
+    };
     expect(isEstimating(plate(1, null, { platehouse: estimate("estimating") }))).toBe(true);
     expect(isEstimating(plate(1, null, { platehouse: STALE }, true))).toBe(true);
     // An older estimate with nothing queued for the selected printer: nothing is coming.
@@ -1242,7 +1249,10 @@ describe("failed plate shows the plain reason and a retry button", () => {
   const WORDS = "The plate is too big for this printer's bed.";
   const DETAIL = "Orca says: the object exceeds the plate boundary.";
 
-  function failedModel(): ModelView {
+  const FAILED_AT = "2026-11-13T10:00:00.000Z";
+
+  /** The model with plate 2 failed; failedAt is when that failure was recorded. */
+  function failedModel(failedAt = FAILED_AT): ModelView {
     return model([
       threeMf([
         plate(1, "Base", { file: fileNumbers(1) }),
@@ -1252,6 +1262,7 @@ describe("failed plate shows the plain reason and a retry button", () => {
             reason: "bed_too_small",
             words: WORDS,
             detail: DETAIL,
+            failedAt,
           },
         }),
         plate(3, "Lid", { file: fileNumbers(3) }),
@@ -1381,6 +1392,27 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(text(huge.querySelector('[role="status"]'))).toBe("");
   });
 
+  test("the not-retryable line goes when the reload after the refusal already shows the estimate failed again", async () => {
+    // Refused because another tab's retry had re-queued it; that slice then
+    // failed before the reload landed (quick when the slicer refuses the
+    // connection), so the reload shows the same estimate failed, but at a
+    // later time, with a Retry that works. The line must go.
+    retryStatus = 409;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, failedModel("2026-11-13T10:05:00.000Z"));
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}`,
+      `POST /app/api/estimates/${EST_FAILED}/retry`,
+      `GET /app/api/models/${MODEL_ID}`,
+    ]);
+    const huge = plateItems()[1] as HTMLElement;
+    expect(text(huge)).toContain(WORDS);
+    button(/retry/i, huge);
+    expect(text(huge.querySelector('[role="status"]'))).toBe("");
+  });
+
   test("the not-retryable line goes when another printer is chosen", async () => {
     // The line was about the first printer's estimate; it says nothing
     // about another printer's numbers.
@@ -1399,6 +1431,7 @@ describe("failed plate shows the plain reason and a retry button", () => {
                       reason: "bed_too_small",
                       words: WORDS,
                       detail: DETAIL,
+                      failedAt: FAILED_AT,
                     },
                   }
                 : { file: fileNumbers(2) },
@@ -2038,7 +2071,13 @@ describe("a reload that fails while the model is on screen", () => {
     return model([
       threeMf([
         plate(1, "Huge", {
-          failure: { estimateId: EST_FAILED, reason: "bed_too_small", words: "x", detail: null },
+          failure: {
+            estimateId: EST_FAILED,
+            reason: "bed_too_small",
+            words: "x",
+            detail: null,
+            failedAt: "2026-11-13T10:00:00.000Z",
+          },
         }),
       ]),
     ]);

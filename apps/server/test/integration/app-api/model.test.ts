@@ -535,14 +535,48 @@ describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
       detail: "Orca: the object exceeds the plate",
     });
     const plates = (await modelView(modelId)).files[0]?.plates ?? [];
+    const row = await env.db
+      .selectFrom("estimates")
+      .select("finishedAt")
+      .where("id", "=", failedId)
+      .executeTakeFirstOrThrow();
     expect(plates[1]?.numbers.failure).toEqual({
       estimateId: failedId,
       reason: "bed_too_small",
       words: REASON_WORDS.bed_too_small,
       detail: "Orca: the object exceeds the plate",
+      failedAt: row.finishedAt?.toISOString(),
     });
     expect(plates[0]?.numbers.file?.timeSeconds).toBe(1000);
     expect(plates[2]?.numbers.file?.timeSeconds).toBe(3000);
+  });
+
+  test("a failure that comes back after a retry keeps the estimate's id and has a new failedAt", async () => {
+    // The page drops its can-no-longer-be-retried line on a new failure of
+    // the refused estimate; a retry keeps the id, so failedAt tells them apart.
+    const { modelId, fileId } = await ingest(
+      `Failed again ${marker()}.3mf`,
+      build3mf({ plates: 1 }),
+    );
+    const [one] = await platesOf(fileId);
+    const failedId = await platehouseEstimate(one?.id ?? "", "failed");
+    const failAt = async (at: Date) =>
+      env.db
+        .updateTable("estimates")
+        .set({ status: "failed", finishedAt: at })
+        .where("id", "=", failedId)
+        .execute();
+    const first = new Date("2026-11-13T10:00:00.000Z");
+    await failAt(first);
+    const before = (await modelView(modelId)).files[0]?.plates[0]?.numbers.failure;
+    expect(before).toMatchObject({ estimateId: failedId, failedAt: first.toISOString() });
+
+    // A retry queues the same estimate again (upsertPending keeps its id).
+    expect(await platehouseEstimate(one?.id ?? "", "pending")).toBe(failedId);
+    const again = new Date("2026-11-13T10:05:00.000Z");
+    await failAt(again);
+    const after = (await modelView(modelId)).files[0]?.plates[0]?.numbers.failure;
+    expect(after).toMatchObject({ estimateId: failedId, failedAt: again.toISOString() });
   });
 });
 

@@ -84,6 +84,8 @@ let bearer: string;
 let modelId: string;
 let fileId: string;
 let estimateId: string;
+/** When the estimate failed (its finishedAt), which the model page shows as failure.failedAt. */
+const FAILED_AT = new Date("2026-11-13T10:00:00.000Z");
 
 beforeAll(async () => {
   env = await startIngestEnv();
@@ -154,7 +156,7 @@ beforeAll(async () => {
       failureCode: -3,
       failureReason: "bed_too_small",
       failureDetail: DIRTY_DETAIL,
-      finishedAt: new Date(),
+      finishedAt: FAILED_AT,
     })
     .where("id", "=", estimateId)
     .execute();
@@ -186,7 +188,7 @@ function expectNothingHidden(body: string) {
   for (const hidden of HIDDEN) expect(body).not.toContain(hidden);
 }
 
-/** The failure the model page and the API show, unchanged in shape. */
+/** The failure the API shows, unchanged in shape; the model page adds failedAt. */
 const EXPECTED_FAILURE = (): PlateFailure => ({
   estimateId,
   reason: "bed_too_small",
@@ -198,7 +200,10 @@ describe("a failed estimate's detail", () => {
   test("the model page shows it cleaned", async () => {
     const { body, json } = await getJson(`/app/api/models/${modelId}`, "session");
     const view = json as ModelView;
-    expect(view.files[0]?.plates[0]?.numbers.failure).toEqual(EXPECTED_FAILURE());
+    expect(view.files[0]?.plates[0]?.numbers.failure).toEqual({
+      ...EXPECTED_FAILURE(),
+      failedAt: FAILED_AT.toISOString(),
+    });
     expectNothingHidden(body);
   });
 

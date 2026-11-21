@@ -21,6 +21,11 @@
 // read (scrubDetail, src/scrub.ts; issue #239): the model page and the
 // Public API v1 both read it from here, and the Activity page cleans it
 // with the same function, so all three show the same text.
+// The model page also gets the failure's time (pagePlateNumbers,
+// failure.failedAt: the estimate's finishedAt). A retry keeps the
+// estimate's id, so the time is the only thing that tells a failure that
+// came back from the one a refused Retry was about. The Public API v1 keeps
+// its failure shape (plateNumbers) and does not get it.
 //
 // Each filament line names the preset that produced its grams and where the
 // preset came from: "bambu" (Bambu's own preset for the printer), "generic"
@@ -98,6 +103,17 @@ export interface PlateNumbers {
   file?: Numbers;
   platehouse?: PlatehouseNumbers;
   failure?: PlateFailure;
+}
+
+/** A failure as the model page gets it: with when it was recorded. */
+export interface PageFailure extends PlateFailure {
+  /** The estimate's finishedAt (ISO 8601) when it failed; null if none was stored. */
+  failedAt: string | null;
+}
+
+/** A plate's numbers as the model page gets them (pagePlateNumbers). */
+export interface PagePlateNumbers extends Omit<PlateNumbers, "failure"> {
+  failure?: PageFailure;
 }
 
 export interface DisplayContext {
@@ -202,11 +218,27 @@ function fileIsFor(row: EstimateRow, selected: Printer | undefined): boolean {
   return printerForFile(row, [selected]) !== undefined;
 }
 
+/**
+ * A plate's numbers, in the shape the Public API v1 documents: the model
+ * page's (pagePlateNumbers) without failure.failedAt.
+ */
 export async function plateNumbers(
   db: Kysely<DB>,
   ctx: DisplayContext,
   plateId: string,
 ): Promise<PlateNumbers> {
+  const shown = await pagePlateNumbers(db, ctx, plateId);
+  if (shown.failure === undefined) return shown;
+  const { estimateId, reason, words, detail } = shown.failure;
+  return { ...shown, failure: { estimateId, reason, words, detail } };
+}
+
+/** A plate's numbers for the model page: plateNumbers with failure.failedAt. */
+export async function pagePlateNumbers(
+  db: Kysely<DB>,
+  ctx: DisplayContext,
+  plateId: string,
+): Promise<PagePlateNumbers> {
   if (!isUuid(plateId)) return {};
   const rows: EstimateRow[] = await db
     .selectFrom("estimates")
@@ -277,7 +309,7 @@ export async function plateNumbers(
         : [],
   });
 
-  const out: PlateNumbers = {};
+  const out: PagePlateNumbers = {};
   const selected = ctx.printers.find((p) => p.id === ctx.printerId);
   const fileRow = rows.find((r) => r.source === "file" && r.status === "ok");
   if (fileRow) {
@@ -305,6 +337,7 @@ export async function plateNumbers(
       reason: isReason(wanted.failureReason) ? wanted.failureReason : "slicer_error",
       words: reasonWords(wanted.failureReason),
       detail: scrubDetail(wanted.failureDetail),
+      failedAt: wanted.finishedAt?.toISOString() ?? null,
     };
   }
   // The newest finished estimate made for an older Orca on this printer, or
