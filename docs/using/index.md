@@ -33,7 +33,9 @@ file-type icon instead of a thumbnail. Pictures of prints sit on a neutral grey 
 black or white print stays visible in both themes.
 
 Search in the top bar matches names, captions, creators and tags, best match first. Pick a tag
-chip to filter by tag. Loading the library never downloads a model file: the only images it
+chip to filter by tag. Typing a search in the top bar turns off a tag filter and searches the
+whole library; the one exception is a creator or collection filter opened from **Show in the
+library**, which stays on. Loading the library never downloads a model file: the only images it
 loads are the stored plate thumbnails.
 
 ### Pages and View all
