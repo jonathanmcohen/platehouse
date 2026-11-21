@@ -24,7 +24,10 @@
 // camelCase words ("approvedByName" gives "approved", "by", "name";
 // "HTTPName" gives "http", "name"), so a name joined to other letters is
 // still a word; a run that is an allowed token as a whole is not split. Plus
-// each pair of neighbouring words joined by one space, plus every dotted run
+// each pair of neighbouring words joined by one space, counting camelCase
+// words as words ("myBlueHeronHost" gives "my blue", "blue heron" and
+// "heron host"), so a two-word name written as an identifier is still a
+// pair; plus every dotted run
 // of numbers cut into its dotted prefixes ("a.", "a.b.", "a.b.c.", from each
 // starting number). An entry matches by kind:
 // - word: a word, a camelCase word, or a pair of words, equals the name.
@@ -225,19 +228,20 @@ interface Camel {
 function tokens(line: string): {
   words: string[];
   camel: Camel[];
+  runs: Camel[];
   pairs: string[];
   dotted: string[];
 } {
   const text = line.replace(INTEGRITY, " ");
   const lower = text.toLowerCase();
   const words = lower.split(/[^a-z0-9]+/).filter((t) => t !== "");
-  const camel: Camel[] = [];
-  for (const [run] of text.matchAll(/[A-Za-z0-9]+/g)) {
-    const parts = run.split(CAMEL);
-    if (parts.length > 1) {
-      camel.push({ whole: run.toLowerCase(), parts: parts.map((p) => p.toLowerCase()) });
-    }
-  }
+  // Every run in order, with its camelCase words (the run alone when it has
+  // none), so names() can pair neighbouring words across both kinds of break.
+  const runs: Camel[] = [...text.matchAll(/[A-Za-z0-9]+/g)].map(([run]) => ({
+    whole: run.toLowerCase(),
+    parts: run.split(CAMEL).map((p) => p.toLowerCase()),
+  }));
+  const camel = runs.filter((r) => r.parts.length > 1);
   const pairs = words.slice(1).map((t, i) => `${words[i]} ${t}`);
   const dotted: string[] = [];
   for (const [run] of lower.matchAll(/\d+(?:\.\d+)*\.?/g)) {
@@ -251,7 +255,7 @@ function tokens(line: string): {
       }
     }
   }
-  return { words, camel, pairs, dotted };
+  return { words, camel, runs, pairs, dotted };
 }
 
 /** A compiled list: hash sets per kind, the prefix lengths, and the allowed tokens. */
@@ -296,7 +300,7 @@ function wordHit(m: Matcher, t: string): boolean {
 /** True when a line, or the line with its backslashes removed, has a forbidden token. */
 function names(m: Matcher, line: string): boolean {
   for (const text of line.includes("\\") ? [line, line.replaceAll("\\", "")] : [line]) {
-    const { words, camel, pairs, dotted } = tokens(text);
+    const { words, camel, runs, pairs, dotted } = tokens(text);
     for (const t of words) if (wordHit(m, t)) return true;
     // The camelCase words of a run, unless the whole run is an allowed token.
     for (const { whole, parts } of camel) {
@@ -304,6 +308,15 @@ function names(m: Matcher, line: string): boolean {
       for (const t of parts) if (wordHit(m, t)) return true;
     }
     for (const t of pairs) if (m.words.has(hashOf(t))) return true;
+    // Pairs of neighbouring words with each run cut into its camelCase words
+    // (an allowed run stays whole), so a two-word name written as an
+    // identifier ("blueHeron", "myBlueHeronHost") is still a pair.
+    const fine = runs.flatMap(({ whole, parts }) =>
+      parts.length > 1 && !m.allowed.has(hashOf(whole)) ? parts : [whole],
+    );
+    for (let i = 1; i < fine.length; i++) {
+      if (m.words.has(hashOf(`${fine[i - 1]} ${fine[i]}`))) return true;
+    }
     for (const t of dotted) if (m.addresses.has(hashOf(t))) return true;
   }
   return false;
@@ -470,12 +483,20 @@ describe("no private name anywhere in the tracked tree", () => {
       "askZEB()",
       "the HTTPQuokka client",
       "myQuokkaHost",
+      // A two-word name written as an identifier, or split across a word
+      // boundary and a camelCase one.
+      "const myBlueHeronHost = 1",
+      "blueHeron: x",
+      "the blue HeronHost",
+      "BlueHeron",
     ];
     const lookAlikes = [
       "quokkas, blue sky, grey heron, heron blue, a zebrafish, ze, wombat",
       "198.51.10.1, 1198.51.100.1, 198.51.1000.1, 192.0.2.10, platehouse.example.com",
       // An allowed token in camelCase, whole or inside a longer identifier.
       "ZebraFish, theZebrafishTank, isZeBRa",
+      // Two-word look-alikes in camelCase.
+      "blueSky, greyHeron, heronBlue, BlueHerons, blue_skyHeron",
       // A Subresource Integrity value (a lockfile's integrity line) is base64,
       // not text: its runs of letters are left alone.
       "resolution: {integrity: sha512-abcZebXy+/zeb0Quokka/QuokkaZ==}",

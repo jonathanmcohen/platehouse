@@ -79,7 +79,7 @@ import {
   VIEW_ALL_CHUNK,
   VIEW_ALL_MAX,
 } from "./paging";
-import { SelectBar } from "./SelectBar";
+import { SelectBar, type TagsState } from "./SelectBar";
 import { SortControl } from "./SortControl";
 import { keepShown, MAX_SELECTED, viewOf } from "./selection";
 import "./library.css";
@@ -229,6 +229,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const selectButton = useRef<HTMLButtonElement>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [tags, setTags] = useState<string[]>([]);
+  /** Whether tags is the server's answer yet, or its last read failed. */
+  const [tagsState, setTagsState] = useState<TagsState>("loading");
   /** Bumped after a bulk action, which can change which tags live models carry. */
   const [tagsKey, setTagsKey] = useState(0);
   const [attempt, setAttempt] = useState(0);
@@ -569,9 +571,15 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   useEffect(() => {
     const controller = new AbortController();
     getJson<{ tags: string[] }>("/app/api/library/tags", controller.signal)
-      .then((answer) => setTags(answer.tags))
+      .then((answer) => {
+        setTags(answer.tags);
+        setTagsState("ready");
+      })
       .catch(() => {
         // The filter is a convenience: without it the grid still works.
+        // Remove tag says the list could not be read rather than that no
+        // model has a tag; a list read earlier stays usable.
+        if (!controller.signal.aborted) setTagsState("failed");
       });
     return () => controller.abort();
   }, [refreshKey, tagsKey]);
@@ -703,6 +711,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           totalCapped={ready?.totalCapped ?? false}
           matching={matching()}
           tags={tags}
+          tagsState={tagsState}
           check={check.state === "checking" || check.state === "failed" ? check.state : null}
           left={left}
           onCheckAgain={() => setCheckAttempt((n) => n + 1)}

@@ -97,6 +97,11 @@ let inViewAsked: Array<Record<string, unknown>>;
 let matchCap: number;
 /** The tag names /app/api/library/tags answers with, as live models carry them. */
 let serverTags: string[];
+/** While true, /app/api/library/tags waits until releaseTags(). */
+let holdingTags: boolean;
+let heldTags: Array<() => void>;
+/** While true, /app/api/library/tags answers 500. */
+let failingTags: boolean;
 /** What each bulk route answers; by default every id changed. */
 let bulkAnswer: (url: string, body: Record<string, unknown>) => Response;
 let location = "";
@@ -124,7 +129,11 @@ function stubServer(all: LibraryCard[]) {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "https://platehouse.test");
       requests.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
-      if (url.pathname === "/app/api/library/tags") return json({ tags: serverTags });
+      if (url.pathname === "/app/api/library/tags") {
+        if (holdingTags) await new Promise<void>((resolve) => heldTags.push(resolve));
+        if (failingTags) return new Response("no", { status: 500 });
+        return json({ tags: serverTags });
+      }
       if (url.pathname === "/app/api/collections") {
         return json({ collections: [{ name: "Shelf", models: 3 }] });
       }
@@ -380,6 +389,9 @@ beforeEach(() => {
   holdingIds = false;
   heldIds = [];
   failingIds = false;
+  holdingTags = false;
+  heldTags = [];
+  failingTags = false;
   matchCap = 1000;
   serverTags = ["Desk", "PLA"];
   bulkAnswer = (_url, body) =>
@@ -946,6 +958,37 @@ describe("bulk actions", () => {
       { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "PLA", view: {} } },
     ]);
     expect(container.textContent).toContain("Removed PLA from 2 models.");
+  });
+
+  test("Remove tag opened before the tags arrive says they are loading, then the first one can be removed", async () => {
+    holdingTags = true;
+    await twoSelected();
+    await click(button("Remove tag"));
+    expect(dialog()?.textContent).toContain("Loading the library's tags.");
+    expect(dialog()?.textContent).not.toContain("No model has a tag yet.");
+
+    holdingTags = false;
+    for (const go of heldTags.splice(0)) go();
+    await settle();
+    const menu = dialog()?.querySelector("select") as HTMLSelectElement;
+    expect(menu.value).toBe("Desk");
+    // The tag the menu shows is the one Remove tag removes, with no change event.
+    expect(dialogButton("Remove tag").getAttribute("aria-disabled")).not.toBe("true");
+    await click(dialogButton("Remove tag"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "Desk", view: {} } },
+    ]);
+  });
+
+  test("Remove tag says the tags could not be read when that request failed, not that there are none", async () => {
+    failingTags = true;
+    await twoSelected();
+    await click(button("Remove tag"));
+    expect(dialog()?.textContent).toContain(
+      "The library's tags could not be read. Reload the page to try again.",
+    );
+    expect(dialog()?.textContent).not.toContain("No model has a tag yet.");
+    expect(dialogButton("Remove tag").getAttribute("aria-disabled")).toBe("true");
   });
 
   test("Add to collection: an existing one is offered, a new one can be typed", async () => {

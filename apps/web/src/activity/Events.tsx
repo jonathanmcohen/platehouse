@@ -2,8 +2,14 @@
 // at most the server's limit, built only from what the app records (models
 // added, inbox files that failed, estimates, renders and conversions that
 // failed). A live model is a link to its page; a trashed one is named
-// without a link. A failed estimate has the model page's own retry, through
-// the existing POST /app/api/estimates/:id/retry. Every text here is shown as
+// without a link. A failed estimate (the server lists live models' only) has
+// the model page's own retry, through the existing POST
+// /app/api/estimates/:id/retry. A 409 not_retryable asks for the list again
+// and says, in a status line above the list that names the model and plate,
+// that the plate can no longer be retried: the refresh usually drops the
+// row, so the words cannot live in it. The line is a one-shot notice whose
+// lifetime is set out in Events below. Any other failure says what the
+// server's answer means (errorText) in the row. Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
 
@@ -12,7 +18,7 @@ import { Link } from "react-router";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
 import { derivedMessageIn } from "../model/FilesTab";
-import { appApi, segment } from "../settings/api";
+import { AppApiError, appApi, segment, useErrorText } from "../settings/api";
 import type { ActivityEvent, ModelSource } from "./ActivityPage";
 
 const SOURCE_WORDS: Readonly<Record<ModelSource, MessageKey>> = {
@@ -90,12 +96,15 @@ function ModelLink({ model }: { model: { id: string; name: string; trashed?: boo
 function EstimateFailure({
   event,
   onRetried,
+  onNotice,
 }: {
   event: Extract<ActivityEvent, { type: "estimate_failed" }>;
   onRetried: () => void;
+  onNotice: (text: string | null) => void;
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
+  const errorText = useErrorText();
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,11 +112,23 @@ function EstimateFailure({
     if (retrying) return;
     setRetrying(true);
     setError(null);
+    onNotice(null);
     try {
       await appApi("POST", `/estimates/${segment(event.estimateId)}/retry`);
       onRetried();
-    } catch {
-      setError(t("model.numbers.retryFailed"));
+    } catch (failure) {
+      if (failure instanceof AppApiError && failure.status === 409) {
+        // not_retryable is final: the estimate is no longer failed, or its
+        // printer or plate is gone. Trying again cannot work, so say so and
+        // ask for the list again, which drops an event that has moved on.
+        // The words go to the section's status line, naming the plate,
+        // because that refresh usually takes this row, and its state, away;
+        // Events says how long they stay.
+        onNotice(t("activity.retryNotRetryable", { model: event.model.name, plate }));
+        onRetried();
+      } else {
+        setError(errorText(failure));
+      }
     } finally {
       setRetrying(false);
     }
@@ -158,7 +179,15 @@ function EstimateFailure({
   );
 }
 
-function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () => void }) {
+function EventBody({
+  event,
+  onChanged,
+  onNotice,
+}: {
+  event: ActivityEvent;
+  onChanged: () => void;
+  onNotice: (text: string | null) => void;
+}) {
   const i18n = useI18n();
   const { t, rich } = i18n;
   switch (event.type) {
@@ -189,7 +218,7 @@ function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () =
         </>
       );
     case "estimate_failed":
-      return <EstimateFailure event={event} onRetried={onChanged} />;
+      return <EstimateFailure event={event} onRetried={onChanged} onNotice={onNotice} />;
     case "render_failed":
       return (
         <>
@@ -224,6 +253,12 @@ function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () =
   }
 }
 
+/** A Retry refused as not retryable: its words, and how many lists have landed since. */
+interface Notice {
+  text: string;
+  lists: number;
+}
+
 export interface EventsProps {
   items: readonly ActivityEvent[];
   limit: number;
@@ -234,18 +269,42 @@ export interface EventsProps {
 
 export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) {
   const { t } = useI18n();
+  // The notice's lifetime: a 409 not_retryable is a one-shot notice, never
+  // state to be proven stale. It is shown until the list after the one the
+  // 409 asked for lands, whatever that list shows, or until another Retry is
+  // pressed or the page is left, whichever comes first. After that the list
+  // alone says what is true. A new items array is a list that landed: the
+  // page polls and keeps this component mounted.
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [seen, setSeen] = useState(items);
+  let shown = notice;
+  if (items !== seen) {
+    setSeen(items);
+    if (notice !== null) {
+      shown = notice.lists === 0 ? { ...notice, lists: 1 } : null;
+      setNotice(shown);
+    }
+  }
   return (
     <>
       {inboxReadable ? null : (
         <p className="studio-alert studio-alert-alert">{t("activity.inboxUnreadable")}</p>
       )}
+      {/* Always in the page, so a screen reader hears what is put in it. */}
+      <div role="status">
+        {shown === null ? null : <p className="ph-activity-line ph-activity-error">{shown.text}</p>}
+      </div>
       {items.length === 0 ? (
         <p className="studio-empty">{t("activity.noEvents")}</p>
       ) : (
         <ol className="studio-list ph-activity-events">
           {items.map((event) => (
             <li key={`${event.type}:${keyOf(event)}`} className="studio-list-item">
-              <EventBody event={event} onChanged={onChanged} />
+              <EventBody
+                event={event}
+                onChanged={onChanged}
+                onNotice={(text) => setNotice(text === null ? null : { text, lists: 0 })}
+              />
             </li>
           ))}
         </ol>
