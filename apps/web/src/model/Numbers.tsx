@@ -17,12 +17,16 @@
 // - A plate that could not be sliced: the reason in plain words, Orca's own
 //   message behind a Details button, and Retry, which queues the slice again
 //   from the stored file (no re-upload). A refused or failed retry is said
-//   beside the plate.
+//   beside the plate: a 401 says the user is signed out, anything else what
+//   the server's answer means (errorText). A 409 not_retryable is the
+//   page's to say, not the plate's (ModelPage's Refused): the model it
+//   loads again often no longer has this plate.
 // Times and weights are formatted as the library's cards format them.
 import { useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
 import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
+import { AppApiError, useErrorText } from "../settings/api";
 import type {
   FilamentNumbers,
   Numbers,
@@ -193,8 +197,11 @@ export interface PlateNumbersViewProps {
   projectFilaments: ProjectFilament[];
   /** Whether an estimate for the selected printer is queued or slicing (ModelPlate.estimatePending). */
   pending: boolean;
-  /** Queues a failed estimate again; resolves true when it was queued. */
-  onRetry(estimateId: string): Promise<boolean>;
+  /**
+   * Queues a failed estimate again; rejects with the server's AppApiError
+   * when refused (on a 409 the page says so and loads the model again).
+   */
+  onRetry(estimateId: string): Promise<void>;
 }
 
 export function PlateNumbersView({
@@ -210,6 +217,7 @@ export function PlateNumbersView({
   const detailId = useId();
   const [showDetail, setShowDetail] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const errorText = useErrorText();
   const [retryError, setRetryError] = useState<string | null>(null);
   const { file, platehouse, failure } = numbers;
 
@@ -218,11 +226,14 @@ export function PlateNumbersView({
     setRetrying(true);
     setRetryError(null);
     try {
-      if (!(await onRetry(failure.estimateId))) {
-        setRetryError(t("model.numbers.retryFailed"));
+      await onRetry(failure.estimateId);
+    } catch (refusal) {
+      // 409 not_retryable is final, and the page says so (ModelPage's
+      // Refused). A 401 says the user is signed out, and anything else what
+      // the server's answer means (errorText).
+      if (!(refusal instanceof AppApiError && refusal.status === 409)) {
+        setRetryError(errorText(refusal));
       }
-    } catch {
-      setRetryError(t("model.numbers.retryFailed"));
     } finally {
       setRetrying(false);
     }

@@ -11,7 +11,8 @@
 //   ChipEditor; a tag typed but not yet added to the list is sent too; a
 //   model's own tags are kept; at most MAX_TAGS, the server's limit, which
 //   the dialog says once the list is full), Remove tag (one of the
-//   library's tags), Add to collection (an existing one offered, or a new
+//   library's tags, or a line saying they are still loading or could not
+//   be read), Add to collection (an existing one offered, or a new
 //   name) and Move to trash (ConfirmDialog, the app's own, with the count;
 //   the trash keeps a model 30 days and it can be restored there). Each is one
 //   POST /app/api/bulk/* with the selected ids (at most MAX_SELECTED) and
@@ -49,6 +50,9 @@ import {
 /** The selection: each id with its model's name, or null when the page never showed it. */
 export type Selection = ReadonlyMap<string, string | null>;
 
+/** Whether the library's tags have been read (LibraryPage). */
+export type TagsState = "loading" | "ready" | "failed";
+
 export interface SelectBarProps {
   selected: Selection;
   /** The cards on the page now, for Select all on this page. */
@@ -60,6 +64,12 @@ export interface SelectBarProps {
   matching: URLSearchParams;
   /** The library's tags, to pick from. */
   tags: string[];
+  /**
+   * Whether tags has been read: "loading" before the first answer, "failed"
+   * when the last read failed, so Remove tag never says no model has a tag
+   * when the list is only missing.
+   */
+  tagsState: TagsState;
   /**
    * The page is checking which selected models the search and filters show,
    * or that check failed: the actions wait either way. Null once it is done.
@@ -218,20 +228,33 @@ function withTag(list: string[], tag: string): string[] {
   return [...list, name];
 }
 
+/** The words Remove tag shows in place of the menu when there is no tag to pick. */
+const NO_TAG_WORDS: Readonly<Record<TagsState, MessageKey>> = {
+  loading: "library.select.loadingTags",
+  failed: "library.select.tagsFailed",
+  ready: "library.select.noTags",
+};
+
 function RemoveTagDialog({
   count,
   tags,
+  tagsState,
   onSubmit,
   onCancel,
 }: {
   count: number;
   tags: string[];
+  tagsState: TagsState;
   onSubmit(tag: string): Promise<void>;
   onCancel(): void;
 }) {
   const { t } = useI18n();
   const id = useId();
-  const [tag, setTag] = useState(tags[0] ?? "");
+  const [picked, setTag] = useState(tags[0] ?? "");
+  // Read at render time, so a list that arrives, or changes, while the
+  // dialog is open is picked from as it is now: the tag the menu shows is
+  // always the one Remove tag removes.
+  const tag = tags.includes(picked) ? picked : (tags[0] ?? "");
   const { busy, run, close, alert } = useRun(onCancel);
   return (
     <Dialog
@@ -239,7 +262,7 @@ function RemoveTagDialog({
       onClose={close}
     >
       {tags.length === 0 ? (
-        <p>{t("library.select.noTags")}</p>
+        <p>{t(NO_TAG_WORDS[tagsState])}</p>
       ) : (
         <div className="ph-field">
           <label htmlFor={id}>{t("library.select.tagToRemove")}</label>
@@ -336,6 +359,7 @@ export function SelectBar({
   totalCapped,
   matching,
   tags,
+  tagsState,
   check,
   left,
   onCheckAgain,
@@ -514,6 +538,7 @@ export function SelectBar({
         <RemoveTagDialog
           count={count}
           tags={tags}
+          tagsState={tagsState}
           onSubmit={(tag) => run({ action: "remove-tag", tag })}
           onCancel={cancel}
         />

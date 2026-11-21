@@ -307,6 +307,8 @@ let models: Map<string, ModelView | number>;
 let mintAnswer: (fileId: string) => Response;
 /** What a POST to the retry route answers. */
 let retryStatus: number;
+/** While set, GET /app/api/models/:id waits for it before it answers. */
+let modelHeld: Promise<void> | null;
 let navigations: string[];
 let loads: ThreeSource[];
 
@@ -324,6 +326,7 @@ function stubServer() {
     requests.push(`${method} ${url.pathname}${url.search}`);
     const modelMatch = /^\/app\/api\/models\/([^/]+)$/.exec(url.pathname);
     if (method === "GET" && modelMatch) {
+      if (modelHeld !== null) await modelHeld;
       const answer = models.get(modelMatch[1] ?? "");
       if (answer === undefined) return json({ error: "not_found" }, 404);
       if (typeof answer === "number") return json({ error: "x" }, answer);
@@ -332,9 +335,12 @@ function stubServer() {
     const mintMatch = /^\/app\/api\/files\/([^/]+)\/slicer-link$/.exec(url.pathname);
     if (method === "POST" && mintMatch) return mintAnswer(mintMatch[1] ?? "");
     if (method === "POST" && /^\/app\/api\/estimates\/[^/]+\/retry$/.test(url.pathname)) {
-      return retryStatus === 202
-        ? json({ queued: true }, 202)
-        : json({ error: "not_retryable" }, retryStatus);
+      if (retryStatus === 202) return json({ queued: true }, 202);
+      // The route's own refusal (apps/server/src/app-api/model.ts); any
+      // other status is a session that ended or a server that is down.
+      return retryStatus === 409
+        ? json({ error: "not_retryable" }, 409)
+        : json({ error: "unavailable" }, retryStatus);
     }
     return new Response("not found", { status: 404 });
   });
@@ -487,6 +493,7 @@ beforeEach(() => {
   navigations = [];
   loads = [];
   retryStatus = 202;
+  modelHeld = null;
   models = new Map<string, ModelView | number>([[MODEL_ID, threePlates()]]);
   mintAnswer = () => json({ error: "not_found" }, 404);
   loadThree.mockClear();
@@ -567,6 +574,16 @@ describe("the model page layout (AC-072)", () => {
     models.set(MODEL_ID, threePlates());
     await click(button(/try again/i));
     expect(text(container.querySelector("h1"))).toBe("Cube set");
+  });
+
+  test("a first load answered 401 says the user is signed out, with no Try again", async () => {
+    // The session ended while the app was open, then a library card was clicked.
+    models.set(MODEL_ID, 401);
+    await render(pageAt(MODEL_ID));
+    expect(text(container.querySelector('[role="alert"]'))).toBe(
+      "You are signed out. Reload the page to sign in again.",
+    );
+    expect(() => button(/try again/i)).toThrow();
   });
 });
 
@@ -1229,6 +1246,7 @@ describe("failed plate shows the plain reason and a retry button", () => {
   const WORDS = "The plate is too big for this printer's bed.";
   const DETAIL = "Orca says: the object exceeds the plate boundary.";
 
+  /** The model with plate 2 failed. */
   function failedModel(): ModelView {
     return model([
       threeMf([
@@ -1244,6 +1262,13 @@ describe("failed plate shows the plain reason and a retry button", () => {
         plate(3, "Lid", { file: fileNumbers(3) }),
       ]),
     ]);
+  }
+
+  /** The page's one status region, where a refused Retry is said. */
+  function pageStatus(): Element {
+    const regions = container.querySelectorAll('[role="status"]');
+    expect(regions).toHaveLength(1);
+    return regions[0] as Element;
   }
 
   test("the reason in plain words, Orca's detail behind a Details toggle, and siblings keep their numbers", async () => {
@@ -1285,15 +1310,291 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(text(plateItems()[1])).toMatch(/estimating/i);
   });
 
-  test("a retry the server refuses says so beside the plate, with no browser dialog", async () => {
+  test("a retry refused as not retryable says so, naming the plate, and reloads the model, and the words outlive the failure", async () => {
+    // 409 not_retryable is final; the usual cause is that the estimate is no
+    // longer failed (retried in another tab), so the reloaded model shows the
+    // plate estimating and its failure, with its Retry, is gone.
     const alertSpy = vi.fn();
     vi.stubGlobal("alert", alertSpy);
     retryStatus = 409;
     models.set(MODEL_ID, failedModel());
     await render(pageAt(MODEL_ID));
-    await click(button(/retry/i, plateItems()[1] as HTMLElement));
-    expect(text(plateItems()[1]?.querySelector('[role="alert"]'))).toMatch(/could not be retried/i);
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(1, "Base", { file: fileNumbers(1) }),
+          plate(2, "Huge", { platehouse: estimate("estimating") }),
+          plate(3, "Lid", { file: fileNumbers(3) }),
+        ]),
+      ]),
+    );
+    await click(retry);
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}`,
+      `POST /app/api/estimates/${EST_FAILED}/retry`,
+      `GET /app/api/models/${MODEL_ID}`,
+    ]);
+    const huge = plateItems()[1] as HTMLElement;
+    expect(text(huge)).toMatch(/estimating/i);
+    expect(() => button(/retry/i, huge)).toThrow();
+    expect(text(pageStatus())).toBe(
+      "Cube set.3mf, plate 2 (Huge) can no longer be retried. It is already being estimated again, or its printer or file has changed.",
+    );
+    expect(text(huge)).not.toMatch(/try again/i);
     expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  const NOT_RETRYABLE =
+    "Cube set.3mf, plate 2 (Huge) can no longer be retried. It is already being estimated again, or its printer or file has changed.";
+
+  // The refusal's line is a one-shot notice (ModelPage.tsx): it is shown by
+  // the answer the 409 asks for, whatever that answer holds, and ended by
+  // the next one, whatever that holds. The answers below are what the
+  // server gives in each case. It is the page's, not the plate's, so it
+  // names the plate and stays when that answer no longer has the plate.
+
+  /** Plate 2 estimating: retried elsewhere, so the poll keeps asking. */
+  function estimatingModel(): ModelView {
+    return model([
+      threeMf([
+        plate(1, "Base", { file: fileNumbers(1) }),
+        plate(2, "Huge", { platehouse: estimate("estimating") }),
+        plate(3, "Lid", { file: fileNumbers(3) }),
+      ]),
+    ]);
+  }
+  /** Plate 2's estimate finished: new numbers, no failure. */
+  function finishedModel(): ModelView {
+    return model([
+      threeMf([
+        plate(1, "Base", { file: fileNumbers(1) }),
+        plate(2, "Huge", { platehouse: estimate("current") }),
+        plate(3, "Lid", { file: fileNumbers(3) }),
+      ]),
+    ]);
+  }
+  test.each([
+    ["the plate estimating", estimatingModel],
+    ["the same failure", failedModel],
+  ])("the answer the refusal asks for shows the line, whatever it holds: %s", async (_, next) => {
+    retryStatus = 409;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, next());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}`,
+      `POST /app/api/estimates/${EST_FAILED}/retry`,
+      `GET /app/api/models/${MODEL_ID}`,
+    ]);
+    expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+  });
+
+  test.each([
+    ["the plate still estimating", estimatingModel],
+    ["the plate finished, with new numbers", finishedModel],
+    ["the estimate failed again", failedModel],
+  ])("the next answer ends the line, whatever it holds: %s", async (_, next) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    retryStatus = 409;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingModel());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+
+    models.set(MODEL_ID, next());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(requests.filter((r) => r === `GET /app/api/models/${MODEL_ID}`)).toHaveLength(3);
+    expect(text(pageStatus())).toBe("");
+  });
+
+  test("a screen reader hears the whole sentence: the polite status region is there, empty, before it", async () => {
+    retryStatus = 409;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const region = pageStatus();
+    expect(text(region)).toBe("");
+    expect(region.getAttribute("aria-live")).not.toBe("off");
+    models.set(MODEL_ID, estimatingModel());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    // The same region, never replaced, now holds the sentence whole.
+    expect(pageStatus()).toBe(region);
+    expect(region.isConnected).toBe(true);
+    expect(text(region)).toBe(NOT_RETRYABLE);
+  });
+
+  test("the not-retryable line goes when another printer is chosen", async () => {
+    // The line was about the first printer's estimate; it says nothing
+    // about another printer's numbers.
+    const failedFor = (shown: string): ModelView =>
+      model(
+        [
+          threeMf([
+            plate(1, "Base", { file: fileNumbers(1) }),
+            plate(
+              2,
+              "Huge",
+              shown === P1S
+                ? {
+                    failure: {
+                      estimateId: EST_FAILED,
+                      reason: "bed_too_small",
+                      words: WORDS,
+                      detail: DETAIL,
+                    },
+                  }
+                : { file: fileNumbers(2) },
+            ),
+            plate(3, "Lid", { file: fileNumbers(3) }),
+          ]),
+        ],
+        {
+          printer: shown,
+          printerName: shown === X1C ? X1C_NAME : P1S_NAME,
+          printers: [
+            { id: P1S, name: P1S_NAME },
+            { id: X1C, name: X1C_NAME },
+          ],
+        },
+      );
+    retryStatus = 409;
+    models.set(MODEL_ID, failedFor(P1S));
+    await render(pageAt(MODEL_ID));
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+
+    // The other printer's answer is held: the switch alone ends the line,
+    // before any answer lands.
+    let release: () => void = () => {};
+    modelHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    models.set(MODEL_ID, failedFor(X1C));
+    const select = panel().querySelector("select");
+    if (!(select instanceof HTMLSelectElement)) throw new Error("no printer switch");
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(select, X1C);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(requests).toContain(
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+    );
+    // Still the first printer's numbers on screen, and the line is gone.
+    expect(text(plateItems()[1])).toContain(WORDS);
+    expect(text(pageStatus())).toBe("");
+
+    modelHeld = null;
+    release();
+    await settle();
+    expect(text(plateItems()[1])).not.toContain(WORDS);
+    expect(text(pageStatus())).toBe("");
+  });
+
+  test("the answer the refusal asks for shows the line when it no longer lists the chosen printer", async () => {
+    // The chosen printer was taken out of My printers in another tab, so the
+    // retry is refused and the reload comes back for the default printer
+    // (the server's fallback). Nobody chose another printer: the line stays,
+    // through the page forgetting the choice and asking again without it.
+    const failedOnX1C = model(
+      [
+        threeMf([
+          plate(1, "Base", { file: fileNumbers(1) }),
+          plate(2, "Huge", {
+            failure: {
+              estimateId: EST_FAILED,
+              reason: "bed_too_small",
+              words: WORDS,
+              detail: DETAIL,
+            },
+          }),
+          plate(3, "Lid", { file: fileNumbers(3) }),
+        ]),
+      ],
+      {
+        printer: X1C,
+        printerName: X1C_NAME,
+        printers: [
+          { id: P1S, name: P1S_NAME },
+          { id: X1C, name: X1C_NAME },
+        ],
+      },
+    );
+    localStorage.setItem(PRINTER_CHOICE_KEY, X1C);
+    retryStatus = 409;
+    models.set(MODEL_ID, failedOnX1C);
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, finishedModel());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+      `POST /app/api/estimates/${EST_FAILED}/retry`,
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+      `GET /app/api/models/${MODEL_ID}`,
+    ]);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
+    expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+  });
+
+  test.each([
+    [
+      "the plate is gone from its file",
+      () =>
+        model([
+          threeMf([
+            plate(1, "Base", { file: fileNumbers(1) }),
+            plate(3, "Lid", { file: fileNumbers(3) }),
+          ]),
+        ]),
+    ],
+    ["the file is gone, and with it the Plates tab", () => model([])],
+  ])(
+    "the answer the refusal asks for shows the line when it no longer has the plate: %s",
+    async (_, next) => {
+      retryStatus = 409;
+      models.set(MODEL_ID, failedModel());
+      await render(pageAt(MODEL_ID));
+      models.set(MODEL_ID, next());
+      await click(button(/retry/i, plateItems()[1] as HTMLElement));
+      expect(requests).toEqual([
+        `GET /app/api/models/${MODEL_ID}`,
+        `POST /app/api/estimates/${EST_FAILED}/retry`,
+        `GET /app/api/models/${MODEL_ID}`,
+      ]);
+      // No plate on the page is plate 2 any more; the page still says it.
+      const titles = [...container.querySelectorAll(".ph-plate-title")].map((h) => text(h));
+      expect(titles).not.toContain("Huge");
+      expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+    },
+  );
+
+  test("a retry answered 401 says the user is signed out, beside the plate", async () => {
+    retryStatus = 401;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(plateItems()[1]?.querySelector('[role="alert"]'))).toBe(
+      "You are signed out. Reload the page to sign in again.",
+    );
+    expect(requests.filter((r) => r.startsWith("GET "))).toHaveLength(1);
+  });
+
+  test("a retry that fails for another reason says what the server's answer means", async () => {
+    retryStatus = 503;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(plateItems()[1]?.querySelector('[role="alert"]'))).toBe(
+      "This is unavailable right now. Try again in a moment.",
+    );
+    expect(requests.filter((r) => r.startsWith("GET "))).toHaveLength(1);
   });
 });
 

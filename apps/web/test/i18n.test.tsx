@@ -628,7 +628,7 @@ describe("an English page and a server sentence the page knows by code", () => {
         printerName="Bambu Lab P1S, 0.4 mm nozzle"
         projectFilaments={[]}
         pending={false}
-        onRetry={async () => true}
+        onRetry={async () => {}}
       />
     );
   }
