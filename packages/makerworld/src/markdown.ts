@@ -90,7 +90,19 @@ const TEXT_LINE = "\0";
 // the escaping step leaves it alone and markdown-it decodes it. Stripped from
 // text before use, like TEXT_LINE.
 const PASS_AMP = "\u0001";
-const stripSentinels = (s: string): string => s.replaceAll(TEXT_LINE, "").replaceAll(PASS_AMP, "");
+// Placeholders for the converter's own emphasis marks and around each link
+// address, while it writes. resolveEmphasis turns each emphasis's pair into
+// ** or *, or drops it, and takes the address placeholders out. They are
+// private-use characters, stripped from text like the sentinels above.
+const STRONG_OPEN = String.fromCharCode(0xe000);
+const STRONG_CLOSE = String.fromCharCode(0xe001);
+const EM_OPEN = String.fromCharCode(0xe002);
+const EM_CLOSE = String.fromCharCode(0xe003);
+const HREF_OPEN = String.fromCharCode(0xe004);
+const HREF_CLOSE = String.fromCharCode(0xe005);
+const PLACEHOLDERS = new RegExp(`[${STRONG_OPEN}-${HREF_CLOSE}]`, "g");
+const stripSentinels = (s: string): string =>
+  s.replaceAll(TEXT_LINE, "").replaceAll(PASS_AMP, "").replace(PLACEHOLDERS, "");
 
 // Nesting caps. A crafted description could nest lists or emphasis thousands
 // deep; past these depths a list is written at its parent's indent and an
@@ -122,43 +134,6 @@ const ATTR =
 const ATTR_SKIP = /[\t\n\f\r /]/;
 const isSpace = (c: string): boolean => /\s/.test(c);
 
-// CommonMark's flanking rules, as markdown-it 15 applies them: whitespace is
-// its isWhiteSpace set and punctuation is Unicode P and S (isPunctChar). The
-// start or end of the text counts as whitespace. Both take one code point.
-const MD_SPACE = /^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]$/;
-const MD_PUNCT = /^[\p{P}\p{S}]$/u;
-/** Neither whitespace nor punctuation: a letter, digit or the like. */
-const isWordChar = (cp: string): boolean => cp !== "" && !MD_SPACE.test(cp) && !MD_PUNCT.test(cp);
-const isMdPunct = (cp: string): boolean => MD_PUNCT.test(cp);
-const firstCodePoint = (s: string): string => {
-  const cp = s.codePointAt(0);
-  return cp === undefined ? "" : String.fromCodePoint(cp);
-};
-const lastCodePoint = (s: string): string => Array.from(s.slice(-2)).at(-1) ?? "";
-// The first or last character of an emphasis's text as markdown-it's
-// scanDelims sees it. An inner emphasis at the text's edge leaves its marks
-// there, and markdown-it reads them and the outer marks as one run, checked
-// against the character beyond the whole run; so for one inner emphasis that
-// character is the one returned. An unescaped * is always a mark the
-// converter wrote, since text asterisks are escaped; escapes are blanked out
-// (same length) before the marks are found. Any other marks in the text (two
-// inner emphases, or one nested in the inner one) make markdown-it's pairing
-// of the runs uncertain, so the edge * itself is returned, which counts as
-// punctuation: the outer marks are then only kept where that is safe.
-const blankEscapes = (text: string): string => text.replace(/\\[\s\S]/g, "ee");
-const EDGE_START = /^(\*+)[^*]+(\*+)[^*]*$/;
-const EDGE_END = /^[^*]*(\*+)[^*]+(\*+)$/;
-const edgeRun = (text: string, edge: RegExp): number => {
-  const m = edge.exec(blankEscapes(text));
-  if (m === null) return 0;
-  const open = (m[1] as string).length;
-  return open === (m[2] as string).length ? open : 0;
-};
-const firstBeyondMarks = (text: string): string =>
-  firstCodePoint(text.slice(edgeRun(text, EDGE_START)));
-const lastBeyondMarks = (text: string): string =>
-  lastCodePoint(text.slice(0, text.length - edgeRun(text, EDGE_END)));
-
 interface Inline {
   readonly tag: string;
   start: number;
@@ -186,32 +161,11 @@ interface Inline {
 //   insert                 open starts after the insertion move with it
 //   replaceTrailingSpace   an open start in the replaced whitespace moves to
 //                          after the replacement
-//   guardClose             see below; its rewrite moves an open start right
-//                          after the guarded emphasis with the text
-//
-// guardClose: an emphasis whose text ends in punctuation is closed only if
-// what follows its closing marks is whitespace, punctuation or the end
-// (CommonMark's right-flanking rule), and what follows is not written yet.
-// So the converter writes the marks and guards them: if the next character
-// appended is a letter, digit or the like, the emphasis is first rewritten
-// as its plain text, marks dropped (0.1.0 release review). Any cut before
-// the guarded end drops the guard: the text it covers is being rewritten,
-// and whoever rewrites it decides again.
-interface CloseGuard {
-  /** Where the guarded emphasis starts. */
-  readonly from: number;
-  /** Where it ends: the guard fires on an append here. */
-  readonly at: number;
-  /** [from, at) without the emphasis marks. */
-  readonly plain: string;
-}
-
 class Output {
   private parts: string[] = [];
   private size = 0;
   private lastText = -1;
   private readonly inline: Inline[] = []; // open emphasis and links, oldest first
-  private guard: CloseGuard | null = null;
 
   get length(): number {
     return this.size;
@@ -219,38 +173,6 @@ class Output {
 
   append(s: string): void {
     if (!s) return;
-    const g = this.guard;
-    if (g !== null) {
-      this.guard = null;
-      if (g.at === this.size && isWordChar(firstCodePoint(s))) this.rewriteTail(g.from, g.plain);
-    }
-    this.push(s);
-  }
-
-  // Guards the emphasis just written at [from, end); plain is its text
-  // without marks.
-  guardClose(from: number, plain: string): void {
-    this.guard = { from, at: this.size, plain };
-  }
-
-  // The guard on an emphasis ending at the end of the output, if any: an
-  // emphasis closing around it takes it over.
-  guardAtEnd(): CloseGuard | null {
-    return this.guard?.at === this.size ? this.guard : null;
-  }
-
-  // Replaces [from, end) with s. An open start at the end (an element opened
-  // right after the guarded emphasis) moves with it; none can lie inside.
-  private rewriteTail(from: number, s: string): void {
-    const end = this.size;
-    const delta = s.length - (end - from);
-    const after = this.inline.filter((e) => e.start >= end);
-    this.cut(from);
-    this.push(s);
-    for (const e of after) e.start += delta;
-  }
-
-  private push(s: string): void {
     this.parts.push(s);
     const last = lastNonSpace(s);
     if (last >= 0) this.lastText = this.size + last;
@@ -368,7 +290,6 @@ class Output {
   private cut(to: number): void {
     if (to >= this.size) return;
     const target = Math.max(0, to);
-    if (this.guard !== null && target < this.guard.at) this.guard = null;
     while (this.parts.length > 0 && this.size > target) {
       const last = this.parts.pop() as string;
       this.size -= last.length;
@@ -914,11 +835,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         // Closing drops every element opened inside this one and still open.
         const open = out.closeInline(tag);
         if (!open) return;
-        // An emphasis inside this one that closed at the same place, still
-        // guarded: if this one is rewritten, its guard moves to this one.
-        const inner = out.guardAtEnd();
         const seg = out.from(open.start);
-        let guardPlain: string | null = null;
         const core = seg.trim();
         const lead = seg.slice(0, seg.length - seg.trimStart().length);
         const trail = seg.slice(seg.trimEnd().length);
@@ -938,37 +855,24 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           // A link with no text (an image wrapped in a link, once the image is
           // dropped) produces nothing, not its address: a description that is
           // only a linked image must stay empty.
-          if (href && core) wrapped = `${lead}[${core}](${href})${trail}`;
+          // The address sits between placeholders, so resolveEmphasis knows
+          // an asterisk there is not a mark.
+          if (href && core) wrapped = `${lead}[${core}](${HREF_OPEN}${href}${HREF_CLOSE})${trail}`;
         } else if (core) {
-          // CommonMark's flanking rules (Output's guardClose): the opening
-          // marks before punctuation open only after whitespace, punctuation
-          // or the line start, else they would show as text, so they are
-          // dropped and the text kept. The closing marks after punctuation
-          // depend on what is written next, so they are guarded. The sentinels
-          // are not text, and TEXT_LINE only ever follows a newline. An inner
-          // emphasis's marks at the edge of the text join these marks in one
-          // run, so the character tested is the one beyond them.
-          const text = stripSentinels(core);
-          const before =
-            lead !== "" || open.start === 0
-              ? " "
-              : stripSentinels(out.charAt(open.start - 2) + out.charAt(open.start - 1));
-          const opens = !isMdPunct(firstBeyondMarks(text)) || !isWordChar(lastCodePoint(before));
-          if (opens) {
-            const mark = EMPHASIS.get(tag) as string;
-            wrapped = lead + mark + core + mark + trail;
-            if (trail === "" && isMdPunct(lastBeyondMarks(text))) {
-              guardPlain =
-                inner !== null && inner.from >= open.start
-                  ? seg.slice(0, inner.from - open.start) + inner.plain
-                  : seg;
-            }
-          }
+          // Placeholders, not marks: whether markdown-it reads them as
+          // emphasis depends on what is around them, much of it not written
+          // yet, so resolveEmphasis decides once the whole text is.
+          const strong = EMPHASIS.get(tag) === "**";
+          wrapped =
+            lead +
+            (strong ? STRONG_OPEN : EM_OPEN) +
+            core +
+            (strong ? STRONG_CLOSE : EM_CLOSE) +
+            trail;
         }
         if (wrapped !== seg) {
           out.truncate(open.start);
           out.append(wrapped);
-          if (guardPlain !== null) out.guardClose(open.start, guardPlain);
         }
       }
     } else if (tag === "table") {
@@ -1157,13 +1061,179 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     }
   }
 
-  return out
-    .toString()
+  return resolveEmphasis(out.toString());
+}
+
+// The converter's line-level finish: block syntax at a text line's start
+// escaped, line ends trimmed, runs of blank lines collapsed. Placeholders
+// pass through it as the marks would: none is whitespace, and none can make
+// a line start look like block syntax.
+function finishLines(raw: string): string {
+  return raw
     .split("\n")
     .map((line) => trimLineEnd(escapeTextLineStart(line)).replace(/^ (?=\S)/, ""))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// Each round of resolveEmphasis parses the whole text once; real
+// descriptions settle in one or two. The first INNERMOST_ROUNDS drop only the
+// innermost failing emphases, later rounds every failing one, and after
+// MAX_EMPHASIS_ROUNDS every emphasis left is dropped unasked, so a crafted
+// description (nesting that unpairs one level a round, or runs that pair
+// across emphases and re-pair after each drop) costs at most that many
+// parses.
+const INNERMOST_ROUNDS = 3;
+const MAX_EMPHASIS_ROUNDS = 6;
+
+// Which emphasis marks markdown-it reads as emphasis is markdown-it's to
+// decide: its delimiter scanner applies CommonMark's flanking rules, the rule
+// of 3 and its pairing, and a copy of those here drifts from it (the 0.1.0
+// release review found three rounds of cases a hand-written copy got wrong).
+// So the converter writes every bold and italic with placeholders, and this
+// asks markdown-it, set up exactly as renderMarkdown is, which marks it
+// paired (pairedMarks). An emphasis with any mark left unpaired would show
+// asterisks, so its marks are dropped and its text kept. Only the innermost
+// such emphases are dropped in a round, because an inner one's marks are
+// often what keeps the outer one from pairing (<b>Size<b>x</b></b>); then
+// the text is asked again, until every mark left is paired. Two emphases of
+// the same kind back to back are written as one (<b>a</b><b>b</b> as
+// **ab**), since **a****b** pairs neither. After the rounds above, or if the
+// marks markdown-it saw do not line up with the ones written, every emphasis
+// is dropped, so no asterisks ever show.
+function resolveEmphasis(raw: string): string {
+  // Pair the placeholders. Each emphasis's open and close are written around
+  // its whole text, so they nest; one with no partner (its other half was cut
+  // away) is dropped. parent is the emphasis an emphasis sits inside, or -1.
+  const at: number[] = []; // where each emphasis placeholder is in raw
+  const owner: number[] = []; // the emphasis it belongs to, or -1
+  const strong: boolean[] = []; // per emphasis
+  const parentOpen: number[] = []; // per emphasis: its parent's open placeholder, or -1
+  const stack: Array<{ index: number; kind: string }> = [];
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i] as string;
+    if (c === STRONG_OPEN || c === EM_OPEN) {
+      stack.push({ index: at.length, kind: c });
+      at.push(i);
+      owner.push(-1);
+    } else if (c === STRONG_CLOSE || c === EM_CLOSE) {
+      at.push(i);
+      const top = stack.at(-1);
+      if (top !== undefined && top.kind === (c === STRONG_CLOSE ? STRONG_OPEN : EM_OPEN)) {
+        stack.pop();
+        owner[top.index] = strong.length;
+        owner.push(strong.length);
+        strong.push(c === STRONG_CLOSE);
+        parentOpen.push(stack.at(-1)?.index ?? -1);
+      } else owner.push(-1);
+    }
+  }
+  if (strong.length === 0) return finishLines(raw).replace(PLACEHOLDERS, "");
+  const parent = parentOpen.map((p) => (p === -1 ? -1 : (owner[p] as number)));
+  const dropped = new Array<boolean>(strong.length).fill(false);
+  const kept = (p: number) => owner[p] !== -1 && !dropped[owner[p] as number];
+
+  // The text with the kept emphases' placeholders, through finishLines, then
+  // with marks for them and no address placeholders. markOwner[k] is the
+  // emphasis that wrote the k-th unescaped * outside a link address.
+  const build = (): { markdown: string; markOwner: number[] } => {
+    const parts: string[] = [];
+    const keptOwners: number[] = [];
+    let from = 0;
+    for (let p = 0; p < at.length; p++) {
+      const i = at[p] as number;
+      parts.push(raw.slice(from, i));
+      from = i + 1;
+      if (!kept(p)) continue;
+      const c = raw[i] as string;
+      const next = p + 1 < at.length && at[p + 1] === i + 1 && kept(p + 1) ? raw[i + 1] : "";
+      if ((c === STRONG_CLOSE && next === STRONG_OPEN) || (c === EM_CLOSE && next === EM_OPEN)) {
+        // A close straight before an open of its kind: neither is written.
+        p++;
+        from = i + 2;
+        continue;
+      }
+      parts.push(c);
+      keptOwners.push(owner[p] as number);
+    }
+    parts.push(raw.slice(from));
+    const finished = finishLines(parts.join(""));
+    const markOwner: number[] = [];
+    let k = 0;
+    const markdown = finished.replace(PLACEHOLDERS, (c) => {
+      if (c === HREF_OPEN || c === HREF_CLOSE) return "";
+      const who = keptOwners[k++] as number;
+      const mark = c === STRONG_OPEN || c === STRONG_CLOSE ? "**" : "*";
+      for (let n = 0; n < mark.length; n++) markOwner.push(who);
+      return mark;
+    });
+    return { markdown, markOwner };
+  };
+
+  for (let round = 0; ; round++) {
+    const { markdown, markOwner } = build();
+    if (markOwner.length === 0) return markdown;
+    const paired = round < MAX_EMPHASIS_ROUNDS ? pairedMarks(markdown) : [];
+    if (paired.length !== markOwner.length) {
+      dropped.fill(true);
+      continue;
+    }
+    const failing = new Set<number>();
+    for (let k = 0; k < paired.length; k++) if (!paired[k]) failing.add(markOwner[k] as number);
+    if (failing.size === 0) return markdown;
+    // In the first rounds only the innermost: a failing emphasis with a
+    // failing one inside it waits for the next round.
+    const waits = new Set<number>();
+    for (const e of round < INNERMOST_ROUNDS ? failing : []) {
+      for (let up = parent[e] as number; up !== -1; up = parent[up] as number) {
+        if (waits.has(up)) break;
+        waits.add(up);
+      }
+    }
+    for (const e of failing) if (!waits.has(e)) dropped[e] = true;
+  }
+}
+
+// The env key pairedMarks' rule writes its answer under.
+const PAIRED = Symbol("platehouse paired marks");
+let pairingParser: MarkdownIt | null = null;
+
+// For every * markdown-it's emphasis rule took as a delimiter, in document
+// order, whether it was paired into emphasis. It runs renderMarkdown's own
+// setup (createMarkdownIt) with one rule added after markdown-it's
+// balance_pairs, which reads the delimiter lists balance_pairs filled: an
+// opener's end names its closer, so both are paired. The rule changes
+// nothing; the parse is the one renderMarkdown would make.
+function pairedMarks(markdown: string): boolean[] {
+  if (pairingParser === null) {
+    const md = createMarkdownIt();
+    md.inline.ruler2.after("balance_pairs", "platehouse_paired_marks", (state) => {
+      const answer = state.env[PAIRED];
+      if (!Array.isArray(answer)) return;
+      const found: Array<{ token: number; paired: boolean }> = [];
+      const lists = [state.delimiters, ...state.tokens_meta.map((m) => m?.delimiters ?? [])];
+      for (const list of lists) {
+        const paired = new Set<number>();
+        for (const d of list) {
+          if (d.marker !== 0x2a || d.end === -1) continue;
+          paired.add(d.token);
+          const closer = list[d.end];
+          if (closer !== undefined) paired.add(closer.token);
+        }
+        for (const d of list) {
+          if (d.marker === 0x2a) found.push({ token: d.token, paired: paired.has(d.token) });
+        }
+      }
+      // A link's text has its own list; token order is document order.
+      found.sort((a, b) => a.token - b.token);
+      for (const f of found) answer.push(f.paired);
+    });
+    pairingParser = md;
+  }
+  const answer: boolean[] = [];
+  pairingParser.parse(markdown, { [PAIRED]: answer });
+  return answer;
 }
 
 // What tagEnd keeps between the tags of one input, so the pass stays linear.
