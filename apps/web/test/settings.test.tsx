@@ -1654,6 +1654,25 @@ describe("the organising pages", () => {
     expect(() => button("Remove tag PETG from Hook")).not.toThrow();
   });
 
+  test("text typed while an add runs is kept when the add answers", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const release = hold("PUT /app/api/models/m2/tags");
+    const input = labelled<HTMLInputElement>("Add a tag to Hook");
+    await type(input, "PETG");
+    await submit(input);
+    expect(callsTo("PUT", "/app/api/models/m2/tags?name=PETG")).toHaveLength(1);
+    // The next name, typed before the server answers the first.
+    await type(input, "Silk");
+    await release();
+    expect(() => button("Remove tag PETG from Hook")).not.toThrow();
+    expect(input.value).toBe("Silk");
+
+    // An add whose text is still in the box when it answers clears the box.
+    await submit(input);
+    expect(callsTo("PUT", "/app/api/models/m2/tags?name=Silk")).toHaveLength(1);
+    expect(input.value).toBe("");
+  });
+
   test('a tag or collection named "." or ".." can be added and removed', async () => {
     // The URL parser rewrites a path segment of "." or "..", %2E too, so
     // DELETE /models/m1/tags/.. would go out as DELETE /models/m1. The
