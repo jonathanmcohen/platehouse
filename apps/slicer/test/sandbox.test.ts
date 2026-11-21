@@ -17,9 +17,109 @@ import {
   prlimitArgs,
   readLandlockAbi,
   reapOrphans,
+  runGroup,
   runsUnderTini,
   scadArgs,
 } from "../src/sandbox.js";
+
+// runGroup settles on the program's exit, not only on its pipes closing. A
+// helper that calls setsid() leaves the group the kills reach and can keep
+// the stdout and stderr pipes it inherited open; Node's 'close' then never
+// fires, and a job waiting on it would hold the heavy-job lock (and keep
+// /v1/health at busy) until the container restarts. reapOrphans, which kills
+// such a helper, runs only after runGroup returns (release()).
+describe("runGroup and a detached helper that keeps the pipes", () => {
+  // A node program that starts a detached (setsid) helper sharing its stdout
+  // and stderr, prints the helper's pid, and exits. `then` is what the
+  // program does after starting the helper.
+  const holderScript = (then: string) =>
+    [
+      'const { spawn } = require("node:child_process");',
+      'const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });',
+      "g.unref();",
+      'process.stdout.write("holder " + g.pid + "\\n");',
+      then,
+    ].join("\n");
+  const holderPid = (out: string) => Number(out.match(/holder (\d+)/)?.[1]);
+  const killHolder = (pid: number) => {
+    try {
+      if (pid > 0) process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
+  // Fails the test with a clear message instead of hanging until vitest's
+  // own timeout.
+  const within = <T>(p: Promise<T>, ms: number) =>
+    Promise.race([
+      p,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`runGroup did not settle within ${ms} ms`)), ms),
+      ),
+    ]);
+
+  test("settles shortly after the program exits, though the helper still holds the pipes", async () => {
+    let pid = 0;
+    try {
+      const r = await within(
+        runGroup(process.execPath, ["-e", holderScript("")], {
+          cwd: tmpdir(),
+          env: process.env,
+          timeoutMs: 60_000,
+          pipeGraceMs: 200,
+        }),
+        5_000,
+      );
+      pid = holderPid(r.stdoutTail);
+      expect(pid).toBeGreaterThan(0);
+      expect(r.code).toBe(0);
+      expect(r.timedOut).toBe(false);
+      expect(r.wallMs).toBeLessThan(5_000);
+    } finally {
+      killHolder(pid);
+    }
+  }, 10_000);
+
+  test("at the time cap the result still comes back, with timedOut set", async () => {
+    let pid = 0;
+    try {
+      const r = await within(
+        runGroup(process.execPath, ["-e", holderScript("setTimeout(() => {}, 120000);")], {
+          cwd: tmpdir(),
+          env: process.env,
+          timeoutMs: 300,
+          pipeGraceMs: 200,
+        }),
+        5_000,
+      );
+      pid = holderPid(r.stdoutTail);
+      expect(pid).toBeGreaterThan(0);
+      expect(r.timedOut).toBe(true);
+      expect(r.signal).toBe("SIGKILL");
+    } finally {
+      killHolder(pid);
+    }
+  }, 10_000);
+
+  test("a program with no helper still returns its whole output and exit code", async () => {
+    const r = await runGroup(
+      process.execPath,
+      ["-e", 'process.stdout.write("out"); process.stderr.write("err"); process.exitCode = 3;'],
+      {
+        cwd: tmpdir(),
+        env: process.env,
+        timeoutMs: 10_000,
+      },
+    );
+    expect(r).toMatchObject({
+      code: 3,
+      signal: null,
+      timedOut: false,
+      stdoutTail: "out",
+      stderrTail: "err",
+    });
+  });
+});
 
 // Issue #153 item 3: a program that calls setsid() leaves its job's process
 // group, so the kill at the time cap misses it, and it is re-parented to

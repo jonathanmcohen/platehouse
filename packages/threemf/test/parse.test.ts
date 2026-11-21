@@ -27,9 +27,11 @@ import {
   ReadUnavailable,
   readProject,
 } from "../src/index.js";
+import { MAX_ZIP_ENTRIES } from "../src/limits.js";
 import { readProjectFromReader } from "../src/parse.js";
 import {
   build3mf,
+  build3mfWithEntries,
   buildZip,
   MiB,
   MODEL_XML,
@@ -1127,6 +1129,19 @@ describe("a NUL in a text value is dropped", () => {
 });
 
 describe("ceilings are inclusive", () => {
+  // The hostile row one past it comes back null; this one, otherwise the
+  // same file, reads. Building and listing 100000 entries takes about 2 s
+  // alone, so it gets a longer timeout than the default 5 s for a full,
+  // parallel run.
+  it("reads a file of exactly 100000 entries (MAX_ZIP_ENTRIES)", { timeout: 60_000 }, async () => {
+    expect(MAX_ZIP_ENTRIES).toBe(100000);
+    const file = build3mfWithEntries(
+      { plates: [{ index: 1 }], pngs: { 1: png("one") } },
+      MAX_ZIP_ENTRIES,
+    );
+    expect((await mustRead(file)).plates.map((p) => p.index)).toEqual([1]);
+  });
+
   it("reads 128 plates from model_settings, pngs and slice_info", async () => {
     const plates = range(128).map((index) => ({ index }));
     expect((await mustRead(build3mf({ plates }))).plates).toHaveLength(128);

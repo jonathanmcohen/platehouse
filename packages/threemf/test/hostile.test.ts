@@ -18,8 +18,10 @@
 // integer columns) failed the save instead of reading as hostile input.
 import { describe, expect, it } from "vitest";
 import { LIMITS, type Project, readProject } from "../src/index.js";
+import { MAX_ZIP_ENTRIES } from "../src/limits.js";
 import {
   build3mf,
+  build3mfWithEntries,
   buildZip,
   MiB,
   MODEL_XML,
@@ -67,13 +69,23 @@ const INT32_MAX = 2147483647;
 /** A healthy plate 1, sliced on a P1S. */
 const sliced1 = { index: 1, prediction: 60, weight: 1, printerModelId: "C12", nozzle: "0.4" };
 
+/**
+ * Every ceiling that refuses a file: the LIMITS keys, and MAX_ZIP_ENTRIES,
+ * which lives beside LIMITS rather than in it. The completeness check below
+ * reads this list, so a standalone ceiling is covered too.
+ */
+const CEILINGS = [...Object.keys(LIMITS), "MAX_ZIP_ENTRIES"] as const;
+type Ceiling = keyof typeof LIMITS | "MAX_ZIP_ENTRIES";
+
 interface Row {
   name: string;
   issue: "#5" | "#6" | "#7" | "#11" | "#12" | "platehouse #78";
-  /** The LIMITS ceiling this row's file breaks, for a ceiling row. */
-  breaks?: keyof typeof LIMITS;
+  /** The ceiling this row's file breaks, for a ceiling row: a LIMITS key or a standalone one. */
+  breaks?: Ceiling;
   file: () => Buffer;
   expect: "null" | "unsliced" | "no thumbnail" | "clean";
+  /** A file that takes seconds to build and list; see SLOW_ROW_MS. */
+  slow?: boolean;
 }
 
 const rows: Row[] = [
@@ -98,6 +110,17 @@ const rows: Row[] = [
     name: "a Zip64 end-record offset past the end of the file",
     issue: "#5",
     file: () => build3mf(onePlate, { zip64EndAt: 0xffffffn }),
+    expect: "null",
+  },
+  {
+    // A central directory listing more entries than any Bambu project has.
+    // Every entry is otherwise sound and the project in it reads, so only
+    // the entry ceiling refuses it (parse.test.ts reads one at the ceiling).
+    name: "one entry past the 100000-entry ceiling",
+    issue: "#5",
+    breaks: "MAX_ZIP_ENTRIES",
+    slow: true,
+    file: () => build3mfWithEntries({ ...onePlate, pngs: { 1: png("one") } }, MAX_ZIP_ENTRIES + 1),
     expect: "null",
   },
   {
@@ -461,46 +484,56 @@ function allStrings(v: unknown): string[] {
   return [];
 }
 
+// A row whose file is large to build and list (the 100001-entry archive takes
+// about 2 s alone) gets a longer timeout, so it does not time out when the
+// whole suite runs in parallel; every other row keeps the default, so a row
+// that ties up the reader still fails there.
+const SLOW_ROW_MS = 60_000;
+
+async function checkRow(row: Row): Promise<void> {
+  const file = writeTmp(row.file());
+  const handed: number[] = [];
+  let result: Project | null | undefined;
+  await expect(
+    (async () => {
+      result = await readProject(file, { onThumbnail: async (i) => void handed.push(i) });
+    })(),
+  ).resolves.toBeUndefined();
+  if (row.expect === "null") {
+    expect(result).toBeNull();
+    expect(handed).toEqual([]);
+  } else if (row.expect === "clean") {
+    expect(result).not.toBeNull();
+    expect(result?.plates.length).toBeGreaterThan(0);
+    expect(allStrings(result).filter((s) => s.includes("\u0000"))).toEqual([]);
+  } else if (row.expect === "no thumbnail") {
+    expect(result?.plates.map((p) => p.index)).toEqual([1]);
+    expect(handed).toEqual([]);
+  } else {
+    expect(result).not.toBeNull();
+    expect(result?.plates[0]?.sliced).toBe(false);
+    expect(result?.plates[0]?.predictionSeconds).toBeUndefined();
+    expect(result?.slicedFor).toBeUndefined();
+  }
+}
+
 describe("hostile files (AC-023)", () => {
-  it.each(rows)("$name ($issue)", async (row) => {
-    const file = writeTmp(row.file());
-    const handed: number[] = [];
-    let result: Project | null | undefined;
-    await expect(
-      (async () => {
-        result = await readProject(file, { onThumbnail: async (i) => void handed.push(i) });
-      })(),
-    ).resolves.toBeUndefined();
-    if (row.expect === "null") {
-      expect(result).toBeNull();
-      expect(handed).toEqual([]);
-    } else if (row.expect === "clean") {
-      expect(result).not.toBeNull();
-      expect(result?.plates.length).toBeGreaterThan(0);
-      expect(allStrings(result).filter((s) => s.includes("\u0000"))).toEqual([]);
-    } else if (row.expect === "no thumbnail") {
-      expect(result?.plates.map((p) => p.index)).toEqual([1]);
-      expect(handed).toEqual([]);
-    } else {
-      expect(result).not.toBeNull();
-      expect(result?.plates[0]?.sliced).toBe(false);
-      expect(result?.plates[0]?.predictionSeconds).toBeUndefined();
-      expect(result?.slicedFor).toBeUndefined();
-    }
-  });
+  it.each(rows.filter((r) => !r.slow))("$name ($issue)", checkRow);
+  it.each(rows.filter((r) => r.slow))("$name ($issue)", checkRow, SLOW_ROW_MS);
 
   it("the healthy control file for the rows above reads", async () => {
     const project = await readProject(writeTmp(good()));
     expect(project?.plates).toHaveLength(1);
   });
 
-  // Each ceiling row names the LIMITS key it breaks, and the set of those
-  // keys must equal the keys of LIMITS: a ceiling added, renamed or dropped
+  // Each ceiling row names the ceiling it breaks, and the set of those names
+  // must equal CEILINGS, the keys of LIMITS plus the standalone
+  // MAX_ZIP_ENTRIES: a LIMITS ceiling added, renamed or dropped
   // without a hostile row that names it fails here (#19). The row's own case
   // above is what shows its file is refused, and the inclusive-ceiling tests
   // in parse.test.ts show a file at each ceiling still reads.
-  it("every LIMITS ceiling has a hostile row", () => {
+  it("every ceiling, LIMITS and MAX_ZIP_ENTRIES, has a hostile row", () => {
     const broken = new Set(rows.flatMap((r) => (r.breaks === undefined ? [] : [r.breaks])));
-    expect([...broken].sort()).toEqual(Object.keys(LIMITS).sort());
+    expect([...broken].sort()).toEqual([...CEILINGS].sort());
   });
 });
