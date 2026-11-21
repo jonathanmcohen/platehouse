@@ -1196,14 +1196,8 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
                 description:
                   "The body is not valid JSON, has a field this API does not know, or a field " +
                   "outside its limits",
-                examples: [
-                  {
-                    error: "bad_request",
-                    message:
-                      "body must be equal to one of the allowed values, body property name " +
-                      "must be valid",
-                  },
-                ],
+                // The message unknownFieldMessage writes; v1-answers.test.ts pins it.
+                examples: [{ error: "bad_request", message: "body has an unknown field: colour" }],
               },
               409: {
                 description:

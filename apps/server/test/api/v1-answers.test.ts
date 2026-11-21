@@ -409,6 +409,22 @@ describe("POST /api/v1/models", () => {
     `);
   });
 
+  // Issue #340: the OpenAPI document (and the Settings API page's copy of
+  // it) shows this answer as its 400 example, so it must be the answer sent.
+  test("the documented 400 example is the answer an unknown key gets", async () => {
+    const doc = JSON.parse((await answer("GET", "/api/v1/openapi.json")).body) as {
+      paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
+    };
+    const documented = doc.paths["/models"]?.post?.responses["400"] as {
+      content: { "application/json": { example: unknown } };
+    };
+    const sent = await answer("POST", "/api/v1/models", {
+      headers: JSON_HEADERS,
+      payload: JSON.stringify({ name: "Cable clip", colour: "red" }),
+    });
+    expect(documented.content["application/json"].example).toEqual(JSON.parse(sent.body));
+  });
+
   test("an unknown key too long to show is named by its start", async () => {
     const res = await answer("POST", "/api/v1/models", {
       headers: JSON_HEADERS,

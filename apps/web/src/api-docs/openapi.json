@@ -823,7 +823,7 @@
                 },
                 "example": {
                   "error": "bad_request",
-                  "message": "body must be equal to one of the allowed values, body property name must be valid"
+                  "message": "body has an unknown field: colour"
                 }
               }
             }
