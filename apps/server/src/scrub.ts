@@ -57,6 +57,11 @@ function isBreak(c: string | undefined): boolean {
   return c === "-" || c === "_";
 }
 
+/** Characters an address may come straight after without a start of its own: [ ] and a full stop. */
+function isOpener(c: string | undefined): boolean {
+  return c === "[" || c === "]" || c === ".";
+}
+
 /** Characters a candidate may end with that are punctuation, not address. */
 function isTrailing(c: string | undefined): boolean {
   return c === "." || c === "]" || c === ":";
@@ -92,17 +97,16 @@ function isPlainAddress(text: string): boolean {
   return /\d/.test(zone === -1 ? text : text.slice(0, zone));
 }
 
-/** An address, an IPv6 address in brackets, or either with a :port. */
+/**
+ * An address, an IPv4 or IPv6 address in brackets ([192.0.2.7]:8080,
+ * [2001:db8::1]), or either with a :port.
+ */
 function isAddress(text: string): boolean {
   if (text.startsWith("[")) {
     const close = text.indexOf("]");
     if (close === -1) return false;
     const rest = text.slice(close + 1);
-    return (
-      (rest === "" || /^:\d{1,5}$/.test(rest)) &&
-      isIP(text.slice(1, close)) === 6 &&
-      isPlainAddress(text.slice(1, close))
-    );
+    return (rest === "" || /^:\d{1,5}$/.test(rest)) && isPlainAddress(text.slice(1, close));
   }
   if (isPlainAddress(text)) return true;
   const colon = text.lastIndexOf(":");
@@ -151,9 +155,11 @@ function addressEnd(run: string, start: number, stop: number): number {
 
 /**
  * The run with each address in it replaced by [address]. A start is the
- * run's beginning, a bracket, or the character after a colon, hyphen or
- * underscore, so an address written straight after a label (eth0:fe80::1,
- * node-1:2001:db8::1) is found whatever the label holds. Starts are tried
+ * run's beginning, a bracket, or the character after a colon, hyphen,
+ * underscore, bracket or full stop, so an address written straight after a
+ * label (eth0:fe80::1, node-1:2001:db8::1, [WARN]10.0.0.5, failed.10.0.0.5)
+ * is found whatever the label holds, as the word-boundary IPv4 pattern this
+ * scan replaced found it. Starts are tried
  * left to right and the first one that begins an address wins, which is the
  * longest address there: when the text before an address could itself be
  * part of one (the "1:" in node-1:2001:db8::1), it goes too, so more is taken
@@ -172,7 +178,7 @@ function scrubRun(run: string): string {
   let i = 0;
   while (i < n) {
     const prev = run[i - 1];
-    const isStart = i === 0 || prev === ":" || isBreak(prev) || run[i] === "[";
+    const isStart = i === 0 || prev === ":" || isBreak(prev) || isOpener(prev) || run[i] === "[";
     if (isStart && !isBreak(run[i])) {
       const end = addressEnd(run, i, stopAt[i] as number);
       if (end !== -1) {
