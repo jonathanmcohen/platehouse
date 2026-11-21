@@ -76,8 +76,9 @@ async function exists(key: string): Promise<boolean> {
 }
 
 // Runs first, while the migrated database still holds no blob rows: the state
-// an empty Postgres volume, a wrong DATABASE_URL or a second instance on the
-// same bucket would leave.
+// an empty Postgres volume, or a wrong DATABASE_URL pointing at an empty
+// database, would leave. (A database with stored rows of its own gets only
+// the size limit; see src/ingest/orphans.ts.)
 describe("the orphan sweep against an empty migrated database", () => {
   test("deletes nothing from a populated bucket, and warns why", async () => {
     const rows = await env.db.selectFrom("blobs").select("id").execute();

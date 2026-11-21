@@ -218,6 +218,17 @@ export interface RankedCard {
  */
 export const SEARCH_RANK_MAX = 1_000_000;
 
+/**
+ * How many leading characters of a name the name index holds (migration
+ * 0009: lower(left(name, 200)), left(name, 200)). Two whole names of up to
+ * 500 characters went over btree's row limit in CJK script or emoji; 200
+ * characters stay under it in any script. The name sort orders by that
+ * prefix first, then by the whole name. Written into the query as a literal,
+ * since Postgres matches an index expression only to the same expression.
+ */
+export const NAME_SORT_CHARS = 200;
+const NAME_PREFIX = sql.lit(NAME_SORT_CHARS);
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_RANKED_LIMIT = 1000;
@@ -465,7 +476,10 @@ export function modelsRepo(db: Kysely<DB>) {
       case "name-asc":
       case "name-desc": {
         const dir = sort === "name-asc" ? "asc" : "desc";
+        // The index's prefix first (NAME_SORT_CHARS), then the whole name.
         select = select
+          .orderBy(sql`lower(left(models.name, ${NAME_PREFIX}))`, dir)
+          .orderBy(sql`left(models.name, ${NAME_PREFIX})`, dir)
           .orderBy(sql`lower(models.name)`, dir)
           .orderBy("models.name", dir)
           .orderBy("models.id", dir);

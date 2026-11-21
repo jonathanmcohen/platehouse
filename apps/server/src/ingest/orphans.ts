@@ -21,16 +21,27 @@
 // daily on the maintenance queue (jobs/queues.ts).
 //
 // The bucket is the only copy of the bytes, and "no blob row" is the sweep's
-// only test, so a database that has lost its rows (an empty volume, a wrong
-// DATABASE_URL, a restore from an older dump, a second instance on the same
-// bucket) would make every object look like an orphan. So the sweep lists the
-// whole prefix first and deletes nothing, logging why, when either holds:
-// - the blobs table holds no stored rows;
+// only test, so a database that does not hold this bucket's rows makes its
+// objects look like orphans. So the sweep lists the whole prefix first and
+// deletes nothing, logging why, when either holds:
+// - the blobs table holds no stored rows (an empty volume, or a wrong
+//   DATABASE_URL pointing at an empty database);
 // - the run would delete more than its limit: ORPHAN_DELETE_FLOOR objects, or
 //   ORPHAN_DELETE_SHARE of the objects it listed in the blob layout when that
 //   is more, and never more than ORPHAN_DELETE_CAP.
 // Orphans are rare (a process that died mid-ingest), so a refused run is a
 // sign to look at the database before anything is deleted.
+//
+// The guard limits how much one run can delete when the database is wrong;
+// it does not prevent deletion. A database that has stored rows of its own
+// but is not this bucket's (a restore from an older dump, a wrong
+// DATABASE_URL pointing at another Platehouse database, a second instance on
+// the same bucket) passes the first test, and a mismatch within the limit is
+// deleted: the uploads made since an older dump, once 24 hours old, or every
+// object of a library of ORPHAN_DELETE_FLOOR objects or fewer. Nothing in the
+// key tells such an object from a real orphan, since a new model's objects
+// have no models row either until its ingest commits. Bucket versioning is
+// the protection here, and the settings page warns while it is off (AC-013).
 import type { Kysely } from "kysely";
 import type { DB } from "../db/types.js";
 import { isBlobKey } from "../storage/keys.js";

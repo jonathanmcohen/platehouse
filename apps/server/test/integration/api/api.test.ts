@@ -202,7 +202,8 @@ beforeAll(async () => {
         return env.store.headBlob(key);
       },
     },
-    plateNumbers: (id) => plateNumbers(env.db, CONTEXT, id),
+    displayContext: async () => CONTEXT,
+    plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
   });
   t = await authTestApp({
     api: { tokens, library },

@@ -1,10 +1,15 @@
 // The orphan sweep's guard (PR #49 review, round 1). The bucket is the only
-// copy of the bytes, so a sweep run against a database that has lost its rows
-// (an empty volume, a wrong DATABASE_URL, an older dump, a second instance on
-// the same bucket) must delete nothing. The sweep refuses to delete when the
-// blobs table holds no stored rows, or when a run would delete more than its
-// limit: 10 objects, or a tenth of the objects it listed in the blob layout
-// when that is more, and never more than 100.
+// copy of the bytes, so the sweep refuses to delete when the blobs table
+// holds no stored rows (an empty volume, or a wrong DATABASE_URL pointing at
+// an empty database), or when a run would delete more than its limit: 10
+// objects, or a tenth of the objects it listed in the blob layout when that
+// is more, and never more than 100.
+//
+// The guard limits a run; it does not prevent deletion. A database with
+// stored rows that is not this bucket's (an older dump, another Platehouse
+// database, a second instance on the same bucket) gets only the limit, so a
+// small mismatch is deleted. That known limit is pinned below, so a change
+// to it is a decision, not an accident; bucket versioning is the protection.
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { uuidv7 } from "../../src/db/ids.js";
@@ -46,6 +51,16 @@ describe("orphanRefusal", () => {
   test("allows a run whose orphans are within the limit while stored rows exist", () => {
     expect(orphanRefusal({ orphans: 10, inLayout: 40, hasStoredRows: true })).toBeUndefined();
     expect(orphanRefusal({ orphans: 25, inLayout: 250, hasStoredRows: true })).toBeUndefined();
+  });
+
+  // The known limit: with stored rows, only the size limit applies.
+  test("allows a small mismatch against a populated database that is not this bucket's", () => {
+    // A restore from yesterday's dump: today's 3 uploads have no rows.
+    expect(orphanRefusal({ orphans: 3, inLayout: 1_000, hasStoredRows: true })).toBeUndefined();
+    // A library of 8 objects pointed at another Platehouse database.
+    expect(orphanRefusal({ orphans: 8, inLayout: 8, hasStoredRows: true })).toBeUndefined();
+    // Two instances on one bucket: the smaller one's 50 objects, in the larger one's sweep.
+    expect(orphanRefusal({ orphans: 50, inLayout: 1_050, hasStoredRows: true })).toBeUndefined();
   });
 
   test("refuses any delete when the blobs table holds no stored rows", () => {

@@ -63,7 +63,10 @@
 //   stopped mid-slice): a running one fails with slicer_error, a pending one
 //   is queued again. It queues again the plates an outage failed (above).
 //   Then it queues any live plate that still has no estimate, so a plate
-//   whose queueing failed at upload is not left out.
+//   whose queueing failed at upload is not left out. A plate whose file
+//   carries its own numbers for a printer is never fetched for that printer
+//   (libraryPlatesFor), so a library of files sliced for My printers costs
+//   the poll one query per printer, not two per plate.
 // - Each slice records the Orca version that produced it (AC-036) and, for
 //   each filament, the preset the slicer used and where it came from:
 //   Bambu's own, Generic, or the file's own filament (PR #55).
@@ -89,6 +92,7 @@ import {
 } from "./client.js";
 import {
   type DisplayContext,
+  NOZZLE_TOLERANCE,
   PLATEHOUSE_SLICER,
   type PlateNumbers,
   plateNumbers,
@@ -444,6 +448,41 @@ function isSliceJob(data: unknown): data is SliceJobData {
   );
 }
 
+/**
+ * The live plates the library re-estimate queues for printer and orca, in
+ * file and plate order: those with no Platehouse estimate for them yet, and
+ * whose file does not carry its own numbers for the printer's BBL model and
+ * nozzle (the clause platesWithoutNumbers uses, matching printerForFile).
+ * Such a plate never gets a Platehouse estimate for that printer, so
+ * fetching it would only have enqueue skip it again on every Orca poll.
+ */
+export async function libraryPlatesFor(
+  db: Kysely<DB>,
+  printer: Printer,
+  orca: string,
+): Promise<string[]> {
+  const { rows } = await sql<{ id: string }>`
+    select p.id
+    from plates p
+    join files f on f.id = p.file_id
+    join models m on m.id = f.model_id
+    where m.trashed_at is null
+      and not exists (
+        select 1 from estimates e
+        where e.plate_id = p.id and e.source = 'platehouse'
+          and e.printer_id = ${printer.id} and e.slicer_version = ${orca}
+      )
+      and not exists (
+        select 1 from estimates e
+        where e.plate_id = p.id and e.source = 'file' and e.status = 'ok'
+          and e.printer_model_id = ${printer.modelId}
+          and abs(e.nozzle - ${printer.nozzle}::double precision) < ${NOZZLE_TOLERANCE}
+      )
+    order by f.created_at, f.id, p.index
+  `.execute(db);
+  return rows.map((r) => r.id);
+}
+
 export function createEstimates(deps: EstimatesDeps): Estimates {
   const { db, boss, slicer, store } = deps;
   const slicerDown = deps.slicerDown ?? SLICER_DOWN_WAIT;
@@ -599,22 +638,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
 
   /** Queues every live plate that has no estimate for printer and orca; returns how many. */
   async function queueLibraryFor(printer: Printer, orca: string): Promise<number> {
-    const { rows } = await sql<{ id: string }>`
-      select p.id
-      from plates p
-      join files f on f.id = p.file_id
-      join models m on m.id = f.model_id
-      where m.trashed_at is null
-        and not exists (
-          select 1 from estimates e
-          where e.plate_id = p.id and e.source = 'platehouse'
-            and e.printer_id = ${printer.id} and e.slicer_version = ${orca}
-        )
-      order by f.created_at, f.id, p.index
-    `.execute(db);
     let queued = 0;
-    for (const row of rows) {
-      if ((await enqueue(row.id, printer, orca)).queued) queued += 1;
+    for (const id of await libraryPlatesFor(db, printer, orca)) {
+      if ((await enqueue(id, printer, orca)).queued) queued += 1;
     }
     return queued;
   }

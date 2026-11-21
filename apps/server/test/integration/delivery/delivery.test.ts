@@ -191,7 +191,8 @@ beforeAll(async () => {
       files: createApiLibrary({
         db,
         store: switching,
-        plateNumbers: (id) => plateNumbers(db, CONTEXT, id),
+        displayContext: async () => CONTEXT,
+        plateNumbers: (ctx, id) => plateNumbers(db, ctx, id),
       }),
       library: createDeliveryLibrary({ db, store: switching }),
       linkSecret: randomBytes(32).toString("hex"),

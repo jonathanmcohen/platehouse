@@ -148,6 +148,11 @@ describe("add tags", () => {
   // order and holds it; Add tags, asked for both in reverse, waits on it; then
   // the holder makes the second tag and commits. Made in the request's order,
   // Add tags would already hold the second tag and the two would deadlock.
+  //
+  // Add tags runs inside this test's own transaction, where bulkRepo never
+  // retries (retryOnConflict's inCaller; issue #286 added the retry). Run on
+  // env.db, a deadlock would be retried once Postgres broke it, the retry
+  // would succeed, and this test would pass with the ordering gone.
   test("two requests making the same new tags in opposite orders do not deadlock", async () => {
     const { live } = await selection();
     const [a] = live;
@@ -175,7 +180,9 @@ describe("add tags", () => {
       await insert(second);
     });
     await firstMade;
-    const adding = bulkRepo(env.db).addTags([a], [second, first], WHOLE_LIBRARY);
+    const adding = env.db
+      .transaction()
+      .execute((trx) => bulkRepo(trx).addTags([a], [second, first], WHOLE_LIBRARY));
     try {
       const deadline = Date.now() + 10_000;
       for (;;) {

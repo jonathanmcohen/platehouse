@@ -129,7 +129,7 @@ export function profileSourceOf(profile: string | null): ProfileSource {
 }
 
 /** Nozzle sizes from a file are decimals; two sizes within this are the same. */
-const NOZZLE_TOLERANCE = 0.001;
+export const NOZZLE_TOLERANCE = 0.001;
 
 /** The menu printer a file was sliced for: same BBL model id and nozzle. */
 export function printerForFile(
