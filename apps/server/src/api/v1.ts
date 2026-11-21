@@ -1002,6 +1002,27 @@ function badRequest(reply: FastifyReply, message: string) {
   return reply.code(400).send({ error: "bad_request", message });
 }
 
+/** Longest unknown field name a 400 repeats back, before "...". */
+const UNKNOWN_FIELD_MAX_CHARS = 100;
+
+/**
+ * The message for a body refused for a field this API does not know
+ * (NEW_MODEL's propertyNames), naming the field as docs/api.md promises;
+ * undefined for any other validation failure. Ajv's own message for it
+ * names no field.
+ */
+function unknownFieldMessage(validation: unknown): string | undefined {
+  if (!Array.isArray(validation)) return undefined;
+  for (const entry of validation as Array<{ keyword?: unknown; params?: unknown }>) {
+    const name = (entry?.params as { propertyName?: unknown } | undefined)?.propertyName;
+    if (entry?.keyword !== "propertyNames" || typeof name !== "string") continue;
+    const shown =
+      name.length > UNKNOWN_FIELD_MAX_CHARS ? `${name.slice(0, UNKNOWN_FIELD_MAX_CHARS)}...` : name;
+    return `body has an unknown field: ${shown}`;
+  }
+  return undefined;
+}
+
 /** Registers the v1 routes (not the tus uploads, which app.ts mounts) behind the bearer hook. */
 export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { library } = deps;
@@ -1022,7 +1043,9 @@ export async function registerV1(app: FastifyInstance, deps: ApiDeps): Promise<v
       });
       scope.setErrorHandler(async (error, request, reply) => {
         const err = error as Error & { statusCode?: number; validation?: unknown };
-        if (err.validation !== undefined) return badRequest(reply, err.message);
+        if (err.validation !== undefined) {
+          return badRequest(reply, unknownFieldMessage(err.validation) ?? err.message);
+        }
         const status = err.statusCode;
         if (status !== undefined && status >= 400 && status < 500) {
           return reply.code(status).send({ error: "bad_request", message: err.message });
