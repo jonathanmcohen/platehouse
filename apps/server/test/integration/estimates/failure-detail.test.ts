@@ -109,7 +109,8 @@ beforeAll(async () => {
       library: createApiLibrary({
         db: env.db,
         store: env.store,
-        plateNumbers: (plateId) => plateNumbers(env.db, CONTEXT, plateId),
+        displayContext: async () => CONTEXT,
+        plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
       }),
     },
     model: createAppModel({

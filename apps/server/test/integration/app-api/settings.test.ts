@@ -27,11 +27,13 @@ import {
 } from "../../../src/api/tokens.js";
 import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
+import { readDisplayContext } from "../../../src/app-api/library.js";
 import { recordVersioning, SLICES_PER_MINUTE } from "../../../src/app-api/settings.js";
 import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
+import { plateNumbers } from "../../../src/estimates/display.js";
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
@@ -231,7 +233,12 @@ beforeAll(async () => {
       library: createApiLibrary({
         db: env.db,
         store: env.store,
-        plateNumbers: (id) => estimates.plateNumbers(id),
+        displayContext: () =>
+          readDisplayContext({
+            settings: () => env.repos.settings.get(),
+            listPrinters: () => estimates.listPrinters(),
+          }),
+        plateNumbers: (ctx, id) => plateNumbers(env.db, ctx, id),
       }),
     },
     appApi: {

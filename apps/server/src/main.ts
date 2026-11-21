@@ -26,7 +26,8 @@
 //      ID is not contacted at startup, only at the first login, so the
 //      server starts while it is down. The Public API v1 (Task 16) gets
 //      tokens from the api_tokens table and reads the library through the
-//      same database, store and estimates.plateNumbers; it never touches
+//      same database and store, with Task 12's plate numbers read as the
+//      library page reads them (one display context per request); it never touches
 //      the OIDC provider, so API tokens keep working while it is down (AC-081).
 //      File delivery and slicer links (Task 17) read files through that
 //      same library and blobs through the same database and store, and
@@ -430,20 +431,22 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     void recordVersioning({ store, settings: repos.settings });
 
     const tokens = createTokens({ store: dbTokenStore(db) });
-    // One library for the API's content route and the file deliveries, so
-    // both find a live file and its stored blob the same way.
-    const apiLibrary = createApiLibrary({
-      db,
-      store,
-      plateNumbers: (plateId) => estimates.plateNumbers(plateId),
-    });
     // The selected printer, the Orca version and the printer menu, read once
-    // per page by the library and the model page.
+    // per page by the library and the model page, and once per request by
+    // the Public API v1.
     const displayContext = () =>
       readDisplayContext({
         settings: () => repos.settings.get(),
         listPrinters: () => estimates.listPrinters(),
       });
+    // One library for the API's content route and the file deliveries, so
+    // both find a live file and its stored blob the same way.
+    const apiLibrary = createApiLibrary({
+      db,
+      store,
+      displayContext,
+      plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
+    });
     // The languages: the built-in catalogs and LOCALES_DIR (the maintainer, 2026-11-19).
     // LOCALES_DIR is read once here, waiting at most LOCALES_READ_LIMIT_MS,
     // then again in the background; no request ever waits on it (issue 297).

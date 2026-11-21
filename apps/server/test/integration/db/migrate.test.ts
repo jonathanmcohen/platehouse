@@ -49,6 +49,7 @@ const SHIPPED = [
   "0006_model_name_source_user.sql",
   "0007_my_printers.sql",
   "0008_library_sort.sql",
+  "0009_name_sort_prefix.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -449,5 +450,61 @@ describe("0007 My printers", () => {
       await sql`update user_printers set position = 1 where printer_id = ${A1_MINI}`.execute(trx);
     });
     expect((await myPrinters(db)).map((r) => r.printerId)).toEqual([A1_MINI, P1S]);
+  });
+});
+
+// Migration 0009 makes the name sort index hold a 200-character prefix. It
+// runs on an existing database at 0008, as a 0.1.0 release candidate leaves
+// it, with live and trashed models; no row may change, and afterwards a name
+// of 500 CJK characters, which 0008's index refused, can be stored.
+describe("0009 name sort prefix", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 8,
+    );
+    expect(later).toContain("0009_name_sort_prefix.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function nameIndex(db: Kysely<DB>): Promise<string | undefined> {
+    const { rows } = await sql<{ indexdef: string }>`
+      select indexdef from pg_indexes where indexname = 'models_live_name'
+    `.execute(db);
+    return rows[0]?.indexdef;
+  }
+
+  test("applies on a database at 0008 with models, changing no row", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    expect(await nameIndex(db)).toMatch(/lower\(name\), name, id/);
+    await sql`
+      insert into models (id, name, trashed_at)
+      values ('0190a0b0-0000-7000-8000-000000000011', 'Synthetic live', null),
+             ('0190a0b0-0000-7000-8000-000000000012', ${"Long ".repeat(100)}, null),
+             ('0190a0b0-0000-7000-8000-000000000013', 'Synthetic trashed', now())
+    `.execute(db);
+    const before = (await sql`select * from models order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(before);
+    const def = await nameIndex(db);
+    expect(def).toMatch(/lower\("left"\(name, 200\)\), "left"\(name, 200\)/);
+    expect(def).toMatch(/WHERE \(trashed_at IS NULL\)/);
+    const cjk = Array.from({ length: 500 }, (_, i) => String.fromCodePoint(0x4e00 + i)).join("");
+    await sql`
+      insert into models (id, name) values ('0190a0b0-0000-7000-8000-000000000014', ${cjk})
+    `.execute(db);
+    await sql`
+      update models set name = ${cjk} where id = '0190a0b0-0000-7000-8000-000000000011'
+    `.execute(db);
   });
 });

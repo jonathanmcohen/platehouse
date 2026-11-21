@@ -389,7 +389,8 @@ describe("POST /api/v1/models", () => {
     }
   });
 
-  test("an unknown key is 400", async () => {
+  // docs/api.md: for an unknown body field, "message says which".
+  test("an unknown key is 400, and the message names it", async () => {
     expect(
       await answer("POST", "/api/v1/models", {
         headers: JSON_HEADERS,
@@ -398,14 +399,42 @@ describe("POST /api/v1/models", () => {
     ).toMatchInlineSnapshot(`
       {
         "auth": undefined,
-        "body": "{"error":"bad_request","message":"body must be equal to one of the allowed values, body property name must be valid"}",
+        "body": "{"error":"bad_request","message":"body has an unknown field: colour"}",
         "cache": "no-store",
         "disposition": undefined,
-        "length": "117",
+        "length": "69",
         "status": 400,
         "type": "application/json; charset=utf-8",
       }
     `);
+  });
+
+  // Issue #340: the OpenAPI document (and the Settings API page's copy of
+  // it) shows this answer as its 400 example, so it must be the answer sent.
+  test("the documented 400 example is the answer an unknown key gets", async () => {
+    const doc = JSON.parse((await answer("GET", "/api/v1/openapi.json")).body) as {
+      paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
+    };
+    const documented = doc.paths["/models"]?.post?.responses["400"] as {
+      content: { "application/json": { example: unknown } };
+    };
+    const sent = await answer("POST", "/api/v1/models", {
+      headers: JSON_HEADERS,
+      payload: JSON.stringify({ name: "Cable clip", colour: "red" }),
+    });
+    expect(documented.content["application/json"].example).toEqual(JSON.parse(sent.body));
+  });
+
+  test("an unknown key too long to show is named by its start", async () => {
+    const res = await answer("POST", "/api/v1/models", {
+      headers: JSON_HEADERS,
+      payload: JSON.stringify({ name: "Cable clip", ["k".repeat(5000)]: 1 }),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: "bad_request",
+      message: `body has an unknown field: ${"k".repeat(100)}...`,
+    });
   });
 
   test("broken JSON is 400", async () => {

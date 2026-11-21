@@ -16,6 +16,7 @@ import { OTHER_PRINTER_LABEL } from "../../../src/estimates/display.js";
 import {
   createEstimates,
   type Estimates,
+  libraryPlatesFor,
   MAX_MY_PRINTERS,
   PrinterListRefused,
   PrintersChanged,
@@ -248,6 +249,34 @@ describe("estimates", () => {
         weightGrams: 10 * plate.index + 0.5,
       });
     }
+  });
+
+  // A plate whose file carries its own numbers for a printer never gets a
+  // Platehouse estimate for it, so the library re-estimate (every Orca poll,
+  // the startup one included) must not fetch it again and again only for
+  // enqueue to skip it: the library query leaves it out, for that printer's
+  // BBL model and nozzle only.
+  test("the library re-estimate leaves out plates whose file has its own numbers for the printer", async () => {
+    const own = await upload({ plates: 2, sliced: [1, 2], printerModelId: "C12" });
+    const plain = await upload({ plates: 1 });
+    await drain();
+    // An Orca version nothing was estimated with, so every other live plate is due.
+    const orca = "0.0.0-synthetic";
+    const byId = (id: string) => {
+      const printer = STUB_PRINTERS.find((p) => p.id === id);
+      if (!printer) throw new Error(`no stub printer ${id}`);
+      return printer;
+    };
+    const p1s06 = { ...byId(P1S), id: "Bambu Lab P1S 0.6 nozzle", nozzle: 0.6 };
+    const forP1S = await libraryPlatesFor(env.db, byId(P1S), orca);
+    const forA1 = await libraryPlatesFor(env.db, byId(A1), orca);
+    const forP1S06 = await libraryPlatesFor(env.db, p1s06, orca);
+    for (const plate of own.plates) {
+      expect(forP1S).not.toContain(plate.id);
+      expect(forA1).toContain(plate.id);
+      expect(forP1S06).toContain(plate.id);
+    }
+    for (const plate of plain.plates) expect(forP1S).toContain(plate.id);
   });
 
   test("a file sliced for X1C on P1S shows Bambu numbers labelled X1C plus a P1S estimate", async () => {
