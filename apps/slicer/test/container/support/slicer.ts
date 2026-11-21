@@ -1,0 +1,167 @@
+// Builds the slicer image and runs it the way examples/docker-compose.yml does
+// (AC-035): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
+// nodev (nothing in a job folder is ever run; examples/docker-compose.yml
+// carries the same options), 4 CPUs
+// (fewer if the host has fewer), 4 GB of memory with no swap, a 1024 process
+// and thread cap, no core files, no capabilities and no-new-privileges
+// (test/harness.test.ts checks these against the compose file). Uses the docker CLI rather than testcontainers, which has
+// no read-only-root option. The port is published on 127.0.0.1 only so the
+// tests can reach the HTTP contract.
+//
+// SLICER_IMAGE names the image (default platehouse-slicer:test). The image is
+// built here, once per run: later files hit Docker's cache. With
+// SLICER_IMAGE_PREBUILT=1 nothing is built: SLICER_IMAGE must already be in
+// Docker. .github/workflows/slicer-image.yml sets it, because it builds the
+// image itself with an Orca version's build args, and a build here would
+// replace that image with one at the Dockerfile's pinned version.
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(fileURLToPath(new URL("../../../../../", import.meta.url)));
+export const IMAGE = process.env.SLICER_IMAGE ?? "platehouse-slicer:test";
+
+interface Run {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function docker(args: string[], opts: { inherit?: boolean } = {}): Run {
+  const r = spawnSync("docker", args, {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: opts.inherit ? ["ignore", "inherit", "inherit"] : "pipe",
+  });
+  if (r.error) throw r.error;
+  return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
+let built = false;
+
+/**
+ * docker build of apps/slicer/Dockerfile with the repo root as context, or,
+ * with SLICER_IMAGE_PREBUILT=1, a check that SLICER_IMAGE is already there.
+ */
+export function ensureImage(): void {
+  if (built) return;
+  if (process.env.SLICER_IMAGE_PREBUILT === "1") {
+    const found = docker(["image", "inspect", "--format", "{{.Id}}", IMAGE]);
+    if (found.code !== 0) {
+      throw new Error(`SLICER_IMAGE_PREBUILT=1, but ${IMAGE} is not in Docker: ${found.stderr}`);
+    }
+    built = true;
+    return;
+  }
+  const r = docker(
+    ["build", "--platform", "linux/amd64", "-f", "apps/slicer/Dockerfile", "-t", IMAGE, "."],
+    { inherit: true },
+  );
+  if (r.code !== 0)
+    throw new Error(`docker build of apps/slicer/Dockerfile failed (exit ${r.code})`);
+  built = true;
+}
+
+export interface RunningSlicer {
+  id: string;
+  base: string;
+  exec(args: string[]): Run;
+  health(): string;
+  /** The server's output so far (docker logs), stdout and stderr together. */
+  logs(): string;
+  stop(): void;
+}
+
+/**
+ * examples/docker-compose.yml gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
+ * host's count, so the tests ask for 4 or as many as the host has, whichever is fewer.
+ */
+export function cpuLimit(hostCpus: number): string {
+  return String(Math.min(4, Math.max(1, Math.floor(hostCpus))));
+}
+
+/**
+ * The docker run arguments startSlicer uses, for a host with hostCpus CPUs.
+ * apps/slicer/test/harness.test.ts checks them against the platehouse-slicer
+ * service in examples/docker-compose.yml, so the container tests (and the
+ * smoke slice that gates a new Orca image) run under the deploy's limits.
+ */
+export function slicerRunArgs(hostCpus: number): string[] {
+  return [
+    "run",
+    "-d",
+    "--platform",
+    "linux/amd64",
+    "--read-only",
+    "--tmpfs",
+    "/work:rw,noexec,nosuid,nodev,size=1g,mode=1777",
+    "--cpus",
+    cpuLimit(hostCpus),
+    "--memory",
+    "4g",
+    // memswap_limit equal to mem_limit, as examples/docker-compose.yml sets
+    // it: with --memory alone Docker allows as much again in swap, so a slice
+    // past 4 GiB would swap and pass here, then be OOM-killed in a deployment.
+    "--memory-swap",
+    "4g",
+    // examples/docker-compose.yml's pids_limit and core-file limit, so every
+    // container test runs under the caps a deployment sets.
+    "--pids-limit",
+    "1024",
+    "--ulimit",
+    "core=0",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges:true",
+    "-p",
+    "127.0.0.1::8080",
+    IMAGE,
+  ];
+}
+
+export async function startSlicer(): Promise<RunningSlicer> {
+  ensureImage();
+  const info = docker(["info", "--format", "{{.NCPU}}"]);
+  const hostCpus = Number(info.stdout.trim());
+  if (info.code !== 0 || !Number.isFinite(hostCpus) || hostCpus < 1) {
+    throw new Error(`docker info gave no CPU count: ${info.stderr}${info.stdout}`);
+  }
+  const run = docker(slicerRunArgs(hostCpus));
+  if (run.code !== 0) throw new Error(`docker run failed: ${run.stderr}`);
+  const id = run.stdout.trim();
+  const stop = () => {
+    docker(["rm", "-f", id]);
+  };
+  try {
+    const port = docker(["port", id, "8080/tcp"]).stdout.trim().split("\n")[0]?.split(":").at(-1);
+    if (!port) throw new Error("the slicer's port 8080 is not published");
+    const health = () =>
+      docker(["inspect", "--format", "{{.State.Health.Status}}", id]).stdout.trim();
+    const until = Date.now() + 180_000;
+    while (health() !== "healthy") {
+      if (Date.now() > until) {
+        const logs = docker(["logs", id]);
+        throw new Error(
+          `the slicer never became healthy (${health()}):\n${logs.stdout}${logs.stderr}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return {
+      id,
+      base: `http://127.0.0.1:${port}`,
+      exec: (args) => docker(["exec", id, ...args]),
+      health,
+      logs: () => {
+        const r = docker(["logs", id]);
+        return `${r.stdout}${r.stderr}`;
+      },
+      stop,
+    };
+  } catch (err) {
+    stop();
+    throw err;
+  }
+}

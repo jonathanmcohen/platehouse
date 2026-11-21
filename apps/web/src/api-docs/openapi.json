@@ -1,0 +1,4298 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Platehouse API",
+    "version": "1.0.0",
+    "description": "The Platehouse public API, for scripts and tools such as AI coding assistants: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence. JSON bodies are at most 1 MiB; uploads are at most 536870912 bytes (512 MiB). The guide is docs/api.md in the Platehouse repository."
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "ph_ token",
+        "description": "An API token, made in Settings > API tokens and shown once. It starts with ph_. Send it on every request as Authorization: Bearer <token>. Revoking it in Settings stops it at once and leaves other tokens working."
+      }
+    },
+    "schemas": {}
+  },
+  "paths": {
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "summary": "This API's OpenAPI description",
+        "tags": ["About the API"],
+        "description": "This document: every operation, its parameters, bodies, answers and examples, in OpenAPI 3.0 JSON. Load it into an OpenAPI tool to generate a client. The server URL in it is Platehouse's configured public address.",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.0 document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The OpenAPI 3.0 document",
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "example": {
+                  "openapi": "3.0.3",
+                  "info": {
+                    "title": "Platehouse API",
+                    "version": "1.0.0"
+                  },
+                  "servers": [
+                    {
+                      "url": "https://platehouse.example.com/api/v1"
+                    }
+                  ],
+                  "paths": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "openapi-head",
+        "summary": "This API's OpenAPI description (headers only)",
+        "tags": ["About the API"],
+        "description": "The same status and headers as the GET, with no body. This document: every operation, its parameters, bodies, answers and examples, in OpenAPI 3.0 JSON. Load it into an OpenAPI tool to generate a client. The server URL in it is Platehouse's configured public address.",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.0 document"
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+          }
+        }
+      }
+    },
+    "/models": {
+      "get": {
+        "operationId": "searchModels",
+        "summary": "Search the library",
+        "tags": ["Models"],
+        "description": "Live models, best match first and then by name, a page at a time. With no parameters it lists the whole library. q, tag, collection and creator can be combined, and each narrows the list. Models in the trash never appear.\n\nTo read every page, pass the answer's nextCursor as cursor until nextCursor is null. Keep the other parameters the same from page to page.\n\nexternalRef is a lookup rather than a filter: it answers the one live model with that reference, or none, and cannot be sent with any other parameter.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "example": "clip",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "description": "Words matched in name, caption, creator and tags, ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "desk",
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "description": "Only models with this tag, ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "Office",
+            "in": "query",
+            "name": "collection",
+            "required": false,
+            "description": "Only models in this collection, ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "example": "Example Maker",
+            "in": "query",
+            "name": "creator",
+            "required": false,
+            "description": "Only models by this creator, exactly as written"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "example": "manyfold:42",
+            "in": "query",
+            "name": "externalRef",
+            "required": false,
+            "description": "The live model with this reference (zero or one); cannot be combined with the others"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "example": "WzAsIkNhYmxlIGNsaXAiLCIwMTkzYTVjMiJd",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "description": "nextCursor from the previous page, to read the next one"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "example": 20,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Models per page, 1 to 200; 50 when left out"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "One page of models",
+                  "type": "object",
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The model's id, a UUID"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "caption": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "A one-line summary"
+                          },
+                          "description": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Markdown"
+                          },
+                          "creator": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Who designed it"
+                          },
+                          "license": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "An SPDX licence id, such as CC-BY-4.0"
+                          },
+                          "licenseNote": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Licence text that is not an SPDX id"
+                          },
+                          "externalRef": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Where the model came from, such as manyfold:<id>; unique"
+                          },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Its tags, A to Z"
+                          },
+                          "collections": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The collections it is in, A to Z"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "caption",
+                          "description",
+                          "creator",
+                          "license",
+                          "licenseNote",
+                          "externalRef",
+                          "tags",
+                          "collections",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Pass as cursor for the next page; null on the last page"
+                    }
+                  },
+                  "required": ["models", "nextCursor"]
+                },
+                "example": {
+                  "models": [
+                    {
+                      "id": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                      "name": "Cable clip",
+                      "caption": "A snap-on clip for desk cables",
+                      "description": "Prints without supports. Use PETG for a stronger snap.",
+                      "creator": "Example Maker",
+                      "license": "CC-BY-4.0",
+                      "licenseNote": null,
+                      "externalRef": null,
+                      "tags": ["clips", "desk"],
+                      "collections": ["Office"],
+                      "createdAt": "2026-11-01T10:00:00.000Z",
+                      "updatedAt": "2026-11-02T11:30:00.000Z"
+                    }
+                  ],
+                  "nextCursor": "WzAsIkNhYmxlIGNsaXAiLCIwMTkzYTVjMiJd"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter is outside its limits, the cursor is not one this API made, or externalRef was sent with another parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "A parameter is outside its limits, the cursor is not one this API made, or externalRef was sent with another parameter"
+                },
+                "examples": {
+                  "example1": {
+                    "value": {
+                      "error": "bad_request",
+                      "message": "querystring/limit must be <= 200"
+                    }
+                  },
+                  "example2": {
+                    "value": {
+                      "error": "bad_request",
+                      "message": "The cursor is not valid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "searchModels-head",
+        "summary": "Search the library (headers only)",
+        "tags": ["Models"],
+        "description": "The same status and headers as the GET, with no body. Live models, best match first and then by name, a page at a time. With no parameters it lists the whole library. q, tag, collection and creator can be combined, and each narrows the list. Models in the trash never appear.\n\nTo read every page, pass the answer's nextCursor as cursor until nextCursor is null. Keep the other parameters the same from page to page.\n\nexternalRef is a lookup rather than a filter: it answers the one live model with that reference, or none, and cannot be sent with any other parameter.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "example": "clip",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "description": "Words matched in name, caption, creator and tags, ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "desk",
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "description": "Only models with this tag, ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "Office",
+            "in": "query",
+            "name": "collection",
+            "required": false,
+            "description": "Only models in this collection, ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "example": "Example Maker",
+            "in": "query",
+            "name": "creator",
+            "required": false,
+            "description": "Only models by this creator, exactly as written"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "example": "manyfold:42",
+            "in": "query",
+            "name": "externalRef",
+            "required": false,
+            "description": "The live model with this reference (zero or one); cannot be combined with the others"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "example": "WzAsIkNhYmxlIGNsaXAiLCIwMTkzYTVjMiJd",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "description": "nextCursor from the previous page, to read the next one"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "example": 20,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Models per page, 1 to 200; 50 when left out"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of models"
+          },
+          "400": {
+            "description": "A parameter is outside its limits, the cursor is not one this API made, or externalRef was sent with another parameter"
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+          }
+        }
+      },
+      "post": {
+        "operationId": "createModel",
+        "summary": "Make a model with no files yet",
+        "tags": ["Models"],
+        "description": "Makes an empty model with the details given, ready for files: upload them with its id as modelId in the upload's metadata. Only name is required. Tags and collections are made on first use. A field this API does not know is refused rather than ignored. The name given is kept: a .3mf uploaded into the model later never renames it from its title, though its MakerWorld details fill any of caption, creator, description and licence the model left empty.\n\nexternalRef records where a model came from and is unique, so an import that runs twice makes each model once: a taken externalRef is 409, with trashed saying whether that model is in the trash.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "propertyNames": {
+                  "enum": [
+                    "name",
+                    "caption",
+                    "description",
+                    "creator",
+                    "license",
+                    "externalRef",
+                    "tags",
+                    "collections"
+                  ]
+                },
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "pattern": "\\S",
+                    "description": "The model's name, 1 to 500 characters, not blank"
+                  },
+                  "caption": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "A one-line summary"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 200000,
+                    "description": "Markdown"
+                  },
+                  "creator": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "pattern": "\\S",
+                    "description": "Who designed it"
+                  },
+                  "license": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "An SPDX licence id"
+                  },
+                  "externalRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "Where the model came from, such as manyfold:<id>; unique"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "pattern": "\\S"
+                    },
+                    "description": "Up to 100 tags, each 1 to 100 characters"
+                  },
+                  "collections": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "pattern": "\\S"
+                    },
+                    "description": "Up to 100 collections, each 1 to 100 characters; made on first use"
+                  }
+                },
+                "required": ["name"]
+              },
+              "example": {
+                "name": "Cable clip",
+                "caption": "A snap-on clip for desk cables",
+                "creator": "Example Maker",
+                "license": "CC-BY-4.0",
+                "tags": ["clips", "desk"],
+                "collections": ["Office"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Made; the new model, with no files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Made; the new model, with no files",
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The model's id, a UUID"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "caption": {
+                          "type": "string",
+                          "nullable": true,
+                          "description": "A one-line summary"
+                        },
+                        "description": {
+                          "type": "string",
+                          "nullable": true,
+                          "description": "Markdown"
+                        },
+                        "creator": {
+                          "type": "string",
+                          "nullable": true,
+                          "description": "Who designed it"
+                        },
+                        "license": {
+                          "type": "string",
+                          "nullable": true,
+                          "description": "An SPDX licence id, such as CC-BY-4.0"
+                        },
+                        "licenseNote": {
+                          "type": "string",
+                          "nullable": true,
+                          "description": "Licence text that is not an SPDX id"
+                        },
+                        "externalRef": {
+                          "type": "string",
+                          "nullable": true,
+                          "description": "Where the model came from, such as manyfold:<id>; unique"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Its tags, A to Z"
+                        },
+                        "collections": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "The collections it is in, A to Z"
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "caption",
+                        "description",
+                        "creator",
+                        "license",
+                        "licenseNote",
+                        "externalRef",
+                        "tags",
+                        "collections",
+                        "createdAt",
+                        "updatedAt"
+                      ]
+                    }
+                  },
+                  "required": ["model"]
+                },
+                "example": {
+                  "model": {
+                    "id": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                    "name": "Cable clip",
+                    "caption": "A snap-on clip for desk cables",
+                    "description": "Prints without supports. Use PETG for a stronger snap.",
+                    "creator": "Example Maker",
+                    "license": "CC-BY-4.0",
+                    "licenseNote": null,
+                    "externalRef": null,
+                    "tags": ["clips", "desk"],
+                    "collections": ["Office"],
+                    "createdAt": "2026-11-01T10:00:00.000Z",
+                    "updatedAt": "2026-11-02T11:30:00.000Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not valid JSON, has a field this API does not know, or a field outside its limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The body is not valid JSON, has a field this API does not know, or a field outside its limits"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "body has an unknown field: colour"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "externalRef is taken by another model; trashed is true when that model is in the trash",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "externalRef is taken by another model; trashed is true when that model is in the trash",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["exists"]
+                    },
+                    "trashed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["error", "trashed"]
+                },
+                "example": {
+                  "error": "exists",
+                  "trashed": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The JSON body is over 1 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The JSON body is over 1 MiB"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "Request body is too large"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as Content-Type: application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The body is not sent as Content-Type: application/json"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "Unsupported Media Type"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/models/{id}": {
+      "get": {
+        "operationId": "getModel",
+        "summary": "Get a model with its files, plates and estimates",
+        "tags": ["Models"],
+        "description": "One live model with all its details, its files oldest first, each .3mf file's plates, and each plate's print time, weight and filaments for the default printer of My printers (Settings). A model in the trash is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The model's id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "The model's id, a UUID"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "caption": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "A one-line summary"
+                    },
+                    "description": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Markdown"
+                    },
+                    "creator": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Who designed it"
+                    },
+                    "license": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "An SPDX licence id, such as CC-BY-4.0"
+                    },
+                    "licenseNote": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Licence text that is not an SPDX id"
+                    },
+                    "externalRef": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Where the model came from, such as manyfold:<id>; unique"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Its tags, A to Z"
+                    },
+                    "collections": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The collections it is in, A to Z"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The file's id, a UUID"
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "description": "The model it belongs to"
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "Its name in Platehouse, which can be renamed"
+                          },
+                          "originalName": {
+                            "type": "string",
+                            "description": "The name it was uploaded with"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": ["3mf", "stl", "step", "scad"]
+                          },
+                          "size": {
+                            "type": "integer",
+                            "description": "Bytes"
+                          },
+                          "sha256": {
+                            "type": "string",
+                            "description": "The SHA-256 of its bytes, in hex"
+                          },
+                          "parseStatus": {
+                            "type": "string",
+                            "enum": ["pending", "ok", "no_plate_data", "unavailable"],
+                            "description": "Whether its plates were read: ok, or no_plate_data for a .3mf with no plates Platehouse can read. Files other than .3mf have no plates."
+                          },
+                          "derivedStatus": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds."
+                          },
+                          "derivedMessage": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "The render or conversion message, such as why it failed, cleaned of work paths, addresses and tokens; at most 2500 characters, keeping the end of a longer one, where the error line is"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "plates": {
+                            "type": "array",
+                            "description": "A .3mf file's plates, in order; empty for other kinds",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "index": {
+                                  "type": "integer",
+                                  "description": "The plate's number in the file, from 1"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "nullable": true,
+                                  "description": "The plate's name in the file"
+                                },
+                                "objectCount": {
+                                  "type": "integer",
+                                  "description": "Objects on the plate"
+                                },
+                                "numbers": {
+                                  "type": "object",
+                                  "description": "The plate's print time, weight and filaments for the default printer of My printers (Settings). Each set is there only when it applies, so the object can be empty.",
+                                  "properties": {
+                                    "file": {
+                                      "type": "object",
+                                      "description": "Bambu's own numbers, saved in the .3mf when it was sliced, labelled with the printer it was sliced for",
+                                      "properties": {
+                                        "source": {
+                                          "type": "string",
+                                          "enum": ["file", "platehouse"],
+                                          "description": "file for the numbers saved in the .3mf, platehouse for an OrcaSlicer estimate"
+                                        },
+                                        "estimateId": {
+                                          "type": "string"
+                                        },
+                                        "printerId": {
+                                          "type": "string",
+                                          "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
+                                        },
+                                        "printerLabel": {
+                                          "type": "string",
+                                          "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                        },
+                                        "printerName": {
+                                          "type": "string",
+                                          "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
+                                        },
+                                        "slicer": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The slicer that made the numbers"
+                                        },
+                                        "slicerVersion": {
+                                          "type": "string",
+                                          "nullable": true
+                                        },
+                                        "processProfile": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The process (quality) preset"
+                                        },
+                                        "timeSeconds": {
+                                          "type": "number",
+                                          "nullable": true,
+                                          "description": "Print time in seconds"
+                                        },
+                                        "weightGrams": {
+                                          "type": "number",
+                                          "nullable": true,
+                                          "description": "Total filament in grams"
+                                        },
+                                        "filaments": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "description": "One filament slot's use on the plate",
+                                            "properties": {
+                                              "slot": {
+                                                "type": "integer",
+                                                "description": "The AMS slot, from 1"
+                                              },
+                                              "type": {
+                                                "type": "string",
+                                                "description": "The filament type, such as PLA or PETG"
+                                              },
+                                              "color": {
+                                                "type": "string",
+                                                "nullable": true,
+                                                "description": "The colour as #RRGGBB, when known"
+                                              },
+                                              "grams": {
+                                                "type": "number",
+                                                "nullable": true,
+                                                "description": "Grams of this filament"
+                                              },
+                                              "profile": {
+                                                "type": "string",
+                                                "nullable": true,
+                                                "description": "The filament preset the slicer used; null for the file's own numbers"
+                                              },
+                                              "profileSource": {
+                                                "type": "string",
+                                                "nullable": true,
+                                                "enum": ["bambu", "generic", "file", null],
+                                                "description": "Where that preset came from: Bambu's own preset, OrcaSlicer's Generic one, or the file's own filament kept; null for the file's own numbers"
+                                              }
+                                            },
+                                            "required": [
+                                              "slot",
+                                              "type",
+                                              "color",
+                                              "grams",
+                                              "profile",
+                                              "profileSource"
+                                            ]
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "source",
+                                        "estimateId",
+                                        "printerId",
+                                        "printerLabel",
+                                        "printerName",
+                                        "slicer",
+                                        "slicerVersion",
+                                        "processProfile",
+                                        "timeSeconds",
+                                        "weightGrams",
+                                        "filaments"
+                                      ]
+                                    },
+                                    "platehouse": {
+                                      "type": "object",
+                                      "description": "Platehouse's own OrcaSlicer estimate for the default printer of My printers, made when the file has no numbers for that printer. Rough numbers.",
+                                      "properties": {
+                                        "source": {
+                                          "type": "string",
+                                          "enum": ["file", "platehouse"],
+                                          "description": "file for the numbers saved in the .3mf, platehouse for an OrcaSlicer estimate"
+                                        },
+                                        "estimateId": {
+                                          "type": "string"
+                                        },
+                                        "printerId": {
+                                          "type": "string",
+                                          "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
+                                        },
+                                        "printerLabel": {
+                                          "type": "string",
+                                          "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                        },
+                                        "printerName": {
+                                          "type": "string",
+                                          "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
+                                        },
+                                        "slicer": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The slicer that made the numbers"
+                                        },
+                                        "slicerVersion": {
+                                          "type": "string",
+                                          "nullable": true
+                                        },
+                                        "processProfile": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The process (quality) preset"
+                                        },
+                                        "timeSeconds": {
+                                          "type": "number",
+                                          "nullable": true,
+                                          "description": "Print time in seconds"
+                                        },
+                                        "weightGrams": {
+                                          "type": "number",
+                                          "nullable": true,
+                                          "description": "Total filament in grams"
+                                        },
+                                        "filaments": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "description": "One filament slot's use on the plate",
+                                            "properties": {
+                                              "slot": {
+                                                "type": "integer",
+                                                "description": "The AMS slot, from 1"
+                                              },
+                                              "type": {
+                                                "type": "string",
+                                                "description": "The filament type, such as PLA or PETG"
+                                              },
+                                              "color": {
+                                                "type": "string",
+                                                "nullable": true,
+                                                "description": "The colour as #RRGGBB, when known"
+                                              },
+                                              "grams": {
+                                                "type": "number",
+                                                "nullable": true,
+                                                "description": "Grams of this filament"
+                                              },
+                                              "profile": {
+                                                "type": "string",
+                                                "nullable": true,
+                                                "description": "The filament preset the slicer used; null for the file's own numbers"
+                                              },
+                                              "profileSource": {
+                                                "type": "string",
+                                                "nullable": true,
+                                                "enum": ["bambu", "generic", "file", null],
+                                                "description": "Where that preset came from: Bambu's own preset, OrcaSlicer's Generic one, or the file's own filament kept; null for the file's own numbers"
+                                              }
+                                            },
+                                            "required": [
+                                              "slot",
+                                              "type",
+                                              "color",
+                                              "grams",
+                                              "profile",
+                                              "profileSource"
+                                            ]
+                                          }
+                                        },
+                                        "state": {
+                                          "type": "string",
+                                          "enum": ["current", "estimating", "stale"],
+                                          "description": "current: for the default printer and the slicer's current OrcaSlicer. estimating: being made, nothing older to show. stale: a new one is being made, and this older one is shown meanwhile: made by an older OrcaSlicer for the same printer, or for a printer no longer in My printers."
+                                        },
+                                        "staleFor": {
+                                          "type": "string",
+                                          "description": "For a stale set: the printer, or OrcaSlicer version, it was made for"
+                                        }
+                                      },
+                                      "required": [
+                                        "source",
+                                        "estimateId",
+                                        "printerId",
+                                        "printerLabel",
+                                        "printerName",
+                                        "slicer",
+                                        "slicerVersion",
+                                        "processProfile",
+                                        "timeSeconds",
+                                        "weightGrams",
+                                        "filaments",
+                                        "state"
+                                      ]
+                                    },
+                                    "failure": {
+                                      "type": "object",
+                                      "description": "Why the estimate for the default printer of My printers failed",
+                                      "properties": {
+                                        "estimateId": {
+                                          "type": "string"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "process_not_compatible",
+                                            "machine_not_supported",
+                                            "bed_too_small",
+                                            "nozzle_mismatch",
+                                            "filament_temperature",
+                                            "toolpath_conflict",
+                                            "timeout",
+                                            "slicer_error"
+                                          ]
+                                        },
+                                        "words": {
+                                          "type": "string",
+                                          "description": "The reason in plain words"
+                                        },
+                                        "detail": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The slicer's own message, cleaned of work paths, addresses and tokens, at most 1000 characters; null when nothing is left to show"
+                                        }
+                                      },
+                                      "required": ["estimateId", "reason", "words", "detail"]
+                                    }
+                                  }
+                                }
+                              },
+                              "required": ["id", "index", "name", "objectCount", "numbers"]
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "modelId",
+                          "name",
+                          "originalName",
+                          "kind",
+                          "size",
+                          "sha256",
+                          "parseStatus",
+                          "derivedStatus",
+                          "derivedMessage",
+                          "createdAt",
+                          "updatedAt",
+                          "plates"
+                        ]
+                      },
+                      "description": "Its files, oldest first"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "caption",
+                    "description",
+                    "creator",
+                    "license",
+                    "licenseNote",
+                    "externalRef",
+                    "tags",
+                    "collections",
+                    "createdAt",
+                    "updatedAt",
+                    "files"
+                  ],
+                  "description": "The model"
+                },
+                "example": {
+                  "id": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                  "name": "Cable clip",
+                  "caption": "A snap-on clip for desk cables",
+                  "description": "Prints without supports. Use PETG for a stronger snap.",
+                  "creator": "Example Maker",
+                  "license": "CC-BY-4.0",
+                  "licenseNote": null,
+                  "externalRef": null,
+                  "tags": ["clips", "desk"],
+                  "collections": ["Office"],
+                  "createdAt": "2026-11-01T10:00:00.000Z",
+                  "updatedAt": "2026-11-02T11:30:00.000Z",
+                  "files": [
+                    {
+                      "id": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+                      "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                      "name": "cable-clip.3mf",
+                      "originalName": "cable-clip.3mf",
+                      "kind": "3mf",
+                      "size": 1843200,
+                      "sha256": "9f2c4a7e1b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+                      "parseStatus": "ok",
+                      "derivedStatus": null,
+                      "derivedMessage": null,
+                      "createdAt": "2026-11-01T10:00:00.000Z",
+                      "updatedAt": "2026-11-01T10:00:00.000Z",
+                      "plates": [
+                        {
+                          "id": "0193a5c2-7d58-7d20-9b22-3c4d5e6f7a81",
+                          "index": 1,
+                          "name": "Clips x4",
+                          "objectCount": 4,
+                          "numbers": {
+                            "file": {
+                              "source": "file",
+                              "estimateId": "0193a5c2-8001-7e30-8c33-4d5e6f7a8b92",
+                              "printerId": "Bambu Lab P1S 0.4 nozzle",
+                              "printerLabel": "Bambu Lab P1S 0.4 nozzle",
+                              "printerName": "Bambu Lab P1S, 0.4 mm nozzle",
+                              "slicer": "BambuStudio",
+                              "slicerVersion": "02.03.00.70",
+                              "processProfile": "0.20mm Standard @BBL X1C",
+                              "timeSeconds": 3720,
+                              "weightGrams": 21.5,
+                              "filaments": [
+                                {
+                                  "slot": 1,
+                                  "type": "PLA",
+                                  "color": "#00AE42",
+                                  "grams": 21.5,
+                                  "profile": null,
+                                  "profileSource": null
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "getModel-head",
+        "summary": "Get a model with its files, plates and estimates (headers only)",
+        "tags": ["Models"],
+        "description": "The same status and headers as the GET, with no body. One live model with all its details, its files oldest first, each .3mf file's plates, and each plate's print time, weight and filaments for the default printer of My printers (Settings). A model in the trash is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The model's id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The model"
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+          }
+        }
+      }
+    },
+    "/files/{id}": {
+      "get": {
+        "operationId": "getFile",
+        "summary": "Get a file with its plates and estimates",
+        "tags": ["Files"],
+        "description": "One file's details: its name, kind, size and SHA-256, whether its plates were read, and each plate's print time, weight and filaments. A file of a model in the trash is 404. GET /files/{id}/content downloads its bytes.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The file's id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "The file's id, a UUID"
+                    },
+                    "modelId": {
+                      "type": "string",
+                      "description": "The model it belongs to"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Its name in Platehouse, which can be renamed"
+                    },
+                    "originalName": {
+                      "type": "string",
+                      "description": "The name it was uploaded with"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["3mf", "stl", "step", "scad"]
+                    },
+                    "size": {
+                      "type": "integer",
+                      "description": "Bytes"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "description": "The SHA-256 of its bytes, in hex"
+                    },
+                    "parseStatus": {
+                      "type": "string",
+                      "enum": ["pending", "ok", "no_plate_data", "unavailable"],
+                      "description": "Whether its plates were read: ok, or no_plate_data for a .3mf with no plates Platehouse can read. Files other than .3mf have no plates."
+                    },
+                    "derivedStatus": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds."
+                    },
+                    "derivedMessage": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "The render or conversion message, such as why it failed, cleaned of work paths, addresses and tokens; at most 2500 characters, keeping the end of a longer one, where the error line is"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "plates": {
+                      "type": "array",
+                      "description": "A .3mf file's plates, in order; empty for other kinds",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "index": {
+                            "type": "integer",
+                            "description": "The plate's number in the file, from 1"
+                          },
+                          "name": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "The plate's name in the file"
+                          },
+                          "objectCount": {
+                            "type": "integer",
+                            "description": "Objects on the plate"
+                          },
+                          "numbers": {
+                            "type": "object",
+                            "description": "The plate's print time, weight and filaments for the default printer of My printers (Settings). Each set is there only when it applies, so the object can be empty.",
+                            "properties": {
+                              "file": {
+                                "type": "object",
+                                "description": "Bambu's own numbers, saved in the .3mf when it was sliced, labelled with the printer it was sliced for",
+                                "properties": {
+                                  "source": {
+                                    "type": "string",
+                                    "enum": ["file", "platehouse"],
+                                    "description": "file for the numbers saved in the .3mf, platehouse for an OrcaSlicer estimate"
+                                  },
+                                  "estimateId": {
+                                    "type": "string"
+                                  },
+                                  "printerId": {
+                                    "type": "string",
+                                    "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
+                                  },
+                                  "printerLabel": {
+                                    "type": "string",
+                                    "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                  },
+                                  "printerName": {
+                                    "type": "string",
+                                    "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
+                                  },
+                                  "slicer": {
+                                    "type": "string",
+                                    "nullable": true,
+                                    "description": "The slicer that made the numbers"
+                                  },
+                                  "slicerVersion": {
+                                    "type": "string",
+                                    "nullable": true
+                                  },
+                                  "processProfile": {
+                                    "type": "string",
+                                    "nullable": true,
+                                    "description": "The process (quality) preset"
+                                  },
+                                  "timeSeconds": {
+                                    "type": "number",
+                                    "nullable": true,
+                                    "description": "Print time in seconds"
+                                  },
+                                  "weightGrams": {
+                                    "type": "number",
+                                    "nullable": true,
+                                    "description": "Total filament in grams"
+                                  },
+                                  "filaments": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "description": "One filament slot's use on the plate",
+                                      "properties": {
+                                        "slot": {
+                                          "type": "integer",
+                                          "description": "The AMS slot, from 1"
+                                        },
+                                        "type": {
+                                          "type": "string",
+                                          "description": "The filament type, such as PLA or PETG"
+                                        },
+                                        "color": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The colour as #RRGGBB, when known"
+                                        },
+                                        "grams": {
+                                          "type": "number",
+                                          "nullable": true,
+                                          "description": "Grams of this filament"
+                                        },
+                                        "profile": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The filament preset the slicer used; null for the file's own numbers"
+                                        },
+                                        "profileSource": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "enum": ["bambu", "generic", "file", null],
+                                          "description": "Where that preset came from: Bambu's own preset, OrcaSlicer's Generic one, or the file's own filament kept; null for the file's own numbers"
+                                        }
+                                      },
+                                      "required": [
+                                        "slot",
+                                        "type",
+                                        "color",
+                                        "grams",
+                                        "profile",
+                                        "profileSource"
+                                      ]
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "source",
+                                  "estimateId",
+                                  "printerId",
+                                  "printerLabel",
+                                  "printerName",
+                                  "slicer",
+                                  "slicerVersion",
+                                  "processProfile",
+                                  "timeSeconds",
+                                  "weightGrams",
+                                  "filaments"
+                                ]
+                              },
+                              "platehouse": {
+                                "type": "object",
+                                "description": "Platehouse's own OrcaSlicer estimate for the default printer of My printers, made when the file has no numbers for that printer. Rough numbers.",
+                                "properties": {
+                                  "source": {
+                                    "type": "string",
+                                    "enum": ["file", "platehouse"],
+                                    "description": "file for the numbers saved in the .3mf, platehouse for an OrcaSlicer estimate"
+                                  },
+                                  "estimateId": {
+                                    "type": "string"
+                                  },
+                                  "printerId": {
+                                    "type": "string",
+                                    "description": "The printer these numbers are for: its OrcaSlicer preset name, such as Bambu Lab P1S 0.4 nozzle, or, for a file's printer the slicer's menu lacks, the printer code the file names"
+                                  },
+                                  "printerLabel": {
+                                    "type": "string",
+                                    "description": "The printer's label: printerId for a printer in the slicer's menu, or \"another printer\" for a file's printer the menu lacks"
+                                  },
+                                  "printerName": {
+                                    "type": "string",
+                                    "description": "The printer in full, its model and nozzle, such as \"Bambu Lab P1S, 0.4 mm nozzle\"; \"another printer\" for a file's printer the menu lacks"
+                                  },
+                                  "slicer": {
+                                    "type": "string",
+                                    "nullable": true,
+                                    "description": "The slicer that made the numbers"
+                                  },
+                                  "slicerVersion": {
+                                    "type": "string",
+                                    "nullable": true
+                                  },
+                                  "processProfile": {
+                                    "type": "string",
+                                    "nullable": true,
+                                    "description": "The process (quality) preset"
+                                  },
+                                  "timeSeconds": {
+                                    "type": "number",
+                                    "nullable": true,
+                                    "description": "Print time in seconds"
+                                  },
+                                  "weightGrams": {
+                                    "type": "number",
+                                    "nullable": true,
+                                    "description": "Total filament in grams"
+                                  },
+                                  "filaments": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "description": "One filament slot's use on the plate",
+                                      "properties": {
+                                        "slot": {
+                                          "type": "integer",
+                                          "description": "The AMS slot, from 1"
+                                        },
+                                        "type": {
+                                          "type": "string",
+                                          "description": "The filament type, such as PLA or PETG"
+                                        },
+                                        "color": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The colour as #RRGGBB, when known"
+                                        },
+                                        "grams": {
+                                          "type": "number",
+                                          "nullable": true,
+                                          "description": "Grams of this filament"
+                                        },
+                                        "profile": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "description": "The filament preset the slicer used; null for the file's own numbers"
+                                        },
+                                        "profileSource": {
+                                          "type": "string",
+                                          "nullable": true,
+                                          "enum": ["bambu", "generic", "file", null],
+                                          "description": "Where that preset came from: Bambu's own preset, OrcaSlicer's Generic one, or the file's own filament kept; null for the file's own numbers"
+                                        }
+                                      },
+                                      "required": [
+                                        "slot",
+                                        "type",
+                                        "color",
+                                        "grams",
+                                        "profile",
+                                        "profileSource"
+                                      ]
+                                    }
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": ["current", "estimating", "stale"],
+                                    "description": "current: for the default printer and the slicer's current OrcaSlicer. estimating: being made, nothing older to show. stale: a new one is being made, and this older one is shown meanwhile: made by an older OrcaSlicer for the same printer, or for a printer no longer in My printers."
+                                  },
+                                  "staleFor": {
+                                    "type": "string",
+                                    "description": "For a stale set: the printer, or OrcaSlicer version, it was made for"
+                                  }
+                                },
+                                "required": [
+                                  "source",
+                                  "estimateId",
+                                  "printerId",
+                                  "printerLabel",
+                                  "printerName",
+                                  "slicer",
+                                  "slicerVersion",
+                                  "processProfile",
+                                  "timeSeconds",
+                                  "weightGrams",
+                                  "filaments",
+                                  "state"
+                                ]
+                              },
+                              "failure": {
+                                "type": "object",
+                                "description": "Why the estimate for the default printer of My printers failed",
+                                "properties": {
+                                  "estimateId": {
+                                    "type": "string"
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "enum": [
+                                      "process_not_compatible",
+                                      "machine_not_supported",
+                                      "bed_too_small",
+                                      "nozzle_mismatch",
+                                      "filament_temperature",
+                                      "toolpath_conflict",
+                                      "timeout",
+                                      "slicer_error"
+                                    ]
+                                  },
+                                  "words": {
+                                    "type": "string",
+                                    "description": "The reason in plain words"
+                                  },
+                                  "detail": {
+                                    "type": "string",
+                                    "nullable": true,
+                                    "description": "The slicer's own message, cleaned of work paths, addresses and tokens, at most 1000 characters; null when nothing is left to show"
+                                  }
+                                },
+                                "required": ["estimateId", "reason", "words", "detail"]
+                              }
+                            }
+                          }
+                        },
+                        "required": ["id", "index", "name", "objectCount", "numbers"]
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "modelId",
+                    "name",
+                    "originalName",
+                    "kind",
+                    "size",
+                    "sha256",
+                    "parseStatus",
+                    "derivedStatus",
+                    "derivedMessage",
+                    "createdAt",
+                    "updatedAt",
+                    "plates"
+                  ],
+                  "description": "The file"
+                },
+                "example": {
+                  "id": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+                  "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                  "name": "cable-clip.3mf",
+                  "originalName": "cable-clip.3mf",
+                  "kind": "3mf",
+                  "size": 1843200,
+                  "sha256": "9f2c4a7e1b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+                  "parseStatus": "ok",
+                  "derivedStatus": null,
+                  "derivedMessage": null,
+                  "createdAt": "2026-11-01T10:00:00.000Z",
+                  "updatedAt": "2026-11-01T10:00:00.000Z",
+                  "plates": [
+                    {
+                      "id": "0193a5c2-7d58-7d20-9b22-3c4d5e6f7a81",
+                      "index": 1,
+                      "name": "Clips x4",
+                      "objectCount": 4,
+                      "numbers": {
+                        "file": {
+                          "source": "file",
+                          "estimateId": "0193a5c2-8001-7e30-8c33-4d5e6f7a8b92",
+                          "printerId": "Bambu Lab P1S 0.4 nozzle",
+                          "printerLabel": "Bambu Lab P1S 0.4 nozzle",
+                          "printerName": "Bambu Lab P1S, 0.4 mm nozzle",
+                          "slicer": "BambuStudio",
+                          "slicerVersion": "02.03.00.70",
+                          "processProfile": "0.20mm Standard @BBL X1C",
+                          "timeSeconds": 3720,
+                          "weightGrams": 21.5,
+                          "filaments": [
+                            {
+                              "slot": 1,
+                              "type": "PLA",
+                              "color": "#00AE42",
+                              "grams": 21.5,
+                              "profile": null,
+                              "profileSource": null
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "getFile-head",
+        "summary": "Get a file with its plates and estimates (headers only)",
+        "tags": ["Files"],
+        "description": "The same status and headers as the GET, with no body. One file's details: its name, kind, size and SHA-256, whether its plates were read, and each plate's print time, weight and filaments. A file of a model in the trash is 404. GET /files/{id}/content downloads its bytes.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The file's id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file"
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+          }
+        }
+      }
+    },
+    "/files/{id}/content": {
+      "get": {
+        "operationId": "getFileContent",
+        "summary": "Download a file",
+        "tags": ["Files"],
+        "description": "The file's bytes, exactly as uploaded. Content-Disposition names the file (with its real extension, such as .3mf) and Content-Length is its size. HEAD answers the same headers with no body, after checking the bytes are in storage. A file of a model in the trash is 404.\n\nThis is the scripted download. The Open in Bambu Studio and Open in OrcaSlicer buttons on a model page use short-lived slicer links instead, made by the web app for a signed-in person; a token cannot make one.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The file's id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file. Content-Type is the file's own (model/3mf, model/stl, model/step, or text/plain; charset=utf-8 for .scad).",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "attachment, with the file's name"
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "The file's size in bytes"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The bytes cannot be read from storage right now (message says so), or the token could not be checked. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The bytes cannot be read from storage right now (message says so), or the token could not be checked. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable",
+                  "message": "This file is unavailable right now"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "getFileContent-head",
+        "summary": "Download a file (headers only)",
+        "tags": ["Files"],
+        "description": "The same status and headers as the GET, with no body. The file's bytes, exactly as uploaded. Content-Disposition names the file (with its real extension, such as .3mf) and Content-Length is its size. HEAD answers the same headers with no body, after checking the bytes are in storage. A file of a model in the trash is 404.\n\nThis is the scripted download. The Open in Bambu Studio and Open in OrcaSlicer buttons on a model page use short-lived slicer links instead, made by the web app for a signed-in person; a token cannot make one.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The file's id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file. Content-Type is the file's own (model/3mf, model/stl, model/step, or text/plain; charset=utf-8 for .scad).",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "attachment, with the file's name"
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "The file's size in bytes"
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+          },
+          "503": {
+            "description": "The bytes cannot be read from storage right now (message says so), or the token could not be checked. Try again shortly."
+          }
+        }
+      }
+    },
+    "/models/{id}/tags/{tag}": {
+      "put": {
+        "operationId": "addTag",
+        "summary": "Tag a model",
+        "tags": ["Tags and collections"],
+        "description": "Adds the tag to the model, making the tag if it is new. A tag the model already has, in any case, is done all the same. A model in the trash is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The model's id"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "\\S"
+            },
+            "example": "desk",
+            "in": "path",
+            "name": "tag",
+            "required": true,
+            "description": "The tag, 1 to 100 characters, URL-encoded; matched ignoring case"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "The tag or collection name is blank",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The tag or collection name is blank"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "params/tag must match pattern \"\\S\""
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeTag",
+        "summary": "Untag a model",
+        "tags": ["Tags and collections"],
+        "description": "Takes the tag off the model; the tag itself stays. A tag the model does not have is done all the same. A model in the trash is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The model's id"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "\\S"
+            },
+            "example": "desk",
+            "in": "path",
+            "name": "tag",
+            "required": true,
+            "description": "The tag, 1 to 100 characters, URL-encoded; matched ignoring case"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "The tag or collection name is blank",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The tag or collection name is blank"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "params/tag must match pattern \"\\S\""
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/collections/{name}/models/{id}": {
+      "put": {
+        "operationId": "addToCollection",
+        "summary": "Put a model in a collection",
+        "tags": ["Tags and collections"],
+        "description": "Puts the model in the collection, making the collection if it is new. A model can be in many collections. Doing it twice is done all the same. A model in the trash is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "\\S"
+            },
+            "example": "Office",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "description": "The collection, 1 to 100 characters, URL-encoded; matched ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The model's id"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "The tag or collection name is blank",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The tag or collection name is blank"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "params/name must match pattern \"\\S\""
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeFromCollection",
+        "summary": "Take a model out of a collection",
+        "tags": ["Tags and collections"],
+        "description": "Takes the model out of the collection; the collection itself stays, even when empty. A model that was not in it is done all the same. A model in the trash is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "\\S"
+            },
+            "example": "Office",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "description": "The collection, 1 to 100 characters, URL-encoded; matched ignoring case"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The model's id"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "The tag or collection name is blank",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "The tag or collection name is blank"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "params/name must match pattern \"\\S\""
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "No such live model or file: the id is unknown, or the model is in the trash. A model in the trash is invisible to the API."
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"],
+                  "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads": {
+      "post": {
+        "operationId": "createUpload",
+        "summary": "Start an upload",
+        "tags": ["Uploads"],
+        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named from the .3mf's MakerWorld title when it has one, else from the file's name.\n\nduplicates says what happens when a live model already holds a file with the same SHA-256: allow (the default) stores it anyway and the result lists the copies; skip stores nothing and the result is failed with code duplicate. A file in the trash never counts.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives, and an upload left unfinished for 24 hours is deleted.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["1.0.0"]
+            },
+            "example": "1.0.0",
+            "in": "header",
+            "name": "tus-resumable",
+            "required": true,
+            "description": "The tus protocol version; always 1.0.0"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 536870912
+            },
+            "example": 5242880,
+            "in": "header",
+            "name": "upload-length",
+            "required": true,
+            "description": "The file's size in bytes, at most 536870912"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "filename Y2FibGUtY2xpcC4zbWY=,modelId MDE5M2E1YzItN2Q0ZS03YjIxLTlmMDAtM2M1YTFlMmI0ZDZm",
+            "in": "header",
+            "name": "upload-metadata",
+            "required": true,
+            "description": "tus Upload-Metadata: comma-separated pairs, each a key, a space and the value in base64. filename is required. modelId adds the file to that live model. batch (1 to 200 characters) groups the uploads that share it; with combine 1 or true they become one model, with combine 0, false or left out each is its own model. modelId cannot be sent with batch or combine. duplicates is skip or allow, allow when left out. Other keys are ignored."
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created. Location is the upload's address, /api/v1/uploads/{id}; send the bytes there. With creation-with-upload, Upload-Offset says how many bytes were taken.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "example": "/api/v1/uploads/0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b"
+                },
+                "description": "The upload's address, relative to the server"
+              },
+              "Tus-Resumable": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "1.0.0"
+              },
+              "Upload-Offset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Bytes taken so far, with creation-with-upload"
+              }
+            }
+          },
+          "400": {
+            "description": "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, has a duplicates other than skip or allow, or breaks a rule above. The body says which.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Upload-Metadata must carry the file's name as filename\n"
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "modelId names no live model: unknown, or in the trash",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The Tus-Resumable header is missing",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Tus-Resumable Required\n"
+              }
+            }
+          },
+          "413": {
+            "description": "Upload-Length is over 536870912 bytes",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Maximum size exceeded\n"
+              }
+            }
+          },
+          "415": {
+            "description": "The file name's extension is not one Platehouse takes",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved\n"
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Something went wrong with that request\n"
+              }
+            }
+          },
+          "501": {
+            "description": "A tus extension Platehouse does not offer: Upload-Defer-Length or Upload-Concat",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "creation-defer-length extension is not (yet) supported.\n"
+              }
+            }
+          },
+          "503": {
+            "description": "JSON: the model named by modelId, or the token, could not be checked (the database is unreachable); try again. Text: a creation that carried the whole file, where the last byte arrived but the import could not be queued: nothing was saved and the upload was removed, so send the file again as a new upload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "The upload could not be queued; nothing was saved. Try again.\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads/{id}": {
+      "head": {
+        "operationId": "resumeUpload",
+        "summary": "Where to resume an upload",
+        "tags": ["Uploads"],
+        "description": "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. Use it after a cut-off, such as a network change. Once the file has been imported, Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed with nothing saved, the answer is 410, and GET /uploads/{id}/result says why. An upload removed by the 24-hour sweep, or because its import could not be queued, is 404.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The upload's id: the last segment of the Location that POST /uploads answered"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["1.0.0"]
+            },
+            "example": "1.0.0",
+            "in": "header",
+            "name": "tus-resumable",
+            "required": true,
+            "description": "The tus protocol version; always 1.0.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upload-Offset and Upload-Length; no body",
+            "headers": {
+              "Upload-Offset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Bytes received"
+              },
+              "Upload-Length": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "The upload's size"
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued"
+          },
+          "410": {
+            "description": "The import failed and nothing was saved. GET /uploads/{id}/result says why; send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)"
+          },
+          "412": {
+            "description": "The Tus-Resumable header is missing"
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong"
+          },
+          "503": {
+            "description": "Platehouse cannot answer right now: its database or file store is unreachable, or the token could not be checked. Nothing was changed. Try again shortly."
+          }
+        }
+      },
+      "patch": {
+        "operationId": "sendUploadBytes",
+        "summary": "Send an upload's bytes",
+        "tags": ["Uploads"],
+        "description": "Appends the request body to the upload at Upload-Offset, which must equal the bytes received so far (0 for the first request). One PATCH may carry the whole file, as curl does, or the file may be sent in chunks of any size, each starting where the last ended. After a cut-off, ask HEAD /uploads/{id} for the offset and carry on.\n\nWhen the last byte lands, the file is queued for import; read GET /uploads/{id}/result for the outcome. A single request may take up to about 72 minutes, enough to send 512 MiB at 1 Mbit/s.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/offset+octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "The file's bytes from Upload-Offset on: all of them, or the next chunk"
+              }
+            }
+          },
+          "description": "The file's bytes from Upload-Offset on: all of them, or the next chunk"
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The upload's id: the last segment of the Location that POST /uploads answered"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["1.0.0"]
+            },
+            "example": "1.0.0",
+            "in": "header",
+            "name": "tus-resumable",
+            "required": true,
+            "description": "The tus protocol version; always 1.0.0"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "example": 0,
+            "in": "header",
+            "name": "upload-offset",
+            "required": true,
+            "description": "Where this body starts: the bytes received so far"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["application/offset+octet-stream"]
+            },
+            "example": "application/offset+octet-stream",
+            "in": "header",
+            "name": "content-type",
+            "required": true,
+            "description": "Always application/offset+octet-stream"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken; Upload-Offset is the new offset",
+            "headers": {
+              "Upload-Offset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Bytes received, this body included"
+              }
+            }
+          },
+          "400": {
+            "description": "A tus header is malformed, or another request on this upload took it over (ask HEAD for the offset and carry on)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Invalid upload-offset\n"
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Upload-Offset or the Content-Type application/offset+octet-stream is missing",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Content-Type header required\n"
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "The file for this url was not found\n"
+              }
+            }
+          },
+          "409": {
+            "description": "Upload-Offset is not the number of bytes received; ask HEAD for it",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Upload-Offset conflict\n"
+              }
+            }
+          },
+          "410": {
+            "description": "The upload is over: it was imported, or its import failed with nothing saved. GET /uploads/{id}/result says which; if it failed, send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "The file for this url no longer exists\n"
+              }
+            }
+          },
+          "412": {
+            "description": "The Tus-Resumable header is missing",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Tus-Resumable Required\n"
+              }
+            }
+          },
+          "413": {
+            "description": "The body runs past Upload-Length",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "upload's size exceeded\n"
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Something went wrong with that request\n"
+              }
+            }
+          },
+          "503": {
+            "description": "Text: the last byte arrived but the import could not be queued: nothing was saved and the upload was removed, so send the file again as a new upload. JSON: the token could not be checked (the database is unreachable); try again.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "The upload could not be queued; nothing was saved. Try again.\n"
+              },
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads/{id}/result": {
+      "get": {
+        "operationId": "getUploadResult",
+        "summary": "What became of an upload",
+        "tags": ["Uploads"],
+        "description": "pending while the upload is still arriving or being imported; done with the model and file it made or joined; failed with a sentence saying why. Poll every second or two until it is not pending. A result is kept for 24 hours.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The upload's id: the last segment of the Location that POST /uploads answered"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upload's state. pending while it is arriving or being imported; done with the model and file, and duplicates: the files of live models that already held the same bytes (empty when none did); or failed with a message. A duplicate refused under duplicates skip is failed with code duplicate and the duplicates it matched, so the client can point at the model or send the file again with duplicates allow. Other failures carry no code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["pending", "done", "failed"]
+                    },
+                    "modelId": {
+                      "type": "string",
+                      "description": "With done: the model"
+                    },
+                    "fileId": {
+                      "type": "string",
+                      "description": "With done: the new file"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "With failed: why, in a sentence"
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["duplicate"],
+                      "description": "With failed: duplicate when a duplicate was skipped; else absent"
+                    },
+                    "duplicates": {
+                      "type": "array",
+                      "description": "With done, and with failed code duplicate: the live files that already held the same bytes, oldest first, at most 10. A file in a trashed model is never listed.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "modelId": {
+                            "type": "string"
+                          },
+                          "modelName": {
+                            "type": "string"
+                          },
+                          "fileId": {
+                            "type": "string"
+                          },
+                          "fileName": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["modelId", "modelName", "fileId", "fileName"]
+                      }
+                    }
+                  },
+                  "required": ["status"]
+                },
+                "examples": {
+                  "done": {
+                    "summary": "Imported",
+                    "value": {
+                      "status": "done",
+                      "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                      "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+                      "duplicates": []
+                    }
+                  },
+                  "pending": {
+                    "summary": "Still arriving or importing",
+                    "value": {
+                      "status": "pending"
+                    }
+                  },
+                  "duplicate": {
+                    "summary": "Skipped: already in the library (duplicates skip)",
+                    "value": {
+                      "status": "failed",
+                      "error": "This file is already in the library, in the model \"Cable clip\" (id 0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f), so it was skipped; nothing was saved",
+                      "code": "duplicate",
+                      "duplicates": [
+                        {
+                          "modelId": "0193a5c2-7d4e-7b21-9f00-3c5a1e2b4d6f",
+                          "modelName": "Cable clip",
+                          "fileId": "0193a5c2-7d52-7c10-8a11-2b3c4d5e6f70",
+                          "fileName": "cable-clip.3mf"
+                        }
+                      ]
+                    }
+                  },
+                  "failed": {
+                    "summary": "Not imported",
+                    "value": {
+                      "status": "failed",
+                      "error": "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["unauthorized"]
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unauthorized"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload, or its result is more than 24 hours old",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "not_found"
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": ["URI Too Long"]
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": ["FST_ERR_MAX_PARAM_LENGTH"]
+                    },
+                    "statusCode": {
+                      "type": "integer",
+                      "enum": [414]
+                    }
+                  },
+                  "required": ["error", "code", "statusCode"]
+                },
+                "example": {
+                  "error": "URI Too Long",
+                  "code": "FST_ERR_MAX_PARAM_LENGTH",
+                  "statusCode": 414
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "internal"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The result cannot be read right now; try again shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "description": "A short code word: bad_request, not_found, exists, unauthorized, unavailable or internal"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "A sentence a person can read, when there is more to say"
+                    }
+                  },
+                  "required": ["error"]
+                },
+                "example": {
+                  "error": "unavailable",
+                  "message": "The upload's result cannot be read right now. Try again shortly."
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "getUploadResult-head",
+        "summary": "What became of an upload (headers only)",
+        "tags": ["Uploads"],
+        "description": "The same status and headers as the GET, with no body. pending while the upload is still arriving or being imported; done with the model and file it made or joined; failed with a sentence saying why. Poll every second or two until it is not pending. A result is kept for 24 hours.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "example": "0193a5c2-8e11-7c42-a1b3-5d6e7f809a1b",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The upload's id: the last segment of the Location that POST /uploads answered"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upload's state. pending while it is arriving or being imported; done with the model and file, and duplicates: the files of live models that already held the same bytes (empty when none did); or failed with a message. A duplicate refused under duplicates skip is failed with code duplicate and the duplicates it matched, so the client can point at the model or send the file again with duplicates allow. Other failures carry no code."
+          },
+          "401": {
+            "description": "No token, or not a live one: missing, malformed, unknown or revoked. The answer carries WWW-Authenticate: Bearer. Cookies are never read.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string",
+                  "enum": ["Bearer"]
+                },
+                "description": "Always Bearer"
+              }
+            }
+          },
+          "404": {
+            "description": "No such upload, or its result is more than 24 hours old"
+          },
+          "414": {
+            "description": "A path parameter is over 100 characters once percent-decoded. The server answers this before it reads the token, in its own error shape rather than the API's."
+          },
+          "500": {
+            "description": "Something unexpected went wrong. The cause is in Platehouse's log and never in the answer. Retrying may work."
+          },
+          "503": {
+            "description": "The result cannot be read right now; try again shortly"
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://platehouse.example.com/api/v1",
+      "description": "This Platehouse server"
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Models",
+      "description": "Search the library, read a model with its files, plates and estimates, and make an empty model to upload files into."
+    },
+    {
+      "name": "Files",
+      "description": "Read one file's details, or download its bytes."
+    },
+    {
+      "name": "Tags and collections",
+      "description": "Add a tag to a model or take it off, and put a model in a collection or take it out. A tag or collection is made on first use."
+    },
+    {
+      "name": "Uploads",
+      "description": "Send a file with the tus 1.0.0 resumable upload protocol (https://tus.io/protocols/resumable-upload): start the upload, send its bytes in one request or in chunks, resume after a cut-off, then read what became of it."
+    },
+    {
+      "name": "About the API",
+      "description": "This document, in OpenAPI 3.0 JSON."
+    }
+  ]
+}

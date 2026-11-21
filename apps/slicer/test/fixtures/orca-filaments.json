@@ -1,0 +1,3676 @@
+{
+  "orca": "2.5.0",
+  "orcaSourceCommit": "40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19",
+  "printers": [
+    "Bambu Lab A1 0.2 nozzle",
+    "Bambu Lab A1 0.4 nozzle",
+    "Bambu Lab A1 0.6 nozzle",
+    "Bambu Lab A1 0.8 nozzle",
+    "Bambu Lab A1 mini 0.2 nozzle",
+    "Bambu Lab A1 mini 0.4 nozzle",
+    "Bambu Lab A1 mini 0.6 nozzle",
+    "Bambu Lab A1 mini 0.8 nozzle",
+    "Bambu Lab A2L 0.2 nozzle",
+    "Bambu Lab A2L 0.4 nozzle",
+    "Bambu Lab A2L 0.6 nozzle",
+    "Bambu Lab A2L 0.8 nozzle",
+    "Bambu Lab H2C 0.2 nozzle",
+    "Bambu Lab H2C 0.4 nozzle",
+    "Bambu Lab H2C 0.6 nozzle",
+    "Bambu Lab H2C 0.8 nozzle",
+    "Bambu Lab H2D 0.2 nozzle",
+    "Bambu Lab H2D 0.4 nozzle",
+    "Bambu Lab H2D 0.6 nozzle",
+    "Bambu Lab H2D 0.8 nozzle",
+    "Bambu Lab H2D Pro 0.2 nozzle",
+    "Bambu Lab H2D Pro 0.4 nozzle",
+    "Bambu Lab H2D Pro 0.6 nozzle",
+    "Bambu Lab H2D Pro 0.8 nozzle",
+    "Bambu Lab H2S 0.2 nozzle",
+    "Bambu Lab H2S 0.4 nozzle",
+    "Bambu Lab H2S 0.6 nozzle",
+    "Bambu Lab H2S 0.8 nozzle",
+    "Bambu Lab P1P 0.2 nozzle",
+    "Bambu Lab P1P 0.4 nozzle",
+    "Bambu Lab P1P 0.6 nozzle",
+    "Bambu Lab P1P 0.8 nozzle",
+    "Bambu Lab P1S 0.2 nozzle",
+    "Bambu Lab P1S 0.4 nozzle",
+    "Bambu Lab P1S 0.6 nozzle",
+    "Bambu Lab P1S 0.8 nozzle",
+    "Bambu Lab P2S 0.2 nozzle",
+    "Bambu Lab P2S 0.4 nozzle",
+    "Bambu Lab P2S 0.6 nozzle",
+    "Bambu Lab P2S 0.8 nozzle",
+    "Bambu Lab X1 0.2 nozzle",
+    "Bambu Lab X1 0.4 nozzle",
+    "Bambu Lab X1 0.6 nozzle",
+    "Bambu Lab X1 0.8 nozzle",
+    "Bambu Lab X1 Carbon 0.2 nozzle",
+    "Bambu Lab X1 Carbon 0.4 nozzle",
+    "Bambu Lab X1 Carbon 0.6 nozzle",
+    "Bambu Lab X1 Carbon 0.8 nozzle",
+    "Bambu Lab X1E 0.2 nozzle",
+    "Bambu Lab X1E 0.4 nozzle",
+    "Bambu Lab X1E 0.6 nozzle",
+    "Bambu Lab X1E 0.8 nozzle",
+    "Bambu Lab X2D 0.2 nozzle",
+    "Bambu Lab X2D 0.4 nozzle",
+    "Bambu Lab X2D 0.6 nozzle",
+    "Bambu Lab X2D 0.8 nozzle"
+  ],
+  "filaments": {
+    "Bambu ABS @BBL A1": {
+      "type": "ABS",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL A1 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL H2C": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL H2C 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL H2C 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL H2C 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL H2D": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL H2D 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL H2D 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL H2D 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL H2DP": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D Pro 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL H2DP 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL H2DP 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D Pro 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL H2DP 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D Pro 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL H2S": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2S 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL H2S 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL H2S 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2S 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL H2S 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2S 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL P1P": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P1P 0.4 nozzle", "Bambu Lab P1P 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL P1P 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL P1P 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P1P 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL P1S 0.4 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P1S 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL P1S 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P1S 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL P2S": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P2S 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL P2S 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL P2S 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P2S 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL P2S 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P2S 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL X1C": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle"
+      ]
+    },
+    "Bambu ABS @BBL X1C 0.2 nozzle": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle"
+      ]
+    },
+    "Bambu ABS @BBL X1C 0.6 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X1 Carbon 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL X1C 0.8 nozzle": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Bambu ABS @BBL X1E": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X1E 0.4 nozzle", "Bambu Lab X1E 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL X1E 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X1E 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL X1E 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X1E 0.8 nozzle"]
+    },
+    "Bambu ABS @BBL X2D": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.6 nozzle"]
+    },
+    "Bambu ABS @BBL X2D 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Bambu ABS @BBL X2D 0.4 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Bambu ABS @BBL X2D 0.8 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL A1 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL A1 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab A1 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL A1 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL H2C": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL H2C 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL H2C 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL H2C 0.8 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL H2D 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL H2D 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL H2D 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL H2D 0.8 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL H2DP 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL H2DP 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D Pro 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL H2DP 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D Pro 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL H2DP 0.8 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D Pro 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL H2S": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2S 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL H2S 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL H2S 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2S 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL H2S 0.8 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2S 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL P2S 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL P2S 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab P2S 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL P2S 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab P2S 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL P2S 0.8 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab P2S 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL X1 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X1 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL X1 0.6 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X1 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL X1C": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Bambu ASA @BBL X1C 0.2 nozzle": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P1P 0.2 nozzle",
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle"
+      ]
+    },
+    "Bambu ASA @BBL X1C 0.4 nozzle": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle"
+      ]
+    },
+    "Bambu ASA @BBL X1E": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X1E 0.6 nozzle", "Bambu Lab X1E 0.8 nozzle"]
+    },
+    "Bambu ASA @BBL X1E 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X1E 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL X1E 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X1E 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL X2D": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle"]
+    },
+    "Bambu ASA @BBL X2D 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Bambu ASA @BBL X2D 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Bambu ASA @BBL X2D 0.8 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL A1": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL A1 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL A1 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL A1M": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 mini 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL A1M 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL A1M 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 mini 0.6 nozzle", "Bambu Lab A1 mini 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL A2L": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A2L 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL A2L 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL A2L 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A2L 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL A2L 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A2L 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2C": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2C 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2C 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2C 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2D 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2D 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2D 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2D 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2DP 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2DP 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D Pro 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2DP 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D Pro 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2DP 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D Pro 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2S": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2S 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2S 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2S 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2S 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL H2S 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2S 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL P1P 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P1P 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL P1S 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P1S 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL P2S 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL P2S 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL P2S 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL P2S 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.8 nozzle"]
+    },
+    "Bambu PETG HF @BBL X1C": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1E 0.4 nozzle"
+      ]
+    },
+    "Bambu PETG HF @BBL X1C 0.2 nozzle": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1P 0.2 nozzle",
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Bambu PETG HF @BBL X1C 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X1 Carbon 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL X1C 0.8 nozzle": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Bambu PETG HF @BBL X2D": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.6 nozzle"]
+    },
+    "Bambu PETG HF @BBL X2D 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Bambu PETG HF @BBL X2D 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Bambu PETG HF @BBL X2D 0.8 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A1": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A1 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A1M": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Bambu PLA Basic @BBL A1M 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A2L 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A2L 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A2L 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A2L 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A2L 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL A2L 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A2L 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2C": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2C 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2C 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2C 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2D": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2D 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2D 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2D 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2DP": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D Pro 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2DP 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2DP 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D Pro 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2DP 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D Pro 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2S": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2S 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2S 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2S 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2S 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL H2S 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2S 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P1P": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1P 0.4 nozzle", "Bambu Lab P1P 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P1P 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P1P 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1P 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P1S 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1S 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P1S 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1S 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P2S": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P2S 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P2S 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P2S 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P2S 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL P2S 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P2S 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL X1": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X1 0.4 nozzle", "Bambu Lab X1 0.6 nozzle", "Bambu Lab X1 0.8 nozzle"]
+    },
+    "Bambu PLA Basic @BBL X1C": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle"
+      ]
+    },
+    "Bambu PLA Basic @BBL X1C 0.2 nozzle": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Bambu PLA Basic @BBL X1C 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X1 Carbon 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL X1C 0.8 nozzle": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Bambu PLA Basic @BBL X2D 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Bambu PLA Basic @BBL X2D 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Bambu PLA Basic @BBL X2D 0.6 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle"]
+    },
+    "Bambu PLA Basic @BBL X2D 0.8 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Bambu TPU 95A @BBL A1": {
+      "type": "TPU",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Bambu TPU 95A @BBL A1M": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL A2L": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL H2C": {
+      "type": "TPU",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Bambu TPU 95A @BBL H2C 0.4 nozzle": {
+      "type": "TPU",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Bambu TPU 95A @BBL H2D": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL H2DP": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL H2S": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL P1P": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL P2S": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL X1": {
+      "type": "TPU",
+      "printers": ["Bambu Lab X1 0.4 nozzle", "Bambu Lab X1 0.6 nozzle", "Bambu Lab X1 0.8 nozzle"]
+    },
+    "Bambu TPU 95A @BBL X1C": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Bambu TPU 95A @BBL X2D": {
+      "type": "TPU",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Bambu TPU 95A @BBL X2D 0.4 nozzle": {
+      "type": "TPU",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic ABS": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @0.2 nozzle": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle"
+      ]
+    },
+    "Generic ABS @BBL A1": {
+      "type": "ABS",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic ABS @BBL A1 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic ABS @BBL H2C": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic ABS @BBL H2C 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic ABS @BBL H2C 0.4 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic ABS @BBL H2D": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @BBL H2D 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic ABS @BBL H2DP": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @BBL H2DP 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic ABS @BBL H2S 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic ABS @BBL H2S 0.4 nozzle": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @BBL P1P": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @BBL P1P 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic ABS @BBL P2S": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @BBL P2S 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic ABS @BBL X1E": {
+      "type": "ABS",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic ABS @BBL X1E 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X1E 0.2 nozzle"]
+    },
+    "Generic ABS @BBL X2D": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic ABS @BBL X2D 0.2 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic ABS @BBL X2D 0.4 nozzle": {
+      "type": "ABS",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic ASA": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @0.2 nozzle": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle"
+      ]
+    },
+    "Generic ASA @BBL A1": {
+      "type": "ASA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic ASA @BBL A1 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic ASA @BBL H2C": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic ASA @BBL H2C 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic ASA @BBL H2C 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic ASA @BBL H2D": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @BBL H2D 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic ASA @BBL H2DP": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @BBL H2DP 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic ASA @BBL H2S 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic ASA @BBL H2S 0.4 nozzle": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @BBL P1P": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @BBL P1P 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic ASA @BBL P2S": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @BBL P2S 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic ASA @BBL X1E": {
+      "type": "ASA",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic ASA @BBL X1E 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X1E 0.2 nozzle"]
+    },
+    "Generic ASA @BBL X2D": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic ASA @BBL X2D 0.2 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic ASA @BBL X2D 0.4 nozzle": {
+      "type": "ASA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic BVOH @BBL A1": {
+      "type": "BVOH",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic BVOH @BBL A1M": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL A2L": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL H2C": {
+      "type": "BVOH",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic BVOH @BBL H2C 0.4 nozzle": {
+      "type": "BVOH",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic BVOH @BBL H2D": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL H2DP": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL H2S 0.4 nozzle": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL P2S": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL X1C": {
+      "type": "BVOH",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic BVOH @BBL X2D": {
+      "type": "BVOH",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic BVOH @BBL X2D 0.4 nozzle": {
+      "type": "BVOH",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic EVA @BBL A1": {
+      "type": "EVA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic EVA @BBL A1M": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL A2L": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL H2C": {
+      "type": "EVA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic EVA @BBL H2C 0.4 nozzle": {
+      "type": "EVA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic EVA @BBL H2D": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL H2DP": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL H2S 0.4 nozzle": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL P2S": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL X1C": {
+      "type": "EVA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic EVA @BBL X2D": {
+      "type": "EVA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic EVA @BBL X2D 0.4 nozzle": {
+      "type": "EVA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic HIPS @BBL A1": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic HIPS @BBL A1 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL A1M": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL A1M 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL A2L": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL A2L 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL H2C": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic HIPS @BBL H2C 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL H2C 0.4 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic HIPS @BBL H2D": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL H2D 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL H2DP": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL H2DP 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL H2S 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL H2S 0.4 nozzle": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL P2S": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL P2S 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL X1C": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL X1C 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": [
+        "Bambu Lab P1P 0.2 nozzle",
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Generic HIPS @BBL X2D": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic HIPS @BBL X2D 0.2 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic HIPS @BBL X2D 0.4 nozzle": {
+      "type": "HIPS",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PA": {
+      "type": "PA",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PA @BBL A1": {
+      "type": "PA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PA @BBL H2C": {
+      "type": "PA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PA @BBL H2C 0.4 nozzle": {
+      "type": "PA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PA @BBL H2D": {
+      "type": "PA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PA @BBL H2DP": {
+      "type": "PA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PA @BBL H2S 0.4 nozzle": {
+      "type": "PA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PA @BBL P1P": {
+      "type": "PA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PA @BBL P2S": {
+      "type": "PA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PA @BBL X2D": {
+      "type": "PA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PA @BBL X2D 0.4 nozzle": {
+      "type": "PA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PA-CF": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL A1": {
+      "type": "PA-CF",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PA-CF @BBL H2C": {
+      "type": "PA-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PA-CF @BBL H2C 0.4 nozzle": {
+      "type": "PA-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PA-CF @BBL H2D": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL H2DP": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL H2S 0.4 nozzle": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL P1P": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL P2S": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL X1E": {
+      "type": "PA-CF",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PA-CF @BBL X2D": {
+      "type": "PA-CF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PA-CF @BBL X2D 0.4 nozzle": {
+      "type": "PA-CF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PC": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Generic PC @0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab X1 0.2 nozzle", "Bambu Lab X1 Carbon 0.2 nozzle"]
+    },
+    "Generic PC @BBL A1": {
+      "type": "PC",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PC @BBL A1 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic PC @BBL H2C": {
+      "type": "PC",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PC @BBL H2C 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic PC @BBL H2C 0.4 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PC @BBL H2D": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL H2D 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic PC @BBL H2DP": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL H2DP 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic PC @BBL H2S": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL H2S 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic PC @BBL P1P": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL P1P 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic PC @BBL P1S": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL P1S 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab P1S 0.2 nozzle"]
+    },
+    "Generic PC @BBL P2S": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL P2S 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic PC @BBL X1E": {
+      "type": "PC",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PC @BBL X1E 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab X1E 0.2 nozzle"]
+    },
+    "Generic PC @BBL X2D": {
+      "type": "PC",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PC @BBL X2D 0.2 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic PC @BBL X2D 0.4 nozzle": {
+      "type": "PC",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PCTG @BBL A1": {
+      "type": "PCTG",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PCTG @BBL A1M": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL A2L": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL H2C": {
+      "type": "PCTG",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PCTG @BBL H2C 0.4 nozzle": {
+      "type": "PCTG",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PCTG @BBL H2D": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL H2DP": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL H2S 0.4 nozzle": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL P2S": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL X1C": {
+      "type": "PCTG",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PCTG @BBL X2D": {
+      "type": "PCTG",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PCTG @BBL X2D 0.4 nozzle": {
+      "type": "PCTG",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PE @BBL A1": {
+      "type": "PE",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PE @BBL A1M": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL A2L": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL H2C": {
+      "type": "PE",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PE @BBL H2C 0.4 nozzle": {
+      "type": "PE",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PE @BBL H2D": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL H2DP": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL H2S 0.4 nozzle": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL P2S": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL X1C": {
+      "type": "PE",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PE @BBL X2D": {
+      "type": "PE",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PE @BBL X2D 0.4 nozzle": {
+      "type": "PE",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PE-CF @BBL A1": {
+      "type": "PE-CF",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PE-CF @BBL A1M": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL A2L": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL H2C": {
+      "type": "PE-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PE-CF @BBL H2C 0.4 nozzle": {
+      "type": "PE-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PE-CF @BBL H2D": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL H2DP": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL H2S 0.4 nozzle": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL P2S": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL X1C": {
+      "type": "PE-CF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PE-CF @BBL X2D": {
+      "type": "PE-CF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PE-CF @BBL X2D 0.4 nozzle": {
+      "type": "PE-CF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PETG": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @0.2 nozzle": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Generic PETG @BBL A1": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PETG @BBL A1 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic PETG @BBL A1M": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL A1M 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Generic PETG @BBL A2L": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL A2L 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Generic PETG @BBL H2C": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PETG @BBL H2C 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic PETG @BBL H2C 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PETG @BBL H2D": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL H2D 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic PETG @BBL H2DP": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL H2DP 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic PETG @BBL H2S": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL H2S 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic PETG @BBL P1P": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL P1P 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic PETG @BBL P2S": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PETG @BBL P2S 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic PETG @BBL X2D": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PETG @BBL X2D 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic PETG @BBL X2D 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PETG HF @BBL A1": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PETG HF @BBL A1 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL A1M": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL A1M 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL A2L": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL A2L 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL H2C": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PETG HF @BBL H2C 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL H2C 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PETG HF @BBL H2D": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL H2D 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL H2DP": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL H2DP 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL H2S 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL H2S 0.4 nozzle": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL P1P": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL P1P 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL P1S 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P1S 0.4 nozzle"]
+    },
+    "Generic PETG HF @BBL P1S 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P1S 0.6 nozzle"]
+    },
+    "Generic PETG HF @BBL P2S": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.6 nozzle", "Bambu Lab P2S 0.8 nozzle"]
+    },
+    "Generic PETG HF @BBL P2S 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL P2S 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab P2S 0.4 nozzle"]
+    },
+    "Generic PETG HF @BBL X1 0.6 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X1 0.4 nozzle", "Bambu Lab X1 0.6 nozzle", "Bambu Lab X1 0.8 nozzle"]
+    },
+    "Generic PETG HF @BBL X1C": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL X1C 0.2 nozzle": {
+      "type": "PETG",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Generic PETG HF @BBL X2D": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PETG HF @BBL X2D 0.2 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic PETG HF @BBL X2D 0.4 nozzle": {
+      "type": "PETG",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PETG-CF @BBL A1": {
+      "type": "PETG-CF",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PETG-CF @BBL A1M": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL A2L": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL H2C": {
+      "type": "PETG-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PETG-CF @BBL H2C 0.4 nozzle": {
+      "type": "PETG-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PETG-CF @BBL H2D": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL H2DP": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL H2S": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL P1P": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL P2S": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL X1C": {
+      "type": "PETG-CF",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PETG-CF @BBL X2D": {
+      "type": "PETG-CF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PETG-CF @BBL X2D 0.4 nozzle": {
+      "type": "PETG-CF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PHA @BBL A1": {
+      "type": "PHA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PHA @BBL A1M": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL A2L": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL H2C": {
+      "type": "PHA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PHA @BBL H2C 0.4 nozzle": {
+      "type": "PHA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PHA @BBL H2D": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL H2DP": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL H2S 0.4 nozzle": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL P2S": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL X1C": {
+      "type": "PHA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PHA @BBL X2D": {
+      "type": "PHA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PHA @BBL X2D 0.4 nozzle": {
+      "type": "PHA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PLA": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @0.2 nozzle": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Generic PLA @BBL A1": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PLA @BBL A1 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic PLA @BBL A1M": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL A1M 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Generic PLA @BBL A2L": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL A2L 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Generic PLA @BBL H2C": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PLA @BBL H2C 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic PLA @BBL H2C 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PLA @BBL H2D": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL H2D 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic PLA @BBL H2DP": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL H2DP 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic PLA @BBL H2S": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL H2S 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic PLA @BBL P1P": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL P1P 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic PLA @BBL P2S": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA @BBL P2S 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic PLA @BBL X2D": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PLA @BBL X2D 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic PLA @BBL X2D 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PLA High Speed @BBL A1": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PLA High Speed @BBL A1 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL A1M": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL A1M 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL A2L": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL A2L 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL H2C": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PLA High Speed @BBL H2C 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL H2C 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PLA High Speed @BBL H2D": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL H2D 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL H2DP": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL H2DP 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2D Pro 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL H2S": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL H2S 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2S 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL P1P": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL P1P 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL P2S": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL P2S 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL X1C": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL X1C 0.2 nozzle": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Generic PLA High Speed @BBL X2D": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PLA High Speed @BBL X2D 0.2 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic PLA High Speed @BBL X2D 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PLA Silk": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL A1": {
+      "type": "PLA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PLA Silk @BBL A1M": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL A2L": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL H2C": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PLA Silk @BBL H2C 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PLA Silk @BBL H2D": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL H2DP": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL H2S": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL P1P": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL P2S": {
+      "type": "PLA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA Silk @BBL X2D": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PLA Silk @BBL X2D 0.4 nozzle": {
+      "type": "PLA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PLA-CF": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL A1": {
+      "type": "PLA-CF",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PLA-CF @BBL A1M": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL A2L": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL H2C": {
+      "type": "PLA-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PLA-CF @BBL H2C 0.4 nozzle": {
+      "type": "PLA-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PLA-CF @BBL H2D": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL H2DP": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL H2S": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL P1P": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL P2S": {
+      "type": "PLA-CF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PLA-CF @BBL X2D": {
+      "type": "PLA-CF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PLA-CF @BBL X2D 0.4 nozzle": {
+      "type": "PLA-CF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PP @BBL A1": {
+      "type": "PP",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PP @BBL A1M": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL A2L": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL H2C": {
+      "type": "PP",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PP @BBL H2C 0.4 nozzle": {
+      "type": "PP",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PP @BBL H2D": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL H2DP": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL H2S 0.4 nozzle": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL P2S": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL X1C": {
+      "type": "PP",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PP @BBL X2D": {
+      "type": "PP",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PP @BBL X2D 0.4 nozzle": {
+      "type": "PP",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PP-CF @BBL A1": {
+      "type": "PP-CF",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PP-CF @BBL H2C": {
+      "type": "PP-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PP-CF @BBL H2C 0.4 nozzle": {
+      "type": "PP-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PP-CF @BBL H2D": {
+      "type": "PP-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PP-CF @BBL H2DP": {
+      "type": "PP-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PP-CF @BBL H2S 0.4 nozzle": {
+      "type": "PP-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PP-CF @BBL P2S": {
+      "type": "PP-CF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PP-CF @BBL X1C": {
+      "type": "PP-CF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PP-CF @BBL X2D": {
+      "type": "PP-CF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PP-CF @BBL X2D 0.4 nozzle": {
+      "type": "PP-CF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PP-GF @BBL A1": {
+      "type": "PP-GF",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PP-GF @BBL H2C": {
+      "type": "PP-GF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PP-GF @BBL H2C 0.4 nozzle": {
+      "type": "PP-GF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PP-GF @BBL H2D": {
+      "type": "PP-GF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PP-GF @BBL H2DP": {
+      "type": "PP-GF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PP-GF @BBL H2S 0.4 nozzle": {
+      "type": "PP-GF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PP-GF @BBL P2S": {
+      "type": "PP-GF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PP-GF @BBL X1C": {
+      "type": "PP-GF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PP-GF @BBL X2D": {
+      "type": "PP-GF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PP-GF @BBL X2D 0.4 nozzle": {
+      "type": "PP-GF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PPA-CF @BBL H2C": {
+      "type": "PPA-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PPA-CF @BBL H2C 0.4 nozzle": {
+      "type": "PPA-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PPA-CF @BBL H2D": {
+      "type": "PPA-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-CF @BBL H2DP": {
+      "type": "PPA-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-CF @BBL H2S 0.4 nozzle": {
+      "type": "PPA-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-CF @BBL P2S": {
+      "type": "PPA-CF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-CF @BBL X1C": {
+      "type": "PPA-CF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-CF @BBL X1E": {
+      "type": "PPA-CF",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-CF @BBL X2D": {
+      "type": "PPA-CF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PPA-CF @BBL X2D 0.4 nozzle": {
+      "type": "PPA-CF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PPA-GF @BBL H2C": {
+      "type": "PPA-GF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PPA-GF @BBL H2C 0.4 nozzle": {
+      "type": "PPA-GF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PPA-GF @BBL H2D": {
+      "type": "PPA-GF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-GF @BBL H2DP": {
+      "type": "PPA-GF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-GF @BBL H2S 0.4 nozzle": {
+      "type": "PPA-GF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-GF @BBL P2S": {
+      "type": "PPA-GF",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-GF @BBL X1C": {
+      "type": "PPA-GF",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-GF @BBL X1E": {
+      "type": "PPA-GF",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PPA-GF @BBL X2D": {
+      "type": "PPA-GF",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PPA-GF @BBL X2D 0.4 nozzle": {
+      "type": "PPA-GF",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic PPS @BBL H2C": {
+      "type": "PPS",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PPS @BBL H2C 0.4 nozzle": {
+      "type": "PPS",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PPS @BBL H2D": {
+      "type": "PPS",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PPS @BBL H2DP": {
+      "type": "PPS",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PPS @BBL H2S 0.4 nozzle": {
+      "type": "PPS",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PPS @BBL X1E": {
+      "type": "PPS",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PPS-CF @BBL H2C": {
+      "type": "PPS-CF",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PPS-CF @BBL H2C 0.4 nozzle": {
+      "type": "PPS-CF",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PPS-CF @BBL H2D": {
+      "type": "PPS-CF",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PPS-CF @BBL H2DP": {
+      "type": "PPS-CF",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PPS-CF @BBL H2S 0.4 nozzle": {
+      "type": "PPS-CF",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PPS-CF @BBL X1E": {
+      "type": "PPS-CF",
+      "printers": [
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PVA": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @0.2 nozzle": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab P1S 0.2 nozzle",
+        "Bambu Lab X1 0.2 nozzle",
+        "Bambu Lab X1 Carbon 0.2 nozzle",
+        "Bambu Lab X1E 0.2 nozzle"
+      ]
+    },
+    "Generic PVA @BBL A1": {
+      "type": "PVA",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic PVA @BBL A1 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab A1 0.2 nozzle"]
+    },
+    "Generic PVA @BBL A1M": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL A1M 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab A1 mini 0.2 nozzle"]
+    },
+    "Generic PVA @BBL A2L": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL A2L 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab A2L 0.2 nozzle"]
+    },
+    "Generic PVA @BBL H2C": {
+      "type": "PVA",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic PVA @BBL H2C 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab H2C 0.2 nozzle"]
+    },
+    "Generic PVA @BBL H2C 0.4 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic PVA @BBL H2D": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL H2DP": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL H2S 0.4 nozzle": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL P1P": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL P1P 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab P1P 0.2 nozzle"]
+    },
+    "Generic PVA @BBL P2S": {
+      "type": "PVA",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic PVA @BBL P2S 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab P2S 0.2 nozzle"]
+    },
+    "Generic PVA @BBL X2D": {
+      "type": "PVA",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic PVA @BBL X2D 0.2 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab X2D 0.2 nozzle"]
+    },
+    "Generic PVA @BBL X2D 0.4 nozzle": {
+      "type": "PVA",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic TPU": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL A1": {
+      "type": "TPU",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic TPU @BBL A1M": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL A2L": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL H2C": {
+      "type": "TPU",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic TPU @BBL H2C 0.4 nozzle": {
+      "type": "TPU",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic TPU @BBL H2D": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL H2DP": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL H2S": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL P1P": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL P2S": {
+      "type": "TPU",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic TPU @BBL X2D": {
+      "type": "TPU",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic TPU @BBL X2D 0.4 nozzle": {
+      "type": "TPU",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    },
+    "Generic TPU for AMS @BBL A1": {
+      "type": "TPU-AMS",
+      "printers": ["Bambu Lab A1 0.4 nozzle", "Bambu Lab A1 0.6 nozzle", "Bambu Lab A1 0.8 nozzle"]
+    },
+    "Generic TPU for AMS @BBL A1M": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab A1 mini 0.4 nozzle",
+        "Bambu Lab A1 mini 0.6 nozzle",
+        "Bambu Lab A1 mini 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL A2L": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab A2L 0.4 nozzle",
+        "Bambu Lab A2L 0.6 nozzle",
+        "Bambu Lab A2L 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL H2C": {
+      "type": "TPU-AMS",
+      "printers": ["Bambu Lab H2C 0.6 nozzle", "Bambu Lab H2C 0.8 nozzle"]
+    },
+    "Generic TPU for AMS @BBL H2C 0.4 nozzle": {
+      "type": "TPU-AMS",
+      "printers": ["Bambu Lab H2C 0.4 nozzle"]
+    },
+    "Generic TPU for AMS @BBL H2D": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab H2D 0.4 nozzle",
+        "Bambu Lab H2D 0.6 nozzle",
+        "Bambu Lab H2D 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL H2DP": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab H2D Pro 0.4 nozzle",
+        "Bambu Lab H2D Pro 0.6 nozzle",
+        "Bambu Lab H2D Pro 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL H2S": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab H2S 0.4 nozzle",
+        "Bambu Lab H2S 0.6 nozzle",
+        "Bambu Lab H2S 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL P1P": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab P1P 0.4 nozzle",
+        "Bambu Lab P1P 0.6 nozzle",
+        "Bambu Lab P1P 0.8 nozzle",
+        "Bambu Lab X1 0.4 nozzle",
+        "Bambu Lab X1 0.6 nozzle",
+        "Bambu Lab X1 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL P2S": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab P2S 0.4 nozzle",
+        "Bambu Lab P2S 0.6 nozzle",
+        "Bambu Lab P2S 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL X1C": {
+      "type": "TPU-AMS",
+      "printers": [
+        "Bambu Lab P1S 0.4 nozzle",
+        "Bambu Lab P1S 0.6 nozzle",
+        "Bambu Lab P1S 0.8 nozzle",
+        "Bambu Lab X1 Carbon 0.4 nozzle",
+        "Bambu Lab X1 Carbon 0.6 nozzle",
+        "Bambu Lab X1 Carbon 0.8 nozzle",
+        "Bambu Lab X1E 0.4 nozzle",
+        "Bambu Lab X1E 0.6 nozzle",
+        "Bambu Lab X1E 0.8 nozzle"
+      ]
+    },
+    "Generic TPU for AMS @BBL X2D": {
+      "type": "TPU-AMS",
+      "printers": ["Bambu Lab X2D 0.6 nozzle", "Bambu Lab X2D 0.8 nozzle"]
+    },
+    "Generic TPU for AMS @BBL X2D 0.4 nozzle": {
+      "type": "TPU-AMS",
+      "printers": ["Bambu Lab X2D 0.4 nozzle"]
+    }
+  }
+}

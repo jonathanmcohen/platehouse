@@ -1,0 +1,1441 @@
+// Build plan Task 8: the ingest pipeline. AC-020 (server side), AC-022
+// (fill-only metadata), AC-024 (unsupported types store nothing) and AC-012
+// (an upload during a store outage leaves nothing behind). AC-033 (ingest
+// never waits on a slice) is checked from the source, in
+// test/ingest/no-slicer.test.ts.
+//
+// Order under test: detect -> hash and put the source blob -> parse (each
+// thumbnail put as it comes) -> one transaction for the rows. A failure before
+// the transaction deletes the objects it put and leaves no rows.
+import { createHash, randomBytes } from "node:crypto";
+import { access } from "node:fs/promises";
+import { CreateBucketCommand } from "@aws-sdk/client-s3";
+import type { Kysely, Transaction } from "kysely";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { uuidv7 } from "../../../src/db/ids.js";
+import type { DB } from "../../../src/db/types.js";
+import {
+  createIngest,
+  INGEST_FAILED_MESSAGE,
+  IngestError,
+  IngestOutcomeUnknown,
+  type IngestStore,
+  STORAGE_UNAVAILABLE_MESSAGE,
+  UNKNOWN_FILE_PRINTER,
+} from "../../../src/ingest/ingest.js";
+import { createRename } from "../../../src/library/rename.js";
+import { createBlobStore, StoreUnavailable } from "../../../src/storage/s3.js";
+import { startS3 } from "../support/containers.js";
+import {
+  ASCII_STL,
+  binaryStl,
+  build3mf,
+  buildZip,
+  footprint,
+  type IngestEnv,
+  plainZip,
+  png,
+  SCAD_TEXT,
+  STEP_TEXT,
+  startIngestEnv,
+  writeUpload,
+} from "../support/ingest.js";
+import { marker } from "../support/library.js";
+
+let env: IngestEnv;
+
+beforeAll(async () => {
+  env = await startIngestEnv();
+});
+
+afterAll(async () => {
+  await env?.stop();
+});
+
+const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest();
+
+async function modelRow(id: string) {
+  return env.db
+    .selectFrom("models")
+    .leftJoin("creators", "creators.id", "models.creatorId")
+    .select([
+      "models.name",
+      "models.caption",
+      "models.descriptionMd",
+      "models.licenseSpdx",
+      "models.licenseNote",
+      "creators.name as creator",
+    ])
+    .where("models.id", "=", id)
+    .executeTakeFirstOrThrow();
+}
+
+async function filesOf(modelId: string) {
+  return env.db
+    .selectFrom("files")
+    .selectAll()
+    .where("modelId", "=", modelId)
+    .orderBy("createdAt")
+    .execute();
+}
+
+async function readObject(key: string): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of await env.store.getBlobStream(key)) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+describe("unsupported files", () => {
+  test.each([
+    ["an unsupported extension", "model.obj", Buffer.from("o cube\nv 0 0 0\n")],
+    ["G-code", "plate_1.gcode", Buffer.from("; generated G-code\nG28\n")],
+    ["no extension", "model", build3mf({ plates: 1 })],
+    ["a .3mf that is not a zip", "model.3mf", Buffer.from("this is not a zip archive")],
+    ["a .scad that is binary", "box.scad", Buffer.from([0x63, 0x00, 0x01, 0x02])],
+    ["a .step without its header", "part.step", Buffer.from("HEADER;\nENDSEC;\n")],
+    ["an empty .stl", "part.stl", Buffer.alloc(0)],
+    // 84 bytes or more and named .stl, but not an STL.
+    ["a PNG named .stl", "part.stl", Buffer.concat([png("not an stl"), Buffer.alloc(200)])],
+    ["a zip named .stl", "part.stl", build3mf({ plates: 1 })],
+    ["G-code named .stl", "plate_1.stl", Buffer.from(`; G-code\nG28\n${"G1 X1 Y1\n".repeat(20)}`)],
+  ])("%s is refused and stores nothing: no rows, no objects", async (_label, name, bytes) => {
+    const before = await footprint(env);
+    const tmpPath = await writeUpload(env, bytes);
+    const error = await env.ingest
+      .ingestFile({ tmpPath, originalName: name, target: "new" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(IngestError);
+    expect((error as IngestError).code).toBe("unsupported_type");
+    expect((error as IngestError).message).toMatch(/nothing was saved/);
+    expect(await footprint(env)).toEqual(before);
+  });
+});
+
+describe("one model per file unless combined", () => {
+  test("each file becomes its own model unless combine", async () => {
+    const a = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, ASCII_STL),
+      originalName: "Bracket left.stl",
+      target: "new",
+    });
+    const b = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, ASCII_STL),
+      originalName: "Bracket right.stl",
+      target: "new",
+    });
+    const batch = uuidv7();
+    const c = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, SCAD_TEXT),
+      originalName: "Box.scad",
+      target: { batch, combine: false },
+    });
+    const d = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, STEP_TEXT),
+      originalName: "Box lid.step",
+      target: { batch, combine: false },
+    });
+    expect(new Set([a.modelId, b.modelId, c.modelId, d.modelId]).size).toBe(4);
+    expect((await modelRow(a.modelId)).name).toBe("Bracket left");
+    expect((await modelRow(d.modelId)).name).toBe("Box lid");
+    for (const r of [a, b, c, d]) expect(await filesOf(r.modelId)).toHaveLength(1);
+  });
+
+  test("a file uploaded into an existing model joins it", async () => {
+    const model = await env.repos.models.create({ name: `Existing ${uuidv7()}` });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, binaryStl()),
+      originalName: "Spare part.stl",
+      target: { modelId: model.id },
+    });
+    expect(r.modelId).toBe(model.id);
+    const files = await filesOf(model.id);
+    expect(files.map((f) => [f.name, f.kind])).toEqual([["Spare part.stl", "stl"]]);
+  });
+
+  test("an upload into a model that does not exist is refused before anything is stored", async () => {
+    const before = await footprint(env);
+    const error = await env.ingest
+      .ingestFile({
+        tmpPath: await writeUpload(env, ASCII_STL),
+        originalName: "Orphan.stl",
+        target: { modelId: uuidv7() },
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(IngestError);
+    expect((error as IngestError).code).toBe("model_not_found");
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("combined batch of three finishing together makes one model", async () => {
+    const batch = uuidv7();
+    const uploads = await Promise.all([
+      writeUpload(env, build3mf({ plates: 2 })),
+      writeUpload(env, ASCII_STL),
+      writeUpload(env, SCAD_TEXT),
+    ]);
+    const names = ["Organiser.3mf", "Organiser insert.stl", "Organiser lid.scad"];
+    const results = await Promise.all(
+      uploads.map((tmpPath, i) =>
+        env.ingest.ingestFile({
+          tmpPath,
+          originalName: names[i] ?? "missing",
+          target: { batch, combine: true },
+        }),
+      ),
+    );
+    const modelIds = new Set(results.map((r) => r.modelId));
+    expect(modelIds.size).toBe(1);
+    const [modelId] = [...modelIds];
+    if (modelId === undefined) throw new Error("no model id");
+    const files = await filesOf(modelId);
+    expect(files.map((f) => f.name).sort()).toEqual([...names].sort());
+    expect(new Set(results.map((r) => r.fileId)).size).toBe(3);
+
+    // A later file of the same batch joins the same model.
+    const late = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, STEP_TEXT),
+      originalName: "Organiser hinge.step",
+      target: { batch, combine: true },
+    });
+    expect(late.modelId).toBe(modelId);
+    expect(await filesOf(modelId)).toHaveLength(4);
+  });
+});
+
+describe("what a stored file records", () => {
+  test("a .3mf stores its source, plates, thumbnails, filaments and Bambu's own numbers", async () => {
+    const bytes = build3mf({
+      plates: 3,
+      sliced: [1, 2],
+      makerWorld: {
+        title: "Synthetic Desk Tidy",
+        designer: "Synthetic Designer",
+        descriptionHtml: "<p>A <strong>tidy</strong> for the desk.</p>",
+        license: "BY-NC-SA",
+      },
+    });
+    const before = await footprint(env);
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Desk tidy.3mf",
+      target: "new",
+    });
+
+    const model = await modelRow(r.modelId);
+    expect(model).toEqual({
+      name: "Synthetic Desk Tidy",
+      caption: "Synthetic Desk Tidy",
+      descriptionMd: "A **tidy** for the desk.",
+      licenseSpdx: "CC-BY-NC-SA-4.0",
+      licenseNote: null,
+      creator: "Synthetic Designer",
+    });
+
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({
+      modelId: r.modelId,
+      name: "Desk tidy.3mf",
+      originalName: "Desk tidy.3mf",
+      kind: "3mf",
+      size: bytes.length,
+      parseStatus: "ok",
+    });
+    expect(file?.sha256.equals(sha256(bytes))).toBe(true);
+
+    const source = await env.repos.blobs.get(file?.blobId ?? "");
+    expect(source).toMatchObject({ kind: "source", state: "stored", size: bytes.length });
+    expect((await readObject(source?.key ?? "")).equals(bytes)).toBe(true);
+
+    const plates = await env.repos.plates.listForFile(r.fileId);
+    expect(plates.map((p) => [p.index, p.name, p.objectCount])).toEqual([
+      [1, "Plate name 1", 1],
+      [2, "Plate name 2", 1],
+      [3, "Plate name 3", 1],
+    ]);
+    for (const plate of plates) {
+      const thumb = await env.repos.blobs.get(plate.thumbnailBlobId ?? "");
+      expect(thumb).toMatchObject({ kind: "thumbnail", state: "stored", contentType: "image/png" });
+      expect((await readObject(thumb?.key ?? "")).toString("latin1")).toContain(`p${plate.index}`);
+    }
+
+    const filaments = await env.db
+      .selectFrom("fileFilaments")
+      .select(["slot", "type", "color"])
+      .where("fileId", "=", r.fileId)
+      .orderBy("slot")
+      .execute();
+    expect(filaments).toEqual([
+      { slot: 1, type: "PLA", color: "#00AE42" },
+      { slot: 2, type: "PETG", color: "#FFFFFF" },
+    ]);
+
+    const estimates = await env.db
+      .selectFrom("estimates")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select([
+        "plates.index",
+        "estimates.source",
+        "estimates.status",
+        "estimates.printerModelId",
+        "estimates.nozzle",
+        "estimates.timeSeconds",
+        "estimates.weightGrams",
+      ])
+      .where("plates.fileId", "=", r.fileId)
+      .orderBy("plates.index")
+      .execute();
+    expect(estimates).toEqual([
+      {
+        index: 1,
+        source: "file",
+        status: "ok",
+        printerModelId: "C12",
+        nozzle: 0.4,
+        timeSeconds: 1000,
+        weightGrams: 10.5,
+      },
+      {
+        index: 2,
+        source: "file",
+        status: "ok",
+        printerModelId: "C12",
+        nozzle: 0.4,
+        timeSeconds: 2000,
+        weightGrams: 20.5,
+      },
+    ]);
+
+    // One source and three thumbnails, each an object and a stored blob row.
+    const after = await footprint(env);
+    expect(after.objects - before.objects).toBe(4);
+    expect(after.blobs - before.blobs).toBe(4);
+  });
+
+  test("a .3mf with no plate data stores the file and shows no_plate_data", async () => {
+    const bytes = plainZip();
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Not from Bambu.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "no_plate_data", size: bytes.length });
+    expect(await env.repos.plates.listForFile(r.fileId)).toEqual([]);
+    const source = await env.repos.blobs.get(file?.blobId ?? "");
+    expect(source?.state).toBe("stored");
+    expect((await readObject(source?.key ?? "")).equals(bytes)).toBe(true);
+  });
+
+  test("a sliced plate that repeats a filament id is stored with the first one", async () => {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({ plates: 1, sliced: [1], sliceFilamentIds: [1, 1] }),
+      ),
+      originalName: "Repeated filament.3mf",
+      target: "new",
+    });
+    const rows = await env.db
+      .selectFrom("estimateFilaments")
+      .innerJoin("estimates", "estimates.id", "estimateFilaments.estimateId")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select(["estimateFilaments.slot", "estimateFilaments.type"])
+      .where("plates.fileId", "=", r.fileId)
+      .execute();
+    expect(rows).toEqual([{ slot: 1, type: "PLA" }]);
+  });
+
+  test("the footer licences name the licence and set no SPDX id", async () => {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: {
+            designer: "Synthetic Designer",
+            descriptionHtml: "<p>Print it.</p>",
+            license: "Standard Digital File License",
+          },
+        }),
+      ),
+      originalName: "Footer licence.3mf",
+      target: "new",
+    });
+    const model = await modelRow(r.modelId);
+    expect(model.licenseSpdx).toBeNull();
+    expect(model.licenseNote).toBe("License on MakerWorld: Standard Digital File License");
+    expect(model.descriptionMd).toBe(
+      "Print it.\n\nLicense on MakerWorld: Standard Digital File License",
+    );
+  });
+});
+
+// A new model is named from its .3mf's MakerWorld Title, else from its file
+// name cleaned (ingest/names.ts); a name a person set is never replaced.
+// Every title and name here is made up.
+describe("a model's name from its file", () => {
+  async function newModel(originalName: string, bytes: Buffer | string) {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName,
+      target: "new",
+    });
+    const model = await env.repos.models.get(r.modelId);
+    if (model === undefined) throw new Error("the model just made is gone");
+    return model;
+  }
+
+  test("a .3mf with a MakerWorld title is named from the title", async () => {
+    const model = await newModel(
+      "Cable_clip_PETG.3mf",
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title: "Cable Clip | Desk Edge" },
+      }),
+    );
+    expect(model).toMatchObject({ name: "Cable Clip | Desk Edge", nameSource: "title" });
+  });
+
+  test("with no title the name is the file name cleaned, case kept", async () => {
+    const plain = await newModel(
+      "Spool_Holder--Wall_V2.1.3mf",
+      build3mf({ plates: 1, nonce: marker() }),
+    );
+    expect(plain).toMatchObject({ name: "Spool Holder Wall V2.1", nameSource: "file" });
+    const stl = await newModel("Hook_[large].stl", `${ASCII_STL}\n${marker()}`);
+    expect(stl).toMatchObject({ name: "Hook [large]", nameSource: "file" });
+  });
+
+  test("a title in a file with no Designer is not used: only MakerWorld titles name a model", async () => {
+    // build3mf writes a Title only with MakerWorld details; this file has a
+    // Designer that is blank, as the user's own designs and other tools' do.
+    const model = await newModel(
+      "Own_design.3mf",
+      build3mf({ plates: 1, nonce: marker(), makerWorld: { designer: "", title: "Untitled Bin" } }),
+    );
+    expect(model).toMatchObject({ name: "Own design", nameSource: "file", caption: null });
+  });
+
+  test("odd characters in a title are kept as text", async () => {
+    const title = `Clip & "Pro" <M3> / 50% ${String.fromCodePoint(0xfc)} ${String.fromCodePoint(0x1f529)}`;
+    const model = await newModel(
+      "odd.3mf",
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title },
+      }),
+    );
+    expect(model.name).toBe(title);
+  });
+
+  test("a very long title is cut at the API's 500-character name limit", async () => {
+    const model = await newModel(
+      "long.3mf",
+      build3mf({
+        plates: 1,
+        nonce: marker(),
+        makerWorld: { designer: "Synthetic Designer", title: "T".repeat(1200) },
+      }),
+    );
+    expect(model.name).toBe("T".repeat(500));
+  });
+
+  test("a model named after its file takes the title of a .3mf added to it", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, `${ASCII_STL}\n${marker()}`),
+      originalName: "Desk_hook.stl",
+      target: "new",
+    });
+    expect((await env.repos.models.get(first.modelId))?.name).toBe("Desk hook");
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Desk Hook | Screwless" },
+        }),
+      ),
+      originalName: "Desk_hook.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Desk Hook | Screwless",
+      nameSource: "title",
+    });
+  });
+
+  test("a model named after its file that already has a caption keeps its name when a .3mf with another title joins", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Lamp Arm | Clamp" },
+        }),
+      ),
+      originalName: "Lamp_arm.3mf",
+      target: "new",
+    });
+    // As a model ingested before titles were used: named from the file's
+    // raw stem, its caption the file's title (migration 0006 leaves it 'file').
+    await env.db
+      .updateTable("models")
+      .set({ name: "Lamp_arm", nameSource: "file" })
+      .where("id", "=", first.modelId)
+      .execute();
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Lamp Arm Spring Kit" },
+        }),
+      ),
+      originalName: "Lamp_arm_spring.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Lamp_arm",
+      nameSource: "file",
+      caption: "Lamp Arm | Clamp",
+    });
+    // Use file titles names it from that same caption.
+    expect((await env.repos.models.titleNamePlan()).renames).toContainEqual({
+      id: first.modelId,
+      from: "Lamp_arm",
+      to: "Lamp Arm | Clamp",
+    });
+  });
+
+  test("a name the user set is never overwritten by a title", async () => {
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, `${ASCII_STL}\n${marker()}`),
+      originalName: "Shelf_bracket.stl",
+      target: "new",
+    });
+    // The user renames it, here to the very name the file gave it.
+    await createRename(env.db).renameModel(first.modelId, "Shelf bracket");
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "Synthetic Designer", title: "Shelf Bracket Pro" },
+        }),
+      ),
+      originalName: "Shelf_bracket.3mf",
+      target: { modelId: first.modelId },
+    });
+    expect(await env.repos.models.get(first.modelId)).toMatchObject({
+      name: "Shelf bracket",
+      nameSource: "user",
+      caption: "Shelf Bracket Pro",
+    });
+  });
+
+  test("a model whose first title named it keeps that name when a second .3mf has another", async () => {
+    const batch = uuidv7();
+    const a = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "D", title: "First Title" },
+        }),
+      ),
+      originalName: "a.3mf",
+      target: { batch, combine: true },
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          nonce: marker(),
+          makerWorld: { designer: "D", title: "Second Title" },
+        }),
+      ),
+      originalName: "b.3mf",
+      target: { batch, combine: true },
+    });
+    expect((await env.repos.models.get(a.modelId))?.name).toBe("First Title");
+  });
+});
+
+// "View on MakerWorld": the design ID a MakerWorld .3mf carries
+// (<metadata name="DesignId">) is stored only when it is valid.
+describe("the MakerWorld design ID", () => {
+  async function designIdOf(makerWorld: { designer: string; designId?: string; title?: string }) {
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 1, nonce: marker(), makerWorld })),
+      originalName: "Design.3mf",
+      target: "new",
+    });
+    return (await env.repos.models.get(r.modelId))?.makerworldDesignId;
+  }
+
+  test("a valid design ID, or the ID from a MakerWorld model URL, is stored", async () => {
+    expect(await designIdOf({ designer: "D", designId: "1234567" })).toBe("1234567");
+    expect(
+      await designIdOf({
+        designer: "D",
+        designId: "https://makerworld.com/en/models/7654321-a-kit",
+      }),
+    ).toBe("7654321");
+  });
+
+  test("an invalid one, or none, stores nothing", async () => {
+    expect(await designIdOf({ designer: "D" })).toBeNull();
+    expect(await designIdOf({ designer: "D", designId: "javascript:alert(1)" })).toBeNull();
+    expect(
+      await designIdOf({ designer: "D", designId: "https://evil.example/models/1" }),
+    ).toBeNull();
+    expect(await designIdOf({ designer: "D", designId: "0042" })).toBeNull();
+  });
+
+  test("a file with no Designer is not a MakerWorld file, so its DesignId is ignored", async () => {
+    expect(await designIdOf({ designer: "", designId: "1234567" })).toBeNull();
+  });
+
+  test("a design ID already on the model is kept", async () => {
+    const model = await env.repos.models.create({ name: `Kept id ${marker()}` });
+    await env.db
+      .updateTable("models")
+      .set({ makerworldDesignId: "111" })
+      .where("id", "=", model.id)
+      .execute();
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({ plates: 1, nonce: marker(), makerWorld: { designer: "D", designId: "222" } }),
+      ),
+      originalName: "Second.3mf",
+      target: { modelId: model.id },
+    });
+    expect((await env.repos.models.get(model.id))?.makerworldDesignId).toBe("111");
+  });
+});
+
+describe("metadata is filled, never overwritten", () => {
+  test("parse never overwrites a field the user set", async () => {
+    const model = await env.repos.models.create({
+      name: `Sam's name ${uuidv7()}`,
+      caption: "Sam's caption",
+      licenseSpdx: "MIT",
+      descriptionMd: "",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: {
+            title: "MakerWorld title",
+            designer: "Synthetic Designer",
+            descriptionHtml: "<p>From MakerWorld.</p>",
+            license: "BY",
+          },
+        }),
+      ),
+      originalName: "Into Sam's model.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    // Set by the user: kept. Empty or null: filled.
+    expect(after.name).toBe(model.name);
+    expect(after.caption).toBe("Sam's caption");
+    expect(after.licenseSpdx).toBe("MIT");
+    expect(after.descriptionMd).toBe("From MakerWorld.");
+    expect(after.creator).toBe("Synthetic Designer");
+  });
+
+  test("an SPDX licence the user set is kept and no footer is added beside it; the footer licence is still stored as the licence note", async () => {
+    // The maintainer's decision: license_note is always stored.
+    const model = await env.repos.models.create({
+      name: `Licensed ${uuidv7()}`,
+      licenseSpdx: "MIT",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: {
+            designer: "Synthetic Designer",
+            descriptionHtml: "<p>Print it.</p>",
+            license: "Standard Digital File License",
+          },
+        }),
+      ),
+      originalName: "Licensed.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.licenseSpdx).toBe("MIT");
+    expect(after.licenseNote).toBe("License on MakerWorld: Standard Digital File License");
+    expect(after.descriptionMd).toBe("Print it.");
+  });
+
+  test("a licence note already on the model is kept: a later file's footer licence does not replace it", async () => {
+    const model = await env.repos.models.create({
+      name: `Noted ${uuidv7()}`,
+      licenseNote: "Sam's own licence note",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: { designer: "Synthetic Designer", license: "Standard Digital File License" },
+        }),
+      ),
+      originalName: "Noted.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.licenseNote).toBe("Sam's own licence note");
+    expect(after.licenseSpdx).toBeNull();
+  });
+
+  test("a description already set is never edited; a footer licence is still stored as the licence note", async () => {
+    // The maintainer, 2026-11-08: the footer goes into the description only when it is
+    // empty; the model page (Task 20) shows models.license_note.
+    const model = await env.repos.models.create({
+      name: `Described ${uuidv7()}`,
+      descriptionMd: "Sam's own description.",
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({
+          plates: 1,
+          makerWorld: {
+            designer: "Synthetic Designer",
+            descriptionHtml: "<p>From MakerWorld.</p>",
+            license: "MakerWorld Exclusive License",
+          },
+        }),
+      ),
+      originalName: "Described.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.descriptionMd).toBe("Sam's own description.");
+    expect(after.licenseSpdx).toBeNull();
+    expect(after.licenseNote).toBe("License on MakerWorld: MakerWorld Exclusive License");
+  });
+
+  test("a creator the user set is kept", async () => {
+    const model = await env.repos.models.create({
+      name: `Credited ${uuidv7()}`,
+      creator: `Sam's creator ${uuidv7()}`,
+    });
+    await env.ingest.ingestFile({
+      tmpPath: await writeUpload(
+        env,
+        build3mf({ plates: 1, makerWorld: { designer: "Someone Else", title: "A title" } }),
+      ),
+      originalName: "Credited.3mf",
+      target: { modelId: model.id },
+    });
+    const after = await modelRow(model.id);
+    expect(after.creator).toBe(model.creator);
+    expect(after.caption).toBe("A title");
+  });
+});
+
+describe("a store outage leaves nothing behind (AC-012)", () => {
+  test("upload with the store stopped leaves no model, file or blob row", async () => {
+    const s3 = await startS3();
+    const bucket = `platehouse-t8-${randomBytes(4).toString("hex")}`;
+    await s3.client.send(new CreateBucketCommand({ Bucket: bucket }));
+    const stopped = createBlobStore(
+      {
+        endpoint: s3.endpoint,
+        region: s3.region,
+        bucket,
+        accessKeyId: s3.accessKeyId,
+        secretAccessKey: s3.secretAccessKey,
+        forcePathStyle: true,
+      },
+      { maxAttempts: 1, connectionTimeoutMs: 1_000, socketTimeoutMs: 2_000 },
+    );
+    await s3.stop();
+    try {
+      const before = await footprint(env);
+      const tmpPath = await writeUpload(env, build3mf({ plates: 2, sliced: [1] }));
+      const error = await env
+        .ingestWith(stopped)
+        .ingestFile({ tmpPath, originalName: "During the outage.3mf", target: "new" })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(IngestError);
+      expect((error as IngestError).code).toBe("storage_unavailable");
+      expect((error as IngestError).message).toBe(STORAGE_UNAVAILABLE_MESSAGE);
+      expect(STORAGE_UNAVAILABLE_MESSAGE).toBe(
+        "Storage is unavailable right now; nothing was saved",
+      );
+      expect(await footprint(env)).toEqual(before);
+      // The upload itself is left for the caller (the inbox retries it).
+      await expect(access(tmpPath)).resolves.toBeUndefined();
+    } finally {
+      stopped.destroy();
+    }
+  });
+
+  test("a store that fails after the source is stored deletes what was put", async () => {
+    let puts = 0;
+    const failsOnThumbnail: IngestStore = {
+      putBlob: async (stream, opts) => {
+        puts += 1;
+        if (puts === 2) {
+          stream.resume();
+          throw new StoreUnavailable("PutObject", "ECONNRESET");
+        }
+        return env.store.putBlob(stream, opts);
+      },
+      deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+    };
+    const before = await footprint(env);
+    const error = await env
+      .ingestWith(failsOnThumbnail)
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 2 })),
+        originalName: "Half stored.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expect((error as IngestError).code).toBe("storage_unavailable");
+    expect(puts).toBe(2);
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("a failure into an existing model leaves the model as it was", async () => {
+    const model = await env.repos.models.create({ name: `Untouched ${uuidv7()}` });
+    const down: IngestStore = {
+      putBlob: async (stream) => {
+        stream.resume();
+        throw new StoreUnavailable("PutObject", "ECONNREFUSED");
+      },
+      deleteBlobs: async () => {
+        throw new StoreUnavailable("DeleteObjects", "ECONNREFUSED");
+      },
+    };
+    const before = await footprint(env);
+    const error = await env
+      .ingestWith(down)
+      .ingestFile({
+        tmpPath: await writeUpload(
+          env,
+          build3mf({ plates: 1, makerWorld: { designer: "D", title: "T" } }),
+        ),
+        originalName: "Into an existing model.3mf",
+        target: { modelId: model.id },
+      })
+      .catch((e: unknown) => e);
+    expect((error as IngestError).code).toBe("storage_unavailable");
+    expect(await footprint(env)).toEqual(before);
+    expect((await modelRow(model.id)).caption).toBeNull();
+  });
+});
+
+/**
+ * The database with some of its methods replaced. Everything else is the
+ * real database, bound to it.
+ */
+function dbWith(overrides: Record<string, unknown>): Kysely<DB> {
+  return new Proxy(env.db, {
+    get(target, prop) {
+      if (typeof prop === "string" && Object.hasOwn(overrides, prop)) return overrides[prop];
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+// Well under the integration test timeout, so a wait that never ends fails
+// the test quickly and its finally still runs.
+const WAIT_MS = 15_000;
+
+/** The promise, or a failure naming what it was waiting for after WAIT_MS. */
+async function within<T>(promise: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), WAIT_MS);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A failure ingest knows saved nothing: an IngestError with the plain
+ * message, the database's own error kept as its cause. The upload's HEAD
+ * then answers 410, so the same file can be sent again.
+ */
+function expectNothingSaved(error: unknown, cause: string): void {
+  expect(error).toBeInstanceOf(IngestError);
+  expect((error as IngestError).code).toBe("ingest_failed");
+  expect((error as IngestError).message).toBe(INGEST_FAILED_MESSAGE);
+  expect(((error as IngestError).cause as Error).message).toBe(cause);
+}
+
+/**
+ * A failure whose commit may have landed: IngestOutcomeUnknown, never an
+ * IngestError, with the database's own error as its cause. The upload's HEAD
+ * then answers finished, so a resend makes no second model.
+ */
+function expectOutcomeUnknown(error: unknown, cause: string): void {
+  expect(error).toBeInstanceOf(IngestOutcomeUnknown);
+  expect(error).not.toBeInstanceOf(IngestError);
+  expect(((error as Error).cause as Error).message).toBe(cause);
+}
+
+describe("a failed commit never deletes what may have been committed", () => {
+  test("a commit that succeeds but reports an error is reported as stored, with its objects kept", async () => {
+    // The connection drops after COMMIT reached the server: the rows are
+    // committed, but ingest only sees an error. A commit is atomic, so a
+    // file row that is there means the whole upload landed, and ingest says
+    // so rather than failing a stored file, which a retry would store twice.
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+    });
+    const before = await footprint(env);
+    const result = await createIngest({ db: committedThenLost, store: env.store }).ingestFile({
+      tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+      originalName: "Committed after all.3mf",
+      target: "new",
+    });
+    const after = await footprint(env);
+    // The file, its source blob and its thumbnail blob were committed, and
+    // both objects are still in the bucket.
+    expect(after.files - before.files).toBe(1);
+    expect(after.blobs - before.blobs).toBe(2);
+    expect(after.objects - before.objects).toBe(2);
+    // The result names the rows that were committed.
+    const files = await filesOf(result.modelId);
+    expect(files.map((f) => f.id)).toEqual([result.fileId]);
+    expect(files[0]?.originalName).toBe("Committed after all.3mf");
+  });
+
+  test("a duplicate stored under allow whose commit answer is lost still lists the live copy", async () => {
+    // The rows were written, so the lookup inside the transaction already
+    // ran: the result says which live file held the same bytes, as it would
+    // had the answer arrived, rather than leaving the list out (the Public
+    // API reads a missing list as "no copy").
+    const tag = `lost-${randomBytes(8).toString("hex")}`;
+    const bytes =
+      `solid ${tag}\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n` +
+      `   vertex 0 1 0\n  endloop\n endfacet\nendsolid ${tag}\n`;
+    const first = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Bracket.stl",
+      target: "new",
+    });
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+    });
+    const result = await createIngest({ db: committedThenLost, store: env.store }).ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Bracket copy.stl",
+      target: "new",
+      duplicates: "allow",
+    });
+    expect((await filesOf(result.modelId)).map((f) => f.id)).toEqual([result.fileId]);
+    expect(result.duplicates).toEqual([
+      {
+        modelId: first.modelId,
+        modelName: "Bracket",
+        fileId: first.fileId,
+        fileName: "Bracket.stl",
+      },
+    ]);
+  });
+
+  test("a transaction that never started deletes its objects, with no lookup", async () => {
+    // The database is unreachable at BEGIN. With no transaction id nothing
+    // ran, so no COMMIT was ever sent and nothing can have committed: the
+    // objects are deleted rather than left for every retry to add to. Every
+    // query is refused too, so a lookup would turn this into "unknown".
+    const unreachable = () => {
+      throw new Error("Connection refused");
+    };
+    const down = dbWith({
+      transaction: () => ({ execute: async () => unreachable() }),
+      selectFrom: unreachable,
+      getExecutor: unreachable,
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: down, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Database down.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection refused");
+    const after = await footprint(env);
+    expect(after.files).toBe(before.files);
+    expect(after.blobs).toBe(before.blobs);
+    // The source and thumbnail objects were put and then deleted.
+    expect(after.objects).toBe(before.objects);
+  });
+
+  test("a database that is down when ingest starts fails with nothing saved", async () => {
+    // The check that the target model exists is the first query, before any
+    // byte is stored (a postgres restart, say). Nothing was put and no
+    // transaction began, so the failure says nothing was saved.
+    const unreachable = () => {
+      throw new Error("Connection refused");
+    };
+    const down = dbWith({
+      transaction: () => ({ execute: async () => unreachable() }),
+      selectFrom: unreachable,
+      getExecutor: unreachable,
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: down, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, ASCII_STL),
+        originalName: "Database down at start.stl",
+        target: { modelId: uuidv7() },
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection refused");
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("when the transaction's status cannot be read, the objects are kept for the orphan sweep", async () => {
+    // The transaction got its id and wrote its rows, then the connection
+    // dropped, and the server cannot be asked how it ended. (It was rolled
+    // back here, so a status that could be read would say "aborted" and the
+    // objects would go; they are kept only because it cannot be read.)
+    const unreachable = () => {
+      throw new Error("Connection refused");
+    };
+    const lost = dbWith({
+      transaction: () => ({
+        execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+          const trx = await env.db.startTransaction().execute();
+          try {
+            await fn(trx);
+          } finally {
+            await trx.rollback().execute();
+          }
+          throw new Error("Connection terminated unexpectedly");
+        },
+      }),
+      selectFrom: unreachable,
+      getExecutor: unreachable,
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: lost, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Status unreadable.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectOutcomeUnknown(error, "Connection terminated unexpectedly");
+    const after = await footprint(env);
+    expect(after.files).toBe(before.files);
+    expect(after.blobs).toBe(before.blobs);
+    // Left in place: no row points at them, so the orphan sweep removes
+    // them after 24 hours.
+    expect(after.objects - before.objects).toBe(2);
+  });
+
+  test("a failure part way through the transaction saved nothing, even when its status cannot be read", async () => {
+    // Postgres restarts while ingest is still writing rows: the files insert
+    // fails with the connection, and the status lookup cannot be answered
+    // either. Kysely sends COMMIT only after the transaction's callback
+    // returns, and rolls back when it throws, so no COMMIT was ever sent:
+    // the objects are deleted and the failure says nothing was saved, so
+    // the upload's HEAD answers 410 and the file can be sent again (#76).
+    const filesInsertFails = (trx: Transaction<DB>): Transaction<DB> =>
+      new Proxy(trx, {
+        get(target, prop) {
+          if (prop === "insertInto") {
+            const insertInto: Transaction<DB>["insertInto"] = (table) => {
+              if (table === "files") throw new Error("Connection terminated unexpectedly");
+              return target.insertInto(table);
+            };
+            return insertInto;
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const lostMidBody = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) =>
+            real.execute((trx) => fn(filesInsertFails(trx))),
+        };
+      },
+      // commitState's status query is the only call made through this.
+      getExecutor: () => {
+        throw new Error("Connection refused");
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: lostMidBody, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Lost part way.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection terminated unexpectedly");
+    // No model, file or blob row, and the source and thumbnail objects were
+    // put and then deleted.
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("a COMMIT still in flight when the error arrives keeps the objects, and they serve the rows once it lands", async () => {
+    // The connection drops while the server is still finishing COMMIT
+    // (flushing WAL, waiting on a synchronous standby). A lookup of the file
+    // row on another connection does not see it yet, so it cannot tell this
+    // from a COMMIT that never happened; the transaction's own status can.
+    //
+    // ingest is handed a real transaction (a Kysely ControlledTransaction)
+    // whose rows are all written but whose COMMIT is held back until the test
+    // lets it go. It has to be a real Transaction: the repositories open their
+    // own transaction on anything that is not one, and on a plain connection
+    // that inner COMMIT would commit everything at once.
+    // Shared with the finally below, so a transaction that only starts after
+    // a timeout there still commits at once instead of holding its connection.
+    const commitNow = Promise.withResolvers<void>();
+    const landCommit = commitNow.resolve;
+    let landed: Promise<void> = Promise.resolve();
+    const inFlight = dbWith({
+      transaction: () => ({
+        execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+          const trx = await env.db.startTransaction().execute();
+          try {
+            await fn(trx);
+          } catch (error) {
+            await trx.rollback().execute();
+            throw error;
+          }
+          landed = commitNow.promise.then(() => trx.commit().execute());
+          throw new Error("Connection terminated unexpectedly");
+        },
+      }),
+    });
+    try {
+      const before = await footprint(env);
+      const error = await within(
+        createIngest({ db: inFlight, store: env.store })
+          .ingestFile({
+            tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+            originalName: "Commit in flight.3mf",
+            target: "new",
+          })
+          .catch((e: unknown) => e),
+        "ingestFile",
+      );
+      expectOutcomeUnknown(error, "Connection terminated unexpectedly");
+      const during = await footprint(env);
+      expect(during.files).toBe(before.files);
+      // Kept: the COMMIT may still land.
+      expect(during.objects - before.objects).toBe(2);
+
+      landCommit();
+      await within(landed, "the held COMMIT");
+      const after = await footprint(env);
+      expect(after.files - before.files).toBe(1);
+      expect(after.blobs - before.blobs).toBe(2);
+      expect(after.objects - before.objects).toBe(2);
+      // Every committed blob row still has its bytes.
+      const file = await env.db
+        .selectFrom("files")
+        .select(["modelId"])
+        .where("originalName", "=", "Commit in flight.3mf")
+        .executeTakeFirstOrThrow();
+      const keys = (await env.store.listPrefix(`models/${file.modelId}/`)).map((o) => o.key);
+      expect(keys).toHaveLength(2);
+      for (const key of keys) expect((await readObject(key)).length).toBeGreaterThan(0);
+    } finally {
+      // Whatever failed above, the held transaction is let go, so its
+      // connection goes back to the pool and afterAll can stop the database.
+      landCommit();
+      await within(landed, "the held COMMIT").catch(() => {});
+    }
+  });
+
+  test("a transaction that rolled back after writing its rows deletes the objects and leaves no rows", async () => {
+    // The transaction had its id, so its status is asked: "aborted" is the
+    // one answer that lets the objects go.
+    const rolledBack = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) =>
+            real.execute(async (trx) => {
+              await fn(trx);
+              throw new Error("Connection terminated unexpectedly");
+            }),
+        };
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: rolledBack, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Rolled back.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectNothingSaved(error, "Connection terminated unexpectedly");
+    expect(await footprint(env)).toEqual(before);
+  });
+
+  test("when the status of the transaction cannot be read, the objects are kept", async () => {
+    const committedThenLost = dbWith({
+      transaction: () => {
+        const real = env.db.transaction();
+        return {
+          execute: async (fn: (trx: Transaction<DB>) => Promise<unknown>) => {
+            await real.execute(fn);
+            throw new Error("Connection terminated unexpectedly");
+          },
+        };
+      },
+      // commitState's status query is the only call made through this.
+      getExecutor: () => {
+        throw new Error("Connection refused");
+      },
+    });
+    const before = await footprint(env);
+    const error = await createIngest({ db: committedThenLost, store: env.store })
+      .ingestFile({
+        tmpPath: await writeUpload(env, build3mf({ plates: 1 })),
+        originalName: "Status unknown.3mf",
+        target: "new",
+      })
+      .catch((e: unknown) => e);
+    expectOutcomeUnknown(error, "Connection terminated unexpectedly");
+    const after = await footprint(env);
+    // It did commit; unable to say so, ingest reports the failure but keeps
+    // every object.
+    expect(after.files - before.files).toBe(1);
+    expect(after.objects - before.objects).toBe(2);
+  });
+});
+
+// Issue #78: a .3mf whose values the database cannot store must still be
+// stored (AC-023), never fail the save. Postgres text cannot hold a NUL, so
+// the parser and the MakerWorld reader drop it from every text value; and
+// plates.index and the slot columns are 32-bit, so a plate index or filament
+// slot past 2147483647 makes the file one with no plate data.
+describe("values the database cannot store (#78)", () => {
+  const NUL = "\u0000";
+  const xmlHead = '<?xml version="1.0" encoding="UTF-8"?>\n';
+
+  /** A one-plate, sliced Bambu-style .3mf built from the given values, written raw. */
+  function hostile3mf(v: {
+    platerId?: string;
+    plateName?: string;
+    sliceIndex?: string;
+    filamentId?: string;
+    filamentType?: string;
+    printerModelId?: string;
+    projectType?: string;
+    processName?: string;
+    designer?: string;
+    title?: string;
+    license?: string;
+  }): Buffer {
+    const model =
+      `${xmlHead}<model unit="millimeter" xml:lang="en-US" ` +
+      'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n' +
+      ` <metadata name="Designer">${v.designer ?? "Synthetic Designer"}</metadata>\n` +
+      ` <metadata name="Title">${v.title ?? "Synthetic Title"}</metadata>\n` +
+      ` <metadata name="License">${v.license ?? "BY"}</metadata>\n` +
+      ' <resources>\n  <object id="1" type="model"/>\n </resources>\n</model>\n';
+    const settings =
+      `${xmlHead}<config>\n  <plate>\n` +
+      `    <metadata key="plater_id" value="${v.platerId ?? "1"}"/>\n` +
+      `    <metadata key="plater_name" value="${v.plateName ?? "Plate one"}"/>\n` +
+      '    <model_instance>\n      <metadata key="object_id" value="2"/>\n    </model_instance>\n' +
+      "  </plate>\n</config>\n";
+    const slice =
+      `${xmlHead}<config>\n  <plate>\n` +
+      `    <metadata key="index" value="${v.sliceIndex ?? "1"}"/>\n` +
+      `    <metadata key="printer_model_id" value="${v.printerModelId ?? "C12"}"/>\n` +
+      '    <metadata key="nozzle_diameters" value="0.4"/>\n' +
+      '    <metadata key="prediction" value="1000"/>\n' +
+      '    <metadata key="weight" value="10.5"/>\n' +
+      `    <filament id="${v.filamentId ?? "1"}" type="${v.filamentType ?? "PLA"}" ` +
+      'color="#00AE42" used_m="1.00" used_g="10.5" />\n' +
+      "  </plate>\n</config>\n";
+    const project = JSON.stringify({
+      print_settings_id: v.processName ?? "0.20mm Standard @BBL X1C",
+      filament_type: [v.projectType ?? "PLA"],
+      filament_colour: ["#00AE42"],
+    });
+    return buildZip([
+      { name: "3D/3dmodel.model", data: model },
+      { name: "Metadata/model_settings.config", data: settings },
+      { name: "Metadata/slice_info.config", data: slice },
+      { name: "Metadata/project_settings.config", data: project },
+      { name: "Metadata/plate_1.png", data: png("p1") },
+    ]);
+  }
+
+  test("a NUL in the plate, filament, process and MakerWorld text is dropped and the file stored", async () => {
+    const bytes = hostile3mf({
+      plateName: `Ba${NUL}se`,
+      filamentType: `P${NUL}LA`,
+      printerModelId: `C1${NUL}2`,
+      projectType: `PE${NUL}TG`,
+      processName: `0.20mm${NUL} Standard`,
+      designer: `Synthetic${NUL} Designer`,
+      title: `Desk${NUL} Tidy`,
+      license: `BY${NUL}-NC`,
+    });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Nul text.3mf",
+      target: "new",
+    });
+
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "ok", size: bytes.length });
+    const plates = await env.repos.plates.listForFile(r.fileId);
+    expect(plates.map((p) => [p.index, p.name])).toEqual([[1, "Base"]]);
+    const filaments = await env.db
+      .selectFrom("fileFilaments")
+      .select(["slot", "type"])
+      .where("fileId", "=", r.fileId)
+      .execute();
+    expect(filaments).toEqual([{ slot: 1, type: "PETG" }]);
+    const estimates = await env.db
+      .selectFrom("estimates")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select(["estimates.id", "estimates.printerModelId", "estimates.processProfile"])
+      .where("plates.fileId", "=", r.fileId)
+      .execute();
+    expect(
+      estimates.map(({ printerModelId, processProfile }) => ({ printerModelId, processProfile })),
+    ).toEqual([{ printerModelId: "C12", processProfile: "0.20mm Standard" }]);
+    const grams = await env.db
+      .selectFrom("estimateFilaments")
+      .select(["slot", "type"])
+      .where("estimateId", "=", estimates[0]?.id ?? "")
+      .execute();
+    expect(grams).toEqual([{ slot: 1, type: "PLA" }]);
+    expect(await modelRow(r.modelId)).toMatchObject({
+      caption: "Desk Tidy",
+      creator: "Synthetic Designer",
+      licenseSpdx: "CC-BY-NC-4.0",
+    });
+  });
+
+  /**
+   * n characters of text that does not compress, with no XML markup
+   * characters, from a fixed linear congruential sequence.
+   */
+  function noise(n: number): string {
+    const chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.,;:!?()[]{}+*/=%$#@^~|";
+    let seed = 12345;
+    let out = "";
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      out += chars[seed % chars.length];
+    }
+    return out;
+  }
+
+  // A few KB of such text in either field used to fail its btree insert
+  // (creators.name, estimates.printer_id) with "index row size exceeds btree
+  // version 4 maximum 2704", which failed the whole upload (#142, #143).
+  test("an over-long MakerWorld Designer reads as no MakerWorld details and the file is stored", async () => {
+    const bytes = hostile3mf({ designer: noise(4096), title: "Long Designer" });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Long designer.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "ok", size: bytes.length });
+    expect((await env.repos.plates.listForFile(r.fileId)).map((p) => p.index)).toEqual([1]);
+    expect(await modelRow(r.modelId)).toMatchObject({
+      creator: null,
+      caption: null,
+      licenseSpdx: null,
+    });
+  });
+
+  test("an over-long printer model id leaves the file's numbers unlabelled and the file stored", async () => {
+    const bytes = hostile3mf({ printerModelId: noise(4096) });
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Long printer id.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "ok", size: bytes.length });
+    const estimates = await env.db
+      .selectFrom("estimates")
+      .innerJoin("plates", "plates.id", "estimates.plateId")
+      .select(["estimates.printerId", "estimates.printerModelId", "estimates.status"])
+      .where("plates.fileId", "=", r.fileId)
+      .where("estimates.source", "=", "file")
+      .execute();
+    expect(estimates).toEqual([
+      { printerId: UNKNOWN_FILE_PRINTER, printerModelId: null, status: "ok" },
+    ]);
+  });
+
+  test.each([
+    ["a plater_id of 3000000000", { platerId: "3000000000", sliceIndex: "3000000000" }],
+    ["a plater_id of 2147483648", { platerId: "2147483648", sliceIndex: "2147483648" }],
+    ["a filament slot of 3000000000", { filamentId: "3000000000" }],
+    ["a filament slot of 2147483648", { filamentId: "2147483648" }],
+  ])("%s is stored as a file with no plate data, not a failed save", async (_label, values) => {
+    const bytes = hostile3mf(values);
+    const before = await footprint(env);
+    const r = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, bytes),
+      originalName: "Out of range.3mf",
+      target: "new",
+    });
+    const file = await env.repos.files.get(r.fileId);
+    expect(file).toMatchObject({ kind: "3mf", parseStatus: "no_plate_data", size: bytes.length });
+    expect(await env.repos.plates.listForFile(r.fileId)).toEqual([]);
+    const source = await env.repos.blobs.get(file?.blobId ?? "");
+    expect(source?.state).toBe("stored");
+    expect((await readObject(source?.key ?? "")).equals(bytes)).toBe(true);
+    // The source only: a damaged file's thumbnails are never put.
+    const after = await footprint(env);
+    expect(after.objects - before.objects).toBe(1);
+  });
+});

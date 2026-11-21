@@ -1,0 +1,147 @@
+# Platehouse: an example Docker Compose project.
+#
+# This is an example to adapt, not a file to use unchanged. Copy it and
+# .env.example into a folder of their own, rename .env.example to .env, fill
+# it in, and read the Install page of the documentation first.
+#
+# Three services:
+#   platehouse         the Platehouse server and web app, behind your
+#                      reverse proxy
+#   platehouse-slicer  OrcaSlicer, OpenSCAD and the STEP converter; it opens
+#                      untrusted files, so it is locked down below
+#   platehouse-db      Postgres 17
+#
+# Each service is named like its container, never app, slicer or db: Docker
+# registers a service name as a DNS alias on every network the service joins,
+# so a generic name could reach another project's container on a shared
+# network. Use these names in compose commands, for example
+# docker compose logs platehouse.
+#
+# Before the first start, create the three networks (all external, so compose
+# never creates or removes them):
+#
+#   docker network create proxy
+#   docker network create --internal platehouse-db
+#   docker network create --internal platehouse-slicer
+#
+# "proxy" is the network your reverse proxy container is on; use the name of
+# the one you already have. The other two are --internal: nothing on them can
+# reach the internet, which is the point for the slicer.
+#
+# And create the app's folders, owned by the app image's user (uid and gid
+# 1000), or the app cannot write its inbox:
+#
+#   mkdir -p data/inbox data/tmp
+#   sudo chown 1000:1000 data/inbox data/tmp
+
+services:
+  platehouse:
+    container_name: platehouse
+    image: ghcr.io/jonathanmcohen/platehouse:0.1.0
+    restart: unless-stopped
+    # The server takes up to 30 s to stop cleanly. Docker's default 10 s
+    # would kill it partway through.
+    stop_grace_period: 40s
+    depends_on:
+      platehouse-db:
+        condition: service_healthy
+    networks:
+      - proxy
+      - platehouse-db
+      - platehouse-slicer
+    # If your reverse proxy runs on the host instead of in a container,
+    # publish the port on the loopback address only, and drop "proxy" above:
+    # ports:
+    #   - "127.0.0.1:3000:3000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
+    environment:
+      TZ: ${TZ:?set TZ in .env}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN in .env}
+      DATABASE_URL: postgres://${DB_USER:?set DB_USER in .env}:${DB_PASS:?set DB_PASS in .env}@platehouse-db:5432/${DB_NAME:?set DB_NAME in .env}
+      PORT: "3000"
+      S3_ENDPOINT: ${S3_ENDPOINT:?set S3_ENDPOINT in .env}
+      S3_REGION: ${S3_REGION:?set S3_REGION in .env}
+      S3_BUCKET: ${S3_BUCKET:?set S3_BUCKET in .env}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID in .env}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY in .env}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:?set S3_FORCE_PATH_STYLE in .env}
+      OIDC_ISSUER: ${OIDC_ISSUER:?set OIDC_ISSUER in .env}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID in .env}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET in .env}
+      OIDC_GROUP: ${OIDC_GROUP:-platehouse}
+      LINK_SECRET: ${LINK_SECRET:?set LINK_SECRET in .env}
+      SLICER_URL: http://platehouse-slicer:8080
+      SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:-120}
+      INBOX_DIR: /data/inbox
+      TMP_DIR: /data/tmp
+      INBOX_SETTLE_SECONDS: ${INBOX_SETTLE_SECONDS:-15}
+    volumes:
+      - ./data/inbox:/data/inbox
+      - ./data/tmp:/data/tmp
+    # The image has its own health check: /healthz answers 200 only while
+    # the database, the job queues and the web app are all up.
+
+  platehouse-slicer:
+    container_name: platehouse-slicer
+    # Pin an orca-X.Y.Z tag, or follow "stable", which moves to a new
+    # OrcaSlicer release only after it has passed a test slice.
+    image: ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1
+    restart: unless-stopped
+    # The image's own slicer user. No other container on the same host
+    # should run as uid 10001: the sandbox's process limit counts every
+    # process of that uid on the whole host.
+    user: "10001"
+    networks:
+      - platehouse-slicer
+    environment:
+      # The same per-plate time cap the app uses.
+      SLICE_PLATE_SECONDS: ${SLICE_PLATE_SECONDS:-120}
+    read_only: true
+    tmpfs:
+      - /work:size=1g,mode=1777,noexec,nosuid,nodev
+    # 4 CPUs and 4 GiB match what the slicer's sandbox assumes. The heaviest
+    # plate measured so far used about 2.5 GiB.
+    cpus: 4
+    mem_limit: 4g
+    memswap_limit: 4g
+    pids_limit: 1024
+    ulimits:
+      core: 0
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  platehouse-db:
+    container_name: platehouse-db
+    image: postgres:17-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: pg_isready -U ${DB_USER} -d ${DB_NAME}
+      interval: 10s
+      timeout: 2s
+      retries: 10
+    networks:
+      - platehouse-db
+    environment:
+      TZ: ${TZ}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+
+networks:
+  proxy:
+    external: true
+  platehouse-db:
+    external: true
+  platehouse-slicer:
+    external: true

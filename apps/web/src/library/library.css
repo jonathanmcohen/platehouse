@@ -1,0 +1,164 @@
+/* The library's count, its Pages and View all choice, and its page numbers
+   (the maintainer, 2026-11-19). Built only from studio.css's tokens and chips (Task
+   18), so it follows the theme, System included, and keeps its contrast; no
+   colour is written here. */
+
+.ph-library-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+}
+
+.ph-library-bar > p {
+  margin: 0;
+}
+
+.ph-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* The numbers stay on one line: pagerItems never gives more than seven. */
+.ph-pager-pages {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.ph-pager .studio-chip {
+  min-width: 2.25em;
+  text-align: center;
+}
+
+.ph-pager-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ph-pager-step svg {
+  flex: none;
+}
+
+/* The current page, drawn like studio.css's active chip. */
+.ph-pager .studio-chip[aria-current="page"] {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-bg);
+  color: var(--chip-active-text);
+  font-weight: 600;
+}
+
+.ph-pager-gap {
+  padding: 4px 2px;
+  color: var(--muted);
+}
+
+/* The Sort menu and the Select button above the grid (the maintainer, 2026-11-19). */
+.ph-library-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 12px 0;
+}
+
+.ph-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.ph-sort .ph-select {
+  width: auto;
+}
+
+.ph-sort > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.ph-library-tools [aria-pressed="true"] {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-bg);
+  color: var(--chip-active-text);
+}
+
+/* The selection toolbar: the count, the select-all choices and the actions. */
+.ph-select-bar {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.ph-select-bar p {
+  margin: 0;
+}
+
+.ph-select-count {
+  font-weight: 600;
+}
+
+/* A card in Select mode: the card is the label of the checkbox in its
+   corner, so the whole card toggles; a selected one is ringed in the accent.
+   The checkbox keeps the page's own focus ring (studio.css :focus-visible). */
+.ph-card-select {
+  position: relative;
+  cursor: pointer;
+}
+
+.ph-card-select:hover {
+  border-color: var(--accent);
+}
+
+.ph-card-select[data-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.ph-card-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Phone width: tighter chips, and Previous and Next show only their arrows.
+   The words stay in the page for screen readers, as the links' names. */
+@media (max-width: 480px) {
+  .ph-pager,
+  .ph-pager-pages {
+    gap: 4px;
+  }
+
+  .ph-pager .studio-chip {
+    padding: 4px 9px;
+  }
+
+  .ph-pager-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@platehouse/i18n",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./node": {
+      "source": "./src/node.ts",
+      "types": "./dist/src/node.d.ts",
+      "default": "./dist/src/node.js"
+    },
+    "./locales/*": "./locales/*"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. --project unit packages/i18n",
+    "format": "node scripts/format.mjs"
+  }
+}

@@ -1,0 +1,756 @@
+# CI for Platehouse (build plan Task 3).
+#
+# The workspace jobs run on every pull request and on every push to main and
+# the release branches, whatever the change touches (issue #16: a paths filter
+# on the triggers meant no CI ran on product PRs). They run in a chain:
+# lint -> typecheck -> unit -> integration -> e2e (Lint (Biome), Typecheck,
+# Unit tests, Integration tests, End-to-end tests; e2e is build plan Task 22).
+# Each test job fails when no test actually ran (AC-094), and logs how many
+# did.
+#
+# The jobs in this file, in order: changes (Decide which path-scoped jobs
+# run), the chain above, gate-tests (Slicing gate tests), gate-image (Slicing
+# gate image build), slicer-image (Slicer image and container tests) and
+# app-image (App image (amd64) and App image (arm64), build plan Task 24: the
+# image build, its healthy and unhealthy checks, then the release workflow's
+# Trivy gate) and docs (Docs build).
+#
+# The docs job builds the user docs site (apps/docs, Docusaurus, reading the
+# pages in docs/) and fails on a broken link or anchor. It runs, by the same
+# changes job, only when docs/, apps/docs, the workspace files its install
+# reads, this workflow or .node-version changes. It only builds: nothing is
+# deployed or published, and there is no GitHub Pages step (publishing waits
+# for the public repository). Nothing depends on it.
+#
+# The two slicing gate jobs keep their own path scoping, decided by the changes
+# job (issue #222). The gate tests are quick, so they run when tools/slicing-gate
+# or any file they read changes (the list is at that step). The gate image is
+# large, so its build runs only when tools/slicing-gate, this file or
+# .node-version (the gate jobs' Node version) changes, and only after the gate
+# tests passed. Nothing else depends on either gate job, so their skips
+# reach no other job. The slicer job (build plan Task 11) is scoped the same
+# way, by the same changes job: it builds the slicer image and runs the
+# container tests against it, and nothing depends on it either. Nothing is
+# pushed anywhere, no image is published (Task 25 does that) and no secret is
+# used. No designer file comes near any job: every test builds its own
+# fixtures, and the one outside file, the slicer's STEP sample, is public NIST
+# test data checked against its sha256.
+name: ci
+
+on:
+  pull_request:
+  # Pushes only to the branches that take merges: a push to a PR branch is
+  # already run by pull_request, and ran twice without this (issue #8).
+  push:
+    branches:
+      - main
+      - "release/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: Decide which path-scoped jobs run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      gate_tests: ${{ steps.diff.outputs.tests }}
+      gate_image: ${{ steps.diff.outputs.image }}
+      slicer: ${{ steps.slicer.outputs.slicer }}
+      docs: ${{ steps.docs.outputs.docs }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # A pull request is compared with its base commit, a push with the commit
+      # the branch pointed at before it. With no usable base (a new branch, or
+      # a force-push whose old commit is gone) both gate jobs run, to be safe.
+      # --no-renames lists both paths of a move: with rename detection on (git's
+      # default) only the new path is listed, so a file moved out of the gate
+      # would leave no gate path in the list and skip the jobs.
+      # The tests list holds tools/slicing-gate and every file the gate tests
+      # read from outside it (issue #222), all in
+      # tools/slicing-gate/test/ciworkflow.test.mjs: this workflow,
+      # .node-version, release.yml, slicer-image.yml, docker/app.Dockerfile,
+      # apps/slicer/Dockerfile, two slicer container test files, README.md and
+      # CHANGELOG.md. A gate test that starts reading another file outside
+      # tools/slicing-gate adds it here, or a PR changing only that file skips
+      # the test and still goes green. ciworkflow.test.mjs scans the gate tests,
+      # and the modules they import, for such reads and fails on one missing
+      # here, but only for the read forms it knows; the forms it misses (a path
+      # built with resolve or a template string, or a file read by a module
+      # outside the gate that the tests import, among others) are listed with
+      # the scan and must be added here by hand. The image list is what
+      # the gate image and its smoke checks are built from: tools/slicing-gate,
+      # this workflow and .node-version. Every image-list path must also be on
+      # the tests list (the gate image job needs a passed tests job), and
+      # ciworkflow.test.mjs fails if one is not.
+      - name: Decide whether the gate jobs run
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          tests=true
+          image=true
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (${base:-none}); the gate tests and the gate image build run."
+          else
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
+            echo "Files changed since ${base}:"
+            printf '%s\n' "$changed"
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image)\.yml$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+              echo "The slicing gate or a file its tests read changed; the gate tests run."
+            else
+              tests=false
+              echo "Neither the slicing gate nor any file its tests read changed; the gate tests are skipped."
+            fi
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The slicing gate, this workflow or .node-version changed; the gate image build runs."
+            else
+              image=false
+              echo "Neither the slicing gate, this workflow nor .node-version changed; the gate image build is skipped."
+            fi
+          fi
+          echo "tests=${tests}" >>"$GITHUB_OUTPUT"
+          echo "image=${image}" >>"$GITHUB_OUTPUT"
+
+      # The same rule for the slicer job (build plan Task 11), with the same
+      # base commit and the same safe default. It runs when apps/slicer or
+      # packages/slicer-contract changes, or anything else the slicer image or
+      # its container tests are built from: packages/threemf (the slicer reads
+      # projects with it, and buildSliceable lives there), the root workspace
+      # files the image's install and build read, vitest.config.ts (the
+      # container project), this workflow and .node-version.
+      - name: Decide whether the slicer job runs
+        id: slicer
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          slicer=true
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (${base:-none}); the slicer job runs."
+          else
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
+            if grep -Eq '^(apps/slicer/|packages/slicer-contract/|packages/threemf/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig\.base\.json$|vitest\.config\.ts$|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The slicer, its contract or an input of its image changed; the slicer job runs."
+            else
+              slicer=false
+              echo "Nothing the slicer image is built from changed; the slicer job is skipped."
+            fi
+          fi
+          echo "slicer=${slicer}" >>"$GITHUB_OUTPUT"
+
+      # The same rule for the docs job, with the same base commit and the same
+      # safe default. It runs when the pages (docs/) or the site (apps/docs)
+      # change, or anything its install reads: the root workspace files, this
+      # workflow and .node-version.
+      - name: Decide whether the docs job runs
+        id: docs
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          docs=true
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (${base:-none}); the docs job runs."
+          else
+            changed="$(git diff --name-only --no-renames "$base" HEAD)"
+            if grep -Eq '^(docs/|apps/docs/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+              echo "The docs, the docs site or an input of its install changed; the docs job runs."
+            else
+              docs=false
+              echo "Nothing the docs site is built from changed; the docs job is skipped."
+            fi
+          fi
+          echo "docs=${docs}" >>"$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint (Biome)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Biome
+        run: pnpm exec biome ci .
+
+  typecheck:
+    name: Typecheck
+    needs: lint
+    if: ${{ !cancelled() && needs.lint.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: tsc -b
+        run: pnpm exec tsc -b
+
+  unit:
+    name: Unit tests
+    needs: typecheck
+    if: ${{ !cancelled() && needs.typecheck.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Full history: apps/server/test/db/previous-checksums.test.ts checks the
+      # pinned earlier migration checksums against the files at an older
+      # commit, and is reported as skipped when the checkout lacks it.
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # The zero-test guard (AC-094). A test that a filter skipped still counts
+      # in numTotalTests, so the guard counts the tests that ran: the total less
+      # the skipped and todo ones. The count is logged whenever vitest wrote a
+      # report, pass or fail. A failed vitest run then ends the step with
+      # vitest's own exit code before the zero-test check, so "No tests ran"
+      # means vitest passed with nothing run, never a hidden failure (#20).
+      - name: Unit tests
+        run: |
+          status=0
+          pnpm exec vitest run --project unit --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ -s report.json ]; then
+            total="$(jq '.numTotalTests' report.json)"
+            skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+            ran=$((total - skipped))
+            echo "unit: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Vitest failed (exit ${status}); its output above names the failure"
+            exit "$status"
+          fi
+          if [ ! -s report.json ]; then
+            echo "::error::No tests ran (vitest wrote no report)"
+            exit 1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No tests ran"
+            exit 1
+          fi
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: unit-report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  integration:
+    name: Integration tests
+    needs: unit
+    if: ${{ !cancelled() && needs.unit.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Postgres and the S3 test server start through testcontainers on the
+      # runner's Docker. Same zero-test guard as the unit job.
+      - name: Integration tests
+        run: |
+          status=0
+          pnpm exec vitest run --project integration --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ -s report.json ]; then
+            total="$(jq '.numTotalTests' report.json)"
+            skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+            ran=$((total - skipped))
+            echo "integration: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Vitest failed (exit ${status}); its output above names the failure"
+            exit "$status"
+          fi
+          if [ ! -s report.json ]; then
+            echo "::error::No tests ran (vitest wrote no report)"
+            exit 1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No tests ran"
+            exit 1
+          fi
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: integration-report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The end-to-end suite (build plan Task 22): e2e/compose.yml runs Traefik
+  # v3, the app from this checkout, the slicer stub, Postgres, the S3 test
+  # server and a mock OIDC issuer, and Playwright drives Chromium through
+  # Traefik at https://platehouse.e2e.test (e2e/README.md). It runs on every
+  # pull request and push, after the integration job, since it reaches every
+  # part of the app. e2e/up.sh makes the run's TLS CA and every secret with
+  # openssl and masks the secrets before anything can print them. Nothing is
+  # pulled from or pushed to ghcr.io/jonathanmcohen. The guard fails the job
+  # when no spec ran: Playwright's JSON report counts the specs that ran
+  # (expected, unexpected and flaky; skipped ones are left out), and the
+  # global setup that signs in is not a spec, so it is never counted.
+  e2e:
+    name: End-to-end tests
+    needs: integration
+    if: ${{ !cancelled() && needs.integration.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck the e2e suite
+        run: pnpm exec tsc -p e2e/tsconfig.json
+      - name: Build the web app
+        run: pnpm --filter @platehouse/web build
+      # Chromium's system libraries come from Ubuntu's mirrors, which can answer
+      # 503 for a while, and one failed fetch used to fail the job with no test
+      # run (issue #264). As in the image builds, apt retries each download 10
+      # times; on top of that the whole install is tried 3 times, 30 seconds
+      # apart, within the job's own timeout.
+      - name: Install Chromium for Playwright
+        run: |
+          printf '%s\n' 'Acquire::Retries "10";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80retries > /dev/null
+          for attempt in 1 2 3; do
+            if pnpm exec playwright install --with-deps chromium; then exit 0; fi
+            echo "Installing Chromium failed (attempt $attempt of 3)."
+            if [ "$attempt" -lt 3 ]; then sleep 30; fi
+          done
+          echo "::error::Chromium for Playwright could not be installed after 3 attempts."
+          exit 1
+      - name: Map the e2e host names to Traefik
+        run: echo "127.0.0.1 platehouse.e2e.test id.e2e.test" | sudo tee -a /etc/hosts
+      - name: Start the e2e stack
+        run: bash e2e/up.sh
+      - name: End-to-end tests
+        run: |
+          status=0
+          pnpm exec playwright test -c e2e || status=$?
+          report=e2e/report.json
+          if [ -s "$report" ]; then
+            ran="$(jq '.stats.expected + .stats.unexpected + .stats.flaky' "$report")"
+            skipped="$(jq '.stats.skipped' "$report")"
+            failed="$(jq '.stats.unexpected' "$report")"
+            echo "e2e: ${ran} specs ran, ${failed} failed, ${skipped} skipped"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Playwright failed (exit ${status}); its output above names the failing specs"
+            exit "$status"
+          fi
+          if [ ! -s "$report" ]; then
+            echo "::error::No specs ran (Playwright wrote no report)"
+            exit 1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No specs ran"
+            exit 1
+          fi
+      - name: Show the stack's logs
+        if: ${{ failure() && env.E2E_ENV_FILE != '' }}
+        run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" logs --no-color --tail 300
+      - name: Upload the Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            e2e/report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Stop the e2e stack
+        if: ${{ always() && env.E2E_ENV_FILE != '' }}
+        run: docker compose -f e2e/compose.yml --env-file "$E2E_ENV_FILE" down -v
+
+  # The slicing gate's tests (node:test, no install, no Docker). Runs only when
+  # the changes job says the gate or a file its tests read changed (#222).
+  gate-tests:
+    name: Slicing gate tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate_tests == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+
+      # A green job must mean tests ran: the TAP copy of the results is read
+      # for its test count, and a count of zero fails the step.
+      - name: Gate tests
+        run: |
+          node --test --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=tap --test-reporter-destination=gate-tests.tap \
+            'tools/slicing-gate/test/**/*.test.mjs'
+          grep -E '^# (tests|pass|fail|skipped) ' gate-tests.tap
+          if ! grep -Eq '^# tests [1-9][0-9]*$' gate-tests.tap; then
+            echo "::error::No gate tests ran"
+            exit 1
+          fi
+
+  # A build of the gate image and its smoke checks, so an image build failure
+  # is found here and not on the test server (the second gate run there,
+  # 2026-11-08, failed while building the image). Runs only when the changes job says the gate,
+  # this workflow or .node-version changed, and only after the gate tests
+  # passed, as when both were one job. Every change that runs this job also
+  # runs the tests (the image list is part of the tests list, pinned by
+  # ciworkflow.test.mjs), and the explicit condition builds only on a passed
+  # tests job, never a failed or skipped one.
+  gate-image:
+    name: Slicing gate image build
+    needs: [changes, gate-tests]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.gate_image == 'true' && needs.gate-tests.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IMAGE: platehouse-gate:ci
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # The smoke step compares its two results with smoke-gate.mjs on the runner.
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+
+      # Every RUN step and build check in the Dockerfile runs here, as on the
+      # test server.
+      - name: Build the gate image
+        run: docker build --platform linux/amd64 -t "$IMAGE" tools/slicing-gate
+
+      # Each check runs in a fresh container the way the gate runs on the test server:
+      # no network, read-only root, a tmpfs scratch dir, no capabilities.
+      # The last ones prove the two gate bugs of gate run 3 (2026-11-08)
+      # fixed: landrun's checks for report item (g), and a crafted cube saved
+      # for one printer and sliced on the others. The cube is sliced twice:
+      # with the image as built, and with Orca's process_full folder hidden by
+      # an empty tmpfs, which is the image as it was for run 3 and must fail
+      # the way run 3 did. Own-printer slices must match between the two.
+      - name: Smoke-check the image
+        run: |
+          gate() {
+            docker run --rm --network none --read-only \
+              --tmpfs /work:rw,size=1g,mode=1777 --cap-drop ALL \
+              --security-opt no-new-privileges:true -e HOME=/work \
+              -v "$PWD/tools/slicing-gate:/src:ro" "$@"
+          }
+          smoke() {
+            local name="$1"
+            shift
+            local out
+            if ! out="$(gate "$IMAGE" "$@" 2>&1)"; then
+              printf '%s\n' "$out"
+              echo "::error::smoke check failed: ${name}"
+              exit 1
+            fi
+            printf '== %s: ok\n' "${name}"
+            # The first lines only, from a here-string: a pipe into head let
+            # head close it early, and under pipefail the SIGPIPE that killed
+            # printf failed a check that had passed (issue #9).
+            head -n 8 <<<"$out"
+          }
+          smoke "orca --help exits 0" /opt/orca/AppRun --help
+          smoke "BBL profile version" node /src/check-profile-version.mjs /opt/orca/resources/profiles/BBL.opc /opt/orca-profiles/BBL.json
+          smoke "OrcaFilamentLibrary profile version" node /src/check-profile-version.mjs /opt/orca/resources/profiles/OrcaFilamentLibrary.opc /opt/orca-profiles/OrcaFilamentLibrary.json
+          smoke "node starts" node --version
+          smoke "openscad starts" /opt/openscad/AppRun --version
+          smoke "landrun starts" landrun --version
+          echo "== landrun checks, report item (g)"
+          gate "$IMAGE" node /src/smoke-gate.mjs checks
+          results="$RUNNER_TEMP/smoke"
+          mkdir -p "$results"
+          chmod 1777 "$results"
+          echo "== crafted cube across printers, image as built"
+          gate -v "$results:/results" "$IMAGE" node /src/smoke-gate.mjs switch --out /results/fixed.json
+          echo "== crafted cube across printers, control: process_full hidden as in run 3"
+          gate -v "$results:/results" --tmpfs /opt/orca/resources/profiles/BBL/process_full:ro,size=1m \
+            "$IMAGE" node /src/smoke-gate.mjs switch --control --out /results/control.json
+          echo "== own-printer slices with and without process_full"
+          node tools/slicing-gate/smoke-gate.mjs compare "$results/fixed.json" "$results/control.json"
+
+  # The slicer image (build plan Task 11): the container tests build
+  # apps/slicer/Dockerfile and run it the way examples/docker-compose.yml does (read-only root,
+  # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract v1 over
+  # HTTP: a real slice of buildSliceable's plates, OpenSCAD renders and the
+  # landrun sandbox, STEP to GLB, health and the printer menu. Runs only when
+  # the changes job says the slicer or an input of its image changed. The
+  # image stays on the runner; nothing is pushed.
+  slicer-image:
+    name: Slicer image and container tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.slicer == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SLICER_IMAGE: platehouse-slicer:ci
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # The STEP sample of gate item (h): NIST MBE PMI test case CTC-01,
+      # geometry only (published 2024-06-19; NIST allows use without
+      # restriction). The archive and the extracted file are both checked
+      # against the sha256 values the slicing gate's Dockerfile records.
+      - name: Fetch the STEP sample
+        env:
+          NIST_URL: https://www.nist.gov/system/files/documents/noindex/2024/06/19/NIST-PMI-STEP-Files.zip
+          NIST_SHA256: 8fa78429e6d8d9b0d7681d223b6aa9ec98c3772185c55b1a0e3679b21c181911
+          NIST_STEP_SHA256: e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855
+        run: |
+          dir="$RUNNER_TEMP/step"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/nist.zip" "$NIST_URL"
+          echo "$NIST_SHA256  $dir/nist.zip" | sha256sum -c -
+          unzip -j -q "$dir/nist.zip" 'NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp' -d "$dir"
+          echo "$NIST_STEP_SHA256  $dir/nist_ctc_01_asme1_rd.stp" | sha256sum -c -
+          echo "STEP_SAMPLE=$dir/nist_ctc_01_asme1_rd.stp" >>"$GITHUB_ENV"
+      # Same zero-test guard as the unit and integration jobs. The image is
+      # built inside the run (the first file's beforeAll), so a build failure
+      # fails the tests rather than skipping them.
+      - name: Container tests
+        run: |
+          status=0
+          pnpm exec vitest run --project container --reporter=default --reporter=json --outputFile=report.json || status=$?
+          if [ -s report.json ]; then
+            total="$(jq '.numTotalTests' report.json)"
+            skipped="$(jq '.numPendingTests + .numTodoTests' report.json)"
+            ran=$((total - skipped))
+            echo "container: ${ran} tests ran, ${skipped} skipped, ${total} collected"
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Vitest failed (exit ${status}); its output above names the failure"
+            exit "$status"
+          fi
+          if [ ! -s report.json ]; then
+            echo "::error::No tests ran (vitest wrote no report)"
+            exit 1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No tests ran"
+            exit 1
+          fi
+      - name: Upload the test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: container-report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The app image (build plan Task 24; this job approved by the maintainer, 2026-11-13):
+  # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
+  # then run by docker/test-app-image.sh against Postgres 17 and the S3 test
+  # server on a private Docker network. The container's own HEALTHCHECK must
+  # report healthy, /healthz answer 200, and every migration the image ships
+  # beside the built migrate.js be applied (#31). Then the same image with
+  # apps/web/dist removed must keep running with /healthz 503 and its
+  # HEALTHCHECK reporting unhealthy (#162). Last, the release workflow's Trivy
+  # gate scans the image for fixable OS HIGH or CRITICAL findings. Nothing is
+  # pushed and there is no login anywhere: the images stay on the runner.
+  # Nothing depends on this job.
+  app-image:
+    name: App image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      IMAGE: platehouse:ci
+      NO_WEB_IMAGE: platehouse:ci-no-web
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+      # The runtime stage's apt-get upgrade is rebuilt whenever
+      # OS_UPDATES_STAMP changes (docker/app.Dockerfile). Today's UTC date
+      # makes pull request builds take Debian's fixes once a day and stay
+      # cached within the day. The run attempt is added so that re-running a
+      # job whose Trivy gate failed on the day's cached layer (Debian shipped a
+      # fix after the first build) rebuilds it with Debian's current fixes.
+      # release.yml passes a value unique to each run.
+      - name: Date the Debian updates
+        id: os-updates
+        run: |
+          echo "stamp=$(date -u +%Y-%m-%d)-${GITHUB_RUN_ATTEMPT:?}" >>"$GITHUB_OUTPUT"
+      - name: Build the app image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE }}
+          build-args: OS_UPDATES_STAMP=${{ steps.os-updates.outputs.stamp }}
+          cache-from: type=gha,scope=app-image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=app-image-${{ matrix.arch }}
+      - name: Run the image and check it reports healthy
+        run: docker/test-app-image.sh "$IMAGE" healthy
+      # The image above with only apps/web/dist taken out. It is built with
+      # Docker's own builder (the default one), which sees the image just
+      # loaded; the Buildx builder above would try to pull it instead.
+      - name: Build the same image without the web app
+        run: |
+          docker buildx build --builder default --load -t "$NO_WEB_IMAGE" --build-arg "IMAGE=$IMAGE" - <<'DOCKERFILE'
+          ARG IMAGE
+          FROM ${IMAGE}
+          USER root
+          RUN rm -rf /app/apps/web/dist && test ! -e /app/apps/web/dist
+          USER node
+          DOCKERFILE
+      - name: Run it and check it reports unhealthy
+        run: docker/test-app-image.sh "$NO_WEB_IMAGE" unhealthy
+      # The release workflow's Trivy gate, the same step with the same inputs,
+      # on the image built above: fixable HIGH or CRITICAL findings in the OS
+      # (Debian) packages fail the job, so a pull request fails on them before
+      # a tag does (release run 43661472697 failed on zlib1g). Its cache stays
+      # in the runner's temp folder, outside the checkout, as in release.yml.
+      # It is the last step, so a finding never hides the image checks above.
+      # The Trivy version is the one release.yml installs, set here rather than
+      # left to the action's default (v0.70.0 for the action's v0.36.0).
+      - name: Trivy gate (fail on fixable OS HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os
+          exit-code: "1"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
+
+  docs:
+    name: Docs build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      # Only the docs site and what it depends on.
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter @platehouse/docs
+      # docusaurus.config.mjs sets onBrokenLinks, onBrokenAnchors and the
+      # broken Markdown link and image hooks to throw, so a broken link fails
+      # the build.
+      - name: Build the docs site
+        run: pnpm --filter @platehouse/docs run build
