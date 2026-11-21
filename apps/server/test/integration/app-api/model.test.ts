@@ -199,7 +199,8 @@ beforeAll(async () => {
   const files = createApiLibrary({
     db: env.db,
     store: env.store,
-    plateNumbers: (plateId) => plateNumbers(env.db, CONTEXT, plateId),
+    displayContext: async () => CONTEXT,
+    plateNumbers: (ctx, plateId) => plateNumbers(env.db, ctx, plateId),
   });
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },

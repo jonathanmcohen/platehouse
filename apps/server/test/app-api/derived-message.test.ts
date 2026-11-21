@@ -170,6 +170,7 @@ function apiLibrary(files: ReturnType<typeof fileRow>[] = FILES) {
   return createApiLibrary({
     db: scriptedDb(files),
     store: unusedStore,
+    displayContext: async () => ({ printerId: "P1S", orcaVersion: null, printers: [] }),
     plateNumbers: async () => ({}),
   });
 }

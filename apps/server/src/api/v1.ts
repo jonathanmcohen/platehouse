@@ -40,6 +40,14 @@
 //   issue #260) as it is read, so no slicer temp path or address is
 //   answered; the whole stored message is kept, and a longer one keeps its
 //   end, where the program's error line is. The stored row is left as it is.
+// - A model's or a file's plate numbers are read as the library page reads
+//   them (app-api/library.ts): one display context per request
+//   (readDisplayContext, so the printer menu waits at most
+//   DISPLAY_MENU_TIMEOUT_MS), shared by every plate, and at most
+//   PLATE_NUMBERS_CONCURRENCY plate lookups at once (mapLimit). A model with
+//   many plates then asks the slicer for its printers once, not once per
+//   plate, leaves most of the database pool free, and shows every plate for
+//   the same printer.
 // - No CORS plugin is registered and no answer carries an Access-Control
 //   header, so a browser on another origin cannot read the API.
 // - A file's content is named and sized here once for every route that
@@ -56,8 +64,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
-import type { DB, FileKind, ModelFile, ParseStatus } from "../db/types.js";
-import type { PlateNumbers } from "../estimates/display.js";
+import type { DB, FileKind, ModelFile, ParseStatus, Plate } from "../db/types.js";
+import { mapLimit, PLATE_NUMBERS_CONCURRENCY } from "../app-api/library.js";
+import type { DisplayContext, PlateNumbers } from "../estimates/display.js";
 import { createCollections } from "../library/collections.js";
 import { createSearch, InvalidCursor, type LibrarySearch } from "../library/search.js";
 import { createTags } from "../library/tags.js";
@@ -347,8 +356,13 @@ function sqlState(error: unknown): string | undefined {
 export function createApiLibrary(deps: {
   db: Kysely<DB>;
   store: Pick<BlobStore, "getBlobStream" | "headBlob">;
-  /** Task 12's plateNumbers for the default printer of My printers (estimates.plateNumbers). */
-  plateNumbers(plateId: string): Promise<PlateNumbers>;
+  /**
+   * The default printer of My printers, the Orca version and the printer
+   * menu (readDisplayContext), read once per request.
+   */
+  displayContext(): Promise<DisplayContext>;
+  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
+  plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
 }): ApiLibrary {
   const { db, store } = deps;
   const repos = createRepos(db);
@@ -402,8 +416,31 @@ export function createApiLibrary(deps: {
     }));
   }
 
-  async function toApiFile(file: ModelFile): Promise<ApiFile> {
-    const plates = await repos.plates.listForFile(file.id);
+  /**
+   * These files as the API shows them. Their plates are listed one file at
+   * a time, then every plate's numbers are read with the one context, at
+   * most PLATE_NUMBERS_CONCURRENCY at once.
+   */
+  async function toApiFiles(files: readonly ModelFile[]): Promise<ApiFile[]> {
+    if (files.length === 0) return [];
+    const ctx = await deps.displayContext();
+    const platesOf: Plate[][] = [];
+    for (const file of files) platesOf.push(await repos.plates.listForFile(file.id));
+    const numbers = new Map(
+      await mapLimit(
+        platesOf.flat(),
+        PLATE_NUMBERS_CONCURRENCY,
+        async (p) => [p.id, await deps.plateNumbers(ctx, p.id)] as const,
+      ),
+    );
+    return files.map((file, i) => toApiFile(file, platesOf[i] ?? [], numbers));
+  }
+
+  function toApiFile(
+    file: ModelFile,
+    plates: readonly Plate[],
+    numbers: ReadonlyMap<string, PlateNumbers>,
+  ): ApiFile {
     return {
       id: file.id,
       modelId: file.modelId,
@@ -417,15 +454,13 @@ export function createApiLibrary(deps: {
       derivedMessage: scrubDerivedMessage(file.derivedMessage),
       createdAt: iso(file.createdAt),
       updatedAt: iso(file.updatedAt),
-      plates: await Promise.all(
-        plates.map(async (p) => ({
-          id: p.id,
-          index: p.index,
-          name: p.name,
-          objectCount: p.objectCount,
-          numbers: await deps.plateNumbers(p.id),
-        })),
-      ),
+      plates: plates.map((p) => ({
+        id: p.id,
+        index: p.index,
+        name: p.name,
+        objectCount: p.objectCount,
+        numbers: numbers.get(p.id) ?? {},
+      })),
     };
   }
 
@@ -513,12 +548,14 @@ export function createApiLibrary(deps: {
         .execute();
       const [shown] = await toApiModels([model]);
       if (shown === undefined) return undefined;
-      return { ...shown, files: await Promise.all(files.map(toApiFile)) };
+      return { ...shown, files: await toApiFiles(files) };
     },
 
     async getFile(id) {
       const file = await liveFile(id);
-      return file === undefined ? undefined : toApiFile(file);
+      if (file === undefined) return undefined;
+      const [shown] = await toApiFiles([file]);
+      return shown;
     },
 
     async fileHead(id) {
