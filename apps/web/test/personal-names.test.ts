@@ -17,13 +17,19 @@
 //    also checked with its backslashes removed, so a regex-escaped name (a dot
 //    written as backslash-dot) is still found.
 //
-// How a line is read (tokens()): lowercased, split into words at every
-// character that is not a-z or 0-9, plus each pair of neighbouring words
-// joined by one space, plus every dotted run of numbers cut into its dotted
-// prefixes ("a.", "a.b.", "a.b.c.", from each starting number). An entry
-// matches by kind:
-// - word: a word, or a pair of words, equals the name.
-// - prefix: a word starts with the name (length says how many characters).
+// How a line is read (tokens()): any Subresource Integrity value (sha512-
+// and its base64, as in a lockfile) is left out first, being noise, not text.
+// Then the line is lowercased and split into words at every character that is
+// not a-z or 0-9. Each run of letters and digits is also split into its
+// camelCase words ("approvedByName" gives "approved", "by", "name";
+// "HTTPName" gives "http", "name"), so a name joined to other letters is
+// still a word; a run that is an allowed token as a whole is not split. Plus
+// each pair of neighbouring words joined by one space, plus every dotted run
+// of numbers cut into its dotted prefixes ("a.", "a.b.", "a.b.c.", from each
+// starting number). An entry matches by kind:
+// - word: a word, a camelCase word, or a pair of words, equals the name.
+// - prefix: a word or a camelCase word starts with the name (length says how
+//   many characters).
 // - address: a dotted prefix equals the name, so a whole address range is
 //   one entry and is never written out.
 //
@@ -197,10 +203,41 @@ function hashOf(token: string): string {
   return h;
 }
 
-/** The word tokens of a line, and the dotted-prefix tokens of its numbers. */
-function tokens(line: string): { words: string[]; pairs: string[]; dotted: string[] } {
-  const lower = line.toLowerCase();
+/**
+ * A Subresource Integrity value, such as a lockfile's integrity line: base64,
+ * so its runs of letters are noise, not words. Left out before a line is read.
+ */
+const INTEGRITY = /\bsha(?:1|256|384|512)-[A-Za-z0-9+/]+=*/g;
+
+/** Where a run of letters and digits splits into camelCase words. */
+const CAMEL = /(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/;
+
+/** A run of letters and digits that holds camelCase words, and those words. */
+interface Camel {
+  whole: string;
+  parts: string[];
+}
+
+/**
+ * The word tokens of a line, its camelCase words, and the dotted-prefix
+ * tokens of its numbers.
+ */
+function tokens(line: string): {
+  words: string[];
+  camel: Camel[];
+  pairs: string[];
+  dotted: string[];
+} {
+  const text = line.replace(INTEGRITY, " ");
+  const lower = text.toLowerCase();
   const words = lower.split(/[^a-z0-9]+/).filter((t) => t !== "");
+  const camel: Camel[] = [];
+  for (const [run] of text.matchAll(/[A-Za-z0-9]+/g)) {
+    const parts = run.split(CAMEL);
+    if (parts.length > 1) {
+      camel.push({ whole: run.toLowerCase(), parts: parts.map((p) => p.toLowerCase()) });
+    }
+  }
   const pairs = words.slice(1).map((t, i) => `${words[i]} ${t}`);
   const dotted: string[] = [];
   for (const [run] of lower.matchAll(/\d+(?:\.\d+)*\.?/g)) {
@@ -214,7 +251,7 @@ function tokens(line: string): { words: string[]; pairs: string[]; dotted: strin
       }
     }
   }
-  return { words, pairs, dotted };
+  return { words, camel, pairs, dotted };
 }
 
 /** A compiled list: hash sets per kind, the prefix lengths, and the allowed tokens. */
@@ -245,17 +282,26 @@ function compile(list: Forbidden[], allowed: Record<string, string>): Matcher {
   return m;
 }
 
+/** True when a word, unless allowed, equals a word entry or starts with a prefix entry. */
+function wordHit(m: Matcher, t: string): boolean {
+  const h = hashOf(t);
+  if (m.allowed.has(h)) return false;
+  if (m.words.has(h)) return true;
+  for (const [length, set] of m.prefixes) {
+    if (t.length >= length && set.has(hashOf(t.slice(0, length)))) return true;
+  }
+  return false;
+}
+
 /** True when a line, or the line with its backslashes removed, has a forbidden token. */
 function names(m: Matcher, line: string): boolean {
   for (const text of line.includes("\\") ? [line, line.replaceAll("\\", "")] : [line]) {
-    const { words, pairs, dotted } = tokens(text);
-    for (const t of words) {
-      const h = hashOf(t);
-      if (m.allowed.has(h)) continue;
-      if (m.words.has(h)) return true;
-      for (const [length, set] of m.prefixes) {
-        if (t.length >= length && set.has(hashOf(t.slice(0, length)))) return true;
-      }
+    const { words, camel, pairs, dotted } = tokens(text);
+    for (const t of words) if (wordHit(m, t)) return true;
+    // The camelCase words of a run, unless the whole run is an allowed token.
+    for (const { whole, parts } of camel) {
+      if (m.allowed.has(hashOf(whole))) continue;
+      for (const t of parts) if (wordHit(m, t)) return true;
     }
     for (const t of pairs) if (m.words.has(hashOf(t))) return true;
     for (const t of dotted) if (m.addresses.has(hashOf(t))) return true;
@@ -266,7 +312,8 @@ function names(m: Matcher, line: string): boolean {
 /** Every allowed token's hash that a text holds, so ALLOWED cannot go stale. */
 function allowedSeen(m: Matcher, text: string, seen: Set<string>): void {
   for (const line of text.split("\n")) {
-    for (const t of tokens(line).words) {
+    const { words, camel } = tokens(line);
+    for (const t of [...words, ...camel.flatMap((c) => c.parts)]) {
       const h = hashOf(t);
       if (m.allowed.has(h)) seen.add(h);
     }
@@ -418,10 +465,21 @@ describe("no private name anywhere in the tracked tree", () => {
       "/198\\.51\\.100\\.\\d+/",
       "/(?:local|quok\\ka)/",
       "allow 10.198.51.100.0/24",
+      // A name joined to other letters in camelCase or after an acronym.
+      "approvedByZeb: true",
+      "askZEB()",
+      "the HTTPQuokka client",
+      "myQuokkaHost",
     ];
     const lookAlikes = [
       "quokkas, blue sky, grey heron, heron blue, a zebrafish, ze, wombat",
       "198.51.10.1, 1198.51.100.1, 198.51.1000.1, 192.0.2.10, platehouse.example.com",
+      // An allowed token in camelCase, whole or inside a longer identifier.
+      "ZebraFish, theZebrafishTank, isZeBRa",
+      // A Subresource Integrity value (a lockfile's integrity line) is base64,
+      // not text: its runs of letters are left alone.
+      "resolution: {integrity: sha512-abcZebXy+/zeb0Quokka/QuokkaZ==}",
+      "integrity sha1-Zeb9/zebQ= and sha384-x+ZEBq",
     ];
     expect(treeLines(m, "sample", [...named, ...lookAlikes].join("\n"))).toEqual(
       named.map((line, i) => `sample:${i + 1}: ${line.trim()}`),
