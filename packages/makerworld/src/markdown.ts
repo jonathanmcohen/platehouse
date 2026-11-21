@@ -122,6 +122,20 @@ const ATTR =
 const ATTR_SKIP = /[\t\n\f\r /]/;
 const isSpace = (c: string): boolean => /\s/.test(c);
 
+// CommonMark's flanking rules, as markdown-it 15 applies them: whitespace is
+// its isWhiteSpace set and punctuation is Unicode P and S (isPunctChar). The
+// start or end of the text counts as whitespace. Both take one code point.
+const MD_SPACE = /^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]$/;
+const MD_PUNCT = /^[\p{P}\p{S}]$/u;
+/** Neither whitespace nor punctuation: a letter, digit or the like. */
+const isWordChar = (cp: string): boolean => cp !== "" && !MD_SPACE.test(cp) && !MD_PUNCT.test(cp);
+const isMdPunct = (cp: string): boolean => MD_PUNCT.test(cp);
+const firstCodePoint = (s: string): string => {
+  const cp = s.codePointAt(0);
+  return cp === undefined ? "" : String.fromCodePoint(cp);
+};
+const lastCodePoint = (s: string): string => Array.from(s.slice(-2)).at(-1) ?? "";
+
 interface Inline {
   readonly tag: string;
   start: number;
@@ -149,11 +163,32 @@ interface Inline {
 //   insert                 open starts after the insertion move with it
 //   replaceTrailingSpace   an open start in the replaced whitespace moves to
 //                          after the replacement
+//   guardClose             see below; its rewrite moves an open start right
+//                          after the guarded emphasis with the text
+//
+// guardClose: an emphasis whose text ends in punctuation is closed only if
+// what follows its closing marks is whitespace, punctuation or the end
+// (CommonMark's right-flanking rule), and what follows is not written yet.
+// So the converter writes the marks and guards them: if the next character
+// appended is a letter, digit or the like, the emphasis is first rewritten
+// as its plain text, marks dropped (0.1.0 release review). Any cut before
+// the guarded end drops the guard: the text it covers is being rewritten,
+// and whoever rewrites it decides again.
+interface CloseGuard {
+  /** Where the guarded emphasis starts. */
+  readonly from: number;
+  /** Where it ends: the guard fires on an append here. */
+  readonly at: number;
+  /** [from, at) without the emphasis marks. */
+  readonly plain: string;
+}
+
 class Output {
   private parts: string[] = [];
   private size = 0;
   private lastText = -1;
   private readonly inline: Inline[] = []; // open emphasis and links, oldest first
+  private guard: CloseGuard | null = null;
 
   get length(): number {
     return this.size;
@@ -161,6 +196,38 @@ class Output {
 
   append(s: string): void {
     if (!s) return;
+    const g = this.guard;
+    if (g !== null) {
+      this.guard = null;
+      if (g.at === this.size && isWordChar(firstCodePoint(s))) this.rewriteTail(g.from, g.plain);
+    }
+    this.push(s);
+  }
+
+  // Guards the emphasis just written at [from, end); plain is its text
+  // without marks.
+  guardClose(from: number, plain: string): void {
+    this.guard = { from, at: this.size, plain };
+  }
+
+  // The guard on an emphasis ending at the end of the output, if any: an
+  // emphasis closing around it takes it over.
+  guardAtEnd(): CloseGuard | null {
+    return this.guard?.at === this.size ? this.guard : null;
+  }
+
+  // Replaces [from, end) with s. An open start at the end (an element opened
+  // right after the guarded emphasis) moves with it; none can lie inside.
+  private rewriteTail(from: number, s: string): void {
+    const end = this.size;
+    const delta = s.length - (end - from);
+    const after = this.inline.filter((e) => e.start >= end);
+    this.cut(from);
+    this.push(s);
+    for (const e of after) e.start += delta;
+  }
+
+  private push(s: string): void {
     this.parts.push(s);
     const last = lastNonSpace(s);
     if (last >= 0) this.lastText = this.size + last;
@@ -278,6 +345,7 @@ class Output {
   private cut(to: number): void {
     if (to >= this.size) return;
     const target = Math.max(0, to);
+    if (this.guard !== null && target < this.guard.at) this.guard = null;
     while (this.parts.length > 0 && this.size > target) {
       const last = this.parts.pop() as string;
       this.size -= last.length;
@@ -823,7 +891,11 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         // Closing drops every element opened inside this one and still open.
         const open = out.closeInline(tag);
         if (!open) return;
+        // An emphasis inside this one that closed at the same place, still
+        // guarded: if this one is rewritten, its guard moves to this one.
+        const inner = out.guardAtEnd();
         const seg = out.from(open.start);
+        let guardPlain: string | null = null;
         const core = seg.trim();
         const lead = seg.slice(0, seg.length - seg.trimStart().length);
         const trail = seg.slice(seg.trimEnd().length);
@@ -845,12 +917,33 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           // only a linked image must stay empty.
           if (href && core) wrapped = `${lead}[${core}](${href})${trail}`;
         } else if (core) {
-          const mark = EMPHASIS.get(tag) as string;
-          wrapped = lead + mark + core + mark + trail;
+          // CommonMark's flanking rules (Output's guardClose): the opening
+          // marks before punctuation open only after whitespace, punctuation
+          // or the line start, else they would show as text, so they are
+          // dropped and the text kept. The closing marks after punctuation
+          // depend on what is written next, so they are guarded. The sentinels
+          // are not text, and TEXT_LINE only ever follows a newline.
+          const text = stripSentinels(core);
+          const before =
+            lead !== "" || open.start === 0
+              ? " "
+              : stripSentinels(out.charAt(open.start - 2) + out.charAt(open.start - 1));
+          const opens = !isMdPunct(firstCodePoint(text)) || !isWordChar(lastCodePoint(before));
+          if (opens) {
+            const mark = EMPHASIS.get(tag) as string;
+            wrapped = lead + mark + core + mark + trail;
+            if (trail === "" && isMdPunct(lastCodePoint(text))) {
+              guardPlain =
+                inner !== null && inner.from >= open.start
+                  ? seg.slice(0, inner.from - open.start) + inner.plain
+                  : seg;
+            }
+          }
         }
         if (wrapped !== seg) {
           out.truncate(open.start);
           out.append(wrapped);
+          if (guardPlain !== null) out.guardClose(open.start, guardPlain);
         }
       }
     } else if (tag === "table") {
