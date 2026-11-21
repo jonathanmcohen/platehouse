@@ -15,10 +15,11 @@ nozzle, as the default. Every printer is named in full, such as "Bambu Lab P1S, 
   **Add printer**.
 - **Adding a printer queues the whole library.** Every plate in the library is queued for the new
   printer, except plates whose file already carries Bambu's own numbers for it. The slicer does one
-  plate at a time, at about 3 plates a minute, so a large library takes hours (463 plates is about
-  2 hours and 35 minutes). The page says how many plates were queued and about how long they will
-  take, counting any other work already queued ahead of them. Each printer in the list shows the
-  plates it still has waiting.
+  plate at a time, so a large library can take an hour or more. The page says how many plates were
+  queued and about how long they will take, counting any other work already queued ahead of them.
+  In 0.1.0 that time is an overestimate, often about 3 times the real run
+  ([#317](https://github.com/jonathanmcohen/platehouse/issues/317)). Each printer in the list shows
+  the plates it still has waiting.
 - **The order**: **Up** and **Down** move a printer in the list. The list order is the order the
   printer switch offers them in.
 - **One default**: one printer is marked **Default**. Its numbers are shown first on the library
