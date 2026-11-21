@@ -79,6 +79,7 @@
   "activity.rate.unknown": "No hay suficiente progreso reciente para estimar el tiempo restante.",
   "activity.refresh": "Actualizar",
   "activity.refreshFailed": "No se pudo actualizar la actividad en este momento. Lo que se muestra puede no estar al d\u00eda.",
+  "activity.retryNotRetryable": "Esta placa ya no se puede reintentar. Ya se est\u00e1 estimando de nuevo, o su impresora o su archivo han cambiado. Se ha vuelto a pedir la lista de abajo.",
   "activity.schedule.checkRenders": "Comprobaci\u00f3n de renderizados",
   "activity.schedule.pollOrca": "Comprobaci\u00f3n de la versi\u00f3n del laminador",
   "activity.schedule.purgeExpired": "Purga de la papelera (modelos movidos all\u00ed hace m\u00e1s de 30 d\u00edas)",

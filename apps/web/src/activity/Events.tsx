@@ -2,8 +2,11 @@
 // at most the server's limit, built only from what the app records (models
 // added, inbox files that failed, estimates, renders and conversions that
 // failed). A live model is a link to its page; a trashed one is named
-// without a link. A failed estimate has the model page's own retry, through
-// the existing POST /app/api/estimates/:id/retry. Every text here is shown as
+// without a link. A failed estimate (the server lists live models' only) has
+// the model page's own retry, through the existing POST /app/api/estimates/:id/retry; a 409
+// not_retryable says the plate can no longer be retried and asks for the
+// list again, and any other failure says what the server's answer means
+// (errorText). Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
 
@@ -12,7 +15,7 @@ import { Link } from "react-router";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
 import { derivedMessageIn } from "../model/FilesTab";
-import { appApi, segment } from "../settings/api";
+import { AppApiError, appApi, segment, useErrorText } from "../settings/api";
 import type { ActivityEvent, ModelSource } from "./ActivityPage";
 
 const SOURCE_WORDS: Readonly<Record<ModelSource, MessageKey>> = {
@@ -96,6 +99,7 @@ function EstimateFailure({
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
+  const errorText = useErrorText();
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,8 +110,16 @@ function EstimateFailure({
     try {
       await appApi("POST", `/estimates/${segment(event.estimateId)}/retry`);
       onRetried();
-    } catch {
-      setError(t("model.numbers.retryFailed"));
+    } catch (failure) {
+      if (failure instanceof AppApiError && failure.status === 409) {
+        // not_retryable is final: the estimate is no longer failed, or its
+        // printer or plate is gone. Trying again cannot work, so say so and
+        // ask for the list again, which drops an event that has moved on.
+        setError(t("activity.retryNotRetryable"));
+        onRetried();
+      } else {
+        setError(errorText(failure));
+      }
     } finally {
       setRetrying(false);
     }

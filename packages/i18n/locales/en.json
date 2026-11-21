@@ -72,6 +72,7 @@
   "activity.rate.unknown": "Not enough recent progress to estimate the time left.",
   "activity.refresh": "Refresh",
   "activity.refreshFailed": "The activity could not be refreshed right now. What is shown may be out of date.",
+  "activity.retryNotRetryable": "This plate can no longer be retried. It is already being estimated again, or its printer or file has changed. The list below has been asked for again.",
   "activity.schedule.checkRenders": "Render check",
   "activity.schedule.pollOrca": "Slicer version check",
   "activity.schedule.purgeExpired": "Trash purge (models trashed over 30 days ago)",

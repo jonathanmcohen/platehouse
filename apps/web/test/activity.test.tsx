@@ -229,9 +229,12 @@ function stubServer() {
         return typeof a === "number" ? json({ error: "unavailable" }, a) : json(a);
       }
       if (method === "POST" && /^\/app\/api\/estimates\/[^/]+\/retry$/.test(url.pathname)) {
-        return retryStatus === 202
-          ? json({ queued: true }, 202)
-          : json({ error: "not_retryable" }, retryStatus);
+        if (retryStatus === 202) return json({ queued: true }, 202);
+        // The route's own refusal (apps/server/src/app-api/model.ts); any
+        // other status is a server that is down or failing.
+        return retryStatus === 409
+          ? json({ error: "not_retryable" }, 409)
+          : json({ error: "unavailable" }, retryStatus);
       }
       return new Response("not found", { status: 404 });
     }),
@@ -573,12 +576,30 @@ describe("recent events", () => {
     expect(gets()).toBe(before + 1);
   });
 
-  test("says so when a retry is refused", async () => {
+  test("a retry the server refuses as not retryable says why and asks for the list again", async () => {
+    // 409 not_retryable is final: the estimate is no longer failed (retried
+    // in another tab or on the model page), or its printer or plate is gone.
     retryStatus = 409;
     await render();
     const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    const before = gets();
     await click(button(/^Retry$/, li));
-    expect(text(li.querySelector('[role="alert"]'))).toContain("could not be retried");
+    const alert = text(li.querySelector('[role="alert"]'));
+    expect(alert).toContain("can no longer be retried");
+    expect(alert).not.toContain("Try again");
+    expect(gets()).toBe(before + 1);
+  });
+
+  test("a retry that fails for another reason says what the server's answer means", async () => {
+    retryStatus = 503;
+    await render();
+    const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    const before = gets();
+    await click(button(/^Retry$/, li));
+    expect(text(li.querySelector('[role="alert"]'))).toBe(
+      "This is unavailable right now. Try again in a moment.",
+    );
+    expect(gets()).toBe(before);
   });
 
   test("links a live model, and names a trashed one without a link", async () => {
