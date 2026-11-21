@@ -1,5 +1,5 @@
 // The headless routes through Traefik (build plan Task 22; AC-082 through
-// Traefik, AC-041, AC-080, lesson 1). Platehouse has two cookieless routes,
+// Traefik, AC-041, AC-080). Platehouse has two cookieless routes,
 // the Public API v1 and slicer links. If a proxy login or the app's session
 // gate covered either, it would redirect to login and pass every unit test
 // (Cairn's OAuth loop, v0.9.16). Each request here goes through Traefik on

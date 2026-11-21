@@ -24,8 +24,8 @@
 # Tags come from docker/metadata-action with type=semver,pattern={{version}}
 # alone: v0.1.0 gives 0.1.0 and latest, and a prerelease such as v0.0.0-test
 # gives 0.0.0-test and no latest, so latest moves only on a stable tag. There
-# is no hand-written latest entry (Engineering Lessons: it would publish only
-# latest for a tag that is not valid semver).
+# is no hand-written latest entry: it would publish latest even for a tag that
+# is not valid semver.
 #
 # workflow_dispatch is for the plan's first release step: dispatching this
 # workflow against a throwaway tag (gh workflow run release.yml --ref
@@ -33,8 +33,8 @@
 # before anything is built, so a dispatch from a branch pushes nothing.
 #
 # Every job after the gate carries if: !cancelled() && needs.<dep>.result ==
-# 'success', so a skipped or failed job stops the chain explicitly (Engineering
-# Lessons: skips propagate). Buildx's own provenance attestation is turned off
+# 'success', so a skipped or failed job stops the chain explicitly, because a
+# skip propagates down a needs chain. Buildx's own provenance attestation is turned off
 # (AC-094: no build attestation), so each arch digest is a plain image.
 name: release
 

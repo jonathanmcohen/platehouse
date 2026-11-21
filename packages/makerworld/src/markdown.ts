@@ -2,8 +2,8 @@
 // for the web app. htmlToMarkdown is ported by behaviour from automation
 // Manyfold/makerworld-metadata at 1ce8c57. That converter escaped text for
 // Kramdown, which Manyfold renders with; Platehouse renders with markdown-it,
-// so the escaping here is re-derived for markdown-it (build plan Task 7,
-// requirements lesson 5) and the tests in test/markdown.test.ts and
+// so the escaping here is re-derived for markdown-it (build plan Task 7)
+// and the tests in test/markdown.test.ts and
 // test/render.test.ts are the contract.
 
 import DOMPurify, {

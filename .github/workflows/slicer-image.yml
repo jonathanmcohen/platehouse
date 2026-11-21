@@ -71,7 +71,7 @@
 # The image is amd64 only (the plan: OpenSCAD has no current arm64 build).
 # Actions are pinned to the exact tags release.yml uses. Every job after detect
 # carries an explicit !cancelled() condition, because a skip propagates down a
-# needs chain (Engineering Lessons). Buildx provenance is off (AC-094: no build
+# needs chain unless a job says otherwise. Buildx provenance is off (AC-094: no build
 # attestation). Each job gets only the permissions it uses; together they are
 # the plan's contents: read, packages: write and issues: write.
 name: slicer-image

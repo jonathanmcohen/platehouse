@@ -1,5 +1,5 @@
-# The end-to-end stack (build plan Task 22; AC-074, AC-075, AC-082, lessons 1
-# and 6). Traefik v3 terminates TLS for two hosts and routes them with its
+# The end-to-end stack (build plan Task 22; AC-074, AC-075, AC-082). Traefik
+# v3 terminates TLS for two hosts and routes them with its
 # file provider: platehouse.e2e.test to the app and id.e2e.test to the mock
 # OIDC issuer. The Platehouse router carries no middleware at all, so no
 # proxy login (oidc-auth) can cover /api/v1/ or /s/, as the reverse proxy

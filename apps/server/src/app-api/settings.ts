@@ -78,7 +78,8 @@ export const APP_API_BODY_LIMIT = 64 * 1024;
 /**
  * Plates the slicer estimates a minute, about 3, as measured on a 4-CPU test
  * host running examples/docker-compose.yml: the page uses it to say how long
- * a printer it just added will take. The slicer runs one plate at a time, so this is the whole rate.
+ * a printer it just added will take. In 0.1.0 this makes that estimate about
+ * 3 times too long; a live run did about 9 plates a minute (issue #317). The slicer runs one plate at a time, so this is the whole rate.
  */
 export const SLICES_PER_MINUTE = 3;
 

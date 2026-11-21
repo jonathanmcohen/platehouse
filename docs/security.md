@@ -73,9 +73,12 @@ container, the slicer, which is locked down.
   - add a firewall rule on the host that drops traffic from the slicer network's subnet to the
     host's own addresses, or
   - create the slicer network with the bridge option `com.docker.network.bridge.inhibit_ipv4`,
-    so the host has no address on it:
-    `docker network create --internal -o com.docker.network.bridge.inhibit_ipv4=true platehouse-slicer`.
-    Check your Docker version's bridge driver documentation for the option first.
+    so the host has no address on it. Check your Docker version's bridge driver documentation for
+    the option first. If you followed the install guide, the network already exists, so replace
+    it, in the folder with your compose file:
+    `docker compose down`, then `docker network rm platehouse-slicer`, then
+    `docker network create --internal -o com.docker.network.bridge.inhibit_ipv4=true platehouse-slicer`,
+    then `docker compose up -d`.
 - **No credentials.** It holds no database password, bucket key, token or other secret. The app
   sends it a file and gets numbers or a render back.
 - **Little it can change.** It runs as its own unprivileged user with every Linux capability

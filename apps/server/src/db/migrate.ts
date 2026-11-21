@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { type Kysely, sql } from "kysely";
 import type { DB } from "./types.js";
 
-// Forward-only migrations from hand-written SQL files (build plan decision 4,
-// lesson 14: nothing generates DDL, and a reviewer reads every statement).
+// Forward-only migrations from hand-written SQL files (build plan decision 4):
+// nothing generates DDL, and a reviewer reads every statement.
 //
 // A migration is a file NNNN_name.sql in migrations/, numbered from 0001 with
 // no gaps. Names that start with "." or do not end in .sql are skipped; a .sql
