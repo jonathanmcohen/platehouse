@@ -21,8 +21,13 @@ import { describe, expect, test } from "vitest";
 import {
   addressSpans,
   DERIVED_MESSAGE_MAX_CHARS,
+  type Rule,
+  regexRule,
+  runRules,
+  SCRUB_MAX_CHARS,
   scrubDerivedMessage,
   scrubDetail,
+  scrubSpans,
   scrubText,
 } from "../src/scrub.js";
 
@@ -96,10 +101,13 @@ describe("scrubText", () => {
 
   // Straight after a word and a colon, with no space, the whole address
   // goes, as an IPv4 address does (peer:192.0.2.7), not just its first group.
+  // When the address starts with two to five digits and a colon, the word
+  // goes too: the scrub before 0.1.0 took peer:2001 out as a host and port,
+  // and scrubText never takes out less than it did (issue #353).
   test("takes out an IPv6 address written straight after a word and a colon", () => {
-    expect(scrubText("peer:2001:db8::1 left")).toBe("peer:[address] left");
+    expect(scrubText("peer:2001:db8::1 left")).toBe("[address] left");
     expect(scrubText("peer:fe80::1%eth0 left")).toBe("peer:[address] left");
-    expect(scrubText("dial tcp:2001:db8::7:8080 failed")).toBe("dial tcp:[address] failed");
+    expect(scrubText("dial tcp:2001:db8::7:8080 failed")).toBe("dial [address] failed");
     expect(scrubText("peer:192.0.2.7 left")).toBe("peer:[address] left");
   });
 
@@ -108,10 +116,11 @@ describe("scrubText", () => {
   // takes the longest address from the first place one can start, so when
   // the end of the label is itself part of a valid address (the "1:" of
   // 1:2001:db8::1, the "0:" of 0:fe80::1), it goes too: more is taken out,
-  // never less.
+  // never less. A label before "2001:" goes whole, as the scrub before
+  // 0.1.0 took node-1:2001 out as a host and port (issue #353).
   test("takes out an address after any label and a colon", () => {
-    expect(scrubText("node-1:2001:db8::1 left")).toBe("node-[address] left");
-    expect(scrubText("slicer1:2001:db8::1 left")).toBe("slicer[address] left");
+    expect(scrubText("node-1:2001:db8::1 left")).toBe("[address] left");
+    expect(scrubText("slicer1:2001:db8::1 left")).toBe("[address] left");
     expect(scrubText("eth0:fe80::1 up")).toBe("eth[address] up");
     for (const shown of [
       scrubText("node-1:2001:db8::1"),
@@ -128,8 +137,13 @@ describe("scrubText", () => {
     ["connect ECONNREFUSED 192.0.2.7", "connect ECONNREFUSED [address]"],
     ["host-192.0.2.7 refused", "host-[address] refused"],
     ["peer_2001:db8::1 left", "peer_[address] left"],
-    // "de:2001:db8::1" is a valid address, so the end of "node" goes with it.
-    ["eth0:node:2001:db8::1", "eth0:no[address]"],
+    // node:2001 is a host and port, as the scrub before 0.1.0 took it.
+    ["eth0:node:2001:db8::1", "eth0:[address]"],
+    // Issue #353: a host joined to a word with '_' goes whole.
+    ["connect my_app-db:5432 refused", "connect [address] refused"],
+    ["connect app_v2.db.example:5432 refused", "connect [address] refused"],
+    ["connect redis_cache.internal:6379 refused", "connect [address] refused"],
+    ["reach a-b.lan-2 now", "reach [address]-2 now"],
     ["a:b:2001:db8::1", "[address]"],
     ["backup 192.0.2.7-old", "backup [address]-old"],
     ["at 192.0.2.7:5432.", "at [address]."],
@@ -531,6 +545,260 @@ describe("the address scrub's invariant", () => {
       if (!out.startsWith(`${before} `) || !out.endsWith(` ${after}`)) {
         broken.push(`${JSON.stringify(text)} -> ${JSON.stringify(out)} changed a look-alike`);
       }
+    }
+    expect(broken.length, broken.slice(0, 20).join("\n")).toBe(0);
+  });
+});
+
+// The whole scrub, checked against the one it replaced. Each round of review
+// found one more rule that took out less than before, so this states the
+// promise for every rule at once: on any text, every span the scrub before
+// 0.1.0 replaced lies inside a span scrubText replaces (scrubSpans). It is
+// checked on the named cases below and on thousands of generated messages
+// holding addresses, host:port pairs, URLs and internal host names next to
+// every kind of neighbour.
+
+/**
+ * TEST ORACLE. A verbatim copy of scrubText from release/v0.1.0 at 68c02f6,
+ * before this release changed it. Never edit it: it is the reference the
+ * differential tests measure the current scrub against, so changing it would
+ * change what they prove. Some of its patterns are quadratic on long runs, so
+ * it only ever runs on short inputs (ORACLE_MAX_CHARS).
+ */
+function oldScrubText(
+  text: string,
+  options: { maxChars?: number; keep?: "start" | "end" } = {},
+): string {
+  let out = text;
+  out = out.replace(/\bBearer\s+\S+/gi, "Bearer [redacted]");
+  out = out.replace(/\bph_[A-Za-z0-9_-]{16,}/g, "[redacted]");
+  out = out.replace(
+    /\b(passwords?|passwd|secrets?|tokens?|api[_-]?keys?|access[_-]?keys?|credentials?)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi,
+    (_m, key: string, sep: string) => `${key}${sep}[redacted]`,
+  );
+  out = out.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi, "[address]");
+  out = out.replace(/\b[A-Za-z]:\\[^\s"'<>)\]]*/g, "[path]");
+  out = out.replace(/(^|[\s"'(=,[])~\/[^\s"'<>)\],]*/g, "$1[path]");
+  out = out.replace(/(^|[\s"'(=,[])\/[^\s"'<>)\],]+/g, "$1[path]");
+  out = out.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[address]");
+  out = out.replace(
+    /\b(?=[A-Za-z0-9.-]*[A-Za-z])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*:\d{2,5}\b/g,
+    "[address]",
+  );
+  out = out.replace(
+    /\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|internal|home|arpa|localdomain)\b/gi,
+    "[address]",
+  );
+  out = out.replace(/\blocalhost\b/gi, "[address]");
+  out = out.trim();
+  const max = options.maxChars ?? SCRUB_MAX_CHARS;
+  if (out.length <= max) return out;
+  return options.keep === "end" ? `...${out.slice(out.length - max)}` : `${out.slice(0, max)}...`;
+}
+
+/** The longest input the oracle is run on, so its quadratic patterns stay quick. */
+const ORACLE_MAX_CHARS = 2_000;
+
+/**
+ * The oracle's replacements as rules, with the same patterns in the same
+ * order, so runRules can say which spans of the input each one replaced. A
+ * replacement that keeps the start of its match ("$1[path]", a credential's
+ * key) starts its span after what it keeps. oldSpansOf checks that these
+ * rules give exactly the oracle's output, so they cannot drift from it.
+ */
+const OLD_RULES: readonly Rule[] = [
+  regexRule(/\bBearer\s+\S+/gi, () => ({ from: 0, text: "Bearer [redacted]" })),
+  regexRule(/\bph_[A-Za-z0-9_-]{16,}/g, () => ({ from: 0, text: "[redacted]" })),
+  regexRule(
+    /\b(passwords?|passwd|secrets?|tokens?|api[_-]?keys?|access[_-]?keys?|credentials?)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi,
+    (m) => ({ from: (m[1] as string).length + (m[2] as string).length, text: "[redacted]" }),
+  ),
+  regexRule(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi, () => ({ from: 0, text: "[address]" })),
+  regexRule(/\b[A-Za-z]:\\[^\s"'<>)\]]*/g, () => ({ from: 0, text: "[path]" })),
+  regexRule(/(^|[\s"'(=,[])~\/[^\s"'<>)\],]*/g, (m) => ({
+    from: (m[1] as string).length,
+    text: "[path]",
+  })),
+  regexRule(/(^|[\s"'(=,[])\/[^\s"'<>)\],]+/g, (m) => ({
+    from: (m[1] as string).length,
+    text: "[path]",
+  })),
+  regexRule(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, () => ({ from: 0, text: "[address]" })),
+  regexRule(/\b(?=[A-Za-z0-9.-]*[A-Za-z])[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*:\d{2,5}\b/g, () => ({
+    from: 0,
+    text: "[address]",
+  })),
+  regexRule(/\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|internal|home|arpa|localdomain)\b/gi, () => ({
+    from: 0,
+    text: "[address]",
+  })),
+  regexRule(/\blocalhost\b/gi, () => ({ from: 0, text: "[address]" })),
+];
+
+/** The spans of text the oracle replaced, after checking OLD_RULES give its output exactly. */
+function oldSpansOf(text: string): [number, number][] {
+  const { text: out, spans } = runRules(text, OLD_RULES, true);
+  expect(out.trim(), JSON.stringify(text)).toBe(
+    oldScrubText(text, { maxChars: Number.POSITIVE_INFINITY }),
+  );
+  return spans;
+}
+
+/**
+ * The differential check: the first span of text the oracle replaced that no
+ * span scrubText replaces holds whole, with both outputs, or undefined when
+ * scrubText takes out everything the oracle did.
+ */
+function takesOutLess(text: string): string | undefined {
+  if (text.length > ORACLE_MAX_CHARS) throw new Error("too long for the oracle");
+  const now = scrubSpans(text);
+  for (const [s, e] of oldSpansOf(text)) {
+    if (!now.some(([ns, ne]) => ns <= s && e <= ne)) {
+      return (
+        `${JSON.stringify(text)}: the old scrub took out ${JSON.stringify(text.slice(s, e))}; ` +
+        `old ${JSON.stringify(oldScrubText(text))}, now ${JSON.stringify(scrubText(text))}`
+      );
+    }
+  }
+  return undefined;
+}
+
+/** Host:port pairs, URLs and internal host names, every one synthetic. */
+const HOST_PORTS = [
+  "slicer:8080",
+  "platehouse-db:5432",
+  "db.internal:5432",
+  "my_app-db:5432",
+  "app_v2.db.example:5432",
+  "redis_cache.internal:6379",
+  "a.b.c:80",
+  "x1:65535",
+  "localhost:3000",
+  "box-2.example.net:443",
+];
+const URLS = [
+  "http://slicer:8080/v1/slice",
+  "https://bucket.example.com/models/a/b?X-Amz-Signature=abc",
+  "s3+https://store.example/x",
+  "http://[2001:db8::1]:8080/v1",
+  "ftp://files.example.org",
+  "HTTP://UPPER.EXAMPLE/",
+];
+const INTERNAL_NAMES = [
+  "server.lan",
+  "platehouse.home.arpa",
+  "nas.local",
+  "db.internal",
+  "box.localdomain",
+  "my_host.lan",
+  "a-b.lan-2",
+  "x.local.example",
+  "localhost",
+];
+
+/** Neighbours for every kind: word characters, '_', '-', '.', digits, punctuation and CJK. */
+const ALL_NEIGHBOURS = [
+  ...NEIGHBOURS,
+  "_db",
+  "app_",
+  "my_",
+  "_",
+  "__",
+  "x-",
+  "-y",
+  "9",
+  "v2.",
+  ".io",
+  ",",
+  ";",
+  "(",
+  ")",
+  "!",
+  "?",
+  "#",
+  "+",
+  "*",
+  "\\",
+  "\t",
+  "日本",
+  "é",
+];
+
+/** A message for the differential check: one or two items of any kind, each between neighbours. */
+function mixedMessage(random: () => number): string {
+  const kinds = [ADDRESSES, HOST_PORTS, URLS, INTERNAL_NAMES];
+  const side = () => {
+    const r = random();
+    const count = r < 0.15 ? 3 : r < 0.5 ? 2 : 1;
+    let s = "";
+    for (let k = 0; k < count; k += 1) s += pick(random, ALL_NEIGHBOURS);
+    return s;
+  };
+  let core = side() + pick(random, pick(random, kinds)) + side();
+  if (random() < 0.4) core += pick(random, pick(random, kinds)) + side();
+  return `${pick(random, LOOKALIKES)} ${core} ${pick(random, LOOKALIKES)}`;
+}
+
+/** The named inputs the differential check runs on, beside the generated ones. */
+const NAMED_DIFFERENTIAL = [
+  // Issue #353: a host joined to a word with '_'.
+  "connect my_app-db:5432 refused",
+  "connect app_v2.db.example:5432 refused",
+  "connect redis_cache.internal:6379 refused",
+  ...LOOKALIKES,
+  ...ADDRESSES.map((a) => `reach ${a} now`),
+  ...HOST_PORTS.map((h) => `reach ${h} now`),
+  ...URLS.map((u) => `GET ${u} failed`),
+  ...INTERNAL_NAMES.map((n) => `reach ${n} now`),
+  "dial [192.0.2.7] failed",
+  "[WARN]10.0.0.5 unreachable",
+  "failed.10.0.0.5",
+  "reach 10.0.0.5.nip.io",
+  "1:2:3:4:5:6:7:10.0.0.5",
+  "peer [::1]:1.2.3.4 left",
+  "Orca exited slicing /tmp/work/a.3mf via http://slicer:8080 token=abc",
+  "Authorization: Bearer abc.def",
+  "C:\\Users\\someone\\file.3mf and ~/models/x.stl",
+];
+
+describe("the whole scrub never takes out less than the scrub before 0.1.0", () => {
+  test("the oracle's spans are the old scrub's, and the check finds what it should", () => {
+    expect(oldScrubText("connect my_app-db:5432 refused")).toBe("connect my_app[address] refused");
+    expect(oldSpansOf("connect my_app-db:5432 refused")).toEqual([[14, 22]]);
+    expect(oldSpansOf("a ~/x b")).toEqual([[2, 5]]);
+    expect(oldSpansOf("token=abc")).toEqual([[6, 9]]);
+    expect(runRules("ab", [regexRule(/b/g, () => ({ from: 0, text: "[x]" }))], true).spans).toEqual(
+      [[1, 2]],
+    );
+    // A replacement of a replacement spans everything both replaced.
+    const twice = [
+      regexRule(/b/g, () => ({ from: 0, text: "[x]" })),
+      regexRule(/a\[x\]c/g, () => ({ from: 0, text: "[y]" })),
+    ];
+    expect(runRules("abc", twice, true)).toEqual({ text: "[y]", spans: [[0, 3]] });
+  });
+
+  test.each(NAMED_DIFFERENTIAL)("%j", (text) => {
+    expect(takesOutLess(text)).toBeUndefined();
+  });
+
+  test("holds for 6000 generated messages of every kind", () => {
+    const random = seeded(0x353);
+    const broken: string[] = [];
+    for (let i = 0; i < 6000; i += 1) {
+      const text = mixedMessage(random);
+      const problem = takesOutLess(text);
+      if (problem !== undefined) broken.push(problem);
+    }
+    expect(broken.length, broken.slice(0, 20).join("\n")).toBe(0);
+  });
+
+  test("holds for the address invariant's 3000 generated messages", () => {
+    const random = seeded(0x5c2b);
+    const broken: string[] = [];
+    for (let i = 0; i < 3000; i += 1) {
+      const problem = takesOutLess(message(random).text);
+      if (problem !== undefined) broken.push(problem);
     }
     expect(broken.length, broken.slice(0, 20).join("\n")).toBe(0);
   });
