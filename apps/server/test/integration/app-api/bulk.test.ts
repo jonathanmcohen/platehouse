@@ -14,10 +14,12 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { registerOrganiseApi } from "../../../src/app-api/organise.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createCollections } from "../../../src/library/collections.js";
+import { withLiveModel } from "../../../src/library/live.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createTrash } from "../../../src/library/trash.js";
 import { type BulkResult, bulkRepo, MAX_BULK_IDS } from "../../../src/repos/bulk.js";
 import type { LibraryView } from "../../../src/repos/models.js";
+import { tagsRepo } from "../../../src/repos/tags.js";
 import {
   type LibraryEnv,
   marker,
@@ -570,6 +572,90 @@ describe("the view a bulk request is made in", () => {
     expect(res.body).toEqual({ changed: [a], unchanged: [], failed: [], notInView: [b] });
     expect((await env.repos.models.get(b))?.id).toBe(b);
   });
+
+  // The library page's view check asks this about selected models past the
+  // first 1000 matches GET /app/api/library/ids answers (PR #313 review):
+  // the same rule as the actions, with no sort and no cap, changing nothing.
+  test("in-view: answers the posted models the view holds, in the request's order, and changes nothing", async () => {
+    const { a, b, c, tag, view } = await tagView();
+    const { trashed } = await selection();
+    const res = await post<{ ids: string[] }>("/app/api/bulk/in-view", {
+      ids: [b, c, trashed, MISSING, "not-an-id", a, a.toUpperCase()],
+      view,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ids: [b, a] });
+    const whole = await post<{ ids: string[] }>("/app/api/bulk/in-view", { ids: [trashed, c] });
+    expect(whole.body).toEqual({ ids: [c] });
+    expect(await tagsOf(a)).toEqual([tag]);
+    expect(await tagsOf(b)).toEqual([tag]);
+    expect(await tagsOf(c)).toEqual([]);
+  });
+
+  // The race in the PR #313 review: another tab takes the filtered tag off a
+  // selected model while the bulk action runs. That change (withLiveModel)
+  // holds the model FOR SHARE until it commits. Every bulk action now locks
+  // the selected models FOR NO KEY UPDATE or FOR UPDATE, which wait on it, so
+  // the view is read after the change commits and the model is answered in
+  // notInView, untouched. Locked FOR SHARE, as these three actions once were,
+  // the action did not wait, read the view before the change committed and
+  // changed the model anyway; here that shows as the action never waiting.
+  const actions: [string, (ids: string[], view: LibraryView) => Promise<BulkResult>][] = [
+    ["add tags", (ids, view) => bulkRepo(env.db).addTags(ids, [`Raced ${marker()}`], view)],
+    ["remove a tag", (ids, view) => bulkRepo(env.db).removeTag(ids, "Raced other", view)],
+    [
+      "add to a collection",
+      (ids, view) => bulkRepo(env.db).addToCollection(ids, `Raced ${marker()}`, view),
+    ],
+    ["move to the trash", (ids, view) => bulkRepo(env.db).trash(ids, view)],
+  ];
+  for (const [name, act] of actions) {
+    test(`${name}: a model taken out of the view while the action runs is left alone`, async () => {
+      const { a, b, tag } = await tagView();
+      await createTags(env.db).addTag(b, "Raced other");
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let taken: () => void = () => {};
+      const tagTaken = new Promise<void>((resolve) => {
+        taken = resolve;
+      });
+      const other = withLiveModel(env.db, b, async (trx) => {
+        expect(await tagsRepo(trx).remove(b, tag)).toBe(true);
+        taken();
+        await released;
+        return true;
+      });
+      await tagTaken;
+      const acting = act([a, b], { q: "", tag });
+      try {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const { rows } = await sql<{ waiting: number }>`
+            select count(*)::int as waiting from pg_stat_activity
+             where wait_event_type = 'Lock' and query ilike 'select %from "models"%for %update%'
+          `.execute(env.db);
+          if ((rows[0]?.waiting ?? 0) > 0) break;
+          if (Date.now() > deadline)
+            throw new Error(`${name} never waited on the share-locked model`);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        release();
+        expect(await other).toBe(true);
+        const done = await acting;
+        expect(done.notInView).toEqual([b]);
+        expect(done.changed).not.toContain(b);
+        expect(await tagsOf(b)).toEqual(["Raced other"]);
+        expect(await env.repos.collections.forModel(b)).toEqual([]);
+        expect((await env.repos.models.get(b))?.id).toBe(b);
+      } finally {
+        release();
+        await other.catch(() => false);
+        await acting.catch(() => undefined);
+      }
+    });
+  }
 
   test("the search counts as the library page's does: name, caption, creator and tag", async () => {
     const word = marker();

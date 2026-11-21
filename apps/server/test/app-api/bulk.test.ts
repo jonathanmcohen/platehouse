@@ -201,6 +201,8 @@ describe("the bulk routes refuse a bad request before anything runs", () => {
     ["/app/api/bulk/remove-tag", { tag: "PLA", view }],
     ["/app/api/bulk/add-to-collection", { collection: "Desk", view }],
     ["/app/api/bulk/trash", { view }],
+    // Not an action: which of the posted models the view holds (PR #313 review).
+    ["/app/api/bulk/in-view", { view }],
   ];
 
   test("each route takes up to the cap and refuses one more, or none", async () => {

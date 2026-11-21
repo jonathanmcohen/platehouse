@@ -92,6 +92,8 @@ let container: HTMLDivElement;
 let root: Root;
 let requests: string[];
 let posted: Posted[];
+/** The bodies POST /app/api/bulk/in-view was sent, the view check past the ids cap. */
+let inViewAsked: Array<Record<string, unknown>>;
 let matchCap: number;
 /** The tag names /app/api/library/tags answers with, as live models carry them. */
 let serverTags: string[];
@@ -125,6 +127,21 @@ function stubServer(all: LibraryCard[]) {
       if (url.pathname === "/app/api/library/tags") return json({ tags: serverTags });
       if (url.pathname === "/app/api/collections") {
         return json({ collections: [{ name: "Shelf", models: 3 }] });
+      }
+      if (url.pathname === "/app/api/bulk/in-view") {
+        // Which posted models the view holds: every match, with no sort and no cap.
+        const body = JSON.parse(String(init?.body ?? "{}")) as Posted["body"];
+        inViewAsked.push(body);
+        const ids = body.ids as string[];
+        const want = (body.view as Record<string, string>).tag?.toLowerCase();
+        return json({
+          ids: ids.filter((i) =>
+            all.some(
+              (c) =>
+                c.id === i && (want === undefined || c.tags.some((t) => t.toLowerCase() === want)),
+            ),
+          ),
+        });
       }
       if (url.pathname.startsWith("/app/api/bulk/")) {
         const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -356,6 +373,7 @@ async function selectMode() {
 beforeEach(() => {
   requests = [];
   posted = [];
+  inViewAsked = [];
   holding = null;
   held = [];
   failing = null;
@@ -1117,6 +1135,42 @@ describe("the selection holds only models the search and filters show (0.1.0-rc.
     expect(container.textContent).not.toContain("left the selection");
   });
 
+  // GET /app/api/library/ids answers only the first matches, up to the cap
+  // (1000), in the sort's order; the server's own rule has no cap (PR #313
+  // review). When the answer is capped, the selected models it leaves out
+  // are asked about by id (POST /app/api/bulk/in-view), so one that still
+  // matches past the cap stays selected and only one that left is counted.
+  test("past the ids cap, a selected model that still matches stays and only one that left is counted", async () => {
+    stubServer(cards(6, 4));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 003"));
+    await click(checkbox("Model 005"));
+    expect(inViewAsked).toEqual([]);
+    matchCap = 2;
+    await click(tagChip("PLA"));
+    expect(location).toBe("/?tag=PLA");
+    expect(inViewAsked).toEqual([{ ids: [id(3), id(5)], view: { tag: "PLA" } }]);
+    expect(statusText()).toBe("1 model selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(3)], view: { tag: "PLA" } } },
+    ]);
+  });
+
+  test("an uncapped ids answer is the whole check: nothing is asked by id", async () => {
+    stubServer(cards(6, 4));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 003"));
+    await click(checkbox("Model 005"));
+    await click(tagChip("PLA"));
+    expect(statusText()).toBe("1 model selected");
+    expect(inViewAsked).toEqual([]);
+  });
+
   test("while the page checks the selection the actions wait, and say why", async () => {
     stubServer(cards(5, 2));
     await render("/");
@@ -1737,6 +1791,46 @@ describe("describeBulk", () => {
         expect(i18n.has("library.bulk.alreadyInCollection"), locale).toBe(true);
       }
     });
+  });
+
+  // The same holds when the server left a model alone because the view no
+  // longer shows it (PR #313 review): "All 2 models" with 3 selected would
+  // read as if only 2 were.
+  test("with some unchanged and some left out of the view, counts and names the tag or collection", () => {
+    const answer = {
+      changed: [] as string[],
+      unchanged: [id(1), id(2)],
+      failed: [],
+      notInView: [id(3)],
+    };
+    const addTags = describeBulk(
+      { action: "add-tags", tags: ["pla"] },
+      { ...answer, tags: ["PLA"] },
+      names,
+    );
+    expect(addTags).toEqual({
+      done: "No model was changed. 2 already had PLA.",
+      failed: null,
+      notInView:
+        "1 selected model was left unchanged because the search and filters no longer show it.",
+    });
+    expect(
+      describeBulk({ action: "remove-tag", tag: "pla" }, { ...answer, tag: "PLA" }, names).done,
+    ).toBe("No model was changed. 2 did not have PLA.");
+    expect(
+      describeBulk(
+        { action: "add-to-collection", collection: "desk" },
+        { ...answer, collection: "Desk" },
+        names,
+      ).done,
+    ).toBe("No model was changed. 2 were already in Desk.");
+    expect(
+      describeBulk(
+        { action: "add-tags", tags: ["PLA"] },
+        { ...answer, notInView: [], tags: ["PLA"] },
+        names,
+      ).done,
+    ).toBe("All 2 models already had PLA.");
   });
 
   test("says no model was changed when every selected model failed", () => {

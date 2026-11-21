@@ -19,6 +19,7 @@
 //   POST   /app/api/bulk/add-to-collection {ids, collection, view}
 //                                                     {changed, unchanged, failed, notInView, collection}
 //   POST   /app/api/bulk/trash {ids, view}            {changed, unchanged, failed, notInView}
+//   POST   /app/api/bulk/in-view {ids, view}          {ids}  the ones the view holds; changes nothing
 //
 // The bulk routes are the library's Select mode (Jon, 2026-11-19): up to
 // MAX_BULK_IDS models (1000, as View all) a request, in one transaction, and
@@ -33,7 +34,11 @@
 // by library.ts's viewOf, so a blank one is no filter; printer, like the
 // sort, does not change which models a view holds). Only the posted models
 // that view holds when the action runs are changed; the others come back in
-// notInView, untouched. A request without a view is refused (400). These
+// notInView, untouched. A request without a view is refused (400).
+// /bulk/in-view answers the same question without acting: which of the
+// posted models the view holds now, with no sort and no match cap. The
+// library page's view check asks it about selected models past the first
+// 1000 matches GET /app/api/library/ids answers (PR #313 review). These
 // routes are the web app's own session API: the public API (v1) has no bulk
 // routes, and its description and docs do not change.
 //
@@ -196,6 +201,7 @@ const BULK_TRASH_BODY = {
   properties: { ids: BULK_IDS, view: BULK_VIEW },
   required: ["ids", "view"],
 } as const;
+const BULK_IN_VIEW_BODY = BULK_TRASH_BODY;
 
 const CUTOFF_BODY = {
   type: "object",
@@ -537,6 +543,17 @@ export async function registerOrganiseApi(
       async (request) => {
         const { ids, view } = request.body;
         return bulkRepo(need(deps).db).trash(ids, viewOf(view));
+      },
+    );
+
+    // Which of the posted models the view holds now, for the library page's
+    // view check; reads only, so it is not a transaction and is not retried.
+    scope.post<{ Body: { ids: string[]; view: BulkView } }>(
+      "/bulk/in-view",
+      { schema: { body: BULK_IN_VIEW_BODY } },
+      async (request) => {
+        const { ids, view } = request.body;
+        return { ids: await bulkRepo(need(deps).db).inView(ids, viewOf(view)) };
       },
     );
 

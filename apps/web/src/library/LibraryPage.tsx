@@ -81,7 +81,7 @@ import {
 } from "./paging";
 import { SelectBar } from "./SelectBar";
 import { SortControl } from "./SortControl";
-import { keepShown } from "./selection";
+import { keepShown, MAX_SELECTED, viewOf } from "./selection";
 import "./library.css";
 
 export interface LibraryPageProps {
@@ -178,6 +178,37 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   });
   if (!res.ok) throw new Error(`${url} answered ${res.status}`);
   return (await res.json()) as T;
+}
+
+async function postJson<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...(signal === undefined ? {} : { signal }),
+  });
+  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/**
+ * Of the selected ids the capped ids answer left out, the ones the view
+ * still holds, asked of the server by id (POST /app/api/bulk/in-view, the
+ * bulk actions' own rule, with no sort and no cap), MAX_SELECTED a request.
+ */
+async function stillShown(ids: string[], matchKey: string, signal: AbortSignal) {
+  const view = viewOf(new URLSearchParams(matchKey));
+  const found: string[] = [];
+  for (let at = 0; at < ids.length; at += MAX_SELECTED) {
+    const chunk = ids.slice(at, at + MAX_SELECTED);
+    const answer = await postJson<{ ids: string[] }>(
+      "/app/api/bulk/in-view",
+      { ids: chunk, view },
+      signal,
+    );
+    found.push(...answer.ids);
+  }
+  return found;
 }
 
 export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
@@ -297,8 +328,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // stops one of them being selected (refused). That holds for as long as
   // those cards are shown (staleCards), so leaving Select mode and entering
   // it again before the reload is in checks again rather than going idle.
-  // Until the answer is in the actions wait, and a failed check keeps them
-  // waiting until Try again works.
+  // The ids answer holds only the first 1000 matches in the sort's order, so
+  // when it is capped the selected models it leaves out may still match:
+  // those are asked about by id (stillShown, the server's own uncapped rule)
+  // and the ones the view holds stay (PR #313 review). Until the answer is
+  // in the actions wait, and a failed check keeps them waiting until Try
+  // again works.
   // biome-ignore lint/correctness/useExhaustiveDependencies: changedKey, refreshKey and checkAttempt only trigger a check; staleCards is read when one runs, and the reload that ends it needs no check.
   useEffect(() => {
     const afterAction = checkedAfter.current !== changedKey || staleCards;
@@ -309,10 +344,20 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     }
     const controller = new AbortController();
     setCheck({ state: "checking" });
-    getJson<{ ids: string[] }>(`/app/api/library/ids?${matchKey}`, controller.signal)
-      .then((answer) => {
+    getJson<{ ids: string[]; capped?: boolean }>(
+      `/app/api/library/ids?${matchKey}`,
+      controller.signal,
+    )
+      .then(async (answer) => {
         if (controller.signal.aborted) return;
         const shown = new Set(answer.ids);
+        if (answer.capped) {
+          const past = [...selectedNow.current.keys()].filter((id) => !shown.has(id));
+          if (past.length > 0) {
+            for (const id of await stillShown(past, matchKey, controller.signal)) shown.add(id);
+            if (controller.signal.aborted) return;
+          }
+        }
         setLeft(keepShown(selectedNow.current, shown).left);
         setSelected((now) => keepShown(now, shown).kept);
         setCheck({ state: "done", shown });

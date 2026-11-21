@@ -6,9 +6,13 @@
 //   a malformed one is reported as not found without a query. At most
 //   MAX_BULK_IDS a request (the routes' schema refuses more), the most View
 //   all shows and Select all matching selects.
-// - In the transaction, every selected model that exists is locked FOR SHARE
-//   to change its tags or collections (as library/live.ts's withLiveModel
-//   locks one) and FOR UPDATE to trash it (as repos/models.ts trash does). A
+// - In the transaction, every selected model that exists is locked FOR NO
+//   KEY UPDATE to change its tags or collections and FOR UPDATE to trash it
+//   (as repos/models.ts trash does). Both conflict with the FOR SHARE lock
+//   library/live.ts's withLiveModel takes on a single model (see the view
+//   below). NO KEY UPDATE, unlike UPDATE, does not conflict with the key
+//   share lock a new tag or collection link's foreign key check takes on its
+//   model, so it does not hold up links made elsewhere for longer. A
 //   model in the trash is not changed and is reported as in_trash, one that
 //   does not exist as not_found; the others are changed together or, if a
 //   statement fails, not at all.
@@ -35,12 +39,15 @@
 //   those. The others are answered in notInView and not touched, so Select
 //   mode never acts on a model the search and filters hide, even one that
 //   left the view after the page last checked. The view is read in the same
-//   transaction as the change, after the row locks. Trash locks FOR UPDATE,
-//   so a tag or collection change that locks the model (FOR SHARE, as
-//   library/live.ts does) either commits before the read or waits for the
-//   trash to commit. Add tags, Remove tag and Add to collection lock FOR
-//   SHARE, which such a change does not wait on: one that commits in the
-//   moment between the read and the change (Read Committed) is not seen.
+//   transaction as the change, after the row locks, and every action's lock
+//   conflicts with the FOR SHARE lock a single-model tag or collection
+//   change takes (library/live.ts) and with another bulk action's lock. So
+//   a change that takes the model out of the view either commits before the
+//   locks are granted, and the read (a new statement under Read Committed)
+//   sees it, or waits for the bulk action to commit. Add tags, Remove tag
+//   and Add to collection once locked FOR SHARE, which such a change does
+//   not wait on, so one that committed between the read and the change was
+//   not seen (PR #313 review).
 // - The answer says which models changed, which were left as they were
 //   (they already had the tags, did not have the tag, or were already in the
 //   collection) and which failed and why. Tags and collections are one per
@@ -203,7 +210,7 @@ interface Selection {
 async function select(
   trx: Kysely<DB>,
   ids: readonly string[],
-  lock: "share" | "update",
+  lock: "noKeyUpdate" | "update",
   view: LibraryView,
 ): Promise<Selection> {
   const { valid } = readIds(ids);
@@ -214,7 +221,7 @@ async function select(
       .select(["id", "trashedAt"])
       .where("id", "in", valid)
       .orderBy("id");
-    query = lock === "share" ? query.forShare() : query.forUpdate();
+    query = lock === "noKeyUpdate" ? query.forNoKeyUpdate() : query.forUpdate();
     for (const row of await query.execute()) found.set(row.id, row.trashedAt === null);
   }
   const live: string[] = [];
@@ -281,6 +288,19 @@ async function storedNames(
 export function bulkRepo(db: Kysely<DB>) {
   return {
     /**
+     * Of the selected models, the live ones the view holds now, in the
+     * request's order; a malformed, missing or trashed one is left out.
+     * The rule every action keeps to (models.inView), with no sort and no
+     * match cap, and nothing is locked or changed. The library page asks it
+     * about selected models past the first 1000 matches that
+     * GET /app/api/library/ids answers, so its view check does not take out
+     * a model that still matches (PR #313 review).
+     */
+    async inView(ids: readonly string[], view: LibraryView): Promise<string[]> {
+      return modelsRepo(db).inView(view, readIds(ids).valid);
+    },
+
+    /**
      * Adds every tag to every selected live model, making a tag on first use;
      * tags a model already has are kept, and a model that had them all is
      * unchanged. RangeError for a blank tag or none.
@@ -288,7 +308,7 @@ export function bulkRepo(db: Kysely<DB>) {
     async addTags(ids: readonly string[], tags: readonly string[], view: LibraryView) {
       const wanted = names(tags, "tag");
       return bulkTransaction(db, async (trx) => {
-        const selection = await select(trx, ids, "share", view);
+        const selection = await select(trx, ids, "noKeyUpdate", view);
         // Made in lower(name) order, not the request's: a new tag's insert
         // waits on another transaction's uncommitted row of the same
         // lower(name), so two requests making the same tags in opposite
@@ -330,7 +350,7 @@ export function bulkRepo(db: Kysely<DB>) {
     async removeTag(ids: readonly string[], tag: string, view: LibraryView) {
       const [name] = names([tag], "tag") as [string];
       return bulkTransaction(db, async (trx) => {
-        const selection = await select(trx, ids, "share", view);
+        const selection = await select(trx, ids, "noKeyUpdate", view);
         let changed: string[] = [];
         if (selection.locked.length > 0) {
           // A DELETE takes no order, so the links are locked first, in
@@ -362,7 +382,7 @@ export function bulkRepo(db: Kysely<DB>) {
     async addToCollection(ids: readonly string[], collection: string, view: LibraryView) {
       const [name] = names([collection], "collection") as [string];
       return bulkTransaction(db, async (trx) => {
-        const selection = await select(trx, ids, "share", view);
+        const selection = await select(trx, ids, "noKeyUpdate", view);
         await trx
           .insertInto("collections")
           .values({ id: uuidv7(), name })

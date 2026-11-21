@@ -62,8 +62,9 @@ export function viewOf(matching: URLSearchParams): Record<string, string> {
 
 /**
  * The selection cut down to the models the view can show (shown: the ids
- * GET /app/api/library/ids answers for the search, filters and sort, which
- * are exactly the matches the pages and View all reach), in the selection's
+ * GET /app/api/library/ids answers for the search, filters and sort, and,
+ * when that answer is capped, the selected ones past the cap that
+ * POST /app/api/bulk/in-view says still match), in the selection's
  * order with their names, and how many left it. The page keeps the
  * selection to what the view shows so its count is true (0.1.0-rc.2 live
  * check); that no action changes a model the view hides is the server's
@@ -156,18 +157,20 @@ export function describeBulk(
   let done: string;
   // Nothing changed (issue #256): every model was already so ("All 2 models
   // already had PLA."), every one failed, or some were already so and the
-  // rest failed. Trash has its own sentence for that below.
+  // rest failed or were left out of the view. Trash has its own sentence for
+  // that below.
   if (
     changed === 0 &&
     action.action !== "trash" &&
     !(action.action === "remove-tag" && answer.tag === null)
   ) {
     if (unchanged === 0) done = t("library.bulk.changedNone");
-    else if (answer.failed.length > 0) {
-      // Some failed too, so "All 2 models" would read as if only 2 were
-      // selected (issue #306): say nothing changed, then count what was
-      // already so. No earlier sentence names the tag or collection here, so
-      // the count sentence names it ("2 already had PLA."), not "it".
+    else if (answer.failed.length > 0 || hidden > 0) {
+      // Some failed too (issue #306), or the server left some alone as the
+      // view no longer shows them (PR #313 review), so "All 2 models" would
+      // read as if only 2 were selected: say nothing changed, then count
+      // what was already so. No earlier sentence names the tag or collection
+      // here, so the count sentence names it ("2 already had PLA."), not "it".
       const already =
         action.action === "add-tags"
           ? t("library.bulk.alreadyHadTags", {

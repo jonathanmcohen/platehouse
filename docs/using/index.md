@@ -85,9 +85,8 @@ Space on it) and a toolbar appears above the grid with the number selected.
   toolbar says only the first 1000 were selected. **Clear selection** empties it.
 - The selection only ever holds models the current search and filters show, and an action never
   changes a model they hide (see below). It is kept while you change page, switch to View all or
-  choose another sort, so you can gather models from several pages. (With more than 1000 matches,
-  the pages reach only the first 1000 in the chosen order, so a new sort can drop a selected model
-  the pages no longer reach.) A new search or filter keeps the selected models it still shows and
+  choose another sort, so you can gather models from several pages, even past the first 1000
+  matches the pages reach. A new search or filter keeps the selected models it still shows and
   drops the rest, and the toolbar says how many left. To gather models from several searches or
   tags, select them under one view that shows them all, such as the whole library with no search
   or filter. **Select** again, or Escape, ends Select mode and clears the selection.
