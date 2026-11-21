@@ -27,10 +27,18 @@
 //   makes no model and is swept after 24 hours (Task 9).
 // - A PATCH is never sent blind twice: after a failed PATCH the client asks
 //   with HEAD where the upload stands and sends only the rest (tus resume).
+//   Platehouse keeps the bytes a cut-off PATCH delivered, so a failed PATCH
+//   that moved the offset forward made progress and does not use up an
+//   attempt; only failed PATCHes that moved nothing count (issue #354).
+// - A PATCH's time limit is an idle limit (uploadTimeoutMs): it fails when
+//   Platehouse takes no byte of the body, and then sends no answer, for
+//   that long, so a large file over a slow link finishes as long as bytes
+//   keep going.
 // - Waiting for the result: GET .../result every second, up to 10 minutes.
 //   A result that never comes is reported as an unknown outcome; the next
 //   run finds the file if the ingest finished.
 
+import { type IdleWatch, idleReason, idleWatch } from "./idle.js";
 import { quoteBody } from "./redact.js";
 
 export class PlatehouseError extends Error {
@@ -96,7 +104,17 @@ export interface PlatehouseOptions {
   redact?: (text: string) => string;
   retries?: number;
   timeoutMs?: number;
+  /**
+   * A file upload's idle limit, in ms: a PATCH fails when Platehouse has
+   * taken no byte of it for this long, waiting for the answer included. It
+   * never limits the whole transfer, so a large file over a slow link still
+   * finishes (issue #354). DEFAULT_UPLOAD_IDLE_MS when not given.
+   */
+  uploadTimeoutMs?: number;
 }
+
+/** An upload's idle limit when none is given: 2 minutes without progress. */
+export const DEFAULT_UPLOAD_IDLE_MS = 120_000;
 
 export interface Platehouse {
   /** One read that proves the API answers and takes the token. */
@@ -114,8 +132,12 @@ const MAX_RETRY_AFTER_S = 300;
 const BODY_QUOTE = 200;
 const POLL_MS = 1000;
 const POLL_LIMIT = 600;
-/** One PATCH may carry the whole file (Task 9); this bounds the time it may take. */
-const UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * One PATCH carries the rest of the file (Task 9), handed to fetch in pieces
+ * this size; fetch asks for the next piece once it has sent the last, and
+ * each ask restarts the idle clock.
+ */
+const UPLOAD_PIECE_BYTES = 64 * 1024;
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -185,15 +207,18 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
   const redact = options.redact ?? ((text: string) => text);
   const attempts = options.retries ?? 4;
   const timeoutMs = options.timeoutMs ?? 30_000;
+  const uploadIdleMs = options.uploadTimeoutMs ?? DEFAULT_UPLOAD_IDLE_MS;
 
   const api = (path: string) => new URL(`/api/v1${path}`, origin);
 
   interface Send {
     method: string;
     headers?: Record<string, string>;
-    body?: string | Uint8Array;
+    body?: string | Uint8Array | ReadableStream<Uint8Array>;
     retry: boolean;
     timeout?: number;
+    /** An idle limit instead of the whole-request timeout. */
+    watch?: IdleWatch;
   }
 
   async function send(url: URL, how: Send): Promise<Response> {
@@ -203,16 +228,18 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
     for (let attempt = 1; ; attempt++) {
       let res: Response;
       try {
-        const init: RequestInit = {
+        const init: RequestInit & { duplex?: "half" } = {
           method: how.method,
           headers: { ...how.headers, Authorization: `Bearer ${options.bearer}` },
           redirect: "manual",
-          signal: AbortSignal.timeout(timeout),
+          signal: how.watch === undefined ? AbortSignal.timeout(timeout) : how.watch.arm(),
         };
         if (how.body !== undefined) init.body = how.body;
+        // fetch takes a stream body only as a half-duplex request.
+        if (how.body instanceof ReadableStream) init.duplex = "half";
         res = await doFetch(url, init);
       } catch (error) {
-        const reason = why(error, timeout);
+        const reason = idleReason(how.watch) ?? why(error, timeout);
         if (how.retry && attempt < attempts) {
           log(`  ${label}: ${reason}, retry ${attempt}`);
           await sleep(2000 * 2 ** (attempt - 1));
@@ -304,22 +331,62 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
     return offset;
   }
 
+  /**
+   * The rest of the file as a PATCH body, in UPLOAD_PIECE_BYTES pieces. Each
+   * time fetch asks for a piece, Platehouse has taken the one before, so the
+   * idle clock starts again; the ask after the last piece starts the wait
+   * for the answer.
+   */
+  function bodyOf(rest: Buffer, watch: IdleWatch): ReadableStream<Uint8Array> {
+    let at = 0;
+    return new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          watch.touch();
+          if (at >= rest.length) {
+            controller.close();
+            return;
+          }
+          const end = Math.min(at + UPLOAD_PIECE_BYTES, rest.length);
+          controller.enqueue(rest.subarray(at, end));
+          at = end;
+        },
+      },
+      // Nothing is read ahead: a piece is made only when fetch asks for it.
+      { highWaterMark: 0 },
+    );
+  }
+
   async function sendBytes(url: URL, bytes: Buffer): Promise<void> {
+    const watch = idleWatch(uploadIdleMs, "no progress");
+    try {
+      await sendRest(url, bytes, watch);
+    } finally {
+      watch.stop();
+    }
+  }
+
+  async function sendRest(url: URL, bytes: Buffer, watch: IdleWatch): Promise<void> {
     let offset = 0;
     for (let attempt = 1; ; attempt++) {
       let problem: string;
       try {
+        const rest = bytes.subarray(offset);
         const res = await send(url, {
           method: "PATCH",
           headers: {
             "Tus-Resumable": "1.0.0",
             "Upload-Offset": String(offset),
             "Content-Type": "application/offset+octet-stream",
+            // A fixed-length request, as with a buffer body, not chunked.
+            "Content-Length": String(rest.length),
           },
-          body: bytes.subarray(offset),
+          body: bodyOf(rest, watch),
           retry: false,
-          timeout: UPLOAD_TIMEOUT_MS,
+          watch,
         });
+        // The answer is here; the idle limit is for the transfer only.
+        watch.stop();
         if (res.status === 204) {
           await res.body?.cancel();
           const reached = Number(res.headers.get("upload-offset"));
@@ -339,13 +406,33 @@ export function createPlatehouse(options: PlatehouseOptions): Platehouse {
         if (!(error instanceof PlatehouseError) || error.status !== null) throw error;
         problem = error.message;
       }
-      if (attempt >= attempts) throw new PlatehouseError(problem);
-      log(`  ${problem}; asking where the upload stands, retry ${attempt}`);
-      await sleep(2000 * 2 ** (attempt - 1));
-      const at = await offsetOf(url);
+      // Out of attempts, the upload is still asked where it stands, since
+      // this attempt may have moved it, but with no wait first; a HEAD that
+      // fails then leaves the PATCH's own problem as the error.
+      const last = attempt >= attempts;
+      if (!last) {
+        log(`  ${problem}; asking where the upload stands, retry ${attempt}`);
+        await sleep(2000 * 2 ** (attempt - 1));
+      }
+      let at: number | null;
+      try {
+        at = await offsetOf(url);
+      } catch (error) {
+        if (last) throw new PlatehouseError(problem);
+        throw error;
+      }
       if (at === null) throw new PlatehouseError(`${problem}; the upload is gone`);
       if (at === bytes.length) return;
+      // Platehouse keeps what a cut-off PATCH delivered, so one that moved
+      // the offset forward made progress and is not counted.
+      const moved = at > offset;
       offset = at;
+      if (moved) {
+        if (last) log(`  ${problem}; Platehouse kept part of it, resuming at byte ${at}`);
+        attempt = 0;
+      } else if (last) {
+        throw new PlatehouseError(problem);
+      }
     }
   }
 

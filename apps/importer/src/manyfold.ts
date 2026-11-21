@@ -43,6 +43,7 @@
 //   only when it came from Manyfold; the token request quotes only
 //   Doorkeeper's error code.
 
+import { type IdleWatch, idleReason, idleWatch } from "./idle.js";
 import { fileNameFor } from "./plan.js";
 import { quoteBody } from "./redact.js";
 
@@ -99,52 +100,6 @@ export interface ManyfoldOptions {
 
 /** A download's idle limit when none is given: 2 minutes without a byte. */
 export const DEFAULT_DOWNLOAD_IDLE_MS = 120_000;
-
-/** Why an idle watch aborted: no byte for its limit. */
-class IdleTimeout extends Error {
-  constructor(ms: number) {
-    super(`no data for ${ms / 1000} s`);
-    this.name = "IdleTimeout";
-  }
-}
-
-interface IdleWatch {
-  /** A fresh signal for one attempt, aborted after ms with no touch(). */
-  arm(): AbortSignal;
-  /** The current attempt's signal. */
-  readonly signal: AbortSignal;
-  /** A byte arrived: the clock starts again. */
-  touch(): void;
-  stop(): void;
-}
-
-/**
- * The idle limit of one download. Each attempt arms a new signal; each chunk
- * that arrives restarts the clock, so only a stall aborts it.
- */
-function idleWatch(ms: number): IdleWatch {
-  let controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const restart = () => {
-    clearTimeout(timer);
-    const current = controller;
-    timer = setTimeout(() => current.abort(new IdleTimeout(ms)), ms);
-  };
-  return {
-    arm() {
-      controller = new AbortController();
-      restart();
-      return controller.signal;
-    },
-    get signal() {
-      return controller.signal;
-    },
-    touch: restart,
-    stop() {
-      clearTimeout(timer);
-    },
-  };
-}
 
 export interface ManyfoldListEntry {
   id: string;
@@ -227,16 +182,6 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 function lastSegment(url: URL): string {
   const parts = url.pathname.split("/").filter((p) => p !== "");
   return decodeURIComponent(parts.at(-1) ?? "");
-}
-
-/**
- * The idle limit's message when the watch is what stopped the request, else
- * null. Read from the watch, not the error, because how a fetch reports an
- * abort is up to the fetch.
- */
-function idleReason(watch: IdleWatch | undefined): string | null {
-  const reason: unknown = watch?.signal.aborted === true ? watch.signal.reason : undefined;
-  return reason instanceof IdleTimeout ? reason.message : null;
 }
 
 function why(error: unknown, timeout: number): string {
@@ -600,7 +545,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     },
 
     async download(link, expectedSize) {
-      const watch = idleWatch(downloadIdleMs);
+      const watch = idleWatch(downloadIdleMs, "no data");
       try {
         return await downloadWith(watch, link, expectedSize);
       } finally {
