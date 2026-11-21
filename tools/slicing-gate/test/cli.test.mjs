@@ -111,12 +111,12 @@ test("select-sample, plan and report run end to end and apply the pass rule", ()
   const result = JSON.parse(readFileSync(join(out, "result.json"), "utf8"));
   assert.equal(result.plates.length, 9);
 
-  fakeResults(out, [ids[3]], { [ids[3]]: { returnCode: -100, errorString: "Failed slicing", timeSeconds: null } });
+  fakeResults(out, [ids[3]], { [ids[3]]: { returnCode: -100, errorString: "Failed slicing", timeSeconds: null, exitStatus: 156 } });
   const fail = node([GATE, "report"], env);
   assert.equal(fail.status, 1);
   assert.match(readFileSync(join(out, "summary.txt"), "utf8"), /^Platehouse slicing gate: FAIL/);
 
-  fakeResults(out, [ids[3]], { [ids[3]]: { returnCode: -63, errorString: "collision", timeSeconds: null } });
+  fakeResults(out, [ids[3]], { [ids[3]]: { returnCode: -63, errorString: "collision", timeSeconds: null, exitStatus: 193 } });
   assert.equal(node([GATE, "report"], env).status, 3);
 });
 
@@ -129,8 +129,8 @@ test("a run whose only non-ok plates are -101 and -62 refusals passes, exit 0", 
   assert.equal(node([GATE, "plan"], env).status, 0);
   const ids = readFileSync(join(out, "jobs.txt"), "utf8").trim().split("\n");
   fakeResults(out, ids, {
-    [ids[3]]: { returnCode: -101, errorString: "Conflicts of G-code paths have been found", timeSeconds: null, weightGrams: null },
-    [ids[4]]: { returnCode: -62, errorString: "temperatures too far apart", timeSeconds: null, weightGrams: null },
+    [ids[3]]: { returnCode: -101, errorString: "Conflicts of G-code paths have been found", timeSeconds: null, weightGrams: null, exitStatus: 155 },
+    [ids[4]]: { returnCode: -62, errorString: "temperatures too far apart", timeSeconds: null, weightGrams: null, exitStatus: 194 },
   });
   writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-08T00:00:00.000Z", openscad: null, landrun: null, step: null }));
   const report = node([GATE, "report"], env);
@@ -182,7 +182,7 @@ test("a failed plate makes report exit 1 even when a machine preset is missing",
   const ran = planJson.jobs.filter((j) => j.machineFile).map((j) => j.id);
   const missing = planJson.jobs.filter((j) => !j.machineFile).map((j) => j.id);
   assert.ok(missing.length > 0 && ran.length > 1);
-  fakeResults(out, ran, { [ran[0]]: { returnCode: -100, errorString: "Failed slicing", timeSeconds: null } });
+  fakeResults(out, ran, { [ran[0]]: { returnCode: -100, errorString: "Failed slicing", timeSeconds: null, exitStatus: 156 } });
   for (const id of missing) writeFileSync(join(out, "jobs", `${id}.json`), JSON.stringify({ id, setupError: "no machine preset" }));
   writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-07T00:00:00.000Z", openscad: null, landrun: null, step: null }));
   const report = node([GATE, "report"], env);

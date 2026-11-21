@@ -128,6 +128,22 @@ export function classifyPlate(r) {
     if ((r.timeSeconds ?? 0) > 0 && (r.weightGrams ?? 0) > 0) return { ...base, verdict: "ok", reason: "ok" };
     return { ...base, verdict: "fail", reason: "no_numbers", meaning: "slicer reported success without a time and a weight above zero" };
   }
+  // A clean exit with return code c exits (256 + c) & 0xff, so a known exit
+  // status other than that, or a signal, means the slicer died after it
+  // wrote its code. That is a crash, as on the code-0 path above, whatever
+  // the code says: a refusal recorded just before a segfault must not pass
+  // the gate. GNU time measures timeout, not Orca, so a segfault shows as
+  // exit status 139 with no signal. An unknown status is no evidence.
+  const cleanStatus = ((code % 256) + 256) % 256;
+  if ((r.signal ?? null) !== null || ((r.exitStatus ?? null) !== null && r.exitStatus !== cleanStatus)) {
+    const how = r.exitStatus ?? null;
+    return {
+      ...base,
+      verdict: "fail",
+      reason: "crash",
+      meaning: `${meaningOf(code)} written, then the slicer ${how !== null ? `exited with ${how}` : `was killed by signal ${r.signal}`}`,
+    };
+  }
   if (code === -58) return { ...base, verdict: "fail", reason: "timeout" };
   if (LEGITIMATE.has(code)) return { ...base, verdict: "refused", reason: LEGITIMATE.get(code) };
   if (NEEDS_DECISION.has(code)) return { ...base, verdict: "needs-decision", reason: "not_in_ac034_list" };
