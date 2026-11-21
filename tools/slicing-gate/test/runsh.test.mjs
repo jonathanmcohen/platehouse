@@ -326,6 +326,14 @@ test("run.sh --clean refuses while a real flock holds run.lock", { skip: !hasFlo
   } finally {
     holder.kill("SIGKILL");
   }
+  // The test leaves nothing holding run.lock: once its holder is killed, the
+  // lock can be taken at once.
+  let free = false;
+  for (let i = 0; i < 40 && !free; i++) {
+    free = spawnSync("flock", ["-n", lock, "true"]).status === 0;
+    if (!free) await new Promise((res) => setTimeout(res, 50));
+  }
+  assert.equal(free, true, "nothing holds run.lock after the test");
 });
 
 // --clean runs rm -rf on GATE_DIR, and a case pattern's * also matches "/.."
