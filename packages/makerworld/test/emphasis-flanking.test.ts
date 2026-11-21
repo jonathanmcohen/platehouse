@@ -81,6 +81,31 @@ describe("emphasis beside punctuation never shows its marks", () => {
     }
     expect(failures).toEqual([]);
   });
+
+  // The same with an emphasis nested at the outer one's edge, where the two
+  // sets of marks meet and markdown-it reads them as one run.
+  it.each([
+    ["inner at both edges", (a: string, z: string) => `<b><i>${a}w${z}</i></b>`],
+    ["inner at the start", (a: string, z: string) => `<b><i>${a}w</i>${z}</b>`],
+    ["inner at the end", (a: string, z: string) => `<b>${a}<i>w${z}</i></b>`],
+  ])("shows nested emphasis text as written, %s", (_name, inner) => {
+    const outside = ["", "a", " ", "(", ".", "\u20ac"];
+    const inside = ["x", "(", ")", ":", "*", "\u2026"];
+    const failures: string[] = [];
+    for (const before of outside) {
+      for (const first of inside) {
+        for (const last of inside) {
+          for (const after of outside) {
+            const html = `<p>${before}${inner(first, last)}${after}</p>`;
+            const want = `${before}${first}w${last}${after}`.trim();
+            const got = shown(html);
+            if (got !== want) failures.push(`${html} -> ${JSON.stringify(got)}`);
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
 });
 
 describe("emphasis beside punctuation is kept where markdown-it reads it", () => {
@@ -94,6 +119,13 @@ describe("emphasis beside punctuation is kept where markdown-it reads it", () =>
     ["<p>Size<b>mm</b>.</p>", "<p>Size<strong>mm</strong>.</p>\n"],
     ["<p><i>e.g.</i> this</p>", "<p><em>e.g.</em> this</p>\n"],
     ["<p>x <b>Note:</b><br>Use</p>", "<p>x <strong>Note:</strong><br>\nUse</p>\n"],
+    // An inner emphasis's marks at the outer one's edge join its marks in one
+    // run, and markdown-it checks the characters outside the whole run.
+    ["<p>foo<b><i>bar</i></b>baz</p>", "<p>foo<em><strong>bar</strong></em>baz</p>\n"],
+    ["<p><b>bar<i>x</i></b>baz</p>", "<p><strong>bar<em>x</em></strong>baz</p>\n"],
+    ["<p>a<b><i>x</i>y</b>c</p>", "<p>a<strong><em>x</em>y</strong>c</p>\n"],
+    ["<p>a<b>y<i>x</i></b>c</p>", "<p>a<strong>y<em>x</em></strong>c</p>\n"],
+    ["<p>Size <b><i>(mm)</i></b>.</p>", "<p>Size <em><strong>(mm)</strong></em>.</p>\n"],
   ])("%s", (html, want) => {
     expect(render(htmlToMarkdown(html))).toBe(want);
   });

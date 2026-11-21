@@ -135,6 +135,29 @@ const firstCodePoint = (s: string): string => {
   return cp === undefined ? "" : String.fromCodePoint(cp);
 };
 const lastCodePoint = (s: string): string => Array.from(s.slice(-2)).at(-1) ?? "";
+// The first or last character of an emphasis's text as markdown-it's
+// scanDelims sees it. An inner emphasis at the text's edge leaves its marks
+// there, and markdown-it reads them and the outer marks as one run, checked
+// against the character beyond the whole run; so for one inner emphasis that
+// character is the one returned. An unescaped * is always a mark the
+// converter wrote, since text asterisks are escaped; escapes are blanked out
+// (same length) before the marks are found. Any other marks in the text (two
+// inner emphases, or one nested in the inner one) make markdown-it's pairing
+// of the runs uncertain, so the edge * itself is returned, which counts as
+// punctuation: the outer marks are then only kept where that is safe.
+const blankEscapes = (text: string): string => text.replace(/\\[\s\S]/g, "ee");
+const EDGE_START = /^(\*+)[^*]+(\*+)[^*]*$/;
+const EDGE_END = /^[^*]*(\*+)[^*]+(\*+)$/;
+const edgeRun = (text: string, edge: RegExp): number => {
+  const m = edge.exec(blankEscapes(text));
+  if (m === null) return 0;
+  const open = (m[1] as string).length;
+  return open === (m[2] as string).length ? open : 0;
+};
+const firstBeyondMarks = (text: string): string =>
+  firstCodePoint(text.slice(edgeRun(text, EDGE_START)));
+const lastBeyondMarks = (text: string): string =>
+  lastCodePoint(text.slice(0, text.length - edgeRun(text, EDGE_END)));
 
 interface Inline {
   readonly tag: string;
@@ -922,17 +945,19 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           // or the line start, else they would show as text, so they are
           // dropped and the text kept. The closing marks after punctuation
           // depend on what is written next, so they are guarded. The sentinels
-          // are not text, and TEXT_LINE only ever follows a newline.
+          // are not text, and TEXT_LINE only ever follows a newline. An inner
+          // emphasis's marks at the edge of the text join these marks in one
+          // run, so the character tested is the one beyond them.
           const text = stripSentinels(core);
           const before =
             lead !== "" || open.start === 0
               ? " "
               : stripSentinels(out.charAt(open.start - 2) + out.charAt(open.start - 1));
-          const opens = !isMdPunct(firstCodePoint(text)) || !isWordChar(lastCodePoint(before));
+          const opens = !isMdPunct(firstBeyondMarks(text)) || !isWordChar(lastCodePoint(before));
           if (opens) {
             const mark = EMPHASIS.get(tag) as string;
             wrapped = lead + mark + core + mark + trail;
-            if (trail === "" && isMdPunct(lastCodePoint(text))) {
+            if (trail === "" && isMdPunct(lastBeyondMarks(text))) {
               guardPlain =
                 inner !== null && inner.from >= open.start
                   ? seg.slice(0, inner.from - open.start) + inner.plain
