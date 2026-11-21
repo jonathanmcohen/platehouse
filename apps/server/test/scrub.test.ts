@@ -428,7 +428,7 @@ const NEIGHBOURS = [
   "=",
   '"',
   "'",
-  "中",
+  "\u4e2d",
   "\u{1f600}",
   " ",
 ];
@@ -720,8 +720,8 @@ const ALL_NEIGHBOURS = [
   "*",
   "\\",
   "\t",
-  "日本",
-  "é",
+  "\u65e5\u672c",
+  "\u00e9",
 ];
 
 /** A message for the differential check: one or two items of any kind, each between neighbours. */
