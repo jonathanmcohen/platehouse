@@ -1092,9 +1092,12 @@ const MAX_EMPHASIS_ROUNDS = 6;
 // of 3 and its pairing, and a copy of those here drifts from it (the 0.1.0
 // release review found three rounds of cases a hand-written copy got wrong).
 // So the converter writes every bold and italic with placeholders, and this
-// asks markdown-it, set up exactly as renderMarkdown is, which marks it
-// paired (pairedMarks). An emphasis with any mark left unpaired would show
-// asterisks, so its marks are dropped and its text kept. Only the innermost
+// asks markdown-it, set up exactly as renderMarkdown is, which mark it paired
+// each mark with (pairedMarks). An emphasis with any mark left unpaired would
+// show asterisks, and one with a mark paired with another emphasis's mark
+// would show emphasis on text the HTML did not emphasise (**Note:**Use**.x**
+// pairs the first close with the second open, so Use shows bold: PR #334
+// review); either way its marks are dropped and its text kept. Only the innermost
 // such emphases are dropped in a round, because an inner one's marks are
 // often what keeps the outer one from pairing (<b>Size<b>x</b></b>); then
 // the text is asked again, until every mark left is paired. Two emphases of
@@ -1136,10 +1139,17 @@ function resolveEmphasis(raw: string): string {
 
   // The text with the kept emphases' placeholders, through finishLines, then
   // with marks for them and no address placeholders. markOwner[k] is the
-  // emphasis that wrote the k-th unescaped * outside a link address.
-  const build = (): { markdown: string; markOwner: number[] } => {
+  // emphasis that wrote the k-th unescaped * outside a link address, and
+  // groupOf[e] the first of the emphases written as one with emphasis e (back
+  // to back, below), whose marks may pair with each other.
+  const build = (): { markdown: string; markOwner: number[]; groupOf: number[] } => {
     const parts: string[] = [];
     const keptOwners: number[] = [];
+    const joined = strong.map((_, e) => e); // per emphasis: one written as one with it
+    const group = (e: number): number => {
+      while (joined[e] !== e) e = joined[e] as number;
+      return e;
+    };
     let from = 0;
     for (let p = 0; p < at.length; p++) {
       const i = at[p] as number;
@@ -1149,7 +1159,9 @@ function resolveEmphasis(raw: string): string {
       const c = raw[i] as string;
       const next = p + 1 < at.length && at[p + 1] === i + 1 && kept(p + 1) ? raw[i + 1] : "";
       if ((c === STRONG_CLOSE && next === STRONG_OPEN) || (c === EM_CLOSE && next === EM_OPEN)) {
-        // A close straight before an open of its kind: neither is written.
+        // A close straight before an open of its kind: neither is written,
+        // and the two emphases are one.
+        joined[group(owner[p + 1] as number)] = group(owner[p] as number);
         p++;
         from = i + 2;
         continue;
@@ -1168,19 +1180,24 @@ function resolveEmphasis(raw: string): string {
       for (let n = 0; n < mark.length; n++) markOwner.push(who);
       return mark;
     });
-    return { markdown, markOwner };
+    return { markdown, markOwner, groupOf: strong.map((_, e) => group(e)) };
   };
 
   for (let round = 0; ; round++) {
-    const { markdown, markOwner } = build();
+    const { markdown, markOwner, groupOf } = build();
+    const markGroup = markOwner.map((e) => groupOf[e] as number);
     if (markOwner.length === 0) return markdown;
-    const paired = round < MAX_EMPHASIS_ROUNDS ? pairedMarks(markdown) : [];
-    if (paired.length !== markOwner.length) {
+    const partner = round < MAX_EMPHASIS_ROUNDS ? pairedMarks(markdown) : [];
+    if (partner.length !== markOwner.length) {
       dropped.fill(true);
       continue;
     }
+    // A mark fails unpaired or paired with a mark of another emphasis.
     const failing = new Set<number>();
-    for (let k = 0; k < paired.length; k++) if (!paired[k]) failing.add(markOwner[k] as number);
+    for (let k = 0; k < partner.length; k++) {
+      const j = partner[k] as number;
+      if (j === -1 || markGroup[j] !== markGroup[k]) failing.add(markOwner[k] as number);
+    }
     if (failing.size === 0) return markdown;
     // In the first rounds only the innermost: a failing emphasis with a
     // failing one inside it waits for the next round.
@@ -1191,7 +1208,12 @@ function resolveEmphasis(raw: string): string {
         waits.add(up);
       }
     }
-    for (const e of failing) if (!waits.has(e)) dropped[e] = true;
+    // Emphases written as one wait together (<b>x<b>a</b></b><b>b</b>: the
+    // outer bold waits for the inner one, and the bold after it with it).
+    const waitingGroups = new Set([...waits].map((e) => groupOf[e] as number));
+    for (const e of failing) {
+      if (!waits.has(e) && !waitingGroups.has(groupOf[e] as number)) dropped[e] = true;
+    }
   }
 }
 
@@ -1200,38 +1222,45 @@ const PAIRED = Symbol("platehouse paired marks");
 let pairingParser: MarkdownIt | null = null;
 
 // For every * markdown-it's emphasis rule took as a delimiter, in document
-// order, whether it was paired into emphasis. It runs renderMarkdown's own
+// order, the index (in that same order) of the * it was paired with into
+// emphasis, or -1 when it was left unpaired. It runs renderMarkdown's own
 // setup (createMarkdownIt) with one rule added after markdown-it's
 // balance_pairs, which reads the delimiter lists balance_pairs filled: an
-// opener's end names its closer, so both are paired. The rule changes
-// nothing; the parse is the one renderMarkdown would make.
-function pairedMarks(markdown: string): boolean[] {
+// opener's end names its closer, so each is the other's partner. The rule
+// changes nothing; the parse is the one renderMarkdown would make.
+function pairedMarks(markdown: string): number[] {
   if (pairingParser === null) {
     const md = createMarkdownIt();
     md.inline.ruler2.after("balance_pairs", "platehouse_paired_marks", (state) => {
       const answer = state.env[PAIRED];
       if (!Array.isArray(answer)) return;
-      const found: Array<{ token: number; paired: boolean }> = [];
+      const found: Array<{ token: number; partner: number }> = [];
       const lists = [state.delimiters, ...state.tokens_meta.map((m) => m?.delimiters ?? [])];
       for (const list of lists) {
-        const paired = new Set<number>();
+        const partner = new Map<number, number>(); // a delimiter's token to its partner's
         for (const d of list) {
           if (d.marker !== 0x2a || d.end === -1) continue;
-          paired.add(d.token);
           const closer = list[d.end];
-          if (closer !== undefined) paired.add(closer.token);
+          if (closer === undefined) continue;
+          partner.set(d.token, closer.token);
+          partner.set(closer.token, d.token);
         }
         for (const d of list) {
-          if (d.marker === 0x2a) found.push({ token: d.token, paired: paired.has(d.token) });
+          if (d.marker === 0x2a)
+            found.push({ token: d.token, partner: partner.get(d.token) ?? -1 });
         }
       }
-      // A link's text has its own list; token order is document order.
+      // A link's text has its own list; token order is document order. The
+      // rule runs once per inline run (each table cell is one), and the
+      // answer is for the whole text, so this run's indices start after the
+      // runs before it.
       found.sort((a, b) => a.token - b.token);
-      for (const f of found) answer.push(f.paired);
+      const index = new Map(found.map((f, k) => [f.token, answer.length + k]));
+      for (const f of found) answer.push(f.partner === -1 ? -1 : (index.get(f.partner) ?? -1));
     });
     pairingParser = md;
   }
-  const answer: boolean[] = [];
+  const answer: number[] = [];
   pairingParser.parse(markdown, { [PAIRED]: answer });
   return answer;
 }

@@ -171,6 +171,85 @@ describe("emphasis is kept exactly where markdown-it pairs it, whatever is besid
   });
 });
 
+// Two emphases side by side (PR #334 review). markdown-it can pair the first
+// emphasis's close with the second's open, and the first's open with the
+// second's close: every mark is then paired, but the emphasis lands on the
+// text between them, which was not emphasised in the HTML. Such marks are
+// dropped like unpaired ones; the text stays.
+describe("an emphasis is kept only where its own marks pair with each other", () => {
+  it.each([
+    ["<p><b>Note:</b>Use<b>.x</b></p>", "<p>Note:Use.x</p>\n"],
+    [
+      "<p><b>\u6ce8\u610f\uff1a</b>\u4f7f\u7528<b>\u300cPLA\u300d</b></p>",
+      "<p>\u6ce8\u610f\uff1a\u4f7f\u7528\u300cPLA\u300d</p>\n",
+    ],
+    // The back-to-back merge writes <b>x<b>a</b></b><b>b</b> as **x**a**b**,
+    // which pairs the outer bold's open with the inner bold's open.
+    ["<p><b>x<b>a</b></b><b>b</b></p>", "<p><strong>xab</strong></p>\n"],
+  ])("%s", (html, want) => {
+    expect(convert(html)).toBe(want);
+  });
+
+  // Every combination of what is outside, the inner edges (where the
+  // punctuation goes) and what is between, for each pair of kinds. The output
+  // must be the HTML's emphasis with some emphases dropped, never emphasis on
+  // other text; and wherever the markdown that keeps every mark renders as the
+  // HTML reads, that is the output.
+  const outside = ["", "a", "(", ".", "\u63a8"];
+  const edge = ["x", "(", ")", ":", ".", "\u63a8", "\uff1a"];
+  const between = ["", "a", " ", ".", "Use", "\u4f7f\u7528", ":"];
+  const kinds: Array<[string, string, string]> = [
+    ["b", "strong", "**"],
+    ["i", "em", "*"],
+  ];
+  const pairs = kinds.flatMap((k1) =>
+    kinds.map((k2) => [`${k1[0]} then ${k2[0]}`, k1, k2] as const),
+  );
+  it.each(pairs)("%s", (_name, [t1, r1, m1], [t2, r2, m2]) => {
+    const failures: string[] = [];
+    for (const before of outside) {
+      for (const z of edge) {
+        for (const mid of between) {
+          for (const a of edge) {
+            for (const after of outside) {
+              const one = `N${z}`;
+              const two = `${a}x`;
+              const html = `<p>${before}<${t1}>${one}</${t1}>${mid}<${t2}>${two}</${t2}>${after}</p>`;
+              const show = (keep1: boolean, keep2: boolean): string => {
+                if (keep1 && keep2 && mid === "" && t1 === t2) {
+                  return `<p>${before}<${r1}>${one}${two}</${r1}>${after}</p>\n`;
+                }
+                const s1 = keep1 ? `<${r1}>${one}</${r1}>` : one;
+                const s2 = keep2 ? `<${r2}>${two}</${r2}>` : two;
+                return `<p>${before}${s1}${mid}${s2}${after}</p>\n`;
+              };
+              const allowed = [
+                show(true, true),
+                show(true, false),
+                show(false, true),
+                show(false, false),
+              ];
+              const got = convert(html);
+              const allMarks = render(
+                `${esc(before)}${m1}${esc(one)}${m1}${esc(mid)}${m2}${esc(two)}${m2}${esc(after)}`,
+              );
+              if (!allowed.includes(got)) failures.push(`${html} gives ${JSON.stringify(got)}`);
+              else if (mid !== "" || t1 !== t2) {
+                if (allMarks === show(true, true) && got !== allMarks) {
+                  failures.push(
+                    `${html} gives ${JSON.stringify(got)}, not ${JSON.stringify(allMarks)}`,
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+});
+
 describe("the converter's placeholders cannot come from the description", () => {
   const pua = (code: number): string => String.fromCharCode(code);
   it("drops private-use placeholder characters in text, written or as references", () => {
