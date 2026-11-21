@@ -44,7 +44,10 @@ function outcome(
 ) {
   const outDir = mkdtempSync(join(tmpdir(), "slicer-orca-"));
   dirs.push(outDir);
-  writeFileSync(join(outDir, "result.json"), JSON.stringify({ return_code: code, error_string: error }));
+  writeFileSync(
+    join(outDir, "result.json"),
+    JSON.stringify({ return_code: code, error_string: error }),
+  );
   const run: GroupResult = {
     code: end.code,
     signal: end.signal ?? null,
