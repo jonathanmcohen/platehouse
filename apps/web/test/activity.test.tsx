@@ -617,45 +617,76 @@ describe("recent events", () => {
     expect(status()).toBe("");
   });
 
-  test("the not-retryable line outlives refreshes that still show the same failure", async () => {
+  // The refusal's line is a one-shot notice (Events.tsx): it is shown by the
+  // refresh the 409 asks for, whatever that refresh holds, and ended by the
+  // next one, whatever that holds. The answers below are what the server
+  // gives in each case.
+  const NOT_RETRYABLE =
+    "Air Dry - AMS, plate 3 (Lid) can no longer be retried. It is already being estimated again, or its printer or file has changed.";
+  const statusLine = () => section("Recent events").querySelector('[role="status"]');
+
+  /** The failed estimate's event is gone: retried elsewhere and estimating, or finished. */
+  function withoutTheFailure(estimating: boolean): ActivityView {
+    const v = busyView();
+    v.events.items = v.events.items.filter((e) => e.type !== "estimate_failed");
+    v.working = estimating;
+    return v;
+  }
+  /** The same estimate failed again: its event is back, recorded later. */
+  function failedAgainView(): ActivityView {
+    const v = busyView();
+    v.events.items = v.events.items.map((e) =>
+      e.type === "estimate_failed" ? { ...e, at: "2026-11-19T12:05:00.000Z" } : e,
+    );
+    return v;
+  }
+
+  test.each([
+    ["the plate estimating", () => withoutTheFailure(true)],
+    ["the same failure", () => busyView()],
+    ["a new failure of that estimate", failedAgainView],
+  ])("the refresh the refusal asks for shows the line, whatever it holds: %s", async (_, next) => {
     retryStatus = 409;
     await render();
     const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    answer = next;
+    const before = gets();
     await click(button(/^Retry$/, li));
-    await click(button(/^Refresh$/));
-    expect(text(section("Recent events").querySelector('[role="status"]'))).toContain(
-      "plate 3 (Lid) can no longer be retried",
-    );
+    expect(gets()).toBe(before + 1);
+    expect(text(statusLine())).toBe(NOT_RETRYABLE);
   });
 
-  test("the not-retryable line goes when a refresh shows that estimate failed again", async () => {
-    // Refused because it was already being estimated again; that estimate
-    // then fails too, and a later refresh lists a new Estimate failed row for
-    // it, at a later time, with a Retry that works. The line must go.
+  test.each([
+    ["the plate still estimating", () => withoutTheFailure(true)],
+    ["the plate finished, with new numbers", () => withoutTheFailure(false)],
+    ["the estimate failed again", failedAgainView],
+  ])("the next refresh ends the line, whatever it holds: %s", async (_, next) => {
     retryStatus = 409;
     await render();
     const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
-    answer = () => {
-      const v = busyView();
-      v.events.items = v.events.items.filter((e) => e.type !== "estimate_failed");
-      return v;
-    };
+    answer = () => withoutTheFailure(true);
     await click(button(/^Retry$/, li));
-    const status = () => text(section("Recent events").querySelector('[role="status"]'));
-    expect(status()).toContain("plate 3 (Lid) can no longer be retried");
+    expect(text(statusLine())).toBe(NOT_RETRYABLE);
 
-    answer = () => {
-      const v = busyView();
-      v.events.items = v.events.items.map((e) =>
-        e.type === "estimate_failed" ? { ...e, at: "2026-11-19T12:05:00.000Z" } : e,
-      );
-      return v;
-    };
+    answer = next;
     await click(button(/^Refresh$/));
-    const again = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
-    expect(text(again)).toContain("Estimate failed");
-    button(/^Retry$/, again);
-    expect(status()).toBe("");
+    expect(text(statusLine())).toBe("");
+  });
+
+  test("a screen reader hears the whole sentence: the polite status region is there, empty, before it", async () => {
+    retryStatus = 409;
+    await render();
+    const region = statusLine();
+    if (region === null) throw new Error("no status region before the refusal");
+    expect(text(region)).toBe("");
+    expect(region.getAttribute("aria-live")).not.toBe("off");
+    answer = () => withoutTheFailure(true);
+    const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    await click(button(/^Retry$/, li));
+    // The same region, never replaced, now holds the sentence whole.
+    expect(statusLine()).toBe(region);
+    expect(region.isConnected).toBe(true);
+    expect(text(region)).toBe(NOT_RETRYABLE);
   });
 
   test("a retry that fails for another reason says what the server's answer means", async () => {

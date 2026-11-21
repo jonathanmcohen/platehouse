@@ -18,14 +18,9 @@
 //   message behind a Details button, and Retry, which queues the slice again
 //   from the stored file (no re-upload). A refused or failed retry is said
 //   beside the plate: a 409 not_retryable says it can no longer be retried,
-//   in a status line that outlives the failure (the page loads the model
-//   again, which usually no longer has it), but not the facts it was about:
-//   it goes when another printer is shown, when a different failure is
-//   shown, or when the refused estimate fails again (it was estimated again
-//   and failed again, so Retry works again): its failure comes back after
-//   it had gone, or is shown with a later failedAt than the one refused,
-//   as when the reload after the 409 already shows the new failure.
-//   A 401 says the user is signed out; anything else says what the
+//   in a status line outside the failure block (the page loads the model
+//   again, which usually no longer has the failure); it is a one-shot
+//   notice whose lifetime is set out in PlateNumbersView. A 401 says the user is signed out; anything else says what the
 //   server's answer means (errorText).
 // Times and weights are formatted as the library's cards format them.
 import { useId, useState } from "react";
@@ -193,35 +188,10 @@ function EstimateNumbers({
   );
 }
 
-/** A Retry refused as not retryable: what it was for, and whether that failure has gone since. */
+/** A Retry refused as not retryable: the printer the switch showed, and how many answers have landed since. */
 interface Refused {
-  estimateId: string;
   printer: string;
-  /** When the refused failure was recorded (PlateFailure.failedAt). */
-  failedAt: string | null;
-  /** Whether a shown answer has had no failure since the refusal. */
-  gone: boolean;
-}
-
-/**
- * Whether a refusal still holds for what is shown now: null once another
- * printer or a different failure is shown, or once the refused estimate
- * has failed again (and can be retried): its failure is back after it had
- * gone, or shown with another failedAt. A retry keeps the estimate's id,
- * so the time is what tells a new failure from the refused one, as
- * notice.at against event.at does on the Activity page.
- * Returns the same object when nothing changed.
- */
-function refusedNow(
-  refused: Refused,
-  printer: string,
-  failure: PlateNumbers["failure"],
-): Refused | null {
-  if (printer !== refused.printer) return null;
-  if (failure === undefined) return refused.gone ? refused : { ...refused, gone: true };
-  if (failure.estimateId !== refused.estimateId || refused.gone) return null;
-  if (failure.failedAt !== refused.failedAt) return null;
-  return refused;
+  answers: number;
 }
 
 export interface PlateNumbersViewProps {
@@ -235,6 +205,12 @@ export interface PlateNumbersViewProps {
   /** Whether an estimate for the selected printer is queued or slicing (ModelPlate.estimatePending). */
   pending: boolean;
   /**
+   * The printer the switch shows now, which changes as soon as another is
+   * chosen, before its numbers land (PlatesTab's switchPrinter); printer
+   * when left out.
+   */
+  switchShows?: string;
+  /**
    * Queues a failed estimate again; rejects with the server's AppApiError
    * when refused (and the page loads the model again on a 409).
    */
@@ -247,6 +223,7 @@ export function PlateNumbersView({
   printerName,
   projectFilaments,
   pending,
+  switchShows = printer,
   onRetry,
 }: PlateNumbersViewProps) {
   const i18n = useI18n();
@@ -256,18 +233,27 @@ export function PlateNumbersView({
   const [retrying, setRetrying] = useState(false);
   const errorText = useErrorText();
   const [retryError, setRetryError] = useState<string | null>(null);
-  /**
-   * That the plate can no longer be retried: the estimate and printer the
-   * 409 was for. It is shown outside the failure block, because the model
-   * loaded again after the refusal usually no longer has the failure, and
-   * the words must not go with it.
-   */
+  // The notice's lifetime: a 409 not_retryable is a one-shot notice, never
+  // state to be proven stale. It is shown until the answer after the one
+  // the 409 asked for lands, whatever that answer shows, or until another
+  // Retry is pressed, another printer is chosen or the page is left,
+  // whichever comes first. After that the plate shows only what the answer
+  // says. It sits outside the failure block, because the answer the 409
+  // asks for usually no longer has the failure. A new numbers object is an
+  // answer that landed: polls, reloads and the printer switch keep this
+  // view mounted, and nothing else replaces it.
   const [refused, setRefused] = useState<Refused | null>(null);
-  const { file, platehouse, failure } = numbers;
-  // Polls, reloads and the printer switch keep this view mounted, so the
-  // line is checked against what is shown now, as each answer lands.
-  const stillRefused = refused === null ? null : refusedNow(refused, printer, failure);
+  const [seen, setSeen] = useState(numbers);
+  let stillRefused = refused;
+  if (numbers !== seen) {
+    setSeen(numbers);
+    if (stillRefused !== null) {
+      stillRefused = stillRefused.answers === 0 ? { ...stillRefused, answers: 1 } : null;
+    }
+  }
+  if (stillRefused !== null && stillRefused.printer !== switchShows) stillRefused = null;
   if (stillRefused !== refused) setRefused(stillRefused);
+  const { file, platehouse, failure } = numbers;
 
   async function retry() {
     if (failure === undefined || retrying) return;
@@ -281,12 +267,7 @@ export function PlateNumbersView({
       // says the user is signed out, and anything else what the server's
       // answer means (errorText).
       if (refusal instanceof AppApiError && refusal.status === 409) {
-        setRefused({
-          estimateId: failure.estimateId,
-          printer,
-          failedAt: failure.failedAt,
-          gone: false,
-        });
+        setRefused({ printer: switchShows, answers: 0 });
       } else setRetryError(errorText(refusal));
     } finally {
       setRetrying(false);

@@ -7,9 +7,8 @@
 // /app/api/estimates/:id/retry. A 409 not_retryable asks for the list again
 // and says, in a status line above the list that names the model and plate,
 // that the plate can no longer be retried: the refresh usually drops the
-// row, so the words cannot live in it. The line goes when a refreshed list
-// shows that estimate failed again (its event at a later time), since its
-// Retry then works. Any other failure says what the
+// row, so the words cannot live in it. The line is a one-shot notice whose
+// lifetime is set out in Events below. Any other failure says what the
 // server's answer means (errorText) in the row. Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
@@ -101,7 +100,7 @@ function EstimateFailure({
 }: {
   event: Extract<ActivityEvent, { type: "estimate_failed" }>;
   onRetried: () => void;
-  onNotice: (notice: Notice | null) => void;
+  onNotice: (text: string | null) => void;
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
@@ -123,12 +122,9 @@ function EstimateFailure({
         // printer or plate is gone. Trying again cannot work, so say so and
         // ask for the list again, which drops an event that has moved on.
         // The words go to the section's status line, naming the plate,
-        // because that refresh usually takes this row, and its state, away.
-        onNotice({
-          text: t("activity.retryNotRetryable", { model: event.model.name, plate }),
-          estimateId: event.estimateId,
-          at: event.at,
-        });
+        // because that refresh usually takes this row, and its state, away;
+        // Events says how long they stay.
+        onNotice(t("activity.retryNotRetryable", { model: event.model.name, plate }));
         onRetried();
       } else {
         setError(errorText(failure));
@@ -190,7 +186,7 @@ function EventBody({
 }: {
   event: ActivityEvent;
   onChanged: () => void;
-  onNotice: (notice: Notice | null) => void;
+  onNotice: (text: string | null) => void;
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
@@ -257,19 +253,10 @@ function EventBody({
   }
 }
 
-/** A Retry refused as not retryable: its words, and the failure it was for. */
+/** A Retry refused as not retryable: its words, and how many lists have landed since. */
 interface Notice {
   text: string;
-  estimateId: string;
-  /** When that failure was recorded: a later one for the estimate is a new failure. */
-  at: string;
-}
-
-/** Whether items show the notice's estimate failed again since, which makes the notice untrue. */
-function failedAgain(notice: Notice, items: readonly ActivityEvent[]): boolean {
-  return items.some(
-    (e) => e.type === "estimate_failed" && e.estimateId === notice.estimateId && e.at !== notice.at,
-  );
+  lists: number;
 }
 
 export interface EventsProps {
@@ -282,16 +269,22 @@ export interface EventsProps {
 
 export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) {
   const { t } = useI18n();
-  /**
-   * What the last Retry learnt that outlives its row: that the plate, named
-   * in full, can no longer be retried. Cleared when a Retry is pressed, or
-   * when a refreshed list shows that estimate failed again (the page polls
-   * and keeps this list mounted, so it is checked as each list lands).
-   */
+  // The notice's lifetime: a 409 not_retryable is a one-shot notice, never
+  // state to be proven stale. It is shown until the list after the one the
+  // 409 asked for lands, whatever that list shows, or until another Retry is
+  // pressed or the page is left, whichever comes first. After that the list
+  // alone says what is true. A new items array is a list that landed: the
+  // page polls and keeps this component mounted.
   const [notice, setNotice] = useState<Notice | null>(null);
-  const untrue = notice !== null && failedAgain(notice, items);
-  if (untrue) setNotice(null);
-  const shown = untrue ? null : notice;
+  const [seen, setSeen] = useState(items);
+  let shown = notice;
+  if (items !== seen) {
+    setSeen(items);
+    if (notice !== null) {
+      shown = notice.lists === 0 ? { ...notice, lists: 1 } : null;
+      setNotice(shown);
+    }
+  }
   return (
     <>
       {inboxReadable ? null : (
@@ -307,7 +300,11 @@ export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) 
         <ol className="studio-list ph-activity-events">
           {items.map((event) => (
             <li key={`${event.type}:${keyOf(event)}`} className="studio-list-item">
-              <EventBody event={event} onChanged={onChanged} onNotice={setNotice} />
+              <EventBody
+                event={event}
+                onChanged={onChanged}
+                onNotice={(text) => setNotice(text === null ? null : { text, lists: 0 })}
+              />
             </li>
           ))}
         </ol>

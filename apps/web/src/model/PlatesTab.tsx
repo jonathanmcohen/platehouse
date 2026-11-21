@@ -116,6 +116,7 @@ export function PlatesTab({
                       printerName={model.printerName}
                       projectFilaments={file.filaments}
                       pending={plate.estimatePending}
+                      switchShows={shown.printer}
                       onRetry={onRetry}
                     />
                   </li>
