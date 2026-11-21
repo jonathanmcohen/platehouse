@@ -112,7 +112,7 @@ describe("the components", () => {
       "<p>{t('a.b')} / {t('c.d')}</p>",
       '<span aria-hidden="true">x</span>',
       '<div className="studio-row ph-small" role="alert" />',
-      "<input list={`${id}-suggestions`} type=\"text\" />",
+      '<input list={`tags-suggestions`} type="text" autoComplete="off" />',
       '<button aria-label={t("a.b", { name })} />',
     ].filter((jsx) => bareText("probe.tsx", `const x = ${jsx};`).length !== 0);
     expect(flagged).toEqual([]);
@@ -178,7 +178,10 @@ function bareText(file: string, text: string): string[] {
   };
   const children = (node: ESTree.JSXElement | ESTree.JSXFragment) => {
     for (const child of node.children) {
-      if (child.type === "JSXExpressionContainer" && child.expression.type !== "JSXEmptyExpression") {
+      if (
+        child.type === "JSXExpressionContainer" &&
+        child.expression.type !== "JSXEmptyExpression"
+      ) {
         for (const piece of literalText(child.expression)) flag(piece.start, piece.text);
       }
     }
@@ -194,7 +197,10 @@ function bareText(file: string, text: string): string[] {
       const value = node.value;
       if (value === null) return;
       if (value.type === "Literal") flag(value.start, String(value.value));
-      else if (value.type === "JSXExpressionContainer" && value.expression.type !== "JSXEmptyExpression") {
+      else if (
+        value.type === "JSXExpressionContainer" &&
+        value.expression.type !== "JSXEmptyExpression"
+      ) {
         for (const piece of literalText(value.expression)) flag(piece.start, piece.text);
       }
     },
