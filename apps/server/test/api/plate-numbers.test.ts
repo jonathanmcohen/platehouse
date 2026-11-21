@@ -82,8 +82,11 @@ const MODEL_ROW = {
   updated_at: CREATED,
 };
 
-/** A database that answers the model, its files and their plates; no tags or collections. */
-function scriptedDb(): Kysely<DB> {
+/**
+ * A database that answers the model, its files and their plates (PLATES
+ * unless given); no tags or collections.
+ */
+function scriptedDb(plates: readonly (typeof PLATES)[number][] = PLATES): Kysely<DB> {
   const connection: DatabaseConnection = {
     async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
       const from = /\bfrom "([a-z_]+)"/.exec(query.sql)?.[1];
@@ -93,7 +96,7 @@ function scriptedDb(): Kysely<DB> {
         const byId = /"id" = \$1/.test(query.sql);
         rows = byId ? FILES.filter((f) => f.id === query.parameters[0]) : FILES;
       } else if (from === "plates") {
-        rows = PLATES.filter((p) => p.file_id === query.parameters[0]);
+        rows = plates.filter((p) => p.file_id === query.parameters[0]);
       }
       return { rows } as QueryResult<R>;
     },
@@ -132,8 +135,8 @@ const unusedStore = {
   },
 };
 
-/** An API library whose context and plate lookups are counted. */
-function countedLibrary() {
+/** An API library whose context and plate lookups are counted; its files have PLATES unless given. */
+function countedLibrary(plates: readonly (typeof PLATES)[number][] = PLATES) {
   const seen = {
     contexts: 0,
     lookups: 0,
@@ -143,7 +146,7 @@ function countedLibrary() {
   };
   let reads = 0;
   const library = createApiLibrary({
-    db: scriptedDb(),
+    db: scriptedDb(plates),
     store: unusedStore,
     async displayContext(): Promise<DisplayContext> {
       seen.contexts += 1;
@@ -194,5 +197,19 @@ describe("the Public API v1's plate numbers", () => {
     expect(file?.plates).toHaveLength(PLATES_PER_FILE);
     expect(seen.contexts).toBe(1);
     expect(seen.maxInFlight).toBeLessThanOrEqual(PLATE_NUMBERS_CONCURRENCY);
+  });
+
+  // An STL, STEP or SCAD file, or a .3mf with no plate data, has no plate
+  // numbers to show, so its answer never waits on the printer menu (and
+  // through it on the slicer).
+  test("a model or file with no plates never reads the display context", async () => {
+    const { library, seen } = countedLibrary([]);
+    const model = await library.getModel(MODEL_ID);
+    expect(model?.files).toHaveLength(FILE_COUNT);
+    for (const file of model?.files ?? []) expect(file.plates).toEqual([]);
+    const file = await library.getFile(FILES[0]?.id ?? "");
+    expect(file?.plates).toEqual([]);
+    expect(seen.contexts).toBe(0);
+    expect(seen.lookups).toBe(0);
   });
 });

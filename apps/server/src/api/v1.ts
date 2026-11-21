@@ -419,20 +419,24 @@ export function createApiLibrary(deps: {
   /**
    * These files as the API shows them. Their plates are listed one file at
    * a time, then every plate's numbers are read with the one context, at
-   * most PLATE_NUMBERS_CONCURRENCY at once.
+   * most PLATE_NUMBERS_CONCURRENCY at once. Files with no plates (an STL,
+   * STEP or SCAD file, or a .3mf with no plate data) read no context, so
+   * their answer never waits on the printer menu or the slicer.
    */
   async function toApiFiles(files: readonly ModelFile[]): Promise<ApiFile[]> {
-    if (files.length === 0) return [];
-    const ctx = await deps.displayContext();
     const platesOf: Plate[][] = [];
     for (const file of files) platesOf.push(await repos.plates.listForFile(file.id));
-    const numbers = new Map(
-      await mapLimit(
-        platesOf.flat(),
+    const plates = platesOf.flat();
+    const numbers = new Map<string, PlateNumbers>();
+    if (plates.length > 0) {
+      const ctx = await deps.displayContext();
+      const read = await mapLimit(
+        plates,
         PLATE_NUMBERS_CONCURRENCY,
         async (p) => [p.id, await deps.plateNumbers(ctx, p.id)] as const,
-      ),
-    );
+      );
+      for (const [id, n] of read) numbers.set(id, n);
+    }
     return files.map((file, i) => toApiFile(file, platesOf[i] ?? [], numbers));
   }
 
