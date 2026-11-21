@@ -92,6 +92,15 @@ describe("scrubText", () => {
     expect(scrubText("GET http://[2001:db8::1]:8080/v1/slice failed")).toBe("GET [address] failed");
   });
 
+  // Straight after a word and a colon, with no space, the whole address
+  // goes, as an IPv4 address does (peer:192.0.2.7), not just its first group.
+  test("takes out an IPv6 address written straight after a word and a colon", () => {
+    expect(scrubText("peer:2001:db8::1 left")).toBe("peer:[address] left");
+    expect(scrubText("peer:fe80::1%eth0 left")).toBe("peer:[address] left");
+    expect(scrubText("dial tcp:2001:db8::7:8080 failed")).toBe("dial tcp:[address] failed");
+    expect(scrubText("peer:192.0.2.7 left")).toBe("peer:[address] left");
+  });
+
   test("leaves times, ratios, ranges and C++ names that look a little like IPv6 alone", () => {
     expect(scrubText("started 12:30:45, layers [1:2]")).toBe("started 12:30:45, layers [1:2]");
     expect(scrubText("Slic3r::GCode::process_layer failed")).toBe(

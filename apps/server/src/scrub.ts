@@ -49,10 +49,13 @@ const BRACKETED_IPV6 = new RegExp(`\\[${IPV6}(?:%[\\w.-]+)?\\](?::\\d{1,5})?`, "
 /**
  * A bare IPv6 address, with its zone and a trailing port if any. It holds
  * a digit and stands alone (not part of a word or a longer run of colons
- * and dots), so a time (12:30:45) and a C++ name (Slic3r::GCode) stay.
+ * and dots), so a time (12:30:45) and a C++ name (Slic3r::GCode) stay. It
+ * may also start straight after a word of letters and one colon
+ * (peer:2001:db8::1), as an IPv4 address may, so the host:port rule never
+ * takes only its first group and leaves the rest behind.
  */
 const BARE_IPV6 = new RegExp(
-  `(?<![\\w:.])(?=[0-9A-Fa-f:]*\\d)${IPV6}(?:%[\\w.-]+)?(?::\\d{1,5})?(?![\\w:]|\\.\\d)`,
+  `(?:(?<![\\w:.])|(?<=(?<![\\w:.])[A-Za-z]+:))(?=[0-9A-Fa-f:]*\\d)${IPV6}(?:%[\\w.-]+)?(?::\\d{1,5})?(?![\\w:]|\\.\\d)`,
   "g",
 );
 
