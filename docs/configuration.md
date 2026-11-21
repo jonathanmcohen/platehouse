@@ -49,9 +49,9 @@ it from `DB_USER`, `DB_PASS` and `DB_NAME` in `.env` without encoding them, and 
   simple, recommended choice.
 - A password with `/`, `#` or `?` ends the URL's address part early. Usually the app then refuses
   to start with `Invalid configuration: DATABASE_URL must be a postgres:// or postgresql:// URL`,
-  although the URL scheme is fine. When the part of the password before that character is all
-  digits, the check passes instead, and the app starts and cannot connect, because it tries the
-  wrong host and port.
+  although the URL scheme is fine. When the part of the password before that character is empty
+  or a number up to 65535, the check passes instead, and the app starts and cannot connect,
+  because it tries the database user name as the host and that number as the port.
 - A password with `%` followed by two hexadecimal digits, such as `%41`, is read as an encoded
   character, so the app starts and then cannot connect: Postgres refuses the password, or the
   database driver cannot read the URL.
