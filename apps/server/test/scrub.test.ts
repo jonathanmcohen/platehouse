@@ -16,6 +16,7 @@
 // Every credential-shaped value here is made by the run, never written into
 // this file.
 import { randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import { describe, expect, test } from "vitest";
 import {
   DERIVED_MESSAGE_MAX_CHARS,
@@ -269,5 +270,213 @@ describe("scrubDetail", () => {
     ]) {
       expect(out).not.toContain(secret);
     }
+  });
+});
+
+// The address scrub is checked against its invariant, not only examples.
+// Every round of review used to find one more character next to an address
+// that hid it, so these tests state the property and try it on many
+// generated messages. On any text, scrubText's output holds:
+//
+// (a) no match of the IPv4 pattern the scan replaced: it never takes out
+//     less than that regex did;
+// (b) no IPv6 address s (net.isIP(s) === 6, holding a digit and at least two
+//     colons) whose neighbours, where there are any, are not hex digits,
+//     ':' or '.'; checked by brute force over every start and every end up
+//     to 64 characters;
+// (c) the text that only looks like an address (times, ranges, C++ names,
+//     versions, hashes) comes out unchanged.
+
+/** The IPv4 pattern scrub.ts used before the address scan. */
+const OLD_IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/;
+
+/** (a): the first match of the old IPv4 pattern left in text, if any. */
+function leftoverIPv4(text: string): string | undefined {
+  return OLD_IPV4.exec(text)?.[0];
+}
+
+/** A character an IPv6 address may run on into: a hex digit, ':' or '.'. */
+function joins(c: string | undefined): boolean {
+  return c !== undefined && /[0-9A-Fa-f:.]/.test(c);
+}
+
+/**
+ * (b), by brute force: the first IPv6 address left in text, if any. Every
+ * start and every end up to 64 characters is tried. It is slow, which is
+ * fine here. Substrings with fewer than two colons or no digit are skipped
+ * before isIP, since (b) does not count them anyway.
+ */
+function leftoverIPv6(text: string): string | undefined {
+  for (let start = 0; start < text.length; start += 1) {
+    if (joins(text[start - 1])) continue;
+    let colons = 0;
+    let digit = false;
+    for (let end = start + 1; end <= Math.min(text.length, start + 64); end += 1) {
+      const c = text[end - 1] as string;
+      if (c === ":") colons += 1;
+      else if (c >= "0" && c <= "9") digit = true;
+      if (colons < 2 || !digit || joins(text[end])) continue;
+      const s = text.slice(start, end);
+      if (isIP(s) === 6) return s;
+    }
+  }
+  return undefined;
+}
+
+/** (c): text that only looks like an address, which must come out unchanged. */
+const LOOKALIKES = [
+  "at 12:34:56",
+  "times 01:02:03 and 23:59:59",
+  "plates [1:2] and [3:4]",
+  "Slic3r::GCode failed",
+  "Add::Feed and Bed::Face",
+  "std::bad_alloc in Model::add",
+  "ratio 16:9 at 1:2:3",
+  "version 2.5.0",
+  "build 2026.11.0.1",
+  "OrcaSlicer 2.3.1-beta",
+  "sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "commit f1c966c4e60f30b244d382a5befca884336ca510",
+];
+
+/** Addresses from documentation and link-local ranges, in every form the scrub takes out. */
+const ADDRESSES = [
+  "10.0.0.5",
+  "192.0.2.7",
+  "198.51.100.23:8080",
+  "203.0.113.9:65535",
+  "999.1.2.3",
+  "2001:db8::1",
+  "2001:db8:0:0:0:0:0:1",
+  "2001:db8::7:8080",
+  "::1",
+  "::ffff:192.0.2.7",
+  "fe80::1%eth0",
+  "fe80::a:b%en0",
+  "[2001:db8::1]",
+  "[2001:db8::1]:443",
+  "[fe80::1%en0]:8080",
+  "[192.0.2.7]",
+  "[10.0.0.5]:5432",
+];
+
+/** What may sit straight before or after an address; "" is the start or end of the text. */
+const NEIGHBOURS = [
+  "",
+  "g",
+  "x",
+  "Z",
+  "a",
+  "F",
+  "abc",
+  "Retrying",
+  "nip.io",
+  ".nip.io",
+  ".Retrying",
+  "7",
+  ".",
+  "]",
+  "[",
+  "%",
+  ":",
+  "-",
+  "_",
+  "/",
+  "@",
+  "=",
+  '"',
+  "'",
+  "中",
+  "\u{1f600}",
+  " ",
+];
+
+/** A small seeded generator (mulberry32), so every run tries the same messages. */
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pick<T>(random: () => number, items: readonly T[]): T {
+  return items[Math.floor(random() * items.length)] as T;
+}
+
+/**
+ * A message: a look-alike, a space, one or two addresses each between
+ * neighbours (one to three on a side), a space and another look-alike.
+ */
+function message(random: () => number): { text: string; before: string; after: string } {
+  const side = () => {
+    const r = random();
+    const count = r < 0.15 ? 3 : r < 0.5 ? 2 : 1;
+    let s = "";
+    for (let k = 0; k < count; k += 1) s += pick(random, NEIGHBOURS);
+    return s;
+  };
+  let core = side() + pick(random, ADDRESSES) + side();
+  if (random() < 0.4) core += pick(random, ADDRESSES) + side();
+  const before = pick(random, LOOKALIKES);
+  const after = pick(random, LOOKALIKES);
+  return { text: `${before} ${core} ${after}`, before, after };
+}
+
+/** What is wrong with scrubText's output for text, or undefined when (a) and (b) hold. */
+function brokenBy(text: string): string | undefined {
+  const out = scrubText(text);
+  const v4 = leftoverIPv4(out);
+  if (v4 !== undefined) return `${JSON.stringify(text)} -> ${JSON.stringify(out)} keeps ${v4}`;
+  const v6 = leftoverIPv6(out);
+  if (v6 !== undefined) return `${JSON.stringify(text)} -> ${JSON.stringify(out)} keeps ${v6}`;
+  return undefined;
+}
+
+describe("the address scrub's invariant", () => {
+  test("the oracle finds what it should: it is not a test that passes on anything", () => {
+    expect(leftoverIPv4("reach 10.0.0.5.nip.io")).toBe("10.0.0.5");
+    expect(leftoverIPv4("build 2026.11.0.1")).toBeUndefined();
+    expect(leftoverIPv6("peer g2001:db8::1 left")).toBe("2001:db8::1");
+    // "%" is not hex, ":" or ".", so the address before the zone counts on its own.
+    expect(leftoverIPv6("at fe80::1%eth0.")).toBe("fe80::1");
+    expect(leftoverIPv6("at [fe80::1]")).toBe("fe80::1");
+    expect(leftoverIPv6("Add::Feed and 12:34:56")).toBeUndefined();
+    expect(leftoverIPv6("[address]")).toBeUndefined();
+  });
+
+  test.each(LOOKALIKES)("(c) %j comes out unchanged", (text) => {
+    expect(scrubText(text)).toBe(text);
+  });
+
+  // The examples earlier review rounds found, kept by name.
+  test.each([
+    ["round 1: an IPv4 address in brackets", "dial [192.0.2.7] failed", "dial [address] failed"],
+    ["round 1: after a closing bracket", "[WARN]10.0.0.5 unreachable", "[WARN][address] unreachable"],
+    ["round 1: after a full stop", "failed.10.0.0.5", "failed.[address]"],
+    ["round 2 (#351): before a host name", "reach 10.0.0.5.nip.io", "reach [address].nip.io"],
+    ["round 2 (#351): before a word", "reach 10.0.0.5.Retrying", "reach [address].Retrying"],
+    ["round 2 (#351): a bracket then letters", "[10.0.0.5]abc", "[address]abc"],
+  ])("%s: %j is shown as %j", (_round, input, shown) => {
+    expect(scrubText(input)).toBe(shown);
+    expect(brokenBy(input)).toBeUndefined();
+  });
+
+  test("(a), (b) and (c) hold for 3000 generated messages", () => {
+    const random = seeded(0x5c2b);
+    const broken: string[] = [];
+    for (let i = 0; i < 3000; i += 1) {
+      const { text, before, after } = message(random);
+      const problem = brokenBy(text);
+      if (problem !== undefined) broken.push(problem);
+      const out = scrubText(text);
+      if (!out.startsWith(`${before} `) || !out.endsWith(` ${after}`)) {
+        broken.push(`${JSON.stringify(text)} -> ${JSON.stringify(out)} changed a look-alike`);
+      }
+    }
+    expect(broken.length, broken.slice(0, 20).join("\n")).toBe(0);
   });
 });
