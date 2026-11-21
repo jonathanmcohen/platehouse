@@ -38,7 +38,9 @@
 //   numbers on screen are for (PlatesTab's switchPrinter, #255).
 // - Retry on a failed plate posts to /app/api/estimates/:id/retry (the
 //   gate's Origin check passes a same-origin fetch) and loads the model
-//   again, which starts the polling while the plate estimates.
+//   again, which starts the polling while the plate estimates. A refusal
+//   reaches the plate as the server's AppApiError (Numbers.tsx puts it in
+//   words); a 409 not_retryable loads the model again too.
 // - Files dropped on the page go to onFiles with this model's id; main.tsx
 //   opens Task 19's upload dialog aimed at this model, where the Combine
 //   switch is not shown. refreshKey changes when an upload round finishes,
@@ -60,7 +62,7 @@ import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { InlineRename } from "../collections/InlineRename";
 import { type MessageKey, useI18n } from "../i18n/I18n";
-import { appApi } from "../settings/api";
+import { AppApiError, appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
 import "./model.css";
@@ -333,15 +335,20 @@ export function ModelPage({
     };
   }, [id, reload, refreshKey, choice]);
 
-  async function retry(estimateId: string): Promise<boolean> {
-    const res = await fetch(`/app/api/estimates/${encodeURIComponent(estimateId)}/retry`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { accept: "application/json" },
-    });
-    if (res.status !== 202) return false;
+  /**
+   * Queues a failed estimate again and loads the model again. A refusal
+   * rejects with the server's AppApiError for the plate to put in words; a
+   * 409 not_retryable also loads the model again, since the estimate has
+   * moved on (it is usually no longer failed).
+   */
+  async function retry(estimateId: string): Promise<void> {
+    try {
+      await appApi("POST", `/estimates/${encodeURIComponent(estimateId)}/retry`);
+    } catch (failure) {
+      if (failure instanceof AppApiError && failure.status === 409) setReload((n) => n + 1);
+      throw failure;
+    }
     setReload((n) => n + 1);
-    return true;
   }
 
   /**
@@ -425,7 +432,8 @@ export function ModelPage({
 
 interface ModelDetailProps {
   model: ModelView;
-  onRetry(estimateId: string): Promise<boolean>;
+  /** Queues a failed estimate again; rejects with the server's AppApiError when refused. */
+  onRetry(estimateId: string): Promise<void>;
   /** The printer switch: shows another printer's numbers. */
   onChoosePrinter(printerId: string): void;
   /** The switch's stored choice, which may still be loading. */

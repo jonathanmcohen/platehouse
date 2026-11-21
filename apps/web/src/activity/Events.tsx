@@ -3,10 +3,12 @@
 // added, inbox files that failed, estimates, renders and conversions that
 // failed). A live model is a link to its page; a trashed one is named
 // without a link. A failed estimate (the server lists live models' only) has
-// the model page's own retry, through the existing POST /app/api/estimates/:id/retry; a 409
-// not_retryable says the plate can no longer be retried and asks for the
-// list again, and any other failure says what the server's answer means
-// (errorText). Every text here is shown as
+// the model page's own retry, through the existing POST
+// /app/api/estimates/:id/retry. A 409 not_retryable asks for the list again
+// and says, in a status line above the list that names the model and plate,
+// that the plate can no longer be retried: the refresh usually drops the
+// row, so the words cannot live in it. Any other failure says what the
+// server's answer means (errorText) in the row. Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
 
@@ -93,9 +95,11 @@ function ModelLink({ model }: { model: { id: string; name: string; trashed?: boo
 function EstimateFailure({
   event,
   onRetried,
+  onNotice,
 }: {
   event: Extract<ActivityEvent, { type: "estimate_failed" }>;
   onRetried: () => void;
+  onNotice: (notice: string | null) => void;
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
@@ -107,6 +111,7 @@ function EstimateFailure({
     if (retrying) return;
     setRetrying(true);
     setError(null);
+    onNotice(null);
     try {
       await appApi("POST", `/estimates/${segment(event.estimateId)}/retry`);
       onRetried();
@@ -115,7 +120,9 @@ function EstimateFailure({
         // not_retryable is final: the estimate is no longer failed, or its
         // printer or plate is gone. Trying again cannot work, so say so and
         // ask for the list again, which drops an event that has moved on.
-        setError(t("activity.retryNotRetryable"));
+        // The words go to the section's status line, naming the plate,
+        // because that refresh usually takes this row, and its state, away.
+        onNotice(t("activity.retryNotRetryable", { model: event.model.name, plate }));
         onRetried();
       } else {
         setError(errorText(failure));
@@ -170,7 +177,15 @@ function EstimateFailure({
   );
 }
 
-function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () => void }) {
+function EventBody({
+  event,
+  onChanged,
+  onNotice,
+}: {
+  event: ActivityEvent;
+  onChanged: () => void;
+  onNotice: (notice: string | null) => void;
+}) {
   const i18n = useI18n();
   const { t, rich } = i18n;
   switch (event.type) {
@@ -201,7 +216,7 @@ function EventBody({ event, onChanged }: { event: ActivityEvent; onChanged: () =
         </>
       );
     case "estimate_failed":
-      return <EstimateFailure event={event} onRetried={onChanged} />;
+      return <EstimateFailure event={event} onRetried={onChanged} onNotice={onNotice} />;
     case "render_failed":
       return (
         <>
@@ -246,18 +261,27 @@ export interface EventsProps {
 
 export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) {
   const { t } = useI18n();
+  /**
+   * What the last Retry learnt that outlives its row: that the plate, named
+   * in full, can no longer be retried. Cleared when a Retry is pressed.
+   */
+  const [notice, setNotice] = useState<string | null>(null);
   return (
     <>
       {inboxReadable ? null : (
         <p className="studio-alert studio-alert-alert">{t("activity.inboxUnreadable")}</p>
       )}
+      {/* Always in the page, so a screen reader hears what is put in it. */}
+      <div role="status">
+        {notice === null ? null : <p className="ph-activity-line ph-activity-error">{notice}</p>}
+      </div>
       {items.length === 0 ? (
         <p className="studio-empty">{t("activity.noEvents")}</p>
       ) : (
         <ol className="studio-list ph-activity-events">
           {items.map((event) => (
             <li key={`${event.type}:${keyOf(event)}`} className="studio-list-item">
-              <EventBody event={event} onChanged={onChanged} />
+              <EventBody event={event} onChanged={onChanged} onNotice={setNotice} />
             </li>
           ))}
         </ol>

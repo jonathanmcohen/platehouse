@@ -17,12 +17,16 @@
 // - A plate that could not be sliced: the reason in plain words, Orca's own
 //   message behind a Details button, and Retry, which queues the slice again
 //   from the stored file (no re-upload). A refused or failed retry is said
-//   beside the plate.
+//   beside the plate: a 409 not_retryable says it can no longer be retried,
+//   in a status line that outlives the failure (the page loads the model
+//   again, which usually no longer has it); a 401 says the user is signed
+//   out; anything else says what the server's answer means (errorText).
 // Times and weights are formatted as the library's cards format them.
 import { useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { printerNameIn } from "../i18n/printers";
 import { ESTIMATE_REASON_KEYS, serverText } from "../i18n/serverText";
+import { AppApiError, useErrorText } from "../settings/api";
 import type {
   FilamentNumbers,
   Numbers,
@@ -193,8 +197,11 @@ export interface PlateNumbersViewProps {
   projectFilaments: ProjectFilament[];
   /** Whether an estimate for the selected printer is queued or slicing (ModelPlate.estimatePending). */
   pending: boolean;
-  /** Queues a failed estimate again; resolves true when it was queued. */
-  onRetry(estimateId: string): Promise<boolean>;
+  /**
+   * Queues a failed estimate again; rejects with the server's AppApiError
+   * when refused (and the page loads the model again on a 409).
+   */
+  onRetry(estimateId: string): Promise<void>;
 }
 
 export function PlateNumbersView({
@@ -210,19 +217,29 @@ export function PlateNumbersView({
   const detailId = useId();
   const [showDetail, setShowDetail] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const errorText = useErrorText();
   const [retryError, setRetryError] = useState<string | null>(null);
+  /**
+   * That the plate can no longer be retried. It is shown outside the failure
+   * block, because the model loaded again after the refusal usually no longer
+   * has the failure, and the words must not go with it.
+   */
+  const [notRetryable, setNotRetryable] = useState(false);
   const { file, platehouse, failure } = numbers;
 
   async function retry() {
     if (failure === undefined || retrying) return;
     setRetrying(true);
     setRetryError(null);
+    setNotRetryable(false);
     try {
-      if (!(await onRetry(failure.estimateId))) {
-        setRetryError(t("model.numbers.retryFailed"));
-      }
-    } catch {
-      setRetryError(t("model.numbers.retryFailed"));
+      await onRetry(failure.estimateId);
+    } catch (refused) {
+      // 409 not_retryable is final: say so rather than "try again". A 401
+      // says the user is signed out, and anything else what the server's
+      // answer means (errorText).
+      if (refused instanceof AppApiError && refused.status === 409) setNotRetryable(true);
+      else setRetryError(errorText(refused));
     } finally {
       setRetrying(false);
     }
@@ -278,6 +295,10 @@ export function PlateNumbersView({
           )}
         </div>
       )}
+      {/* Always in the page, so a screen reader hears what is put in it. */}
+      <div role="status">
+        {notRetryable ? <p className="ph-error">{t("model.numbers.notRetryable")}</p> : null}
+      </div>
       {file === undefined && platehouse === undefined && failure === undefined ? (
         <>
           <p className="studio-muted">{t("model.numbers.none")}</p>

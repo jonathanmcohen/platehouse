@@ -36,7 +36,8 @@ export function parseStatusWords(
 
 export interface PlatesTabProps {
   model: ModelView;
-  onRetry(estimateId: string): Promise<boolean>;
+  /** Queues a failed estimate again; rejects with the server's AppApiError when refused. */
+  onRetry(estimateId: string): Promise<void>;
   /** The printer switch: shows another of My printers' numbers. */
   onChoosePrinter(printerId: string): void;
   /** The switch's stored choice, which may still be loading; null for the default. */

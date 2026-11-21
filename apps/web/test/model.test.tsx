@@ -332,9 +332,12 @@ function stubServer() {
     const mintMatch = /^\/app\/api\/files\/([^/]+)\/slicer-link$/.exec(url.pathname);
     if (method === "POST" && mintMatch) return mintAnswer(mintMatch[1] ?? "");
     if (method === "POST" && /^\/app\/api\/estimates\/[^/]+\/retry$/.test(url.pathname)) {
-      return retryStatus === 202
-        ? json({ queued: true }, 202)
-        : json({ error: "not_retryable" }, retryStatus);
+      if (retryStatus === 202) return json({ queued: true }, 202);
+      // The route's own refusal (apps/server/src/app-api/model.ts); any
+      // other status is a session that ended or a server that is down.
+      return retryStatus === 409
+        ? json({ error: "not_retryable" }, 409)
+        : json({ error: "unavailable" }, retryStatus);
     }
     return new Response("not found", { status: 404 });
   });
@@ -1295,15 +1298,62 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(text(plateItems()[1])).toMatch(/estimating/i);
   });
 
-  test("a retry the server refuses says so beside the plate, with no browser dialog", async () => {
+  test("a retry refused as not retryable says so beside the plate and reloads the model, and the words outlive the failure", async () => {
+    // 409 not_retryable is final; the usual cause is that the estimate is no
+    // longer failed (retried in another tab), so the reloaded model shows the
+    // plate estimating and its failure, with its Retry, is gone.
     const alertSpy = vi.fn();
     vi.stubGlobal("alert", alertSpy);
     retryStatus = 409;
     models.set(MODEL_ID, failedModel());
     await render(pageAt(MODEL_ID));
-    await click(button(/retry/i, plateItems()[1] as HTMLElement));
-    expect(text(plateItems()[1]?.querySelector('[role="alert"]'))).toMatch(/could not be retried/i);
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([
+          plate(1, "Base", { file: fileNumbers(1) }),
+          plate(2, "Huge", { platehouse: estimate("estimating") }),
+          plate(3, "Lid", { file: fileNumbers(3) }),
+        ]),
+      ]),
+    );
+    await click(retry);
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}`,
+      `POST /app/api/estimates/${EST_FAILED}/retry`,
+      `GET /app/api/models/${MODEL_ID}`,
+    ]);
+    const huge = plateItems()[1] as HTMLElement;
+    expect(text(huge)).toMatch(/estimating/i);
+    expect(() => button(/retry/i, huge)).toThrow();
+    expect(text(huge.querySelector('[role="status"]'))).toBe(
+      "This plate can no longer be retried. It is already being estimated again, or its printer or file has changed.",
+    );
+    expect(text(huge)).not.toMatch(/try again/i);
     expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  test("a retry answered 401 says the user is signed out, beside the plate", async () => {
+    retryStatus = 401;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(plateItems()[1]?.querySelector('[role="alert"]'))).toBe(
+      "You are signed out. Reload the page to sign in again.",
+    );
+    expect(requests.filter((r) => r.startsWith("GET "))).toHaveLength(1);
+  });
+
+  test("a retry that fails for another reason says what the server's answer means", async () => {
+    retryStatus = 503;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(plateItems()[1]?.querySelector('[role="alert"]'))).toBe(
+      "This is unavailable right now. Try again in a moment.",
+    );
+    expect(requests.filter((r) => r.startsWith("GET "))).toHaveLength(1);
   });
 });
 

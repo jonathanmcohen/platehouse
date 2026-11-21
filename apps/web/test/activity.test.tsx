@@ -579,15 +579,42 @@ describe("recent events", () => {
   test("a retry the server refuses as not retryable says why and asks for the list again", async () => {
     // 409 not_retryable is final: the estimate is no longer failed (retried
     // in another tab or on the model page), or its printer or plate is gone.
+    // Usually the estimate is no longer failed, so the refreshed list leaves
+    // its event out and the row, with its Retry, goes. The words must not go
+    // with it: they are in the section's status line and name the plate.
+    retryStatus = 409;
+    await render();
+    const events = section("Recent events");
+    const li = [...events.querySelectorAll("ol > li")][0] as HTMLElement;
+    expect(text(li)).toContain("Estimate failed");
+    answer = () => {
+      const v = busyView();
+      v.events.items = v.events.items.filter((e) => e.type !== "estimate_failed");
+      return v;
+    };
+    const before = gets();
+    await click(button(/^Retry$/, li));
+    expect(gets()).toBe(before + 1);
+    expect(li.isConnected).toBe(false);
+    expect(text(section("Recent events"))).not.toContain("Estimate failed");
+    const status = text(section("Recent events").querySelector('[role="status"]'));
+    expect(status).toBe(
+      "Air Dry - AMS, plate 3 (Lid) can no longer be retried. It is already being estimated again, or its printer or file has changed.",
+    );
+  });
+
+  test("the not-retryable line stays when the refreshed list still holds the event, and the next Retry clears it", async () => {
     retryStatus = 409;
     await render();
     const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
-    const before = gets();
     await click(button(/^Retry$/, li));
-    const alert = text(li.querySelector('[role="alert"]'));
-    expect(alert).toContain("can no longer be retried");
-    expect(alert).not.toContain("Try again");
-    expect(gets()).toBe(before + 1);
+    const status = () => text(section("Recent events").querySelector('[role="status"]'));
+    expect(status()).toContain("plate 3 (Lid) can no longer be retried");
+    expect(li.querySelector('[role="alert"]')).toBeNull();
+
+    retryStatus = 202;
+    await click(button(/^Retry$/, li));
+    expect(status()).toBe("");
   });
 
   test("a retry that fails for another reason says what the server's answer means", async () => {
