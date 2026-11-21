@@ -12,6 +12,7 @@ import {
   MigrationError,
   migrate,
   migrateFrom,
+  PREVIOUS_CHECKSUMS,
 } from "../../../src/db/migrate.js";
 import type { DB } from "../../../src/db/types.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
@@ -217,6 +218,85 @@ describe("migrate with a changed migrations folder", () => {
 
     expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED);
     expect(await tableNames(db)).not.toContain("half_made");
+  });
+});
+
+// Four applied migrations had comments reworded after they shipped (PR #320).
+// Only comments changed, so a database that applied the earlier bytes has the
+// same schema as one that applied the current bytes; it differs only in the
+// checksums schema_migrations recorded. These tests make such a database by
+// migrating with the shipped files and then recording each listed file's
+// previous checksum in place of its current one.
+describe("migrations reworded after they shipped", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A database migrated with the earlier files: the listed rows hold the previous checksums. */
+  async function migratedWithEarlierFiles(): Promise<Kysely<DB>> {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    for (const [name, { previous }] of PREVIOUS_CHECKSUMS) {
+      await db
+        .updateTable("schemaMigrations")
+        .set({ checksum: previous })
+        .where("name", "=", name)
+        .execute();
+    }
+    return db;
+  }
+
+  test("a database migrated with the earlier files starts with the reworded ones and keeps its records", async () => {
+    const db = await migratedWithEarlierFiles();
+    const before = await applied(db);
+    expect(
+      before.filter((r) => r.checksum === PREVIOUS_CHECKSUMS.get(r.name)?.previous),
+    ).toHaveLength(4);
+
+    await migrate(db);
+    // A new migration after them is still applied.
+    await writeFile(join(dir, `${NEXT}_more.sql`), "create table more_things (id int);\n");
+    await migrateFrom(db, dir);
+
+    // The rows it had are not rewritten: the previous checksums stay recorded.
+    expect((await applied(db)).slice(0, SHIPPED.length)).toEqual(before);
+    expect(await tableNames(db)).toContain("more_things");
+  });
+
+  test("a recorded checksum that is neither the current nor the listed previous one still stops migrate", async () => {
+    const db = await migratedWithEarlierFiles();
+    await db
+      .updateTable("schemaMigrations")
+      .set({ checksum: "0".repeat(64) })
+      .where("name", "=", "0001_init.sql")
+      .execute();
+    const before = await applied(db);
+
+    await expect(migrate(db)).rejects.toThrow(MigrationError);
+    await expect(migrate(db)).rejects.toThrow(/0001_init\.sql.*checksum/);
+    expect(await applied(db)).toEqual(before);
+  });
+
+  test("the previous checksum stops migrate once the file has changed again", async () => {
+    const db = await migratedWithEarlierFiles();
+    await appendFile(join(dir, "0007_my_printers.sql"), "\n-- an edit after it was reworded\n");
+
+    await expect(migrateFrom(db, dir)).rejects.toThrow(/0007_my_printers\.sql.*checksum/);
+  });
+
+  test("a database migrated with the current files also starts", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    const before = await applied(db);
+    await migrate(db);
+    expect(await applied(db)).toEqual(before);
   });
 });
 

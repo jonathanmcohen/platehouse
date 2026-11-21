@@ -1,16 +1,16 @@
--- Platehouse schema 0007: My printers, the list of printers Jon owns.
+-- Platehouse schema 0007: My printers, the list of printers the user owns.
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
 -- once applied anywhere: a change is a new file.
 --
 -- Until now settings.printer_id held the one printer every estimate was made
--- for. Now Jon lists the printers he owns, in the order he wants them shown,
+-- for. Now the user lists the printers they own, in the order they want them shown,
 -- and Platehouse estimates every plate for each of them. settings.printer_id
 -- stays, and means the default printer: the one the library and model pages
 -- show first and the public API v1 answers for.
 --
 -- Safe on a live database:
 -- - The printer selected today becomes the only entry, at position 1, and
---   stays the default, so nothing anyone sees changes until Jon adds one.
+--   stays the default, so nothing anyone sees changes until the user adds one.
 -- - Estimates are untouched. They were already keyed by printer_id (a text
 --   copy of the Orca preset name, the same text stored here), so every
 --   existing estimate stays valid for the printer it was made for.

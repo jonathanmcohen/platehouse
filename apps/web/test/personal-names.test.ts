@@ -288,17 +288,7 @@ const ALLOWED: Record<string, string> = {
  * the list cannot go stale. Keep it empty unless a file genuinely cannot
  * change yet.
  */
-const ALLOWED_FILES: Record<string, string> = Object.fromEntries(
-  [
-    "apps/server/src/db/migrations/0001_init.sql",
-    "apps/server/src/db/migrations/0004_files_sha256.sql",
-    "apps/server/src/db/migrations/0007_my_printers.sql",
-    "apps/server/src/db/migrations/0008_library_sort.sql",
-  ].map((f) => [
-    f,
-    "An applied migration: db/migrate.ts refuses to run when an applied file's SHA-256 changes, so editing even a comment here stops an existing database from migrating. Pending a decision on how to reword these comments.",
-  ]),
-);
+const ALLOWED_FILES: Record<string, string> = {};
 
 const SHIPPED = compile(FORBIDDEN, ALLOWED);
 const TREE = compile(

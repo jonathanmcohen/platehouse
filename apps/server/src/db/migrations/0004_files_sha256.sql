@@ -1,5 +1,5 @@
 -- Platehouse schema 0004: an index on each file's SHA-256, for the duplicate
--- check (approved for 0.1.0 by Jon, 2026-11-19; ingest/duplicates.ts).
+-- check (approved for 0.1.0 by the maintainer, 2026-11-19; ingest/duplicates.ts).
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
 -- once applied anywhere: a change is a new file.
 --
