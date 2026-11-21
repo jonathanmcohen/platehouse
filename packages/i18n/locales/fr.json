@@ -444,6 +444,7 @@
   "settings.loading": "Chargement des param\u00e8tres.",
   "settings.loadingReference": "Chargement de la r\u00e9f\u00e9rence de l'API.",
   "settings.myPrinters": "Mes imprimantes",
+  "settings.referenceFailed": "Impossible de charger la r\u00e9f\u00e9rence de l'API. Rechargez la page pour r\u00e9essayer.",
   "settings.versioning.off": "Le versionnage du bucket est d\u00e9sactiv\u00e9. Activez-le chez votre fournisseur de stockage et conservez les anciennes versions pendant 30 jours.",
   "settings.versioning.unknown": "Platehouse n'a pas pu lire l'\u00e9tat du versionnage du bucket au d\u00e9marrage, il ne peut donc pas dire si les anciennes versions sont conserv\u00e9es.",
   "shell.add": "Ajouter",

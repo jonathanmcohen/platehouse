@@ -437,6 +437,7 @@
   "settings.loading": "Loading the settings.",
   "settings.loadingReference": "Loading the API reference.",
   "settings.myPrinters": "My printers",
+  "settings.referenceFailed": "The API reference could not be loaded. Reload the page to try again.",
   "settings.versioning.off": "Bucket versioning is off. Turn it on at your storage provider and keep old versions for 30 days.",
   "settings.versioning.unknown": "Platehouse could not read the bucket's versioning state when it started, so it cannot say whether old versions are kept.",
   "shell.add": "Add",

@@ -10,14 +10,18 @@
 // /settings?view=api is the API reference (../api-docs), linked from the API
 // tokens section. It is a view of this page rather than a path of its own,
 // so it is served, and needs a login, exactly as /settings does. Its module
-// and the OpenAPI document it bundles load only when it is opened. Switching
+// and the OpenAPI document it bundles load only when it is opened; if that
+// chunk cannot be fetched (a tab opened before a new image replaced the
+// hashed assets, or a dropped connection), LoadBoundary shows a line saying
+// so and a link back, rather than the whole app going blank. Switching
 // view by a link moves focus to the new view's heading, since the link that
 // was followed goes away and the shell only moves focus when the path
 // changes; Back and Forward (a POP) and a fresh load leave focus alone.
 import { lazy, Suspense, useEffect, useRef } from "react";
-import { useNavigationType, useSearchParams } from "react-router";
+import { Link, useNavigationType, useSearchParams } from "react-router";
 import { useI18n } from "../i18n/I18n";
 import { LanguagePicker } from "../i18n/LanguagePicker";
+import { LoadBoundary } from "../shell/LoadBoundary";
 import { TrashList } from "../trash/TrashList";
 import { AccentPicker } from "./AccentPicker";
 import { useAppApi } from "./api";
@@ -81,12 +85,27 @@ export function SettingsPage() {
   const focusHeading = useNavigationType() !== "POP";
   if (params.get("view") === API_VIEW) {
     return (
-      <Suspense fallback={<p className="studio-muted">{t("settings.loadingReference")}</p>}>
-        <ApiReference focusHeading={focusHeading} />
-      </Suspense>
+      <LoadBoundary fallback={<ReferenceFailed />}>
+        <Suspense fallback={<p className="studio-muted">{t("settings.loadingReference")}</p>}>
+          <ApiReference focusHeading={focusHeading} />
+        </Suspense>
+      </LoadBoundary>
     );
   }
   return <SettingsMain focusHeading={focusHeading} />;
+}
+
+/** In the reference's place when its chunk cannot be loaded. */
+function ReferenceFailed() {
+  const { t } = useI18n();
+  return (
+    <>
+      <p role="alert" className="studio-alert studio-alert-alert">
+        {t("settings.referenceFailed")}
+      </p>
+      <Link to="/settings">{t("apiDocs.back")}</Link>
+    </>
+  );
 }
 
 function SettingsMain({ focusHeading }: { focusHeading: boolean }) {

@@ -444,6 +444,7 @@
   "settings.loading": "Cargando los ajustes.",
   "settings.loadingReference": "Cargando la referencia de la API.",
   "settings.myPrinters": "Mis impresoras",
+  "settings.referenceFailed": "No se pudo cargar la referencia de la API. Vuelve a cargar la p\u00e1gina para intentarlo de nuevo.",
   "settings.versioning.off": "El control de versiones del bucket est\u00e1 desactivado. Act\u00edvalo en tu proveedor de almacenamiento y conserva las versiones antiguas durante 30 d\u00edas.",
   "settings.versioning.unknown": "Platehouse no pudo leer el estado del control de versiones del bucket al arrancar, as\u00ed que no puede saber si se conservan las versiones antiguas.",
   "shell.add": "A\u00f1adir",
