@@ -450,6 +450,13 @@ export async function registerModelApi(app: FastifyInstance, model: AppModel): P
       return payload;
     });
     scope.setErrorHandler(async (error, request, reply) => {
+      // A request the schema refuses (an over-long or repeated printer) is
+      // the client's mistake: 400, and not logged as a server failure.
+      const err = error as Error & { validation?: unknown; statusCode?: number };
+      if (err.validation !== undefined) return reply.code(400).send({ error: "bad_request" });
+      if (err.statusCode !== undefined && err.statusCode >= 400 && err.statusCode < 500) {
+        return reply.code(err.statusCode).send({ error: "bad_request" });
+      }
       // The cause (a database host) goes to the log only.
       request.log.error({ err: error }, "model: the request failed");
       return reply.code(500).send({ error: "internal" });
