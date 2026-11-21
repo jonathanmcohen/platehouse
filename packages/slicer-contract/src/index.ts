@@ -27,7 +27,7 @@
 // slicer's own kill, or no result.json) has code null, and an ok slice's
 // process is null when the file names none.
 //
-// Filaments (build plan Task 11 Decisions, Jon 2026-11-08: "I use mostly
+// Filaments (build plan Task 11 Decisions, the maintainer, 2026-11-08: "I use mostly
 // Bambu Filaments"): a printer's default filament for a type is Bambu's own
 // preset for that printer where Orca has one, else the Generic preset for
 // that printer. /v1/profiles lists that default once per printer and type,
@@ -57,7 +57,7 @@ export type Limits = { [K in keyof typeof LIMITS]: number };
 
 /**
  * Why a plate could not be sliced. The plan's map as amended: Orca v2.5.0's
- * own codes, with -62 and -101 legitimate refusals (Jon, 2026-11-08).
+ * own codes, with -62 and -101 legitimate refusals (the maintainer, 2026-11-08).
  */
 export const REASONS = [
   "process_not_compatible",

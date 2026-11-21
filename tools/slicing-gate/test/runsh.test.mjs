@@ -248,7 +248,7 @@ test("run.sh exits 2, not FAIL, when an unguarded setup step fails", async (t) =
 });
 
 // --clean runs rm -rf on GATE_DIR, and a case pattern's * also matches "/.."
-// so /tmp/platehouse-gate/../../home/jon passed the old guard. These paths
+// so /tmp/platehouse-gate/../../home/someone passed the old guard. These paths
 // stay inside the test's own scratch dir, so the old code deletes nothing
 // outside it while the test is red.
 test("run.sh refuses a GATE_DIR with a .. segment before --clean deletes anything", () => {

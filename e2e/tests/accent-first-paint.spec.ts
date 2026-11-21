@@ -1,4 +1,4 @@
-// The accent colour scheme on the first paint (Jon, 2026-11-19). The server
+// The accent colour scheme on the first paint (the maintainer, 2026-11-19). The server
 // writes the ph_accent cookie into the html element's data-accent before the
 // page is sent, the same way it writes the theme, so the stylesheet already
 // has the right scheme when the app first renders and nothing changes
@@ -57,7 +57,7 @@ test("an unknown ph_accent gets the default scheme", async ({ page, context }) =
   ]);
   const res = await page.goto(`${ORIGIN}/`, { waitUntil: "load" });
   expect(res?.status()).toBe(200);
-  // Blueprint indigo, the default (Jon, 2026-11-19): #596eec in dark.
+  // Blueprint indigo, the default (the maintainer, 2026-11-19): #596eec in dark.
   expect(await res?.text()).toContain('data-accent="blueprint-indigo"');
   await expect(page.locator(".studio-brand .studio-logo")).toHaveCSS("color", "rgb(89, 110, 236)");
 });

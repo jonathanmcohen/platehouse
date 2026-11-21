@@ -1,4 +1,4 @@
-// The library's sort (Jon, 2026-11-19), the parts that need no database:
+// The library's sort (the maintainer, 2026-11-19), the parts that need no database:
 // the sort names and their default, which printer the time and weight sorts
 // total for, what the numbered page's read orders by (against a scripted
 // database that records its SQL), and what the route refuses. The database

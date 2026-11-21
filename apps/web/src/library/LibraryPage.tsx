@@ -5,7 +5,7 @@
 //   the creator and collection filters, which the Creators and Collections
 //   pages' Show in the library link sets (Task 21). Each change reloads the
 //   grid from GET /app/api/library with all four.
-// - Numbered pages (Jon, 2026-11-19, replacing Load more): 48 models a page
+// - Numbered pages (the maintainer, 2026-11-19, replacing Load more): 48 models a page
 //   (PAGE_SIZE), the page in ?page= (paging.ts), with Previous, Next and the
 //   page numbers below the grid (Pager). A new search or filter is a new
 //   address without ?page=, so it starts at page 1; Back and Forward and a
@@ -20,11 +20,11 @@
 //   keeps the models shown and says so beside a Try again that goes on from
 //   that chunk. The Pages and View all choice shows when there is more than
 //   one page, or in View all.
-// - Sort (Jon, 2026-11-19): the Sort menu (SortControl) sets ?sort=, which
+// - Sort (the maintainer, 2026-11-19): the Sort menu (SortControl) sets ?sort=, which
 //   the request carries unless it is the default (best match while a search
 //   is active, else newest), and which the server orders by. A new sort is a
 //   new address at page 1; the pager, View all and the tag chips keep it.
-// - Select mode (Jon, 2026-11-19): the Select button (aria-pressed) turns
+// - Select mode (the maintainer, 2026-11-19): the Select button (aria-pressed) turns
 //   the cards into checkboxes (ModelCard; a click or Space toggles one) and
 //   shows the selection toolbar (SelectBar) with the count, the select-all
 //   choices and the bulk actions. The selection holds only models the search

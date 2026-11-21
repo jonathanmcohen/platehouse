@@ -631,7 +631,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The app image (build plan Task 24; this job approved by Jon 2026-11-13):
+  # The app image (build plan Task 24; this job approved by the maintainer, 2026-11-13):
   # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
   # then run by docker/test-app-image.sh against Postgres 17 and the S3 test
   # server on a private Docker network. The container's own HEALTHCHECK must

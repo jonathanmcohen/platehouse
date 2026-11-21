@@ -13,7 +13,7 @@
 //   match with lower() on both sides). So a padded "Gifts " is sent as
 //   "Gifts", and a re-run finds it held and sends nothing.
 // - A model Platehouse has is never edited: the API has no route to change a
-//   model's details, and a field Jon changed stays his. It only gets the
+//   model's details, and a field the user changed stays as they set it. It only gets the
 //   tags and collections it lacks, and the files it lacks.
 // - A file's name is Manyfold's filename when it has an extension Platehouse
 //   takes, else the last part of its contentUrl's path when that has one

@@ -1,6 +1,6 @@
 // API tokens for the settings page (build plan Task 21; AC-083 UI). These
-// are session-class /app/api routes for Jon's UI, separate from the bearer
-// API: they need his session, and the two that change state need Origin to
+// are session-class /app/api routes for the web UI, separate from the bearer
+// API: they need a signed-in session, and the two that change state need Origin to
 // be PUBLIC_ORIGIN (Task 15's gate).
 //
 //   GET    /app/api/tokens       {tokens: [{id, name, prefix, createdAt, lastUsedAt}]}

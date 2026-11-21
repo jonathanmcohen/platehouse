@@ -1,4 +1,4 @@
-// The accent colour scheme (Jon, 2026-11-19): twelve schemes, a second
+// The accent colour scheme (the maintainer, 2026-11-19): twelve schemes, a second
 // per-browser choice beside the Dark / Light / System theme. It works the way
 // the theme does (theme.ts). The choice lives in this browser, in the
 // ph_accent cookie; nothing is stored on the server. The server writes it
@@ -15,19 +15,19 @@
 // stylesheet's [data-accent] blocks must match it (test/accent-palette.test.ts
 // checks they do, and checks every pairing for WCAG contrast). Where they
 // come from:
-// - light: accent is Jon's "button" colour, the fill behind white button
+// - light: accent is the maintainer's "button" colour, the fill behind white button
 //   text, which is also what progress bars and selected borders draw with
 //   (the raw accent is under 3:1 on white for seven of the twelve, Green
-//   included); accentText and accentSoft are Jon's; brand, the logo, is
-//   Jon's accent.
-// - dark: accent is Jon's accent, the fill behind the dark palette's
-//   near-black button text; accentText is Jon's dark value; accentSoft is the
+//   included); accentText and accentSoft are the maintainer's; brand, the logo, is
+//   the maintainer's accent.
+// - dark: accent is the maintainer's accent, the fill behind the dark palette's
+//   near-black button text; accentText is the maintainer's dark value; accentSoft is the
 //   accent laid 13% over the dark surface (#1a1d23), which is how the studio
 //   palette's dark green soft was made; brand is the dark accent.
 // - A colour that missed a bar was moved to the nearest colour (CIEDE2000)
 //   that meets them all: 4.5:1 for text, 3:1 for fills and focus rings, at
 //   least 10 from the theme's danger colour, and no closer to another
-//   scheme's colour than Jon's was. Six moved: Blueprint indigo dark accent
+//   scheme's colour than the maintainer's was. Six moved: Blueprint indigo dark accent
 //   (was #5560e0, 3.83:1 under button text), Graphite dark accent (was
 //   #6b7380, 4.07:1), and Coral's light fill (was #c2412b), light text (was
 //   #b83a25), dark accent (was #f0644a) and dark text (was #ff9580), which
@@ -52,7 +52,7 @@ export const ACCENTS = [
 
 export type AccentId = (typeof ACCENTS)[number];
 
-/** The scheme a browser with no choice gets: Blueprint indigo (Jon, 2026-11-19). */
+/** The scheme a browser with no choice gets: Blueprint indigo (the maintainer, 2026-11-19). */
 export const DEFAULT_ACCENT: AccentId = "blueprint-indigo";
 
 export const ACCENT_COOKIE = "ph_accent";

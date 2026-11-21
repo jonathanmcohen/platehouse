@@ -11,12 +11,12 @@
 //   script: the html element's data-theme and the color-scheme meta are
 //   written in from the ph_theme cookie (dark, light or system; anything
 //   else is dark, the default). System resolves in CSS with
-//   prefers-color-scheme. The accent colour scheme (Jon, 2026-11-19) is
+//   prefers-color-scheme. The accent colour scheme (the maintainer, 2026-11-19) is
 //   written the same way: the html element's data-accent comes from the
 //   ph_accent cookie (one of the twelve ACCENTS; anything else is
 //   DEFAULT_ACCENT), so the right colour is on the first paint too. The
 //   answer is never cached, since it follows the cookies. A page path no
-//   task has registered stays a 404. The language (Jon, 2026-11-19) is
+//   task has registered stays a 404. The language (the maintainer, 2026-11-19) is
 //   written the same way: the html element's lang is the language the page
 //   is shown in, from the ph_lang cookie, else the browser's
 //   Accept-Language, else English (locales/locales.ts resolve), so the web
@@ -30,7 +30,7 @@
 //   their root paths from the root of dist/, where Vite copies
 //   apps/web/public/, each with its own content type and cached for a day,
 //   since their names do not change when they are regenerated. They are
-//   public-class at exactly these paths (auth/gate.ts, Jon's decision A-1):
+//   public-class at exactly these paths (auth/gate.ts, the maintainer's decision A-1):
 //   a signed-out browser loads them on the auth pages, and the manifest,
 //   which browsers fetch without cookies, loads with no session.
 //
@@ -128,7 +128,7 @@ export function colorSchemeFor(theme: Theme): "dark" | "light" | "light dark" {
 }
 
 /**
- * The accent colour schemes (Jon, 2026-11-19), in the order the picker shows
+ * The accent colour schemes (the maintainer, 2026-11-19), in the order the picker shows
  * them. The ids, the default and the cookie name are the web app's
  * (src/shell/accent.ts); a test checks they match.
  */

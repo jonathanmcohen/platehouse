@@ -1,4 +1,4 @@
-// Numbers, dates and lists for a language, through Intl (Jon, 2026-11-19).
+// Numbers, dates and lists for a language, through Intl (the maintainer, 2026-11-19).
 // Units (g, kg, KB, h, min, %) are catalog messages, not Intl units, so the
 // English output stays exactly what the UI showed before translations and
 // each language writes its own (French Ko and Mo, a space before %).

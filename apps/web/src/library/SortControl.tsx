@@ -1,4 +1,4 @@
-// The library's sort menu (Jon, 2026-11-19): a labelled select of the
+// The library's sort menu (the maintainer, 2026-11-19): a labelled select of the
 // library's orders (SORT_OPTIONS). Best match is offered only while a search
 // is active, and is then the default; newest is the default otherwise. A
 // choice is a new address (sortHref): the sort in ?sort= (left out for the

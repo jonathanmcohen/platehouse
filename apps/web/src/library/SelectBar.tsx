@@ -1,4 +1,4 @@
-// The library's Select mode toolbar (Jon, 2026-11-19), shown above the grid
+// The library's Select mode toolbar (the maintainer, 2026-11-19), shown above the grid
 // while Select is on:
 //
 // - The count, in a status line, so a screen reader hears it change.
@@ -18,7 +18,7 @@
 //   the view they were selected in (viewOf: the search, filters and
 //   printer), and the dialog stays open, showing any failure, until the
 //   server answers. The server changes only the posted models that view
-//   shows when the action runs (Jon, 2026-11-20).
+//   shows when the action runs (the maintainer, 2026-11-20).
 // - The answer is shown in words (describeBulk): what changed, what was
 //   already so, how many the server left alone because the search and
 //   filters no longer show them, and in an alert the models that failed and

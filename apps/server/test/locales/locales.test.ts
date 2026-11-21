@@ -1,5 +1,5 @@
 // The languages the server knows (locales/locales.ts): the built-in catalogs
-// and a LOCALES_DIR a self-hoster drops files into (Jon, 2026-11-19), and
+// and a LOCALES_DIR a self-hoster drops files into (the maintainer, 2026-11-19), and
 // GET /app/api/locales over them.
 import {
   lstat,

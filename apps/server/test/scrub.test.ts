@@ -53,7 +53,7 @@ describe("scrubText", () => {
 
   test("takes out home and Windows paths", () => {
     expect(scrubText("see ~/projects/x.scad")).toBe("see [path]");
-    expect(scrubText("C:\\Users\\jon\\x.3mf is locked")).toBe("[path] is locked");
+    expect(scrubText("C:\\Users\\sam\\x.3mf is locked")).toBe("[path] is locked");
   });
 
   test("takes out URLs, signed or not", () => {

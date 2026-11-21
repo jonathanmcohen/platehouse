@@ -1,4 +1,4 @@
-// How a printer is named (Jon, 2026-11-19). The server names a printer in
+// How a printer is named (the maintainer, 2026-11-19). The server names a printer in
 // English in its answers, such as "Bambu Lab P1S, 0.4 mm nozzle", and names a
 // file's printer the slicer's menu lacks "another printer"
 // (apps/server/src/estimates/display.ts builds both with what is here). The

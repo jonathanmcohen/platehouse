@@ -102,7 +102,7 @@ export function landrunArgs(opts: {
 }
 
 /**
- * The lowest Landlock ABI the self-test accepts (Jon, 2026-11-11; the deploy
+ * The lowest Landlock ABI the self-test accepts (the maintainer, 2026-11-11; the test
  * host runs kernel 6.17). ABI 6 is the first that also scopes signals and abstract
  * Unix sockets, on top of the TCP rules of ABI 4 and the filesystem rules
  * this sandbox is built on.
@@ -110,11 +110,11 @@ export function landrunArgs(opts: {
  * Known limits, which only the container setup covers (security review of
  * PR #123, issue #153): below ABI 9, best effort drops the right that stops
  * a connect() to a pathname Unix socket (landrun sandbox.go, go-landlock
- * config.go), and the deploy host's kernel 6.17 is below ABI 9 (inferred from
+ * config.go), and the test host's kernel 6.17 is below ABI 9 (inferred from
  * the kernel's history; the first self-test line there records the ABI). And
  * Landlock restricts no UDP at any ABI. So OpenSCAD's sandbox relies on the
  * container having no Unix socket mounted and only its internal network
- * (Task 26 checks both on the deploy host).
+ * (a deploy checks both on its own host).
  */
 export const MIN_LANDLOCK_ABI = 6;
 
@@ -174,15 +174,15 @@ export const OPENSCAD_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024;
 /**
  * The process-count limit (RLIMIT_NPROC): far above what a render needs
  * (OpenSCAD's TBB and Mesa llvmpipe start about one thread per host CPU;
- * the deploy host has 8), far below what a runaway fork could reach. RLIMIT_NPROC
+ * 8 on an 8-CPU host), far below what a runaway fork could reach. RLIMIT_NPROC
  * counts every process and thread of the user, and with Docker's default of
  * no user-namespace remap that is per UID across the whole host, not per
  * container: the server's own threads count, and so would any other
  * container running as UID 10001, such as the slicing gate image, which
  * uses the same UID. Past the limit OpenSCAD fails to start threads
- * (security review of PR #123, issues #138 and #153; Task 26 checks that no
- * other container on the deploy host runs as 10001). The container's pids_limit
- * (Task 26) is the hard cap.
+ * (security review of PR #123, issues #138 and #153; a deploy checks that no
+ * other container on its host runs as 10001). The container's pids_limit
+ * (examples/docker-compose.yml) is the hard cap.
  */
 export const OPENSCAD_PROCESS_LIMIT = 512;
 

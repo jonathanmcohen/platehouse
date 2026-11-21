@@ -88,7 +88,7 @@ describe("filePrinterLabel", () => {
   });
 });
 
-// Jon, 2026-11-19: the printer menu showed only "0.4 mm nozzle" once closed,
+// The maintainer, 2026-11-19: the printer menu showed only "0.4 mm nozzle" once closed,
 // so the chosen printer could not be told apart. Every place that names a
 // printer names it in full: the model and the nozzle.
 describe("printerName", () => {

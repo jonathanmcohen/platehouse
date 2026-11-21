@@ -1,4 +1,4 @@
-// Duplicate files (approved for 0.1.0 by Jon, 2026-11-19): a file is a
+// Duplicate files (approved for 0.1.0 by the maintainer, 2026-11-19): a file is a
 // duplicate when a live model (neither in the trash nor being purged)
 // already holds a file with the same SHA-256. Ingest records every file's
 // SHA-256 (files.sha256, indexed by migration 0004), so the lookup is one

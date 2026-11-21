@@ -120,7 +120,7 @@ test("the build checks the paths the pinned artifacts really hold", () => {
   assert.doesNotMatch(all, /find \/opt\/openscad/, "OpenSCAD's binary is named, not searched for");
 });
 
-// Jon's call, 2026-11-08: Orca 2.5.0 ships its presets only as binary .opc
+// The maintainer's call, 2026-11-08: Orca 2.5.0 ships its presets only as binary .opc
 // caches, so the gate takes the BBL profile JSON from Orca's own source at the
 // commit tag v2.5.0 points to, fetched by that commit and checked by git.
 const ORCA_SRC_SHA = "40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19";

@@ -41,7 +41,7 @@ test("the workflow reads the repo only, holds no secrets and pushes nothing", ()
   assert.match(t, /persist-credentials: false/, "checkout keeps no token on disk");
 });
 
-// The one exception is the app image job (build plan Task 24, approved by Jon
+// The one exception is the app image job (build plan Task 24, approved by the maintainer
 // 2026-11-13): it builds and runs the image for amd64 and arm64 natively, so
 // its runs-on is its matrix's runner, and that matrix lists exactly
 // ubuntu-24.04 and ubuntu-24.04-arm.
@@ -62,7 +62,7 @@ test("every job runs on ubuntu-24.04 with a timeout, the app image's arm64 leg o
   for (const m of timeouts) assert.ok(m > 0 && m <= 90, `timeout ${m}`);
 });
 
-// Engineering Lessons: actions pin to an exact release tag (Jon, 2026-09-05,
+// Engineering Lessons: actions pin to an exact release tag (the maintainer, 2026-09-05,
 // locked), never a floating major such as @v7.
 test("every action is pinned to an exact release tag", () => {
   const uses = [...text().matchAll(/uses: (\S+)/g)].map((m) => m[1]);
@@ -70,7 +70,7 @@ test("every action is pinned to an exact release tag", () => {
   for (const u of uses) assert.match(u, /^[\w.-]+\/[\w.-]+@v\d+\.\d+\.\d+$/, `not an exact release tag: ${u}`);
 });
 
-// Jon, 2026-11-08 (build plan Task 3): every job takes its Node version from
+// The maintainer, 2026-11-08 (build plan Task 3): every job takes its Node version from
 // .node-version, the one the workspace pins, instead of a hardcoded one.
 test("every setup-node step reads .node-version, which pins Node 26", () => {
   const t = text();
@@ -1408,7 +1408,7 @@ test("slicer-image: each job holds only the permissions it uses, within the plan
   for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
 });
 
-// Exact release tags (Jon's locked rule), and the same tag as release.yml for
+// Exact release tags (the maintainer's locked rule), and the same tag as release.yml for
 // every action release.yml also uses, else the same as ci.yml.
 test("slicer-image: every action is pinned to the exact tag release.yml or ci.yml uses", () => {
   const pins = (t) => {
@@ -1646,7 +1646,7 @@ for (const [name, version, env, want] of [
 
 // The registry is the state: a schedule stops when orca-X.Y.Z exists; a tag
 // push or a dispatch always builds and never asks the registry, so GHCR's
-// answer for a package that does not exist yet cannot block it (Jon,
+// answer for a package that does not exist yet cannot block it (the maintainer,
 // 2026-11-15). Only "not found" means the tag does not exist.
 const DOCKER_INSPECT_STUB = [
   "docker() {",
@@ -1691,7 +1691,7 @@ test("slicer-image: detect logs in to GHCR on daily runs only, and hands its sta
   assert.match(tag, /\n {10}MOVE_STABLE: \$\{\{ needs\.detect\.outputs\.stable \}\}\n/);
 });
 
-// Jon, 2026-11-15: a report-only Trivy scan of the built image before any
+// The maintainer, 2026-11-15: a report-only Trivy scan of the built image before any
 // push, at release.yml's action and Trivy version; it can never fail the job.
 const SLICER_TRIVY = "Trivy report (informational, does not fail the job)";
 

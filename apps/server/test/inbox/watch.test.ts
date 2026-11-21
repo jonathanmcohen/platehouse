@@ -1460,7 +1460,7 @@ describe("an imported file whose check or delete in its holding folder fails", (
       // The check after the import passed, then a writer renamed a newer
       // file over the name, so the newer file is what is held. Its check
       // throws, so nothing showed it is the imported file: a reason saying
-      // it was imported and stored would lead Jon to delete it as a
+      // it was imported and stored would lead the user to delete it as a
       // duplicate of the model already in the library (#135).
       const fake = fakeIngest();
       const deps = { findImported: async (q: ImportedQuery) => storedRow(fake, q) };
@@ -3786,7 +3786,7 @@ describe("a fault the checks cannot see", () => {
     await w.pollOnce();
     expect((await tick(w, 15_000)).waiting).toBe(true);
 
-    // Jon takes both files out during the hold; the retry finds nothing to try.
+    // The user takes both files out during the hold; the retry finds nothing to try.
     await rm(join(inbox, "a.stl"));
     await rm(join(inbox, "b.stl"));
     const empty = await tick(w, BACKOFF_FIRST_MS);

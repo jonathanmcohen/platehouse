@@ -446,7 +446,7 @@ beforeEach(() => {
     printersVersion: 1,
     myPrinters: [P1S],
     waiting: {},
-    // Jon's library on 2026-11-19.
+    // A library of 463 plates.
     addQueued: 463,
     bucketVersioning: "enabled",
     tokens: [
@@ -705,7 +705,7 @@ describe("the settings page", () => {
     return callsTo("PUT", "/app/api/settings/printers").map((c) => c.body);
   }
 
-  // Jon, 2026-11-19: the closed menu showed only "0.4 mm nozzle", so the
+  // The maintainer, 2026-11-19: the closed menu showed only "0.4 mm nozzle", so the
   // chosen printer could not be told apart.
   test("the printer menu names every printer in full, closed or open, and stays grouped", async () => {
     await show("/settings", <SettingsPage />);

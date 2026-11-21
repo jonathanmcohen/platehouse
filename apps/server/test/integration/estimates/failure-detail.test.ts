@@ -120,7 +120,7 @@ beforeAll(async () => {
     activity: createAppActivity({ db: env.db, boss, slicer: { health: async () => HEALTHY } }),
   });
   await app.ready();
-  session = (await auth.sessions.start("jon")).id;
+  session = (await auth.sessions.start("someone")).id;
   bearer = (await tokens.createToken(`issue 239 ${marker()}`)).token;
 
   // One .3mf with one plate and no numbers of its own, whose Platehouse

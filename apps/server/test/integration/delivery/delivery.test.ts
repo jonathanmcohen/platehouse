@@ -202,7 +202,7 @@ beforeAll(async () => {
   const address = app.server.address();
   if (address === null || typeof address === "string") throw new Error("no port");
   base = `http://127.0.0.1:${address.port}`;
-  sessionCookie = (await t.sessions.start("jon")).id;
+  sessionCookie = (await t.sessions.start("someone")).id;
 });
 
 afterAll(async () => {
@@ -505,7 +505,7 @@ describe("hostile file names (Review Focus 1)", () => {
       expect(segments, name).toHaveLength(4);
       const last = segments[3] ?? "";
       // The segment has / \ % ? # ;, control characters and invisible
-      // format characters (\p{Cf}) replaced by _ (Jon, 2026-11-12);
+      // format characters (\p{Cf}) replaced by _ (the maintainer, 2026-11-12);
       // Content-Disposition keeps the rest of the stored name, its / and \
       // replaced as well.
       expect(last, name).toBe(encodeURIComponent(expected.replace(UNSAFE_IN_SEGMENT, "_")));

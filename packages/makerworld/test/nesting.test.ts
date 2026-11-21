@@ -190,7 +190,7 @@ const ALLOWED_TAGS = new Set([
 
 const norm = (s: string): string => s.replace(/\s+/g, " ");
 
-// renderMarkdown never renders an image (Jon, 2026-11-08), so it cannot show
+// renderMarkdown never renders an image (the maintainer, 2026-11-08), so it cannot show
 // a "!" the converter left bare before a link's [. The same markdown-it setup
 // with the image rule back on still would, so the converter's escaping is
 // checked through it as well.

@@ -1,4 +1,4 @@
-// A printer's name in the shown language (Jon, 2026-11-19). The server
+// A printer's name in the shown language (the maintainer, 2026-11-19). The server
 // names printers in English ("Bambu Lab P1S, 0.4 mm nozzle", "another
 // printer"; packages/i18n/src/printers.ts); on an English page they are shown
 // as sent, and in another language written again with the catalog's words and

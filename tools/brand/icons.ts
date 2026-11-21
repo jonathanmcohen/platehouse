@@ -19,7 +19,7 @@ import {
   SMALL_ART,
 } from "../../apps/web/src/shell/logoArt.ts";
 
-/** The default colour scheme's accent, Blueprint indigo (Jon, 2026-11-19). */
+/** The default colour scheme's accent, Blueprint indigo (the maintainer, 2026-11-19). */
 export const ACCENT = "#5560e0";
 
 /**

@@ -12,7 +12,7 @@
  * prefers-color-scheme. The theme switch changes the attribute and the
  * cookie together, with no reload.
  *
- * Accent schemes (Jon, 2026-11-19): the html element also carries
+ * Accent schemes (the maintainer, 2026-11-19): the html element also carries
  * data-accent, one of twelve scheme ids, written by the server from the
  * ph_accent cookie the same way. Each scheme is a [data-accent] block of
  * --scheme-* colours below the palettes; the palettes map them onto the
@@ -135,7 +135,7 @@
   --scheme-dark-soft: #192e34;
 }
 
-/* Blueprint indigo, the default (Jon, 2026-11-19) */
+/* Blueprint indigo, the default (the maintainer, 2026-11-19) */
 :where(:root),
 [data-accent="blueprint-indigo"] {
   --scheme-light-accent: #3d47c4;
@@ -424,7 +424,7 @@ img {
   font-size: 1.05rem;
 }
 
-/* The logo (Logo.tsx): the scheme's own accent colour (Jon's "accent"). It
+/* The logo (Logo.tsx): the scheme's own accent colour (the maintainer's "accent"). It
    draws in currentColor, so this colour is the logo's. */
 .studio-logo {
   flex: none;
@@ -978,7 +978,7 @@ a.studio-card:hover {
   overflow-wrap: anywhere;
 }
 
-/* ---- Settings: the Accent colour picker (Jon, 2026-11-19) ----
+/* ---- Settings: the Accent colour picker (the maintainer, 2026-11-19) ----
    Twelve radios in a grid, each a colour dot and the scheme's name. The
    checked one has a thicker accent edge, bold name and a tick on its dot, so
    it is told apart by more than colour. The dot carries its scheme's

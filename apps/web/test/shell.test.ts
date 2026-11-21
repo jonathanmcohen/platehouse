@@ -55,7 +55,7 @@ describe("the sidebar", () => {
     ["Tags", "/tags"],
     // Task 21's pages.
     ["Trash", "/trash"],
-    // The Activity page (Jon, 2026-11-19).
+    // The Activity page (the maintainer, 2026-11-19).
     ["Activity", "/activity"],
     ["Settings", "/settings"],
   ];

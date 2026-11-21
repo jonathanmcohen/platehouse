@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The Activity page, /activity (Jon, 2026-11-19: one page that shows what
-// Platehouse is doing and holds, so he never has to read container logs).
+// The Activity page, /activity (the maintainer, 2026-11-19: one page that shows what
+// Platehouse is doing and holds, so the user never has to read container logs).
 //
 // The page is rendered into jsdom inside a memory router and talks to a fake
 // GET /app/api/activity (and the model page's existing retry route) through

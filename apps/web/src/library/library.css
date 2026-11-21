@@ -1,5 +1,5 @@
 /* The library's count, its Pages and View all choice, and its page numbers
-   (Jon, 2026-11-19). Built only from studio.css's tokens and chips (Task
+   (the maintainer, 2026-11-19). Built only from studio.css's tokens and chips (Task
    18), so it follows the theme, System included, and keeps its contrast; no
    colour is written here. */
 
@@ -57,7 +57,7 @@
   color: var(--muted);
 }
 
-/* The Sort menu and the Select button above the grid (Jon, 2026-11-19). */
+/* The Sort menu and the Select button above the grid (the maintainer, 2026-11-19). */
 .ph-library-tools {
   display: flex;
   flex-wrap: wrap;

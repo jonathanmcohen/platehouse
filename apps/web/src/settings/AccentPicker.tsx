@@ -1,4 +1,4 @@
-// The Accent colour section of Settings (Jon, 2026-11-19): twelve swatches
+// The Accent colour section of Settings (the maintainer, 2026-11-19): twelve swatches
 // as a radio group, following the WAI-ARIA radio group pattern. Only the
 // checked swatch is in the tab order; Right and Down move to the next scheme,
 // Left and Up to the previous one (wrapping), Home and End to the first and

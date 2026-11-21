@@ -1,4 +1,4 @@
-// The library's sort (Jon, 2026-11-19) against Postgres 17: the order is
+// The library's sort (the maintainer, 2026-11-19) against Postgres 17: the order is
 // made in the database, every order is total (models that tie on its key
 // go by id, so numbered pages never repeat or skip one), the time and weight
 // orders total the plates for the selected printer by the cards' own rule

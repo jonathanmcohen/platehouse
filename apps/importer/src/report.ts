@@ -67,7 +67,7 @@ export const SIZE_MISMATCH = "size mismatch";
 
 /**
  * The reason on a file row that is already in Platehouse. It was matched by
- * original name and size alone (plan.ts, as Jon decided on 2026-11-12); its
+ * original name and size alone (plan.ts, as the maintainer decided on 2026-11-12); its
  * SHA-256 is shown as Platehouse recorded it but is not compared with
  * Manyfold's bytes, so a mismatch is reported only by the run that uploaded it.
  */

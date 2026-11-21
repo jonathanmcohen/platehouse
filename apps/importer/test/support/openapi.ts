@@ -2,7 +2,7 @@
 //
 // test/fixtures/manyfold-openapi-0.154.1.json is app/api/v0/openapi.json
 // from Manyfold's public source at tag v0.154.1 (commit d8bccfe), the version
-// Jon runs. Its content is upstream's unchanged; only the whitespace is the
+// the importer was written against. Its content is upstream's unchanged; only the whitespace is the
 // repo's Biome formatting. Upstream's file has sha256
 // 7ca71106280aac4af8172bdc8c46966c0cdc9a87f753fe03f1ca08899314c0e1; the pin
 // below is the sha256 of JSON.stringify(JSON.parse(file)), which is the same

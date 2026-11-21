@@ -3,7 +3,7 @@
 //
 // - The printer menu is /v1/profiles' printer list, read once per Orca
 //   version (listPrinters). My printers (migration 0007) are the printers
-//   Jon owns, picked from that menu, in his order; one of them is the
+//   the user owns, picked from that menu, in their order; one of them is the
 //   default (settings.printer_id, P1S 0.4 on a fresh database). Every
 //   estimate is made for each of My printers, not just the default.
 // - A Platehouse estimate is queued for a plate and printer only when its
@@ -575,7 +575,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
    * My printers that the slicer can estimate for, the default first and the
    * rest in list order. A listed printer the menu no longer has (an Orca
    * update renamed its preset) is left out, and logged: nothing can be
-   * sliced for it until Jon replaces it. UnknownPrinter when that leaves
+   * sliced for it until the user replaces it. UnknownPrinter when that leaves
    * none, as for the one printer before My printers.
    */
   async function slicedPrinters(): Promise<Printer[]> {

@@ -285,7 +285,7 @@ describe("re-running", () => {
     expect(platehouseCalls().filter((c) => c === "POST /api/v1/uploads")).toHaveLength(3);
   });
 
-  it("skips a model Jon trashed in Platehouse, with the reason, and makes no new copy", async () => {
+  it("skips a model the user trashed in Platehouse, with the reason, and makes no new copy", async () => {
     const s = setup(library());
     await s.run(["--apply"]);
     s.platehouse.trash(byRef(s, "m1").id);

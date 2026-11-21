@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The library's sort control and Select mode (Jon, 2026-11-19). Rendered in
+// The library's sort control and Select mode (the maintainer, 2026-11-19). Rendered in
 // jsdom with React; the server is a stubbed fetch that answers the library's
 // app API the way the server does (apps/server/src/app-api/library.ts and
 // organise.ts) and records every request.

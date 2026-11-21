@@ -2,7 +2,7 @@
 // creator, the MakerWorld page when the model's .3mf named one (View on
 // MakerWorld, also beside the creator in the page head), the licence with the stored licence note beside it (so a
 // MakerWorld-only licence such as the Standard Digital File License shows
-// even when the description was already set and ingest left it alone; Jon,
+// even when the description was already set and ingest left it alone; the maintainer,
 // 2026-11-08, PR #49), the tags and collections, and the description.
 //
 // The description is Markdown, rendered by Task 7's renderMarkdown, which

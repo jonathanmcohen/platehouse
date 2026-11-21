@@ -1105,7 +1105,7 @@ describe("replacing a .scad (AC-053)", () => {
   });
 
   test("a replacement that OpenSCAD rejects becomes the file's source with OpenSCAD's message, and the previous STL and preview stay, marked as the previous version's", async () => {
-    // Jon's decision on issue #103: the replacement is the file Jon uploaded,
+    // The maintainer's decision on issue #103: the replacement is the file the user uploaded,
     // so it becomes the source as uploaded even when OpenSCAD rejects it
     // (here, a .scad that fails only inside the sandbox, whose library is not
     // there). The previous STL and PNG stay attached and are said to be the

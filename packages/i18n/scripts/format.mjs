@@ -1,5 +1,5 @@
 // pnpm i18n:format: rewrites every catalog in packages/i18n/locales into its
-// canonical form (Jon, 2026-11-19): $meta first, then the keys sorted, two
+// canonical form (the maintainer, 2026-11-19): $meta first, then the keys sorted, two
 // spaces of indent, a newline at the end, and every character outside ASCII
 // written as a \u escape, so the repo stays ASCII however a translator typed
 // it. With --check it rewrites nothing and exits 1 when a file is not in

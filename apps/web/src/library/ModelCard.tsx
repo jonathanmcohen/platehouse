@@ -5,7 +5,7 @@
 // slicer's printer menu could not be read, so the file's own numbers could
 // not be matched to the printer. An STL, STEP or SCAD model (no plate
 // thumbnail) shows a generic file-type icon instead. The card links to the
-// model page (Task 20), except in the library's Select mode (Jon,
+// model page (Task 20), except in the library's Select mode (the maintainer,
 // 2026-11-19), where the card is the label of a checkbox named for the
 // model, shown in its corner, and a selected card is ringed in the accent.
 //

@@ -1,5 +1,5 @@
-// The Activity page's app API (Jon, 2026-11-19: one page that shows what
-// Platehouse is doing and holds, so he never has to read container logs).
+// The Activity page's app API (the maintainer, 2026-11-19: one page that shows what
+// Platehouse is doing and holds, so the user never has to read container logs).
 //
 //   GET /app/api/activity   ActivityView: the library's numbers, estimate
 //                           progress for the selected printer, the pg-boss

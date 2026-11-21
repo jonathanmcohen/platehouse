@@ -465,9 +465,9 @@ describe("the Use file titles backfill", () => {
     const { t, repos, m } = await library();
     const plan = await repos.models.titleNamePlan();
     expect(plan.renames).toHaveLength(2);
-    await createRename(t.db).renameModel(m.raw.id, "Jon's spool holder");
+    await createRename(t.db).renameModel(m.raw.id, "Sam's spool holder");
     expect(await repos.models.applyTitleNames(plan.planId)).toBeNull();
-    expect((await repos.models.get(m.raw.id))?.name).toBe("Jon's spool holder");
+    expect((await repos.models.get(m.raw.id))?.name).toBe("Sam's spool holder");
     expect((await repos.models.get(m.cleaned.id))?.name).toBe("Cable clip PETG");
   });
 

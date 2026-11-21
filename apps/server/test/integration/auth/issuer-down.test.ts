@@ -1,4 +1,4 @@
-// Build plan Task 15, AC-081: when Pocket ID cannot be reached, /auth/login
+// Build plan Task 15, AC-081: when the OIDC provider cannot be reached, /auth/login
 // shows "Login is unavailable right now" with status 503, and nothing else
 // depends on it. A bearer-class route is not touched by the issuer: it still
 // gives its own 401, never the login page and never a 503. An existing

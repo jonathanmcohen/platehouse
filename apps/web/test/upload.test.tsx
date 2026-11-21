@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Duplicate files in the upload dialog (approved for 0.1.0 by Jon,
+// Duplicate files in the upload dialog (approved for 0.1.0 by the maintainer,
 // 2026-11-19). Every file is sent with duplicates skip, so the server
 // refuses a file whose SHA-256 a live model already holds and stores
 // nothing. The dialog says up front that such a file is skipped; a skipped

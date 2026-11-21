@@ -236,7 +236,7 @@ beforeAll(async () => {
   const address = app.server.address();
   if (address === null || typeof address === "string") throw new Error("no port");
   base = `http://127.0.0.1:${address.port}`;
-  sessionCookie = (await t.sessions.start("jon")).id;
+  sessionCookie = (await t.sessions.start("someone")).id;
 });
 
 afterAll(async () => {
@@ -688,7 +688,7 @@ describe("GET /s/<token>/<name>", () => {
   test("Fastify's own 400 and 414 off /s/ never repeat the path (issue #177)", async () => {
     // Only a /s/ path is a refused link. On any other path the framework
     // answer keeps its status and code, but not Fastify's message, which
-    // repeated the request path (Jon, 2026-11-14, plan item 11).
+    // repeated the request path (the maintainer, 2026-11-14, plan item 11).
     const marker = "Secretish-Path-Part";
     const cases: Array<[string, number, string]> = [
       [`/files/x%zz${marker}${FILE_A}/download`, 400, "FST_ERR_BAD_URL"],
@@ -786,7 +786,7 @@ describe("GET /s/<token>/<name>", () => {
   test("a name with slashes, dot-dot or escapes in it links with them replaced by _", async () => {
     // The segment replaces / \ % ? # ;, control characters and invisible
     // format characters (\p{Cf}, such as U+202E RIGHT-TO-LEFT OVERRIDE) with
-    // _ (Jon, 2026-11-12), so nothing a proxy might decode or refuse is in
+    // _ (the maintainer, 2026-11-12), so nothing a proxy might decode or refuse is in
     // it and a decoded name never reads as another extension;
     // Content-Disposition still carries the stored name. A raw "/" after
     // the name segment is refused.

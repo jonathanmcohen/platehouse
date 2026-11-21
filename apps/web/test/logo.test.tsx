@@ -1,7 +1,7 @@
-// The logo (icon A, "Layered house", Jon's pick of 2026-11-19): a roof over
+// The logo (icon A, "Layered house", the maintainer's pick of 2026-11-19): a roof over
 // three stacked print layers, and a two-layer version for 16 px.
 //
-// - The art is drawn exactly as Jon picked it (a 64 x 64 viewBox), in one
+// - The art is drawn exactly as the maintainer picked it (a 64 x 64 viewBox), in one
 //   place: src/shell/logoArt.ts. The Logo component and the icon generator
 //   (tools/brand) both draw from it.
 // - In the app the Logo draws in currentColor and carries the class
@@ -67,7 +67,7 @@ function bytes(url: URL): Uint8Array {
   return new Uint8Array(readFileSync(url));
 }
 
-describe("the art is Jon's icon A as drawn", () => {
+describe("the art is the maintainer's icon A as drawn", () => {
   test("the full icon: the roof stroke and three layers fading 1, 0.78, 0.56", () => {
     expect(FULL_ART.roof).toEqual({ d: "M9 29 L32 10 L55 29", strokeWidth: 6 });
     expect(FULL_ART.layers).toEqual([

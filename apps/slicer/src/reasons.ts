@@ -5,7 +5,7 @@
 //
 // -50, -61, -63 to -65, -67 and -69 (empty plate, bed type, collisions,
 // vase mode, TPU count, mixed filament) are not among the legitimate
-// refusals AC-034 names. By Jon's decision (2026-11-08) they take the
+// refusals AC-034 names. By the maintainer's decision (2026-11-08) they take the
 // contract's "anything else" and are slicer_error, with Orca's message as
 // the detail.
 import type { Reason } from "@platehouse/slicer-contract";
@@ -59,7 +59,7 @@ const MAP: ReadonlyMap<number, Reason> = new Map<number, Reason>([
   [-102, "bed_too_small"],
   [-66, "nozzle_mismatch"],
   [-68, "nozzle_mismatch"],
-  // Jon, 2026-11-08 (gate run 3): legitimate refusals, shown with the reason.
+  // The maintainer, 2026-11-08 (gate run 3): legitimate refusals, shown with the reason.
   [-62, "filament_temperature"],
   [-101, "toolpath_conflict"],
   [-58, "timeout"],

@@ -1,4 +1,4 @@
-// Checks over the source that keep the translations whole (Jon,
+// Checks over the source that keep the translations whole (the maintainer,
 // 2026-11-19): every key the code names is in the English catalog, every
 // English key is used somewhere, no message is set as raw HTML, and no new
 // English sentence slips into a component as bare JSX text or a bare
@@ -71,7 +71,7 @@ describe("the components", () => {
     "SCAD",
     "3MF",
   ]);
-  // The API reference's body stays English in 0.1.0 (Jon's decision 6).
+  // The API reference's body stays English in 0.1.0 (the maintainer's decision 6).
   const SKIP = ["api-docs/"];
 
   it("show no bare English text in JSX or in a user-facing attribute", () => {

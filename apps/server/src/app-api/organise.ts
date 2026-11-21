@@ -1,7 +1,7 @@
 // The organising pages' app API (build plan Task 21; AC-060, AC-061, AC-062,
 // AC-063 UI): the Creators, Collections, Tags and Trash pages. Every route
 // is session-class under /app/api (settings.ts, appApiScope), so it needs
-// Jon's session, and every state-changing one Origin = PUBLIC_ORIGIN.
+// a signed-in session, and every state-changing one Origin = PUBLIC_ORIGIN.
 //
 //   GET    /app/api/creators | /collections | /tags   {<list>: [{name, models}]}
 //   GET    /app/api/organise/models?creator|collection|tag&cursor
@@ -21,13 +21,13 @@
 //   POST   /app/api/bulk/trash {ids, view}            {changed, unchanged, failed, notInView}
 //   POST   /app/api/bulk/in-view {ids, view}          {ids}  the ones the view holds; changes nothing
 //
-// The bulk routes are the library's Select mode (Jon, 2026-11-19): up to
+// The bulk routes are the library's Select mode (the maintainer, 2026-11-19): up to
 // MAX_BULK_IDS models (1000, as View all) a request, in one transaction, and
 // a model that is in the trash or not found is reported in failed with its
 // reason while the others change (repos/bulk.ts). Bulk trash is the same
 // soft delete as Move to trash: restorable for 30 days, never a purge.
 //
-// The server keeps Select mode to the models the user can see (Jon,
+// The server keeps Select mode to the models the user can see (the maintainer,
 // 2026-11-20, after the 0.1.0-rc.2 live checks): every bulk request carries
 // view, the library view the selection was made in, with the same q, tag,
 // collection, creator and printer fields as GET /app/api/library/ids (read

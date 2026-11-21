@@ -7,9 +7,9 @@
 //   cookie named for the login's state, __Host-ph_login_<state>, so two
 //   logins that overlap (two tabs restored at once) each keep their own:
 //   signed (HMAC-SHA256, @fastify/cookie), HttpOnly, SameSite=Lax so it
-//   comes back on Pocket ID's top-level redirect, 10 minutes long, with its
+//   comes back on the OIDC provider's top-level redirect, 10 minutes long, with its
 //   expiry inside the signed value as well, since a browser's Max-Age is
-//   only advice. So that logins abandoned at Pocket ID cannot pile up past
+//   only advice. So that logins abandoned at the OIDC provider cannot pile up past
 //   the header size limit, it first clears every login cookie the request
 //   carries that is forged or expired, and of the rest all but the newest
 //   MAX_PENDING_LOGINS - 1. When the issuer cannot be reached the answer is
@@ -26,10 +26,10 @@
 //   is 503.
 // - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as every state-
 //   changing request on a session route does (gate.ts), or it is 403 and the
-//   session and its cookie are left alone, so another site cannot sign Jon
+//   session and its cookie are left alone, so another site cannot sign the user
 //   out. It is a public route, so the gate does not check it. Otherwise it
 //   ends the session, if any, clears its cookie and answers 204. Signing out
-//   of Pocket ID itself is not part of it.
+//   of the OIDC provider itself is not part of it.
 //
 // Every answer is Cache-Control: no-store, and the pages are plain HTML with
 // the Platehouse logo above the heading and a link to try again. Nothing here logs a code, a token or a cookie, and
@@ -72,7 +72,7 @@ export const LOGIN_COOKIE_MS = 10 * 60 * 1000;
 
 /**
  * The most login cookies a browser keeps at once. Every signed-out page load
- * starts a login (gate.ts), so logins abandoned at Pocket ID would otherwise
+ * starts a login (gate.ts), so logins abandoned at the OIDC provider would otherwise
  * pile up, about 330 bytes each on the Cookie header, until it passes Node's
  * 16 KiB limit and every request is 431. GET /auth/login keeps the newest
  * few and clears the rest.
@@ -146,7 +146,7 @@ type Words = [key: string, values?: MessageValues];
 /**
  * A plain page: the logo, a heading, a sentence and a link to try again, in the
  * request's language (the ph_lang cookie, else Accept-Language, else
- * English; Jon, 2026-11-19), with the html lang to match. Every word is
+ * English; the maintainer, 2026-11-19), with the html lang to match. Every word is
  * escaped: a translation is text, never markup.
  */
 function page(tr: Translator, title: Words, message: Words): string {
