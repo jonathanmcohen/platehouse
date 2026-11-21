@@ -25,7 +25,7 @@ const REWORDED = [
   "0008_library_sort.sql",
 ];
 
-/** Whether this checkout has the commit; CI checks out one commit only. */
+/** Whether this checkout has the commit; a shallow clone does not. */
 function hasCommit(rev: string): boolean {
   try {
     execFileSync("git", ["cat-file", "-e", `${rev}^{commit}`], { cwd: ROOT, stdio: "ignore" });
@@ -55,19 +55,26 @@ describe("PREVIOUS_CHECKSUMS", () => {
 
   // The digests are pinned in migrate.ts and were computed with
   // git show d268f23:apps/server/src/db/migrations/<name> | shasum -a 256.
-  // Where the checkout has that commit (a full clone), this recomputes them
-  // from git. CI checks out one commit, so there only the pinned values and
-  // the tests above are checked.
-  test("each previous checksum is the SHA-256 of the file at d268f23, where the checkout has it", () => {
-    const full = hasCommit(BEFORE);
-    for (const [name, { previous }] of PREVIOUS_CHECKSUMS) {
-      if (!full) continue;
-      const old = execFileSync("git", ["show", `${BEFORE}:apps/server/src/db/migrations/${name}`], {
-        cwd: ROOT,
-      });
-      expect(previous, name).toBe(sha256(old));
-    }
-  });
+  // This is the only test that checks them against the earlier bytes: the
+  // integration test writes the same pinned values into schema_migrations, so
+  // it agrees with whatever is pinned. The unit job in CI checks out the full
+  // history (fetch-depth: 0) so the commit is there. Where it is not (a
+  // shallow clone, or a history rewritten without it) the test is reported as
+  // skipped, never as a pass that checked nothing.
+  test.skipIf(!hasCommit(BEFORE))(
+    "each previous checksum is the SHA-256 of the file at d268f23",
+    () => {
+      for (const [name, { previous }] of PREVIOUS_CHECKSUMS) {
+        const old = execFileSync(
+          "git",
+          ["show", `${BEFORE}:apps/server/src/db/migrations/${name}`],
+          { cwd: ROOT },
+        );
+        expect(previous, name).toBe(sha256(old));
+      }
+      expect.assertions(PREVIOUS_CHECKSUMS.size);
+    },
+  );
 });
 
 describe("isSameMigration", () => {

@@ -235,10 +235,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # Full history: apps/server/test/db/previous-checksums.test.ts checks the
+      # pinned earlier migration checksums against the files at an older
+      # commit, and is reported as skipped when the checkout lacks it.
       - name: Check out
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up pnpm
         uses: pnpm/action-setup@v6.1.1
       - name: Set up Node
