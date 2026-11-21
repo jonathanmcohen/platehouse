@@ -7,6 +7,10 @@ and never logs a secret, token or slicer link.
 
 - **`Invalid configuration: KEY is missing`** or **`KEY must be ...`**: a setting in `.env` is
   missing or wrong. The message names the key and why. See [Configuration](./configuration.md).
+- **`DATABASE_URL must be a postgres:// or postgresql:// URL`** when the URL does start with
+  `postgres://`: the database password holds `/`, `#` or `?`, which ends the URL early. Use a
+  password of letters and digits, or percent-encode it; see
+  [the database password](./configuration.md#the-database-password).
 - **It restarts over and over, or stays unhealthy.** `/healthz` answers 200 only while the database
   answers within 3 seconds, the job queues run and the web app is present. Check the database
   container is healthy and `DATABASE_URL` is right.
