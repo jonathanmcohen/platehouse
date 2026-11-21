@@ -568,6 +568,16 @@ describe("the model page layout (AC-072)", () => {
     await click(button(/try again/i));
     expect(text(container.querySelector("h1"))).toBe("Cube set");
   });
+
+  test("a first load answered 401 says the user is signed out, with no Try again", async () => {
+    // The session ended while the app was open, then a library card was clicked.
+    models.set(MODEL_ID, 401);
+    await render(pageAt(MODEL_ID));
+    expect(text(container.querySelector('[role="alert"]'))).toBe(
+      "You are signed out. Reload the page to sign in again.",
+    );
+    expect(() => button(/try again/i)).toThrow();
+  });
 });
 
 describe("plates tab lists every plate in order with name or Plate N, swatches, grams, time and weight", () => {

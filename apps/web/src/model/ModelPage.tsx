@@ -28,7 +28,8 @@
 //   polling it is also asked again in POLL_MS, and the next successful
 //   load clears the notice; otherwise (a reload after an upload or a Retry)
 //   it is not asked again. A 401 ends the asking either way and says the
-//   user is signed out.
+//   user is signed out; so does a 401 on the first load, with no Try
+//   again, since asking again cannot help.
 // - The Plates tab's printer switch (PrinterSwitch) picks which of My
 //   printers' numbers the plates show: the page asks for the model again
 //   with ?printer=, and only reads; no slicing starts. The choice is kept
@@ -230,7 +231,8 @@ type Load =
   | { id: string; status: "loading" }
   | { id: string; status: "ready"; model: ModelView }
   | { id: string; status: "missing" }
-  | { id: string; status: "failed" };
+  | { id: string; status: "failed" }
+  | { id: string; status: "signed-out" };
 
 type TabName = "plates" | "files" | "about";
 
@@ -269,19 +271,22 @@ export function ModelPage({
 
     /** A failed load; status is the answer's, undefined when no answer came. */
     function failed(status?: number) {
-      // A failed first load says so, with Try again.
-      if (shownFor.current !== id) {
+      // A 401 will not change by asking again, first load or not: it says
+      // the user is signed out and offers no Try again.
+      const first = shownFor.current !== id;
+      if (status === 401) {
+        if (first) setLoad({ id, status: "signed-out" });
+        else setNotice({ id, kind: "signed-out" });
+        return;
+      }
+      // Any other failed first load says so, with Try again.
+      if (first) {
         setLoad({ id, status: "failed" });
         return;
       }
-      // A failed poll or reload keeps the model on screen. A 401 will not
-      // change by asking again. Anything else says the model could not be
-      // refreshed, and is asked again only while the page is polling; the
+      // A failed poll or reload keeps the model on screen, says it could not
+      // be refreshed, and is asked again only while the page is polling; the
       // next successful load clears the notice.
-      if (status === 401) {
-        setNotice({ id, kind: "signed-out" });
-        return;
-      }
       setNotice({ id, kind: "failed" });
       if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
     }
@@ -367,6 +372,13 @@ export function ModelPage({
           <Link to="/">{t("model.missing.back")}</Link>
         </p>
       </>
+    );
+  }
+  if (current.status === "signed-out") {
+    return (
+      <div role="alert" className="studio-alert studio-alert-alert">
+        <p>{t("common.signedOut")}</p>
+      </div>
     );
   }
   if (current.status === "failed") {
