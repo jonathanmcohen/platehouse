@@ -123,7 +123,7 @@ test("buildReport applies the pass rule and reports the Bambu gap, limits and pr
   const results = {};
   for (const j of jobs) results[j.id] = res();
   const x1cA2 = jobs.find((j) => j.file === "a.3mf" && j.printer === X1C && j.plate === 2);
-  results[x1cA2.id] = res({ returnCode: -17, errorString: "not compatible", timeSeconds: null, weightGrams: null });
+  results[x1cA2.id] = res({ returnCode: -17, errorString: "not compatible", timeSeconds: null, weightGrams: null, exitStatus: 239 });
   const inspect = Object.entries(metas).map(([name, m]) => ({ name, project: m.project, keys: {} }));
   const report = buildReport({ plan: { jobs, errors: [], inspect, recipe }, results, hostExits: {}, checks });
   assert.equal(report.verdict, "PASS");
@@ -200,7 +200,7 @@ test("a plate failure outranks a setup error: one unexplained slicer error fails
   const { jobs } = buildJobs(selection, metas, recipe);
   const results = {};
   for (const j of jobs) results[j.id] = res();
-  results[jobs[0].id] = res({ returnCode: -100, errorString: "Failed slicing", timeSeconds: null, weightGrams: null });
+  results[jobs[0].id] = res({ returnCode: -100, errorString: "Failed slicing", timeSeconds: null, weightGrams: null, exitStatus: 156 });
   const report = buildReport({ plan: { jobs, errors: ["printer X missing"], inspect: [], recipe }, results, hostExits: {}, checks });
   assert.equal(report.verdict, "FAIL");
   assert.equal(report.counts.fail, 1, "the failed plate is still counted and listed");

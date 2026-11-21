@@ -249,11 +249,28 @@ function killGroup(pid: number | undefined): void {
 }
 
 /**
+ * How long runGroup waits for the program's pipes to close once it has
+ * exited (or been killed at the time cap) before it stops reading them and
+ * returns anyway.
+ */
+export const PIPE_GRACE_MS = 2_000;
+
+/**
  * Runs a program in its own process group with a time cap. At the cap the
  * whole group is killed (SIGKILL), so a helper the program started cannot
  * outlive it; the group is killed again once the program exits, for the
  * same reason. `track` receives a kill function while the program runs, so
  * the server can stop it when it shuts down.
+ *
+ * It returns when the program's pipes close, which normally follows its exit
+ * at once. A helper that called setsid() is outside the group the kills
+ * reach and may keep the stdout and stderr it inherited open, so 'close'
+ * never comes. So once the program has exited, or the time cap has fired,
+ * runGroup waits at most pipeGraceMs (PIPE_GRACE_MS by default) for the
+ * pipes, then destroys them and returns with the output read so far. Without
+ * that, the job would never finish and would hold the heavy-job lock until
+ * the container restarted; the helper itself is killed by reapOrphans when
+ * the job is released (issue #153 item 3).
  */
 export function runGroup(
   cmd: string,
@@ -263,6 +280,7 @@ export function runGroup(
     env: NodeJS.ProcessEnv;
     timeoutMs: number;
     track?: (kill: (() => void) | null) => void;
+    pipeGraceMs?: number;
   },
 ): Promise<GroupResult> {
   const started = process.hrtime.bigint();
@@ -279,9 +297,36 @@ export function runGroup(
     });
     const kill = () => killGroup(child.pid);
     opts.track?.(kill);
+    let settled = false;
+    let grace: NodeJS.Timeout | undefined;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      opts.track?.(null);
+      resolvePromise({
+        ...exit,
+        timedOut,
+        wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        stdoutTail: stdout.toString("utf8"),
+        stderrTail: stderr.toString("utf8"),
+      });
+    };
+    // Started once, at the program's exit or the time cap, whichever is
+    // first: a pipe a setsid() helper still holds cannot keep the job open.
+    const waitForPipes = () => {
+      if (grace !== undefined || settled) return;
+      grace = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle();
+      }, opts.pipeGraceMs ?? PIPE_GRACE_MS);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
+      waitForPipes();
     }, opts.timeoutMs);
     child.stdout.on("data", (c: Buffer) => {
       stdout = keepTail(stdout, c);
@@ -295,18 +340,9 @@ export function runGroup(
     child.on("exit", (code, signal) => {
       exit = { code, signal };
       kill();
+      waitForPipes();
     });
-    child.on("close", () => {
-      clearTimeout(timer);
-      opts.track?.(null);
-      resolvePromise({
-        ...exit,
-        timedOut,
-        wallMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
-        stdoutTail: stdout.toString("utf8"),
-        stderrTail: stderr.toString("utf8"),
-      });
-    });
+    child.on("close", settle);
   });
 }
 

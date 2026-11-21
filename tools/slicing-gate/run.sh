@@ -56,6 +56,19 @@ command -v timeout > /dev/null || die "GNU timeout is not installed"
 docker info > /dev/null 2>&1 || die "cannot reach the docker daemon"
 
 if [[ "${1:-}" = "--clean" ]]; then
+  # README step 3 runs the gate detached under flock -n GATE_DIR/run.lock.
+  # Take that lock before deleting anything, and hold it (fd 9) through the
+  # delete, so pasting step 5 while a run is still going refuses instead of
+  # deleting the live run's inputs, outputs and lock. No run.lock means no
+  # run was ever started that way.
+  lock="${GATE_DIR}/run.lock"
+  if [[ -e "${lock}" ]]; then
+    command -v flock > /dev/null \
+      || die "${lock} exists and flock (util-linux) is not installed to check whether a gate run holds it; nothing was deleted"
+    exec 9< "${lock}" || die "cannot open ${lock}; nothing was deleted"
+    flock -n 9 \
+      || die "a gate run is going (it holds ${lock}); wait for run.exit, then run --clean again; nothing was deleted"
+  fi
   rm -rf -- "${GATE_DIR}"
   if docker image inspect "${IMAGE}" > /dev/null 2>&1; then
     docker image rm "${IMAGE}" > /dev/null

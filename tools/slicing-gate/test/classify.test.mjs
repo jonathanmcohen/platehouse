@@ -104,6 +104,37 @@ test("a crash fails: killed by a signal, no result.json, or a signal after numbe
   assert.equal(classifyPlate({ returnCode: null, exitStatus: 137 }).reason, "crash");
 });
 
+// GNU time measures timeout, not Orca, so a segfault after result.json shows
+// as exit status 139 with no signal. A clean exit with return code c exits
+// (256 + c) & 0xff (239 for -17), so any other known status, or a signal,
+// means the slicer died after writing its code: a crash, whatever the code.
+test("a refusal or needs-decision code followed by a crash fails as a crash", () => {
+  for (const r of [
+    { returnCode: -17, exitStatus: 139 },
+    { returnCode: -101, exitStatus: 139, signal: 11 },
+    { returnCode: -62, exitStatus: 137 },
+    { returnCode: -50, exitStatus: 139 },
+    { returnCode: -63, exitStatus: 1 },
+    { returnCode: -100, exitStatus: 139 },
+    { returnCode: -58, exitStatus: 139 },
+    { returnCode: -17, signal: 9 },
+  ]) {
+    const c = classifyPlate(r);
+    assert.equal(c.verdict, "fail", JSON.stringify(r));
+    assert.equal(c.reason, "crash", JSON.stringify(r));
+    assert.match(c.meaning, /then the slicer exited with|then the slicer was killed by signal/, JSON.stringify(r));
+  }
+  // The same codes with the status a clean exit gives keep their verdicts.
+  assert.equal(classifyPlate({ returnCode: -17, exitStatus: 239 }).verdict, "refused");
+  assert.equal(classifyPlate({ returnCode: -50, exitStatus: 206 }).verdict, "needs-decision");
+  assert.equal(classifyPlate({ returnCode: -100, exitStatus: 156 }).reason, "slicer_error");
+  // An unknown status (no time output) is not evidence of a crash.
+  assert.equal(classifyPlate({ returnCode: -17, exitStatus: null }).verdict, "refused");
+  assert.equal(classifyPlate({ returnCode: -17 }).verdict, "refused");
+  // A crash on one plate fails a gate the rest of which would pass.
+  assert.equal(gateVerdict([classifyPlate(ok), classifyPlate({ returnCode: -17, exitStatus: 139 })]), "FAIL");
+});
+
 test("any other code is an unexplained slicer error and fails", () => {
   const c = classifyPlate({ returnCode: -100, errorString: "Failed slicing" });
   assert.equal(c.verdict, "fail");
