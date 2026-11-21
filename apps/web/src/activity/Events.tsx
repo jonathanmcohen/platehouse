@@ -7,7 +7,9 @@
 // /app/api/estimates/:id/retry. A 409 not_retryable asks for the list again
 // and says, in a status line above the list that names the model and plate,
 // that the plate can no longer be retried: the refresh usually drops the
-// row, so the words cannot live in it. Any other failure says what the
+// row, so the words cannot live in it. The line goes when a refreshed list
+// shows that estimate failed again (its event at a later time), since its
+// Retry then works. Any other failure says what the
 // server's answer means (errorText) in the row. Every text here is shown as
 // text, never HTML, and the server has already taken paths and addresses
 // out of it (scrubText and scrubDetail in apps/server/src/scrub.ts).
@@ -99,7 +101,7 @@ function EstimateFailure({
 }: {
   event: Extract<ActivityEvent, { type: "estimate_failed" }>;
   onRetried: () => void;
-  onNotice: (notice: string | null) => void;
+  onNotice: (notice: Notice | null) => void;
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
@@ -122,7 +124,11 @@ function EstimateFailure({
         // ask for the list again, which drops an event that has moved on.
         // The words go to the section's status line, naming the plate,
         // because that refresh usually takes this row, and its state, away.
-        onNotice(t("activity.retryNotRetryable", { model: event.model.name, plate }));
+        onNotice({
+          text: t("activity.retryNotRetryable", { model: event.model.name, plate }),
+          estimateId: event.estimateId,
+          at: event.at,
+        });
         onRetried();
       } else {
         setError(errorText(failure));
@@ -184,7 +190,7 @@ function EventBody({
 }: {
   event: ActivityEvent;
   onChanged: () => void;
-  onNotice: (notice: string | null) => void;
+  onNotice: (notice: Notice | null) => void;
 }) {
   const i18n = useI18n();
   const { t, rich } = i18n;
@@ -251,6 +257,21 @@ function EventBody({
   }
 }
 
+/** A Retry refused as not retryable: its words, and the failure it was for. */
+interface Notice {
+  text: string;
+  estimateId: string;
+  /** When that failure was recorded: a later one for the estimate is a new failure. */
+  at: string;
+}
+
+/** Whether items show the notice's estimate failed again since, which makes the notice untrue. */
+function failedAgain(notice: Notice, items: readonly ActivityEvent[]): boolean {
+  return items.some(
+    (e) => e.type === "estimate_failed" && e.estimateId === notice.estimateId && e.at !== notice.at,
+  );
+}
+
 export interface EventsProps {
   items: readonly ActivityEvent[];
   limit: number;
@@ -263,9 +284,14 @@ export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) 
   const { t } = useI18n();
   /**
    * What the last Retry learnt that outlives its row: that the plate, named
-   * in full, can no longer be retried. Cleared when a Retry is pressed.
+   * in full, can no longer be retried. Cleared when a Retry is pressed, or
+   * when a refreshed list shows that estimate failed again (the page polls
+   * and keeps this list mounted, so it is checked as each list lands).
    */
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const untrue = notice !== null && failedAgain(notice, items);
+  if (untrue) setNotice(null);
+  const shown = untrue ? null : notice;
   return (
     <>
       {inboxReadable ? null : (
@@ -273,7 +299,7 @@ export function Events({ items, limit, inboxReadable, onChanged }: EventsProps) 
       )}
       {/* Always in the page, so a screen reader hears what is put in it. */}
       <div role="status">
-        {notice === null ? null : <p className="ph-activity-line ph-activity-error">{notice}</p>}
+        {shown === null ? null : <p className="ph-activity-line ph-activity-error">{shown.text}</p>}
       </div>
       {items.length === 0 ? (
         <p className="studio-empty">{t("activity.noEvents")}</p>

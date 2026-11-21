@@ -19,8 +19,12 @@
 //   from the stored file (no re-upload). A refused or failed retry is said
 //   beside the plate: a 409 not_retryable says it can no longer be retried,
 //   in a status line that outlives the failure (the page loads the model
-//   again, which usually no longer has it); a 401 says the user is signed
-//   out; anything else says what the server's answer means (errorText).
+//   again, which usually no longer has it), but not the facts it was about:
+//   it goes when another printer is shown, when a different failure is
+//   shown, or when the refused estimate's failure comes back after it had
+//   gone (it was estimated again and failed again, so Retry works again).
+//   A 401 says the user is signed out; anything else says what the
+//   server's answer means (errorText).
 // Times and weights are formatted as the library's cards format them.
 import { useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
@@ -187,6 +191,31 @@ function EstimateNumbers({
   );
 }
 
+/** A Retry refused as not retryable: what it was for, and whether that failure has gone since. */
+interface Refused {
+  estimateId: string;
+  printer: string;
+  /** Whether a shown answer has had no failure since the refusal. */
+  gone: boolean;
+}
+
+/**
+ * Whether a refusal still holds for what is shown now: null once another
+ * printer or a different failure is shown, or once the refused estimate's
+ * failure is back after it had gone (it failed again, and can be retried).
+ * Returns the same object when nothing changed.
+ */
+function refusedNow(
+  refused: Refused,
+  printer: string,
+  failure: PlateNumbers["failure"],
+): Refused | null {
+  if (printer !== refused.printer) return null;
+  if (failure === undefined) return refused.gone ? refused : { ...refused, gone: true };
+  if (failure.estimateId !== refused.estimateId || refused.gone) return null;
+  return refused;
+}
+
 export interface PlateNumbersViewProps {
   numbers: PlateNumbers;
   /** The printer the page shows numbers for (an Orca preset id). */
@@ -220,26 +249,32 @@ export function PlateNumbersView({
   const errorText = useErrorText();
   const [retryError, setRetryError] = useState<string | null>(null);
   /**
-   * That the plate can no longer be retried. It is shown outside the failure
-   * block, because the model loaded again after the refusal usually no longer
-   * has the failure, and the words must not go with it.
+   * That the plate can no longer be retried: the estimate and printer the
+   * 409 was for. It is shown outside the failure block, because the model
+   * loaded again after the refusal usually no longer has the failure, and
+   * the words must not go with it.
    */
-  const [notRetryable, setNotRetryable] = useState(false);
+  const [refused, setRefused] = useState<Refused | null>(null);
   const { file, platehouse, failure } = numbers;
+  // Polls, reloads and the printer switch keep this view mounted, so the
+  // line is checked against what is shown now, as each answer lands.
+  const stillRefused = refused === null ? null : refusedNow(refused, printer, failure);
+  if (stillRefused !== refused) setRefused(stillRefused);
 
   async function retry() {
     if (failure === undefined || retrying) return;
     setRetrying(true);
     setRetryError(null);
-    setNotRetryable(false);
+    setRefused(null);
     try {
       await onRetry(failure.estimateId);
-    } catch (refused) {
+    } catch (refusal) {
       // 409 not_retryable is final: say so rather than "try again". A 401
       // says the user is signed out, and anything else what the server's
       // answer means (errorText).
-      if (refused instanceof AppApiError && refused.status === 409) setNotRetryable(true);
-      else setRetryError(errorText(refused));
+      if (refusal instanceof AppApiError && refusal.status === 409) {
+        setRefused({ estimateId: failure.estimateId, printer, gone: false });
+      } else setRetryError(errorText(refusal));
     } finally {
       setRetrying(false);
     }
@@ -297,7 +332,9 @@ export function PlateNumbersView({
       )}
       {/* Always in the page, so a screen reader hears what is put in it. */}
       <div role="status">
-        {notRetryable ? <p className="ph-error">{t("model.numbers.notRetryable")}</p> : null}
+        {stillRefused !== null ? (
+          <p className="ph-error">{t("model.numbers.notRetryable")}</p>
+        ) : null}
       </div>
       {file === undefined && platehouse === undefined && failure === undefined ? (
         <>

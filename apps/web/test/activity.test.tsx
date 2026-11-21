@@ -617,6 +617,47 @@ describe("recent events", () => {
     expect(status()).toBe("");
   });
 
+  test("the not-retryable line outlives refreshes that still show the same failure", async () => {
+    retryStatus = 409;
+    await render();
+    const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    await click(button(/^Retry$/, li));
+    await click(button(/^Refresh$/));
+    expect(text(section("Recent events").querySelector('[role="status"]'))).toContain(
+      "plate 3 (Lid) can no longer be retried",
+    );
+  });
+
+  test("the not-retryable line goes when a refresh shows that estimate failed again", async () => {
+    // Refused because it was already being estimated again; that estimate
+    // then fails too, and a later refresh lists a new Estimate failed row for
+    // it, at a later time, with a Retry that works. The line must go.
+    retryStatus = 409;
+    await render();
+    const li = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    answer = () => {
+      const v = busyView();
+      v.events.items = v.events.items.filter((e) => e.type !== "estimate_failed");
+      return v;
+    };
+    await click(button(/^Retry$/, li));
+    const status = () => text(section("Recent events").querySelector('[role="status"]'));
+    expect(status()).toContain("plate 3 (Lid) can no longer be retried");
+
+    answer = () => {
+      const v = busyView();
+      v.events.items = v.events.items.map((e) =>
+        e.type === "estimate_failed" ? { ...e, at: "2026-11-19T12:05:00.000Z" } : e,
+      );
+      return v;
+    };
+    await click(button(/^Refresh$/));
+    const again = [...section("Recent events").querySelectorAll("ol > li")][0] as HTMLElement;
+    expect(text(again)).toContain("Estimate failed");
+    button(/^Retry$/, again);
+    expect(status()).toBe("");
+  });
+
   test("a retry that fails for another reason says what the server's answer means", async () => {
     retryStatus = 503;
     await render();
