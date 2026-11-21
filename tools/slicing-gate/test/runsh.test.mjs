@@ -315,7 +315,13 @@ test("run.sh --clean refuses while a real flock holds run.lock", { skip: !hasFlo
   const lock = join(gate, "run.lock");
   const ready = join(gate, "held");
   const { spawn } = await import("node:child_process");
-  const holder = spawn("flock", ["-n", lock, "bash", "-c", `touch '${ready}'; sleep 30`], { stdio: "ignore" });
+  // flock without -o keeps the lock open in the command it forks, so killing
+  // flock alone would leave "bash ...; sleep 30" holding run.lock. The holder
+  // gets its own process group, and the whole group is killed.
+  const holder = spawn("flock", ["-n", lock, "bash", "-c", `touch '${ready}'; sleep 30`], {
+    stdio: "ignore",
+    detached: true,
+  });
   try {
     for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise((res) => setTimeout(res, 50));
     assert.equal(existsSync(ready), true, "the holder took the lock");
@@ -324,7 +330,7 @@ test("run.sh --clean refuses while a real flock holds run.lock", { skip: !hasFlo
     assert.match(r.stderr, /a gate run is going/);
     assert.equal(existsSync(lock), true);
   } finally {
-    holder.kill("SIGKILL");
+    process.kill(-holder.pid, "SIGKILL");
   }
   // The test leaves nothing holding run.lock: once its holder is killed, the
   // lock can be taken at once.
