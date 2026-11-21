@@ -101,6 +101,78 @@ describe("scrubText", () => {
     expect(scrubText("peer:192.0.2.7 left")).toBe("peer:[address] left");
   });
 
+  // Issue #345: whatever comes before the colon (a word with digits, a
+  // hyphen, an interface name), the address after it goes whole. In
+  // node-1:2001:db8::1 the "1:" is itself part of a valid address
+  // (1:2001:db8::1), so it goes too: more is taken out, never less.
+  test("takes out an address after any label and a colon", () => {
+    expect(scrubText("node-1:2001:db8::1 left")).toBe("node-[address] left");
+    expect(scrubText("slicer1:2001:db8::1 left")).toBe("slicer1:[address] left");
+    expect(scrubText("eth0:fe80::1 up")).toBe("eth0:[address] up");
+    for (const shown of [
+      scrubText("node-1:2001:db8::1"),
+      scrubText("slicer1:2001:db8::1"),
+      scrubText("eth0:fe80::1"),
+    ]) {
+      expect(shown).not.toMatch(/db8|fe80|::1/);
+    }
+  });
+
+  // One table, IPv4 and IPv6 through the same path: each input and what is shown.
+  test.each([
+    ["connect ECONNREFUSED 192.0.2.7:5432", "connect ECONNREFUSED [address]"],
+    ["connect ECONNREFUSED 192.0.2.7", "connect ECONNREFUSED [address]"],
+    ["host-192.0.2.7 refused", "host-[address] refused"],
+    ["peer_2001:db8::1 left", "peer_[address] left"],
+    ["eth0:node:2001:db8::1", "eth0:node:[address]"],
+    ["a:b:2001:db8::1", "[address]"],
+    ["backup 192.0.2.7-old", "backup [address]-old"],
+    ["at 192.0.2.7:5432.", "at [address]."],
+    ["slicer:8080 and db.internal:5432", "[address] and [address]"],
+    ["x.server.lan.example.com", "[address].example.com"],
+    ["see https://[2001:db8::1]:8080/v1 now", "see [address] now"],
+    ["x9:y8:192.0.2.7:80 failed", "x9:y8:[address] failed"],
+    ["at [2001:db8::1]:443.", "at [address]."],
+    ["at fe80::1%en0.", "at [address]."],
+    ["(2001:db8::1)", "([address])"],
+    ["'2001:db8::1'", "'[address]'"],
+    ["2001:db8::1, 192.0.2.7 and ::1", "[address], [address] and [address]"],
+    ["link:[fe80::1%eth0]:8080 lost", "link:[address] lost"],
+    ["::ffff:192.0.2.7", "[address]"],
+    ["version 2.5.0 at 12:34:56", "version 2.5.0 at 12:34:56"],
+    ["plates [1:2] and [3:4]", "plates [1:2] and [3:4]"],
+    ["Slic3r::GCode failed", "Slic3r::GCode failed"],
+    ["Add::Feed and Bed::Face", "Add::Feed and Bed::Face"],
+    ["ratio 16:9 at 1:2:3", "ratio 16:9 at 1:2:3"],
+    ["build 2026.11.0.1", "build 2026.11.0.1"],
+  ])("%j is shown as %j", (input, shown) => {
+    expect(scrubText(input)).toBe(shown);
+  });
+
+  // A long message must take time in proportion to its length, never its
+  // square: most of these inputs are single long runs of address characters,
+  // the worst case for a scan that tries every start. Each takes well under
+  // a second; a scan that went back over the run from every start took tens
+  // of seconds at this size, so the 2-second limit only fails on that.
+  test.each([
+    ["colons and digits", "1:".repeat(100_000)],
+    ["double colons", "1::".repeat(66_000)],
+    ["hex groups", "abcd:".repeat(40_000)],
+    ["addresses", "2001:db8::1 192.0.2.7:80 ".repeat(8_000)],
+    ["dots and digits", "1.".repeat(100_000)],
+    ["letters and hyphens", "a-".repeat(100_000)],
+    ["letters and dots", "a.".repeat(100_000)],
+    ["one long word", "a".repeat(200_000)],
+    ["labels and colons", "eth0:".repeat(40_000)],
+    ["brackets", "[1:".repeat(70_000)],
+    ["words and spaces", "word 1:2 ".repeat(25_000)],
+  ])("a 200,000-character message of %s is cleaned quickly", (_what, input) => {
+    expect(input.length).toBeGreaterThanOrEqual(190_000);
+    const started = performance.now();
+    scrubText(input);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   test("leaves times, ratios, ranges and C++ names that look a little like IPv6 alone", () => {
     expect(scrubText("started 12:30:45, layers [1:2]")).toBe("started 12:30:45, layers [1:2]");
     expect(scrubText("Slic3r::GCode::process_layer failed")).toBe(
