@@ -37,69 +37,55 @@ export interface ScrubOptions {
   keep?: "start" | "end";
 }
 
-/**
- * A run of the characters an address can be written with: an IPv4 or IPv6
- * address, in brackets or not, with a zone (%eth0) and a :port, and the
- * label and colon a message may put straight before it (eth0:fe80::1). The
- * text is split into maximal runs once, so every run is looked at once.
- */
-const ADDRESS_RUN = /[0-9A-Za-z:.%_[\]-]+/g;
+// The address scan's invariant, which test/scrub.test.ts checks on thousands
+// of generated messages: after it, the text holds no match of the IPv4
+// pattern it replaced (/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/), and no
+// IPv6 address holding a digit whose neighbours are not hex digits, ':' or
+// '.'. It gets there with no rule about what may come before or after an
+// address: at every place an address could start, the longest address that
+// starts there (up to ADDRESS_MAX_CHARS) is taken out, whatever follows it.
 
 /**
  * Longest text one address can take: [, 45 characters of IPv6, a zone of up
- * to 32, ], and :65535. A longer candidate is never parsed, which keeps the
- * work for each start bounded and the scan linear in the run's length.
+ * to 32, ], and :65535. No candidate is longer, which bounds the work at
+ * each start and keeps the scan linear in the text's length.
  */
 const ADDRESS_MAX_CHARS = 100;
 
-/** Characters that end a candidate: neither an address nor a zone holds them. */
-function isBreak(c: string | undefined): boolean {
-  return c === "-" || c === "_";
+function isHexDigit(c: string | undefined): boolean {
+  return c !== undefined && /^[0-9A-Fa-f]$/.test(c);
 }
 
-/** Characters an address may come straight after without a start of its own: [ ] and a full stop. */
-function isOpener(c: string | undefined): boolean {
-  return c === "[" || c === "]" || c === ".";
-}
-
-/** Characters a candidate may end with that are punctuation, not address. */
-function isTrailing(c: string | undefined): boolean {
-  return c === "." || c === "]" || c === ":";
-}
-
-/**
- * Whether a candidate with these counts could be an address at all, so the
- * parser is asked only about the few that could: an IPv4 address has three
- * dots (and a colon before a port); an IPv6 address has "::" and up to 9
- * colons (8 with a port, one more for the "::"), or no "::" and 6 to 8
- * colons (an IPv4 tail, eight groups, or eight groups and a port).
- */
-function couldBeAddress(colons: number, dots: number, doubleColon: boolean): boolean {
-  if (dots === 3 && colons <= 1) return true;
-  return doubleColon ? colons >= 2 && colons <= 9 : colons >= 6 && colons <= 8;
+function isDigit(c: string | undefined): boolean {
+  return c !== undefined && c >= "0" && c <= "9";
 }
 
 /** A zone id: letters and digits, dots only between them (eth0, en0, eth0.100). */
 const ZONE = /^[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*$/;
 
+/** A dotted quad as the replaced pattern read it: any one to three digits in each part. */
+const DOTTED_QUAD = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
 /**
- * An IPv4 address, or an IPv6 address (a zone allowed) that holds a digit,
- * as Node's own parser reads them. The digit rule keeps a C++ name made of
- * hex letters (Add::Feed) from reading as IPv6. Node takes any text as a
+ * An IPv4 address (any dotted quad, as the replaced pattern took), or an
+ * IPv6 address, a zone allowed, that holds a digit (in the zone too), as
+ * Node's own parser reads it. The digit rule keeps a C++ name made of hex
+ * letters (Add::Feed) from reading as IPv6. Node takes nearly any text as a
  * zone, so the zone is checked here, and a full stop after it stays.
  */
 function isPlainAddress(text: string): boolean {
+  if (DOTTED_QUAD.test(text)) return true;
   const version = isIP(text);
   if (version === 4) return true;
   if (version !== 6) return false;
   const zone = text.indexOf("%");
   if (zone !== -1 && !ZONE.test(text.slice(zone + 1))) return false;
-  return /\d/.test(zone === -1 ? text : text.slice(0, zone));
+  return /\d/.test(text);
 }
 
 /**
- * An address, an IPv4 or IPv6 address in brackets ([192.0.2.7]:8080,
- * [2001:db8::1]), or either with a :port.
+ * An address: plain, in brackets ([192.0.2.7], [2001:db8::1%eth0]), or
+ * either with a :port.
  */
 function isAddress(text: string): boolean {
   if (text.startsWith("[")) {
@@ -116,73 +102,116 @@ function isAddress(text: string): boolean {
 }
 
 /**
- * Where the longest address that starts at start ends in the run, or -1.
- * A candidate ends at the next hyphen or underscore (stop), at that point
- * without trailing dots, colons and brackets, or just before any colon on
- * the way (an address followed by :label), and is at most
- * ADDRESS_MAX_CHARS long. The walk counts colons and dots as it goes, so
- * only a candidate couldBeAddress allows reaches the parser, longest first.
+ * The ends of the text from start that could be an unbracketed address,
+ * shortest first. The walk stops as soon as no longer text could be one: a
+ * character no address holds, a group of more than five digits or letters,
+ * more than nine colons, a second "::", or more than three dots before a
+ * zone. It keeps only ends isAddress could accept: the text ends in a hex
+ * digit, a zone character or "::", holds a digit, and has three dots (a
+ * dotted quad, perhaps with a port, or an IPv6 address ending in one) or
+ * none and at least two colons (IPv6). So only those are parsed.
  */
-function addressEnd(run: string, start: number, stop: number): number {
-  const limit = Math.min(stop, start + ADDRESS_MAX_CHARS);
+function plainEnds(text: string, start: number): number[] {
   const ends: number[] = [];
+  const limit = Math.min(text.length, start + ADDRESS_MAX_CHARS);
   let colons = 0;
   let dots = 0;
-  let doubleColon = false;
-  for (let e = start; e <= limit; e += 1) {
-    const atColon = e < limit && run[e] === ":";
-    if (e > start && (atColon || e === limit) && couldBeAddress(colons, dots, doubleColon)) {
-      ends.push(e);
+  let doubles = 0;
+  let group = 0;
+  let digit = false;
+  let zone = -1;
+  const plausible = () => digit && (dots === 3 || (dots === 0 && colons >= 2));
+  for (let e = start; e < limit; e += 1) {
+    const c = text[e] as string;
+    if (isDigit(c)) digit = true;
+    if (zone !== -1) {
+      if (!/^[0-9A-Za-z.]$/.test(c)) break;
+      if (c !== "." && digit) ends.push(e + 1);
+      continue;
     }
-    if (e === limit) break;
-    if (atColon) {
-      if (run[e - 1] === ":" && e - 1 >= start) doubleColon = true;
+    if (c === ":") {
       colons += 1;
-    } else if (run[e] === ".") {
+      if (colons > 9) break;
+      if (e > start && text[e - 1] === ":") {
+        doubles += 1;
+        if (doubles > 1) break;
+        if (plausible()) ends.push(e + 1);
+      }
+      group = 0;
+    } else if (c === ".") {
       dots += 1;
+      if (dots > 3) break;
+      group = 0;
+    } else if (c === "%") {
+      if (colons < 2) break;
+      zone = e;
+    } else if (isHexDigit(c)) {
+      group += 1;
+      if (group > 5) break;
+      if (plausible()) ends.push(e + 1);
+    } else {
+      break;
     }
   }
-  // The end without trailing punctuation, as in "at 2001:db8::1." or "192.0.2.7:".
-  let trimmed = limit;
-  while (trimmed > start && isTrailing(run[trimmed - 1])) trimmed -= 1;
-  if (trimmed < limit && trimmed > start) ends.push(trimmed);
-  ends.sort((a, b) => b - a);
-  for (const end of ends) {
-    if (isAddress(run.slice(start, end))) return end;
+  return ends;
+}
+
+/**
+ * The ends of the text from a [ at start that could be a bracketed address,
+ * shortest first: just after the ], and after each digit of a :port.
+ */
+function bracketEnds(text: string, start: number): number[] {
+  const limit = Math.min(text.length, start + ADDRESS_MAX_CHARS);
+  let close = -1;
+  for (let e = start + 1; e < limit; e += 1) {
+    const c = text[e] as string;
+    if (c === "]") {
+      close = e;
+      break;
+    }
+    if (!/^[0-9A-Za-z:.%]$/.test(c)) return [];
+  }
+  if (close === -1) return [];
+  const ends = [close + 1];
+  if (text[close + 1] === ":") {
+    for (let e = close + 2; e < Math.min(limit, close + 7) && isDigit(text[e]); e += 1) {
+      ends.push(e + 1);
+    }
+  }
+  return ends;
+}
+
+/** Where the longest address that starts at start ends, or -1. */
+function addressEnd(text: string, start: number): number {
+  const ends = text[start] === "[" ? bracketEnds(text, start) : plainEnds(text, start);
+  for (let k = ends.length - 1; k >= 0; k -= 1) {
+    const end = ends[k] as number;
+    if (isAddress(text.slice(start, end))) return end;
   }
   return -1;
 }
 
 /**
- * The run with each address in it replaced by [address]. A start is the
- * run's beginning, a bracket, or the character after a colon, hyphen,
- * underscore, bracket or full stop, so an address written straight after a
- * label (eth0:fe80::1, node-1:2001:db8::1, [WARN]10.0.0.5, failed.10.0.0.5)
- * is found whatever the label holds, as the word-boundary IPv4 pattern this
- * scan replaced found it. Starts are tried
- * left to right and the first one that begins an address wins, which is the
- * longest address there: when the text before an address could itself be
- * part of one (the "1:" in node-1:2001:db8::1), it goes too, so more is taken
- * out, never less.
+ * Every IPv4 and IPv6 address in text, bare, in brackets, with a zone or a
+ * port, as [address]. An address can start at a [, or at a hex digit or a
+ * colon that does not come straight after a hex digit (inside a hex run
+ * such as a hash or a C++ name, a later start would only cut a word in
+ * two). Starts are tried left to right, and at each the longest address
+ * there is taken out. Straight after one, the text before is "[address]",
+ * not a hex digit, so the next character may start another.
  */
-function scrubRun(run: string): string {
-  const n = run.length;
-  // stopAt[i]: the next hyphen or underscore at or after i, or n.
-  const stopAt = new Int32Array(n + 1);
-  stopAt[n] = n;
-  for (let i = n - 1; i >= 0; i -= 1) {
-    stopAt[i] = isBreak(run[i]) ? i : (stopAt[i + 1] as number);
-  }
+function scrubAddresses(text: string): string {
   let out = "";
   let kept = 0;
   let i = 0;
-  while (i < n) {
-    const prev = run[i - 1];
-    const isStart = i === 0 || prev === ":" || isBreak(prev) || isOpener(prev) || run[i] === "[";
-    if (isStart && !isBreak(run[i])) {
-      const end = addressEnd(run, i, stopAt[i] as number);
+  while (i < text.length) {
+    const c = text[i];
+    const afterHex = i !== kept && isHexDigit(text[i - 1]);
+    const canStart = c === "[" || ((isHexDigit(c) || c === ":") && !afterHex);
+    if (canStart) {
+      const end = addressEnd(text, i);
       if (end !== -1) {
-        out += `${run.slice(kept, i)}[address]`;
+        out += `${text.slice(kept, i)}[address]`;
         kept = end;
         i = end;
         continue;
@@ -190,12 +219,7 @@ function scrubRun(run: string): string {
     }
     i += 1;
   }
-  return kept === 0 ? run : out + run.slice(kept);
-}
-
-/** Every IPv4 and IPv6 address in text, bare, in brackets, with a zone or a port, as [address]. */
-function scrubAddresses(text: string): string {
-  return text.replace(ADDRESS_RUN, scrubRun);
+  return kept === 0 ? text : out + text.slice(kept);
 }
 
 /**
@@ -283,12 +307,12 @@ function scrubInternalNames(run: string): string {
 /**
  * Takes out of stored error text everything a user must not be shown:
  * tokens and credentials, URLs (signed ones included), file system paths,
- * IPv4 and IPv6 addresses (bare, or in brackets, with a zone or a port, and
- * after any label and colon), host:port pairs and internal host names. The
- * words around them stay, so the message still reads. Cut at SCRUB_MAX_CHARS
- * characters (options.maxChars), keeping the start with "..." after it, or
- * with options.keep "end", keeping the end with "..." before it. The work is
- * linear in the text's length: no rule scans a position twice.
+ * IPv4 and IPv6 addresses (bare, or in brackets, with a zone or a port,
+ * whatever comes before or after them), host:port pairs and internal host
+ * names. The words around them stay, so the message still reads. Cut at
+ * SCRUB_MAX_CHARS characters (options.maxChars), keeping the start with
+ * "..." after it, or with options.keep "end", keeping the end with "..."
+ * before it. The work is linear in the text's length.
  */
 export function scrubText(text: string, options: ScrubOptions = {}): string {
   let out = text;

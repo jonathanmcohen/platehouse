@@ -103,13 +103,15 @@ describe("scrubText", () => {
   });
 
   // Issue #345: whatever comes before the colon (a word with digits, a
-  // hyphen, an interface name), the address after it goes whole. In
-  // node-1:2001:db8::1 the "1:" is itself part of a valid address
-  // (1:2001:db8::1), so it goes too: more is taken out, never less.
+  // hyphen, an interface name), the address after it goes whole. The scan
+  // takes the longest address from the first place one can start, so when
+  // the end of the label is itself part of a valid address (the "1:" of
+  // 1:2001:db8::1, the "0:" of 0:fe80::1), it goes too: more is taken out,
+  // never less.
   test("takes out an address after any label and a colon", () => {
     expect(scrubText("node-1:2001:db8::1 left")).toBe("node-[address] left");
-    expect(scrubText("slicer1:2001:db8::1 left")).toBe("slicer1:[address] left");
-    expect(scrubText("eth0:fe80::1 up")).toBe("eth0:[address] up");
+    expect(scrubText("slicer1:2001:db8::1 left")).toBe("slicer[address] left");
+    expect(scrubText("eth0:fe80::1 up")).toBe("eth[address] up");
     for (const shown of [
       scrubText("node-1:2001:db8::1"),
       scrubText("slicer1:2001:db8::1"),
@@ -125,7 +127,8 @@ describe("scrubText", () => {
     ["connect ECONNREFUSED 192.0.2.7", "connect ECONNREFUSED [address]"],
     ["host-192.0.2.7 refused", "host-[address] refused"],
     ["peer_2001:db8::1 left", "peer_[address] left"],
-    ["eth0:node:2001:db8::1", "eth0:node:[address]"],
+    // "de:2001:db8::1" is a valid address, so the end of "node" goes with it.
+    ["eth0:node:2001:db8::1", "eth0:no[address]"],
     ["a:b:2001:db8::1", "[address]"],
     ["backup 192.0.2.7-old", "backup [address]-old"],
     ["at 192.0.2.7:5432.", "at [address]."],
@@ -455,7 +458,11 @@ describe("the address scrub's invariant", () => {
   // The examples earlier review rounds found, kept by name.
   test.each([
     ["round 1: an IPv4 address in brackets", "dial [192.0.2.7] failed", "dial [address] failed"],
-    ["round 1: after a closing bracket", "[WARN]10.0.0.5 unreachable", "[WARN][address] unreachable"],
+    [
+      "round 1: after a closing bracket",
+      "[WARN]10.0.0.5 unreachable",
+      "[WARN][address] unreachable",
+    ],
     ["round 1: after a full stop", "failed.10.0.0.5", "failed.[address]"],
     ["round 2 (#351): before a host name", "reach 10.0.0.5.nip.io", "reach [address].nip.io"],
     ["round 2 (#351): before a word", "reach 10.0.0.5.Retrying", "reach [address].Retrying"],
