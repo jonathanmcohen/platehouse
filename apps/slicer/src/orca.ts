@@ -173,6 +173,24 @@ export function sliceOutcome(
     );
   }
   if (code !== 0) {
+    // Orca 2.5.0 ends every refusal by writing its code to result.json and
+    // returning that code from main (record_exit_reson, then
+    // flush_and_exit, in src/OrcaSlicer.cpp), so a clean refusal exits
+    // (256 + code) & 0xff: 239 for -17. GNU time exits with Orca's status,
+    // or 128 + the signal when Orca was killed, so a segfault shows as 139.
+    // A known status other than the clean one, or a signal, means Orca died
+    // after it wrote the code: a crash, whatever the code says, as the
+    // slicing gate rules (tools/slicing-gate/lib/classify.mjs). An unknown
+    // status is no evidence.
+    const cleanStatus = ((code % 256) + 256) % 256;
+    if (run.signal || (run.code !== null && run.code !== cleanStatus)) {
+      const end = run.signal ? `was killed by ${run.signal}` : `exited with ${run.code}`;
+      return failed(
+        code,
+        "slicer_error",
+        `Orca wrote return code ${code} (${orcaMessage(code)}), then ${end}`,
+      );
+    }
     const text = typeof result?.error_string === "string" ? result.error_string.trim() : "";
     return failed(code, reasonFor(code), text || orcaMessage(code));
   }

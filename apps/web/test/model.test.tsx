@@ -1498,6 +1498,114 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(text(pageStatus())).toBe("");
   });
 
+  /**
+   * The chosen printer (X1C) was taken out of My printers in another tab, so
+   * a Retry is refused and the reload comes back as `next`, for the default
+   * printer (the server's fallback). The page then forgets the choice and
+   * asks again without it, which is answered with `next` too. Returns once
+   * those four requests are made.
+   */
+  async function refusedAfterChoiceDropped(next: ModelView) {
+    const failedOnX1C = model(
+      [
+        threeMf([
+          plate(1, "Base", { file: fileNumbers(1) }),
+          plate(2, "Huge", {
+            failure: {
+              estimateId: EST_FAILED,
+              reason: "bed_too_small",
+              words: WORDS,
+              detail: DETAIL,
+            },
+          }),
+          plate(3, "Lid", { file: fileNumbers(3) }),
+        ]),
+      ],
+      {
+        printer: X1C,
+        printerName: X1C_NAME,
+        printers: [
+          { id: P1S, name: P1S_NAME },
+          { id: X1C, name: X1C_NAME },
+        ],
+      },
+    );
+    localStorage.setItem(PRINTER_CHOICE_KEY, X1C);
+    retryStatus = 409;
+    models.set(MODEL_ID, failedOnX1C);
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, next);
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(requests).toEqual([
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+      `POST /app/api/estimates/${EST_FAILED}/retry`,
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(X1C)}`,
+      `GET /app/api/models/${MODEL_ID}`,
+    ]);
+    expect(localStorage.getItem(PRINTER_CHOICE_KEY)).toBeNull();
+  }
+
+  test("after the page forgets a dropped printer, the re-request keeps the line and the next answer ends it", async () => {
+    // The re-request made without the forgotten choice only asks for the
+    // same answer again, so it does not count. The poll after it is a new
+    // answer and ends the line, so the page's forgetting does not outlive
+    // that one re-request.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    await refusedAfterChoiceDropped(estimatingModel());
+    expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    await settle();
+    expect(requests.filter((r) => r === `GET /app/api/models/${MODEL_ID}`)).toHaveLength(2);
+    expect(text(pageStatus())).toBe("");
+  });
+
+  test("after the page forgets a dropped printer, the user's own printer choice ends the line", async () => {
+    // My printers now holds P1S and A1. Choosing A1 on the switch is the
+    // user's own choice, so it ends the line before its answer lands: the
+    // answer is held, so only the choice can have ended it.
+    const A1 = "Bambu Lab A1 0.4 nozzle";
+    const A1_NAME = "Bambu Lab A1, 0.4 mm nozzle";
+    const afterDrop = (shown: string): ModelView =>
+      model(estimatingModel().files, {
+        printer: shown,
+        printerName: shown === A1 ? A1_NAME : P1S_NAME,
+        printers: [
+          { id: P1S, name: P1S_NAME },
+          { id: A1, name: A1_NAME },
+        ],
+      });
+    await refusedAfterChoiceDropped(afterDrop(P1S));
+    expect(text(pageStatus())).toBe(NOT_RETRYABLE);
+
+    let release: () => void = () => {};
+    modelHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    models.set(MODEL_ID, afterDrop(A1));
+    const select = panel().querySelector("select");
+    if (!(select instanceof HTMLSelectElement)) throw new Error("no printer switch");
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(select, A1);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(requests.at(-1)).toBe(
+      `GET /app/api/models/${MODEL_ID}?printer=${encodeURIComponent(A1)}`,
+    );
+    // The switch shows A1 while its answer is held, and the line is gone.
+    expect(panel().querySelector("select")?.value).toBe(A1);
+    expect(text(pageStatus())).toBe("");
+
+    modelHeld = null;
+    release();
+    await settle();
+    expect(text(pageStatus())).toBe("");
+  });
+
   test("the answer the refusal asks for shows the line when it no longer lists the chosen printer", async () => {
     // The chosen printer was taken out of My printers in another tab, so the
     // retry is refused and the reload comes back for the default printer

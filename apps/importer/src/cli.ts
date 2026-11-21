@@ -20,6 +20,9 @@
 // --download-idle-timeout <seconds> (else MANYFOLD_DOWNLOAD_IDLE_TIMEOUT),
 // from 1 to 86400. It is an idle limit, not a limit on the whole transfer,
 // so a large file over a slow link finishes as long as bytes keep arriving.
+// A file upload's limit works the same way: it fails when Platehouse takes
+// nothing for 120 s, or for --upload-idle-timeout <seconds> (else
+// PLATEHOUSE_UPLOAD_IDLE_TIMEOUT), from 1 to 86400.
 //
 // It reads Manyfold with one read-scoped token and writes to Platehouse only
 // through the Public API v1, with a Platehouse API token. A dry run is the
@@ -61,7 +64,12 @@ import {
   type ManyfoldModel,
 } from "./manyfold.js";
 import { externalRefFor, type ModelPlan, planModel, type SourceModel } from "./plan.js";
-import { createPlatehouse, type Platehouse, type PlatehouseModel } from "./platehouse.js";
+import {
+  createPlatehouse,
+  DEFAULT_UPLOAD_IDLE_MS,
+  type Platehouse,
+  type PlatehouseModel,
+} from "./platehouse.js";
 import { cleanText, createRedactor, type Redactor } from "./redact.js";
 import {
   exitCode,
@@ -89,18 +97,30 @@ const CREDENTIALS = ["MANYFOLD_CLIENT_ID", "MANYFOLD_CLIENT_SECRET", "PLATEHOUSE
 
 export const USAGE = [
   "usage: platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]",
-  "         [--download-idle-timeout <seconds>]",
+  "         [--download-idle-timeout <seconds>] [--upload-idle-timeout <seconds>]",
   "  --manyfold and --platehouse are the https addresses of Manyfold and Platehouse;",
   "  without a flag, MANYFOLD_BASE or PLATEHOUSE_BASE is read. Neither has a default.",
   "  Set MANYFOLD_CLIENT_ID, MANYFOLD_CLIENT_SECRET and PLATEHOUSE_TOKEN in the environment.",
   "  A dry run is the default; --apply writes to Platehouse. --model <id> runs one model.",
   "  --download-idle-timeout <seconds>, or MANYFOLD_DOWNLOAD_IDLE_TIMEOUT, fails a file download",
   `  that receives nothing for that long (default ${DEFAULT_DOWNLOAD_IDLE_MS / 1000}); a slow download that keeps receiving never times out.`,
+  "  --upload-idle-timeout <seconds>, or PLATEHOUSE_UPLOAD_IDLE_TIMEOUT, fails a file upload",
+  `  that Platehouse takes nothing of for that long (default ${DEFAULT_UPLOAD_IDLE_MS / 1000}); a slow upload that keeps going never times out.`,
 ].join("\n");
 
-/** The download idle limit's flag and variable, and the most they take: a day. */
-const IDLE_FLAG = "download-idle-timeout";
-const IDLE_VARIABLE = "MANYFOLD_DOWNLOAD_IDLE_TIMEOUT";
+/** The idle limits' flags and variables, and their defaults; each takes at most a day. */
+const IDLE_LIMITS = {
+  download: {
+    flag: "download-idle-timeout",
+    variable: "MANYFOLD_DOWNLOAD_IDLE_TIMEOUT",
+    fallback: DEFAULT_DOWNLOAD_IDLE_MS,
+  },
+  upload: {
+    flag: "upload-idle-timeout",
+    variable: "PLATEHOUSE_UPLOAD_IDLE_TIMEOUT",
+    fallback: DEFAULT_UPLOAD_IDLE_MS,
+  },
+} as const;
 const IDLE_MAX_S = 86_400;
 
 /** A whole number of seconds from 1 to IDLE_MAX_S, as ms, or null. */
@@ -419,7 +439,8 @@ export async function run(options: RunOptions): Promise<RunResult> {
       model: string | undefined;
       manyfold: string | undefined;
       platehouse: string | undefined;
-      idle: string | undefined;
+      downloadIdle: string | undefined;
+      uploadIdle: string | undefined;
     };
     try {
       const { values } = parseArgs({
@@ -429,7 +450,8 @@ export async function run(options: RunOptions): Promise<RunResult> {
           model: { type: "string" },
           manyfold: { type: "string" },
           platehouse: { type: "string" },
-          [IDLE_FLAG]: { type: "string" },
+          [IDLE_LIMITS.download.flag]: { type: "string" },
+          [IDLE_LIMITS.upload.flag]: { type: "string" },
         },
         strict: true,
         allowPositionals: false,
@@ -439,7 +461,8 @@ export async function run(options: RunOptions): Promise<RunResult> {
         model: values.model,
         manyfold: values.manyfold,
         platehouse: values.platehouse,
-        idle: values[IDLE_FLAG],
+        downloadIdle: values[IDLE_LIMITS.download.flag],
+        uploadIdle: values[IDLE_LIMITS.upload.flag],
       };
     } catch (error) {
       err(message(error));
@@ -452,15 +475,25 @@ export async function run(options: RunOptions): Promise<RunResult> {
       return { code: 2, report: null };
     }
 
-    // The download idle limit: the flag, else the variable, else the default.
-    // An empty variable counts as not set, as for the addresses.
-    const idleFromEnv = (options.env[IDLE_VARIABLE] ?? "").trim();
-    const idleGiven = args.idle ?? (idleFromEnv === "" ? undefined : idleFromEnv);
-    const downloadTimeoutMs =
-      idleGiven === undefined ? DEFAULT_DOWNLOAD_IDLE_MS : idleSeconds(idleGiven);
-    if (downloadTimeoutMs === null) {
-      const source = args.idle === undefined ? IDLE_VARIABLE : `--${IDLE_FLAG}`;
-      err(`${source} takes a whole number of seconds from 1 to ${IDLE_MAX_S}`);
+    // Each idle limit: the flag, else the variable, else the default. An
+    // empty variable counts as not set, as for the addresses.
+    const idleLimit = (
+      which: keyof typeof IDLE_LIMITS,
+      fromFlag: string | undefined,
+    ): number | null => {
+      const { flag, variable, fallback } = IDLE_LIMITS[which];
+      const fromEnv = (options.env[variable] ?? "").trim();
+      const given = fromFlag ?? (fromEnv === "" ? undefined : fromEnv);
+      const ms = given === undefined ? fallback : idleSeconds(given);
+      if (ms === null) {
+        const source = fromFlag === undefined ? variable : `--${flag}`;
+        err(`${source} takes a whole number of seconds from 1 to ${IDLE_MAX_S}`);
+      }
+      return ms;
+    };
+    const downloadTimeoutMs = idleLimit("download", args.downloadIdle);
+    const uploadTimeoutMs = idleLimit("upload", args.uploadIdle);
+    if (downloadTimeoutMs === null || uploadTimeoutMs === null) {
       usage();
       return { code: 2, report: null };
     }
@@ -533,7 +566,12 @@ export async function run(options: RunOptions): Promise<RunResult> {
       sensitive: (value) => redactor.add(value),
       downloadTimeoutMs,
     });
-    const platehouse = createPlatehouse({ ...common, base: platehouseBase, bearer });
+    const platehouse = createPlatehouse({
+      ...common,
+      base: platehouseBase,
+      bearer,
+      uploadTimeoutMs,
+    });
 
     out(
       `${new Date().toISOString()} platehouse-import ${mode}: ${manyfoldBase} -> ${platehouseBase}`,
