@@ -162,13 +162,33 @@ smoke slice passes.
 
 ## Layout
 
-- `apps/server` - the Fastify server. So far it holds `src/config.ts`, which reads the
-  configuration from the environment and refuses to start when a value is missing or invalid.
-  A configuration error names the key and never prints its value.
+- `apps/server` - the Fastify server: sign-in, the app API the web app uses, the public API
+  (`src/api`), uploads, ingest, the job queues, storage and the slicer client. `src/main.ts`
+  starts it. `src/config.ts` reads the configuration from the environment and refuses to start
+  when a value is missing or invalid; a configuration error names the key and never prints its
+  value.
   - `src/db` - the Postgres schema as hand-written, numbered SQL files in `src/db/migrations`,
     the forward-only migrator (`migrate.ts`) and the Kysely setup. An applied migration is
     never edited: the migrator refuses to run if one changed, so a change goes in a new file.
   - `src/repos` - the database repositories the rest of the server calls.
+- `apps/web` - the web app: React, built with Vite. The server serves its build.
+- `apps/slicer` - the slicer server that runs in the slicer container: OrcaSlicer estimates,
+  OpenSCAD renders and STEP conversion over the slicer HTTP contract, on the internal network
+  only. Its image is `apps/slicer/Dockerfile`.
+- `apps/importer` - `platehouse-import`, the one-time import of a Manyfold library through the
+  public API.
+- `apps/docs` - the Docusaurus site that builds the pages in `docs/`.
+- `packages/threemf` - reads a `.3mf` project: its plates, filaments and the numbers Bambu saved.
+- `packages/makerworld` - the MakerWorld details in a `.3mf`, its description as Markdown, the
+  licence map and the sanitising Markdown renderer.
+- `packages/slicer-contract` - the slicer HTTP contract's schemas, shared by the slicer server
+  and the server's slicer client.
+- `packages/i18n` - the translations: the message format, the catalogs in `locales/` (English is
+  the source) and their check.
+- `docker` - the app image (`app.Dockerfile`, the server with the web app beside it) and the
+  script CI uses to test it.
+- `e2e` - the end-to-end tests: Playwright through a real Traefik; see its README.
+- `examples` - the example `docker-compose.yml` and `.env.example` the Install page starts from.
 - `tools/slicing-gate` - the Task 1 slicing gate harness; see its README.
 - `tools/brand` - writes the logo's static files (the favicons, app icons and web manifest in
   `apps/web/public`, and `docs/assets/logo.svg` and `favicon.svg`) from the art in

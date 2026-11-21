@@ -34,8 +34,10 @@ Each API client, such as a script or another tool on one computer, gets its own 
   it then; Platehouse cannot show it again.
 - Platehouse stores only a SHA-256 hash of each token and its first 8 characters, so you can tell
   tokens apart. A stolen database does not give working tokens.
-- Revoke a token in **Settings** when a client no longer needs it, or if it may have leaked.
-  Revoking one leaves the others working. Each token shows when it was last used.
+- Revoke a token in **Settings** when a client no longer needs it, if it may have leaked, or when
+  someone who made or used it is removed from the group: removing a person does not revoke their
+  tokens (see [Sign-in](./sign-in.md#the-allowed-group)). Revoking one leaves the others working.
+  Each token shows when it was last used.
 - A token is sent as `Authorization: Bearer <token>`. Cookies never count for the API, and tokens
   never appear in the app's log.
 - A token can read the library, upload files and change tags and collections. It cannot delete,

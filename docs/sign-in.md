@@ -54,6 +54,21 @@ to take access away, remove them. Removing someone stops their next sign-in, but
 session they already have lasts until it expires (7 days without use, 30 days at most) or they
 sign out. Platehouse 0.1.0 has no button to end another person's session.
 
+Removing someone does not touch API tokens. A token belongs to the library, not to the person who
+made it, never expires and is not checked against the group, so a token they made or used keeps
+reading, uploading and tagging after they are removed. While their session lasts they can also
+make new tokens in **Settings**. To cut someone off completely:
+
+1. Remove them from the group at your provider.
+2. End their sessions: in Platehouse's database, delete their rows from the `sessions` table with
+   `delete from sessions where subject = '<their user id>';`, where the user id is the `sub` your
+   provider gives them. Do this before step 3, or they can make a new token in the meantime.
+3. In **Settings**, revoke every API token they made or had a copy of, and any token you cannot
+   account for.
+
+Platehouse 0.1.0 does not record who made a token or end someone's sessions for you; that is
+planned ([#322](https://github.com/jonathanmcohen/platehouse/issues/322)).
+
 Everyone who signs in sees and changes the same library. There are no roles.
 
 ## Sessions
