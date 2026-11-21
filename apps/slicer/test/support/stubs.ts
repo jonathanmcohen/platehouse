@@ -19,7 +19,14 @@ function writeScript(file: string, body: string): string {
 
 export type OrcaMode =
   | { kind: "ok"; time: number; weight: number; grams: number[] }
-  | { kind: "result"; code: number; error: string }
+  /**
+   * Orca writes result.json with this code, then exits as a real refusal
+   * does, with (256 + code) & 0xff (239 for -17: Orca returns the code from
+   * main). exit replaces that status; segfault kills the stub with SIGSEGV
+   * after it writes the file, which the fake time, like GNU time, reports
+   * as exit 139.
+   */
+  | { kind: "result"; code: number; error: string; exit?: number; segfault?: boolean }
   | { kind: "crash"; exit: number }
   | { kind: "noStats" }
   | { kind: "sleep" };
@@ -61,7 +68,7 @@ exit 0
     }
     case "result":
       body = `printf '%s' '${JSON.stringify({ return_code: mode.code, error_string: mode.error })}' > "$out/result.json"
-exit 1
+${mode.segfault === true ? "kill -SEGV $$" : `exit ${mode.exit ?? (mode.code + 256) % 256}`}
 `;
       break;
     case "crash":

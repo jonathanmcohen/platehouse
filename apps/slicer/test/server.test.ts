@@ -421,6 +421,24 @@ describe("slicing", () => {
     expect(body.status === "failed" && body.detail.length).toBe(2000);
   });
 
+  // A refusal Orca recorded just before it crashed must not read as that
+  // refusal: the user would change settings for nothing, and the crash
+  // would never be logged as one.
+  test.each([
+    ["exit 139", { exit: 139 }],
+    ["a segfault signal", { segfault: true }],
+  ])("a refusal code followed by %s is a crash, slicer_error, not the refusal", async (_, end) => {
+    const msg = "The selected printer is not compatible with the process preset in the 3mf.";
+    const base = await start(setup({}, { kind: "result", code: -17, error: msg, ...end }).config);
+    const body = slicerContract.sliceResult.parse(
+      await (await postSlice(base, sliceable())).json(),
+    );
+    expect(body).toMatchObject({ status: "failed", code: -17, reason: "slicer_error" });
+    expect(body.status === "failed" && body.detail).toBe(
+      "Orca wrote return code -17 (the selected printer is not compatible with the process preset in the 3mf), then exited with 139",
+    );
+  });
+
   test("a crash with no result.json is slicer_error with no code", async () => {
     const base = await start(setup({}, { kind: "crash", exit: 139 }).config);
     const body = slicerContract.sliceResult.parse(
