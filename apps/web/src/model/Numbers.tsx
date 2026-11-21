@@ -17,11 +17,10 @@
 // - A plate that could not be sliced: the reason in plain words, Orca's own
 //   message behind a Details button, and Retry, which queues the slice again
 //   from the stored file (no re-upload). A refused or failed retry is said
-//   beside the plate: a 409 not_retryable says it can no longer be retried,
-//   in a status line outside the failure block (the page loads the model
-//   again, which usually no longer has the failure); it is a one-shot
-//   notice whose lifetime is set out in PlateNumbersView. A 401 says the user is signed out; anything else says what the
-//   server's answer means (errorText).
+//   beside the plate: a 401 says the user is signed out, anything else what
+//   the server's answer means (errorText). A 409 not_retryable is the
+//   page's to say, not the plate's (ModelPage's Refused): the model it
+//   loads again often no longer has this plate.
 // Times and weights are formatted as the library's cards format them.
 import { useId, useState } from "react";
 import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
@@ -188,12 +187,6 @@ function EstimateNumbers({
   );
 }
 
-/** A Retry refused as not retryable: the printer the switch showed, and how many answers have landed since. */
-interface Refused {
-  printer: string;
-  answers: number;
-}
-
 export interface PlateNumbersViewProps {
   numbers: PlateNumbers;
   /** The printer the page shows numbers for (an Orca preset id). */
@@ -205,14 +198,8 @@ export interface PlateNumbersViewProps {
   /** Whether an estimate for the selected printer is queued or slicing (ModelPlate.estimatePending). */
   pending: boolean;
   /**
-   * The printer the switch shows now, which changes as soon as another is
-   * chosen, before its numbers land (PlatesTab's switchPrinter); printer
-   * when left out.
-   */
-  switchShows?: string;
-  /**
    * Queues a failed estimate again; rejects with the server's AppApiError
-   * when refused (and the page loads the model again on a 409).
+   * when refused (on a 409 the page says so and loads the model again).
    */
   onRetry(estimateId: string): Promise<void>;
 }
@@ -223,7 +210,6 @@ export function PlateNumbersView({
   printerName,
   projectFilaments,
   pending,
-  switchShows = printer,
   onRetry,
 }: PlateNumbersViewProps) {
   const i18n = useI18n();
@@ -233,42 +219,21 @@ export function PlateNumbersView({
   const [retrying, setRetrying] = useState(false);
   const errorText = useErrorText();
   const [retryError, setRetryError] = useState<string | null>(null);
-  // The notice's lifetime: a 409 not_retryable is a one-shot notice, never
-  // state to be proven stale. It is shown until the answer after the one
-  // the 409 asked for lands, whatever that answer shows, or until another
-  // Retry is pressed, another printer is chosen or the page is left,
-  // whichever comes first. After that the plate shows only what the answer
-  // says. It sits outside the failure block, because the answer the 409
-  // asks for usually no longer has the failure. A new numbers object is an
-  // answer that landed: polls, reloads and the printer switch keep this
-  // view mounted, and nothing else replaces it.
-  const [refused, setRefused] = useState<Refused | null>(null);
-  const [seen, setSeen] = useState(numbers);
-  let stillRefused = refused;
-  if (numbers !== seen) {
-    setSeen(numbers);
-    if (stillRefused !== null) {
-      stillRefused = stillRefused.answers === 0 ? { ...stillRefused, answers: 1 } : null;
-    }
-  }
-  if (stillRefused !== null && stillRefused.printer !== switchShows) stillRefused = null;
-  if (stillRefused !== refused) setRefused(stillRefused);
   const { file, platehouse, failure } = numbers;
 
   async function retry() {
     if (failure === undefined || retrying) return;
     setRetrying(true);
     setRetryError(null);
-    setRefused(null);
     try {
       await onRetry(failure.estimateId);
     } catch (refusal) {
-      // 409 not_retryable is final: say so rather than "try again". A 401
-      // says the user is signed out, and anything else what the server's
-      // answer means (errorText).
-      if (refusal instanceof AppApiError && refusal.status === 409) {
-        setRefused({ printer: switchShows, answers: 0 });
-      } else setRetryError(errorText(refusal));
+      // 409 not_retryable is final, and the page says so (ModelPage's
+      // Refused). A 401 says the user is signed out, and anything else what
+      // the server's answer means (errorText).
+      if (!(refusal instanceof AppApiError && refusal.status === 409)) {
+        setRetryError(errorText(refusal));
+      }
     } finally {
       setRetrying(false);
     }
@@ -324,12 +289,6 @@ export function PlateNumbersView({
           )}
         </div>
       )}
-      {/* Always in the page, so a screen reader hears what is put in it. */}
-      <div role="status">
-        {stillRefused !== null ? (
-          <p className="ph-error">{t("model.numbers.notRetryable")}</p>
-        ) : null}
-      </div>
       {file === undefined && platehouse === undefined && failure === undefined ? (
         <>
           <p className="studio-muted">{t("model.numbers.none")}</p>

@@ -352,7 +352,7 @@
   "model.numbers.fromFile": "Bambu, dans le fichier",
   "model.numbers.main": "{time}, {weight}",
   "model.numbers.none": "Pas encore de chiffres pour ce plateau.",
-  "model.numbers.notRetryable": "Ce plateau ne peut plus \u00eatre relanc\u00e9. Il est d\u00e9j\u00e0 en cours de nouvelle estimation, ou son imprimante ou son fichier a chang\u00e9.",
+  "model.numbers.notRetryable": "{file}, {plate} : ne peut plus \u00eatre relanc\u00e9. Il est d\u00e9j\u00e0 en cours de nouvelle estimation, ou son imprimante ou son fichier a chang\u00e9.",
   "model.numbers.onItsWay": "Une nouvelle estimation pour {printer} est en route.",
   "model.numbers.printer": "Imprimante",
   "model.numbers.process": "Processus",

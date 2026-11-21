@@ -12,7 +12,7 @@
 
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
 import { PrinterSwitch } from "../settings/PrinterSwitch";
-import type { ModelFile, ModelView } from "./ModelPage";
+import type { ModelFile, ModelView, RetryTarget } from "./ModelPage";
 import { PlateNumbersView } from "./Numbers";
 import { OpenInSlicer, type Platform } from "./OpenInSlicer";
 import { plateLabel } from "./PlateStrip";
@@ -36,8 +36,11 @@ export function parseStatusWords(
 
 export interface PlatesTabProps {
   model: ModelView;
-  /** Queues a failed estimate again; rejects with the server's AppApiError when refused. */
-  onRetry(estimateId: string): Promise<void>;
+  /**
+   * Queues a failed estimate again, with the file and plate it is for;
+   * rejects with the server's AppApiError when refused.
+   */
+  onRetry(estimateId: string, target: RetryTarget): Promise<void>;
   /** The printer switch: shows another of My printers' numbers. */
   onChoosePrinter(printerId: string): void;
   /** The switch's stored choice, which may still be loading; null for the default. */
@@ -116,8 +119,7 @@ export function PlatesTab({
                       printerName={model.printerName}
                       projectFilaments={file.filaments}
                       pending={plate.estimatePending}
-                      switchShows={shown.printer}
-                      onRetry={onRetry}
+                      onRetry={(estimateId) => onRetry(estimateId, { fileName: file.name, plate })}
                     />
                   </li>
                 ))}

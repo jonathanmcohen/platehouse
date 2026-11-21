@@ -622,13 +622,7 @@ describe("an English page and a server sentence the page knows by code", () => {
     return (
       <PlateNumbersView
         numbers={{
-          failure: {
-            estimateId: "est-1",
-            reason: "bed_too_small",
-            words: SAID,
-            detail: null,
-            failedAt: "2026-11-13T10:00:00.000Z",
-          },
+          failure: { estimateId: "est-1", reason: "bed_too_small", words: SAID, detail: null },
         }}
         printer="p1s"
         printerName="Bambu Lab P1S, 0.4 mm nozzle"

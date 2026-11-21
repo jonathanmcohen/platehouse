@@ -40,8 +40,7 @@
 //   rendered STL (render_stl) and preview (render_png). Anything else is
 //   null, so the page shows no image rather than another file's bytes. A
 //   .3mf has no 3D view (AC-051).
-// - Each plate's numbers are Task 12's numbers (pagePlateNumbers: plateNumbers
-//   with the failure's time, failure.failedAt), with the display
+// - Each plate's numbers are Task 12's plateNumbers, with the display
 //   context (the settings row and the printer menu, readDisplayContext)
 //   read once per page, as the library page does (app-api/library.ts).
 //   Beside them, estimatePending says whether an estimate for the selected
@@ -69,8 +68,8 @@ import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
 import {
   type DisplayContext,
-  type PagePlateNumbers,
-  pagePlateNumbers,
+  type PlateNumbers,
+  plateNumbers,
   printerName,
 } from "../estimates/display.js";
 import { createRepos } from "../repos/index.js";
@@ -108,8 +107,7 @@ export interface ModelPlate {
   objectCount: number;
   /** /blobs/<id> of the plate's stored thumbnail; null when there is none. */
   thumbnail: string | null;
-  /** Task 12's numbers, the failure with its time (pagePlateNumbers). */
-  numbers: PagePlateNumbers;
+  numbers: PlateNumbers;
   /**
    * Whether a Platehouse estimate for the selected printer and the current
    * Orca version is queued or slicing now. The page polls on this, not on a
@@ -320,7 +318,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
         blobId !== null && kindOf.get(blobId) === kind ? blobId : null;
 
       // Every plate's numbers and estimatePending from one snapshot.
-      const numbers = new Map<string, PagePlateNumbers>();
+      const numbers = new Map<string, PlateNumbers>();
       const pending = new Set<string>();
       if (plates.length > 0) {
         await db
@@ -346,7 +344,7 @@ export function createAppModel(deps: AppModelDeps): AppModel {
               .where("status", "in", ["pending", "running"])
               .execute();
             for (const r of pendingRows) pending.add(r.plateId);
-            for (const p of plates) numbers.set(p.id, await pagePlateNumbers(trx, ctx, p.id));
+            for (const p of plates) numbers.set(p.id, await plateNumbers(trx, ctx, p.id));
           });
       }
 

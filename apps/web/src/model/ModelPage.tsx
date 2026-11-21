@@ -40,7 +40,11 @@
 //   gate's Origin check passes a same-origin fetch) and loads the model
 //   again, which starts the polling while the plate estimates. A refusal
 //   reaches the plate as the server's AppApiError (Numbers.tsx puts it in
-//   words); a 409 not_retryable loads the model again too.
+//   words), except a 409 not_retryable: that loads the model again and is
+//   said by the page, in a status line that names the file and plate,
+//   because the answer it asks for often no longer has the plate (its file
+//   was removed) or the printer (taken out of My printers). Its lifetime is
+//   set out at Refused below.
 // - Files dropped on the page go to onFiles with this model's id; main.tsx
 //   opens Task 19's upload dialog aimed at this model, where the Combine
 //   switch is not shown. refreshKey changes when an upload round finishes,
@@ -111,8 +115,6 @@ export interface PlateFailure {
   reason: string;
   words: string;
   detail: string | null;
-  /** When this failure was recorded (ISO 8601); a retry keeps estimateId, so this tells failures apart. */
-  failedAt: string | null;
 }
 
 export interface PlateNumbers {
@@ -240,6 +242,35 @@ type Load =
 
 type TabName = "plates" | "files" | "about";
 
+/** The plate a Retry is for, so a refusal can name it after the plate has left the page. */
+export interface RetryTarget {
+  fileName: string;
+  plate: Pick<ModelPlate, "index" | "name">;
+}
+
+/**
+ * A Retry refused as not retryable (409), on the model with this id: the
+ * plate it was for, and how many answers have landed since.
+ *
+ * The notice's lifetime: a 409 not_retryable is a one-shot notice, never
+ * state to be proven stale. It is shown until the answer after the one the
+ * 409 asked for lands, whatever that answer shows, or until another Retry
+ * is pressed, the user chooses another printer or the page is left,
+ * whichever comes first. After that the plates show only what the answer
+ * says. It is the page's, not the plate's, so it stays when the answer no
+ * longer has the plate (its file was removed). Of printer changes, only
+ * the user's own choice on the switch ends it: an answer for another
+ * printer than the one chosen (the chosen one was taken out of My
+ * printers, so the server fell back to the default) is not a switch, and
+ * the request the page then makes without the forgotten choice (settle)
+ * asks for that same answer again, so it is not counted as the next one.
+ */
+interface Refused {
+  id: string;
+  target: RetryTarget;
+  answers: number;
+}
+
 const TAB_LABEL: Record<TabName, MessageKey> = {
   plates: "model.tab.plates",
   files: "model.tab.files",
@@ -266,6 +297,10 @@ export function ModelPage({
   /** The printer switch's choice: whose numbers the plates show. */
   const printer = usePrinterChoice();
   const { choice, settle: settlePrinter } = printer;
+  const [refused, setRefused] = useState<Refused | null>(null);
+  /** Whether the last answer made the page forget its printer choice, so the next request only asks for it again. */
+  const forgetting = useRef(false);
+  if (refused !== null && refused.id !== id) setRefused(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload and refreshKey are triggers: a change of either loads the model again.
   useEffect(() => {
@@ -277,6 +312,7 @@ export function ModelPage({
     function failed(status?: number) {
       // A 401 will not change by asking again, first load or not: it says
       // the user is signed out and offers no Try again.
+      forgetting.current = false;
       const first = shownFor.current !== id;
       if (status === 401) {
         if (first) setLoad({ id, status: "signed-out" });
@@ -317,6 +353,14 @@ export function ModelPage({
         }
         const model = (await res.json()) as ModelView;
         if (cancelled) return;
+        // An answer landed for the refusal's notice (Refused), unless it
+        // only asked again for the last one without a forgotten choice.
+        if (!forgetting.current) {
+          setRefused((was) =>
+            was === null ? null : was.answers === 0 ? { ...was, answers: 1 } : null,
+          );
+        }
+        forgetting.current = choice !== null && model.printer !== "" && model.printer !== choice;
         shownFor.current = id;
         polling.current = needsPolling(model);
         setNotice(null);
@@ -340,17 +384,28 @@ export function ModelPage({
   /**
    * Queues a failed estimate again and loads the model again. A refusal
    * rejects with the server's AppApiError for the plate to put in words; a
-   * 409 not_retryable also loads the model again, since the estimate has
-   * moved on (it is usually no longer failed).
+   * 409 not_retryable is said here instead (Refused), naming the plate, and
+   * loads the model again, since the estimate has moved on (it is usually
+   * no longer failed).
    */
-  async function retry(estimateId: string): Promise<void> {
+  async function retry(estimateId: string, target: RetryTarget): Promise<void> {
+    setRefused(null);
     try {
       await appApi("POST", `/estimates/${encodeURIComponent(estimateId)}/retry`);
     } catch (failure) {
-      if (failure instanceof AppApiError && failure.status === 409) setReload((n) => n + 1);
+      if (failure instanceof AppApiError && failure.status === 409) {
+        setRefused({ id, target, answers: 0 });
+        setReload((n) => n + 1);
+      }
       throw failure;
     }
     setReload((n) => n + 1);
+  }
+
+  /** The user's own choice on the printer switch, which ends a refusal's notice. */
+  function choosePrinter(printerId: string) {
+    setRefused(null);
+    printer.choose(printerId);
   }
 
   /**
@@ -416,11 +471,28 @@ export function ModelPage({
           </button>
         </div>
       )}
+      {/* Always in the page, so a screen reader hears what is put in it. */}
+      <div role="status">
+        {refused === null ? null : (
+          <p className="studio-alert studio-alert-alert">
+            {t("model.numbers.notRetryable", {
+              file: refused.target.fileName,
+              plate:
+                refused.target.plate.name === null
+                  ? t("activity.plate", { index: refused.target.plate.index })
+                  : t("activity.plateNamed", {
+                      index: refused.target.plate.index,
+                      name: refused.target.plate.name,
+                    }),
+            })}
+          </p>
+        )}
+      </div>
       <ModelDetail
         key={model.id}
         model={model}
         onRetry={retry}
-        onChoosePrinter={printer.choose}
+        onChoosePrinter={choosePrinter}
         chosenPrinter={choice}
         onRename={rename}
         loadThree={loadThree}
@@ -435,7 +507,7 @@ export function ModelPage({
 interface ModelDetailProps {
   model: ModelView;
   /** Queues a failed estimate again; rejects with the server's AppApiError when refused. */
-  onRetry(estimateId: string): Promise<void>;
+  onRetry(estimateId: string, target: RetryTarget): Promise<void>;
   /** The printer switch: shows another printer's numbers. */
   onChoosePrinter(printerId: string): void;
   /** The switch's stored choice, which may still be loading. */

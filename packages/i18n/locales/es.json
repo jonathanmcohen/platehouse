@@ -352,7 +352,7 @@
   "model.numbers.fromFile": "Bambu, en el archivo",
   "model.numbers.main": "{time}, {weight}",
   "model.numbers.none": "Todav\u00eda no hay datos para esta placa.",
-  "model.numbers.notRetryable": "Esta placa ya no se puede reintentar. Ya se est\u00e1 estimando de nuevo, o su impresora o su archivo han cambiado.",
+  "model.numbers.notRetryable": "{file}, {plate}: ya no se puede reintentar. Ya se est\u00e1 estimando de nuevo, o su impresora o su archivo han cambiado.",
   "model.numbers.onItsWay": "Hay una nueva estimaci\u00f3n en camino para {printer}.",
   "model.numbers.printer": "Impresora",
   "model.numbers.process": "Proceso",
