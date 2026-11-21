@@ -48,9 +48,33 @@ describe("slicer image", () => {
     expect(r.stdout.trim()).toBe("");
   });
 
+  // /tmp is mode 1777 in the Ubuntu base and the image never changes it, so
+  // user 10001 could write there on a writable root: only a read-only mount
+  // stops the touch. (A root-owned folder such as /opt/platehouse refuses
+  // 10001 either way, so it proves nothing about the mount.) The root
+  // mount's own options must say ro too.
   test("the root filesystem is read-only and /work is writable", () => {
-    expect(slicer.exec(["touch", "/opt/platehouse/x"]).code).not.toBe(0);
+    expect(slicer.exec(["stat", "-c", "%a", "/tmp"]).stdout.trim()).toBe("1777");
+    const tmp = slicer.exec(["touch", "/tmp/x"]);
+    expect(tmp.code).not.toBe(0);
+    expect(tmp.stderr).toMatch(/Read-only file system/);
+    const mounts = slicer.exec(["cat", "/proc/mounts"]).stdout.split("\n");
+    const root = mounts.filter((l) => l.split(" ")[1] === "/").at(-1);
+    expect(root).toBeDefined();
+    expect((root ?? "").split(" ")[3]?.split(",")).toContain("ro");
     expect(slicer.exec(["touch", "/work/x"]).code).toBe(0);
+  });
+
+  // examples/docker-compose.yml sets memswap_limit equal to mem_limit and a
+  // core-file limit of 0; the harness passes the same (test/harness.test.ts),
+  // and this checks they reached the running container. On cgroup v2 a swap
+  // cap equal to the memory cap is memory.swap.max 0.
+  test("memory is capped at 4 GiB with no swap, and core files are off", () => {
+    expect(slicer.exec(["cat", "/sys/fs/cgroup/memory.max"]).stdout.trim()).toBe(
+      String(4 * 1024 ** 3),
+    );
+    expect(slicer.exec(["cat", "/sys/fs/cgroup/memory.swap.max"]).stdout.trim()).toBe("0");
+    expect(slicer.exec(["sh", "-c", "ulimit -c"]).stdout.trim()).toBe("0");
   });
 
   // A body with no Content-Length is counted as it arrives. Going past the

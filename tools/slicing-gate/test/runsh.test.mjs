@@ -247,6 +247,87 @@ test("run.sh exits 2, not FAIL, when an unguarded setup step fails", async (t) =
   }
 });
 
+// README step 3 starts the run detached under flock -n GATE_DIR/run.lock, and
+// step 5 is --clean. Pasting step 5 while a detached run is still going must
+// not delete that run's inputs, outputs and lock: --clean takes the lock first
+// and refuses, deleting nothing, while a run holds it. A stub flock decides
+// the lock in these cases, so they run on macOS too, where flock (util-linux)
+// is not installed; the real-flock case below runs where it is.
+const FLOCK = `#!/usr/bin/env bash
+printf 'flock %s\\n' "$*" >> "$STUB_LOG"
+exit "\${STUB_FLOCK_RC:-0}"
+`;
+function withFlock(stubDir) {
+  writeFileSync(join(stubDir, "flock"), FLOCK);
+  chmodSync(join(stubDir, "flock"), 0o755);
+  return stubDir;
+}
+const hasFlock = spawnSync("bash", ["-c", "command -v flock"]).status === 0;
+
+test("run.sh --clean refuses, deleting nothing, while a gate run holds run.lock", () => {
+  const gate = gateDir();
+  writeFileSync(join(gate, "run.lock"), "");
+  mkdirSync(join(gate, "out"));
+  writeFileSync(join(gate, "out", "partial.json"), "{}");
+  const r = run(["--clean"], { gate, stubDir: withFlock(stubs()), extra: { STUB_FLOCK_RC: "1" } });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /a gate run is going/);
+  assert.match(r.stderr, /nothing was deleted/);
+  assert.ok(r.calls.some((c) => /^flock -n /.test(c)), r.calls.join("\n"));
+  assert.equal(existsSync(join(gate, "out", "partial.json")), true, "the live run's output is kept");
+  assert.equal(existsSync(join(gate, "in", "sample")), true, "the live run's input is kept");
+  assert.equal(existsSync(join(gate, "run.lock")), true, "the live run's lock is kept");
+  assert.ok(!r.calls.includes("image rm platehouse-gate:t1"), "the image is not removed");
+  assert.doesNotMatch(r.stdout, /neither remains/);
+});
+
+test("run.sh --clean deletes as before once run.lock is free", () => {
+  const gate = gateDir();
+  writeFileSync(join(gate, "run.lock"), "");
+  const r = run(["--clean"], { gate, stubDir: withFlock(stubs()) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.calls.some((c) => /^flock -n /.test(c)), "the lock was taken");
+  assert.equal(existsSync(gate), false);
+  assert.ok(r.calls.includes("image rm platehouse-gate:t1"));
+  assert.match(r.stdout, /neither remains/);
+});
+
+test("run.sh --clean with no run.lock never ran a gate under the lock, so it needs no flock", () => {
+  const gate = gateDir();
+  const r = run(["--clean"], { gate, stubDir: withFlock(stubs()), extra: { STUB_FLOCK_RC: "1" } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.calls.some((c) => c.startsWith("flock")), r.calls.join("\n"));
+  assert.equal(existsSync(gate), false);
+});
+
+test("run.sh --clean refuses when run.lock exists but flock is not installed to test it", { skip: hasFlock && "flock is installed here" }, () => {
+  const gate = gateDir();
+  writeFileSync(join(gate, "run.lock"), "");
+  const r = run(["--clean"], { gate, stubDir: stubs() });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /flock/);
+  assert.match(r.stderr, /nothing was deleted/);
+  assert.equal(existsSync(join(gate, "run.lock")), true);
+});
+
+test("run.sh --clean refuses while a real flock holds run.lock", { skip: !hasFlock && "flock (util-linux) is not installed" }, async () => {
+  const gate = gateDir();
+  const lock = join(gate, "run.lock");
+  const ready = join(gate, "held");
+  const { spawn } = await import("node:child_process");
+  const holder = spawn("flock", ["-n", lock, "bash", "-c", `touch '${ready}'; sleep 30`], { stdio: "ignore" });
+  try {
+    for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(existsSync(ready), true, "the holder took the lock");
+    const r = run(["--clean"], { gate, stubDir: stubs() });
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /a gate run is going/);
+    assert.equal(existsSync(lock), true);
+  } finally {
+    holder.kill("SIGKILL");
+  }
+});
+
 // --clean runs rm -rf on GATE_DIR, and a case pattern's * also matches "/.."
 // so /tmp/platehouse-gate/../../home/someone passed the old guard. These paths
 // stay inside the test's own scratch dir, so the old code deletes nothing

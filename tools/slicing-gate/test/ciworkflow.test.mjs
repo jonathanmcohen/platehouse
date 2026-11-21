@@ -1492,6 +1492,15 @@ for (const [name, env, want] of [
   ["a release whose tag is not the one asked for is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "2.5.0", BYTAG: release("v2.5.1") }, { fail: /asked for v2\.5\.0/ }],
   ["a tag push that is not semver is refused", { EVENT: "push", REF: "refs/tags/v1.2.3.4" }, { fail: /is not a semver tag/, noCall: true }],
   ["a tag push of vtest.x.y is refused", { EVENT: "push", REF: "refs/tags/vtest.x.y" }, { fail: /is not a semver tag/, noCall: true }],
+  // A run by hand builds the dispatched ref's apps/slicer and moves stable, so
+  // it must start from main or a release tag, as release.yml's gate requires;
+  // a dispatch from any other branch would publish unreviewed code.
+  ["a dispatch from a feature branch is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/heads/fix/slicer-x", LATEST: release("v2.5.1") }, { fail: /refs\/heads\/fix\/slicer-x is not main or a release tag/, noCall: true }],
+  ["a dispatch from the release branch is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/heads/release/v0.1.0", LATEST: release("v2.5.1") }, { fail: /is not main or a release tag/, noCall: true }],
+  ["a dispatch from a branch named like main is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/heads/main-x", LATEST: release("v2.5.1") }, { fail: /is not main or a release tag/, noCall: true }],
+  ["a dispatch from a tag that is not semver is refused", { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/tags/vtest", LATEST: release("v2.5.1") }, { fail: /is not a semver tag/, noCall: true }],
+  ["a dispatch from a plain release tag moves stable", { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/tags/v0.1.0", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "true" }],
+  ["a dispatch from a prerelease tag leaves stable alone", { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/tags/v0.1.0-rc.1", LATEST: release("v2.5.1") }, { version: "2.5.1", call: "releases/latest", stable: "false" }],
   ["a failed API call fails the step", { EVENT: "schedule", GH_STATUS: "1" }, { fail: /HTTP 404/ }],
 ]) {
   test(`slicer-image version pick: ${name}`, () => {

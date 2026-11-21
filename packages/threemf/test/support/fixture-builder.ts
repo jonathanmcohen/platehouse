@@ -29,6 +29,12 @@ export interface ZipOptions {
   cdOffset?: number;
   /** Mark the end record as zip64 and add a locator pointing at this offset. */
   zip64EndAt?: bigint;
+  /**
+   * Write a valid zip64 end record and locator (the only way to list more
+   * than 65535 entries), with the classic end record's fields set to their
+   * zip64 markers.
+   */
+  zip64Records?: boolean;
 }
 
 export function buildZip(entries: ZipEntry[], opts: ZipOptions = {}): Buffer {
@@ -73,16 +79,31 @@ export function buildZip(entries: ZipEntry[], opts: ZipOptions = {}): Buffer {
   }
   const cd = Buffer.concat(centrals);
   const tail: Buffer[] = [];
-  if (opts.zip64EndAt !== undefined) {
+  let zip64EndAt = opts.zip64EndAt;
+  if (opts.zip64Records) {
+    const cdOffset = BigInt(opts.cdOffset ?? offset);
+    const record = Buffer.alloc(56);
+    record.writeUInt32LE(0x06064b50, 0);
+    record.writeBigUInt64LE(44n, 4);
+    record.writeUInt16LE(45, 12);
+    record.writeUInt16LE(45, 14);
+    record.writeBigUInt64LE(BigInt(entries.length), 24);
+    record.writeBigUInt64LE(BigInt(entries.length), 32);
+    record.writeBigUInt64LE(BigInt(cd.length), 40);
+    record.writeBigUInt64LE(cdOffset, 48);
+    tail.push(record);
+    zip64EndAt ??= BigInt(offset + cd.length);
+  }
+  if (zip64EndAt !== undefined) {
     const locator = Buffer.alloc(20);
     locator.writeUInt32LE(0x07064b50, 0);
-    locator.writeBigUInt64LE(opts.zip64EndAt, 8);
+    locator.writeBigUInt64LE(zip64EndAt, 8);
     locator.writeUInt32LE(1, 16);
     tail.push(locator);
   }
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0);
-  const zip64 = opts.zip64EndAt !== undefined;
+  const zip64 = zip64EndAt !== undefined;
   eocd.writeUInt16LE(zip64 ? 0xffff : entries.length, 8);
   eocd.writeUInt16LE(zip64 ? 0xffff : entries.length, 10);
   eocd.writeUInt32LE(zip64 ? 0xffffffff : cd.length, 12);
@@ -248,6 +269,19 @@ export function projectEntries(spec: ProjectSpec): ZipEntry[] {
 
 export function build3mf(spec: ProjectSpec, opts?: ZipOptions): Buffer {
   return buildZip(projectEntries(spec), opts);
+}
+
+/**
+ * A project padded with empty, stored entries of distinct names to exactly
+ * total entries, behind a zip64 end record. Everything but the count is a
+ * healthy file, so only an entry ceiling can refuse it.
+ */
+export function build3mfWithEntries(spec: ProjectSpec, total: number): Buffer {
+  const entries = projectEntries(spec);
+  const pad = total - entries.length;
+  if (pad < 0) throw new Error(`the project alone has ${entries.length} entries`);
+  for (let i = 0; i < pad; i++) entries.push({ name: `p/${i}`, data: Buffer.alloc(0), method: 0 });
+  return buildZip(entries, { zip64Records: true });
 }
 
 let tmpRoot: string | undefined;
