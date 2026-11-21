@@ -55,7 +55,7 @@ export interface FoundMetadata {
    * Stored as license_note whenever the model has none, whatever its SPDX id
    * (license_note is always stored); it is added at the foot of the
    * description only when the description and both licence columns are
-   * empty, since a description already set is never edited (Jon,
+   * empty, since a description already set is never edited (the maintainer,
    * 2026-11-08). The model page shows license_note (Task 20).
    */
   licenseNote?: string | null;
@@ -152,7 +152,7 @@ export interface RankedSearchQuery {
 export type LibraryView = Pick<RankedSearchQuery, "q" | "tag" | "collection" | "creator">;
 
 /**
- * The library's orders (Jon, 2026-11-19). relevance is best match first;
+ * The library's orders (the maintainer, 2026-11-19). relevance is best match first;
  * the others are by date added, name ignoring case, total print time or
  * weight for the selected printer, and plate count. Every order ends with
  * the model's id, so it is total and models that tie always come in the
@@ -600,10 +600,10 @@ export function modelsRepo(db: Kysely<DB>) {
 
     /**
      * Fill-only metadata (AC-022): writes each found value only into a field
-     * that is null or empty, so nothing Jon set is overwritten. The name is
+     * that is null or empty, so nothing the user set is overwritten. The name is
      * never touched. A found value that is null, empty or blank writes
      * nothing. A found licence note is stored whenever licenseNote is empty,
-     * whatever licenseSpdx holds (Jon's decision: license_note is always
+     * whatever licenseSpdx holds (the maintainer's decision: license_note is always
      * stored). A found SPDX id is filled only when both licence columns are
      * empty, and the note joins the foot of the description only when both
      * licence columns and the description were empty. False when the model

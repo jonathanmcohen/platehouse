@@ -1,4 +1,4 @@
-// The library's bulk actions (Jon, 2026-11-19): add tags to, remove a tag
+// The library's bulk actions (the maintainer, 2026-11-19): add tags to, remove a tag
 // from, add to a collection, or move to the trash every selected model, in
 // one request and one transaction.
 //
@@ -31,7 +31,7 @@
 //   try fails, the request answers 500 and nothing changed. Run inside a
 //   caller's transaction (inTransaction), an action is not retried, since
 //   the failed statement has already aborted that transaction.
-// - The view (Jon, 2026-11-20). Every action takes the library view the
+// - The view (the maintainer, 2026-11-20). Every action takes the library view the
 //   selection was made in: its search and its tag, collection and creator
 //   filters. After the selected models are locked, the action reads which
 //   of the live ones that view holds now, with the models repository's

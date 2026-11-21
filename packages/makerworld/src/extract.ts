@@ -165,7 +165,7 @@ function* metadataElements(xml: string): Generator<[string, string]> {
 // only NUL is then blank, so it reads as absent. No entity decodes to NUL
 // (decodeRef refuses code point 0), so a raw NUL is the only way one arrives.
 //
-// Null when there is no Designer: MakerWorld always writes one, Jon's own
+// Null when there is no Designer: MakerWorld always writes one, the user's own
 // designs leave it empty, and other tools' exports carry only a placeholder
 // title. Also null when the Designer is a generator's name, or longer than
 // MAX_DESIGNER_LENGTH, which no MakerWorld name is: the designer is stored as

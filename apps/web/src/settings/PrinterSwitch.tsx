@@ -1,4 +1,4 @@
-// The printer switch on the library header and the model page (Jon,
+// The printer switch on the library header and the model page (the maintainer,
 // 2026-11-19): a small menu of My printers that changes whose times and
 // weights the page shows. It only reads. The page asks its own route again
 // with ?printer=<id> (app-api/library.ts and model.ts), whose answer names

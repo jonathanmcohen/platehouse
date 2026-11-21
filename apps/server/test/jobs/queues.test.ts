@@ -1,5 +1,5 @@
 // Build plan Task 8: what each queue is created and worked with. The slicer
-// queue is a singleton queue, so one slice runs at a time (Jon, 2026-11-08,
+// queue is a singleton queue, so one slice runs at a time (the maintainer, 2026-11-08,
 // PR #49: there is no SLICER_CONCURRENCY); Task 12 adds its jobs and its
 // worker with these settings. A slicer job is retried by pg-boss's own retry
 // settings, three times with backoff (Task 12), not by a loop in the handler.

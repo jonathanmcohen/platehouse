@@ -409,7 +409,7 @@ describe("a model's name from its file", () => {
 
   test("a title in a file with no Designer is not used: only MakerWorld titles name a model", async () => {
     // build3mf writes a Title only with MakerWorld details; this file has a
-    // Designer that is blank, as Jon's own designs and other tools' do.
+    // Designer that is blank, as the user's own designs and other tools' do.
     const model = await newModel(
       "Own_design.3mf",
       build3mf({ plates: 1, nonce: marker(), makerWorld: { designer: "", title: "Untitled Bin" } }),
@@ -624,10 +624,10 @@ describe("the MakerWorld design ID", () => {
 });
 
 describe("metadata is filled, never overwritten", () => {
-  test("parse never overwrites a field Jon set", async () => {
+  test("parse never overwrites a field the user set", async () => {
     const model = await env.repos.models.create({
-      name: `Jon's name ${uuidv7()}`,
-      caption: "Jon's caption",
+      name: `Sam's name ${uuidv7()}`,
+      caption: "Sam's caption",
       licenseSpdx: "MIT",
       descriptionMd: "",
     });
@@ -644,20 +644,20 @@ describe("metadata is filled, never overwritten", () => {
           },
         }),
       ),
-      originalName: "Into Jon's model.3mf",
+      originalName: "Into Sam's model.3mf",
       target: { modelId: model.id },
     });
     const after = await modelRow(model.id);
-    // Set by Jon: kept. Empty or null: filled.
+    // Set by the user: kept. Empty or null: filled.
     expect(after.name).toBe(model.name);
-    expect(after.caption).toBe("Jon's caption");
+    expect(after.caption).toBe("Sam's caption");
     expect(after.licenseSpdx).toBe("MIT");
     expect(after.descriptionMd).toBe("From MakerWorld.");
     expect(after.creator).toBe("Synthetic Designer");
   });
 
-  test("an SPDX licence Jon set is kept and no footer is added beside it; the footer licence is still stored as the licence note", async () => {
-    // Jon's decision: license_note is always stored.
+  test("an SPDX licence the user set is kept and no footer is added beside it; the footer licence is still stored as the licence note", async () => {
+    // The maintainer's decision: license_note is always stored.
     const model = await env.repos.models.create({
       name: `Licensed ${uuidv7()}`,
       licenseSpdx: "MIT",
@@ -686,7 +686,7 @@ describe("metadata is filled, never overwritten", () => {
   test("a licence note already on the model is kept: a later file's footer licence does not replace it", async () => {
     const model = await env.repos.models.create({
       name: `Noted ${uuidv7()}`,
-      licenseNote: "Jon's own licence note",
+      licenseNote: "Sam's own licence note",
     });
     await env.ingest.ingestFile({
       tmpPath: await writeUpload(
@@ -700,16 +700,16 @@ describe("metadata is filled, never overwritten", () => {
       target: { modelId: model.id },
     });
     const after = await modelRow(model.id);
-    expect(after.licenseNote).toBe("Jon's own licence note");
+    expect(after.licenseNote).toBe("Sam's own licence note");
     expect(after.licenseSpdx).toBeNull();
   });
 
   test("a description already set is never edited; a footer licence is still stored as the licence note", async () => {
-    // Jon, 2026-11-08: the footer goes into the description only when it is
+    // The maintainer, 2026-11-08: the footer goes into the description only when it is
     // empty; the model page (Task 20) shows models.license_note.
     const model = await env.repos.models.create({
       name: `Described ${uuidv7()}`,
-      descriptionMd: "Jon's own description.",
+      descriptionMd: "Sam's own description.",
     });
     await env.ingest.ingestFile({
       tmpPath: await writeUpload(
@@ -727,15 +727,15 @@ describe("metadata is filled, never overwritten", () => {
       target: { modelId: model.id },
     });
     const after = await modelRow(model.id);
-    expect(after.descriptionMd).toBe("Jon's own description.");
+    expect(after.descriptionMd).toBe("Sam's own description.");
     expect(after.licenseSpdx).toBeNull();
     expect(after.licenseNote).toBe("License on MakerWorld: MakerWorld Exclusive License");
   });
 
-  test("a creator Jon set is kept", async () => {
+  test("a creator the user set is kept", async () => {
     const model = await env.repos.models.create({
       name: `Credited ${uuidv7()}`,
-      creator: `Jon's creator ${uuidv7()}`,
+      creator: `Sam's creator ${uuidv7()}`,
     });
     await env.ingest.ingestFile({
       tmpPath: await writeUpload(

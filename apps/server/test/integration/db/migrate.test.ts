@@ -221,7 +221,7 @@ describe("migrate with a changed migrations folder", () => {
 });
 
 // Migration 0007 turns the one printer setting into My printers. It runs on
-// Jon's live database, which has the schema before it, one selected printer and
+// An existing database, which has the schema before it, one selected printer and
 // estimates keyed by printer_id; all of that must come through as it is.
 describe("0007 My printers", () => {
   const P1S = "Bambu Lab P1S 0.4 nozzle";
@@ -246,7 +246,7 @@ describe("0007 My printers", () => {
   });
 
   /**
-   * A database migrated up to 0006, as Jon's will be: printerId selected, one plate, and two
+   * A database migrated up to 0006, as an existing install's will be: printerId selected, one plate, and two
    * finished estimates for it (one for printerId, one for the P1S on an older
    * Orca), as a printer change and an Orca update leave behind.
    */

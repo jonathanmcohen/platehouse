@@ -1,4 +1,4 @@
-// The Activity page's Recent events list (Jon, 2026-11-19): newest first,
+// The Activity page's Recent events list (the maintainer, 2026-11-19): newest first,
 // at most the server's limit, built only from what the app records (models
 // added, inbox files that failed, estimates, renders and conversions that
 // failed). A live model is a link to its page; a trashed one is named

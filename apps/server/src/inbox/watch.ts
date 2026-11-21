@@ -33,7 +33,7 @@
 //   The clock is read for each file as it is looked at, not once per pass,
 //   so a slow import earlier in a pass does not shorten a later file's window.
 // - A settled file goes to ingestFile with duplicates "skip" (approved for
-//   0.1.0 by Jon, 2026-11-19): a file whose SHA-256 a live model already
+//   0.1.0 by the maintainer, 2026-11-19): a file whose SHA-256 a live model already
 //   holds is not imported. Ingest refuses it with DuplicateFile before any
 //   byte is stored, and it moves to failed as any refusal does (FILE_FAULTS,
 //   below), only while its name still holds the file ingest read, with a
@@ -123,7 +123,7 @@
 //   and so on when the name is taken) with <name>.reason.txt beside it,
 //   holding one line: a stable code, a colon and a space, then one plain
 //   sentence, such as "changed: This file changed while ..." (reasonFileText
-//   and reasonCode below; Jon, 2026-11-19). failed/ is made when missing, and refused
+//   and reasonCode below; the maintainer, 2026-11-19). failed/ is made when missing, and refused
 //   when it is anything but a real folder (a symlink copied in by rsync -a,
 //   say): nothing moves through it, and each file that would have is logged
 //   and left in the inbox, as a file that cannot be moved is (below), or,
@@ -343,7 +343,7 @@ export const FAILED_DIR = "failed";
 export const REASON_SUFFIX = ".reason.txt";
 
 /**
- * A reason file's text (Jon, 2026-11-19): a stable code, a colon, the plain
+ * A reason file's text (the maintainer, 2026-11-19): a stable code, a colon, the plain
  * English sentence, a newline, such as "changed: This file changed while
  * ...". The code lets a script, or the Activity page in another language,
  * tell the reasons apart without reading the sentence.
@@ -383,7 +383,7 @@ export const UNREMOVED_REASON =
  * its holding folder (the lstat or the fstat threw), so it is not known
  * whether it is the imported file or a newer one renamed over the name just
  * before it was held. UNREMOVED_REASON says it was imported, which would
- * lead Jon to delete a newer file as a duplicate of the model.
+ * lead the user to delete a newer file as a duplicate of the model.
  */
 export const UNCHECKED_REASON =
   "Platehouse imported a file with this name but could not check whether this is that file or a newer one put under the same name, so it was kept here; compare it with the model in the library before you delete it or add it again.";
@@ -1254,13 +1254,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * would send inbox files, under names their writer chose, into whatever it
    * points at.
    *
-   * Known limit, accepted by Jon on 2026-11-10 (issue #85): inbox/failed is
+   * Known limit, accepted by the maintainer on 2026-11-10 (issue #85): inbox/failed is
    * checked for a symlink once, here, and moveToFailed's writeFile of the
    * reason file and its rename then resolve the folder by its path again. A
    * writer who swaps the folder for a symlink between this check and those
    * calls can still move files through the link. Closing it needs a rename
    * relative to an open folder, which Node lacks, or a failed folder the
-   * inbox writer cannot rename; only Jon's own machines write to the inbox.
+   * inbox writer cannot rename; only the operator's own machines are meant to write to the inbox.
    */
   async function failedFolder(): Promise<void> {
     let st: BigIntStats;
@@ -1341,7 +1341,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
 
   /**
    * Removes what is held once it is back under its name; it stays for the
-   * restart sweep if not. Known limit (issue #93, accepted by Jon on
+   * restart sweep if not. Known limit (issue #93, accepted by the maintainer on
    * 2026-11-11; see copyBack): after copyBack, a writer that still has the
    * held file open and writes again after its last check loses that write.
    */
@@ -1443,7 +1443,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * with the held file still held, on any other failure, a filesystem with
    * no hard links at all among them.
    *
-   * Known limit, accepted by Jon on 2026-11-11 (issue #93): the last size
+   * Known limit, accepted by the maintainer on 2026-11-11 (issue #93): the last size
    * and mtime check comes just after the link, and dropHeld then unlinks the
    * held file. A writer under another uid (the SMB case, where link() gets
    * EPERM) that keeps the held file open, pauses for longer than the copy

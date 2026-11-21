@@ -66,7 +66,7 @@
 //   page (its number is in the answer), never an empty one. Plate numbers
 //   are looked up for the page's cards only, so a request computes numbers
 //   for at most 200 models whatever the total.
-// - Sorting (Jon, 2026-11-19): ?sort= orders a numbered page, in the
+// - Sorting (the maintainer, 2026-11-19): ?sort= orders a numbered page, in the
 //   database (the models repository's LIBRARY_SORTS): best match, date added
 //   (newest, oldest), name ignoring case (A to Z, Z to A), total print time
 //   or weight for the selected printer (models without numbers for it last,

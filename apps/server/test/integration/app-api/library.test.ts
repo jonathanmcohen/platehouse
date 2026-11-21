@@ -188,7 +188,7 @@ beforeAll(async () => {
     logger: { write: (line: string) => lines.push(line) },
   });
   await app.ready();
-  session = (await auth.sessions.start("jon")).id;
+  session = (await auth.sessions.start("someone")).id;
 });
 
 afterAll(async () => {
@@ -388,7 +388,7 @@ describe("card shows time and weight only when every plate is known", () => {
   });
 });
 
-// The library header's printer switch (Jon, 2026-11-19): ?printer= shows
+// The library header's printer switch (the maintainer, 2026-11-19): ?printer= shows
 // another of My printers' times and weights. It reads numbers only.
 describe("the printer switch", () => {
   afterEach(() => {

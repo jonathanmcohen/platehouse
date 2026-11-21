@@ -27,7 +27,7 @@
 //      server starts while it is down. The Public API v1 (Task 16) gets
 //      tokens from the api_tokens table and reads the library through the
 //      same database, store and estimates.plateNumbers; it never touches
-//      Pocket ID, so API tokens keep working while it is down (AC-081).
+//      the OIDC provider, so API tokens keep working while it is down (AC-081).
 //      File delivery and slicer links (Task 17) read files through that
 //      same library and blobs through the same database and store, and
 //      sign links with a key links.ts derives from LINK_SECRET.
@@ -376,7 +376,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       sliceTimeoutMs: sliceTimeoutMs(config.slicer.plateSeconds),
     });
     const derived = createDerived({ db, store, slicerUrl: config.slicer.url, queue: startedBoss });
-    // Two hooks on purpose, afterCommit here and onIngested below (Jon,
+    // Two hooks on purpose, afterCommit here and onIngested below (the maintainer,
     // 2026-11-11): afterCommit runs inside ingestFile, only for the attempt
     // whose rows committed, while onIngested also runs on the inbox
     // watcher's lost-answer path (inbox/watch.ts, earlierImport), where an
@@ -444,7 +444,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         settings: () => repos.settings.get(),
         listPrinters: () => estimates.listPrinters(),
       });
-    // The languages: the built-in catalogs and LOCALES_DIR (Jon, 2026-11-19).
+    // The languages: the built-in catalogs and LOCALES_DIR (the maintainer, 2026-11-19).
     // LOCALES_DIR is read once here, waiting at most LOCALES_READ_LIMIT_MS,
     // then again in the background; no request ever waits on it (issue 297).
     // A dropped file is logged by name and key only, never by its words.

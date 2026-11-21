@@ -1,4 +1,4 @@
-// The library's bulk actions as the web app sends and reports them (Jon,
+// The library's bulk actions as the web app sends and reports them (the maintainer,
 // 2026-11-19): what each sends to /app/api/bulk/* (apps/server/src/app-api/
 // organise.ts), what the server answers, and the plain sentences the library
 // shows for an answer: what changed, what was already so, and which models
@@ -47,7 +47,7 @@ export interface BulkAnswer {
 /**
  * The library view a bulk request names, from the page's search, filters,
  * printer and sort (LibraryPage's matching): the server changes only the
- * posted models this view shows when the action runs (Jon, 2026-11-20).
+ * posted models this view shows when the action runs (the maintainer, 2026-11-20).
  * The sort and the paging do not change which models a view holds, so they
  * are not sent.
  */

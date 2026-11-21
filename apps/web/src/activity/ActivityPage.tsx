@@ -1,5 +1,5 @@
-// The Activity page, /activity (Jon, 2026-11-19: one page that shows what
-// Platehouse is doing and holds, so he never has to read container logs).
+// The Activity page, /activity (the maintainer, 2026-11-19: one page that shows what
+// Platehouse is doing and holds, so the user never has to read container logs).
 // Everything comes from the session-class GET /app/api/activity
 // (apps/server/src/app-api/activity.ts): the library's numbers, estimate
 // progress for the selected printer as a labelled progressbar, the pg-boss

@@ -153,7 +153,7 @@ const envSchema = z.object({
   OIDC_CLIENT_SECRET: required(text, NOT_EMPTY),
   OIDC_GROUP: optional("platehouse", text, NOT_EMPTY),
   LINK_SECRET: required(linkKey, `must be at least ${LINK_MIN_BYTES} bytes`),
-  // The example compose's slicer service name (Jon, 2026-11-19, issue #304):
+  // The example compose's slicer service name (the maintainer, 2026-11-19, issue #304):
   // a generic name such as "slicer" could resolve to another project's
   // container on a shared network.
   SLICER_URL: optional("http://platehouse-slicer:8080", httpUrl, HTTP_URL),

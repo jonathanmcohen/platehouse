@@ -18,7 +18,7 @@
 # - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
 #   the slicer wrapper ships with the release. It always builds. A prerelease
 #   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and its run tag but
-#   leaves stable alone (Jon, 2026-11-15); a plain vX.Y.Z tag moves it. The
+#   leaves stable alone (the maintainer, 2026-11-15); a plain vX.Y.Z tag moves it. The
 #   daily run never promotes such a version, as its orca-X.Y.Z exists; the
 #   run's summary says so.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
@@ -440,7 +440,7 @@ jobs:
             echo "The smoke slice passed for OrcaSlicer ${VERSION}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/smoke.log"
 
-      # A report only (Jon, 2026-11-15): fixable HIGH and CRITICAL findings in
+      # A report only (the maintainer, 2026-11-15): fixable HIGH and CRITICAL findings in
       # the built image, as a table in this log, before anything is pushed.
       # It never fails the job: exit-code 0, and continue-on-error covers the
       # action itself failing (a Trivy database download, say). Same action

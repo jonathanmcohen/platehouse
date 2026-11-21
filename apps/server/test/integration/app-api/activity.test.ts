@@ -1,4 +1,4 @@
-// The Activity page's app API, GET /app/api/activity (Jon, 2026-11-19), run
+// The Activity page's app API, GET /app/api/activity (the maintainer, 2026-11-19), run
 // against a migrated Postgres 17 and a started pg-boss on the same database,
 // so its queries read the real schema and pg-boss's real job table. The
 // slicer is a fake health() (it is asked for nothing else), and the inbox's
@@ -250,7 +250,7 @@ beforeAll(async () => {
   pgc = await startTestPostgres();
   tmp = await mkdtemp(join(tmpdir(), "ph-activity-int-"));
   auth = await testAuth();
-  session = (await auth.sessions.start("jon")).id;
+  session = (await auth.sessions.start("someone")).id;
 });
 
 afterAll(async () => {

@@ -3,7 +3,7 @@
 // - ingest: an uploaded file through the ingest pipeline, two at once, never
 //   retried, so a failed upload fails visibly (AC-012);
 // - slicer: the singleton queue for slicer work, one job at a time, matching
-//   the slicer's own one-job lock (Jon, 2026-11-08, PR #49: there is no
+//   the slicer's own one-job lock (the maintainer, 2026-11-08, PR #49: there is no
 //   SLICER_CONCURRENCY, since the singleton policy made it a no-op). Task 12
 //   adds its slice jobs and Task 13 its render and mesh jobs; the slicer
 //   answers 409 busy while any heavy job runs, and those jobs retry on 409
@@ -136,7 +136,7 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
 
 /**
- * Daily at 04:35 local time (Task 15, Jon 2026-11-11): the delete of sessions
+ * Daily at 04:35 local time (Task 15, the maintainer, 2026-11-11): the delete of sessions
  * past their idle or absolute expiry. Expired rows already let nobody in, so
  * the hour only bounds how long they are kept; 04:35 is after the 03:30
  * purge and the 04:00 orphan sweep, and clear of every other schedule.

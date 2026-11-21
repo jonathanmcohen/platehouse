@@ -20,7 +20,7 @@ accessibility. CI runs them in the e2e job of `.github/workflows/ci.yml`.
 on the Platehouse router), the app from this checkout (started from source as
 the integration tests start it), the slicer stub, `postgres:17-alpine`, the S3
 test server, a one-shot job that makes the bucket, and a mock OIDC issuer
-(`stubs/oidc-issuer.ts`) standing in for Pocket ID. Traefik serves
+(`stubs/oidc-issuer.ts`) standing in for the OIDC provider. Traefik serves
 `https://platehouse.e2e.test` and `https://id.e2e.test` with a certificate made
 per run.
 

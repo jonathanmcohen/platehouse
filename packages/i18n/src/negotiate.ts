@@ -1,4 +1,4 @@
-// Which language a page is shown in (Jon, 2026-11-19): the choice saved in
+// Which language a page is shown in (the maintainer, 2026-11-19): the choice saved in
 // the ph_lang cookie when that language is still available, else the
 // browser's languages (the Accept-Language header on the server,
 // navigator.languages in the browser), else English. A browser language
@@ -72,7 +72,7 @@ export function matchLocale(
 }
 
 /**
- * The locale dates and numbers are formatted in (Jon, 2026-11-19, issue
+ * The locale dates and numbers are formatted in (the maintainer, 2026-11-19, issue
  * 292): the browser's own full tag when its language is the one shown, so
  * an en-GB browser on English writes 19 Nov 2026, 13:52 and an es-MX browser
  * on Spanish writes Mexican dates; else the shown language itself (a de

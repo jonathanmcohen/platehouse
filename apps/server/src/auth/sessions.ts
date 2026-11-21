@@ -4,7 +4,7 @@
 // value (sessionRowId), also 43 characters, so the table never holds a
 // working cookie: someone who can read it (a backup, a log of a query)
 // cannot sign in with what they read, and a stored id sent as a cookie is
-// hashed again and matches nothing (Jon, 2026-11-11, PR #109 security
+// hashed again and matches nothing (the maintainer, 2026-11-11, PR #109 security
 // review). start, find and end hash; the store only ever sees row ids. A
 // session lasts SESSION_IDLE_MS (7 days) without a request and
 // SESSION_ABSOLUTE_MS (30 days) at most, however busy it is; rows past
@@ -17,7 +17,7 @@
 //
 // The cookie's attributes are fixed here: __Host- (so Secure, Path=/ and no
 // Domain), HttpOnly and SameSite=Lax. Lax, not Strict: the callback from
-// Pocket ID is a top-level navigation from another site, and so is a link
+// the OIDC provider is a top-level navigation from another site, and so is a link
 // to Platehouse; state-changing requests are guarded by the Origin check in
 // gate.ts instead.
 import { createHash, randomBytes } from "node:crypto";

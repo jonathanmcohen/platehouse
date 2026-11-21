@@ -1,5 +1,5 @@
 // The end-to-end run's setup (build plan Task 22): signs in once through
-// Traefik and the mock issuer, the way a browser signs in to Pocket ID, and
+// Traefik and the mock issuer, the way a browser signs in to the OIDC provider, and
 // fills the library the specs look at. It is a global setup, not a test, so
 // the CI guard counts only real specs.
 //

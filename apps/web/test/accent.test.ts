@@ -1,4 +1,4 @@
-// The accent colour scheme (Jon, 2026-11-19): twelve schemes, picked per
+// The accent colour scheme (the maintainer, 2026-11-19): twelve schemes, picked per
 // browser beside the Dark / Light / System theme. The choice lives in the
 // ph_accent cookie; the server writes it into the html element's data-accent
 // before the page is sent, so the first paint is already right, and the app
@@ -94,13 +94,13 @@ const NOT_IDS: unknown[] = [
 ];
 
 describe("the schemes", () => {
-  test("there are twelve, in the order Jon listed them, each with a unique id", () => {
+  test("there are twelve, in the order the maintainer listed them, each with a unique id", () => {
     expect([...ACCENTS]).toEqual(IDS);
     expect(new Set(ACCENTS).size).toBe(12);
     expect(SCHEMES.map((s) => s.id)).toEqual(IDS);
   });
 
-  test("Blueprint indigo is the default (Jon, 2026-11-19)", () => {
+  test("Blueprint indigo is the default (the maintainer, 2026-11-19)", () => {
     expect(DEFAULT_ACCENT).toBe("blueprint-indigo");
     expect(ACCENTS).toContain(DEFAULT_ACCENT);
   });
@@ -113,7 +113,7 @@ describe("the schemes", () => {
     for (const id of ACCENTS) expect(id).toMatch(/^[a-z]+(?:-[a-z]+)*$/);
   });
 
-  test("each scheme has its name, and the twelve names are the ones Jon gave", () => {
+  test("each scheme has its name, and the twelve names are the ones the maintainer gave", () => {
     expect(ACCENTS.map((id) => ACCENT_NAMES[id])).toEqual([
       "Green",
       "Workshop green",
@@ -150,7 +150,7 @@ describe("the schemes", () => {
     });
   });
 
-  test("Green's light text and soft are the studio palette's, and its fill is Jon's button green", () => {
+  test("Green's light text and soft are the studio palette's, and its fill is the maintainer's button green", () => {
     const green = SCHEMES.find((s) => s.id === "bambu-green");
     expect(green?.light).toEqual({
       accent: "#00873a",

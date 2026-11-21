@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Platehouse slicing gate (build plan Task 1), run on the test server after
-# Jon approves. Builds the throwaway image, runs every plate slice in a
+# the maintainer approves. Builds the throwaway image, runs every plate slice in a
 # fresh network-less, read-only container, then the OpenSCAD, landrun and STEP
 # checks, then writes the report.
 #

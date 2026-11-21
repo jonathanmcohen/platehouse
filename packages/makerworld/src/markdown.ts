@@ -1304,7 +1304,7 @@ function safeHref(raw: string): string | null {
 // Markdown is text; linkify off, so a bare address is text; links only to
 // absolute http(s) addresses, so javascript:, data:, relative and
 // protocol-relative ones render as text. The image rule is off: descriptions
-// never render images (Jon, 2026-11-08, PR #24), so ![alt](url) is a "!" and
+// never render images (the maintainer, 2026-11-08, PR #24), so ![alt](url) is a "!" and
 // a link to the address, and no description can make the page load a remote
 // address. A newline in a paragraph is a line break, as it was for
 // descriptions in Manyfold (Kramdown's GFM parser, hard_wrap on) and as
@@ -1320,7 +1320,7 @@ export function createMarkdownIt(): MarkdownIt {
 // the attributes a link and an ordered list need. Anything else (an image, an
 // event handler, a style, a class, a script) is removed. img is not allowed
 // and is forbidden outright as well, so no description can load a remote
-// address whatever markdown-it writes (Jon, 2026-11-08, PR #24). An href must
+// address whatever markdown-it writes (the maintainer, 2026-11-08, PR #24). An href must
 // be an absolute http(s) address: ALLOWED_URI_REGEXP says so, and
 // keepHttpAddressesOnly below covers the data: exception DOMPurify makes on
 // its own. markdown-it with html off writes nothing dangerous; this is the

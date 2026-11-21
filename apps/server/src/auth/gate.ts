@@ -9,7 +9,7 @@
 //   everything else                   session
 //
 // The icon files are the favicons, app icons and web manifest at their exact
-// root paths (web/shell.ts), public since Jon's decision A-1 (2026-11-19) so
+// root paths (web/shell.ts), public since the maintainer's decision A-1 (2026-11-19) so
 // a signed-out browser can load them: on the auth pages, while the login
 // redirect returns, and for the manifest, which browsers fetch without
 // cookies. Only those exact paths: /favicon.ico/x or /icon-1024.png is

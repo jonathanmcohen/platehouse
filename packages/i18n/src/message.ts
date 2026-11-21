@@ -1,6 +1,6 @@
 // The message format of Platehouse's translations: a small, strict subset of
 // ICU MessageFormat, parsed and rendered here so the web app, the server and
-// the catalog check all read a message the same way (Jon, 2026-11-19: no new
+// the catalog check all read a message the same way (the maintainer, 2026-11-19: no new
 // dependency).
 //
 // - Text is taken as it is. Apostrophes and quotes need no escaping.

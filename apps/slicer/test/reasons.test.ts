@@ -2,7 +2,7 @@
 // v2.5.0's own return codes (src/libslic3r/Utils.hpp, messages from
 // src/OrcaSlicer.cpp cli_errors), as the slicing gate's lib/classify.mjs
 // reads them. -62 and -101 are legitimate refusals reported with their
-// reason (Jon, 2026-11-08, gate run 3). Only the codes the contract's map
+// reason (the maintainer, 2026-11-08, gate run 3). Only the codes the contract's map
 // names get a reason of their own; -15 and -20 are not among them.
 import { describe, expect, test } from "vitest";
 import { ORCA_MESSAGES, reasonFor } from "../src/reasons.js";
@@ -21,7 +21,7 @@ const MAP: Array<[number, string]> = [
 
 // Codes the plan's original map sent to nozzle_mismatch (-61 to -69) or did
 // not name (-50), whose Orca meaning is something else: empty plate, bed
-// type, collisions, vase mode, TPU count, mixed filament. By Jon's decision
+// type, collisions, vase mode, TPU count, mixed filament. By the maintainer's decision
 // (2026-11-08) they fall to the contract's "anything else".
 const SLICER_ERROR_CODES = [-50, -61, -63, -64, -65, -67, -69];
 

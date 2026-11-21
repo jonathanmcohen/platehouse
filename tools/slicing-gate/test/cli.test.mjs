@@ -120,7 +120,7 @@ test("select-sample, plan and report run end to end and apply the pass rule", ()
   assert.equal(node([GATE, "report"], env).status, 3);
 });
 
-// Jon, 2026-11-08: -101 (G-code path conflicts) and -62 (filament
+// The maintainer, 2026-11-08: -101 (G-code path conflicts) and -62 (filament
 // temperatures too far apart) are legitimate refusals. A run whose only
 // non-ok plates are those two ends PASS and says why each was refused.
 test("a run whose only non-ok plates are -101 and -62 refusals passes, exit 0", () => {
@@ -137,14 +137,14 @@ test("a run whose only non-ok plates are -101 and -62 refusals passes, exit 0", 
   assert.equal(report.status, 0, report.stdout + report.stderr);
   const summary = readFileSync(join(out, "summary.txt"), "utf8");
   assert.match(summary, /^Platehouse slicing gate: PASS/);
-  assert.match(summary, /refused for a legitimate reason 2, needs Jon's decision 0, failed 0/);
+  assert.match(summary, /refused for a legitimate reason 2, needs the maintainer's decision 0, failed 0/);
   assert.match(summary, /refused: .* plate \d+: gcode_path_conflict \(code -101: G-code path conflicts\)/);
   assert.match(summary, /refused: .* plate \d+: filament_temperature_mismatch \(code -62: filament temperatures too far apart\)/);
 });
 
 // The pass rule as summary.txt states it names both codes as legitimate,
 // says whose decision it was, and no longer lists -62 for a decision.
-test("the summary's pass rule lists -101 and -62 as legitimate refusals by Jon's decision of 2026-11-08", () => {
+test("the summary's pass rule lists -101 and -62 as legitimate refusals by the maintainer's decision of 2026-11-08", () => {
   const { root, sample, out, env } = setup();
   assert.equal(node([SELECT, sample, "--json", join(root, "in", "selection.json")], env).status, 0);
   assert.equal(node([GATE, "plan"], env).status, 0);
@@ -152,7 +152,7 @@ test("the summary's pass rule lists -101 and -62 as legitimate refusals by Jon's
   writeFileSync(join(out, "checks.json"), JSON.stringify({ ranAt: "2026-11-08T00:00:00.000Z", openscad: null, landrun: null, step: null }));
   assert.equal(node([GATE, "report"], env).status, 0);
   const rule = readFileSync(join(out, "summary.txt"), "utf8").split("\n").find((l) => l.startsWith("Pass rule: "));
-  assert.match(rule, /Jon's decision on 2026-11-08/);
+  assert.match(rule, /the maintainer's decision on 2026-11-08/);
   assert.match(rule, /-101 \(G-code path conflicts\)/);
   assert.match(rule, /-62 \(filament temperatures too far apart\)/);
   assert.match(rule, /needs-decision/);

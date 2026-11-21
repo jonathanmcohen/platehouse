@@ -1,5 +1,5 @@
 // The current accent scheme, shared from the Shell to the Settings picker
-// (Jon, 2026-11-19). The Shell starts it from what the server wrote into the
+// (the maintainer, 2026-11-19). The Shell starts it from what the server wrote into the
 // html element; a change is applied to the document (data-accent and the
 // ph_accent cookie) at once, with no reload, so every page re-colours as the
 // user picks.

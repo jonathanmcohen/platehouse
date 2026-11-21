@@ -1,6 +1,6 @@
-// Every word the accent colour feature shows (Jon, 2026-11-19), by message
+// Every word the accent colour feature shows (the maintainer, 2026-11-19), by message
 // key; the words themselves are in the catalogs (packages/i18n/locales). The
-// scheme names are the ones Jon gave; each is also the accessible name of its
+// scheme names are the ones the maintainer gave; each is also the accessible name of its
 // swatch in the picker. ACCENT_NAMES and ACCENT_LABELS are the English words,
 // for code and tests that need them outside a component.
 import { ENGLISH_I18N, type MessageKey } from "../i18n/I18n";

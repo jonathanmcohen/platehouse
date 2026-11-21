@@ -1,4 +1,4 @@
-// Pocket ID login over OpenID Connect (build plan Task 15; AC-080, AC-081),
+// Login over OpenID Connect (build plan Task 15; AC-080, AC-081),
 // with openid-client: the authorization code flow with PKCE S256, a state
 // and a nonce, scopes openid email profile groups, and the client
 // authenticating to the token endpoint with client_secret_basic.
@@ -9,7 +9,7 @@
 //   headers (AC-091). openid-client sends the callback URL, less its query,
 //   as the token request's redirect_uri.
 // - Discovery happens on the first login, not at startup, so the server
-//   starts and serves everything but login while Pocket ID is down (AC-081).
+//   starts and serves everything but login while the OIDC provider is down (AC-081).
 //   A discovery that fails is not remembered: the next login tries again.
 //   Every request to the issuer gives up after ISSUER_TIMEOUT_SECONDS.
 // - A user is let in when the claims carry a subject, groups include
@@ -73,7 +73,7 @@ export interface OidcOptions {
   clientSecret: string;
   /** absoluteUrl('/auth/callback'): built from PUBLIC_ORIGIN, never a request. */
   redirectUri: string;
-  /** The Pocket ID group a user must be in (OIDC_GROUP). */
+  /** The OIDC provider group a user must be in (OIDC_GROUP). */
   group: string;
   /** Passed to openid-client's discovery; the tests allow a plain-HTTP issuer here. */
   discovery?: DiscoveryRequestOptions;

@@ -1,4 +1,4 @@
-// The library's bulk actions (Jon, 2026-11-19) against Postgres 17 and the
+// The library's bulk actions (the maintainer, 2026-11-19) against Postgres 17 and the
 // S3 test server: add tags, remove a tag, add to a collection and move to
 // the trash, each for many models in one request and one transaction. Each
 // is tried with live, trashed, missing and malformed ids: the live ones
@@ -466,7 +466,7 @@ describe("one transaction", () => {
   });
 });
 
-// The server keeps Select mode to the models the user can see (Jon,
+// The server keeps Select mode to the models the user can see (the maintainer,
 // 2026-11-20). Each request names the search and filters it was made in;
 // the server works out, in the action's own transaction, which of the
 // posted models that view matches now, changes only those, and answers the

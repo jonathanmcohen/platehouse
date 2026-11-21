@@ -131,7 +131,7 @@ export interface ModelFileView {
   /**
    * The sentences Platehouse wrote at the start of derivedMessage, by code
    * (derived/client.ts splitDerivedMessage), for the page to show in its
-   * language (Jon, 2026-11-19); empty when it holds none.
+   * language (the maintainer, 2026-11-19); empty when it holds none.
    */
   derivedCodes: string[];
   /** What derivedMessage holds after those sentences (the program's own words), or null. */

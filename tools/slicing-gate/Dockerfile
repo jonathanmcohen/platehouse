@@ -98,7 +98,7 @@ RUN source /usr/local/lib/fetch.sh \
  && need -f /opt/orca/resources/profiles/OrcaFilamentLibrary.opc
 
 # Orca's BBL profile JSON, from OrcaSlicer's own source at the commit tag
-# v2.5.0 points to (Jon's call, 2026-11-08; resolved with git ls-remote on
+# v2.5.0 points to (the maintainer's call, 2026-11-08; resolved with git ls-remote on
 # 2026-11-08: a lightweight tag on 40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19).
 # It is fetched by that commit, never by the tag or a branch, shallow and
 # without blobs, and only BBL.json, BBL/, OrcaFilamentLibrary.json and
@@ -132,7 +132,7 @@ RUN source /usr/local/lib/need.sh \
  && need -f /opt/orca-profiles/OrcaFilamentLibrary.json \
  && need -d /opt/orca-profiles/OrcaFilamentLibrary/filament
 
-# OpenSCAD 2026.11-RC0 Linux AppImage (pre-release, Jon's call: latest RC).
+# OpenSCAD 2026.11-RC0 Linux AppImage (pre-release, the maintainer's call: latest RC).
 # Layout read from this exact file's squashfs on 2026-11-08: AppRun is a
 # symlink to usr/bin/openscad, an ELF binary whose RUNPATH ($ORIGIN/../lib)
 # finds the libraries bundled in usr/lib.

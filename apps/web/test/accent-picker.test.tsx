@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Accent colour picker in Settings (Jon, 2026-11-19): twelve swatches as
+// The Accent colour picker in Settings (the maintainer, 2026-11-19): twelve swatches as
 // a radio group. Arrow keys move the choice and the focus together (Right
 // and Down forward, Left and Up back, wrapping; Home and End to the ends),
 // only the checked swatch is in the tab order, each swatch is named by its

@@ -29,7 +29,7 @@ import { DESIGNER_PAYLOADS, htmlEscape } from "./support/payloads.js";
 const md = createMarkdownIt();
 const render = (markdown: string): string => md.render(markdown);
 // The same setup with markdown-it's image rule back on. renderMarkdown never
-// renders an image (Jon, 2026-11-08), so a "!" the converter left bare before
+// renders an image (the maintainer, 2026-11-08), so a "!" the converter left bare before
 // a link's [ no longer shows there; this renderer still turns it into an
 // <img>, so the escaping checks below keep their teeth.
 const withImages = createMarkdownIt().enable("image");
@@ -933,7 +933,7 @@ describe("the markdown-it layer alone", () => {
     expect(html).not.toMatch(/<a |<img /);
   });
 
-  // Descriptions never render images (Jon, 2026-11-08): the image rule is
+  // Descriptions never render images (the maintainer, 2026-11-08): the image rule is
   // off, so an image to an http(s) address is a "!" and a link to it.
   it("an absolute http(s) link is kept, and an image is a link to its address", () => {
     expect(render("[x](https://e.test/a) ![i](http://e.test/i.png) <https://e.test/b>")).toBe(

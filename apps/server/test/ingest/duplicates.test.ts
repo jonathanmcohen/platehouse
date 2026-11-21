@@ -1,4 +1,4 @@
-// Duplicate files, without Docker (approved for 0.1.0 by Jon, 2026-11-19).
+// Duplicate files, without Docker (approved for 0.1.0 by the maintainer, 2026-11-19).
 // The message a refused duplicate carries, and where ingest checks: with
 // duplicates "skip" it looks for the file's SHA-256 among live models before
 // any byte is put, and again inside the transaction under a lock on the hash,

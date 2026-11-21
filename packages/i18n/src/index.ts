@@ -1,4 +1,4 @@
-// Platehouse's translations (Jon, 2026-11-19): the message format, the
+// Platehouse's translations (the maintainer, 2026-11-19): the message format, the
 // catalog check, language negotiation and the translator, shared by the web
 // app, the server and the CI check. The catalogs are the JSON files in
 // ../locales; English (en.json) is the source of truth. Node-only helpers

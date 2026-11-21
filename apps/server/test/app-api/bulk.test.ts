@@ -1,4 +1,4 @@
-// The library's bulk actions (Jon, 2026-11-19), the parts that need no
+// The library's bulk actions (the maintainer, 2026-11-19), the parts that need no
 // database: how the selected ids are read (deduplicated ignoring case, a
 // malformed one reported as not found without a query) and what the routes
 // refuse before they touch anything (no ids, more than the cap, too many or
@@ -217,7 +217,7 @@ describe("the bulk routes refuse a bad request before anything runs", () => {
   });
 
   // The server, not the browser, keeps Select mode to the models the user
-  // can see (Jon, 2026-11-20): every bulk request names the search and
+  // can see (the maintainer, 2026-11-20): every bulk request names the search and
   // filters it was made in, and one that does not is refused.
   test("each route refuses a request without a view, or with a view that is not one", async () => {
     for (const [url, rest] of ROUTES) {
@@ -235,7 +235,7 @@ describe("the bulk routes refuse a bad request before anything runs", () => {
         const res = await post(url, { ids: [A], ...withoutView, view: bad });
         expect(res.statusCode, `${url} ${JSON.stringify(bad)}`).toBe(400);
       }
-      const full = { q: "benchy", tag: "PLA", collection: "Desk", creator: "Jon", printer: "P1S" };
+      const full = { q: "benchy", tag: "PLA", collection: "Desk", creator: "Sam", printer: "P1S" };
       expect((await post(url, { ids: [A], ...withoutView, view: full })).statusCode, url).toBe(503);
     }
   });

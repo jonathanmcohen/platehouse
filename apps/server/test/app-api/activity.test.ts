@@ -1,5 +1,5 @@
 // The Activity page's app API, the parts that need no database (2026-11-19,
-// Jon: one page that shows what Platehouse is doing and holds, so he never
+// the maintainer: one page that shows what Platehouse is doing and holds, so the user never
 // has to read container logs). The queries themselves run against Postgres
 // and pg-boss in test/integration/app-api/activity.test.ts.
 //

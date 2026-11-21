@@ -1,6 +1,6 @@
 // A mock OpenID Connect issuer for the end-to-end stack (build plan Task 22),
-// standing in for Pocket ID. It answers discovery, an authorize endpoint
-// that signs in one fixed test user at once (as Pocket ID does for a browser
+// standing in for the OIDC provider. It answers discovery, an authorize endpoint
+// that signs in one fixed test user at once (as the OIDC provider does for a browser
 // already signed in to it), a token endpoint that checks the client, the
 // redirect_uri and the PKCE verifier, the JWKS and userinfo. ID tokens are
 // RS256, signed with a key made at start. Plain node:crypto and node:http, so
@@ -8,7 +8,7 @@
 //
 // It listens over plain HTTP on 8080 inside the compose network; Traefik
 // serves it as https://id.e2e.test, the issuer identifier, so the app talks
-// to it over TLS like it talks to Pocket ID. The client secret comes from
+// to it over TLS like it talks to the OIDC provider. The client secret comes from
 // the run's env file; the user and the key are made here and are throwaway.
 import {
   createHash,

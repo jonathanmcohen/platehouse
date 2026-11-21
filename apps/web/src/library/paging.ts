@@ -1,5 +1,5 @@
 // The library's numbered pages, View all and sort, as they live in the URL
-// (Jon, 2026-11-19): ?page=<n> beside ?q, ?tag, ?creator and ?collection,
+// (the maintainer, 2026-11-19): ?page=<n> beside ?q, ?tag, ?creator and ?collection,
 // ?view=all for every match on one page, and ?sort= for the order. Page 1
 // has no ?page= and the default sort no ?sort=, so the library's plain
 // address stays /.
@@ -51,7 +51,7 @@ export function libraryHref(
 }
 
 /**
- * The library's orders (Jon, 2026-11-19), as the server names them
+ * The library's orders (the maintainer, 2026-11-19), as the server names them
  * (LIBRARY_SORTS in apps/server/src/repos/models.ts), with their labels.
  * Best match is offered only while a search is active.
  */

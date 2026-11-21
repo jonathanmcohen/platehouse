@@ -782,7 +782,7 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
     expect(only).toContain(X1C_NAME);
   });
 
-  // Jon, 2026-11-19: the card read "Platehouse estimate Estimate".
+  // The maintainer, 2026-11-19: the card read "Platehouse estimate Estimate".
   test("the estimate is labelled once, and a screen reader hears that label once", async () => {
     await render(pageAt(MODEL_ID));
     const second = plateItems()[1];
@@ -820,7 +820,7 @@ describe("each set of numbers says where it came from (AC-032 display)", () => {
   });
 });
 
-// The model page's printer switch (Jon, 2026-11-19): My printers in a small
+// The model page's printer switch (the maintainer, 2026-11-19): My printers in a small
 // menu on the Plates tab. It asks for the model again with ?printer= and
 // starts no slicing.
 describe("the model page's printer switch", () => {
@@ -1705,7 +1705,7 @@ describe("the About tab", () => {
           model={model([], {
             license: null,
             licenseNote: "License on MakerWorld: Standard Digital File License",
-            description: "Already set by Jon.",
+            description: "Already set by the user.",
           })}
         />
       </MemoryRouter>,
@@ -1720,7 +1720,7 @@ describe("the About tab", () => {
     expect(text(container)).toContain("Three cubes for testing");
     expect(text(container)).toContain("Gridfinity");
     expect(text(container)).toContain("Desk");
-    expect(text(container)).toContain("Already set by Jon.");
+    expect(text(container)).toContain("Already set by the user.");
   });
 
   test("a licence and its note show together", async () => {

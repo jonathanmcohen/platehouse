@@ -1,5 +1,5 @@
-// API tokens on the settings page (build plan Task 21; AC-083 UI). Jon
-// makes one token per API client (Claude Code on each Mac) and revokes it
+// API tokens on the settings page (build plan Task 21; AC-083 UI). The user
+// makes one token per API client (each script or assistant, on each machine) and revokes it
 // here. A new token is shown once, in a themed dialog with Copy, and never
 // again: it is held only while that dialog is open, never put in the list,
 // and the server never answers it a second time. The list shows each live

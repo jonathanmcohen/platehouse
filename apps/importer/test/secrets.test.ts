@@ -381,8 +381,8 @@ describe("the output never shows a credential or a signed query", () => {
     expect(r.output).toMatch(/PATCH .*HTTP 503 busy \[redacted\]; asking where the upload stands/);
   });
 
-  // claude-env, or whoever sets the variable, may pass a token with a
-  // newline or space before or after it. The importer sends it trimmed (see
+  // Whatever sets the variable, a secret manager's wrapper say, may pass a
+  // token with a newline or space before or after it. The importer sends it trimmed (see
   // "a credential set with padding around it is sent bare", below), so
   // Platehouse sees, and may echo, the bare token. A 403 is used because its
   // body is quoted; a 401's is not.

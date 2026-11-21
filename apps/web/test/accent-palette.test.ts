@@ -1,4 +1,4 @@
-// The twelve accent schemes in the stylesheet (Jon, 2026-11-19). Each scheme
+// The twelve accent schemes in the stylesheet (the maintainer, 2026-11-19). Each scheme
 // is a [data-accent="id"] block of --scheme-* colours; the theme palettes map
 // them onto the app's tokens (--accent, --accent-text, --accent-soft,
 // --brand, --focus, and --chip-active-bg in dark). The same mapping is
@@ -389,7 +389,7 @@ describe("contrast", () => {
 
   test("the contrast check fails a pairing below the bar", () => {
     // The check itself, on a pair known to fail: Green's #00ae42 on white is
-    // 2.94:1, which is why the light theme fills with Jon's button colour.
+    // 2.94:1, which is why the light theme fills with the maintainer's button colour.
     expect(contrast("#00ae42", "#ffffff")).toBeLessThan(3);
     expect(contrast("#ffffff", "#00873a")).toBeGreaterThanOrEqual(4.5);
     expect(contrast("#000000", "#ffffff")).toBeCloseTo(21, 5);
@@ -412,7 +412,7 @@ describe("the accent never looks like danger", () => {
   });
 
   test("the distance check sees a near match", () => {
-    // Jon's original Coral label colour, #b83a25, beside light danger.
+    // The maintainer's original Coral label colour, #b83a25, beside light danger.
     expect(deltaE2000("#b83a25", "#c62828")).toBeLessThan(DANGER_DISTANCE);
     // Sharma, Wu and Dalal's test pair 1.
     expect(deltaE2000Lab([50, 2.6772, -79.7751], [50, 0, -82.7485])).toBeCloseTo(2.0425, 3);

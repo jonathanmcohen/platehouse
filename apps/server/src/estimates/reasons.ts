@@ -6,7 +6,7 @@
 //
 // The first six sentences are the plan's, word for word. filament_temperature
 // (-62) and toolpath_conflict (-101) were added to the map as legitimate
-// refusals after the plan was written (Jon, 2026-11-08, gate run 3); their
+// refusals after the plan was written (the maintainer, 2026-11-08, gate run 3); their
 // sentences are written here in the same style. The slicer's own detail
 // (Orca's error_string) is kept with the estimate and shown behind a Details
 // toggle, never in place of these words.

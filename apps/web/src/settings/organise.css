@@ -191,7 +191,7 @@
   min-width: 0;
 }
 
-/* The Language section (Jon, 2026-11-19): one radio button per language. */
+/* The Language section (the maintainer, 2026-11-19): one radio button per language. */
 .ph-language-picker {
   border: 0;
   margin: 0;

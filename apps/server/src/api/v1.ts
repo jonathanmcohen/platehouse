@@ -1,5 +1,5 @@
 // The Public API v1 (build plan Task 16; AC-082, AC-084, AC-085), for
-// Claude Code and the Manyfold importer (Task 23). Every route is under
+// scripts, AI assistants and the Manyfold importer (Task 23). Every route is under
 // /api/v1, bearer-class (auth/gate.ts) and behind the bearer hook
 // (api/tokens.ts): a token, never a cookie, never a login redirect, and no
 // Origin check. The operations are the contract's:
@@ -27,7 +27,7 @@
 // - POST /api/v1/models takes the metadata and externalRef the importer
 //   carries (decision 5). license is an SPDX id. A taken externalRef, on a
 //   live or a trashed model, is 409 {"error":"exists","trashed":<bool>}, so
-//   a re-run import skips a model Jon trashed rather than recreating it
+//   a re-run import skips a model the user trashed rather than recreating it
 //   (Review Focus 4).
 // - externalRef= finds the live model with that reference (zero or one); it
 //   is a lookup, not a filter, so it cannot be combined with the others.

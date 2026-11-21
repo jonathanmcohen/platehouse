@@ -225,7 +225,7 @@ beforeAll(async () => {
     }),
   });
   await app.ready();
-  session = (await auth.sessions.start("jon")).id;
+  session = (await auth.sessions.start("someone")).id;
 });
 
 afterAll(async () => {

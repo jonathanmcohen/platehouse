@@ -306,7 +306,7 @@ describe("the link's name segment (Review Focus 1)", () => {
     expect(linkFileName({ name, originalName, kind })).toBe(expected);
   });
 
-  // Jon, 2026-11-12 (PR #156): the segment is the delivered name with
+  // The maintainer, 2026-11-12 (PR #156): the segment is the delivered name with
   // / \ % ? # ; NUL, control characters and invisible format characters
   // (\p{Cf}: bidi overrides and isolates, zero-width characters) replaced
   // by _, then percent-encoded, so a link never depends on how a proxy

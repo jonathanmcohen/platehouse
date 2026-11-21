@@ -1,4 +1,4 @@
-// Platehouse's logo, icon A "Layered house" (Jon's pick, 2026-11-19): a roof
+// Platehouse's logo, icon A "Layered house" (the maintainer's pick, 2026-11-19): a roof
 // over three stacked print layers, on a 64 x 64 viewBox, exactly as picked.
 // The small art is the 16 px version: a heavier roof and two thicker layers,
 // so it stays crisp at that size.

@@ -1,4 +1,4 @@
-// The library's page numbers (Jon, 2026-11-19): Previous, the page numbers
+// The library's page numbers (the maintainer, 2026-11-19): Previous, the page numbers
 // and Next, in a nav landmark named "Library pages". Each is a link to the
 // page's own address, so it works with Back and Forward, a middle click and
 // a shared link. The current page is marked aria-current="page", which

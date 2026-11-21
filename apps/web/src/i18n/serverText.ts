@@ -1,4 +1,4 @@
-// The one rule for text the server sends (Jon, 2026-11-19, PR 287 review):
+// The one rule for text the server sends (the maintainer, 2026-11-19, PR 287 review):
 // a message, label, reason or sentence the server wrote is shown as it is on
 // an English page, never en.json's copy of it, so the two can never disagree
 // there; on a page in another language it is shown in the catalog's words

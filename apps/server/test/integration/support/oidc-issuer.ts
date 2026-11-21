@@ -1,6 +1,6 @@
 // A local OpenID Connect issuer for the login tests (build plan Task 15),
 // built on jose: discovery, an authorize endpoint the test drives like a
-// browser that is already signed in to Pocket ID, a token endpoint that
+// browser that is already signed in to the OIDC provider, a token endpoint that
 // checks the client, the redirect_uri and the PKCE verifier, the JWKS and
 // userinfo. It listens on 127.0.0.1 over plain HTTP, so the app's OIDC client
 // is created with openid-client's allowInsecureRequests for these tests only
@@ -39,7 +39,7 @@ import { createUploads, type Uploads } from "../../../src/uploads/tus.js";
 /** The public origin the auth tests use. */
 export const TEST_ORIGIN = "https://platehouse.test";
 
-/** The Pocket ID group a test user must be in. */
+/** The OIDC provider group a test user must be in. */
 export const TEST_GROUP = "platehouse";
 
 /** Who the issuer says is signing in. Leave a claim undefined to leave it out. */
@@ -165,7 +165,7 @@ export async function startMockIssuer(opts: MockIssuerOptions = {}): Promise<Moc
     clientSecret,
     user: {
       sub: `user-${randomBytes(4).toString("hex")}`,
-      email: "jon@example.test",
+      email: "someone@example.test",
       email_verified: true,
       groups: [TEST_GROUP, "other"],
       ...opts.user,

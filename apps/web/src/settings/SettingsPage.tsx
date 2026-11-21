@@ -4,7 +4,7 @@
 // Model names (the one-off "Use file titles", TitleNames.tsx), and the trash.
 // Everything comes from the session-class app API under /app/api
 // (apps/server/src/app-api); every dialog is the app's own themed one.
-// The Accent colour picker (Jon, 2026-11-19) comes first: it is this
+// The Accent colour picker (the maintainer, 2026-11-19) comes first: it is this
 // browser's choice, kept in a cookie, and needs nothing from the API.
 //
 // /settings?view=api is the API reference (../api-docs), linked from the API

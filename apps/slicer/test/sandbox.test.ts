@@ -297,7 +297,7 @@ describe("reading the kernel's Landlock ABI from a strict landrun run", () => {
   const refusal = (abi: number) =>
     `[landrun:error] 2026/11/11 00:00:00 Failed to apply sandbox: failed to apply Landlock restrictions: missing kernel Landlock support. Got Landlock ABI v${abi}, wanted {Landlock V9; FS: all; Net: all; Scoped: all}\n`;
 
-  test("the minimum is ABI 6 (Jon, 2026-11-11) and landrun asks for 9", () => {
+  test("the minimum is ABI 6 (the maintainer, 2026-11-11) and landrun asks for 9", () => {
     expect(MIN_LANDLOCK_ABI).toBe(6);
     expect(LANDRUN_STRICT_ABI).toBe(9);
   });

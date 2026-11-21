@@ -1,5 +1,5 @@
 // API tokens and the bearer check (build plan Task 16; AC-081, AC-083,
-// AC-085). Each API client, such as Claude Code on one Mac, has its own
+// AC-085). Each API client, such as a script or an AI assistant on one machine, has its own
 // token, made by createToken and ended by revokeToken (Task 21's settings
 // page calls both; nothing in this task makes a token from the UI).
 //

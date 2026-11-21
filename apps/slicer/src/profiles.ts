@@ -17,7 +17,7 @@
 //   in "nozzle" (not templates, not _common); each gets a flattened machine
 //   file, and each filament type gets one default filament per printer:
 //   Bambu's own preset for that printer where BAMBU_FILAMENTS maps the type
-//   and Orca has one, else the generic preset for that printer (Jon,
+//   and Orca has one, else the generic preset for that printer (the maintainer,
 //   2026-11-08: "I use mostly Bambu Filaments");
 // - Orca's process_full folder gets the flattened default process of every
 //   instantiable machine. Orca 2.5.0 loads that file on a printer switch and
@@ -332,8 +332,8 @@ export function genericFilamentFor(
 /**
  * Bambu's own filament preset per filament type, preferred over the generic
  * one wherever Orca has it for the printer (build plan Task 11 Decisions,
- * Jon 2026-11-08: "I use mostly Bambu Filaments"). The front office's
- * mapping, which Jon may correct: this table is the one place it lives.
+ * the maintainer, 2026-11-08: "I use mostly Bambu Filaments"). The
+ * mapping, which the maintainer may correct: this table is the one place it lives.
  * Each value is a preset's base name, the part before " @".
  */
 export const BAMBU_FILAMENTS: Readonly<Record<string, string>> = Object.freeze({

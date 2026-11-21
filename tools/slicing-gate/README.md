@@ -1,18 +1,18 @@
 # Slicing gate (build plan Task 1)
 
 This is a one-off test, not product code. Before any Platehouse feature is
-built, it proves that the OrcaSlicer 2.5.0 command-line slicer can slice Jon's
+built, it proves that the OrcaSlicer 2.5.0 command-line slicer can slice
 real Bambu Studio files headless, in a locked-down container, and gives
 numbers good enough to show. It also measures what the production slicer
 container needs (CPU, memory, time per plate, scratch space) and checks the
 OpenSCAD, landrun and STEP pieces the slicer image will carry.
 
-It runs on the test server only, a Linux host with Docker, after Jon approves
+It runs on the test server only, a Linux host with Docker, after the maintainer approves
 it. Designer files go from your workstation to the test server over ssh and
 never to GitHub. When the report is collected, the scratch dir and the image
 are deleted.
 
-If the gate fails, the build plan stops and goes back to Jon with Kiri:Moto as
+If the gate fails, the build plan stops and goes back to the maintainer with Kiri:Moto as
 the fallback.
 
 ## Files
@@ -50,7 +50,7 @@ image with the gate's hardening and use no designer file:
 The pinned Orca 2.5.0 AppImage ships no `resources/profiles/BBL.json`. Every
 vendor's presets are packed into `resources/profiles/<vendor>.opc`, a binary
 preset cache, and `BBL/` keeps only covers, models and a few filament maps.
-`flatten-profiles.mjs` reads JSON, so (Jon, 2026-11-08) the image takes the
+`flatten-profiles.mjs` reads JSON, so (the maintainer, 2026-11-08) the image takes the
 JSON from Orca's own source at the commit tag v2.5.0 points to:
 
 - The fetch names the commit (see Pins), never the tag or a branch. It is a
@@ -132,10 +132,10 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 
 ## How to run it
 
-1. On your workstation, read only over the folder; the selection is written to /tmp, never into the folder:
+1. On your workstation, read only over your folder of Bambu Studio files (`$HOME/designs` below; put your own folder in its place); the selection is written to /tmp, never into the folder:
 
    ```sh
-   node tools/slicing-gate/select-sample.mjs "$HOME/Downloads/3D Prints" \
+   node tools/slicing-gate/select-sample.mjs "$HOME/designs" \
      --json /tmp/platehouse-selection.json --names /tmp/platehouse-names.txt
    ```
 
@@ -144,7 +144,7 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    ```sh
    ssh TestServer 'rm -rf /tmp/platehouse-gate/tool && mkdir -p /tmp/platehouse-gate/in/sample'
    scp /tmp/platehouse-selection.json TestServer:/tmp/platehouse-gate/in/selection.json
-   cd "$HOME/Downloads/3D Prints"
+   cd "$HOME/designs"
    COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -T /tmp/platehouse-names.txt | ssh TestServer 'tar -xf - -C /tmp/platehouse-gate/in/sample'
    scp -rp /path/to/platehouse/tools/slicing-gate TestServer:/tmp/platehouse-gate/tool
    ```
@@ -250,14 +250,14 @@ Studio is not refused on version alone; the recipe in the report says so.
 
 ## The pass rule
 
-Jon, 2026-11-07: every plate gets a time and a weight above zero, or is refused
+The maintainer, 2026-11-07: every plate gets a time and a weight above zero, or is refused
 for a reason AC-034 treats as legitimate (process not compatible, machine not
 supported, bed too small, nozzle or extruder mismatch), which is reported. A
 crash, a timeout or an unexplained slicer error on any plate fails the gate.
 
 The legitimate refusals, by Orca 2.5.0 return code: -15 and -16 (machine not
 supported), -17 (process not compatible), -20, -52 and -102 (bed too small),
--66 and -68 (nozzle or extruder mismatch), and, by Jon's decision on
+-66 and -68 (nozzle or extruder mismatch), and, by the maintainer's decision on
 2026-11-08 after gate run 3 hit them, -101 (G-code path conflicts) and -62
 (filament temperatures too far apart). Each refused plate is reported with
 its code and Orca's meaning for it.
@@ -266,7 +266,7 @@ NEEDS-DECISION: the plan's slicer contract maps -61 to -69 to "nozzle
 mismatch", but Orca's own messages say only -66 and -68 are about extruders.
 -61, -63 to -65, -67 and -69 (bed type, collisions, vase mode, TPU count,
 mixed filament), and -50 (empty plate), are reported as needs-decision rather
-than passed or failed, so Jon decides them.
+than passed or failed, so the maintainer decides them.
 
 ## What the report holds
 

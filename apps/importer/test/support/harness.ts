@@ -19,7 +19,7 @@ export const FAKE_ID = ["stub", "client", "id", "7f3a"].join("-");
 export const FAKE_KEY = ["stub", "client", "key", "c0ffee", "9b1d"].join("-");
 export const FAKE_BEARER = ["ph", "_", "S".repeat(20), "t".repeat(23)].join("");
 
-/** The environment claude-env would give the command, with the two addresses. */
+/** The environment the command is given, with the two addresses. */
 export const ENV: Record<string, string> = {};
 ENV.MANYFOLD_CLIENT_ID = FAKE_ID;
 ENV[["MANYFOLD", "CLIENT", "SECRET"].join("_")] = FAKE_KEY;
