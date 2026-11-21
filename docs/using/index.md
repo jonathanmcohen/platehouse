@@ -41,8 +41,13 @@ loads are the stored plate thumbnails.
 ### Pages and View all
 
 The library shows 48 models a page, with **Previous**, **Next** and page numbers at the bottom
-(shortened with gaps on a narrow screen). **View all** shows every match on one page instead,
+(shortened with gaps on a narrow screen). **View all** shows the matches on one page instead,
 loading them 200 at a time as you go.
+
+- The pages and View all both reach the first 1000 matches in the chosen sort, no further. When
+  more match, the count shows "1000+" and a note above the cards says only the first 1000 can be
+  shown. To reach the rest, narrow the search, pick a tag or other filter, or choose another sort
+  order.
 
 - The count above the cards shows how many models there are, or how many match of the whole
   library while a search or filter is on.

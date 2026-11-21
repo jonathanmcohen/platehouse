@@ -88,7 +88,62 @@ export interface ManyfoldOptions {
   redact?: (text: string) => string;
   retries?: number;
   timeoutMs?: number;
+  /**
+   * A file download's idle limit, in ms: the download fails when no byte has
+   * arrived for this long, waiting for the answer included. It never limits
+   * the whole transfer, so a large file over a slow link still finishes
+   * (0.1.0 release review). DEFAULT_DOWNLOAD_IDLE_MS when not given.
+   */
   downloadTimeoutMs?: number;
+}
+
+/** A download's idle limit when none is given: 2 minutes without a byte. */
+export const DEFAULT_DOWNLOAD_IDLE_MS = 120_000;
+
+/** Why an idle watch aborted: no byte for its limit. */
+class IdleTimeout extends Error {
+  constructor(ms: number) {
+    super(`no data for ${ms / 1000} s`);
+    this.name = "IdleTimeout";
+  }
+}
+
+interface IdleWatch {
+  /** A fresh signal for one attempt, aborted after ms with no touch(). */
+  arm(): AbortSignal;
+  /** The current attempt's signal. */
+  readonly signal: AbortSignal;
+  /** A byte arrived: the clock starts again. */
+  touch(): void;
+  stop(): void;
+}
+
+/**
+ * The idle limit of one download. Each attempt arms a new signal; each chunk
+ * that arrives restarts the clock, so only a stall aborts it.
+ */
+function idleWatch(ms: number): IdleWatch {
+  let controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const restart = () => {
+    clearTimeout(timer);
+    const current = controller;
+    timer = setTimeout(() => current.abort(new IdleTimeout(ms)), ms);
+  };
+  return {
+    arm() {
+      controller = new AbortController();
+      restart();
+      return controller.signal;
+    },
+    get signal() {
+      return controller.signal;
+    },
+    touch: restart,
+    stop() {
+      clearTimeout(timer);
+    },
+  };
 }
 
 export interface ManyfoldListEntry {
@@ -174,6 +229,16 @@ function lastSegment(url: URL): string {
   return decodeURIComponent(parts.at(-1) ?? "");
 }
 
+/**
+ * The idle limit's message when the watch is what stopped the request, else
+ * null. Read from the watch, not the error, because how a fetch reports an
+ * abort is up to the fetch.
+ */
+function idleReason(watch: IdleWatch | undefined): string | null {
+  const reason: unknown = watch?.signal.aborted === true ? watch.signal.reason : undefined;
+  return reason instanceof IdleTimeout ? reason.message : null;
+}
+
 function why(error: unknown, timeout: number): string {
   const e = error as { name?: string; message?: string; cause?: { code?: string } };
   if (e.name === "TimeoutError") return `timed out after ${Math.round(timeout / 1000)} s`;
@@ -243,7 +308,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   const redact = options.redact ?? ((text: string) => text);
   const attempts = options.retries ?? 4;
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const downloadTimeoutMs = options.downloadTimeoutMs ?? 600_000;
+  const downloadIdleMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_IDLE_MS;
   let token: string | null = null;
   let asked = false;
 
@@ -272,11 +337,16 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
   const downloadPath = (url: URL) =>
     url.origin === origin ? url.pathname : url.host + url.pathname;
 
+  /**
+   * One GET with retries. With a watch (a download), each attempt's limit is
+   * the watch's idle limit instead of the whole-request timeout.
+   */
   async function request(
     url: URL,
     accept: string,
     timeout: number,
     named: (url: URL) => string = shortPath,
+    watch?: IdleWatch,
   ): Promise<Response> {
     const onManyfold = url.origin === origin;
     for (let attempt = 1; ; attempt++) {
@@ -291,10 +361,10 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           method: "GET",
           headers,
           redirect: "manual",
-          signal: AbortSignal.timeout(timeout),
+          signal: watch === undefined ? AbortSignal.timeout(timeout) : watch.arm(),
         });
       } catch (error) {
-        const reason = why(error, timeout);
+        const reason = idleReason(watch) ?? why(error, timeout);
         if (attempt < attempts) {
           log(`  GET ${named(url)}: ${reason}, retry ${attempt}`);
           await sleep(backoff(attempt));
@@ -460,7 +530,7 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     });
   }
 
-  return {
+  const manyfold: Manyfold = {
     authenticate,
 
     async listModels() {
@@ -530,67 +600,95 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
     },
 
     async download(link, expectedSize) {
-      let url = safeUrl(link);
-      for (let hop = 0; ; hop++) {
-        const res = await request(url, "*/*", downloadTimeoutMs, downloadPath);
-        const location = res.headers.get("location");
-        if (res.status >= 300 && res.status < 400 && location !== null) {
-          await res.body?.cancel();
-          if (hop >= MAX_REDIRECTS) {
-            throw new ManyfoldError(
-              `GET ${downloadPath(url)}: more than ${MAX_REDIRECTS} redirects`,
-            );
-          }
-          const next = new URL(location, url);
-          // Every hop's query is registered before anything else, Manyfold's
-          // own host included: a redirect there may be signed too. On that
-          // host only a query holding a sensitive parameter is registered,
-          // so an ordinary one such as "?download" never mangles the output.
-          const sameHost = next.hostname === hostname;
-          for (const value of signedQueryValues(next.search, { requireSigned: sameHost })) {
-            sensitive(value);
-          }
-          if (next.protocol !== "https:") {
-            // Refused on Manyfold's own host too, not upgraded: the plan
-            // says a non-https redirect is refused.
-            throw new ManyfoldError(
-              `GET ${downloadPath(url)}: refusing a redirect that is not https, to ${next.host}`,
-            );
-          }
-          url = sameHost ? safeUrl(next.toString()) : next;
-          continue;
-        }
-        if (res.status !== 200) throw await failure(url, res, downloadPath);
-        const chunks: Buffer[] = [];
-        let got = 0;
-        try {
-          if (res.body !== null) {
-            for await (const chunk of res.body) {
-              got += chunk.byteLength;
-              if (got > expectedSize) {
-                await res.body.cancel().catch(() => {});
-                throw new SizeMismatch(
-                  `size mismatch: got more than ${expectedSize} bytes, Manyfold says ${expectedSize}`,
-                  expectedSize,
-                  got,
-                );
-              }
-              chunks.push(Buffer.from(chunk));
-            }
-          }
-        } catch (error) {
-          if (error instanceof SizeMismatch) throw error;
-          throw new ManyfoldError(`GET ${downloadPath(url)}: ${why(error, downloadTimeoutMs)}`);
-        }
-        if (got !== expectedSize) {
-          throw new SizeMismatch(
-            `size mismatch: got ${got} bytes, Manyfold says ${expectedSize}`,
-            expectedSize,
-            got,
-          );
-        }
-        return Buffer.concat(chunks);
+      const watch = idleWatch(downloadIdleMs);
+      try {
+        return await downloadWith(watch, link, expectedSize);
+      } finally {
+        watch.stop();
       }
     },
   };
+
+  /** download(), under one idle watch for every hop and attempt. */
+  async function downloadWith(watch: IdleWatch, link: string, expectedSize: number) {
+    let url = safeUrl(link);
+    for (let hop = 0; ; hop++) {
+      const res = await request(url, "*/*", downloadIdleMs, downloadPath, watch);
+      watch.touch();
+      const location = res.headers.get("location");
+      if (res.status >= 300 && res.status < 400 && location !== null) {
+        await res.body?.cancel();
+        if (hop >= MAX_REDIRECTS) {
+          throw new ManyfoldError(`GET ${downloadPath(url)}: more than ${MAX_REDIRECTS} redirects`);
+        }
+        const next = new URL(location, url);
+        // Every hop's query is registered before anything else, Manyfold's
+        // own host included: a redirect there may be signed too. On that
+        // host only a query holding a sensitive parameter is registered,
+        // so an ordinary one such as "?download" never mangles the output.
+        const sameHost = next.hostname === hostname;
+        for (const value of signedQueryValues(next.search, { requireSigned: sameHost })) {
+          sensitive(value);
+        }
+        if (next.protocol !== "https:") {
+          // Refused on Manyfold's own host too, not upgraded: the plan
+          // says a non-https redirect is refused.
+          throw new ManyfoldError(
+            `GET ${downloadPath(url)}: refusing a redirect that is not https, to ${next.host}`,
+          );
+        }
+        url = sameHost ? safeUrl(next.toString()) : next;
+        continue;
+      }
+      if (res.status !== 200) throw await failure(url, res, downloadPath);
+      const chunks: Buffer[] = [];
+      let got = 0;
+      if (res.body !== null) {
+        const reader = res.body.getReader();
+        // A stall ends the read even if the fetch does not error its body
+        // when the signal aborts.
+        const signal = watch.signal;
+        let onAbort = () => {};
+        const stalled = new Promise<never>((_, reject) => {
+          onAbort = () => reject(signal.reason);
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
+        stalled.catch(() => {});
+        try {
+          for (;;) {
+            const next = await Promise.race([reader.read(), stalled]);
+            if (next.done) break;
+            watch.touch();
+            got += next.value.byteLength;
+            if (got > expectedSize) {
+              throw new SizeMismatch(
+                `size mismatch: got more than ${expectedSize} bytes, Manyfold says ${expectedSize}`,
+                expectedSize,
+                got,
+              );
+            }
+            chunks.push(Buffer.from(next.value));
+          }
+        } catch (error) {
+          await reader.cancel().catch(() => {});
+          if (error instanceof SizeMismatch) throw error;
+          const reason = idleReason(watch) ?? why(error, downloadIdleMs);
+          throw new ManyfoldError(`GET ${downloadPath(url)}: ${reason}`);
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+        }
+      }
+      if (got !== expectedSize) {
+        throw new SizeMismatch(
+          `size mismatch: got ${got} bytes, Manyfold says ${expectedSize}`,
+          expectedSize,
+          got,
+        );
+      }
+      return Buffer.concat(chunks);
+    }
+  }
+
+  return manyfold;
 }

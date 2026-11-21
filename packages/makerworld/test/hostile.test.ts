@@ -36,6 +36,22 @@ const HTML_SHAPES: Array<[string, string]> = [
   ["deeply nested emphasis", nest("<b>", "x", "</b>")],
   ["deeply nested links", nest('<a href="https://e.test/">', "x", "</a>")],
   ["many sibling emphasis", fill("<b>x</b> ")],
+  // emitEmphasis parses the whole text once a round (0.1.0 release
+  // review): shapes that need the most rounds, or pair across emphases and
+  // re-pair after each drop, must still finish in a few parses.
+  ["emphasis that never pairs", fill("<b>x:</b>y ")],
+  [
+    "nested emphasis that unpairs one level a round",
+    fill(`a${"<b><i>".repeat(8)}(x)${"</i></b>".repeat(8)}b `),
+  ],
+  ["one paragraph of emphasis pairing across each other", `<p>${fill("<b>x:</b>y")}</p>`],
+  ["bold holding many italics", fill(`<b>${"a<i>x</i>".repeat(50)}</b>c `)],
+  ["emphasis back to back", fill("<b>a</b><i>b</i><b>c</b><b>d</b>")],
+  // emitEmphasis drops no two touching emphases in one round: a long chain of
+  // touching ones that each fail must still settle in a few rounds.
+  ["touching emphases that each fail", `<p>${fill("<b>a:</b><i>b</i>")}</p>`],
+  // Punctuation only, so every character takes the probe's punctuation tags.
+  ["emphasis on punctuation only", `<p>${fill("<b>:</b>.<i>!</i>,<b>(</b>")}</p>`],
   ["deeply nested lists", fill("<ul><li>a")],
   ["deeply nested ordered lists", fill("<ol><li>a")],
   ["many line breaks in one list item", `<ul><li>${fill("a<br>")}`],

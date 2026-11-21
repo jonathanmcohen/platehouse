@@ -90,7 +90,20 @@ const TEXT_LINE = "\0";
 // the escaping step leaves it alone and markdown-it decodes it. Stripped from
 // text before use, like TEXT_LINE.
 const PASS_AMP = "\u0001";
-const stripSentinels = (s: string): string => s.replaceAll(TEXT_LINE, "").replaceAll(PASS_AMP, "");
+// Placeholders around each bold or italic element and each link address,
+// while the converter writes. emitEmphasis reads the formatting of every
+// character from the emphasis pairs, writes the marks itself, and takes the
+// address placeholders out. They are private-use characters, stripped from
+// text like the sentinels above.
+const STRONG_OPEN = String.fromCharCode(0xe000);
+const STRONG_CLOSE = String.fromCharCode(0xe001);
+const EM_OPEN = String.fromCharCode(0xe002);
+const EM_CLOSE = String.fromCharCode(0xe003);
+const HREF_OPEN = String.fromCharCode(0xe004);
+const HREF_CLOSE = String.fromCharCode(0xe005);
+const PLACEHOLDERS = new RegExp(`[${STRONG_OPEN}-${HREF_CLOSE}]`, "g");
+const stripSentinels = (s: string): string =>
+  s.replaceAll(TEXT_LINE, "").replaceAll(PASS_AMP, "").replace(PLACEHOLDERS, "");
 
 // Nesting caps. A crafted description could nest lists or emphasis thousands
 // deep; past these depths a list is written at its parent's indent and an
@@ -843,10 +856,20 @@ export function htmlToMarkdown(html: string | null | undefined): string {
           // A link with no text (an image wrapped in a link, once the image is
           // dropped) produces nothing, not its address: a description that is
           // only a linked image must stay empty.
-          if (href && core) wrapped = `${lead}[${core}](${href})${trail}`;
+          // The address sits between placeholders, so emitEmphasis never
+          // puts a mark in it or swaps its letters in the probe.
+          if (href && core) wrapped = `${lead}[${core}](${HREF_OPEN}${href}${HREF_CLOSE})${trail}`;
         } else if (core) {
-          const mark = EMPHASIS.get(tag) as string;
-          wrapped = lead + mark + core + mark + trail;
+          // Placeholders, not marks: they record which text this element
+          // made bold or italic, and emitEmphasis writes the marks once the
+          // whole text is known.
+          const strong = EMPHASIS.get(tag) === "**";
+          wrapped =
+            lead +
+            (strong ? STRONG_OPEN : EM_OPEN) +
+            core +
+            (strong ? STRONG_CLOSE : EM_CLOSE) +
+            trail;
         }
         if (wrapped !== seg) {
           out.truncate(open.start);
@@ -1039,13 +1062,570 @@ export function htmlToMarkdown(html: string | null | undefined): string {
     }
   }
 
-  return out
-    .toString()
+  return emitEmphasis(out.toString());
+}
+
+// The converter's line-level finish: block syntax at a text line's start
+// escaped, line ends trimmed, runs of blank lines collapsed. Placeholders
+// pass through it as the marks would: none is whitespace, and none can make
+// a line start look like block syntax.
+function finishLines(raw: string): string {
+  return raw
     .split("\n")
     .map((line) => trimLineEnd(escapeTextLineStart(line)).replace(/^ (?=\S)/, ""))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+// Bold and italic, decided from what each character should look like rather
+// than from how marks pair (0.1.0 release review of PR #334, issues #346,
+// #348 and #352). Checking how markdown-it paired the marks was always one
+// level too shallow: marks that pair "correctly" can still render the wrong
+// kind (<i><i>x</i></i> written **x** is bold) or land on other text.
+//
+// 1. Flatten. The converter wrote a placeholder pair around each bold or
+//    italic element. From them, every character gets two flags, bold and
+//    italic: an element inside one of its own kind adds nothing, so
+//    <i><i>x</i></i> is just italic. Whitespace, a line break included,
+//    takes the flags its two neighbours share, so marks hug the text; a
+//    paragraph break and the text's ends are plain. Neighbouring characters
+//    with the same flags form one run.
+// 2. Emit. Each stretch of runs with a flag gets one emphasis of that kind,
+//    the kind that runs on longer outermost, nested as marks must be.
+// 3. Check. markdown-it, set up as renderMarkdown is, renders a probe copy
+//    of the markdown in which every letter and digit is swapped for a
+//    private-use character naming its run. Private-use characters are
+//    neither whitespace nor punctuation, as letters and digits are not, so
+//    markdown-it pairs the marks of the probe exactly as it pairs the real
+//    ones. Each rendered character's bold and italic is then compared with
+//    its run's flags, and the visible text with the text rendered with no
+//    marks at all, so a mark showing as an asterisk is found too.
+// 4. Repair. An emphasis whose text renders without it, or whose marks put
+//    emphasis on text the HTML did not emphasise, loses its marks (its text
+//    stays). In the first rounds only the innermost such emphases go, since
+//    an inner one is often what breaks the outer; then every one found. The
+//    probe is checked again, for at most MAX_EMPHASIS_ROUNDS rounds; after
+//    that every mark is dropped, so the cost stays a few parses however
+//    long the description, and nothing is ever shown that the HTML did not
+//    say.
+const INNERMOST_ROUNDS = 3;
+const MAX_EMPHASIS_ROUNDS = 6;
+const BOLD = 1;
+const ITALIC = 2;
+
+interface Run {
+  readonly start: number;
+  readonly end: number;
+  readonly flags: number;
+}
+
+interface Span {
+  readonly kind: number;
+  readonly from: number; // first run
+  to: number; // run after the last
+  readonly parent: number; // enclosing span, or -1
+  dropped: boolean;
+}
+
+let probeParser: MarkdownIt | null = null;
+
+function emitEmphasis(raw: string): string {
+  const { text, runs } = flatten(raw);
+  const spans = layOut(runs);
+  const finish = (s: string): string =>
+    finishLines(s).replace(PLACEHOLDERS, (c) =>
+      c === STRONG_OPEN || c === STRONG_CLOSE ? "**" : c === EM_OPEN || c === EM_CLOSE ? "*" : "",
+    );
+  if (spans.length === 0) return finish(text);
+
+  const opensAt: number[][] = Array.from({ length: runs.length + 1 }, () => []);
+  const closesAt: number[][] = Array.from({ length: runs.length + 1 }, () => []);
+  spans.forEach((sp, id) => {
+    (opensAt[sp.from] as number[]).push(id); // outer first: ids rise inward
+    (closesAt[sp.to] as number[]).unshift(id); // inner first
+  });
+  probeParser ??= createMarkdownIt();
+  const parser = probeParser;
+  const probeText = probeRuns(text, runs, parser.utils);
+  const build = (probe: boolean): string => {
+    let s = "";
+    for (let b = 0; b <= runs.length; b++) {
+      for (const id of closesAt[b] as number[]) {
+        const sp = spans[id] as Span;
+        if (!sp.dropped) s += sp.kind === BOLD ? STRONG_CLOSE : EM_CLOSE;
+      }
+      for (const id of opensAt[b] as number[]) {
+        const sp = spans[id] as Span;
+        if (!sp.dropped) s += sp.kind === BOLD ? STRONG_OPEN : EM_OPEN;
+      }
+      if (b < runs.length) {
+        const run = runs[b] as Run;
+        s += probe ? probeText[b] : text.slice(run.start, run.end);
+      }
+    }
+    return finish(s);
+  };
+
+  // The probe with no marks at all: the visible text every round must show.
+  for (const sp of spans) sp.dropped = true;
+  const plain = visible(parser, build(true));
+  for (const sp of spans) sp.dropped = false;
+
+  for (let round = 0; round < MAX_EMPHASIS_ROUNDS; round++) {
+    const blamed = blame(visible(parser, build(true)), plain, runs, spans, opensAt, closesAt);
+    if (blamed === null) return build(false);
+    if (blamed.size === 0) break;
+    // Innermost first: a blamed emphasis with a blamed one inside it waits.
+    const waits = new Set<number>();
+    if (round < INNERMOST_ROUNDS) {
+      for (const id of blamed) {
+        for (let up = (spans[id] as Span).parent; up !== -1; up = (spans[up] as Span).parent) {
+          if (waits.has(up)) break;
+          waits.add(up);
+        }
+      }
+    }
+    // Two blamed emphases side by side are often blamed for each other (in
+    // **Note:***Use* neither shows); dropping one can let the other show. So
+    // in a round no two that touch both go: the narrowest go first, then the
+    // first in the text. One left waits a round, and goes then if it still
+    // fails, no longer touching one with marks.
+    const order = [...blamed]
+      .filter((id) => !waits.has(id))
+      .sort((p, q) => {
+        const a = spans[p] as Span;
+        const b = spans[q] as Span;
+        return a.to - a.from - (b.to - b.from) || a.from - b.from;
+      });
+    const edges = new Set<number>();
+    for (const id of order) {
+      const sp = spans[id] as Span;
+      if (round < INNERMOST_ROUNDS && (edges.has(sp.from) || edges.has(sp.to))) continue;
+      sp.dropped = true;
+      edges.add(sp.from);
+      edges.add(sp.to);
+    }
+  }
+  for (const sp of spans) sp.dropped = true;
+  return build(false);
+}
+
+// The raw text without its emphasis placeholders, and its runs. A
+// placeholder pair is the converter's record of one bold or italic element
+// around the text it wrapped; one left without its partner (its other half
+// was cut away with text) counts for nothing.
+function flatten(raw: string): { text: string; runs: Run[] } {
+  const paired = new Uint8Array(raw.length);
+  const stack: number[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === STRONG_OPEN || c === EM_OPEN) stack.push(i);
+    else if (c === STRONG_CLOSE || c === EM_CLOSE) {
+      const top = stack.at(-1);
+      if (top !== undefined && raw[top] === (c === STRONG_CLOSE ? STRONG_OPEN : EM_OPEN)) {
+        stack.pop();
+        paired[top] = 1;
+        paired[i] = 1;
+      }
+    }
+  }
+  let text = "";
+  const flags: number[] = [];
+  let bold = 0;
+  let italic = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i] as string;
+    if (c === STRONG_OPEN || c === STRONG_CLOSE || c === EM_OPEN || c === EM_CLOSE) {
+      if (paired[i] === 1) {
+        if (c === STRONG_OPEN) bold++;
+        else if (c === STRONG_CLOSE) bold--;
+        else if (c === EM_OPEN) italic++;
+        else italic--;
+      }
+      continue;
+    }
+    text += c;
+    flags.push((bold > 0 ? BOLD : 0) | (italic > 0 ? ITALIC : 0));
+  }
+  // Whitespace takes the flags both neighbours share, so a mark never sits
+  // beside a space it would have to be read across. A line break counts as
+  // whitespace (emphasis may run across one), and so does the text-line
+  // sentinel; a newline beside another, a blank line, is a paragraph break,
+  // which no emphasis crosses, so it is plain and separates.
+  const loose = (c: string): boolean => c === " " || c === "\t" || c === TEXT_LINE;
+  const breakAt = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "\n") continue;
+    let j = i + 1;
+    while (j < text.length && loose(text[j] as string)) j++;
+    if (j === text.length || text[j] === "\n") {
+      breakAt[i] = 1;
+      if (j < text.length) breakAt[j] = 1;
+    }
+    let k = i - 1;
+    while (k >= 0 && loose(text[k] as string)) k--;
+    if (k < 0) breakAt[i] = 1;
+  }
+  const blank = (i: number): boolean =>
+    loose(text[i] as string) || (text[i] === "\n" && breakAt[i] === 0);
+  for (let i = 0; i < text.length; i++) if (breakAt[i] === 1) flags[i] = 0;
+  const before = new Array<number>(text.length);
+  let last = 0;
+  for (let i = 0; i < text.length; i++) {
+    before[i] = last;
+    if (!blank(i)) last = flags[i] as number;
+  }
+  last = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (blank(i)) flags[i] = (before[i] as number) & last;
+    else last = flags[i] as number;
+  }
+  const runs: Run[] = [];
+  let start = 0;
+  for (let i = 1; i <= text.length; i++) {
+    if (i === text.length || flags[i] !== flags[start]) {
+      if (i > start) runs.push({ start, end: i, flags: flags[start] as number });
+      start = i;
+    }
+  }
+  return { text, runs };
+}
+
+// One emphasis for each stretch of runs with a flag, as properly nested
+// marks: at each run, the emphases whose flag it lacks close (with any opened
+// inside them, which reopen if the run still has their flag), then the
+// flags it has that are not open open, the one that runs on longer first.
+function layOut(runs: readonly Run[]): Span[] {
+  const extent = [BOLD, ITALIC].map((kind) => {
+    const n = new Int32Array(runs.length + 1);
+    for (let r = runs.length - 1; r >= 0; r--) {
+      n[r] = ((runs[r] as Run).flags & kind) !== 0 ? (n[r + 1] as number) + 1 : 0;
+    }
+    return n;
+  });
+  const spans: Span[] = [];
+  const open: number[] = [];
+  runs.forEach((run, r) => {
+    const low = open.findIndex((id) => (run.flags & (spans[id] as Span).kind) === 0);
+    if (low !== -1) {
+      for (const id of open.splice(low)) (spans[id] as Span).to = r;
+    }
+    const kinds = [BOLD, ITALIC]
+      .filter((k) => (run.flags & k) !== 0 && !open.some((id) => (spans[id] as Span).kind === k))
+      .sort((p, q) => (extent[q - 1]?.[r] as number) - (extent[p - 1]?.[r] as number));
+    for (const kind of kinds) {
+      open.push(spans.length);
+      spans.push({ kind, from: r, to: runs.length, parent: open.at(-2) ?? -1, dropped: false });
+    }
+  });
+  return spans;
+}
+
+// Which characters the probe swaps, and for what. A character that is
+// neither whitespace nor punctuation (to markdown-it) becomes a letter tag;
+// punctuation becomes a punctuation tag. Swapping never changes how
+// markdown-it reads the marks, since that depends only on whether the
+// characters beside them are whitespace, punctuation or neither. So nothing
+// that is syntax is swapped: a link address and the parentheses around it, a
+// list marker the converter wrote, a backslash, the bare [ ] | * _ ` ~ < > & !
+// the converter writes as markup (in text it escapes them), and a bare
+// - + = # outside text (a list marker or table rule). An escaped character
+// is text, so it is swapped and its backslash kept. An entity reference is
+// written as &amp;, which has the same characters at its edges.
+function probeRuns(text: string, runs: readonly Run[], utils: MarkdownIt["utils"]): string[] {
+  const alphabet = punctuationTags(utils);
+  const keep = new Uint8Array(text.length);
+  const entity = new Int32Array(text.length);
+  const escaped = new Uint8Array(text.length);
+  const inText = new Uint8Array(text.length);
+  for (const m of text.matchAll(/&#?[A-Za-z0-9]+;/g)) entity[m.index] = m[0].length;
+  for (const m of text.matchAll(/(^|\n)([ \t]*)(\d+[.)])/g)) {
+    const at = m.index + (m[1] as string).length + (m[2] as string).length;
+    keep.fill(1, at, at + (m[3] as string).length);
+  }
+  let inHref = false;
+  let afterTextLine = false;
+  let slashes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string;
+    if (c === "\n") afterTextLine = false;
+    else if (c === TEXT_LINE) afterTextLine = true;
+    if (c === HREF_OPEN) inHref = true;
+    if (inHref) keep[i] = 1;
+    if (c === HREF_CLOSE) inHref = false;
+    if ((c === "(" && text[i + 1] === HREF_OPEN) || (c === ")" && text[i - 1] === HREF_CLOSE)) {
+      keep[i] = 1;
+    }
+    escaped[i] = slashes % 2;
+    slashes = c === "\\" ? slashes + 1 : 0;
+    inText[i] = afterTextLine ? 1 : 0;
+  }
+  return runs.map((run, r) => {
+    const letter = String.fromCodePoint(LETTER_BASE + (r % LETTER_COUNT));
+    const punct = String.fromCodePoint(alphabet[r % alphabet.length] as number);
+    let s = "";
+    for (let i = run.start; i < run.end; ) {
+      const cp = text.codePointAt(i) as number;
+      const ch = String.fromCodePoint(cp);
+      const length = entity[i] as number;
+      if (length > 0 && keep[i] !== 1 && i + length <= run.end) {
+        s += "&amp;";
+        i += length;
+        continue;
+      }
+      i += ch.length;
+      if (
+        keep[i - ch.length] === 1 ||
+        cp <= 0x20 ||
+        ch === TEXT_LINE ||
+        ch === PASS_AMP ||
+        (cp >= 0xe000 && cp <= 0xe005) ||
+        utils.isWhiteSpace(cp)
+      ) {
+        s += ch;
+      } else if (!utils.isPunctChar(ch)) s += letter;
+      else if (ch === "\\") s += ch;
+      else if (escaped[i - ch.length] === 1 || cp >= 0x80) s += punct;
+      else if ("[]|*_`~<>&!".includes(ch)) s += ch;
+      else if ("-+=#".includes(ch)) s += inText[i - ch.length] === 1 ? punct : ch;
+      else s += punct;
+    }
+    return s;
+  });
+}
+
+// The probe's alphabets: a run's index modulo the alphabet's size. Letter
+// tags are plane-15 private-use characters, which markdown-it reads as
+// neither whitespace nor punctuation. Punctuation tags are symbols from
+// blocks assigned long ago (arrows, mathematical operators, box drawing,
+// geometric shapes, Braille, supplemental mathematical operators), kept
+// only where markdown-it's own isPunctChar says punctuation.
+const LETTER_BASE = 0xf0000;
+const LETTER_COUNT = 0xfffe;
+const PUNCT_BLOCKS: Array<[number, number]> = [
+  [0x2190, 0x22ff],
+  [0x2500, 0x25ff],
+  [0x2800, 0x28ff],
+  [0x2a00, 0x2aff],
+];
+let punctAlphabet: number[] | null = null;
+let punctPosition: Map<number, number> | null = null;
+
+function punctuationTags(utils: MarkdownIt["utils"]): number[] {
+  if (punctAlphabet === null) {
+    const tags: number[] = [];
+    for (const [from, to] of PUNCT_BLOCKS) {
+      for (let cp = from; cp <= to; cp++) {
+        if (utils.isPunctChar(String.fromCodePoint(cp)) && !utils.isWhiteSpace(cp)) tags.push(cp);
+      }
+    }
+    punctAlphabet = tags;
+    punctPosition = new Map(tags.map((cp, k) => [cp, k]));
+  }
+  return punctAlphabet;
+}
+
+// A probe character's run, given the run read just before it, or -1 for a
+// character that is not a tag.
+function tagRun(cp: number, prev: number): number {
+  let v: number;
+  let size: number;
+  if (cp >= LETTER_BASE && cp < LETTER_BASE + LETTER_COUNT) {
+    v = cp - LETTER_BASE;
+    size = LETTER_COUNT;
+  } else {
+    const k = punctPosition?.get(cp);
+    if (k === undefined || punctAlphabet === null) return -1;
+    v = k;
+    size = punctAlphabet.length;
+  }
+  const from = Math.max(0, prev);
+  return from + ((((v - (from % size)) % size) + size) % size);
+}
+
+interface Shown {
+  /** The visible characters, as code points, whitespace left out. */
+  codes: number[];
+  /** Each one's rendered bold and italic. */
+  flags: number[];
+}
+
+// What markdown-it shows of the markdown: each visible character and its
+// bold and italic, read from the tokens.
+function visible(parser: MarkdownIt, markdown: string): Shown {
+  const codes: number[] = [];
+  const flags: number[] = [];
+  for (const block of parser.parse(markdown, {})) {
+    let strong = 0;
+    let em = 0;
+    for (const t of block.children ?? []) {
+      if (t.type === "strong_open") strong++;
+      else if (t.type === "strong_close") strong--;
+      else if (t.type === "em_open") em++;
+      else if (t.type === "em_close") em--;
+      else if (t.type === "text" || t.type === "code_inline") {
+        for (const ch of t.content) {
+          const cp = ch.codePointAt(0) as number;
+          if (parser.utils.isWhiteSpace(cp) || /\s/u.test(ch)) continue;
+          codes.push(cp);
+          flags.push((strong > 0 ? BOLD : 0) | (em > 0 ? ITALIC : 0));
+        }
+      }
+    }
+  }
+  return { codes, flags };
+}
+
+// The emphases to drop, from the probe as rendered: null when every
+// character looks as its run says and the visible text is the text with no
+// marks; otherwise the emphases blamed, empty when none can be named.
+function blame(
+  shown: Shown,
+  plain: Shown,
+  runs: readonly Run[],
+  spans: Span[],
+  opensAt: readonly number[][],
+  closesAt: readonly number[][],
+): Set<number> | null {
+  const blamed = new Set<number>();
+  let wrong = false;
+  // The kept emphasis of each kind over each run, and for each run boundary
+  // the nearest kept emphasis of each kind that ends at or before it and
+  // that starts at or after it.
+  const over = [BOLD, ITALIC].map(() => new Int32Array(runs.length).fill(-1));
+  const endsBy = [BOLD, ITALIC].map(() => new Int32Array(runs.length + 1).fill(-1));
+  const startsFrom = [BOLD, ITALIC].map(() => new Int32Array(runs.length + 2).fill(-1));
+  const flagged = [BOLD, ITALIC].map(() => new Int32Array(runs.length + 1));
+  spans.forEach((sp, id) => {
+    if (sp.dropped) return;
+    const k = sp.kind - 1;
+    (over[k] as Int32Array).fill(id, sp.from, sp.to);
+    const e = endsBy[k] as Int32Array;
+    if ((e[sp.to] as number) === -1) e[sp.to] = id;
+    const s = startsFrom[k] as Int32Array;
+    s[sp.from] = id;
+  });
+  for (let k = 0; k < 2; k++) {
+    const e = endsBy[k] as Int32Array;
+    for (let b = 1; b <= runs.length; b++) if (e[b] === -1) e[b] = e[b - 1] as number;
+    const s = startsFrom[k] as Int32Array;
+    for (let b = runs.length - 1; b >= 0; b--) if (s[b] === -1) s[b] = s[b + 1] as number;
+    const f = flagged[k] as Int32Array;
+    for (let r = 0; r < runs.length; r++) {
+      f[r + 1] = (f[r] as number) + (((runs[r] as Run).flags & (k + 1)) !== 0 ? 1 : 0);
+    }
+  }
+  const width = (id: number): number => (spans[id] as Span).to - (spans[id] as Span).from;
+  // Emphasis of kind k showing on text from runs lo to hi that has none: the
+  // kept emphasis of that kind nearest on either side paired across it, so
+  // the narrower of the two goes; with neither, every kept emphasis over it.
+  const across = (k: number, lo: number, hi: number): void => {
+    const left = (endsBy[k] as Int32Array)[Math.max(0, Math.min(lo, runs.length))] as number;
+    const right = (startsFrom[k] as Int32Array)[Math.max(0, hi + 1)] as number;
+    if (left !== -1 && (right === -1 || width(left) <= width(right))) blamed.add(left);
+    else if (right !== -1) blamed.add(right);
+    else {
+      for (let j = 0; j < 2; j++) {
+        const id = (over[j] as Int32Array)[Math.max(0, Math.min(lo, runs.length - 1))] as number;
+        if (id !== -1) blamed.add(id);
+      }
+    }
+  };
+
+  // The visible text must be the text with no marks: an extra * is a mark
+  // shown as text, and the emphases with a mark between the runs around it
+  // are blamed; anything else unexpected blames every emphasis.
+  const extra: number[] = []; // positions in shown of characters not in plain
+  for (let i = 0, j = 0; i < shown.codes.length || j < plain.codes.length; ) {
+    if (i < shown.codes.length && j < plain.codes.length && shown.codes[i] === plain.codes[j]) {
+      i++;
+      j++;
+    } else if (i < shown.codes.length && shown.codes[i] === 0x2a) {
+      extra.push(i++);
+    } else {
+      for (let id = 0; id < spans.length; id++) if (!(spans[id] as Span).dropped) blamed.add(id);
+      return blamed;
+    }
+  }
+
+  // Read the probe: the run each tag names, in order.
+  const runAt = new Int32Array(shown.codes.length).fill(-1);
+  let prev = -1;
+  for (let i = 0; i < shown.codes.length; i++) {
+    const r = tagRun(shown.codes[i] as number, prev);
+    if (r === -1) continue;
+    runAt[i] = r;
+    prev = r;
+  }
+  // The runs on either side of each untagged character: the last tag's run
+  // before it and the next tag's after it.
+  const prevRun = new Int32Array(shown.codes.length);
+  const nextRun = new Int32Array(shown.codes.length);
+  let seen = -1;
+  for (let i = 0; i < shown.codes.length; i++) {
+    if ((runAt[i] as number) !== -1) seen = runAt[i] as number;
+    prevRun[i] = seen;
+  }
+  seen = runs.length;
+  for (let i = shown.codes.length - 1; i >= 0; i--) {
+    if ((runAt[i] as number) !== -1) seen = runAt[i] as number;
+    nextRun[i] = seen;
+  }
+
+  for (const i of extra) {
+    wrong = true;
+    const lo = Math.max(0, prevRun[i] as number);
+    const hi = Math.min(runs.length - 1, nextRun[i] as number);
+    let found = false;
+    // A mark sits on a run boundary from lo + 1 to hi; look at a bounded
+    // number of them, so a long stretch with no letters costs nothing.
+    for (let b = lo + 1; b <= hi && b <= lo + 64; b++) {
+      for (const id of [...(opensAt[b] as number[]), ...(closesAt[b] as number[])]) {
+        if (!(spans[id] as Span).dropped) {
+          blamed.add(id);
+          found = true;
+        }
+      }
+    }
+    if (!found) {
+      for (let id = 0; id < spans.length; id++) if (!(spans[id] as Span).dropped) blamed.add(id);
+    }
+  }
+
+  for (let i = 0; i < shown.codes.length; i++) {
+    const got = shown.flags[i] as number;
+    const r = runAt[i] as number;
+    if (r !== -1) {
+      // Emphasis the HTML did not give is wrong; so is a kept emphasis that
+      // does not show. One already dropped is expected not to show.
+      const want = (runs[r] as Run).flags;
+      for (let k = 0; k < 2; k++) {
+        const bit = k + 1;
+        const id = (over[k] as Int32Array)[r] as number;
+        if (id !== -1 && (got & bit) === 0) {
+          wrong = true;
+          blamed.add(id);
+        } else if ((want & bit) === 0 && (got & bit) !== 0) {
+          wrong = true;
+          across(k, r, r);
+        }
+      }
+    } else if (got !== 0) {
+      // Punctuation and the like carry no tag: emphasis on one is right if a
+      // run around it has that flag.
+      const lo = Math.max(0, prevRun[i] as number);
+      const hi = Math.min(runs.length - 1, nextRun[i] as number);
+      for (let k = 0; k < 2; k++) {
+        const f = flagged[k] as Int32Array;
+        if ((got & (k + 1)) !== 0 && (f[hi + 1] as number) - (f[lo] as number) === 0) {
+          wrong = true;
+          across(k, lo, hi);
+        }
+      }
+    }
+  }
+  return wrong ? blamed : null;
 }
 
 // What tagEnd keeps between the tags of one input, so the pass stays linear.

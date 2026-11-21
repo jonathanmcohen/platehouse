@@ -16,6 +16,11 @@
 // flag is not given from MANYFOLD_BASE or PLATEHOUSE_BASE, and must be an
 // https origin (both clients send requests to the origin only).
 //
+// A file download fails when it receives nothing for 120 s, or for
+// --download-idle-timeout <seconds> (else MANYFOLD_DOWNLOAD_IDLE_TIMEOUT),
+// from 1 to 86400. It is an idle limit, not a limit on the whole transfer,
+// so a large file over a slow link finishes as long as bytes keep arriving.
+//
 // It reads Manyfold with one read-scoped token and writes to Platehouse only
 // through the Public API v1, with a Platehouse API token. A dry run is the
 // default: it reads both sides, plans each model, downloads nothing and
@@ -49,7 +54,12 @@
 // redactor that knows them, the Manyfold token and each signed query (AC-003).
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
-import { createManyfold, type Manyfold, type ManyfoldModel } from "./manyfold.js";
+import {
+  createManyfold,
+  DEFAULT_DOWNLOAD_IDLE_MS,
+  type Manyfold,
+  type ManyfoldModel,
+} from "./manyfold.js";
 import { externalRefFor, type ModelPlan, planModel, type SourceModel } from "./plan.js";
 import { createPlatehouse, type Platehouse, type PlatehouseModel } from "./platehouse.js";
 import { cleanText, createRedactor, type Redactor } from "./redact.js";
@@ -79,11 +89,26 @@ const CREDENTIALS = ["MANYFOLD_CLIENT_ID", "MANYFOLD_CLIENT_SECRET", "PLATEHOUSE
 
 export const USAGE = [
   "usage: platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]",
+  "         [--download-idle-timeout <seconds>]",
   "  --manyfold and --platehouse are the https addresses of Manyfold and Platehouse;",
   "  without a flag, MANYFOLD_BASE or PLATEHOUSE_BASE is read. Neither has a default.",
   "  Set MANYFOLD_CLIENT_ID, MANYFOLD_CLIENT_SECRET and PLATEHOUSE_TOKEN in the environment.",
   "  A dry run is the default; --apply writes to Platehouse. --model <id> runs one model.",
+  "  --download-idle-timeout <seconds>, or MANYFOLD_DOWNLOAD_IDLE_TIMEOUT, fails a file download",
+  `  that receives nothing for that long (default ${DEFAULT_DOWNLOAD_IDLE_MS / 1000}); a slow download that keeps receiving never times out.`,
 ].join("\n");
+
+/** The download idle limit's flag and variable, and the most they take: a day. */
+const IDLE_FLAG = "download-idle-timeout";
+const IDLE_VARIABLE = "MANYFOLD_DOWNLOAD_IDLE_TIMEOUT";
+const IDLE_MAX_S = 86_400;
+
+/** A whole number of seconds from 1 to IDLE_MAX_S, as ms, or null. */
+export function idleSeconds(value: string): number | null {
+  if (!/^[0-9]{1,6}$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds >= 1 && seconds <= IDLE_MAX_S ? seconds * 1000 : null;
+}
 
 const MODEL_ID = /^[A-Za-z0-9_-]{1,100}$/;
 
@@ -394,6 +419,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
       model: string | undefined;
       manyfold: string | undefined;
       platehouse: string | undefined;
+      idle: string | undefined;
     };
     try {
       const { values } = parseArgs({
@@ -403,6 +429,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
           model: { type: "string" },
           manyfold: { type: "string" },
           platehouse: { type: "string" },
+          [IDLE_FLAG]: { type: "string" },
         },
         strict: true,
         allowPositionals: false,
@@ -412,6 +439,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
         model: values.model,
         manyfold: values.manyfold,
         platehouse: values.platehouse,
+        idle: values[IDLE_FLAG],
       };
     } catch (error) {
       err(message(error));
@@ -420,6 +448,19 @@ export async function run(options: RunOptions): Promise<RunResult> {
     }
     if (args.model !== undefined && !MODEL_ID.test(args.model)) {
       err("--model takes a Manyfold model's public id, such as abc123 (letters, digits, - and _)");
+      usage();
+      return { code: 2, report: null };
+    }
+
+    // The download idle limit: the flag, else the variable, else the default.
+    // An empty variable counts as not set, as for the addresses.
+    const idleFromEnv = (options.env[IDLE_VARIABLE] ?? "").trim();
+    const idleGiven = args.idle ?? (idleFromEnv === "" ? undefined : idleFromEnv);
+    const downloadTimeoutMs =
+      idleGiven === undefined ? DEFAULT_DOWNLOAD_IDLE_MS : idleSeconds(idleGiven);
+    if (downloadTimeoutMs === null) {
+      const source = args.idle === undefined ? IDLE_VARIABLE : `--${IDLE_FLAG}`;
+      err(`${source} takes a whole number of seconds from 1 to ${IDLE_MAX_S}`);
       usage();
       return { code: 2, report: null };
     }
@@ -490,6 +531,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
       clientId,
       clientKey,
       sensitive: (value) => redactor.add(value),
+      downloadTimeoutMs,
     });
     const platehouse = createPlatehouse({ ...common, base: platehouseBase, bearer });
 
