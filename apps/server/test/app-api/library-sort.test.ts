@@ -28,7 +28,7 @@ import {
   sortPrinterFor,
 } from "../../src/app-api/library.js";
 import type { DB } from "../../src/db/types.js";
-import { defaultSort, LIBRARY_SORTS, modelsRepo } from "../../src/repos/models.js";
+import { defaultSort, LIBRARY_SORTS, modelsRepo, NAME_SORT_CHARS } from "../../src/repos/models.js";
 
 /** A database that answers every query with no rows, or a count of 0, and records its SQL. */
 function recordingDb(statements: string[]): Kysely<DB> {
@@ -187,17 +187,27 @@ describe("a numbered page's read is ordered in the database", () => {
     expect((await order({ page: 1, sort: "oldest" })).order).toMatch(
       /^"models"\."created_at" asc, "models"\."id" asc limit/,
     );
+    // The first 200 characters lead, as the name index holds them (migration
+    // 0009), then the whole name, so names alike that far still sort by the rest.
     expect((await order({ page: 1, sort: "name-asc" })).order).toMatch(
-      /^lower\(models\.name\) asc, "models"\."name" asc, "models"\."id" asc limit/,
+      /^lower\(left\(models\.name, 200\)\) asc, left\(models\.name, 200\) asc, lower\(models\.name\) asc, "models"\."name" asc, "models"\."id" asc limit/,
     );
     expect((await order({ page: 1, sort: "name-desc" })).order).toMatch(
-      /^lower\(models\.name\) desc, "models"\."name" desc, "models"\."id" desc limit/,
+      /^lower\(left\(models\.name, 200\)\) desc, left\(models\.name, 200\) desc, lower\(models\.name\) desc, "models"\."name" desc, "models"\."id" desc limit/,
     );
+  });
+
+  // Postgres uses an expression index only for the same expression: a bound
+  // parameter ($1) in place of 200 would never match the index's left(name, 200).
+  test("the name sort's prefix length is written into the query, never bound", async () => {
+    const { order: by } = await order({ page: 1, sort: "name-asc" });
+    expect(by.split(" limit ")[0]).not.toMatch(/\$\d/);
+    expect(NAME_SORT_CHARS).toBe(200);
   });
 
   test("a sort the page names wins over the search's best match", async () => {
     const { order: by, answer } = await order({ q: "benchy", page: 1, sort: "name-asc" });
-    expect(by).toMatch(/^lower\(models\.name\)/);
+    expect(by).toMatch(/^lower\(left\(models\.name, 200\)\)/);
     expect(answer.sort).toBe("name-asc");
   });
 

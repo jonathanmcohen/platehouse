@@ -335,11 +335,59 @@ describe("Select all matching", () => {
   });
 });
 
-test("the sort indexes exist on live models (migration 0008)", async () => {
+test("the sort indexes exist on live models (migrations 0008 and 0009)", async () => {
   const { rows } = await sql<{ indexname: string; indexdef: string }>`
     select indexname, indexdef from pg_indexes
     where tablename = 'models' and indexname in ('models_live_created', 'models_live_name')
     order by indexname`.execute(env.db);
   expect(rows.map((r) => r.indexname)).toEqual(["models_live_created", "models_live_name"]);
   for (const row of rows) expect(row.indexdef).toMatch(/WHERE \(trashed_at IS NULL\)/);
+  // 0009: the name index holds the first 200 characters, never the whole name.
+  const name = rows.find((r) => r.indexname === "models_live_name")?.indexdef ?? "";
+  expect(name).toMatch(/lower\("left"\(name, 200\)\), "left"\(name, 200\)/);
+  expect(name).not.toMatch(/lower\(name\)/);
+});
+
+// A name is up to 500 characters (ingest, rename and the public API), and
+// the name index once held two whole copies of it. 500 characters of CJK
+// script (3 bytes each in UTF-8) or emoji (4 bytes) made an index row over
+// btree's 2704-byte limit, so the insert or rename failed. The index now
+// holds a 200-character prefix (migration 0009).
+describe("long names in any script", () => {
+  const cjk = Array.from({ length: 500 }, (_, i) => String.fromCodePoint(0x4e00 + i)).join("");
+  const emoji = Array.from({ length: 500 }, (_, i) => String.fromCodePoint(0x1f300 + i)).join("");
+
+  test("a 500-character CJK or emoji name can be made, renamed and sorted", async () => {
+    const shelf = `Long names ${marker()}`;
+    const made: string[] = [];
+    for (const name of [cjk, emoji]) {
+      const id = (await env.repos.models.create({ name })).id;
+      expect(await createCollections(env.db).addToCollection(id, shelf)).toBe(true);
+      made.push(id);
+    }
+    const [first, second] = made;
+    if (first === undefined || second === undefined) throw new Error("no models made");
+    // A rename to the other long name, and back.
+    await env.db.updateTable("models").set({ name: emoji }).where("id", "=", first).execute();
+    await env.db.updateTable("models").set({ name: cjk }).where("id", "=", first).execute();
+    const sorted = await page({ collection: shelf, page: 1, sort: "name-asc" });
+    expect(new Set(sorted.models.map((m) => m.id))).toEqual(new Set(made));
+  });
+
+  test("names alike in their first 200 characters still sort by the rest, ignoring case", async () => {
+    const word = marker();
+    const shelf = `Alike ${word}`;
+    const prefix = `Alike ${word} `.padEnd(200, "x");
+    const made = new Map<string, string>();
+    for (const end of ["c", "B", "a"]) {
+      const id = (await env.repos.models.create({ name: `${prefix}${end}` })).id;
+      expect(await createCollections(env.db).addToCollection(id, shelf)).toBe(true);
+      made.set(end, id);
+    }
+    const up = ["a", "B", "c"].map((end) => made.get(end));
+    const asc = await page({ collection: shelf, page: 1, sort: "name-asc" });
+    expect(asc.models.map((m) => m.id)).toEqual(up);
+    const desc = await page({ collection: shelf, page: 1, sort: "name-desc" });
+    expect(desc.models.map((m) => m.id)).toEqual([...up].reverse());
+  });
 });
