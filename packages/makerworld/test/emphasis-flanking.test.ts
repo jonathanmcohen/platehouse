@@ -6,13 +6,13 @@ import { createMarkdownIt, htmlToMarkdown } from "../src/markdown.js";
 // flanking rules, the rule of 3 and how markdown-it pairs the runs, and a
 // hand-written copy of those rules missed case after case (punctuation
 // beside the marks, an emphasis nested at another's edge, bold holding two
-// or more italics, nested bold in bold). The converter now writes every
-// emphasis and asks markdown-it which marks it paired, dropping only the
-// marks of an emphasis markdown-it would show as asterisks.
+// or more italics, nested bold in bold). The converter now works out what
+// each character should look like and drops the marks of any emphasis
+// markdown-it would render differently (emitEmphasis).
 //
-// The oracle here is markdown-it's rendered output with its tags, through
-// the same setup renderMarkdown uses, so lost emphasis shows as a missing
-// <strong> or <em> and stray marks show as asterisks.
+// These cases pin exact output, through the same markdown-it setup
+// renderMarkdown uses. emphasis-invariant.test.ts checks the property itself,
+// character by character, on these inputs and on generated ones.
 
 const md = createMarkdownIt();
 const render = (markdown: string): string => md.render(markdown);
@@ -223,19 +223,21 @@ describe("an emphasis is kept only where its own marks pair with each other", ()
                 const s2 = keep2 ? `<${r2}>${two}</${r2}>` : two;
                 return `<p>${before}${s1}${mid}${s2}${after}</p>\n`;
               };
-              const allowed = [
-                show(true, true),
-                show(true, false),
-                show(false, true),
-                show(false, false),
-              ];
+              // Two of a kind with only a space between are one run, so one
+              // emphasis over both, the space included, shows the same.
+              const merged =
+                t1 === t2 && mid.trim() === "" && mid !== ""
+                  ? `<p>${before}<${r1}>${one}${mid}${two}</${r1}>${after}</p>\n`
+                  : null;
+              const both = merged === null ? [show(true, true)] : [show(true, true), merged];
+              const allowed = [...both, show(true, false), show(false, true), show(false, false)];
               const got = convert(html);
               const allMarks = render(
                 `${esc(before)}${m1}${esc(one)}${m1}${esc(mid)}${m2}${esc(two)}${m2}${esc(after)}`,
               );
               if (!allowed.includes(got)) failures.push(`${html} gives ${JSON.stringify(got)}`);
               else if (mid !== "" || t1 !== t2) {
-                if (allMarks === show(true, true) && got !== allMarks) {
+                if (allMarks === show(true, true) && !both.includes(got)) {
                   failures.push(
                     `${html} gives ${JSON.stringify(got)}, not ${JSON.stringify(allMarks)}`,
                   );
