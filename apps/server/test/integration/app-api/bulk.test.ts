@@ -14,9 +14,12 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { registerOrganiseApi } from "../../../src/app-api/organise.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createCollections } from "../../../src/library/collections.js";
+import { withLiveModel } from "../../../src/library/live.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createTrash } from "../../../src/library/trash.js";
 import { type BulkResult, bulkRepo, MAX_BULK_IDS } from "../../../src/repos/bulk.js";
+import type { LibraryView } from "../../../src/repos/models.js";
+import { tagsRepo } from "../../../src/repos/tags.js";
 import {
   type LibraryEnv,
   marker,
@@ -30,15 +33,19 @@ const MISSING = "0198f0c4-0000-7000-8000-0000000000ff";
 let env: LibraryEnv;
 let app: FastifyInstance;
 
+/** The whole library as a view: no search and no filter, so every live model is in it. */
+const WHOLE_LIBRARY: LibraryView = { q: "" };
+
+/** Posts body, in the whole library's view unless body names one. */
 async function post<T = BulkResult>(
   url: string,
-  body: unknown,
+  body: Record<string, unknown>,
 ): Promise<{ status: number; body: T }> {
   const res = await app.inject({
     method: "POST",
     url,
     headers: { "content-type": "application/json", accept: "application/json" },
-    payload: JSON.stringify(body),
+    payload: JSON.stringify({ view: {}, ...body }),
   });
   return { status: res.statusCode, body: res.json() as T };
 }
@@ -92,6 +99,7 @@ describe("add tags", () => {
         { id: MISSING, reason: "not_found" },
         { id: "not-an-id", reason: "not_found" },
       ],
+      notInView: [],
       tags: ["PLA", "Desk"],
     });
     expect(await tagsOf(a)).toEqual(["Desk", "Old", "PLA"]);
@@ -167,7 +175,7 @@ describe("add tags", () => {
       await insert(second);
     });
     await firstMade;
-    const adding = bulkRepo(env.db).addTags([a], [second, first]);
+    const adding = bulkRepo(env.db).addTags([a], [second, first], WHOLE_LIBRARY);
     try {
       const deadline = Date.now() + 10_000;
       for (;;) {
@@ -219,6 +227,7 @@ describe("remove a tag", () => {
         { id: trashed, reason: "in_trash" },
         { id: MISSING, reason: "not_found" },
       ],
+      notInView: [],
       tag,
     });
     expect(await tagsOf(a)).toEqual([]);
@@ -239,14 +248,20 @@ describe("remove a tag", () => {
     const tag = `Gone ${marker()} \u0391\u03a3`;
     await createTags(env.db).addTag(a, tag);
     const res = await post("/app/api/bulk/remove-tag", { ids: [a, b], tag });
-    expect(res.body).toEqual({ changed: [a], unchanged: [b], failed: [], tag });
+    expect(res.body).toEqual({ changed: [a], unchanged: [b], failed: [], notInView: [], tag });
     expect(await tagsOf(a)).toEqual([]);
   });
 
   test("a tag no model has: every live model unchanged, and no stored name", async () => {
     const { live } = await selection();
     const res = await post("/app/api/bulk/remove-tag", { ids: live, tag: `Never ${marker()}` });
-    expect(res.body).toEqual({ changed: [], unchanged: live, failed: [], tag: null });
+    expect(res.body).toEqual({
+      changed: [],
+      unchanged: live,
+      failed: [],
+      notInView: [],
+      tag: null,
+    });
   });
 });
 
@@ -267,6 +282,7 @@ describe("add to a collection", () => {
         { id: trashed, reason: "in_trash" },
         { id: MISSING, reason: "not_found" },
       ],
+      notInView: [],
       collection: name,
     });
     for (const id of live) expect(await env.repos.collections.forModel(id)).toEqual([name]);
@@ -311,6 +327,7 @@ describe("move to the trash", () => {
         { id: trashed, reason: "in_trash" },
         { id: MISSING, reason: "not_found" },
       ],
+      notInView: [],
     });
     expect(await env.repos.models.get(a)).toBeUndefined();
     expect(await env.repos.models.get(b)).toBeUndefined();
@@ -377,8 +394,8 @@ describe("two bulk requests at once, with the models in opposite orders (issue #
       const [a, b] = live;
       const tags = [`Race ${round} one ${marker()}`, `Race ${round} two ${marker()}`];
       const answers = await Promise.allSettled([
-        repo.addTags([a, b], tags),
-        repo.addTags([b, a], [...tags].reverse()),
+        repo.addTags([a, b], tags, WHOLE_LIBRARY),
+        repo.addTags([b, a], [...tags].reverse(), WHOLE_LIBRARY),
       ]);
       expect(
         answers.map((x) => x.status),
@@ -399,8 +416,8 @@ describe("two bulk requests at once, with the models in opposite orders (issue #
       const [a, b] = live;
       const name = `Race shelf ${round} ${marker()}`;
       const answers = await Promise.allSettled([
-        repo.addToCollection([a, b], name),
-        repo.addToCollection([b, a], name),
+        repo.addToCollection([a, b], name, WHOLE_LIBRARY),
+        repo.addToCollection([b, a], name, WHOLE_LIBRARY),
       ]);
       expect(
         answers.map((x) => x.status),
@@ -418,10 +435,10 @@ describe("two bulk requests at once, with the models in opposite orders (issue #
       const { live } = await selection();
       const [a, b] = live;
       const tag = `Race off ${round} ${marker()}`;
-      await repo.addTags([a, b], [tag]);
+      await repo.addTags([a, b], [tag], WHOLE_LIBRARY);
       const answers = await Promise.allSettled([
-        repo.removeTag([a, b], tag),
-        repo.removeTag([b, a], tag),
+        repo.removeTag([a, b], tag, WHOLE_LIBRARY),
+        repo.removeTag([b, a], tag, WHOLE_LIBRARY),
       ]);
       expect(
         answers.map((x) => x.status),
@@ -438,7 +455,7 @@ describe("one transaction", () => {
     const tag = `Rolled back ${marker()}`;
     await expect(
       env.db.transaction().execute(async (trx) => {
-        const done = await bulkRepo(trx).addTags(live, [tag]);
+        const done = await bulkRepo(trx).addTags(live, [tag], WHOLE_LIBRARY);
         expect(done.changed).toEqual(live);
         throw new Error("roll back");
       }),
@@ -446,5 +463,248 @@ describe("one transaction", () => {
     for (const id of live) expect(await tagsOf(id)).toEqual([]);
     const made = await env.db.selectFrom("tags").select("id").where("name", "=", tag).execute();
     expect(made).toEqual([]);
+  });
+});
+
+// The server keeps Select mode to the models the user can see (Jon,
+// 2026-11-20). Each request names the search and filters it was made in;
+// the server works out, in the action's own transaction, which of the
+// posted models that view matches now, changes only those, and answers the
+// rest in notInView, untouched. That includes a model that matched when the
+// browser last checked and has left the view since (here its tag is taken
+// off between the check and the request).
+describe("the view a bulk request is made in", () => {
+  /** Two models with a fresh tag (in the view tag=it) and one without, with that tag. */
+  async function tagView() {
+    const { live } = await selection();
+    const [a, b, c] = live;
+    const tag = `View ${marker()}`;
+    await createTags(env.db).addTag(a, tag);
+    await createTags(env.db).addTag(b, tag);
+    return { a, b, c, tag, view: { tag } };
+  }
+
+  test("add tags: a model outside the view is left alone and answered in notInView", async () => {
+    const { a, c, view } = await tagView();
+    const res = await post("/app/api/bulk/add-tags", { ids: [a, c], tags: ["Added"], view });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ changed: [a], unchanged: [], failed: [], notInView: [c] });
+    expect(await tagsOf(a)).toContain("Added");
+    expect(await tagsOf(c)).toEqual([]);
+  });
+
+  test("add tags: a model that left the view after the browser's check is left alone", async () => {
+    const { a, b, tag, view } = await tagView();
+    await createTags(env.db).removeTag(b, tag);
+    const res = await post("/app/api/bulk/add-tags", { ids: [a, b], tags: ["Late"], view });
+    expect(res.body).toMatchObject({ changed: [a], notInView: [b] });
+    expect(await tagsOf(b)).toEqual([]);
+  });
+
+  test("remove a tag: a model outside the view keeps the tag and is answered in notInView", async () => {
+    const { a, c, view } = await tagView();
+    const other = `Other ${marker()}`;
+    await createTags(env.db).addTag(a, other);
+    await createTags(env.db).addTag(c, other);
+    const res = await post("/app/api/bulk/remove-tag", { ids: [a, c], tag: other, view });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      changed: [a],
+      unchanged: [],
+      failed: [],
+      notInView: [c],
+      tag: other,
+    });
+    expect(await tagsOf(c)).toEqual([other]);
+  });
+
+  test("remove a tag: a model that left the view after the browser's check keeps its tags", async () => {
+    const { a, b, tag, view } = await tagView();
+    const other = `Other ${marker()}`;
+    await createTags(env.db).addTag(b, other);
+    await createTags(env.db).removeTag(b, tag);
+    const res = await post("/app/api/bulk/remove-tag", { ids: [a, b], tag: other, view });
+    expect(res.body).toMatchObject({ changed: [], unchanged: [a], notInView: [b] });
+    expect(await tagsOf(b)).toEqual([other]);
+  });
+
+  test("add to a collection: a model outside the view stays out and is answered in notInView", async () => {
+    const { a, c, view } = await tagView();
+    const name = `View shelf ${marker()}`;
+    const res = await post("/app/api/bulk/add-to-collection", {
+      ids: [a, c],
+      collection: name,
+      view,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ changed: [a], notInView: [c], collection: name });
+    expect(await env.repos.collections.forModel(a)).toEqual([name]);
+    expect(await env.repos.collections.forModel(c)).toEqual([]);
+  });
+
+  test("add to a collection: a model that left the view after the browser's check stays out", async () => {
+    const { a, b, tag, view } = await tagView();
+    await createTags(env.db).removeTag(b, tag);
+    const name = `Late shelf ${marker()}`;
+    const res = await post("/app/api/bulk/add-to-collection", {
+      ids: [a, b],
+      collection: name,
+      view,
+    });
+    expect(res.body).toMatchObject({ changed: [a], notInView: [b] });
+    expect(await env.repos.collections.forModel(b)).toEqual([]);
+  });
+
+  test("move to the trash: a model outside the view is not trashed and is answered in notInView", async () => {
+    const { a, c, view } = await tagView();
+    const res = await post("/app/api/bulk/trash", { ids: [a, c], view });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ changed: [a], unchanged: [], failed: [], notInView: [c] });
+    expect(await env.repos.models.get(a)).toBeUndefined();
+    expect((await env.repos.models.get(c))?.id).toBe(c);
+  });
+
+  test("move to the trash: a model that left the view after the browser's check is not trashed", async () => {
+    // The rc.2 live case: the filtered tag was taken off a selected model.
+    const { a, b, tag, view } = await tagView();
+    await createTags(env.db).removeTag(b, tag);
+    const res = await post("/app/api/bulk/trash", { ids: [a, b], view });
+    expect(res.body).toEqual({ changed: [a], unchanged: [], failed: [], notInView: [b] });
+    expect((await env.repos.models.get(b))?.id).toBe(b);
+  });
+
+  // The library page's view check asks this about selected models past the
+  // first 1000 matches GET /app/api/library/ids answers (PR #313 review):
+  // the same rule as the actions, with no sort and no cap, changing nothing.
+  test("in-view: answers the posted models the view holds, in the request's order, and changes nothing", async () => {
+    const { a, b, c, tag, view } = await tagView();
+    const { trashed } = await selection();
+    const res = await post<{ ids: string[] }>("/app/api/bulk/in-view", {
+      ids: [b, c, trashed, MISSING, "not-an-id", a, a.toUpperCase()],
+      view,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ids: [b, a] });
+    const whole = await post<{ ids: string[] }>("/app/api/bulk/in-view", { ids: [trashed, c] });
+    expect(whole.body).toEqual({ ids: [c] });
+    expect(await tagsOf(a)).toEqual([tag]);
+    expect(await tagsOf(b)).toEqual([tag]);
+    expect(await tagsOf(c)).toEqual([]);
+  });
+
+  // The race in the PR #313 review: another tab takes the filtered tag off a
+  // selected model while the bulk action runs. That change (withLiveModel)
+  // holds the model FOR SHARE until it commits. Every bulk action now locks
+  // the selected models FOR NO KEY UPDATE or FOR UPDATE, which wait on it, so
+  // the view is read after the change commits and the model is answered in
+  // notInView, untouched. Locked FOR SHARE, as these three actions once were,
+  // the action did not wait, read the view before the change committed and
+  // changed the model anyway; here that shows as the action never waiting.
+  const actions: [string, (ids: string[], view: LibraryView) => Promise<BulkResult>][] = [
+    ["add tags", (ids, view) => bulkRepo(env.db).addTags(ids, [`Raced ${marker()}`], view)],
+    ["remove a tag", (ids, view) => bulkRepo(env.db).removeTag(ids, "Raced other", view)],
+    [
+      "add to a collection",
+      (ids, view) => bulkRepo(env.db).addToCollection(ids, `Raced ${marker()}`, view),
+    ],
+    ["move to the trash", (ids, view) => bulkRepo(env.db).trash(ids, view)],
+  ];
+  for (const [name, act] of actions) {
+    test(`${name}: a model taken out of the view while the action runs is left alone`, async () => {
+      const { a, b, tag } = await tagView();
+      await createTags(env.db).addTag(b, "Raced other");
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let taken: () => void = () => {};
+      const tagTaken = new Promise<void>((resolve) => {
+        taken = resolve;
+      });
+      const other = withLiveModel(env.db, b, async (trx) => {
+        expect(await tagsRepo(trx).remove(b, tag)).toBe(true);
+        taken();
+        await released;
+        return true;
+      });
+      await tagTaken;
+      const acting = act([a, b], { q: "", tag });
+      try {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const { rows } = await sql<{ waiting: number }>`
+            select count(*)::int as waiting from pg_stat_activity
+             where wait_event_type = 'Lock' and query ilike 'select %from "models"%for %update%'
+          `.execute(env.db);
+          if ((rows[0]?.waiting ?? 0) > 0) break;
+          if (Date.now() > deadline)
+            throw new Error(`${name} never waited on the share-locked model`);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        release();
+        expect(await other).toBe(true);
+        const done = await acting;
+        expect(done.notInView).toEqual([b]);
+        expect(done.changed).not.toContain(b);
+        expect(await tagsOf(b)).toEqual(["Raced other"]);
+        expect(await env.repos.collections.forModel(b)).toEqual([]);
+        expect((await env.repos.models.get(b))?.id).toBe(b);
+      } finally {
+        release();
+        await other.catch(() => false);
+        await acting.catch(() => undefined);
+      }
+    });
+  }
+
+  test("the search counts as the library page's does: name, caption, creator and tag", async () => {
+    const word = marker();
+    const named = (await seedStoredModel(env, { name: `Searched ${word}` })).model.id;
+    const byCreator = (await seedStoredModel(env, { creator: `Maker ${word}` })).model.id;
+    const tagged = (await seedStoredModel(env)).model.id;
+    await createTags(env.db).addTag(tagged, `Tag ${word}`);
+    const other = (await seedStoredModel(env)).model.id;
+    const res = await post("/app/api/bulk/add-tags", {
+      ids: [named, byCreator, tagged, other],
+      tags: ["Found"],
+      view: { q: word.toUpperCase() },
+    });
+    expect(res.body).toMatchObject({ changed: [named, byCreator, tagged], notInView: [other] });
+  });
+
+  test("the collection and creator filters, and a blank filter that is no filter", async () => {
+    const { live } = await selection();
+    const [a, b, c] = live;
+    const shelf = `Filter shelf ${marker()}`;
+    await createCollections(env.db).addToCollection(a, shelf);
+    await createCollections(env.db).addToCollection(b, shelf);
+    const inShelf = await post("/app/api/bulk/add-tags", {
+      ids: [a, b, c],
+      tags: ["Shelved"],
+      view: { collection: shelf.toLowerCase(), tag: "  " },
+    });
+    expect(inShelf.body).toMatchObject({ changed: [a, b], notInView: [c] });
+    const maker = `Filter maker ${marker()}`;
+    const made = (await seedStoredModel(env, { creator: maker })).model.id;
+    const byMaker = await post("/app/api/bulk/add-tags", {
+      ids: [made, c],
+      tags: ["Made"],
+      view: { creator: maker },
+    });
+    expect(byMaker.body).toMatchObject({ changed: [made], notInView: [c] });
+  });
+
+  test("a model in the trash is still reported as in the trash, not as outside the view", async () => {
+    const { trashed } = await selection();
+    const res = await post("/app/api/bulk/add-tags", {
+      ids: [trashed],
+      tags: ["Never"],
+      view: { tag: `Nothing ${marker()}` },
+    });
+    expect(res.body).toMatchObject({
+      changed: [],
+      failed: [{ id: trashed, reason: "in_trash" }],
+      notInView: [],
+    });
   });
 });

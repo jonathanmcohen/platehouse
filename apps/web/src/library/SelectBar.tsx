@@ -14,12 +14,23 @@
 //   library's tags), Add to collection (an existing one offered, or a new
 //   name) and Move to trash (ConfirmDialog, the app's own, with the count;
 //   the trash keeps a model 30 days and it can be restored there). Each is one
-//   POST /app/api/bulk/* with the selected ids (at most MAX_SELECTED), and
-//   the dialog stays open, showing any failure, until the server answers.
+//   POST /app/api/bulk/* with the selected ids (at most MAX_SELECTED) and
+//   the view they were selected in (viewOf: the search, filters and
+//   printer), and the dialog stays open, showing any failure, until the
+//   server answers. The server changes only the posted models that view
+//   shows when the action runs (Jon, 2026-11-20).
 // - The answer is shown in words (describeBulk): what changed, what was
-//   already so, and in an alert the models that failed and why. A failed
-//   model leaves the selection, as does one moved to the trash, and the grid
-//   reloads to show the change.
+//   already so, how many the server left alone because the search and
+//   filters no longer show them, and in an alert the models that failed and
+//   why. A failed model leaves the selection, as does one moved to the trash
+//   or left alone, and the grid reloads to show the change.
+// - The selection holds only models the search and filters show (0.1.0-rc.2
+//   live check; LibraryPage checks it), so its count is true: while that
+//   check runs, or after it fails, the actions wait and the toolbar says
+//   why, with Try again for a failure; models it takes out are counted in a
+//   note. Every change to the selection goes through LibraryPage (onAdd,
+//   onRemove, onClear), applied to the selection as it is when it lands, and
+//   a Select all matching answer from an earlier view (era) is dropped.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { ChipEditor } from "../collections/ChipEditor";
 import { type MessageKey, useI18n } from "../i18n/I18n";
@@ -32,6 +43,7 @@ import {
   describeBulk,
   MAX_SELECTED,
   MAX_TAGS,
+  viewOf,
 } from "./selection";
 
 /** The selection: each id with its model's name, or null when the page never showed it. */
@@ -48,8 +60,26 @@ export interface SelectBarProps {
   matching: URLSearchParams;
   /** The library's tags, to pick from. */
   tags: string[];
-  /** Replaces the selection. */
-  onChange(next: Map<string, string | null>): void;
+  /**
+   * The page is checking which selected models the search and filters show,
+   * or that check failed: the actions wait either way. Null once it is done.
+   */
+  check: "checking" | "failed" | null;
+  /** How many selected models the last check took out, as the view no longer shows them. */
+  left: number;
+  /** Runs a failed check again. */
+  onCheckAgain(): void;
+  /** The view the page shows now, as a count that moves on with it; see onAdd. */
+  era(): number;
+  /**
+   * Adds models to the selection as it is when this lands, unless the view
+   * has moved on from era asked (then nothing is added and it answers false).
+   */
+  onAdd(entries: Array<[string, string | null]>, asked: number): boolean;
+  /** Takes models out of the selection. */
+  onRemove(ids: Iterable<string>): void;
+  /** Clear selection. */
+  onClear(): void;
   /** An action changed models: reload the grid. */
   onChanged(): void;
   /** A dialog opened or closed (Escape then belongs to the dialog). */
@@ -306,7 +336,13 @@ export function SelectBar({
   totalCapped,
   matching,
   tags,
-  onChange,
+  check,
+  left,
+  onCheckAgain,
+  era,
+  onAdd,
+  onRemove,
+  onClear,
   onChanged,
   onDialog,
 }: SelectBarProps) {
@@ -314,12 +350,14 @@ export function SelectBar({
   const { t } = i18n;
   const errorText = useErrorText();
   const [open, setOpenState] = useState<Open>(null);
-  const [result, setResult] = useState<{ done: string; failed: string | null } | null>(null);
+  const [result, setResult] = useState<ReturnType<typeof describeBulk> | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const opener = useRef<HTMLButtonElement | null>(null);
   const count = selected.size;
   const none = count === 0;
+  /** The actions wait: nothing is selected, or the selection is not yet checked against the view. */
+  const off = none || check !== null;
 
   function setOpen(next: Open, from?: HTMLButtonElement) {
     if (from !== undefined) opener.current = from;
@@ -327,25 +365,22 @@ export function SelectBar({
     onDialog(next !== null);
   }
 
-  function add(entries: Array<[string, string | null]>) {
-    const next = new Map(selected);
-    for (const [id, name] of entries) {
-      if (!next.has(id) || (next.get(id) === null && name !== null)) next.set(id, name);
-    }
-    onChange(next);
-  }
-
   async function selectMatching() {
     if (picking) return;
     setPicking(true);
     setNote(null);
+    // The view it is asked in: if the search, a filter, the sort or the
+    // printer changes, an action finishes or Select mode ends before the
+    // answer is in, the answer is another view's and adds nothing.
+    const asked = era();
     try {
       const answer = await appApi<{ ids: string[]; capped: boolean }>(
         "GET",
         `/library/ids?${matching}`,
       );
       const names = new Map(shown.map((c) => [c.id, c.name]));
-      add(answer.ids.map((id) => [id, names.get(id) ?? null]));
+      const entries = answer.ids.map((id): [string, string | null] => [id, names.get(id) ?? null]);
+      if (!onAdd(entries, asked)) return;
       if (answer.capped) {
         setNote(t("library.select.capped", { count: answer.ids.length }));
       }
@@ -357,6 +392,9 @@ export function SelectBar({
   }
 
   async function run(action: BulkAction) {
+    // A dialog opened before a check began (Back to another search, say):
+    // the selection may hold a model the view does not show until it ends.
+    if (check !== null) throw new AppApiError(0, t("library.select.checking"));
     const ids = [...selected.keys()];
     if (ids.length > MAX_SELECTED) {
       throw new AppApiError(0, t("library.select.tooMany", { max: MAX_SELECTED }));
@@ -364,13 +402,15 @@ export function SelectBar({
     const answer = await appApi<BulkAnswer>(
       "POST",
       `/bulk/${action.action}`,
-      bulkBody(action, ids),
+      bulkBody(action, ids, viewOf(matching)),
     );
     const names = new Map([...selected].filter((e): e is [string, string] => e[1] !== null));
     setResult(describeBulk(action, answer, names, i18n));
-    const gone = new Set(answer.failed.map((f) => f.id));
+    // Failed models, ones the server left alone as the view no longer shows
+    // them, and trashed ones leave the selection.
+    const gone = new Set([...answer.failed.map((f) => f.id), ...(answer.notInView ?? [])]);
     if (action.action === "trash") for (const id of answer.changed) gone.add(id);
-    onChange(new Map([...selected].filter(([id]) => !gone.has(id))));
+    onRemove(gone);
     setOpen(null);
     onChanged();
   }
@@ -380,9 +420,9 @@ export function SelectBar({
       <button
         type="button"
         className={`studio-button ph-small${danger ? " ph-button-danger" : ""}`}
-        aria-disabled={none}
+        aria-disabled={off}
         onClick={(event) => {
-          if (none) return;
+          if (off) return;
           setResult(null);
           setOpen(name, event.currentTarget);
         }}
@@ -406,7 +446,12 @@ export function SelectBar({
         <button
           type="button"
           className="studio-button ph-small"
-          onClick={() => add(shown.map((c) => [c.id, c.name]))}
+          onClick={() =>
+            onAdd(
+              shown.map((c) => [c.id, c.name]),
+              era(),
+            )
+          }
         >
           {t("library.select.page")}
         </button>
@@ -422,7 +467,7 @@ export function SelectBar({
           type="button"
           className="studio-button ph-small"
           onClick={() => {
-            onChange(new Map());
+            onClear();
             setNote(null);
           }}
         >
@@ -435,8 +480,23 @@ export function SelectBar({
         {action("add-to-collection", "library.select.addToCollection")}
         {action("trash", "library.select.trash", true)}
       </div>
+      {check === "checking" && !none ? (
+        <p className="studio-muted">{t("library.select.checking")}</p>
+      ) : null}
+      {check === "failed" && !none ? (
+        <div className="studio-alert studio-alert-alert">
+          <p role="alert">{t("library.select.checkFailed")}</p>
+          <button type="button" className="studio-button ph-small" onClick={onCheckAgain}>
+            {t("common.tryAgain")}
+          </button>
+        </div>
+      ) : null}
       {note === null ? null : <p className="studio-muted">{note}</p>}
       {result === null ? null : <p className="studio-muted">{result.done}</p>}
+      {result?.notInView ? <p className="studio-muted">{result.notInView}</p> : null}
+      {left > 0 ? (
+        <p className="studio-muted">{t("library.select.left", { count: left })}</p>
+      ) : null}
       {result?.failed ? (
         <p role="alert" className="studio-alert studio-alert-alert">
           {result.failed}

@@ -23,6 +23,11 @@
 //   unless another overlay that takes Escape is open: the upload dialog
 //   (mounted beside the library) or the narrow-screen menu. Escape closes
 //   that overlay only (PR #246 review).
+// - The selection holds only models the search and filters show (0.1.0-rc.2
+//   live check): a new search, filter or sort, or an action that takes a
+//   model out of the view, takes it out of the selection and says how many
+//   left; the actions wait while that is checked, and after a failed check
+//   until Try again works.
 // - With models selected: Add tags (type or pick), Remove tag, Add to
 //   collection (existing or new) and Move to trash (the app's own confirm
 //   dialog, with the count). Each is one request with the selected ids; the
@@ -40,7 +45,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { LibraryPage } from "../src/library/LibraryPage";
 import type { LibraryCard } from "../src/library/ModelCard";
 import { SORT_OPTIONS, sortFrom } from "../src/library/paging";
-import { describeBulk, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
+import { describeBulk, keepShown, MAX_SELECTED, MAX_TAGS } from "../src/library/selection";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { MenuButton } from "../src/shell/MenuButton";
 import { UploadDialog } from "../src/upload/UploadDialog";
@@ -87,6 +92,8 @@ let container: HTMLDivElement;
 let root: Root;
 let requests: string[];
 let posted: Posted[];
+/** The bodies POST /app/api/bulk/in-view was sent, the view check past the ids cap. */
+let inViewAsked: Array<Record<string, unknown>>;
 let matchCap: number;
 /** The tag names /app/api/library/tags answers with, as live models carry them. */
 let serverTags: string[];
@@ -98,6 +105,11 @@ let holding: ((page: number) => boolean) | null;
 let held: Array<() => void>;
 /** Library requests for a page this says yes to answer 500. */
 let failing: ((page: number) => boolean) | null;
+/** While true, /app/api/library/ids requests wait until releaseIds(). */
+let holdingIds: boolean;
+let heldIds: Array<() => void>;
+/** While true, /app/api/library/ids answers 500. */
+let failingIds: boolean;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -116,6 +128,21 @@ function stubServer(all: LibraryCard[]) {
       if (url.pathname === "/app/api/collections") {
         return json({ collections: [{ name: "Shelf", models: 3 }] });
       }
+      if (url.pathname === "/app/api/bulk/in-view") {
+        // Which posted models the view holds: every match, with no sort and no cap.
+        const body = JSON.parse(String(init?.body ?? "{}")) as Posted["body"];
+        inViewAsked.push(body);
+        const ids = body.ids as string[];
+        const want = (body.view as Record<string, string>).tag?.toLowerCase();
+        return json({
+          ids: ids.filter((i) =>
+            all.some(
+              (c) =>
+                c.id === i && (want === undefined || c.tags.some((t) => t.toLowerCase() === want)),
+            ),
+          ),
+        });
+      }
       if (url.pathname.startsWith("/app/api/bulk/")) {
         const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
         posted.push({ url: url.pathname, body });
@@ -127,6 +154,8 @@ function stubServer(all: LibraryCard[]) {
       );
       const matches = found.slice(0, matchCap);
       if (url.pathname === "/app/api/library/ids") {
+        if (holdingIds) await new Promise<void>((resolve) => heldIds.push(resolve));
+        if (failingIds) return new Response("no", { status: 500 });
         return json({ ids: matches.map((c) => c.id), capped: found.length > matchCap });
       }
       if (url.pathname !== "/app/api/library") return new Response("no", { status: 404 });
@@ -317,6 +346,26 @@ async function releaseHeld() {
   await settle();
 }
 
+/** Lets every held /app/api/library/ids request answer. */
+async function releaseIds() {
+  holdingIds = false;
+  const waiting = heldIds;
+  heldIds = [];
+  for (const go of waiting) go();
+  await settle();
+}
+
+/**
+ * Lets the oldest held /app/api/library/ids request answer, and only it, so
+ * a test sets the order two answers arrive in. Later ones stay held.
+ */
+async function releaseOneIds() {
+  const go = heldIds.shift();
+  if (go === undefined) throw new Error("no ids request is held");
+  go();
+  await settle();
+}
+
 async function selectMode() {
   await click(button("Select"));
 }
@@ -324,9 +373,13 @@ async function selectMode() {
 beforeEach(() => {
   requests = [];
   posted = [];
+  inViewAsked = [];
   holding = null;
   held = [];
   failing = null;
+  holdingIds = false;
+  heldIds = [];
+  failingIds = false;
   matchCap = 1000;
   serverTags = ["Desk", "PLA"];
   bulkAnswer = (_url, body) =>
@@ -683,7 +736,10 @@ describe("bulk actions", () => {
     const before = libraryQueries().length;
     await click(dialogButton("Add tags"));
     expect(posted).toEqual([
-      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA", "Kitchen"] } },
+      {
+        url: "/app/api/bulk/add-tags",
+        body: { ids: [id(1), id(2)], tags: ["PLA", "Kitchen"], view: {} },
+      },
     ]);
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain("Added PLA and Kitchen to 2 models.");
@@ -754,7 +810,7 @@ describe("bulk actions", () => {
     expect(dialogButton("Add tags").getAttribute("aria-disabled")).toBe("false");
     await click(dialogButton("Add tags"));
     expect(posted).toEqual([
-      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA"] } },
+      { url: "/app/api/bulk/add-tags", body: { ids: [id(1), id(2)], tags: ["PLA"], view: {} } },
     ]);
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain("Added PLA to 2 models.");
@@ -887,7 +943,7 @@ describe("bulk actions", () => {
     await choose(menu, "PLA");
     await click(dialogButton("Remove tag"));
     expect(posted).toEqual([
-      { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "PLA" } },
+      { url: "/app/api/bulk/remove-tag", body: { ids: [id(1), id(2)], tag: "PLA", view: {} } },
     ]);
     expect(container.textContent).toContain("Removed PLA from 2 models.");
   });
@@ -903,7 +959,7 @@ describe("bulk actions", () => {
     expect(posted).toEqual([
       {
         url: "/app/api/bulk/add-to-collection",
-        body: { ids: [id(1), id(2)], collection: "Garage" },
+        body: { ids: [id(1), id(2)], collection: "Garage", view: {} },
       },
     ]);
     expect(container.textContent).toContain("Added 2 models to Garage.");
@@ -926,7 +982,9 @@ describe("bulk actions", () => {
     await twoSelected();
     await click(button("Move to trash"));
     await click(dialogButton("Move to trash"));
-    expect(posted).toEqual([{ url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)] } }]);
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)], view: {} } },
+    ]);
     expect(dialog()).toBeNull();
     expect(container.textContent).toContain(
       "Moved 2 models to the trash. Restore them from the trash within 30 days.",
@@ -978,6 +1036,557 @@ describe("bulk actions", () => {
     expect(dialog()).toBeNull();
     expect(button("Select").getAttribute("aria-pressed")).toBe("true");
     expect(statusText()).toBe("2 models selected");
+  });
+});
+
+describe("the selection holds only models the search and filters show (0.1.0-rc.2 live check)", () => {
+  // The selection never acts on a model the view cannot show. A model leaves
+  // it when a new search, filter or sort no longer shows it, or when an
+  // action takes it out of the view (Remove tag of the filtered tag, Move to
+  // trash), and the toolbar says how many left. While the page checks which
+  // selected models the view shows, the actions wait.
+
+  /** The tag filter's chip named name. */
+  function tagChip(name: string): HTMLElement {
+    const found = [
+      ...container.querySelectorAll<HTMLElement>('nav[aria-label="Filter by tag"] a'),
+    ].find((a) => a.textContent === name);
+    if (found === undefined) throw new Error(`no tag chip ${name}`);
+    return found;
+  }
+
+  /** The server's remove-tag: the tag comes off each model it names. */
+  function removesTags(all: LibraryCard[]) {
+    bulkAnswer = (_url, body) => {
+      const ids = body.ids as string[];
+      for (const card of all) {
+        if (ids.includes(card.id)) card.tags = card.tags.filter((t) => t !== body.tag);
+      }
+      return json({ changed: ids, unchanged: [], failed: [], tag: body.tag });
+    };
+  }
+
+  const ONE_LEFT =
+    "1 selected model is not shown by the search and filters, so it left the selection.";
+
+  test("Remove tag of the filtered tag: the model leaves the selection and Move to trash is off", async () => {
+    const all = cards(5, 1);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    expect(container.textContent).toContain("Removed PLA from 1 model.");
+    expect(container.textContent).toContain("No models match.");
+    expect(statusText()).toBe("No models selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+    await click(button("Move to trash"));
+    expect(dialog()).toBeNull();
+    expect(posted).toHaveLength(1);
+  });
+
+  test("a new filter keeps the selected models it shows, says how many left, and acts on those only", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 002"));
+    await click(checkbox("Model 004"));
+    expect(statusText()).toBe("3 models selected");
+    await click(tagChip("PLA"));
+    expect(location).toBe("/?tag=PLA");
+    expect(statusText()).toBe("2 models selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    await click(button("Move to trash"));
+    expect(dialog()?.textContent).toContain("Move 2 models to the trash?");
+    await click(dialogButton("Move to trash"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(1), id(2)], view: { tag: "PLA" } } },
+    ]);
+  });
+
+  test("two or more that leave are counted in the plural", async () => {
+    stubServer(cards(5, 1));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 003"));
+    await click(checkbox("Model 004"));
+    await click(tagChip("PLA"));
+    expect(statusText()).toBe("1 model selected");
+    expect(container.textContent).toContain(
+      "2 selected models are not shown by the search and filters, so they left the selection.",
+    );
+  });
+
+  test("a new sort that still shows every selected model keeps the selection, with no note", async () => {
+    stubServer(cards(5));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 003"));
+    await choose(sortMenu(), "name-asc");
+    expect(lastLibraryQuery().get("sort")).toBe("name-asc");
+    expect(statusText()).toBe("2 models selected");
+    expect(container.textContent).not.toContain("left the selection");
+  });
+
+  // GET /app/api/library/ids answers only the first matches, up to the cap
+  // (1000), in the sort's order; the server's own rule has no cap (PR #313
+  // review). When the answer is capped, the selected models it leaves out
+  // are asked about by id (POST /app/api/bulk/in-view), so one that still
+  // matches past the cap stays selected and only one that left is counted.
+  test("past the ids cap, a selected model that still matches stays and only one that left is counted", async () => {
+    stubServer(cards(6, 4));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 003"));
+    await click(checkbox("Model 005"));
+    expect(inViewAsked).toEqual([]);
+    matchCap = 2;
+    await click(tagChip("PLA"));
+    expect(location).toBe("/?tag=PLA");
+    expect(inViewAsked).toEqual([{ ids: [id(3), id(5)], view: { tag: "PLA" } }]);
+    expect(statusText()).toBe("1 model selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(3)], view: { tag: "PLA" } } },
+    ]);
+  });
+
+  test("an uncapped ids answer is the whole check: nothing is asked by id", async () => {
+    stubServer(cards(6, 4));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 003"));
+    await click(checkbox("Model 005"));
+    await click(tagChip("PLA"));
+    expect(statusText()).toBe("1 model selected");
+    expect(inViewAsked).toEqual([]);
+  });
+
+  test("while the page checks the selection the actions wait, and say why", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 004"));
+    holdingIds = true;
+    await click(tagChip("PLA"));
+    expect(container.textContent).toContain(
+      "Checking which selected models the search and filters show",
+    );
+    for (const name of ["Add tags", "Remove tag", "Add to collection", "Move to trash"]) {
+      expect(button(name).getAttribute("aria-disabled"), name).toBe("true");
+      await click(button(name));
+      expect(dialog(), name).toBeNull();
+    }
+    await releaseIds();
+    expect(statusText()).toBe("1 model selected");
+    expect(container.textContent).not.toContain("Checking which selected models");
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("false");
+    expect(posted).toEqual([]);
+  });
+
+  test("a check that fails pauses the actions until Try again gets an answer", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 004"));
+    failingIds = true;
+    await click(tagChip("PLA"));
+    const alert = () => container.querySelector('.ph-select-bar [role="alert"]');
+    expect(alert()?.textContent).toBe(
+      "Could not check which selected models the search and filters show, so the actions are paused.",
+    );
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+    await click(button("Move to trash"));
+    expect(dialog()).toBeNull();
+    failingIds = false;
+    await click(button("Try again"));
+    expect(alert()).toBeNull();
+    expect(statusText()).toBe("1 model selected");
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("false");
+  });
+
+  test("Select all matching answered after the filter changed selects nothing", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    holdingIds = true;
+    await click(button("Select all 5 matching"));
+    await click(tagChip("PLA"));
+    await releaseIds();
+    expect(statusText()).toBe("No models selected");
+  });
+
+  test("after the check, a card still shown from before the action cannot be selected", async () => {
+    const all = cards(5, 1);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    // The grid's reload is held, so Model 001's card is still shown.
+    expect(checkboxes()).toHaveLength(1);
+    expect(statusText()).toBe("No models selected");
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+    await releaseHeld();
+    expect(container.textContent).toContain("No models match.");
+  });
+
+  test("after the check, Select all on this page skips cards still shown from before the action", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    // The grid's reload is held: Model 001 and Model 002 are still shown,
+    // though only Model 002 still has PLA.
+    expect(checkboxes()).toHaveLength(2);
+    await click(button("Select all on this page"));
+    expect(statusText()).toBe("1 model selected");
+    expect(checkbox("Model 002").checked).toBe(true);
+    expect(checkbox("Model 001").checked).toBe(false);
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(1);
+  });
+
+  test("after Move to trash empties the selection, a trashed card still shown cannot be selected", async () => {
+    const all = cards(5);
+    stubServer(all);
+    bulkAnswer = (_url, body) => {
+      const ids = body.ids as string[];
+      for (const gone of ids)
+        all.splice(
+          all.findIndex((c) => c.id === gone),
+          1,
+        );
+      return json({ changed: ids, unchanged: [], failed: [] });
+    };
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    // The grid's reload is held, so the trashed model's card is still shown.
+    expect(checkboxes()).toHaveLength(5);
+    expect(statusText()).toBe("No models selected");
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+    await click(checkbox("Model 002"));
+    expect(statusText()).toBe("1 model selected");
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(4);
+  });
+
+  test("an action whose dialog opened before the search or filters changed waits for the check", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 004"));
+    await click(button("Move to trash"));
+    holdingIds = true;
+    await click(tagChip("PLA"));
+    await click(dialogButton("Move to trash"));
+    expect(posted).toEqual([]);
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Checking which selected models the search and filters show",
+    );
+    await releaseIds();
+    await click(dialogButton("Move to trash"));
+    expect(posted).toEqual([
+      { url: "/app/api/bulk/trash", body: { ids: [id(1)], view: { tag: "PLA" } } },
+    ]);
+  });
+
+  test("Select all matching answered after an action selects nothing, even under the same filter", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holdingIds = true;
+    await click(button("Select all 2 matching"));
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    expect(posted).toHaveLength(1);
+    // Held: Select all matching's answer (asked before the action, so it
+    // still names Model 001), then the check that follows the action.
+    expect(heldIds).toHaveLength(2);
+    const [selectAll, check] = heldIds;
+    holdingIds = false;
+    heldIds = [];
+    check?.();
+    await settle();
+    expect(statusText()).toBe("No models selected");
+    selectAll?.();
+    await settle();
+    expect(statusText()).toBe("No models selected");
+    await click(checkbox("Model 002"));
+    expect(statusText()).toBe("1 model selected");
+  });
+
+  test("Clear selection after a failed check that followed an action keeps the actions off", async () => {
+    const all = cards(5);
+    stubServer(all);
+    bulkAnswer = (_url, body) => {
+      const ids = body.ids as string[];
+      for (const gone of ids)
+        all.splice(
+          all.findIndex((c) => c.id === gone),
+          1,
+        );
+      return json({ changed: ids, unchanged: [], failed: [] });
+    };
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    failingIds = true;
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    // The grid's reload is held, so the trashed model's card is still shown,
+    // and the check after the action failed.
+    expect(checkboxes()).toHaveLength(5);
+    await click(button("Clear selection"));
+    await click(checkbox("Model 001"));
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+    await click(button("Move to trash"));
+    expect(dialog()).toBeNull();
+    expect(container.querySelector('.ph-select-bar [role="alert"]')?.textContent).toBe(
+      "Could not check which selected models the search and filters show, so the actions are paused.",
+    );
+    failingIds = false;
+    await click(button("Try again"));
+    expect(statusText()).toBe("No models selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    expect(posted).toHaveLength(1);
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(4);
+  });
+
+  test("leaving and re-entering Select mode while the grid reloads after an action still refuses a card it no longer shows", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holding = () => true;
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    // The grid's reload is held: Model 001 and Model 002 are still shown,
+    // though only Model 002 still has PLA.
+    expect(checkboxes()).toHaveLength(2);
+    await key(checkbox("Model 001"), "Escape");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+    await click(checkbox("Model 002"));
+    expect(statusText()).toBe("1 model selected");
+    // Clicking Select twice is the same as Escape.
+    await click(button("Select"));
+    await selectMode();
+    await click(checkbox("Model 001"));
+    expect(statusText()).toBe("No models selected");
+    expect(posted).toHaveLength(1);
+    await releaseHeld();
+    expect(checkboxes()).toHaveLength(1);
+  });
+
+  test("Select all matching answered after Select mode was left and entered again selects nothing", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    holdingIds = true;
+    await click(button("Select all 5 matching"));
+    await key(button("Select"), "Escape");
+    await click(tagChip("PLA"));
+    await selectMode();
+    await releaseIds();
+    expect(statusText()).toBe("No models selected");
+    expect(button("Move to trash").getAttribute("aria-disabled")).toBe("true");
+  });
+
+  test("once the grid's reload after an action is in, a model added since can be selected on another page", async () => {
+    const all = cards(50);
+    stubServer(all);
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "Desk");
+    await submit(input.form);
+    await click(dialogButton("Add tags"));
+    expect(statusText()).toBe("1 model selected");
+    // Another tab uploads a model, then page 2 shows it.
+    all.push({ ...cards(51)[50], name: "Model 051" } as LibraryCard);
+    const next = [...container.querySelectorAll('nav[aria-label="Library pages"] a')].find(
+      (a) => (a.getAttribute("aria-label") ?? a.textContent?.trim()) === "Next",
+    );
+    await click(next as HTMLElement);
+    expect(location).toBe("/?page=2");
+    await click(checkbox("Model 051"));
+    expect(statusText()).toBe("2 models selected");
+    await click(checkbox("Model 051"));
+    await click(button("Select all on this page"));
+    expect(statusText()).toBe("4 models selected");
+  });
+
+  /** The Select all matching button, whatever count it names now. */
+  function selectAllMatching(): HTMLButtonElement {
+    const found = [...container.querySelectorAll("button")].find((b) =>
+      /^Select (all|the first) \d+ matching$/.test(b.textContent?.trim() ?? ""),
+    );
+    if (found === undefined) throw new Error("no Select all matching button");
+    return found;
+  }
+
+  // Issue #315: the view check after an action answers first and takes a
+  // model out; a Select all matching asked for meanwhile answers later. The
+  // late answer is added to the selection as it is then, so the model the
+  // check took out stays out.
+  test("after an action, a Select all matching answer that arrives after the view check does not put back what the check took out (issue #315)", async () => {
+    const all = cards(5, 2);
+    stubServer(all);
+    removesTags(all);
+    await render("/?tag=PLA");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    holdingIds = true;
+    await click(button("Remove tag"));
+    await choose(dialog()?.querySelector("select") as HTMLSelectElement, "PLA");
+    await click(dialogButton("Remove tag"));
+    // The view check after the action is held; Select all matching is asked for behind it.
+    expect(heldIds).toHaveLength(1);
+    await click(selectAllMatching());
+    expect(heldIds).toHaveLength(2);
+    await releaseOneIds();
+    expect(statusText()).toBe("No models selected");
+    expect(container.textContent).toContain(ONE_LEFT);
+    await releaseOneIds();
+    expect(statusText()).toBe("1 model selected");
+    expect(checkbox("Model 002").checked).toBe(true);
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted.at(-1)).toEqual({
+      url: "/app/api/bulk/trash",
+      body: { ids: [id(2)], view: { tag: "PLA" } },
+    });
+  });
+
+  test("after a new filter, a Select all matching answer that arrives after the view check does not put back what the check took out (issue #315)", async () => {
+    stubServer(cards(5, 2));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 004"));
+    holdingIds = true;
+    await click(tagChip("PLA"));
+    expect(heldIds).toHaveLength(1);
+    await click(selectAllMatching());
+    expect(heldIds).toHaveLength(2);
+    await releaseOneIds();
+    expect(statusText()).toBe("1 model selected");
+    await releaseOneIds();
+    expect(statusText()).toBe("2 models selected");
+    expect(checkbox("Model 001").checked).toBe(true);
+    expect(checkbox("Model 002").checked).toBe(true);
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted.at(-1)?.body.ids).toEqual([id(1), id(2)]);
+  });
+
+  test("each action names the view it was made in: the search, filters and printer, not the sort", async () => {
+    localStorage.setItem(PRINTER_CHOICE_KEY, A1);
+    stubServer(cards(5, 2));
+    await render("/?q=Model&tag=PLA&sort=name-asc");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(posted.at(-1)?.body.view).toEqual({ q: "Model", tag: "PLA", printer: A1 });
+  });
+
+  test("models the server left alone because the view no longer shows them are named in a count and leave the selection", async () => {
+    stubServer(cards(5));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    await click(checkbox("Model 002"));
+    await click(checkbox("Model 003"));
+    bulkAnswer = (_url, body) =>
+      json({
+        changed: [id(1)],
+        unchanged: [],
+        failed: [],
+        notInView: (body.ids as string[]).filter((x) => x !== id(1)),
+        tags: body.tags,
+      });
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, "PLA");
+    await click(dialogButton("Add tags"));
+    expect(container.textContent).toContain("Added PLA to 1 model.");
+    expect(container.textContent).toContain(
+      "2 selected models were left unchanged because the search and filters no longer show them.",
+    );
+    expect(statusText()).toBe("1 model selected");
+    expect(checkbox("Model 001").checked).toBe(true);
+    expect(checkbox("Model 002").checked).toBe(false);
+  });
+
+  test("one model left alone because the view no longer shows it is named in the singular", async () => {
+    stubServer(cards(5));
+    await render("/");
+    await selectMode();
+    await click(checkbox("Model 001"));
+    bulkAnswer = () => json({ changed: [], unchanged: [], failed: [], notInView: [id(1)] });
+    await click(button("Move to trash"));
+    await click(dialogButton("Move to trash"));
+    expect(container.textContent).toContain(
+      "1 selected model was left unchanged because the search and filters no longer show it.",
+    );
+    expect(statusText()).toBe("No models selected");
+  });
+
+  test("keepShown keeps the selected models the view shows, with their names, and counts the rest", () => {
+    const chosen = new Map<string, string | null>([
+      [id(1), "Model 001"],
+      [id(2), null],
+      [id(3), "Model 003"],
+    ]);
+    const out = keepShown(chosen, new Set([id(3), id(1), id(9)]));
+    expect([...out.kept]).toEqual([
+      [id(1), "Model 001"],
+      [id(3), "Model 003"],
+    ]);
+    expect(out.left).toBe(1);
   });
 });
 
@@ -1042,7 +1651,7 @@ describe("describeBulk", () => {
         { changed: [id(1)], unchanged: [id(2)], failed: [], tags: ["PLA"] },
         names,
       ),
-    ).toEqual({ done: "Added PLA to 1 model. 1 already had it.", failed: null });
+    ).toEqual({ done: "Added PLA to 1 model. 1 already had it.", failed: null, notInView: null });
     expect(
       describeBulk(
         { action: "remove-tag", tag: "pla" },
@@ -1182,6 +1791,46 @@ describe("describeBulk", () => {
         expect(i18n.has("library.bulk.alreadyInCollection"), locale).toBe(true);
       }
     });
+  });
+
+  // The same holds when the server left a model alone because the view no
+  // longer shows it (PR #313 review): "All 2 models" with 3 selected would
+  // read as if only 2 were.
+  test("with some unchanged and some left out of the view, counts and names the tag or collection", () => {
+    const answer = {
+      changed: [] as string[],
+      unchanged: [id(1), id(2)],
+      failed: [],
+      notInView: [id(3)],
+    };
+    const addTags = describeBulk(
+      { action: "add-tags", tags: ["pla"] },
+      { ...answer, tags: ["PLA"] },
+      names,
+    );
+    expect(addTags).toEqual({
+      done: "No model was changed. 2 already had PLA.",
+      failed: null,
+      notInView:
+        "1 selected model was left unchanged because the search and filters no longer show it.",
+    });
+    expect(
+      describeBulk({ action: "remove-tag", tag: "pla" }, { ...answer, tag: "PLA" }, names).done,
+    ).toBe("No model was changed. 2 did not have PLA.");
+    expect(
+      describeBulk(
+        { action: "add-to-collection", collection: "desk" },
+        { ...answer, collection: "Desk" },
+        names,
+      ).done,
+    ).toBe("No model was changed. 2 were already in Desk.");
+    expect(
+      describeBulk(
+        { action: "add-tags", tags: ["PLA"] },
+        { ...answer, notInView: [], tags: ["PLA"] },
+        names,
+      ).done,
+    ).toBe("All 2 models already had PLA.");
   });
 
   test("says no model was changed when every selected model failed", () => {
