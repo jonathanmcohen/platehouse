@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The web app in other languages (Jon, 2026-11-19): pages render in Spanish
+// The web app in other languages (the maintainer, 2026-11-19): pages render in Spanish
 // and French with no raw key anywhere, numbers follow the language, the
 // Settings language menu switches at once and keeps the choice in the
 // ph_lang cookie, the browser's language is the default, and a language a

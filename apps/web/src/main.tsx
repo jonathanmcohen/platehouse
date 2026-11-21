@@ -12,7 +12,7 @@
 //
 // The model page (Task 20) is at /models/:id. Files dropped on it open a
 // dialog aimed at that model (modelId), where the Combine switch is not
-// shown (Jon, 2026-11-12), and so does the page's Add files button, with no
+// shown (the maintainer, 2026-11-12), and so does the page's Add files button, with no
 // files, which is how a hidden model dialog is opened again; Add and a drop
 // on the library open the dialog for new models. There is one dialog per target, never one dialog whose target
 // changes: the dialog for new models, and one for each model files were

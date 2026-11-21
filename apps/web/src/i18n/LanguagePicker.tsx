@@ -1,4 +1,4 @@
-// The Language section of Settings (Jon, 2026-11-19): the browser's own
+// The Language section of Settings (the maintainer, 2026-11-19): the browser's own
 // language, or one of the languages Platehouse has, as a group of radio
 // buttons. A pick applies at once, with no reload, and is kept in this
 // browser in the ph_lang cookie; Browser language clears the cookie, so the

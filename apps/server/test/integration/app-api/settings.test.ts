@@ -2,7 +2,7 @@
 // pages (AC-013 warning, AC-031 menu, AC-060, AC-061, AC-062, AC-063 UI,
 // AC-083 UI). Every route is under /app/api and session-class: it needs a
 // live session, and every state-changing one needs Origin to be
-// PUBLIC_ORIGIN (Task 15's gate), so the token routes here are for Jon's UI
+// PUBLIC_ORIGIN (Task 15's gate), so the token routes here are for the web UI
 // and separate from the bearer API.
 //
 // Everything is real but the login: a migrated Postgres 17 and a bucket on
@@ -85,7 +85,7 @@ interface Answer {
   json(): unknown;
 }
 
-/** One request to the app with Jon's session and a same-origin Origin, unless told otherwise. */
+/** One request to the app with a signed-in session and a same-origin Origin, unless told otherwise. */
 async function call(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   url: string,
@@ -254,7 +254,7 @@ beforeAll(async () => {
     web: { dir: join(env.dir, "no-web-build") },
   });
   await app.ready();
-  session = (await auth.sessions.start("jon")).id;
+  session = (await auth.sessions.start("someone")).id;
 });
 
 afterAll(async () => {

@@ -1,4 +1,4 @@
-// The language choice (Jon, 2026-11-19): kept in this browser in the ph_lang
+// The language choice (the maintainer, 2026-11-19): kept in this browser in the ph_lang
 // cookie, as the theme is in ph_theme, so no schema change. With no cookie
 // the browser's own languages decide. The server reads the cookie (and,
 // without it, Accept-Language) and writes the resolved language into the

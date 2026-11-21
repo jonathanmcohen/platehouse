@@ -13,7 +13,7 @@
 //   4. one transaction: the model (when new), the blob rows, the file, its
 //      filament list, its plates and the file's own numbers (estimates with
 //      source 'file'). Metadata is filled only into empty fields, so nothing
-//      Jon set is overwritten (AC-022). A new model is named from the
+//      the user set is overwritten (AC-022). A new model is named from the
 //      file's MakerWorld title, else its cleaned file name (names.ts); a
 //      model joined takes the title only while nobody has named it;
 //   5. enqueueing estimates (Task 12) and renders (Task 13) comes after the
@@ -47,7 +47,7 @@
 // here: its owner (the tus store, the inbox) decides, so the inbox can retry
 // after an outage.
 //
-// Duplicates (approved for 0.1.0 by Jon, 2026-11-19; duplicates.ts): a file
+// Duplicates (approved for 0.1.0 by the maintainer, 2026-11-19; duplicates.ts): a file
 // is a duplicate when a live model already holds a file with the same
 // SHA-256. With input.duplicates "skip" (the web dialog's default and the
 // inbox's), ingest hashes the upload and looks it up before any byte is put,
@@ -104,7 +104,7 @@ export const MODEL_NOT_FOUND_MESSAGE =
   "That model does not exist or is in the trash; nothing was saved";
 
 /**
- * What an upload shows when it failed for a reason that is not Jon's to fix
+ * What an upload shows when it failed for a reason that is not the user's to fix
  * (a database that cannot be reached, a filesystem error reading the upload)
  * and nothing was committed. The cause stays on the error, for the logs.
  */
@@ -119,7 +119,7 @@ export type IngestErrorCode =
   | "ingest_failed";
 
 /**
- * An upload refused or failed with a plain message for Jon, and nothing was
+ * An upload refused or failed with a plain message for the user, and nothing was
  * saved: no row was committed. Every failure of ingestFile is one of these
  * except IngestOutcomeUnknown. A failure with no message of its own (a
  * filesystem error reading the upload, a database error) is code
@@ -279,7 +279,7 @@ function metadataOf(project: Project | null): FoundMetadata {
   const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
   // A footer licence sets no SPDX id. fillMetadata stores it as the licence
   // note whenever the model has none, and adds it at the foot of the
-  // description only when the description is empty (Jon, 2026-11-08: a
+  // description only when the description is empty (the maintainer, 2026-11-08: a
   // description already set is never edited; the model page shows the note).
   return {
     caption: details.title,

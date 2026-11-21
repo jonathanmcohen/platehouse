@@ -1,5 +1,5 @@
 // The default filament per type for a printer (build plan Task 11 Decisions,
-// Jon 2026-11-08: "I use mostly Bambu Filaments"): Bambu's own preset for
+// the maintainer, 2026-11-08: "I use mostly Bambu Filaments"): Bambu's own preset for
 // that printer where Orca has one, then the Generic preset for that printer,
 // then the file's own filament (no pick). The first block runs over a digest
 // of the real Orca 2.5.0 BBL profiles (test/fixtures/orca-filaments.json,
@@ -49,7 +49,7 @@ const FILE_FALLBACKS = [
 ].sort();
 
 describe("the mapping table", () => {
-  test("is the front office's five types, in one table", () => {
+  test("is the five chosen types, in one table", () => {
     expect(BAMBU_FILAMENTS).toEqual({
       PLA: "Bambu PLA Basic",
       PETG: "Bambu PETG HF",

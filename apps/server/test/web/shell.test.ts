@@ -67,7 +67,7 @@ function webAccents(): { ids: string[]; fallback: string | undefined; cookie: st
   };
 }
 
-// Jon, 2026-11-19: the accent colour scheme, a second per-browser choice
+// The maintainer, 2026-11-19: the accent colour scheme, a second per-browser choice
 // beside the theme. data-accent on the html element comes from the
 // ph_accent cookie the same way data-theme comes from ph_theme, so the first
 // paint already has the right colour. Anything that is not one of the twelve
@@ -349,7 +349,7 @@ describe("constants", () => {
     expect(web.fallback).toBe(DEFAULT_ACCENT);
   });
 
-  test("the default accent is Blueprint indigo (Jon, 2026-11-19)", () => {
+  test("the default accent is Blueprint indigo (the maintainer, 2026-11-19)", () => {
     expect(DEFAULT_ACCENT).toBe("blueprint-indigo");
   });
 
@@ -365,7 +365,7 @@ describe("constants", () => {
 
   test("the shell pages are the sidebar's sections and the model page, each a session-class page", () => {
     // Task 21 adds the trash and settings pages, Task 20 the model page, and
-    // the Activity page (Jon, 2026-11-19) comes before Settings.
+    // the Activity page (the maintainer, 2026-11-19) comes before Settings.
     expect([...SHELL_PAGES]).toEqual([
       "/",
       "/creators",
@@ -454,7 +454,7 @@ describe("registerWeb without a web build", () => {
   });
 });
 
-// The favicons, app icons and web manifest (the logo, Jon's icon A). Vite
+// The favicons, app icons and web manifest (the logo, the maintainer's icon A). Vite
 // copies apps/web/public/ into the root of dist/, and the server answers each
 // file at its root path with its own content type. They are not hashed, so
 // they are cached for a day, not for a year: a regenerated icon (a new
@@ -521,7 +521,7 @@ describe("the icon files at the root", () => {
     });
   });
 
-  // Public in the Route classes table (Jon, 2026-11-19, decision A-1), so
+  // Public in the Route classes table (the maintainer, 2026-11-19, decision A-1), so
   // the browser loads them without a session: on the auth pages, before the
   // login redirect returns, and for the manifest, which browsers fetch
   // without cookies.

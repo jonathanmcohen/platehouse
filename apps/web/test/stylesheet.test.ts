@@ -5,7 +5,7 @@
 // palettes, the alert edges meet 3:1, System's light copy equals Light, the
 // default accent is Blueprint indigo, and the palettes, radii and breakpoints
 // are the ones manyfold-studio shipped at 4076a67. The palettes take their
-// accent tokens from the accent scheme (Jon, 2026-11-19); here they are read
+// accent tokens from the accent scheme (the maintainer, 2026-11-19); here they are read
 // with the default scheme filled in, or with Green, the studio's own colour,
 // where they are compared with 4076a67. accent-palette.test.ts checks all
 // twelve.
@@ -133,7 +133,7 @@ const PAIRS: Array<[string, string]> = [
 
 // The palettes of manyfold-studio's studio.css at 4076a67, with its accent,
 // the Green scheme, filled in. --brand, the logo's colour, was
-// added with the accent schemes (Jon, 2026-11-19).
+// added with the accent schemes (the maintainer, 2026-11-19).
 // The thumbnail backdrop (--thumb-bg and --thumb-edge, issue #245) is
 // Platehouse's own; manyfold-studio did not have it.
 const STUDIO_DARK: Palette = {
@@ -159,7 +159,7 @@ const STUDIO_DARK: Palette = {
 
 // Light differs from 4076a67 in the accent fill only, on purpose: #00ae42 is
 // 2.94:1 on white, under the 3:1 a button fill and a progress bar need, so
-// the light theme fills with Jon's button green, #00873a, behind white text
+// the light theme fills with the maintainer's button green, #00873a, behind white text
 // (4.64:1). The logo keeps #00ae42.
 const STUDIO_LIGHT: Palette = {
   "--bg": "#f6f7f9",
@@ -246,7 +246,7 @@ describe("palettes", () => {
     expect(palette(DARK, GREEN_SCHEME)).toEqual(STUDIO_DARK);
   });
 
-  test("light with Green is the studio light palette, with Jon's button green as the fill, plus the thumbnail backdrop", () => {
+  test("light with Green is the studio light palette, with the maintainer's button green as the fill, plus the thumbnail backdrop", () => {
     expect(palette(LIGHT, GREEN_SCHEME)).toEqual(STUDIO_LIGHT);
   });
 
@@ -272,7 +272,7 @@ describe("palettes", () => {
     });
   });
 
-  // Jon, 2026-11-19: the default is Blueprint indigo. Its dark fill and logo
+  // The maintainer, 2026-11-19: the default is Blueprint indigo. Its dark fill and logo
   // are #596eec, not #5560e0, which is 3.83:1 under the dark button text
   // (src/shell/accent.ts); #5560e0 is the light logo.
   test("the default accent is Blueprint indigo: #596eec in dark and in the dark logo, #3d47c4 as the light fill, #5560e0 as the light logo", () => {

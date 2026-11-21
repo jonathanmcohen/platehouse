@@ -39,7 +39,7 @@ describe("the real server serves delivery and slicer links", () => {
     );
     if (file === undefined) throw new Error("the inbox file was not imported");
 
-    const session = await createSessions({ store: dbSessionStore(env.db) }).start("jon");
+    const session = await createSessions({ store: dbSessionStore(env.db) }).start("someone");
     const cookie = `${SESSION_COOKIE}=${session.id}`;
 
     const download = await fetch(`${env.baseUrl}/files/${file.id}/download`, {

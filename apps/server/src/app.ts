@@ -9,7 +9,7 @@
 //   Origin to be PUBLIC_ORIGIN, and public, bearer and link routes pass to
 //   their own checks.
 // - GET /auth/login, GET /auth/callback and POST /auth/logout (auth/routes.ts)
-//   log Jon in with Pocket ID and out again.
+//   log the user in with the OIDC provider and out again.
 // - GET /healthz answers 200 only when the database answers a query within
 //   HEALTH_TIMEOUT_MS and pg-boss is started (and, when web.required is
 //   set, the web build is there), else 503. The body is a fixed
@@ -208,7 +208,7 @@ export interface AppDeps {
    */
   activity?: AppActivity;
   /**
-   * The languages (locales/locales.ts, Jon 2026-11-19): the built-in
+   * The languages (locales/locales.ts, the maintainer, 2026-11-19): the built-in
    * catalogs and LOCALES_DIR. They decide the shell page's lang, the login
    * pages' words and GET /app/api/locales. Left out, the built-in languages
    * only.
@@ -389,7 +389,7 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  * refused link, as the link route and the not-found handler answer one:
  * 403, an empty body and no-store. Off /s/ the body is Fastify's status
  * and code without its message, which repeated the request path (issue
- * #177; Jon, 2026-11-14, plan item 11).
+ * #177; the maintainer, 2026-11-14, plan item 11).
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   releaseUnreadBody(request, reply);

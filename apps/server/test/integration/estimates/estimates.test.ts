@@ -858,7 +858,7 @@ describe("estimates", () => {
   });
 });
 
-// My printers (Jon, 2026-11-19): the printers Jon owns, each estimated for
+// My printers (the maintainer, 2026-11-19): the printers the user owns, each estimated for
 // every plate, one of them the default. The tests share one library, so
 // counts are measured from the database rather than assumed.
 describe("My printers", () => {

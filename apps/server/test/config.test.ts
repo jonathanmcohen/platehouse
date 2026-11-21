@@ -234,7 +234,7 @@ describe("loadConfig", () => {
     expect(config.tmpDir).toBe("/srv/tmp");
   });
 
-  it("SLICER_CONCURRENCY is not read: slices run one at a time (Jon, 2026-11-08, PR #49)", () => {
+  it("SLICER_CONCURRENCY is not read: slices run one at a time (the maintainer, 2026-11-08, PR #49)", () => {
     const config = loadConfig(withValue(validEnv(), "SLICER_CONCURRENCY", "0"));
     expect(config.slicer).toEqual({ url: "http://platehouse-slicer:8080", plateSeconds: 120 });
   });

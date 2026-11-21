@@ -1,5 +1,5 @@
 // The large plate image of a .3mf, with buttons to turn and flip it
-// (requested 2026-11-19: some plate thumbnails in Jon's files are upside
+// (requested 2026-11-19: some plate thumbnails in real files are upside
 // down). The turn is on screen only: nothing is sent to the server and
 // nothing is stored, not even in the browser. PlateViewer keys this
 // component by file and plate, so choosing another plate, viewing another

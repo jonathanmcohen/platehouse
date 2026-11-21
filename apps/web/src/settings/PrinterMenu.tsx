@@ -1,7 +1,7 @@
 // My printers on the Settings page (build plan Task 21; AC-031 menu UI, and
-// Jon's 2026-11-19 asks: several printers, and a menu that names the
-// printer). Jon lists the printers he owns, picked from the slicer's printer
-// menu, in the order he wants them, and one of them is the default.
+// the maintainer's 2026-11-19 asks: several printers, and a menu that names the
+// printer). The user lists the printers they own, picked from the slicer's printer
+// menu, in the order they want them, and one of them is the default.
 // Platehouse estimates every plate for each of them; the library and model
 // pages show the default first and switch to the others with no slicing.
 //

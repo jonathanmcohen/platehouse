@@ -236,7 +236,7 @@ export function randomBinaryStl(triangles: number): Buffer {
   return out;
 }
 
-/** About 90 MiB, the size of Jon's largest file (AC-020): 94,371,834 bytes. */
+/** About 90 MiB, the size of the largest file AC-020 names: 94,371,834 bytes. */
 export const NINETY_MB_TRIANGLES = 1_887_435;
 
 /** 5 MiB, the chunk size of the resumable upload test. */

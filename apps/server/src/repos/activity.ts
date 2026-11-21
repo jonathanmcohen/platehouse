@@ -1,4 +1,4 @@
-// Read-only queries for the Activity page (app-api/activity.ts; Jon,
+// Read-only queries for the Activity page (app-api/activity.ts; the maintainer,
 // 2026-11-19). Nothing here writes. Every query is a count, a group-by or a
 // short ordered list with a LIMIT, run once per page load or poll; none
 // loops over plates or files.
@@ -18,7 +18,7 @@
 //
 // The estimate counts have no index of their own on (printer_id, status):
 // the estimates table holds one row per plate, source, printer and Orca
-// version (a few thousand rows for Jon's 463 plates), so the scan is cheap,
+// version (a few thousand rows for a library of 463 plates), so the scan is cheap,
 // and adding an index would need a migration this page does not justify.
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";

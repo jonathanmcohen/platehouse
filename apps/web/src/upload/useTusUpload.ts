@@ -10,7 +10,7 @@
 // - tus-js-client keeps a resume fingerprint in localStorage, so a dropped
 //   upload resumes when the same file is sent again. The fingerprint
 //   includes the target, so the same file sent to a different target starts
-//   a new upload instead of resuming the old one (Jon, 2026-11-09, issue
+//   a new upload instead of resuming the old one (the maintainer, 2026-11-09, issue
 //   #77). A finished upload's fingerprint is removed too: Task 9 answers a
 //   HEAD on an ingested upload as finished, so resuming it would store
 //   nothing (uploads/tus.ts).
@@ -26,7 +26,7 @@
 //   session, a refusal, a server that cannot take it now), or the tus
 //   handler's own one-line plain-text reason, never tus-js-client's
 //   diagnostic text and never a JSON body such as the session gate's.
-// - Duplicates (approved for 0.1.0 by Jon, 2026-11-19): every file is sent
+// - Duplicates (approved for 0.1.0 by the maintainer, 2026-11-19): every file is sent
 //   with duplicates skip, so the server refuses a file whose SHA-256 a live
 //   model already holds, stores nothing, and answers failed with code
 //   duplicate and the files it matched. That row becomes "duplicate", not

@@ -99,7 +99,7 @@ describe("a script or event-handler payload does not survive", () => {
     "![x](data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+)",
     '[x](https://e.test "t" onmouseover="alert(1)")',
     "[x]: javascript:alert(1)\n\n[x]",
-    // Descriptions never render images (Jon, 2026-11-08): an image to an
+    // Descriptions never render images (the maintainer, 2026-11-08): an image to an
     // http(s) address is a link, never an <img> that loads it.
     "![x](https://attacker.example/x.png)",
     '![x](http://attacker.example/x.png "t")',
@@ -181,7 +181,7 @@ describe("the DOMPurify layer alone", () => {
     ['<a href="//e.test/x">x</a>', "<a>x</a>"],
     ['<a href="javascript:alert(1)">x</a>', "<a>x</a>"],
     ['<a href="mailto:a@e.test">x</a>', "<a>x</a>"],
-    // Descriptions never render images (Jon, 2026-11-08): img is forbidden,
+    // Descriptions never render images (the maintainer, 2026-11-08): img is forbidden,
     // whatever its address, an http(s) one included.
     ['<img src="data:image/png;base64,AAAA" onerror="alert(1)">', ""],
     ['<img src="data:image/svg+xml;base64,PHN2Zz4=" alt="a">', ""],
@@ -304,7 +304,7 @@ describe("escaped designer text beside misnested inline tags renders literally t
   });
 });
 
-// Jon's decision, 2026-11-08 (build plan Task 7): descriptions never render
+// The maintainer's decision, 2026-11-08 (build plan Task 7): descriptions never render
 // images. markdown-it's image rule is off, so ![alt](url) is a "!" and a link
 // to the address, and DOMPurify forbids img, so no description can load a
 // remote address whatever the Markdown holds.

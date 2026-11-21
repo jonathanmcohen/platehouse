@@ -56,16 +56,16 @@ test("the four AC-034 refusals are reported, not failed", () => {
   }
 });
 
-// Jon, 2026-11-08: -101 and -62 are legitimate refusals (run 3 hit both),
+// The maintainer, 2026-11-08: -101 and -62 are legitimate refusals (run 3 hit both),
 // reported with Orca's reason, and do not fail the gate.
-test("-101, G-code path conflicts, is a legitimate refusal (Jon, 2026-11-08)", () => {
+test("-101, G-code path conflicts, is a legitimate refusal (the maintainer, 2026-11-08)", () => {
   const c = classifyPlate({ returnCode: -101, errorString: "Conflicts of G-code paths have been found", exitStatus: 155 });
   assert.equal(c.verdict, "refused");
   assert.equal(c.reason, "gcode_path_conflict");
   assert.equal(c.meaning, "G-code path conflicts");
 });
 
-test("-62, filament temperatures too far apart, is a legitimate refusal (Jon, 2026-11-08)", () => {
+test("-62, filament temperatures too far apart, is a legitimate refusal (the maintainer, 2026-11-08)", () => {
   const c = classifyPlate({ returnCode: -62, errorString: "filament temperatures", exitStatus: 194 });
   assert.equal(c.verdict, "refused");
   assert.equal(c.reason, "filament_temperature_mismatch");
@@ -77,7 +77,7 @@ test("plates refused only with -101 and -62 beside ok plates pass the gate", () 
   assert.equal(gateVerdict(plates), "PASS");
 });
 
-test("codes the plan maps to nozzle_mismatch but Orca names otherwise need Jon's decision", () => {
+test("codes the plan maps to nozzle_mismatch but Orca names otherwise need the maintainer's decision", () => {
   for (const code of [-50, -61, -63, -64, -65, -67, -69]) {
     const c = classifyPlate({ returnCode: code, exitStatus: 256 + code });
     assert.equal(c.verdict, "needs-decision", String(code));

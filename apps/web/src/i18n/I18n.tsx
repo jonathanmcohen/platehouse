@@ -1,4 +1,4 @@
-// The web app's translations (Jon, 2026-11-19). useI18n gives every
+// The web app's translations (the maintainer, 2026-11-19). useI18n gives every
 // component the shown language's t (plain text), rich (text with elements
 // for its <tag>s, such as a <time> or a link) and fmt (numbers, sizes,
 // durations, dates and lists). Messages are always rendered as text nodes

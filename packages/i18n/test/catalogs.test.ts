@@ -7,7 +7,7 @@ import { formatMessage } from "../src/message.js";
 import { builtinLocalesDir, readBuiltinCatalogs } from "../src/node.js";
 import { checkCatalog, checkEnglish, type Messages, messagesOf } from "../src/validate.js";
 
-// The CI check on the built-in catalogs (Jon, 2026-11-19): English parses,
+// The CI check on the built-in catalogs (the maintainer, 2026-11-19): English parses,
 // and every other built-in language has exactly English's keys, the same
 // placeholders and tags, every plural case its language has, and $meta;
 // every file is in the canonical form pnpm i18n:format writes (ASCII only).

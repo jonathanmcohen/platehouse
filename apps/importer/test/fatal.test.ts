@@ -130,6 +130,8 @@ describe("the usage text (issue #244)", () => {
       expect(USAGE).toContain(name);
     }
     expect(USAGE).toMatch(/in the environment/);
-    expect(USAGE).not.toMatch(/claude-env|1Password/);
+    expect(USAGE).not.toMatch(/1Password/);
+    // A personal wrapper's name is kept out of the whole tree, this text
+    // included, by apps/web/test/personal-names.test.ts.
   });
 });

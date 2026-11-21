@@ -67,7 +67,7 @@ describe("extractMakerWorld", () => {
     expect(mw?.title).toBe('"Widget" Holder');
   });
 
-  it("returns null without a Designer: Jon's own designs and other tools' exports", () => {
+  it("returns null without a Designer: the user's own designs and other tools' exports", () => {
     expect(
       extractMakerWorld('<model><metadata name="Application">BambuStudio</metadata>'),
     ).toBeNull();

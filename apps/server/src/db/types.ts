@@ -177,7 +177,7 @@ export interface SettingsTable {
 }
 
 /**
- * My printers (0007): the printers Jon owns, in display order. The default
+ * My printers (0007): the printers the user owns, in display order. The default
  * is settings.printerId, which must be one of them.
  */
 export interface UserPrintersTable {

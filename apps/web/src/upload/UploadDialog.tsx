@@ -35,7 +35,7 @@
 // drop zone), which would otherwise open or download the file and leave the
 // app. Text and links dragged over the page keep the browser's handling.
 //
-// Duplicates (approved for 0.1.0 by Jon, 2026-11-19): the dialog says up
+// Duplicates (approved for 0.1.0 by the maintainer, 2026-11-19): the dialog says up
 // front that a file already in the library is skipped. A file the server
 // skips (its SHA-256 matches a file in a live model; a trashed one does not
 // count) shows Skipped, names the model that holds it with a link to its

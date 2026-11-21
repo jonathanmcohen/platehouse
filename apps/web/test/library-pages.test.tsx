@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The library's numbered pages and View all (Jon, 2026-11-19: replace Load
+// The library's numbered pages and View all (the maintainer, 2026-11-19: replace Load
 // more). Rendered in jsdom with React; the server is a stubbed fetch that
 // answers GET /app/api/library's numbered pages the way the server does
 // (apps/server/src/app-api/library.ts) and records every request.

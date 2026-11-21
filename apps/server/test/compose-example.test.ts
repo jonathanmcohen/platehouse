@@ -3,7 +3,7 @@
 // every network the service joins, so a generic name such as db or app could
 // resolve to another project's container on a shared network. The services
 // are therefore named platehouse, platehouse-slicer and platehouse-db, the
-// same as their containers (Jon, 2026-11-19), and every host the app is given
+// same as their containers (the maintainer, 2026-11-19), and every host the app is given
 // and every service a doc names is one of them.
 //
 // Read as text: the workspace has no YAML parser of its own, and the file is

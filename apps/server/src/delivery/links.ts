@@ -27,7 +27,7 @@
 //   characters (\p{Cf}: bidi overrides and isolates, zero-width characters)
 //   and the line and paragraph separators (\p{Zl}, \p{Zp}, as the public
 //   API's filename* does, PR #211) replaced by _, then percent-encoded
-//   (Jon, 2026-11-12, PR #156), so it is always one segment, holds nothing
+//   (the maintainer, 2026-11-12, PR #156), so it is always one segment, holds nothing
 //   a proxy might decode, refuse or split on, and never displays as a name
 //   with another extension or broken across lines. OrcaSlicer
 //   names its download after it. That segment is never used for lookup;

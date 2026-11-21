@@ -1,4 +1,4 @@
-// The languages the server knows (Jon, 2026-11-19): the built-in catalogs in
+// The languages the server knows (the maintainer, 2026-11-19): the built-in catalogs in
 // packages/i18n/locales (English, the source of truth, and every language a
 // contributor added there), and any a self-hoster drops into LOCALES_DIR.
 //

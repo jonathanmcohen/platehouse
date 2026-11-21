@@ -20,7 +20,7 @@
 //
 // Every route needs the bearer token; anything else is 401 JSON, as the
 // bearer hook answers. Nothing deletes or trashes through the API; a test
-// trashes a model with trash(), as Jon would in the UI.
+// trashes a model with trash(), as a user would in the UI.
 import { createHash, randomUUID } from "node:crypto";
 import { HttpResponse, http } from "msw";
 
@@ -440,7 +440,7 @@ export function createPlatehouseStub(options: PlatehouseStubOptions) {
     requests,
     /** Makes a model as POST /api/v1/models would, for a test that loses the answer. */
     createModel,
-    /** Trashes a model, as Jon would in the UI. */
+    /** Trashes a model, as a user would in the UI. */
     trash(id: string) {
       const m = models.get(id);
       if (m !== undefined) m.trashed = true;

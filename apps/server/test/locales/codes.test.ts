@@ -1,5 +1,5 @@
 // The codes the server sends beside its English sentences, so the web app
-// can say them in its language (Jon, 2026-11-19): render messages split into
+// can say them in its language (the maintainer, 2026-11-19): render messages split into
 // Platehouse's own sentences and the program's words, inbox reason files
 // with a stable code first, printer names in the shared English form, the
 // login pages in the request's language, and the shell page's lang.

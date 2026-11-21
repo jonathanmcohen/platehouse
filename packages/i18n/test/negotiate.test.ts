@@ -76,7 +76,7 @@ describe("createTranslator", () => {
     const t = createTranslator("fr", { a: "Biblioth\u00e8que", c: "Salut {x" }, en);
     expect(t.t("a")).toBe("Biblioth\u00e8que");
     expect(t.t("b", { n: 2 })).toBe("2 plates");
-    expect(t.t("c", { x: "Jon" })).toBe("Hi Jon");
+    expect(t.t("c", { x: "Sam" })).toBe("Hi Sam");
     expect(t.has("a")).toBe(true);
     expect(t.has("b")).toBe(false);
   });

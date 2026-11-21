@@ -262,7 +262,7 @@ describe("the bearer check", () => {
   });
 
   test("a cookie alone does not authenticate the API", async () => {
-    const session = await t.sessions.start("jon");
+    const session = await t.sessions.start("someone");
     const cookie = `${SESSION_COOKIE}=${session.id}; ph_token=${token}`;
     const alone = await call("GET", "/api/v1/models", { auth: false, headers: { cookie } });
     expect(alone.status).toBe(401);

@@ -139,7 +139,7 @@ describe("a built web app", () => {
     expect(res.body).toContain(`<meta name="color-scheme" content="${scheme}" />`);
   });
 
-  // Jon, 2026-11-19: the accent scheme reaches the first paint the same way.
+  // The maintainer, 2026-11-19: the accent scheme reaches the first paint the same way.
   test.each([
     ["coral", "coral"],
     ["sky-blue", "sky-blue"],

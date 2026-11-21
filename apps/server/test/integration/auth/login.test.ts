@@ -94,7 +94,7 @@ function expectHostCookie(cookie: SetCookie | undefined, name: string) {
 }
 
 describe("GET /auth/login", () => {
-  test("sends the browser to Pocket ID: code flow, PKCE S256, state, nonce and the scopes", async () => {
+  test("sends the browser to the OIDC provider: code flow, PKCE S256, state, nonce and the scopes", async () => {
     const res = await t.app.inject({ method: "GET", url: "/auth/login" });
     expect(res.statusCode).toBe(302);
     const location = new URL(String(res.headers.location));
@@ -174,7 +174,7 @@ describe("GET /auth/login", () => {
 
   test("50 logins that never finish leave at most 5 login cookies, the newest, and they still finish", async () => {
     // Each signed-out page load the gate sends to /auth/login starts a login;
-    // ones abandoned at Pocket ID must not pile up until the Cookie header
+    // ones abandoned at the OIDC provider must not pile up until the Cookie header
     // passes Node's 16 KiB limit and every request is 431.
     const jar = new Map<string, string>();
     const keep = (res: { headers: Record<string, unknown> }) => {
@@ -312,7 +312,7 @@ describe("GET /auth/callback", () => {
       const run = await runLogin(t);
       expect(run.callback.statusCode).toBe(403);
       expect(run.callback.headers["content-type"]).toMatch(/^text\/html/);
-      expect(run.callback.body).toMatch(/email address is not verified/i);
+      expect(run.callback.body).toMatch(/email address on your sign-in account is not verified/i);
       expect(run.sessionCookie).toBeUndefined();
       expect(t.store.rows.size).toBe(0);
     });
@@ -416,7 +416,7 @@ describe("GET /auth/callback", () => {
     }
   });
 
-  test("an error sent back by Pocket ID is 400 with no session", async () => {
+  test("an error sent back by the OIDC provider is 400 with no session", async () => {
     const start = await t.app.inject({ method: "GET", url: "/auth/login" });
     const login = loginCookieOf(start);
     const state = new URL(String(start.headers.location)).searchParams.get("state") ?? "";

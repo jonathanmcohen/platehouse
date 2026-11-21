@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]
-// (build plan Task 23; AC-001 to AC-004): the one-time import of Jon's
+// (build plan Task 23; AC-001 to AC-004): the one-time import of a
 // Manyfold library into Platehouse.
 //
-//   claude-env Manyfold username MANYFOLD_CLIENT_ID -- \
-//   claude-env Manyfold password MANYFOLD_CLIENT_SECRET -- \
-//   claude-env <Platehouse token item> <field> PLATEHOUSE_TOKEN -- \
+// With MANYFOLD_CLIENT_ID, MANYFOLD_CLIENT_SECRET and PLATEHOUSE_TOKEN set in
+// the environment (from a secret manager, never typed on the command line):
+//
 //   node apps/importer/dist/src/cli.js \
 //     --manyfold https://manyfold.example.com \
 //     --platehouse https://platehouse.example.com [--apply] [--model <id>]

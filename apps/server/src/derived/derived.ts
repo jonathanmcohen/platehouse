@@ -78,7 +78,7 @@
 // the previous version whole: its source, its renders and its rows.
 //
 // A replacement that OpenSCAD or the STEP converter rejects itself is the
-// exception (Jon, issue #103): it is the file Jon uploaded, so it becomes
+// exception (the maintainer, issue #103): it is the file the user uploaded, so it becomes
 // the file's source as uploaded and the file shows the program's message.
 // The previous version's STL and PNG, or GLB, stay attached until a later
 // render succeeds, which replaces and deletes them as any render does; only
@@ -238,7 +238,7 @@ export type DerivedErrorCode =
   | "too_large"
   | "storage_unavailable";
 
-/** A call refused with a plain message for Jon. */
+/** A call refused with a plain message for the user. */
 export class DerivedError extends Error {
   readonly code: DerivedErrorCode;
 
@@ -999,7 +999,7 @@ export function createDerived(deps: DerivedDeps) {
   /**
    * Records a render or conversion error with the program's message. A
    * replacement the program rejects still becomes the file's source as
-   * uploaded (Jon, issue #103): the file is pointed at it and the old
+   * uploaded (the maintainer, issue #103): the file is pointed at it and the old
    * source's row deleted in one transaction, and the old source's object
    * after the commit. The derived blobs are left as they are, so the file
    * keeps showing the previous version's renders until a render succeeds.

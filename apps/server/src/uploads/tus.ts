@@ -10,7 +10,7 @@
 //      MAX_UPLOAD_BYTES (512 MiB), so an open length cannot dodge the cap.
 //      Upload-Metadata must carry filename, and may carry modelId (into an
 //      existing model) or batch with combine (Task 8's batch target), and
-//      duplicates: skip or allow (approved for 0.1.0 by Jon, 2026-11-19).
+//      duplicates: skip or allow (approved for 0.1.0 by the maintainer, 2026-11-19).
 //      Left out it is allow, so an API client that never sends it sees no
 //      change; the web dialog sends skip unless the user chose Import anyway.
 //      A refused creation (400, 413, 415) writes nothing.
@@ -22,7 +22,7 @@
 //      ingest queue (Task 8) under the upload's own id, and ingestFile runs
 //      there. GET <prefix>/<id>/result answers pending, done (modelId,
 //      fileId, and duplicates: the live files that already held the same
-//      bytes, empty when none did) or failed (a message for Jon; a duplicate
+//      bytes, empty when none did) or failed (a message for the user; a duplicate
 //      refused under skip adds code "duplicate" and the duplicates it
 //      matched, so a client can link to the model or send it again with
 //      allow). A refused duplicate is an IngestError, so HEAD answers it 410
@@ -162,7 +162,7 @@ export type AuthHook = (request: FastifyRequest, reply: FastifyReply) => Promise
  * removes every other code). On /app/uploads, the web app's own mount, a
  * failure also carries the ingest's own code (unsupported_type,
  * model_not_found, storage_unavailable, ingest_failed, upload_failed), so
- * the page can say it in its language (Jon, 2026-11-19).
+ * the page can say it in its language (the maintainer, 2026-11-19).
  */
 export type UploadResult =
   | { status: "pending" }
@@ -346,7 +346,7 @@ export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): Uplo
           return { status: "failed", error: UPLOAD_FAILED_MESSAGE, code: "upload_failed" };
         }
         case "failed": {
-          // Only ingest's own messages are written for Jon; anything else
+          // Only ingest's own messages are written for the user; anything else
           // (a database error, a stack) stays in the job and the logs.
           const message = output?.message;
           if (output?.name === "IngestError" && typeof message === "string") {
@@ -355,7 +355,7 @@ export function bossUploadQueue(boss: Pick<PgBoss, "send" | "getJobById">): Uplo
               return { status: "failed", error: message, code: "duplicate", duplicates };
             }
             // The code (unsupported_type, model_not_found, ...) lets the page
-            // say it in its language (Jon, 2026-11-19).
+            // say it in its language (the maintainer, 2026-11-19).
             return typeof output.code === "string"
               ? { status: "failed", error: message, code: output.code }
               : { status: "failed", error: message };

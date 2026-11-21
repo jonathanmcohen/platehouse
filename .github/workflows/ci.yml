@@ -235,10 +235,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # Full history: apps/server/test/db/previous-checksums.test.ts checks the
+      # pinned earlier migration checksums against the files at an older
+      # commit, and is reported as skipped when the checkout lacks it.
       - name: Check out
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up pnpm
         uses: pnpm/action-setup@v6.1.1
       - name: Set up Node
@@ -631,7 +635,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The app image (build plan Task 24; this job approved by Jon 2026-11-13):
+  # The app image (build plan Task 24; this job approved by the maintainer, 2026-11-13):
   # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
   # then run by docker/test-app-image.sh against Postgres 17 and the S3 test
   # server on a private Docker network. The container's own HEALTHCHECK must

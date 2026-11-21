@@ -1,5 +1,5 @@
 // Checks a translation against the English catalog, the source of truth
-// (Jon, 2026-11-19). The same check runs in three places: the CI test over
+// (the maintainer, 2026-11-19). The same check runs in three places: the CI test over
 // the built-in catalogs (strict: every key, the same placeholders, tags and
 // plural cases), the server over a file a self-hoster drops into
 // LOCALES_DIR (lenient: missing keys fall back to English, unknown keys are

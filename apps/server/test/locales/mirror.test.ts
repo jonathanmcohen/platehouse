@@ -1,5 +1,5 @@
 // Catalog messages that mirror a server sentence must say the same thing
-// (Jon, 2026-11-19, PR 287 review). The web app shows the server's own text
+// (the maintainer, 2026-11-19, PR 287 review). The web app shows the server's own text
 // on an English page and the catalog's words in any other language
 // (apps/web/src/i18n/serverText.ts), so on an English page a drift between
 // the two never shows; this test is what catches it. Each pair is a server

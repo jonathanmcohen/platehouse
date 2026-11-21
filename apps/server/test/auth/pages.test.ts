@@ -1,7 +1,7 @@
 // The auth pages (routes.ts: login unavailable, a login that did not finish,
-// a login refused) show the Platehouse logo above their heading (Jon's
+// a login refused) show the Platehouse logo above their heading (the maintainer's
 // decision A-1, 2026-11-19). The app has no sign-in page of its own
-// (/auth/login sends the browser to Pocket ID), so these plain pages are
+// (/auth/login sends the browser to the OIDC provider), so these plain pages are
 // where a signed-out person sees Platehouse. The logo is /favicon.svg, which
 // is public-class, so it loads without a session; nothing else about the
 // pages changes.

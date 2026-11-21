@@ -1,4 +1,4 @@
-// The languages the web app can show (Jon, 2026-11-19), session-class like
+// The languages the web app can show (the maintainer, 2026-11-19), session-class like
 // every /app/api route:
 //
 //   GET /app/api/locales        {locales: ListedLocale[]}: every language,

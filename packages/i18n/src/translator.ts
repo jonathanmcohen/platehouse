@@ -1,5 +1,5 @@
 // A translator for one language: a message by key, from that language's
-// catalog, else English (Jon, 2026-11-19: missing keys fall back to
+// catalog, else English (the maintainer, 2026-11-19: missing keys fall back to
 // English). A key neither has is a programming error the catalog check
 // catches; at run time it shows as the English fallback text "?", never as
 // the raw key. Parsed messages are kept, so each is parsed once.

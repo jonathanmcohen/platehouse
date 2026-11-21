@@ -84,7 +84,7 @@ export const DERIVED_MESSAGES = {
 
 /**
  * Every sentence Platehouse writes into files.derived_message, by the code
- * the app API sends it under (Jon, 2026-11-19): DERIVED_MESSAGES' own keys,
+ * the app API sends it under (the maintainer, 2026-11-19): DERIVED_MESSAGES' own keys,
  * and previousScad and previousStep for PREVIOUS_RENDERS_SENTENCE, which
  * stands alone while a new render is pending.
  */

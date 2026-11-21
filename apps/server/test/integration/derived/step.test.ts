@@ -143,7 +143,7 @@ describe("STEP meshes (AC-050)", () => {
   });
 
   test("a replacement the converter rejects becomes the file's source with the converter's message, and the previous mesh stays, marked as the previous version's", async () => {
-    // Jon's decision on issue #103, as for a .scad: the replacement becomes
+    // The maintainer's decision on issue #103, as for a .scad: the replacement becomes
     // the source as uploaded, the previous GLB stays attached and is said to
     // be the previous version's, and only the old source is deleted.
     const first = uniqueStep("convert error, before");

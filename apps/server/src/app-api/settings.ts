@@ -19,7 +19,7 @@
 //   the slicer lists them, each printer named in full ("Bambu Lab P1S,
 //   0.4 mm nozzle"). While the slicer cannot be asked, printers is null and
 //   the page says so; My printers are still shown.
-// - My printers are the printers Jon owns, in his order, one of them the
+// - My printers are the printers the user owns, in their order, one of them the
 //   default. The page saves the whole list at once (add, remove, reorder or
 //   a new default) through the estimates service's savePrinters: an added
 //   printer has every live plate queued for it, which takes hours on a big
@@ -76,9 +76,9 @@ export const APP_API_PREFIX = "/app/api";
 export const APP_API_BODY_LIMIT = 64 * 1024;
 
 /**
- * Plates the slicer estimates a minute, as measured on the maintainer's own
- * test machine running the example compose file (Jon, about 3 a minute): the page uses it to say how long a printer it just added will
- * take. The slicer runs one plate at a time, so this is the whole rate.
+ * Plates the slicer estimates a minute, about 3, as measured on a 4-CPU test
+ * host running examples/docker-compose.yml: the page uses it to say how long
+ * a printer it just added will take. The slicer runs one plate at a time, so this is the whole rate.
  */
 export const SLICES_PER_MINUTE = 3;
 
@@ -152,7 +152,7 @@ export function refuse(
   message?: string,
   /**
    * A finer code (and its values) the web app shows the refusal by in a
-   * language other than English (Jon, 2026-11-19); message stays the English
+   * language other than English (the maintainer, 2026-11-19); message stays the English
    * sentence an English page and an API client read.
    */
   extra?: { code: string } & Record<string, string | number>,

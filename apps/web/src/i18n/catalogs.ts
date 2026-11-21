@@ -1,4 +1,4 @@
-// Where the web app gets each language's messages (Jon, 2026-11-19).
+// Where the web app gets each language's messages (the maintainer, 2026-11-19).
 // English is bundled into every page: it is the source of truth and the
 // fallback for any missing key. Every other built-in language is its own
 // chunk, loaded only when it is chosen; a contributor adds one by adding its

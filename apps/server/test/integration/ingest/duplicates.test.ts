@@ -1,4 +1,4 @@
-// Duplicate files (approved for 0.1.0 by Jon, 2026-11-19): a file whose
+// Duplicate files (approved for 0.1.0 by the maintainer, 2026-11-19): a file whose
 // SHA-256 matches a file already in a live model. With duplicates "skip"
 // ingest refuses it before any byte reaches the bucket, names the model that
 // holds it, and stores nothing. With "allow", the default, it is stored as

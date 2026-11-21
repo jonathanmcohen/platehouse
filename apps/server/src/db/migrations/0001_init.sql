@@ -23,7 +23,7 @@ create table creators (
 -- Models. Metadata is fill-only (AC-022): an import or a parse writes a
 -- field only while it is null or empty; that rule lives in the ingest code.
 -- external_ref (manyfold:<id>) is unique across live and trashed models, so
--- a re-run import cannot recreate a model Jon trashed (Review Focus 4).
+-- a re-run import cannot recreate a model the user trashed (Review Focus 4).
 create table models (
   id             uuid primary key,
   name           text not null check (name <> ''),
@@ -99,7 +99,7 @@ create table blobs (
 
 create index blobs_model_id on blobs (model_id);
 
--- Files: what Jon sees on a model's Files tab. A rename changes name only;
+-- Files: what the user sees on a model's Files tab. A rename changes name only;
 -- original_name keeps the uploaded name and the blob key never changes
 -- (AC-060). parse_status 'unavailable' is a store outage, never damage
 -- (AC-012). derived_status and derived_message describe the OpenSCAD render

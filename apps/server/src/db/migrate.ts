@@ -14,7 +14,9 @@ import type { DB } from "./types.js";
 // yet recorded in schema_migrations, in number order, and records each with
 // the SHA-256 of its bytes. It refuses to run, and applies nothing, when an
 // applied file's checksum has changed or an applied file is missing: an
-// applied migration is never edited, a change goes in a new file.
+// applied migration is never edited, a change goes in a new file. The one
+// exception is PREVIOUS_CHECKSUMS below: four files whose comments were
+// reworded after they shipped.
 
 // The migrations folder is found next to this module. Run from source that is
 // src/db/migrations. tsc -b compiles this file to dist/src/db/migrate.js and
@@ -26,6 +28,68 @@ import type { DB } from "./types.js";
 export const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations/", import.meta.url));
 
 const NAME = /^([0-9]{4})_[a-z0-9_]+\.sql$/;
+
+export interface PreviousChecksum {
+  /** The SHA-256 the file had before its comments were reworded. */
+  previous: string;
+  /** The SHA-256 of the file as shipped now. */
+  current: string;
+}
+
+/**
+ * Applied migrations whose comments were reworded after they shipped, to take
+ * a personal name out of the public source (PR #320). Only comments changed,
+ * never a statement, so a database that applied the earlier bytes has the
+ * same schema; it just recorded a different checksum. For each file listed
+ * here, a recorded previous checksum counts as the same file while the file
+ * is still exactly current, and the row keeps the checksum it recorded. Any
+ * other mismatch still stops migrate(). Nothing else may be added here: a
+ * change to a migration goes in a new file.
+ *
+ * Each previous digest was computed with
+ * git show d268f23:apps/server/src/db/migrations/<name> | shasum -a 256.
+ */
+export const PREVIOUS_CHECKSUMS: ReadonlyMap<string, PreviousChecksum> = new Map([
+  [
+    "0001_init.sql",
+    {
+      previous: "438a41b92fdee7448af0fbfd296f81e00cdb4516849e80d3643705a60e1dc2bb",
+      current: "3d6ca3d3d57e2d9c29fa29fb03a7a559b4ce0bbf0ce190f390a68ba52962bbf1",
+    },
+  ],
+  [
+    "0004_files_sha256.sql",
+    {
+      previous: "a8c5fb155cbc3a8ca7f053e13cba19708bd7da3177623bff7023d8583b003626",
+      current: "b8b09c173e5b5a20eb278a454d299963387603dbdd5012a92c089d11593560a2",
+    },
+  ],
+  [
+    "0007_my_printers.sql",
+    {
+      previous: "b3edabeef0ec9c6a2cea1a1b64f45dda14f5b548976408285cbad82b8a437720",
+      current: "351e661b978d9d4762c318634e44d49ea99bc82310b7f20ab9af09e36bcd7a2e",
+    },
+  ],
+  [
+    "0008_library_sort.sql",
+    {
+      previous: "f3211d19f8eab30a0867e4925b8b483afee2f290e370d667e7b2b7fa0c6632a5",
+      current: "588ed7b8cd458ea8786166d98ba07db40db4404994708594b71a9e7ac2858185",
+    },
+  ],
+]);
+
+/**
+ * Whether an applied migration's recorded checksum matches its file: the same
+ * digest, or, for a file in PREVIOUS_CHECKSUMS that is still exactly as
+ * shipped, its one listed previous digest.
+ */
+export function isSameMigration(name: string, recorded: string, current: string): boolean {
+  if (recorded === current) return true;
+  const known = PREVIOUS_CHECKSUMS.get(name);
+  return known !== undefined && known.previous === recorded && known.current === current;
+}
 
 /**
  * Whether a folder entry is meant as a migration at all. A name that starts
@@ -111,7 +175,7 @@ export async function migrateFrom(db: Kysely<DB>, dir: string): Promise<void> {
           `Applied migration ${row.name} is missing from the migrations folder; refusing to migrate`,
         );
       }
-      if (file.checksum !== row.checksum) {
+      if (!isSameMigration(row.name, row.checksum, file.checksum)) {
         throw new MigrationError(
           `Applied migration ${row.name} has changed since it was applied (checksum ${row.checksum} recorded, ${file.checksum} now); refusing to migrate. Put the change in a new migration file.`,
         );

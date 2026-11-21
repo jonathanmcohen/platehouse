@@ -380,7 +380,7 @@ describe("card shows time and weight only when every plate is known", () => {
   });
 });
 
-// The library header's printer switch (Jon, 2026-11-19): My printers in a
+// The library header's printer switch (the maintainer, 2026-11-19): My printers in a
 // small menu that changes whose times and weights the cards show. It only
 // reads: it asks for the library again, never anything that slices.
 describe("the header's printer switch", () => {
