@@ -330,7 +330,13 @@ test("run.sh --clean refuses while a real flock holds run.lock", { skip: !hasFlo
     assert.match(r.stderr, /a gate run is going/);
     assert.equal(existsSync(lock), true);
   } finally {
-    process.kill(-holder.pid, "SIGKILL");
+    // The holder may already be gone (flock -n can exit at once); a missing
+    // group must not hide the assertion that failed above.
+    try {
+      process.kill(-holder.pid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
   }
   // The test leaves nothing holding run.lock: once its holder is killed, the
   // lock can be taken at once.
