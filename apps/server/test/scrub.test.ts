@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import { describe, expect, test } from "vitest";
 import {
+  addressSpans,
   DERIVED_MESSAGE_MAX_CHARS,
   scrubDerivedMessage,
   scrubDetail,
@@ -281,8 +282,10 @@ describe("scrubDetail", () => {
 // that hid it, so these tests state the property and try it on many
 // generated messages. On any text, scrubText's output holds:
 //
-// (a) no match of the IPv4 pattern the scan replaced: it never takes out
-//     less than that regex did;
+// (a) every span the IPv4 pattern the scan replaced took out lies inside a
+//     span the scan takes out, so it never takes out less than that regex
+//     did; checked on the scan's own spans (addressSpans) of the text, and
+//     on scrubText's output, which holds no match of the pattern;
 // (b) no IPv6 address s (net.isIP(s) === 6, holding a digit and at least two
 //     colons) whose neighbours, where there are any, are not hex digits,
 //     ':' or '.'; checked by brute force over every start and every end up
@@ -296,6 +299,23 @@ const OLD_IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/;
 /** (a): the first match of the old IPv4 pattern left in text, if any. */
 function leftoverIPv4(text: string): string | undefined {
   return OLD_IPV4.exec(text)?.[0];
+}
+
+/**
+ * (a), on the scan's spans: the first span the old IPv4 pattern took out of
+ * text (every match, as its global replace found them) that no span in
+ * spans holds whole, if any.
+ */
+function uncoveredIPv4(
+  text: string,
+  spans: readonly (readonly [number, number])[],
+): string | undefined {
+  for (const m of text.matchAll(new RegExp(OLD_IPV4.source, "g"))) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (!spans.some(([s, e]) => s <= start && end <= e)) return m[0];
+  }
+  return undefined;
 }
 
 /** A character an IPv6 address may run on into: a hex digit, ':' or '.'. */
@@ -376,6 +396,11 @@ const NEIGHBOURS = [
   "nip.io",
   ".nip.io",
   ".Retrying",
+  // Hex groups that can run on into an address: they make a longer address
+  // that ends inside an IPv4 one (1:2:3:4:5:6:7:10 of 1:2:3:4:5:6:7:10.0.0.5).
+  "1:2:3:4:5:6:7:",
+  "a::b:c:d:e:f:",
+  "[::1]:",
   "7",
   ".",
   "]",
@@ -431,6 +456,8 @@ function message(random: () => number): { text: string; before: string; after: s
 
 /** What is wrong with scrubText's output for text, or undefined when (a) and (b) hold. */
 function brokenBy(text: string): string | undefined {
+  const cut = uncoveredIPv4(text, addressSpans(text));
+  if (cut !== undefined) return `${JSON.stringify(text)}: the scan cuts into ${cut}`;
   const out = scrubText(text);
   const v4 = leftoverIPv4(out);
   if (v4 !== undefined) return `${JSON.stringify(text)} -> ${JSON.stringify(out)} keeps ${v4}`;
@@ -449,6 +476,10 @@ describe("the address scrub's invariant", () => {
     expect(leftoverIPv6("at [fe80::1]")).toBe("fe80::1");
     expect(leftoverIPv6("Add::Feed and 12:34:56")).toBeUndefined();
     expect(leftoverIPv6("[address]")).toBeUndefined();
+    // A span that ends inside the old match does not hold it; one that starts before and ends after does.
+    expect(uncoveredIPv4("x:10.0.0.5", [[0, 4]])).toBe("10.0.0.5");
+    expect(uncoveredIPv4("x:10.0.0.5", [[0, 10]])).toBeUndefined();
+    expect(uncoveredIPv4("x 10.0.0.5 and 192.0.2.7", [[2, 10]])).toBe("192.0.2.7");
   });
 
   test.each(LOOKALIKES)("(c) %j comes out unchanged", (text) => {
@@ -467,9 +498,26 @@ describe("the address scrub's invariant", () => {
     ["round 2 (#351): before a host name", "reach 10.0.0.5.nip.io", "reach [address].nip.io"],
     ["round 2 (#351): before a word", "reach 10.0.0.5.Retrying", "reach [address].Retrying"],
     ["round 2 (#351): a bracket then letters", "[10.0.0.5]abc", "[address]abc"],
+    ["round 3: seven hex groups before an IPv4 address", "1:2:3:4:5:6:7:10.0.0.5", "1:[address]"],
+    ["round 3: '::' and six groups before one", "a::b:c:d:e:f:10.0.0.5", "a::b:c:d:e:f:[address]"],
+    [
+      "round 3: a bracketed address and a colon before one",
+      "peer [::1]:1.2.3.4 left",
+      "peer [address]:[address] left",
+    ],
   ])("%s: %j is shown as %j", (_round, input, shown) => {
     expect(scrubText(input)).toBe(shown);
     expect(brokenBy(input)).toBeUndefined();
+  });
+
+  // A known limit, kept as the CHANGELOG states it: an address may not start
+  // straight after a hex digit, so one written straight after a letter A to
+  // F or a digit is not taken out whole. The replaced IPv4 pattern did not
+  // take a10.0.0.5 out either (no word boundary before its "1").
+  test("an address straight after a hex digit is not taken out whole", () => {
+    expect(scrubText("a10.0.0.5")).toBe("a10.0.0.5");
+    expect(leftoverIPv4("a10.0.0.5")).toBeUndefined();
+    expect(scrubText("f2001:db8::1")).toBe("f2001:[address]");
   });
 
   test("(a), (b) and (c) hold for 3000 generated messages", () => {

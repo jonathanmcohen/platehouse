@@ -38,12 +38,16 @@ export interface ScrubOptions {
 }
 
 // The address scan's invariant, which test/scrub.test.ts checks on thousands
-// of generated messages: after it, the text holds no match of the IPv4
-// pattern it replaced (/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/), and no
-// IPv6 address holding a digit whose neighbours are not hex digits, ':' or
-// '.'. It gets there with no rule about what may come before or after an
-// address: at every place an address could start, the longest address that
-// starts there (up to ADDRESS_MAX_CHARS) is taken out, whatever follows it.
+// of generated messages: every span the IPv4 pattern it replaced
+// (/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g) took out lies inside a span
+// it takes out, and after it the text holds no IPv6 address holding a digit
+// whose neighbours are not hex digits, ':' or '.'. At every place an address
+// could start, the longest address that starts there (up to
+// ADDRESS_MAX_CHARS) is taken out, whatever follows it, except that it may
+// not end strictly inside a span of the replaced pattern. An address may
+// not start straight after a hex digit, so one written straight after a
+// letter A to F or a digit (a10.0.0.5, f2001:db8::1) is not taken out whole;
+// the replaced pattern did not take a10.0.0.5 out either.
 
 /**
  * Longest text one address can take: [, 45 characters of IPv6, a zone of up
@@ -181,27 +185,51 @@ function bracketEnds(text: string, start: number): number[] {
   return ends;
 }
 
-/** Where the longest address that starts at start ends, or -1. */
-function addressEnd(text: string, start: number): number {
+/** The IPv4 pattern the address scan replaced, with its global flag as it was used. */
+const REPLACED_IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g;
+
+/**
+ * For each place in text, whether it falls strictly inside a span the
+ * replaced IPv4 pattern took out (after its first character, before its
+ * end). An address may not end there.
+ */
+function insideReplacedIPv4(text: string): Uint8Array {
+  const inside = new Uint8Array(text.length + 1);
+  for (const m of text.matchAll(REPLACED_IPV4)) {
+    inside.fill(1, m.index + 1, m.index + m[0].length);
+  }
+  return inside;
+}
+
+/**
+ * Where the longest address that starts at start ends, or -1. An end that
+ * falls strictly inside a span the replaced IPv4 pattern took out is
+ * skipped, so 1:2:3:4:5:6:7:10 never takes the "10" of 10.0.0.5 and leaves
+ * ".0.0.5" behind.
+ */
+function addressEnd(text: string, start: number, inside: Uint8Array): number {
   const ends = text[start] === "[" ? bracketEnds(text, start) : plainEnds(text, start);
   for (let k = ends.length - 1; k >= 0; k -= 1) {
     const end = ends[k] as number;
-    if (isAddress(text.slice(start, end))) return end;
+    if (inside[end] === 0 && isAddress(text.slice(start, end))) return end;
   }
   return -1;
 }
 
 /**
- * Every IPv4 and IPv6 address in text, bare, in brackets, with a zone or a
- * port, as [address]. An address can start at a [, or at a hex digit or a
+ * Where every IPv4 and IPv6 address in text is, bare, in brackets, with a
+ * zone or a port: [start, end) spans, left to right, none overlapping.
+ * scrubAddresses replaces each with [address]; test/scrub.test.ts checks
+ * the scan's invariant on them. An address can start at a [, or at a hex digit or a
  * colon that does not come straight after a hex digit (inside a hex run
  * such as a hash or a C++ name, a later start would only cut a word in
  * two). Starts are tried left to right, and at each the longest address
  * there is taken out. Straight after one, the text before is "[address]",
  * not a hex digit, so the next character may start another.
  */
-function scrubAddresses(text: string): string {
-  let out = "";
+export function addressSpans(text: string): [number, number][] {
+  const spans: [number, number][] = [];
+  const inside = insideReplacedIPv4(text);
   let kept = 0;
   let i = 0;
   while (i < text.length) {
@@ -209,15 +237,26 @@ function scrubAddresses(text: string): string {
     const afterHex = i !== kept && isHexDigit(text[i - 1]);
     const canStart = c === "[" || ((isHexDigit(c) || c === ":") && !afterHex);
     if (canStart) {
-      const end = addressEnd(text, i);
+      const end = addressEnd(text, i, inside);
       if (end !== -1) {
-        out += `${text.slice(kept, i)}[address]`;
+        spans.push([i, end]);
         kept = end;
         i = end;
         continue;
       }
     }
     i += 1;
+  }
+  return spans;
+}
+
+/** Every address addressSpans finds in text, as [address]. */
+function scrubAddresses(text: string): string {
+  let out = "";
+  let kept = 0;
+  for (const [start, end] of addressSpans(text)) {
+    out += `${text.slice(kept, start)}[address]`;
+    kept = end;
   }
   return kept === 0 ? text : out + text.slice(kept);
 }
@@ -308,7 +347,8 @@ function scrubInternalNames(run: string): string {
  * Takes out of stored error text everything a user must not be shown:
  * tokens and credentials, URLs (signed ones included), file system paths,
  * IPv4 and IPv6 addresses (bare, or in brackets, with a zone or a port,
- * whatever comes before or after them), host:port pairs and internal host
+ * whatever comes after them, and after anything but a hex digit), host:port
+ * pairs and internal host
  * names. The words around them stay, so the message still reads. Cut at
  * SCRUB_MAX_CHARS characters (options.maxChars), keeping the start with
  * "..." after it, or with options.keep "end", keeping the end with "..."
