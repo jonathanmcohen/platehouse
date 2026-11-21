@@ -301,7 +301,7 @@ describe("migrations reworded after they shipped", () => {
 });
 
 // Migration 0007 turns the one printer setting into My printers. It runs on
-// An existing database, which has the schema before it, one selected printer and
+// an existing database, which has the schema before it, one selected printer and
 // estimates keyed by printer_id; all of that must come through as it is.
 describe("0007 My printers", () => {
   const P1S = "Bambu Lab P1S 0.4 nozzle";

@@ -312,7 +312,7 @@ describe("GET /auth/callback", () => {
       const run = await runLogin(t);
       expect(run.callback.statusCode).toBe(403);
       expect(run.callback.headers["content-type"]).toMatch(/^text\/html/);
-      expect(run.callback.body).toMatch(/email address is not verified/i);
+      expect(run.callback.body).toMatch(/email address on your sign-in account is not verified/i);
       expect(run.sessionCookie).toBeUndefined();
       expect(t.store.rows.size).toBe(0);
     });
