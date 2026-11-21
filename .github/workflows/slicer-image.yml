@@ -22,7 +22,11 @@
 #   daily run never promotes such a version, as its orca-X.Y.Z exists; the
 #   run's summary says so.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
-#   release. It always builds and moves stable. force_fail fails the smoke
+#   release. It must be started from main or a release tag (like release.yml,
+#   it refuses any other branch before anything is built, so unreviewed slicer
+#   code never reaches stable); from main or a plain vX.Y.Z tag it always
+#   builds and moves stable, from a prerelease tag it leaves stable alone, as
+#   a push of that tag would. force_fail fails the smoke
 #   slice on purpose after it ran, to test the failure path.
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
@@ -149,8 +153,16 @@ jobs:
           {
             # stable moves on daily and manual runs and on a plain vX.Y.Z tag;
             # a prerelease tag publishes the orca tags and leaves stable alone.
+            # A run by hand builds apps/slicer from the ref it was started on,
+            # so it must start from main or a release tag, as release.yml's
+            # gate requires: a dispatch from any other branch would publish
+            # unreviewed code as orca-X.Y.Z and stable.
             stable=true
-            if [ "$EVENT" = "push" ]; then
+            if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ] && [[ "$REF" != refs/tags/* ]]; then
+              echo "::error::${REF} is not main or a release tag; a run by hand must start from main or a vX.Y.Z tag, so nothing is built"
+              exit 1
+            fi
+            if [ "$EVENT" = "push" ] || [[ "$REF" == refs/tags/* ]]; then
               re='^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
               if [[ ! "$REF" =~ $re ]]; then
                 echo "::error::${REF} is not a semver tag vMAJOR.MINOR.PATCH[-prerelease]; nothing is built"

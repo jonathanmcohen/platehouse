@@ -2,8 +2,9 @@
 // (AC-035): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
 // nodev (nothing in a job folder is ever run; examples/docker-compose.yml
 // carries the same options), 4 CPUs
-// (fewer if the host has fewer), 4 GB of memory, a 1024 process and thread
-// cap, no capabilities and no-new-privileges. Uses the docker CLI rather than testcontainers, which has
+// (fewer if the host has fewer), 4 GB of memory with no swap, a 1024 process
+// and thread cap, no core files, no capabilities and no-new-privileges
+// (test/harness.test.ts checks these against the compose file). Uses the docker CLI rather than testcontainers, which has
 // no read-only-root option. The port is published on 127.0.0.1 only so the
 // tests can reach the HTTP contract.
 //
@@ -80,14 +81,14 @@ export function cpuLimit(hostCpus: number): string {
   return String(Math.min(4, Math.max(1, Math.floor(hostCpus))));
 }
 
-export async function startSlicer(): Promise<RunningSlicer> {
-  ensureImage();
-  const info = docker(["info", "--format", "{{.NCPU}}"]);
-  const hostCpus = Number(info.stdout.trim());
-  if (info.code !== 0 || !Number.isFinite(hostCpus) || hostCpus < 1) {
-    throw new Error(`docker info gave no CPU count: ${info.stderr}${info.stdout}`);
-  }
-  const run = docker([
+/**
+ * The docker run arguments startSlicer uses, for a host with hostCpus CPUs.
+ * apps/slicer/test/harness.test.ts checks them against the platehouse-slicer
+ * service in examples/docker-compose.yml, so the container tests (and the
+ * smoke slice that gates a new Orca image) run under the deploy's limits.
+ */
+export function slicerRunArgs(hostCpus: number): string[] {
+  return [
     "run",
     "-d",
     "--platform",
@@ -99,10 +100,17 @@ export async function startSlicer(): Promise<RunningSlicer> {
     cpuLimit(hostCpus),
     "--memory",
     "4g",
-    // examples/docker-compose.yml's pids_limit, so every container test runs
-    // under the cap a deployment sets.
+    // memswap_limit equal to mem_limit, as examples/docker-compose.yml sets
+    // it: with --memory alone Docker allows as much again in swap, so a slice
+    // past 4 GiB would swap and pass here, then be OOM-killed in a deployment.
+    "--memory-swap",
+    "4g",
+    // examples/docker-compose.yml's pids_limit and core-file limit, so every
+    // container test runs under the caps a deployment sets.
     "--pids-limit",
     "1024",
+    "--ulimit",
+    "core=0",
     "--cap-drop",
     "ALL",
     "--security-opt",
@@ -110,7 +118,17 @@ export async function startSlicer(): Promise<RunningSlicer> {
     "-p",
     "127.0.0.1::8080",
     IMAGE,
-  ]);
+  ];
+}
+
+export async function startSlicer(): Promise<RunningSlicer> {
+  ensureImage();
+  const info = docker(["info", "--format", "{{.NCPU}}"]);
+  const hostCpus = Number(info.stdout.trim());
+  if (info.code !== 0 || !Number.isFinite(hostCpus) || hostCpus < 1) {
+    throw new Error(`docker info gave no CPU count: ${info.stderr}${info.stdout}`);
+  }
+  const run = docker(slicerRunArgs(hostCpus));
   if (run.code !== 0) throw new Error(`docker run failed: ${run.stderr}`);
   const id = run.stdout.trim();
   const stop = () => {

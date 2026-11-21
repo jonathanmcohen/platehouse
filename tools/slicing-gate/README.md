@@ -187,8 +187,11 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
    so a second start while it is going does nothing: no new run, and its
    `run.log` and `run.exit` stay as they are. Without the lock, a second
    start would empty `run.log`, die at "out is not empty" and write 2 to
-   `run.exit` while the first run carried on, and step 5 would then delete
-   the live run. The first line prints a warning when a run is going, so
+   `run.exit` while the first run carried on. `run.sh --clean` (step 5)
+   takes the same lock before it deletes anything, so pasted while a run is
+   going it refuses with "a gate run is going" and deletes nothing; where
+   `run.lock` exists but `flock` is missing it refuses too, since it cannot
+   tell. The first line prints a warning when a run is going, so
    after a reconnect, paste it alone to check before anything else. `flock`
    and `setsid` come from util-linux, so this step runs on Linux, not macOS.
 
@@ -267,6 +270,14 @@ mismatch", but Orca's own messages say only -66 and -68 are about extruders.
 -61, -63 to -65, -67 and -69 (bed type, collisions, vase mode, TPU count,
 mixed filament), and -50 (empty plate), are reported as needs-decision rather
 than passed or failed, so the maintainer decides them.
+
+A refusal or needs-decision code counts only when the slicer then exited
+cleanly. Orca 2.5.0 records the code in result.json and returns it from main,
+so a clean exit with code c has exit status (256 + c) & 0xff (239 for -17).
+Any other exit status, or a signal, means the slicer died after writing its
+code, and the plate fails as a crash, as a crash after a successful slice
+does. GNU time measures `timeout`, not Orca, so a segfault shows as exit
+status 139.
 
 ## What the report holds
 
