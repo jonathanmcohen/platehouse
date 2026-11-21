@@ -11,7 +11,9 @@
 // remove that works unmounts its chip's button, so focus then goes to the
 // next chip's remove button, else the previous chip's, else the add input
 // (useRowFocus in ../settings/focus); a remove that fails leaves focus on
-// its button.
+// its button. The input stays open while an add runs; when the add answers
+// it is cleared only if it still holds the text that was added, so a next
+// name typed meanwhile is kept.
 import { type FormEvent, useId, useRef, useState } from "react";
 import { useErrorText } from "../settings/api";
 import { useRowFocus } from "../settings/focus";
@@ -32,7 +34,7 @@ export interface ChipEditorProps {
   suggestions?: string[];
   /**
    * Told the input's text whenever it changes, including when an add clears
-   * it, so a form around the editor can count text typed but not yet added.
+   * it (an add clears only the text it added), so a form around the editor can count text typed but not yet added.
    */
   onDraft?(draft: string): void;
 }
@@ -53,7 +55,10 @@ export function ChipEditor({
   const errorText = useErrorText();
   const id = useId();
   const [draft, setDraftState] = useState("");
+  // The input's text right now, which an add that answers later reads.
+  const latestDraft = useRef("");
   const setDraft = (next: string) => {
+    latestDraft.current = next;
     setDraftState(next);
     onDraft?.(next);
   };
@@ -82,7 +87,7 @@ export function ChipEditor({
     if (value === "") return;
     void run(async () => {
       await onAdd(value);
-      setDraft("");
+      if (latestDraft.current.trim() === value) setDraft("");
     });
   }
 
