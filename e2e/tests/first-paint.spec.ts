@@ -1,4 +1,4 @@
-// The theme on the first paint (build plan Task 22; AC-070, lesson 6). A
+// The theme on the first paint (build plan Task 22; AC-070). A
 // System theme with prefers-color-scheme light must paint light on the first
 // frame, with no flash of the dark default. Parchment's System-theme bug
 // showed only on a fresh load and vanished after a toggle, so this loads

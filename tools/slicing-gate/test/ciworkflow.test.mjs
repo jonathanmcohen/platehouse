@@ -62,8 +62,8 @@ test("every job runs on ubuntu-24.04 with a timeout, the app image's arm64 leg o
   for (const m of timeouts) assert.ok(m > 0 && m <= 90, `timeout ${m}`);
 });
 
-// Engineering Lessons: actions pin to an exact release tag (the maintainer, 2026-09-05,
-// locked), never a floating major such as @v7.
+// Actions pin to an exact release tag (the maintainer, 2026-09-05, locked),
+// never a floating major such as @v7, so a moved tag cannot change a build.
 test("every action is pinned to an exact release tag", () => {
   const uses = [...text().matchAll(/uses: (\S+)/g)].map((m) => m[1]);
   assert.ok(uses.length >= 2, uses.join("\n"));
@@ -248,7 +248,7 @@ function jobBlock(t, id) {
 
 // Build plan Task 3: lint, typecheck, unit and integration in a chain, and
 // every job after the first carries its own !cancelled() condition, because a
-// skip propagates down a needs chain (Engineering Lessons).
+// skip propagates down a needs chain unless a job says otherwise.
 test("lint, typecheck, unit and integration run in a chain, each gated on the one before", () => {
   const t = text();
   assert.doesNotMatch(jobBlock(t, "lint"), /needs:/, "lint is the first job");

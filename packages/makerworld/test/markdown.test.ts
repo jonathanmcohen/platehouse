@@ -6,8 +6,7 @@ import { DESIGNER_PAYLOADS, htmlEscape } from "./support/payloads.js";
 // test/metadata.test.mjs at 1ce8c57 (the htmlToMarkdown cases). The source
 // escaped for Kramdown 2.5.2 and kramdown-parser-gfm 1.1.0. Platehouse renders
 // with markdown-it 15 (CommonMark plus GFM tables and strikethrough), so the
-// escaping was re-derived for markdown-it (build plan Task 7, requirements
-// lesson 5), and every expected string below is the markdown-it form.
+// escaping was re-derived for markdown-it (build plan Task 7), and every expected string below is the markdown-it form.
 //
 // What changed from the Kramdown rules, each case marked "CommonMark" below:
 // - < and > are backslash-escaped, not written as &lt; and &gt;, because
