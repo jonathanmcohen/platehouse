@@ -12,7 +12,9 @@
 //   starts and serves everything but login while the OIDC provider is down (AC-081).
 //   A discovery that fails is not remembered: the next login tries again.
 //   Every request to the issuer gives up after ISSUER_TIMEOUT_SECONDS.
-// - A user is let in when the claims carry a subject, groups include
+// - A user is let in when the claims carry a subject of at most
+//   MAX_SUBJECT_LENGTH (255) characters, the limit OpenID Connect Core sets
+//   (issue #378), groups include
 //   OIDC_GROUP, and email_verified is true or the string "true" (Parchment
 //   dropped a string claim and login became an opaque "denied"). Groups and
 //   email_verified are read from the ID token, and from userinfo when the ID
@@ -53,17 +55,46 @@ export interface LoginChecks {
 
 /**
  * Why a login did not end in a session: the issuer could not be reached, the
- * response did not check out, or the user is not let in.
+ * response did not check out, the subject is longer than OIDC allows, or the
+ * user is not let in.
  */
-export type LoginFailure = "unavailable" | "failed" | "not_in_group" | "email_not_verified";
+export type LoginFailure =
+  | "unavailable"
+  | "failed"
+  | "subject_too_long"
+  | "not_in_group"
+  | "email_not_verified";
+
+/**
+ * The longest OIDC subject (sub) Platehouse takes, in characters: OpenID
+ * Connect Core limits sub to 255 ASCII characters (issue #378). admit()
+ * refuses a longer one, so every column and index that stores a subject
+ * (sessions.subject, api_tokens.created_by_subject; migration 0010) and the
+ * Sign out everywhere body hold at most this many. Counted by code point,
+ * as Postgres's char_length counts. 0.1.0 took any non-empty string, so
+ * nothing else about a subject is refused.
+ */
+export const MAX_SUBJECT_LENGTH = 255;
+
+/** How many characters a subject has, counted as char_length counts them. */
+export function subjectLength(subject: string): number {
+  return Array.from(subject).length;
+}
 
 export class LoginError extends Error {
   readonly failure: LoginFailure;
+  /** For subject_too_long: how many characters the subject had, never the subject. */
+  readonly subjectLength: number | undefined;
 
-  constructor(failure: LoginFailure, message: string, options?: { cause?: unknown }) {
+  constructor(
+    failure: LoginFailure,
+    message: string,
+    options?: { cause?: unknown; subjectLength?: number },
+  ) {
     super(message, options);
     this.name = "LoginError";
     this.failure = failure;
+    this.subjectLength = options?.subjectLength;
   }
 }
 
@@ -134,6 +165,14 @@ export function admit(claims: Record<string, unknown>, group: string): { subject
   const subject = claims.sub;
   if (typeof subject !== "string" || subject === "") {
     throw new LoginError("failed", "The login response named no user");
+  }
+  const length = subjectLength(subject);
+  if (length > MAX_SUBJECT_LENGTH) {
+    throw new LoginError(
+      "subject_too_long",
+      `The user id is ${length} characters; OpenID Connect allows at most ${MAX_SUBJECT_LENGTH}`,
+      { subjectLength: length },
+    );
   }
   if (!inGroup(claims.groups, group)) {
     throw new LoginError("not_in_group", `The user is not in the ${group} group`);

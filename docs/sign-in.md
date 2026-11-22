@@ -13,9 +13,11 @@ own short-lived key. See [Security](./security.md).
 - **Flow:** authorization code with PKCE (S256), plus a state and a nonce.
 - **Scopes:** `openid email profile groups`.
 - **Client authentication:** a client secret sent with HTTP Basic (`client_secret_basic`).
-- **Claims:** a subject, `email_verified` set to true (the string `"true"` is accepted too), and a
-  `groups` claim that holds the group in `OIDC_GROUP`. Platehouse reads these from the ID token,
-  and from the userinfo endpoint when the ID token leaves them out.
+- **Claims:** a subject (`sub`) of at most 255 characters, the most OpenID Connect allows,
+  `email_verified` set to true (the string `"true"` is accepted too), and a `groups` claim that
+  holds the group in `OIDC_GROUP`. Platehouse reads these from the ID token, and from the
+  userinfo endpoint when the ID token leaves them out. A longer subject is refused with a page
+  that says so.
 - **Discovery:** the provider must publish `/.well-known/openid-configuration` under its issuer
   URL.
 

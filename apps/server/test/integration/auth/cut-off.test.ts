@@ -374,6 +374,16 @@ describe("Sign out everywhere", () => {
     expect(lines.join("\n")).not.toContain(tooLong);
   });
 
+  test("the sign-out takes a subject of 255 characters outside ASCII, as sign-in does", async () => {
+    // Its maxLength counts characters, as admit() does, not UTF-16 units.
+    const me = await signIn("subject-admin");
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: String.fromCodePoint(0x1f600).repeat(255),
+      revokeTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+  });
+
   test("a user with nothing live is 200 with nothing ended", async () => {
     const me = await signIn("subject-admin");
     const res = await call("POST", "/app/api/users/sign-out", me, {

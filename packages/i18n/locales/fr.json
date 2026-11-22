@@ -310,6 +310,7 @@
   "login.pageTitle": "{title} - Platehouse",
   "login.refused.email": "L'adresse e-mail de votre compte de connexion n'est pas v\u00e9rifi\u00e9e. V\u00e9rifiez-la aupr\u00e8s de votre fournisseur de connexion, puis r\u00e9essayez.",
   "login.refused.group": "Votre compte de connexion ne fait pas partie du groupe {group}. Demandez \u00e0 y \u00eatre ajout\u00e9, puis r\u00e9essayez.",
+  "login.refused.subject": "Votre fournisseur de connexion a donn\u00e9 \u00e0 votre compte un identifiant d'utilisateur de plus de {max} caract\u00e8res, ce qu'OpenID Connect n'autorise pas, donc Platehouse ne peut pas vous connecter. Demandez \u00e0 la personne qui g\u00e8re le fournisseur de connexion de donner \u00e0 votre compte un identifiant plus court.",
   "login.refused.title": "Connexion refus\u00e9e",
   "login.tryAgain": "R\u00e9essayer",
   "login.unavailable.issuer": "Platehouse ne peut pas joindre le service de connexion. R\u00e9essayez dans quelques minutes.",

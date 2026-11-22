@@ -610,8 +610,8 @@ describe("0010 token creators", () => {
       code: "23514",
     });
     await session("L".repeat(43), String.fromCodePoint(0x1f600).repeat(255), null).execute(db);
-    await expect(session("M".repeat(43), "x".repeat(256), null).execute(db)).rejects.toMatchObject(
-      { code: "23514" },
-    );
+    await expect(session("M".repeat(43), "x".repeat(256), null).execute(db)).rejects.toMatchObject({
+      code: "23514",
+    });
   });
 });

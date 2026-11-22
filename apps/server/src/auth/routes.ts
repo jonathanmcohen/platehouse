@@ -27,8 +27,10 @@
 //   name the claims give, sets __Host-ph_session and sends the browser to
 //   PUBLIC_ORIGIN/ (or the login's next path on PUBLIC_ORIGIN). A missing,
 //   forged or expired login cookie, or a response that does not check out,
-//   is 400; a user not let in is 403 with the reason; the issuer unreachable
-//   is 503.
+//   is 400; a user not let in is 403 with the reason (not in the group,
+//   email not verified, or a user id over MAX_SUBJECT_LENGTH characters,
+//   which the log records by its length, never its value); the issuer
+//   unreachable is 503.
 // - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as every state-
 //   changing request on a session route does (gate.ts), or it is 403 and the
 //   session and its cookie are left alone, so another site cannot sign the user
@@ -50,7 +52,7 @@ import {
 } from "@platehouse/i18n";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createLocales, englishMessages, type Locales } from "../locales/locales.js";
-import { type LoginChecks, LoginError, type OidcClient } from "./oidc.js";
+import { type LoginChecks, LoginError, MAX_SUBJECT_LENGTH, type OidcClient } from "./oidc.js";
 import {
   SESSION_ABSOLUTE_MS,
   SESSION_COOKIE,
@@ -350,10 +352,23 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       ({ subject, name: displayName } = await deps.oidc.finish(callbackUrl, login.checks));
     } catch (error) {
       const failure = error instanceof LoginError ? error.failure : "failed";
-      request.log.warn({ failure }, "auth: login refused");
+      // The subject's length, never the subject: one too long could be anything.
+      const subjectLength = error instanceof LoginError ? error.subjectLength : undefined;
+      request.log.warn(
+        subjectLength === undefined ? { failure } : { failure, subjectLength },
+        "auth: login refused",
+      );
       switch (failure) {
         case "unavailable":
           return unavailable(reply, await words(request));
+        case "subject_too_long":
+          return sendPage(
+            reply,
+            await words(request),
+            403,
+            ["login.refused.title"],
+            ["login.refused.subject", { max: MAX_SUBJECT_LENGTH }],
+          );
         case "not_in_group":
           return sendPage(
             reply,

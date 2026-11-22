@@ -28,6 +28,7 @@ import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { Tokens } from "../api/tokens.js";
 import { sessionOf } from "../auth/gate.js";
+import { MAX_SUBJECT_LENGTH } from "../auth/oidc.js";
 import type { Sessions } from "../auth/sessions.js";
 import type { DB } from "../db/types.js";
 import { appApiScope, need } from "./settings.js";
@@ -108,10 +109,10 @@ export function dbUserList(db: Kysely<DB>): (now: Date) => Promise<KnownUser[]> 
 const SIGN_OUT = {
   type: "object",
   properties: {
-    // No length cap: sign-in takes a subject of any length (auth/oidc.ts
-    // admit; sessions.subject has none), so a cap here could leave someone
-    // signed in whom Sign out everywhere cannot reach.
-    subject: { type: "string", minLength: 1 },
+    // The same cap sign-in applies (auth/oidc.ts admit, MAX_SUBJECT_LENGTH,
+    // issue #378), so every subject that can sign in can be signed out.
+    // JSON Schema's maxLength counts code points, as admit() does.
+    subject: { type: "string", minLength: 1, maxLength: MAX_SUBJECT_LENGTH },
     revokeTokens: { type: "boolean" },
   },
   required: ["subject", "revokeTokens"],
