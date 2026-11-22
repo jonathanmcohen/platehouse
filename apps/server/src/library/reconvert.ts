@@ -37,14 +37,24 @@
 // after the last model counted, and the step records the totals of the whole
 // conversion, which the Activity page shows, not only of the last run.
 //
-// A run is told when to stop (run's stop), and checks it after each model it
-// counts, so each run checks at least one model. A run that stops leaves its
-// counts and says it paused (RECONVERT_PAUSED); the maintenance queue then
-// sends the next job, which goes on after the last model counted. That keeps
-// each job inside pg-boss's expiry, so a large library on a slow object store
-// never has its job failed while the run carries on, and the scheduled
-// maintenance tasks wait at most one slice (jobs/queues.ts
-// RECONVERT_SLICE_SECONDS).
+// A run is resumable and idempotent whatever happens to it (#381, #382):
+// - It is told when to stop in two ways. stop, asked after each model it
+//   counts, ends a slice (so each run checks at least one model); signal,
+//   asked before each model and passed to every read of the object store,
+//   ends it at once: the server's stop aborts it, so a read in flight is
+//   abandoned rather than awaited. Either way the run returns
+//   RECONVERT_PAUSED with its counts kept and nothing half done: a model is
+//   only counted, or written and counted, in one step, after it is decided.
+// - Only an outage stops a run with an error: the object store
+//   (SourceOutage, from storeTextReader) or the database. A file that is
+//   damaged in any way, missing, or that the converter cannot read, counts
+//   that model as could not be read, and the run goes on.
+// - The maintenance queue drives it (jobs/queues.ts): at start-up, on a
+//   short schedule while it is pending, and with the next job after a slice.
+//   An outage only delays it, with a back-off, and the schedule ends when
+//   the step finishes. Only one run goes at a time (exclusive, below).
+
+import type { Readable } from "node:stream";
 import {
   CONVERTER_VERSION,
   earlierConversions,
@@ -53,7 +63,7 @@ import {
   mapLicense,
 } from "@platehouse/makerworld";
 import { ReadUnavailable, readMakerWorldXml } from "@platehouse/threemf";
-import { BlobNotFound, type BlobStore } from "../storage/s3.js";
+import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { descriptionSha256 } from "./description-hash.js";
 
 export { descriptionSha256 };
@@ -89,8 +99,28 @@ export interface SourceText {
   note: string | null;
 }
 
-/** Reads a file's text; null when the file cannot be read (gone, damaged). Throws on an outage. */
-export type ReadText = (file: SourceFile) => Promise<SourceText | null>;
+/**
+ * Reads a file's text; null when the file cannot be read (gone, damaged).
+ * Throws SourceOutage when the store is down, and stops when signal aborts.
+ */
+export type ReadText = (file: SourceFile, signal?: AbortSignal) => Promise<SourceText | null>;
+
+/**
+ * The object store could not be reached, or refused for a reason that is not
+ * about the one object (its access settings, say). It stops the run, which
+ * goes on once the store is back; it never counts a model.
+ */
+export class SourceOutage extends Error {
+  constructor(cause: unknown) {
+    super("The object store is unavailable", { cause });
+    this.name = "SourceOutage";
+  }
+}
+
+/** True for what a read gives when its signal aborted: the run was told to stop. */
+function stopped(err: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true || (err instanceof Error && err.name === "AbortError");
+}
 
 export type Decision =
   /** Its hash no longer matches: changed since a converter wrote it. */
@@ -196,59 +226,97 @@ export async function decide(
   stored: StoredDescription,
   files: readonly SourceFile[],
   readText: ReadText,
+  signal?: AbortSignal,
 ): Promise<Decision> {
+  // Anything that goes wrong with one file, other than an outage or a stop,
+  // is that file being unreadable: a crafted .3mf or a converter bug must
+  // never stop the run, or it would stop at the same model every time.
+  const attempt = async <T>(fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof SourceOutage || stopped(err, signal)) throw err;
+      return null;
+    }
+  };
   if (stored.sha256 !== null) {
     if (descriptionSha256(stored.description) !== stored.sha256) return { kind: "edited" };
     const source = files.find((f) => f.fileId === stored.fileId);
     if (source === undefined) return { kind: "unreadable" };
-    const text = await readText(source);
-    if (text === null) return { kind: "unreadable" };
-    // The hash proves the text untouched but not where its converted part
-    // ends, so the note counts as added when the text ends with it after a
-    // blank line. Only a MakerWorld description whose own last paragraph is
-    // the licence note, word for word, could be read wrong, and then that
-    // paragraph would show twice.
-    return outcome(stored, source.fileId, text, endsWithNote(stored.description, text.note));
+    const decision = await attempt(async () => {
+      const text = await readText(source, signal);
+      if (text === null) return null;
+      return outcome(stored, source.fileId, text, endsWithNote(stored.description, text.note));
+    });
+    return decision ?? { kind: "unreadable" };
   }
   // With no .3mf left to read, nothing can be proved either way.
   let unreadable = files.length === 0;
   for (const file of files) {
-    const text = await readText(file);
-    if (text === null) {
-      unreadable = true;
-      continue;
-    }
-    if (!text.html && !text.note) continue;
-    for (const { markdown } of earlierConversions(text.html ?? "")) {
-      for (const withNote of [false, true]) {
-        const before = composeDescription(markdown, text.note, withNote);
-        if (before !== "" && before === stored.description) {
-          return outcome(stored, file.fileId, text, withNote);
+    const found = await attempt(async () => {
+      const text = await readText(file, signal);
+      if (text === null) return null;
+      if (!text.html && !text.note) return { decision: null };
+      for (const { markdown } of earlierConversions(text.html ?? "")) {
+        for (const withNote of [false, true]) {
+          const before = composeDescription(markdown, text.note, withNote);
+          if (before !== "" && before === stored.description) {
+            return { decision: outcome(stored, file.fileId, text, withNote) };
+          }
         }
       }
-    }
+      return { decision: null };
+    });
+    if (found === null) unreadable = true;
+    else if (found.decision !== null) return found.decision;
   }
   return unreadable ? { kind: "unreadable" } : { kind: "unproven" };
 }
 
+/** True for a store error about the one object, which says nothing about the store. */
+function objectRefused(err: unknown): boolean {
+  return (
+    err instanceof BlobNotFound ||
+    err instanceof RangeError ||
+    (err instanceof StoreError && OBJECT_CODES.has(err.code))
+  );
+}
+
+/** S3 codes that refuse one request for one object, not the store as a whole. */
+const OBJECT_CODES: ReadonlySet<string> = new Set(["InvalidRange", "NoBody", "NoSuchKey"]);
+
 /**
  * Reads a stored .3mf's MakerWorld text from the object store with ranged
- * reads. A missing object or a file that is not a readable zip is null; a
- * file with no MakerWorld details gives no text. A store outage throws the
- * store's own error, which stops the run.
+ * reads, each given the run's signal. A missing object, a range the store
+ * refuses, a file that is not a readable zip, or any other failure that is
+ * about the file is null; a file with no MakerWorld details gives no text.
+ * A store that cannot be reached (StoreUnavailable) or refuses for another
+ * reason (any other StoreError) is SourceOutage, which stops the run until
+ * the store is back. A read stopped by the signal stops the run too.
  */
-export function storeTextReader(store: Pick<BlobStore, "getBlobRange">): ReadText {
-  return async (file) => {
+export function storeTextReader(store: {
+  getBlobRange(
+    key: string,
+    start: number,
+    end: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Readable>;
+}): ReadText {
+  return async (file, signal) => {
     let xml: string | null;
     try {
       xml = await readMakerWorldXml(
-        (start, end) => store.getBlobRange(file.key, start, end),
+        (start, end) => store.getBlobRange(file.key, start, end, signal ? { signal } : undefined),
         file.size,
       );
     } catch (err) {
-      if (err instanceof ReadUnavailable && err.cause instanceof BlobNotFound) return null;
-      if (err instanceof ReadUnavailable && err.cause instanceof Error) throw err.cause;
-      throw err;
+      const cause = err instanceof ReadUnavailable ? err.cause : err;
+      if (stopped(cause, signal)) throw cause;
+      if (objectRefused(cause)) return null;
+      if (cause instanceof StoreUnavailable || cause instanceof StoreError) {
+        throw new SourceOutage(cause);
+      }
+      return null;
     }
     if (xml === null) return null;
     const details = extractMakerWorld(xml);
@@ -267,9 +335,15 @@ export interface DescriptionReconvert {
    * (or none, when that was the last): its counts stay, nothing is recorded
    * finished, and the next run goes on after the last model counted. stop is
    * asked after each model counted, never before the first; with none given
-   * the run goes to the end.
+   * the run goes to the end. signal, when it aborts, ends the run before the
+   * next model and abandons any read in flight, also RECONVERT_PAUSED with
+   * nothing counted for the model it was on. A store outage
+   * (SourceOutage) or a database error rejects, with the counts so far kept.
    */
-  run(stop?: () => boolean): Promise<ReconvertResult | typeof RECONVERT_PAUSED | null>;
+  run(
+    stop?: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<ReconvertResult | typeof RECONVERT_PAUSED | null>;
 }
 
 /** Models read from the database at a time. */
@@ -287,7 +361,7 @@ export function createDescriptionReconvert(deps: {
     async pending() {
       return !(await deps.store.stepFinished(RECONVERT_STEP));
     },
-    async run(stop = () => false) {
+    async run(stop = () => false, signal?: AbortSignal) {
       if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
       return deps.store.exclusive(RECONVERT_STEP, async () => {
         // Another run may have finished between the check above and taking the step.
@@ -296,8 +370,17 @@ export function createDescriptionReconvert(deps: {
         for (;;) {
           const page = await deps.store.candidates(after, batch);
           for (const row of page) {
+            if (signal?.aborted) return RECONVERT_PAUSED;
             const files = await deps.store.sourceFiles(row.modelId);
-            const decision = await decide(row, files, deps.readText);
+            let decision: Decision;
+            try {
+              decision = await decide(row, files, deps.readText, signal);
+            } catch (err) {
+              // Told to stop part way through the model: nothing is counted
+              // for it, so the next run decides it again from the start.
+              if (stopped(err, signal)) return RECONVERT_PAUSED;
+              throw err;
+            }
             if (decision.kind === "same" || decision.kind === "changed") {
               const outcome = decision.kind === "changed" ? "changed" : "unchanged";
               const written = await deps.store.write(
@@ -311,7 +394,7 @@ export function createDescriptionReconvert(deps: {
               const outcome = decision.kind === "unreadable" ? "unreadable" : "kept";
               await deps.store.count(RECONVERT_STEP, row.modelId, outcome);
             }
-            if (stop()) {
+            if (stop() || signal?.aborted) {
               log(
                 `platehouse: MakerWorld description re-conversion stopped after model ${row.modelId}; ` +
                   "it goes on in a new job",

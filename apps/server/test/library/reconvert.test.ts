@@ -17,11 +17,12 @@ import {
   type ReconvertResult,
   type ReconvertStore,
   type SourceFile,
+  SourceOutage,
   type SourceText,
   type StoredDescription,
   storeTextReader,
 } from "../../src/library/reconvert.js";
-import { BlobNotFound, StoreUnavailable } from "../../src/storage/s3.js";
+import { BlobNotFound, StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 import { build3mf } from "../integration/support/ingest.js";
 
 // One description the three converters write three ways: the rc converter
@@ -396,10 +397,10 @@ describe("a run", () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
-  test("stops, records nothing and rethrows when a file read fails for a reason other than the file", async () => {
+  test("stops, records nothing and rethrows when the store is down", async () => {
     const { rows, files } = library();
     const mem = memoryStore(rows, files);
-    const outage = new Error("the store is down");
+    const outage = new SourceOutage(new Error("the store is down"));
     const reconvert = createDescriptionReconvert({
       store: mem.store,
       readText: async () => {
@@ -418,7 +419,7 @@ describe("a run", () => {
   test("records the totals of the whole conversion when a run cut off part way is started again", async () => {
     const { rows, files, texts } = library();
     const mem = memoryStore(rows, files);
-    const outage = new Error("the store is down");
+    const outage = new SourceOutage(new Error("the store is down"));
     const good = reader(texts).readText;
     const first = createDescriptionReconvert({
       store: mem.store,
@@ -580,12 +581,141 @@ describe("storeTextReader", () => {
     expect(await storeTextReader(store)({ fileId: FILE_A, key: "k", size: 4096 })).toBeNull();
   });
 
-  test("throws the store's own error for an outage, so the run stops", async () => {
+  test("throws SourceOutage, with the store's error as its cause, for an outage", async () => {
     const outage = new StoreUnavailable("GetObject", "ECONNREFUSED");
     const bytes = build3mf({ plates: 1 });
     const { store } = rangeStore(bytes, outage);
-    await expect(
-      storeTextReader(store)({ fileId: FILE_A, key: "k", size: bytes.length }),
-    ).rejects.toBe(outage);
+    const err = await storeTextReader(store)({
+      fileId: FILE_A,
+      key: "k",
+      size: bytes.length,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SourceOutage);
+    expect((err as Error).cause).toBe(outage);
+  });
+
+  // Only the store as a whole being unavailable or refusing stops the run;
+  // a refusal about the one object is that object being unreadable (#382).
+  test.each([
+    ["a store that cannot be reached", new StoreUnavailable("GetObject", "ETIMEDOUT"), "outage"],
+    ["access denied", new StoreError("GetObject", "AccessDenied", 403), "outage"],
+    ["a missing bucket", new StoreError("GetObject", "NoSuchBucket", 404), "outage"],
+    ["a range the store refuses", new StoreError("GetObject", "InvalidRange", 416), "null"],
+    ["an answer with no body", new StoreError("GetObject", "NoBody"), "null"],
+    ["a range the caller got wrong", new RangeError("bad range"), "null"],
+    ["any other error", new TypeError("a bug in a reader"), "null"],
+  ])("classifies %s", async (_what, error, expected) => {
+    const bytes = build3mf({ plates: 1 });
+    const { store } = rangeStore(bytes, error);
+    const got = await storeTextReader(store)({ fileId: FILE_A, key: "k", size: bytes.length }).then(
+      (v) => (v === null ? "null" : "text"),
+      (e: unknown) => (e instanceof SourceOutage ? "outage" : `other ${String(e)}`),
+    );
+    expect(got).toBe(expected);
+  });
+
+  test("gives each range read the run's signal, and stops when it aborts", async () => {
+    const bytes = build3mf({ plates: 1 });
+    const seen: Array<AbortSignal | undefined> = [];
+    const controller = new AbortController();
+    const store = {
+      getBlobRange: async (
+        _k: string,
+        start: number,
+        end: number,
+        opts?: { signal?: AbortSignal },
+      ) => {
+        seen.push(opts?.signal);
+        controller.abort();
+        const err = new Error("The read was stopped");
+        err.name = "AbortError";
+        if (opts?.signal?.aborted) throw err;
+        return Readable.from([bytes.subarray(start, end)]);
+      },
+    };
+    const err = await storeTextReader(store)(
+      { fileId: FILE_A, key: "k", size: bytes.length },
+      controller.signal,
+    ).catch((e: unknown) => e);
+    expect(seen[0]).toBe(controller.signal);
+    expect((err as Error).name).toBe("AbortError");
+  });
+});
+
+// A file that is wrong in any way counts its model as could not be read, and
+// the run goes on; a stop part way through a model counts nothing for it.
+describe("a run and one bad file", () => {
+  test("counts a model whose read fails for a reason other than an outage as could not be read", async () => {
+    const rows = [stored({ modelId: model(1), description: BY_RC })];
+    const files = { [model(1)]: [file(fileOf(1))] };
+    const mem = memoryStore(rows, files);
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: async () => {
+        throw new TypeError("a reader bug on a crafted file");
+      },
+      log: () => {},
+    });
+    expect(await reconvert.run()).toMatchObject({ checked: 1, unreadable: 1 });
+  });
+
+  test("counts a model the converter throws on as could not be read", async () => {
+    const rows = [stored({ modelId: model(1), description: BY_RC })];
+    const files = { [model(1)]: [file(fileOf(1))] };
+    const mem = memoryStore(rows, files);
+    // An html getter that throws stands in for the converter failing on it.
+    const hostile = {
+      get html(): string {
+        throw new Error("converter failure");
+      },
+      note: null,
+    } as unknown as SourceText;
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: async () => hostile,
+      log: () => {},
+    });
+    expect(await reconvert.run()).toMatchObject({ checked: 1, unreadable: 1 });
+    expect(mem.writes).toEqual([]);
+  });
+
+  test("a stop in the middle of a model counts nothing for it, and the next run decides it", async () => {
+    const rows = [
+      stored({ modelId: model(1), description: BY_RC }),
+      stored({ modelId: model(2), description: BY_RC }),
+    ];
+    const files = { [model(1)]: [file(fileOf(1))], [model(2)]: [file(fileOf(2))] };
+    const mem = memoryStore(rows, files);
+    const controller = new AbortController();
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: async (f, signal) => {
+        if (f.fileId === fileOf(2) && !controller.signal.aborted) {
+          controller.abort();
+          const err = new Error("The read was stopped");
+          err.name = "AbortError";
+          if (signal?.aborted) throw err;
+        }
+        return { html: HTML, note: null };
+      },
+      log: () => {},
+    });
+    expect(await reconvert.run(undefined, controller.signal)).toBe(RECONVERT_PAUSED);
+    expect(mem.writes.map((w) => w.modelId)).toEqual([model(1)]);
+    const result = await reconvert.run();
+    expect(result).toMatchObject({ checked: 2, changed: 2 });
+    expect(mem.writes.map((w) => w.modelId)).toEqual([model(1), model(2)]);
+  });
+
+  test("a signal already aborted ends the run before it reads anything", async () => {
+    const rows = [stored({ modelId: model(1), description: BY_RC })];
+    const files = { [model(1)]: [file(fileOf(1))] };
+    const mem = memoryStore(rows, files);
+    const { readText } = reader({ [fileOf(1)]: { html: HTML, note: null } });
+    const controller = new AbortController();
+    controller.abort();
+    const reconvert = createDescriptionReconvert({ store: mem.store, readText, log: () => {} });
+    expect(await reconvert.run(undefined, controller.signal)).toBe(RECONVERT_PAUSED);
+    expect(readText).not.toHaveBeenCalled();
   });
 });

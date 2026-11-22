@@ -39,7 +39,7 @@ import { printerName } from "../estimates/display.js";
 import { isReason, reasonWords } from "../estimates/reasons.js";
 import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
-import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
+import { MAINTENANCE_TASKS, QUEUE, UPGRADE_TASKS } from "../jobs/queues.js";
 import { activityRepo, type QueueCount } from "../repos/activity.js";
 import { descriptionsRepo } from "../repos/descriptions.js";
 import { settingsRepo } from "../repos/settings.js";
@@ -440,6 +440,9 @@ export const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
   [MAINTENANCE_TASKS.sweepUploads]: "Sweep of unfinished uploads",
   [MAINTENANCE_TASKS.pollOrca]: "Slicer version check",
   [MAINTENANCE_TASKS.checkRenders]: "Render check",
+  // Listed only while the step is pending (#382), so an unfinished
+  // re-conversion shows on the page, not only in the server log.
+  [UPGRADE_TASKS.reconvertDescriptions]: "MakerWorld description re-conversion (until it finishes)",
 };
 
 const SCHEDULE_ORDER: readonly string[] = [
@@ -449,6 +452,7 @@ const SCHEDULE_ORDER: readonly string[] = [
   MAINTENANCE_TASKS.sweepUploads,
   MAINTENANCE_TASKS.checkRenders,
   MAINTENANCE_TASKS.pollOrca,
+  UPGRADE_TASKS.reconvertDescriptions,
 ];
 
 export interface AppActivity {

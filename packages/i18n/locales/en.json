@@ -80,6 +80,7 @@
   "activity.schedule.pollOrca": "Slicer version check",
   "activity.schedule.purgeExpired": "Trash purge (models trashed over 30 days ago)",
   "activity.schedule.purgeSessions": "Expired login cleanup",
+  "activity.schedule.reconvertDescriptions": "MakerWorld description re-conversion (until it finishes)",
   "activity.schedule.sweepOrphans": "Sweep of stored objects with no record",
   "activity.schedule.sweepUploads": "Sweep of unfinished uploads",
   "activity.schedules.lastFailed": "Last ran {at}, failed",

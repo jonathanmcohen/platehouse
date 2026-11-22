@@ -847,3 +847,25 @@ describe("a description re-conversion", () => {
     expect(text(li)).toContain("1 description changed, of 1 checked.");
   });
 });
+
+// While the re-conversion has not finished, its schedule is listed (#382), so
+// a step an outage has delayed shows on the page.
+describe("an unfinished description re-conversion", () => {
+  test("shows its schedule by name", async () => {
+    answer = () => {
+      const v = emptyView();
+      v.schedules = [
+        {
+          key: "reconvert-descriptions",
+          label: "MakerWorld description re-conversion (until it finishes)",
+          schedule: "Every 5 minutes (UTC)",
+          lastRunAt: null,
+          lastState: null,
+        },
+      ];
+      return v;
+    };
+    await render();
+    expect(text(container)).toContain("MakerWorld description re-conversion (until it finishes)");
+  });
+});

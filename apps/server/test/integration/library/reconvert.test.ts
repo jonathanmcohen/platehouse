@@ -14,6 +14,7 @@ import {
   RECONVERT_PAUSED,
   RECONVERT_STEP,
   type ReconvertResult,
+  SourceOutage,
   storeTextReader,
 } from "../../../src/library/reconvert.js";
 import { descriptionsRepo, progressName } from "../../../src/repos/descriptions.js";
@@ -262,7 +263,7 @@ describe("a run", () => {
     const [, last] = [a, b].sort((x, y) => (x.modelId < y.modelId ? -1 : 1));
     if (last === undefined) throw new Error("two models were ingested");
 
-    const outage = new Error("the store is down");
+    const outage = new SourceOutage(new Error("the store is down"));
     const read = storeTextReader(env.store);
     const first = createDescriptionReconvert({
       store: descriptionsRepo(env.db),

@@ -87,6 +87,7 @@
   "activity.schedule.pollOrca": "V\u00e9rification de la version du trancheur",
   "activity.schedule.purgeExpired": "Purge de la corbeille (mod\u00e8les mis \u00e0 la corbeille il y a plus de 30 jours)",
   "activity.schedule.purgeSessions": "Nettoyage des connexions expir\u00e9es",
+  "activity.schedule.reconvertDescriptions": "Nouvelle conversion des descriptions MakerWorld (jusqu'\u00e0 ce qu'elle soit termin\u00e9e)",
   "activity.schedule.sweepOrphans": "Nettoyage des objets stock\u00e9s sans enregistrement",
   "activity.schedule.sweepUploads": "Nettoyage des envois inachev\u00e9s",
   "activity.schedules.lastFailed": "Derni\u00e8re ex\u00e9cution le {at}, \u00e9chou\u00e9e",

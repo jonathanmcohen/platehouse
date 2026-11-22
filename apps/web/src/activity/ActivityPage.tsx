@@ -370,6 +370,7 @@ const SCHEDULE_KEYS: Readonly<Record<string, MessageKey>> = {
   "sweep-uploads": "activity.schedule.sweepUploads",
   "poll-orca": "activity.schedule.pollOrca",
   "check-renders": "activity.schedule.checkRenders",
+  "reconvert-descriptions": "activity.schedule.reconvertDescriptions",
 };
 
 /**

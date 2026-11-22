@@ -615,8 +615,36 @@ async function simulate(seed: number): Promise<SeedReport> {
   // Chaos: three hours of stops, crashes, outages, lost jobs and hand edits.
   const CHAOS_MS = 3 * 60 * 60_000;
   const chaosEnd = w.now() + CHAOS_MS;
+  // Besides the random events, every seed gets a store outage early on, and a
+  // stop while a re-conversion job is in hand, so none finishes unstressed.
+  const forcedOutageAt = w.now() + 30_000 + Math.floor(w.next() * 150_000);
+  let forcedOutage = false;
+  let forcedStop = false;
   while (w.now() < chaosEnd) {
     await advance(w, current, 5_000);
+    if (!forcedOutage && w.now() >= forcedOutageAt) {
+      forcedOutage = true;
+      w.outages += 1;
+      if (!w.steps.has(RECONVERT_STEP)) w.stressWhilePending += 1;
+      w.storeHangs = w.next() < 0.5;
+      w.storeDownUntil = Math.max(
+        w.storeDownUntil,
+        w.now() + 10_000 + Math.floor(w.next() * 600_000),
+      );
+    }
+    if (
+      !forcedStop &&
+      proc !== null &&
+      w.active?.epoch === proc.epoch &&
+      w.active.job.data.task === "reconvert-descriptions" &&
+      w.next() < 0.3
+    ) {
+      forcedStop = true;
+      w.stressWhilePending += 1;
+      await stopProcess(w, proc);
+      proc = await startProcess(w);
+      continue;
+    }
     const r = w.next();
     if (r < 0.016 && !w.steps.has(RECONVERT_STEP)) w.stressWhilePending += 1;
     if (r < 0.002 && proc !== null) {
@@ -741,7 +769,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const SEEDS = Array.from({ length: 16 }, (_, i) => 1001 + i);
+const SEEDS = Array.from({ length: 32 }, (_, i) => 1001 + i);
 
 describe("the re-conversion holds its invariant under random stops, crashes, outages and lost jobs", () => {
   test.each(SEEDS)(
