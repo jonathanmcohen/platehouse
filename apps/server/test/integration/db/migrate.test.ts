@@ -50,6 +50,7 @@ const SHIPPED = [
   "0007_my_printers.sql",
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
+  "0010_token_creators.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -506,5 +507,88 @@ describe("0009 name sort prefix", () => {
     await sql`
       update models set name = ${cjk} where id = '0190a0b0-0000-7000-8000-000000000011'
     `.execute(db);
+  });
+});
+
+// Migration 0010 (issue #322) records who made each API token and the display
+// name each session signed in with. It runs on a database at 0009, as 0.1.0
+// leaves it, holding a live token, a revoked one and a session: they keep
+// every value they had, and their new columns are null, so the tokens list
+// their creator as unknown and the session has no name.
+describe("0010 token creators", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 9,
+    );
+    expect(later).toContain("0010_token_creators.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0009 with tokens and sessions, changing no value", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into api_tokens (id, name, prefix, token_hash, revoked_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Live script', 'ph_aaaaa',
+              decode(repeat('ab', 32), 'hex'), null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Revoked script', 'ph_bbbbb',
+              decode(repeat('cd', 32), 'hex'), now())
+    `.execute(db);
+    await sql`
+      insert into sessions (id, subject, expires_at, idle_expires_at)
+      values (${"G".repeat(43)}, 'subject-old', now() + interval '1 day', now() + interval '1 day')
+    `.execute(db);
+    const tokensBefore = (await sql`select * from api_tokens order by id`.execute(db)).rows;
+    const sessionsBefore = (await sql`select * from sessions order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    const tokensAfter = (
+      await sql<Record<string, unknown>>`select * from api_tokens order by id`.execute(db)
+    ).rows;
+    expect(tokensAfter).toEqual(
+      tokensBefore.map((row) => ({ ...row, createdBySubject: null, createdByName: null })),
+    );
+    const sessionsAfter = (
+      await sql<Record<string, unknown>>`select * from sessions order by id`.execute(db)
+    ).rows;
+    expect(sessionsAfter).toEqual(sessionsBefore.map((row) => ({ ...row, displayName: null })));
+  });
+
+  test("the new columns refuse an empty or over-long value, and a name with no subject", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    const token = (n: number, subject: string | null, name: string | null) => sql`
+      insert into api_tokens (id, name, prefix, token_hash, created_by_subject, created_by_name)
+      values (${`0190a0b0-0000-7000-8000-00000000003${n}`}, 'Script', 'ph_ccccc',
+              decode(repeat(${`0${n}`}, 32), 'hex'), ${subject}, ${name})
+    `;
+    await token(1, "subject-ok", "Synthetic Name").execute(db);
+    await token(2, "subject-ok", null).execute(db);
+    for (const [n, subject, name] of [
+      [3, "", null],
+      [4, "x".repeat(256), null],
+      [5, "subject-ok", ""],
+      [6, "subject-ok", "x".repeat(201)],
+      [7, null, "Name without a subject"],
+    ] as const) {
+      await expect(token(n, subject, name).execute(db), `case ${n}`).rejects.toMatchObject({
+        code: "23514",
+      });
+    }
+    await expect(
+      sql`
+        insert into sessions (id, subject, display_name, expires_at, idle_expires_at)
+        values (${"H".repeat(43)}, 'subject-ok', '', now() + interval '1 day', now() + interval '1 day')
+      `.execute(db),
+    ).rejects.toMatchObject({ code: "23514" });
   });
 });

@@ -88,7 +88,19 @@ interface FakeState {
     prefix: string;
     createdAt: string;
     lastUsedAt: string | null;
+    /** Who made it; null for a token made before Platehouse recorded that (issue #322). */
+    createdBy: { subject: string; name: string | null } | null;
   }>;
+  /** Sign out everywhere's list (GET /app/api/users). */
+  users: Array<{
+    subject: string;
+    name: string | null;
+    sessions: number;
+    tokens: number;
+    you: boolean;
+  }>;
+  /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
+  signInRequired: boolean;
   trash: Array<{
     id: string;
     name: string;
@@ -286,6 +298,15 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
   if (method === "POST" && path === "/app/api/tokens") {
+    // A session signed in too long ago is refused, as the server does (issue #322).
+    if (state.signInRequired) {
+      return json(403, {
+        error: "sign_in_required",
+        message: "Sign in again to create an API token.",
+        code: "sign_in_required",
+        signIn: "/auth/login?next=/settings",
+      });
+    }
     const token = freshToken();
     issued.push(token);
     const row = {
@@ -294,6 +315,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
       prefix: token.slice(0, 8),
       createdAt: "2026-11-12T10:00:00.000Z",
       lastUsedAt: null,
+      createdBy: { subject: "subject-me", name: "Synthetic Me" },
     };
     state.tokens = [row, ...state.tokens];
     return json(201, { ...row, token });
@@ -301,6 +323,26 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   if (method === "DELETE" && seg[0] === "tokens") {
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
+  }
+  if (method === "GET" && path === "/app/api/users") return json(200, { users: state.users });
+  // Sign out everywhere, as the server does: every session of the user ends,
+  // and with revokeTokens every live token they made is revoked.
+  if (method === "POST" && path === "/app/api/users/sign-out") {
+    const user = state.users.find((u) => u.subject === body.subject);
+    const sessionsEnded = user?.sessions ?? 0;
+    const theirs = state.tokens.filter((t) => t.createdBy?.subject === body.subject);
+    const tokensRevoked = body.revokeTokens === true ? theirs.length : 0;
+    if (body.revokeTokens === true) {
+      state.tokens = state.tokens.filter((t) => !theirs.includes(t));
+    }
+    state.users = state.users
+      .map((u) =>
+        u.subject === body.subject
+          ? { ...u, sessions: 0, tokens: body.revokeTokens === true ? 0 : u.tokens }
+          : u,
+      )
+      .filter((u) => u.sessions > 0 || u.tokens > 0);
+    return json(200, { sessionsEnded, tokensRevoked });
   }
   if (method === "GET" && path === "/app/api/trash") {
     return json(200, { models: state.trash, readAt: state.now });
@@ -456,8 +498,13 @@ beforeEach(() => {
         prefix: "ph_Ab3dE",
         createdAt: "2026-11-01T09:00:00.000Z",
         lastUsedAt: "2026-11-11T08:30:00.000Z",
+        createdBy: null,
       },
     ],
+    users: [
+      { subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true },
+    ],
+    signInRequired: false,
     trash: [
       {
         id: "m-trashed-1",
@@ -662,6 +709,10 @@ function announced(): string {
 }
 
 /** The link whose text is name. */
+/** What Sign out everywhere's live status line says after a change (role="status"). */
+function signOutStatus(): string {
+  return document.querySelector("[data-sign-out-status]")?.textContent ?? "";
+}
 function link(name: string): HTMLAnchorElement {
   const found = [...document.querySelectorAll("a")].find((a) => a.textContent?.trim() === name);
   if (found === undefined) throw new Error(`no link named ${JSON.stringify(name)}`);
@@ -1223,6 +1274,136 @@ describe("the settings page", () => {
     await release();
     expect(dialog()).toBeNull();
     expect(text()).not.toContain("Office desktop");
+  });
+
+  // Issue #322: who made each token, a fresh sign-in for a new one, and
+  // Sign out everywhere.
+  test("each token says who made it, or that who made it is unknown", async () => {
+    state.tokens.push(
+      {
+        id: "t5",
+        name: "Named maker",
+        prefix: "ph_Nm5aB",
+        createdAt: "2026-11-03T09:00:00.000Z",
+        lastUsedAt: null,
+        createdBy: { subject: "subject-5", name: "Synthetic Maker" },
+      },
+      {
+        id: "t6",
+        name: "Nameless maker",
+        prefix: "ph_Nl6cD",
+        createdAt: "2026-11-04T09:00:00.000Z",
+        lastUsedAt: null,
+        createdBy: { subject: "subject-6", name: null },
+      },
+    );
+    await show("/settings", <SettingsPage />);
+    const row = (name: string) =>
+      [...document.querySelectorAll("li")].find((li) => li.textContent?.includes(name));
+    expect(row("Office desktop")?.textContent).toContain("Made by an unknown user");
+    expect(row("Named maker")?.textContent).toContain("Made by Synthetic Maker");
+    expect(row("Nameless maker")?.textContent).toContain("Made by subject-6");
+  });
+
+  test("a token refused for an old sign-in says to sign in again, with a link that comes back here", async () => {
+    state.signInRequired = true;
+    await show("/settings", <SettingsPage />);
+    await type(labelled<HTMLInputElement>("Token name"), "Late script");
+    await click(button("Create token"));
+    expect(callsTo("POST", "/app/api/tokens")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("sign in again");
+    const again = link("Sign in again");
+    expect(again.getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("Sign out everywhere lists each user and asks before ending their sessions", async () => {
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 2,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t7",
+      name: "Gone's script",
+      prefix: "ph_Gn7eF",
+      createdAt: "2026-11-05T09:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
+    });
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Sign out everywhere");
+    expect(text()).toContain("Synthetic Gone");
+    expect(text()).toContain("Synthetic Me (you)");
+
+    await click(button("Sign out Synthetic Gone everywhere"));
+    const ask = dialog();
+    expect(ask?.textContent).toContain("Synthetic Gone");
+    await click(button("Cancel", ask as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(0);
+
+    await click(button("Sign out Synthetic Gone everywhere"));
+    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    expect(box?.checked).toBe(false);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: false,
+    });
+    expect(dialog()).toBeNull();
+    expect(signOutStatus()).toContain("Ended 2 sessions for Synthetic Gone");
+    // Its token was left alone.
+    expect(text()).toContain("Gone's script");
+  });
+
+  test("Sign out everywhere can also revoke the user's tokens", async () => {
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 1,
+      tokens: 1,
+      you: false,
+    });
+    state.tokens.push({
+      id: "t8",
+      name: "Gone's script",
+      prefix: "ph_Gn8gH",
+      createdAt: "2026-11-05T09:00:00.000Z",
+      lastUsedAt: null,
+      createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out Synthetic Gone everywhere"));
+    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    expect(box).not.toBeNull();
+    await click(box as HTMLInputElement);
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-gone",
+      revokeTokens: true,
+    });
+    expect(signOutStatus()).toContain("revoked 1 API token");
+    // The token list is read again, so the revoked token is gone from it.
+    expect(text()).not.toContain("Gone's script");
+  });
+
+  test("signing yourself out everywhere says so and offers to sign in again", async () => {
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out Synthetic Me (you) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-me",
+      revokeTokens: false,
+    });
+    expect(signOutStatus()).toContain("You are signed out everywhere");
+    expect(link("Sign in").getAttribute("href")).toBe("/auth/login");
   });
 
   test("the settings page holds the trash", async () => {
@@ -1876,6 +2057,7 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
       prefix: "ph_Zy9xW",
       createdAt: "2026-11-02T09:00:00.000Z",
       lastUsedAt: null,
+      createdBy: null,
     });
     await show("/settings", <SettingsPage />);
     const revoke = button("Revoke Office desktop");

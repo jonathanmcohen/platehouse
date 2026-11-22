@@ -595,6 +595,13 @@ describe("the settings page", () => {
 });
 
 describe("API tokens", () => {
+  // A new token needs a session signed in within TOKEN_SIGN_IN_WINDOW_MS
+  // (issue #322), and the tests above can take longer than that, so each
+  // token test signs in afresh, with a display name to record as creator.
+  beforeEach(async () => {
+    session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+  });
+
   test("new token is shown once and never again", async () => {
     const { res, created } = await makeToken("Upload script on a laptop");
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -616,6 +623,7 @@ describe("API tokens", () => {
       prefix: created.prefix,
       createdAt: created.createdAt,
       lastUsedAt: null,
+      createdBy: { subject: "subject-settings", name: "Synthetic Settings User" },
     });
 
     // It is a working API token, and its use shows as last used.
@@ -626,6 +634,19 @@ describe("API tokens", () => {
       }
     ).tokens.find((t) => t.id === created.id);
     expect(after?.lastUsedAt).not.toBeNull();
+  });
+
+  test("the api_tokens row records who made the token (issue #322)", async () => {
+    const { created } = await makeToken(`creator ${marker()}`);
+    const row = await env.db
+      .selectFrom("apiTokens")
+      .select(["createdBySubject", "createdByName"])
+      .where("id", "=", created.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({
+      createdBySubject: "subject-settings",
+      createdByName: "Synthetic Settings User",
+    });
   });
 
   test("revoking one token leaves the other working and drops it from the list", async () => {

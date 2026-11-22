@@ -24,6 +24,8 @@ import { allowInsecureRequests } from "openid-client";
 import type { TokenStore } from "../../../src/api/tokens.js";
 import type { ApiDeps } from "../../../src/api/v1.js";
 import { type AppAuth, type AppDeps, buildApp } from "../../../src/app.js";
+import type { ListedToken } from "../../../src/app-api/tokens.js";
+import type { KnownUser } from "../../../src/app-api/users.js";
 import { createOidc, type OidcClient } from "../../../src/auth/oidc.js";
 import { LOGIN_COOKIE_PREFIX, loginCookieKey } from "../../../src/auth/routes.js";
 import {
@@ -45,6 +47,8 @@ export const TEST_GROUP = "platehouse";
 /** Who the issuer says is signing in. Leave a claim undefined to leave it out. */
 export interface TestUser {
   sub: string;
+  /** The name claim, in the ID token and userinfo; left out when undefined. */
+  name?: string;
   email?: string;
   email_verified?: unknown;
   groups?: unknown;
@@ -212,6 +216,7 @@ export async function startMockIssuer(opts: MockIssuerOptions = {}): Promise<Moc
     const { user } = code;
     const forge = user.forge ?? {};
     const claims: Record<string, unknown> = { nonce: forge.nonce ?? code.nonce };
+    if (user.name !== undefined) claims.name = user.name;
     if (user.email !== undefined) claims.email = user.email;
     if (user.claimsInIdToken !== false) {
       if (user.email_verified !== undefined) claims.email_verified = user.email_verified;
@@ -295,6 +300,7 @@ export async function startMockIssuer(opts: MockIssuerOptions = {}): Promise<Moc
         const u = accessTokens.get(header.replace(/^Bearer /, ""));
         if (u === undefined) return json(res, 401, { error: "invalid_token" });
         const body: Record<string, unknown> = { sub: u.forge?.userinfoSub ?? u.sub };
+        if (u.name !== undefined) body.name = u.name;
         if (u.email !== undefined) body.email = u.email;
         if (u.email_verified !== undefined) body.email_verified = u.email_verified;
         if (u.groups !== undefined) body.groups = u.groups;
@@ -357,6 +363,17 @@ export function memorySessionStore(): MemoryStore {
       if (store.failWith) throw store.failWith;
       return rows.delete(id);
     },
+    async deleteForSubject(subject) {
+      if (store.failWith) throw store.failWith;
+      let deleted = 0;
+      for (const [id, row] of rows) {
+        if (row.subject === subject) {
+          rows.delete(id);
+          deleted += 1;
+        }
+      }
+      return deleted;
+    },
     async touch(id, idleExpiresAt) {
       if (store.failWith) throw store.failWith;
       const row = rows.get(id);
@@ -387,6 +404,8 @@ export function memoryTokenStore(): MemoryTokenStore {
         createdAt: new Date(),
         lastUsedAt: null,
         revokedAt: null,
+        createdBySubject: input.createdBy?.subject ?? null,
+        createdByName: input.createdBy?.name ?? null,
       };
       rows.set(row.id, row);
       return row;
@@ -404,12 +423,88 @@ export function memoryTokenStore(): MemoryTokenStore {
       rows.set(id, { ...row, revokedAt: new Date() });
       return true;
     },
+    async revokeForCreator(subject) {
+      let revoked = 0;
+      for (const [id, row] of rows) {
+        if (row.revokedAt === null && row.createdBySubject === subject) {
+          rows.set(id, { ...row, revokedAt: new Date() });
+          revoked += 1;
+        }
+      }
+      return revoked;
+    },
     async touchLastUsed(id, at) {
       const row = rows.get(id);
       if (row !== undefined) rows.set(id, { ...row, lastUsedAt: at });
     },
   };
   return store;
+}
+
+/** The token list the settings page reads, over a memory store: live tokens, newest first. */
+export function memoryTokenList(store: MemoryTokenStore): () => Promise<ListedToken[]> {
+  return async () =>
+    [...store.rows.values()]
+      .filter((row) => row.revokedAt === null)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1))
+      .map(({ id, name, prefix, createdAt, lastUsedAt, createdBySubject, createdByName }) => ({
+        id,
+        name,
+        prefix,
+        createdAt,
+        lastUsedAt,
+        createdBySubject,
+        createdByName,
+      }));
+}
+
+/**
+ * Sign out everywhere's user list over memory stores, with dbUserList's
+ * rules: everyone with a live session or a live token they made, named by
+ * their newest session that has a name, else their newest token that has one.
+ */
+export function memoryUserList(
+  sessions: MemoryStore,
+  tokens: MemoryTokenStore,
+): (now: Date) => Promise<KnownUser[]> {
+  return async (now) => {
+    const users = new Map<string, KnownUser & { namedAt: number; fromSession: boolean }>();
+    const entry = (subject: string) => {
+      let user = users.get(subject);
+      if (user === undefined) {
+        user = { subject, name: null, sessions: 0, tokens: 0, namedAt: -1, fromSession: false };
+        users.set(subject, user);
+      }
+      return user;
+    };
+    for (const row of sessions.rows.values()) {
+      if (row.expiresAt <= now || row.idleExpiresAt <= now) continue;
+      const user = entry(row.subject);
+      user.sessions += 1;
+      const at = row.createdAt.getTime();
+      if (row.displayName !== null && (!user.fromSession || at > user.namedAt)) {
+        user.name = row.displayName;
+        user.namedAt = at;
+        user.fromSession = true;
+      }
+    }
+    for (const row of tokens.rows.values()) {
+      if (row.revokedAt !== null || row.createdBySubject === null) continue;
+      const user = entry(row.createdBySubject);
+      user.tokens += 1;
+      const at = row.createdAt.getTime();
+      if (row.createdByName !== null && !user.fromSession && at > user.namedAt) {
+        user.name = row.createdByName;
+        user.namedAt = at;
+      }
+    }
+    return [...users.values()].map(({ subject, name, sessions: s, tokens: n }) => ({
+      subject,
+      name,
+      sessions: s,
+      tokens: n,
+    }));
+  };
 }
 
 export interface TestAuth {
@@ -480,6 +575,8 @@ export async function authTestApp(
     uploads?: Uploads;
     /** buildApp's logger: a stream here lets a test read every log line. */
     logger?: AppDeps["logger"];
+    /** The /app/api modules, built from the test's auth (its session store and sessions). */
+    appApi?: (auth: TestAuth) => AppDeps["appApi"];
   } = {},
 ): Promise<AuthTestApp> {
   const t = await testAuth(opts);
@@ -496,6 +593,7 @@ export async function authTestApp(
     auth: t.auth,
     ...(opts.api === undefined ? {} : { api: opts.api }),
     ...(opts.logger === undefined ? {} : { logger: opts.logger }),
+    ...(opts.appApi === undefined ? {} : { appApi: opts.appApi(t) }),
   });
   await opts.beforeReady?.(app);
   await app.ready();
@@ -540,10 +638,16 @@ export async function runLogin(
   opts: {
     headers?: Record<string, string>;
     beforeCallback?: (callbackUrl: URL) => Promise<void> | void;
+    /** Where the login starts: /auth/login, or that with a next= query. */
+    loginPath?: string;
   } = {},
 ): Promise<LoginRun> {
   const headers = opts.headers ?? {};
-  const start = await t.app.inject({ method: "GET", url: "/auth/login", headers });
+  const start = await t.app.inject({
+    method: "GET",
+    url: opts.loginPath ?? "/auth/login",
+    headers,
+  });
   const location = start.headers.location;
   if (start.statusCode !== 302 || typeof location !== "string") {
     throw new Error(`GET /auth/login answered ${start.statusCode}, not a redirect`);
