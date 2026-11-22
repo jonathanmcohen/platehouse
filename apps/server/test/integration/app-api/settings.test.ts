@@ -28,12 +28,13 @@ import {
 import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { readDisplayContext } from "../../../src/app-api/library.js";
-import { recordVersioning, SLICES_PER_MINUTE } from "../../../src/app-api/settings.js";
+import { recordVersioning } from "../../../src/app-api/settings.js";
 import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
 import { plateNumbers } from "../../../src/estimates/display.js";
+import { FALLBACK_SLICES_PER_MINUTE, MIN_FINISHES_FOR_RATE } from "../../../src/estimates/rate.js";
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
 import type { IngestInput, IngestResult } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
@@ -349,9 +350,72 @@ describe("the settings page", () => {
           through: 0,
         },
       ],
-      slicesPerMinute: SLICES_PER_MINUTE,
+      // No slice has finished yet in this file, so the rate is the fallback.
+      slicesPerMinute: FALLBACK_SLICES_PER_MINUTE,
     });
-    expect(SLICES_PER_MINUTE).toBe(3);
+    expect(FALLBACK_SLICES_PER_MINUTE).toBe(6);
+  });
+
+  describe("the slicer's rate, measured from recent finished slices (issue #317)", () => {
+    /** Every finished Platehouse slice, oldest first, a fixed gap apart, ending a minute ago. */
+    async function spaceFinishes(gapMs: number, idleAfter?: { index: number; ms: number }) {
+      const rows = await env.db
+        .selectFrom("estimates")
+        .select("id")
+        .where("source", "=", "platehouse")
+        .where("status", "=", "ok")
+        .orderBy("id")
+        .execute();
+      let at = Date.now() - 60_000 - rows.length * gapMs - (idleAfter?.ms ?? 0);
+      for (const [i, row] of rows.entries()) {
+        at += gapMs;
+        if (idleAfter !== undefined && i === idleAfter.index) at += idleAfter.ms;
+        await env.db
+          .updateTable("estimates")
+          .set({ finishedAt: new Date(at) })
+          .where("id", "=", row.id)
+          .execute();
+      }
+      return rows.length;
+    }
+
+    async function slicesPerMinute(): Promise<unknown> {
+      const res = await call("GET", "/app/api/settings");
+      expect(res.status, res.text).toBe(200);
+      return (res.json() as { slicesPerMinute: unknown }).slicesPerMinute;
+    }
+
+    test("with fewer finished slices than it needs, the page gets the fallback rate", async () => {
+      await sql`update estimates set finished_at = null where source = 'platehouse'`.execute(
+        env.db,
+      );
+      expect(await slicesPerMinute()).toBe(FALLBACK_SLICES_PER_MINUTE);
+    });
+
+    test("a plate every 6.5 seconds reads as about 9.2 plates a minute, not the fallback", async () => {
+      await upload12();
+      expect(await spaceFinishes(6_500)).toBeGreaterThanOrEqual(MIN_FINISHES_FOR_RATE);
+      expect(await slicesPerMinute()).toBe(9.2);
+    });
+
+    test("an idle hour between two runs does not slow the rate", async () => {
+      await upload12();
+      await spaceFinishes(6_500, { index: 5, ms: 3_600_000 });
+      expect(await slicesPerMinute()).toBe(9.2);
+    });
+
+    /** Uploads a synthetic twelve-plate .3mf and lets every plate be sliced. */
+    async function upload12() {
+      const tmpPath = await writeUpload(env, build3mf({ plates: 12 }));
+      const input: IngestInput = { tmpPath, originalName: "Twelve.3mf", target: "new" };
+      const id = await boss.send(QUEUE.ingest, input);
+      if (id === null) throw new Error("ingest job not created");
+      await until(
+        () => boss.getJobById<IngestInput>(QUEUE.ingest, id),
+        (j) => j?.state === "completed" || j?.state === "failed",
+      );
+      await drain();
+    }
   });
 
   test("adding a printer queues every plate for it and answers how many", async () => {
