@@ -12,12 +12,13 @@ import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   createDerived,
+  DERIVED_KINDS,
   DERIVED_MESSAGES,
   type DerivedDeps,
   type DerivedJob,
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
-import { QUEUE } from "../../../src/jobs/queues.js";
+import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
   blobsOf,
@@ -249,6 +250,117 @@ describe("the preview backfill (issue #316)", () => {
     const run = await env.derived.backfillPreviews(later());
     for (const id of ignored) expect(run.queued).not.toContain(id);
     for (const id of ignored) expect(await previewJobs(id)).toHaveLength(0);
+  });
+
+  test("a STEP file whose replacement was dropped after its own mesh was stored gets its picture from that mesh", async () => {
+    // PR #363 review: the original's conversion finishes while a newer
+    // replacement is queued, so it queues no picture (the replacement's own
+    // conversion would). The replacement then ends with a slicer error and
+    // is not saved, so the file keeps its source and a stored mesh of it,
+    // with derivedStatus 'failed' (the replace* sentence) and no picture.
+    // Nothing else would ever queue that picture.
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    const holding = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+      retryDelaySeconds: 1,
+    });
+    const { modelId, fileId } = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, uniqueStep("Dropped replacement, original")),
+      originalName: "Dropped.step",
+      target: "new",
+    });
+    const original = await env.repos.files.get(fileId);
+    if (!original) throw new Error("file not stored");
+    await holding.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep("Dropped replacement, replacement")),
+    );
+    expect(
+      await env.derived.runJob(
+        { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: original.blobId },
+        { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+      ),
+    ).toEqual({ status: "ok" });
+    const held = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
+      (j) => j.state === "created" && j.data.kind === DERIVED_KINDS.convertStep,
+    );
+    expect(held).toHaveLength(1);
+    const convert = held[0];
+    if (!convert) throw new Error("no held conversion");
+    await env.boss.cancel(QUEUE.slicer, convert.id);
+    env.stub.renders.always("/v1/step/glb", { kind: "drop" });
+    expect(
+      await env.derived.runJob(convert.data, {
+        retryCount: convert.retryLimit,
+        retryLimit: convert.retryLimit,
+      }),
+    ).toEqual({ status: "failed", reason: "slicer_error" });
+    env.stub.renders.reset();
+    const dropped = await env.repos.files.get(fileId);
+    expect(dropped).toMatchObject({
+      blobId: original.blobId,
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.replaceFailed,
+      renderPngBlobId: null,
+      previewStatus: null,
+    });
+    const meshBlobId = dropped?.meshBlobId;
+    if (!meshBlobId) throw new Error("no mesh");
+
+    const run = await env.derived.backfillPreviews(later());
+    expect(run.queued).toContain(fileId);
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      blobId: original.blobId,
+      meshBlobId,
+      derivedStatus: "failed",
+      previewStatus: "ok",
+      previewMessage: null,
+    });
+    const blobs = await blobsOf(env, modelId);
+    const mesh = blobs.find((b) => b.id === meshBlobId);
+    const png = blobs.find((b) => b.id === file.renderPngBlobId);
+    expect(await readObject(env, png?.key ?? "")).toEqual(
+      await meshPreviewBytes(await readObject(env, mesh?.key ?? "")),
+    );
+    // From the stored mesh, with no second conversion.
+    expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(0);
+    expect((await previewJobs(fileId)).map((j) => j.data.kind)).toEqual(["preview-step"]);
+  });
+
+  test("a STEP file whose replacement the converter rejected, left with the previous version's mesh, is not taken", async () => {
+    // Its derivedStatus is 'failed' too, but its mesh is of the earlier
+    // source, so a picture of it would be of the wrong version.
+    const stored = await env.ingestDerived.ingestFile({
+      tmpPath: await writeUpload(env, uniqueStep("Rejected replacement, original")),
+      originalName: "Rejected.step",
+      target: "new",
+    });
+    const before = await settledFile(env, stored.fileId);
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "STEP import failed" });
+    await env.derived.replaceFile(
+      stored.fileId,
+      await writeUpload(env, uniqueStep("Rejected replacement, replacement")),
+    );
+    expect(await settledFile(env, stored.fileId)).toMatchObject({
+      meshBlobId: before.meshBlobId,
+      derivedStatus: "failed",
+      renderPngBlobId: null,
+      previewStatus: null,
+    });
+
+    const run = await env.derived.backfillPreviews(later());
+    expect(run.queued).not.toContain(stored.fileId);
+    expect(await previewJobs(stored.fileId)).toHaveLength(0);
   });
 
   /**

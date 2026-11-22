@@ -2037,8 +2037,15 @@ export function createDerived(deps: DerivedDeps) {
   /**
    * The files the preview backfill takes, oldest first: an STL with no render
    * status (stored before previews existed, or one whose upload could not
-   * queue its preview), and a STEP file whose conversion is done, whose mesh
-   * is stored and of its current source, and which has no preview. Each in a
+   * queue its preview), and a STEP file whose mesh is stored and of its
+   * current source, which has no preview, and whose conversion is settled:
+   * ok, or failed once a replacement was dropped (PR #363 review: a mesh
+   * that committed while a newer replacement was queued queues no picture,
+   * and when that replacement then ends in commitSlicerError the file keeps
+   * that mesh, derived_status 'failed' and no picture, and nothing else
+   * would queue it). Never while pending: a conversion is queued or
+   * running, whose own commit queues the picture, and queueBackfill would
+   * refuse the file for its live job anyway. Each in a
    * live model, written before cutoff (so an upload's own afterUpload has had
    * its turn). An STL or such a STEP file whose preview failed with one of
    * the PREVIEW_RETRIED sentences (a slicer or a store that stayed down, or a
@@ -2053,7 +2060,9 @@ export function createDerived(deps: DerivedDeps) {
     // The picture's own status (issues #380 and #389): none, which is
     // exactly "no picture of the current source and nothing pending or
     // failed", or a failure that is tried again. A STEP file's mesh must be
-    // done and of its current source.
+    // stored and of its current source, and its conversion settled (ok, or
+    // failed after a dropped replacement); the EXISTS test, not the status,
+    // is what says the mesh is of the current source.
     const retried = sql`(f.preview_status = 'failed'
            and f.preview_message in (${sql.join(PREVIEW_RETRIED)})
            and f.updated_at < ${cutoff})`;
@@ -2067,7 +2076,7 @@ export function createDerived(deps: DerivedDeps) {
          and f.created_at < ${cutoff}
          and (
            (f.kind = 'stl' and ${noPicture})
-           or (f.kind = 'step' and f.derived_status = 'ok' and ${noPicture}
+           or (f.kind = 'step' and f.derived_status in ('ok', 'failed') and ${noPicture}
                and exists (
                  select 1 from blobs mb, blobs sb
                   where mb.id = f.mesh_blob_id and mb.kind = 'mesh_glb'
