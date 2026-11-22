@@ -60,23 +60,31 @@ export async function ensureLabels(
         .onConflict((oc) => oc.expression(sql`lower(name)`).doNothing())
         .execute();
     }
-    const { rows } = await sql<{ id: string }>`
-      select t.id
-      from ${sql.table(table)} t
-      where lower(t.name) in (select lower(w.name) from unnest(cast(${names} as text[])) as w(name))
-      order by t.id
-      for key share
-    `.execute(trx);
-    // A row deleted by a transaction that committed after the insert above
-    // is skipped by the lock, and this later statement sees it gone.
-    const { rows: missing } = await sql<{ n: number }>`
-      select count(*)::int as n
-      from unnest(cast(${names} as text[])) as w(name)
-      where not exists (
-        select 1 from ${sql.table(table)} t where lower(t.name) = lower(w.name)
+    // A row whose delete commits while the lock waits on it is skipped by
+    // the lock. What is missing is therefore worked out from the rows this
+    // statement actually locked, in the same statement: a later statement
+    // takes a new snapshot, and would miss a name deleted here and made
+    // again by a third request in between (PR #367 review). One row per
+    // name, with a null id where no row was locked.
+    const { rows } = await sql<{ id: string | null }>`
+      with wanted as (
+        select distinct lower(w.name) as key
+        from unnest(cast(${names} as text[])) as w(name)
+      ),
+      locked as materialized (
+        select t.id, lower(t.name) as key
+        from ${sql.table(table)} t
+        where lower(t.name) in (select key from wanted)
+        order by t.id
+        for key share of t
       )
+      select l.id
+      from wanted w
+      left join locked l on l.key = w.key
+      order by l.id
     `.execute(trx);
-    if ((missing[0]?.n ?? 0) === 0) return rows.map((r) => r.id);
+    const ids = rows.flatMap((r) => (r.id === null ? [] : [r.id]));
+    if (ids.length === rows.length) return ids;
     if (attempt >= LABEL_TRIES) {
       throw new Error(
         `${table}: a name was deleted ${LABEL_TRIES} times while it was being linked`,
