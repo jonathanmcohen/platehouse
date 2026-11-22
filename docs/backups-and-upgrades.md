@@ -145,6 +145,46 @@ release ships its slicer changes in the slicer image. The STL and STEP preview p
 for up to 2 hours, and then shows "The slicer is not answering." It is tried again in the
 background, so the picture appears once the slicer image is updated.
 
+### Testing a release candidate
+
+Both images also carry an `rc` tag, meant for a test server. Unlike a version tag it moves. It
+points at the newest version, by version number, that has both images published: the highest
+release candidate (`vX.Y.Z-rc.N`) or release (`vX.Y.Z`) whose app image and slicer image were
+both built. Both `rc` tags point at builds of the same version, so a test server does not run a
+new app with an old slicer. The workflow that moves them reads both before it moves either, and if
+it fails after moving one, it moves that one back. Only if moving it back fails too can the two
+differ for a while, until the workflow next succeeds; compare the digests (below) if a candidate
+behaves as if app and slicer do not match.
+
+To follow it, set both images in `docker-compose.yml` to `rc`:
+
+- `ghcr.io/jonathanmcohen/platehouse:rc`
+- `ghcr.io/jonathanmcohen/platehouse-slicer:rc`
+
+Then, to pick up the newest candidate, back up the database and pull:
+
+```bash
+docker compose pull platehouse platehouse-slicer
+docker compose up -d --no-deps platehouse platehouse-slicer
+```
+
+A release for an older version that is cut after a newer candidate, such as a `0.1.1` fix while
+`0.2.0-rc.1` is being tested, does not move `rc`: it stays on the newer candidate, by design.
+Throwaway tags such as `v0.0.0-test` and other prerelease kinds never move it.
+
+To check which version `rc` points at, compare its digest with a version's (the project's
+releases page does not list candidates, so it cannot tell you):
+
+```bash
+docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:rc --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --format '{{.Manifest.Digest}}'
+```
+
+Do not run `rc` on a server you rely on. A release candidate can have bugs the release fixes, and
+the app's database changes only move forward, so going back from a candidate means restoring the
+dump you took before you pulled it (see the restore steps above, and their warning about files
+uploaded since the dump).
+
 ### Postgres
 
 The example pins `postgres:17-alpine`. Minor updates within 17 are safe to pull. Moving to a new

@@ -103,9 +103,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X DELETE -H "Authorization: Bearer $P
 Expect `204` both times, and the tag `proxy/check` to appear on the model between the two. A `404`
 means the proxy decoded or refused the `%2F`.
 
-Removing a tag takes it off the model, but the tag itself stays in the database: Platehouse 0.1.0
-has no way to delete a tag. A tag no live model has is not listed on the **Tags** page, in the
-library's tag chips or in the tag pickers, so the leftover `proxy/check` is not seen anywhere. Each
+Removing a tag through the API takes it off the model but leaves the tag itself, because the API
+never deletes anything. The leftover `proxy/check` is listed on the **Tags** page with 0 models,
+where **Delete** removes it; it is not shown in the library's tag chips or the tag pickers. Each
 run of this check reuses the same tag rather than adding another.
 
 ## 5. A slicer link with a `/` in the file name works

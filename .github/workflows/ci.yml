@@ -83,8 +83,9 @@ jobs:
       # would leave no gate path in the list and skip the jobs.
       # The tests list holds tools/slicing-gate and every file the gate tests
       # read from outside it (issue #222), all in
-      # tools/slicing-gate/test/ciworkflow.test.mjs: this workflow,
-      # .node-version, release.yml, slicer-image.yml, docker/app.Dockerfile,
+      # tools/slicing-gate/test/ciworkflow.test.mjs and rctarget.test.mjs: this
+      # workflow, .node-version, release.yml, slicer-image.yml, rc-tag.yml,
+      # .github/scripts/rc-target.mjs, docker/app.Dockerfile,
       # apps/slicer/Dockerfile, two slicer container test files, README.md and
       # CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
@@ -114,7 +115,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image)\.yml$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag)\.yml$|\.github/scripts/rc-target\.mjs$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false

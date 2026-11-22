@@ -153,3 +153,18 @@ export async function rowCounts(db: Kysely<DB>, modelId: string) {
     collectionModels: row.collections,
   };
 }
+
+/**
+ * Whether a tag or collection of this name is stored, matched ignoring case
+ * with Postgres's lower() on both sides, as the unique index matches.
+ */
+export async function labelStored(
+  db: Kysely<DB>,
+  table: "tags" | "collections",
+  name: string,
+): Promise<boolean> {
+  const { rows } = await sql<{ n: number }>`
+    select count(*)::int as n from ${sql.table(table)} where lower(name) = lower(${name})
+  `.execute(db);
+  return (rows[0]?.n ?? 0) > 0;
+}
