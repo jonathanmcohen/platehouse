@@ -5,7 +5,8 @@
 #   detect: pick the Orca version -> resolve its pins -> check the registry
 #   build:  build (load) -> smoke slice -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
-#           -> tag orca-X.Y.Z and the run tag -> move stable
+#           -> tag orca-X.Y.Z, the run tag and, on a run from a release
+#           tag, the release's version tag -> move stable
 #   report-failure: when detect or build failed, open an issue (or comment on
 #           the open one with the same title)
 #
@@ -57,7 +58,18 @@
 # and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
 # on a re-run, which keeps the run number; issue #221), are pointed at that
 # digest and read back, and
-# only then stable (not on a prerelease tag). Before any push a Trivy scan
+# only then stable (not on a prerelease tag).
+#
+# The release's version tag. A run started from a release tag vX.Y.Z or
+# vX.Y.Z-rc.N (its push, a re-run of it, or a run by hand from that tag) also
+# tags the image X.Y.Z or X.Y.Z-rc.N, in the same create as the orca tags,
+# so the build made for a release can be found afterwards by the same name as
+# the app image's platehouse:X.Y.Z. Daily runs and runs from main tag no
+# version. This workflow never moves rc: .github/workflows/rc-tag.yml runs
+# after every run of this workflow or release.yml and points both images' rc
+# at the highest vX.Y.Z or vX.Y.Z-rc.N whose two version tags both exist.
+#
+# Before any push a Trivy scan
 # reports fixable HIGH and CRITICAL findings in the job log; it is a report
 # and never fails the job. imagetools create runs with --prefer-index=false so each
 # tag is a carbon copy of the pushed manifest (by default a single source is
@@ -128,6 +140,7 @@ jobs:
     outputs:
       version: ${{ steps.pick.outputs.version }}
       stable: ${{ steps.pick.outputs.stable }}
+      release: ${{ steps.pick.outputs.release }}
       orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}
       orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}
       build: ${{ steps.registry.outputs.build }}
@@ -157,7 +170,11 @@ jobs:
             # so it must start from main or a release tag, as release.yml's
             # gate requires: a dispatch from any other branch would publish
             # unreviewed code as orca-X.Y.Z and stable.
+            # release: the version of the release tag this run started from
+            # (X.Y.Z or X.Y.Z-rc.1 for v0.1.0-rc.1), tagged beside the orca
+            # tags; empty for a daily run or a run from main.
             stable=true
+            release=""
             if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ] && [[ "$REF" != refs/tags/* ]]; then
               echo "::error::${REF} is not main or a release tag; a run by hand must start from main or a vX.Y.Z tag, so nothing is built"
               exit 1
@@ -172,8 +189,11 @@ jobs:
                 stable=false
                 echo "${REF#refs/tags/} is a prerelease tag: stable will not move"
               fi
+              release="${REF#refs/tags/v}"
+              echo "The image will also be tagged ${release}, the release's version"
             fi
             echo "stable=${stable}" >>"$GITHUB_OUTPUT"
+            echo "release=${release}" >>"$GITHUB_OUTPUT"
             if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
               if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 echo "::error::orca_version '${INPUT_VERSION}' is not X.Y.Z"
@@ -525,9 +545,11 @@ jobs:
             echo "The pushed image is the tested image, manifest ${TESTED}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/check.log"
 
-      # 5) The version tags, read back; then stable, read back, unless this is
-      #    a prerelease tag's run (MOVE_STABLE false). A carbon copy each
-      #    (--prefer-index=false), so every tag is the tested digest.
+      # 5) The version tags (orca-X.Y.Z, the run tag and, on a run from a
+      #    release tag, the release's version RELEASE), read back; then
+      #    stable, read back, unless this is a prerelease tag's run
+      #    (MOVE_STABLE false). A carbon copy each (--prefer-index=false), so
+      #    every tag is the tested digest.
       - name: Tag the image and move stable
         id: tag
         env:
@@ -535,6 +557,7 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           MOVE_STABLE: ${{ needs.detect.outputs.stable }}
+          RELEASE: ${{ needs.detect.outputs.release }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
@@ -555,11 +578,25 @@ jobs:
               echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
               exit 1
             fi
+            # RELEASE is empty, or the semver version of the release tag the
+            # run started from (the same rule as the pick step's tag check),
+            # and a valid image tag (at most 128 characters).
+            if [ -n "$RELEASE" ]; then
+              if [[ ! "$RELEASE" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || [ "${#RELEASE}" -gt 128 ]; then
+                echo "::error::the release version '${RELEASE}' from detect is malformed; nothing is tagged"
+                exit 1
+              fi
+            fi
             src="${IMAGE}@${DIGEST}"
             # tagged: the tags this step has pointed, or is pointing, at the
             # digest, for the failure issue. Written before each create, so a
             # create or readback that fails part way still names its tags.
             tags="orca-${VERSION}, ${run_tag}"
+            release_args=()
+            if [ -n "$RELEASE" ]; then
+              tags="${tags}, ${RELEASE}"
+              release_args=(-t "${IMAGE}:${RELEASE}")
+            fi
             echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
             readback() {
               local got
@@ -570,9 +607,10 @@ jobs:
               fi
             }
             docker buildx imagetools create --prefer-index=false \
-              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:${run_tag}" "$src"
+              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:${run_tag}" "${release_args[@]}" "$src"
             readback "${IMAGE}:orca-${VERSION}"
             readback "${IMAGE}:${run_tag}"
+            if [ -n "$RELEASE" ]; then readback "${IMAGE}:${RELEASE}"; fi
             if [ "$MOVE_STABLE" = "true" ]; then
               tags="${tags}, stable"
               echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
@@ -707,6 +745,8 @@ jobs:
                 echo "stable was not touched and still points at the last image that passed."
               fi
             fi
+            echo ""
+            echo "rc is not moved by this workflow: the rc-tag workflow points it at the newest version with both images published after every run of slicer-image or release, so rc fixes itself on the next successful run of either workflow, or when rc-tag is run by hand (Actions, rc-tag, Run workflow)."
             echo ""
             echo "Run: ${RUN_URL}"
             echo ""
