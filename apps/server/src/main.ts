@@ -41,7 +41,8 @@
 //      The web app's own API under /app/api (Task 21: settings, tokens,
 //      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
-//      settings page's warning (AC-013).
+//      settings page's warning (AC-013). Sign out everywhere (issue #322)
+//      shares the login's sessions and the API's tokens.
 //      The built web app (Task 18) is served from options.web, by default
 //      apps/web/dist beside the server package and optional, so a test
 //      server without a web build reports healthy. The process (main())
@@ -68,12 +69,13 @@ import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { createTokens, dbTokenStore } from "./api/tokens.js";
 import { createApiLibrary } from "./api/v1.js";
-import { buildApp } from "./app.js";
+import { type AppApiDeps, buildApp } from "./app.js";
 import { createAppActivity } from "./app-api/activity.js";
 import { createAppLibrary, readDisplayContext } from "./app-api/library.js";
 import { createAppModel } from "./app-api/model.js";
 import { recordVersioning } from "./app-api/settings.js";
 import { dbTokenList } from "./app-api/tokens.js";
+import { dbUserList } from "./app-api/users.js";
 import { createOidc } from "./auth/oidc.js";
 import { loginCookieKey } from "./auth/routes.js";
 import { createSessions, dbSessionStore } from "./auth/sessions.js";
@@ -433,6 +435,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     void recordVersioning({ store, settings: repos.settings });
 
     const tokens = createTokens({ store: dbTokenStore(db) });
+    // One set of sessions for the login and Sign out everywhere (issue #322).
+    const sessions = createSessions({ store: dbSessionStore(db) });
     // The selected printer, the Orca version and the printer menu, read once
     // per page by the library and the model page, and once per request by
     // the Public API v1.
@@ -475,7 +479,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
           redirectUri: config.absoluteUrl("/auth/callback"),
           group: config.oidc.group,
         }),
-        sessions: createSessions({ store: dbSessionStore(db) }),
+        sessions,
         publicOrigin: config.publicOrigin,
         absoluteUrl: (path) => config.absoluteUrl(path),
         group: config.oidc.group,
@@ -500,12 +504,15 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       }),
       // A .3mf plate's 3D view (issue #358), made on first open.
       plateMeshes: createPlateMeshes({ db, store, tmpDir: config.tmpDir }),
-      // The settings, trash and organising pages (Task 21).
+      // The settings, trash and organising pages (Task 21), and Sign out
+      // everywhere on the settings page (issue #322). Every module is passed:
+      // satisfies AppApiDeps catches one left out.
       appApi: {
         settings: { settings: repos.settings, estimates },
         tokens: { tokens, list: dbTokenList(db) },
         organise: { db, trash },
-      },
+        users: { list: dbUserList(db), sessions, tokens },
+      } satisfies AppApiDeps,
       // The Activity page: read-only numbers, queues, slicer health and events.
       activity: createAppActivity({
         db,

@@ -54,8 +54,14 @@ See [Printers and estimates](./printers-and-estimates.md#my-printers).
 
 ## API tokens
 
-Create, name and revoke API tokens. A new token is shown once, in a dialog with **Copy**. See
+Create, name and revoke API tokens. A new token is shown once, in a dialog with **Copy**. Each
+token says who made it. Creating one needs a sign-in from the last 5 minutes; if yours is older,
+the page asks you to sign in again and brings you back here. See
 [Security](../security.md#api-tokens).
+
+**Sign out everywhere**, below the token list, ends every session of one person and can revoke
+the tokens they made. Use it when someone should no longer have access; see
+[Sign-in](../sign-in.md#the-allowed-group).
 
 ## Model names
 

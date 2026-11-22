@@ -7,6 +7,8 @@
 import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { createTokens, dbTokenStore } from "../../../src/api/tokens.js";
+import { dbUserList } from "../../../src/app-api/users.js";
 import {
   createSessions,
   dbSessionStore,
@@ -136,6 +138,107 @@ describe("createSessions over the sessions table", () => {
     expect(await sessions.find(undefined)).toBeUndefined();
     await sessions.end(undefined);
   });
+
+  // Issue #322: the sign-in time (created_at, from the sessions clock) decides
+  // whether a session may make a new API token, and the display name is what
+  // that token records as its creator's name.
+  test("start records the sign-in time from its clock and the display name, or null", async () => {
+    const clock = testClock(new Date(Date.now() - 3 * DAY));
+    const sessions = createSessions({ store: dbSessionStore(db), now: () => clock.now });
+    const named = await sessions.start("subject-5", "Synthetic Five");
+    const stored = await rowOf(named.id);
+    expect(stored?.displayName).toBe("Synthetic Five");
+    expect(stored?.createdAt.getTime()).toBe(clock.now.getTime());
+    expect((await sessions.find(named.id))?.displayName).toBe("Synthetic Five");
+    const unnamed = await sessions.start("subject-5");
+    expect((await rowOf(unnamed.id))?.displayName).toBeNull();
+  });
+
+  test("endAllFor deletes every session of one subject and no other", async () => {
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const a1 = await sessions.start("subject-a");
+    const a2 = await sessions.start("subject-a");
+    const b = await sessions.start("subject-b");
+    expect(await sessions.endAllFor("subject-a")).toBe(2);
+    expect(await rowOf(a1.id)).toBeUndefined();
+    expect(await rowOf(a2.id)).toBeUndefined();
+    expect(await rowOf(b.id)).toBeDefined();
+    expect(await sessions.find(b.id)).toBeDefined();
+    expect(await sessions.endAllFor("subject-a")).toBe(0);
+  });
+
+  test("the schema refuses a display name over 200 characters", async () => {
+    await expect(
+      dbSessionStore(db).create({
+        id: "B".repeat(43),
+        subject: "subject-long",
+        displayName: "x".repeat(201),
+        expiresAt: new Date(Date.now() + DAY),
+        idleExpiresAt: new Date(Date.now() + DAY),
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+});
+
+describe("dbUserList over the sessions and api_tokens tables (issue #322)", () => {
+  beforeEach(async () => {
+    await db.deleteFrom("apiTokens").execute();
+  });
+
+  test("lists everyone with a live session or a live token they made, named by their newest session", async () => {
+    const now = new Date();
+    const store = dbSessionStore(db);
+    const live = (id: string, subject: string, displayName: string | null, ageMs: number) =>
+      store.create({
+        id,
+        subject,
+        displayName,
+        createdAt: new Date(now.getTime() - ageMs),
+        expiresAt: new Date(now.getTime() + DAY),
+        idleExpiresAt: new Date(now.getTime() + DAY),
+      });
+    await live("C".repeat(43), "subject-x", "Old Name", 2 * DAY);
+    await live("D".repeat(43), "subject-x", "New Name", DAY);
+    await live("E".repeat(43), "subject-x", null, MINUTE);
+    // Past its idle expiry: not counted, and its name is not used.
+    await store.create({
+      id: "F".repeat(43),
+      subject: "subject-expired",
+      displayName: "Expired",
+      expiresAt: new Date(now.getTime() + DAY),
+      idleExpiresAt: new Date(now.getTime() - MINUTE),
+    });
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    await tokens.createToken("x laptop", { subject: "subject-x", name: "Token Name" });
+    await tokens.createToken("y laptop", { subject: "subject-y", name: "Only Token" });
+    const revoked = await tokens.createToken("y old", { subject: "subject-y", name: "Older" });
+    await tokens.revokeToken(revoked.id);
+    // Made before creators were recorded: no user to list.
+    await tokens.createToken("anonymous");
+
+    const users = await dbUserList(db)(now);
+    expect(users).toEqual(
+      expect.arrayContaining([
+        { subject: "subject-x", name: "New Name", sessions: 3, tokens: 1 },
+        { subject: "subject-y", name: "Only Token", sessions: 0, tokens: 1 },
+      ]),
+    );
+    expect(users).toHaveLength(2);
+  });
+
+  test("revokeAllFrom revokes every live token of one creator and no other", async () => {
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const a = await tokens.createToken("a1", { subject: "subject-a", name: null });
+    const a2 = await tokens.createToken("a2", { subject: "subject-a", name: "A" });
+    const b = await tokens.createToken("b", { subject: "subject-b", name: "B" });
+    const none = await tokens.createToken("old");
+    expect(await tokens.revokeAllFrom("subject-a")).toBe(2);
+    expect(await tokens.authenticate(`Bearer ${a.token}`)).toBeUndefined();
+    expect(await tokens.authenticate(`Bearer ${a2.token}`)).toBeUndefined();
+    expect((await tokens.authenticate(`Bearer ${b.token}`))?.id).toBe(b.id);
+    expect((await tokens.authenticate(`Bearer ${none.token}`))?.id).toBe(none.id);
+    expect(await tokens.revokeAllFrom("subject-a")).toBe(0);
+  });
 });
 
 describe("the stored session id", () => {
@@ -213,6 +316,37 @@ describe("a login through the app with sessions in Postgres", () => {
     });
     expect(out.statusCode).toBe(204);
     expect(await rowOf(id)).toBeUndefined();
+    expect(await db.selectFrom("sessions").select("id").execute()).toEqual([]);
+  });
+
+  test("records the name the issuer gives as the session's display name (issue #322)", async () => {
+    t.issuer.user = { ...t.issuer.user, name: "Synthetic Signer" };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(302);
+    expect((await rowOf(run.sessionCookie ?? ""))?.displayName).toBe("Synthetic Signer");
+  });
+
+  // Issue #378: a subject is at most 255 characters (admit, MAX_SUBJECT_LENGTH),
+  // so every subject sign-in lets in fits the subject columns, their checks and
+  // their btree indexes. Four-byte characters make it about 1 KB, the largest
+  // a subject can be.
+  test("a 255-character subject signs in and makes a token, with Postgres", async () => {
+    const sub = String.fromCodePoint(0x1f600).repeat(255);
+    t.issuer.user = { ...t.issuer.user, sub, name: "Synthetic Long" };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(302);
+    expect((await rowOf(run.sessionCookie ?? ""))?.subject).toBe(sub);
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const made = await tokens.createToken("Long script", { subject: sub, name: "Synthetic Long" });
+    expect((await tokens.authenticate(`Bearer ${made.token}`))?.createdBySubject).toBe(sub);
+    expect(await tokens.revokeAllFrom(sub)).toBe(1);
+  });
+
+  test("a 256-character subject is refused at sign-in, and no session row is written", async () => {
+    t.issuer.user = { ...t.issuer.user, sub: "w".repeat(256) };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(403);
+    expect(run.sessionCookie).toBeUndefined();
     expect(await db.selectFrom("sessions").select("id").execute()).toEqual([]);
   });
 });

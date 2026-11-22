@@ -98,6 +98,7 @@ import {
 } from "./app-api/plate-mesh.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
+import { registerUsersApi, type UsersApiDeps } from "./app-api/users.js";
 import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -206,11 +207,13 @@ export interface AppDeps {
   web?: WebDeps;
   /**
    * The web app's own JSON API under /app/api (Task 21: settings, tokens and
-   * organising). Session-class like every route outside the listed
-   * prefixes. Left out, the routes still exist (so the route-class gate
-   * covers them) and answer 503.
+   * organising; issue #322: Sign out everywhere). Session-class like every
+   * route outside the listed prefixes. A module left out (or all of them)
+   * still has its routes (so the route-class gate covers them), and they
+   * answer 503. The server passes every module (main.ts checks it against
+   * AppApiDeps); a test passes the ones it is about.
    */
-  appApi?: AppApiDeps;
+  appApi?: Partial<AppApiDeps>;
   /**
    * The Activity page's app API (app-api/activity.ts): library numbers, job
    * progress, the slicer's health and recent events, read-only. Left out,
@@ -227,11 +230,12 @@ export interface AppDeps {
   locales?: Locales;
 }
 
-/** What the /app/api routes of Task 21 read and change. */
+/** What the /app/api routes of Task 21 and Sign out everywhere read and change. */
 export interface AppApiDeps {
   settings: SettingsApiDeps;
   tokens: TokensApiDeps;
   organise: OrganiseDeps;
+  users: UsersApiDeps;
 }
 
 /**
@@ -514,6 +518,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await registerSettingsApi(app, deps.appApi?.settings);
   await registerTokensApi(app, deps.appApi?.tokens);
   await registerOrganiseApi(app, deps.appApi?.organise);
+  await registerUsersApi(app, deps.appApi?.users);
   await registerActivityApi(app, deps.activity);
   await registerLocalesApi(app, locales);
   await registerTus(app, {

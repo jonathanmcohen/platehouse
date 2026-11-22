@@ -4,6 +4,7 @@ import type { ApiToken, DB } from "../db/types.js";
 
 // API tokens (AC-083). Only the SHA-256 of a token and its first 8
 // characters are ever stored; the token itself is shown once by the caller.
+// Since migration 0013 each new token also records who made it (issue #322).
 
 export interface NewToken {
   name: string;
@@ -11,6 +12,14 @@ export interface NewToken {
   prefix: string;
   /** SHA-256 of the 32-byte random token. */
   tokenHash: Buffer;
+  /** Who made it (migration 0013); left out, the maker is recorded as unknown. */
+  createdBy?: TokenCreator | null;
+}
+
+/** Who made a token: the OIDC subject and the display name the session had then. */
+export interface TokenCreator {
+  subject: string;
+  name: string | null;
 }
 
 export function tokensRepo(db: Kysely<DB>) {
@@ -23,6 +32,8 @@ export function tokensRepo(db: Kysely<DB>) {
           name: input.name,
           prefix: input.prefix,
           tokenHash: input.tokenHash,
+          createdBySubject: input.createdBy?.subject ?? null,
+          createdByName: input.createdBy?.name ?? null,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -59,6 +70,20 @@ export function tokensRepo(db: Kysely<DB>) {
         .where("revokedAt", "is", null)
         .executeTakeFirst();
       return result.numUpdatedRows > 0n;
+    },
+
+    /**
+     * Revokes every live token this subject made (Sign out everywhere);
+     * returns how many. A token whose maker is unknown is never touched.
+     */
+    async revokeForCreator(subject: string): Promise<number> {
+      const result = await db
+        .updateTable("apiTokens")
+        .set({ revokedAt: sql`now()` })
+        .where("createdBySubject", "=", subject)
+        .where("revokedAt", "is", null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows);
     },
   };
 }

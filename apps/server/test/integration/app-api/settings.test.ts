@@ -29,7 +29,11 @@ import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { readDisplayContext } from "../../../src/app-api/library.js";
 import { recordVersioning } from "../../../src/app-api/settings.js";
-import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
+import {
+  dbTokenList,
+  type ListedToken,
+  TOKEN_SIGN_IN_WINDOW_MS,
+} from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { uuidv7 } from "../../../src/db/ids.js";
@@ -245,7 +249,8 @@ beforeAll(async () => {
     },
     appApi: {
       settings: { settings: env.repos.settings, estimates },
-      tokens: { tokens, list: () => tokenList() },
+      // The sign-in window is measured on the sessions' clock (issue #377).
+      tokens: { tokens, list: () => tokenList(), now: () => auth.clock.now },
       organise: {
         db: env.db,
         trash: createTrash({
@@ -707,6 +712,30 @@ describe("the settings page", () => {
 });
 
 describe("API tokens", () => {
+  // A new token needs a session signed in within TOKEN_SIGN_IN_WINDOW_MS
+  // (issue #322). The sessions and the token route both read the test auth's
+  // hand-moved clock (auth.clock, passed to the tokens module as now), so the
+  // window does not depend on how long the tests above took (issue #377).
+  // Each token test still signs in afresh, with a display name to record as
+  // creator.
+  beforeEach(async () => {
+    session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+  });
+
+  test("the sign-in window is measured on the sessions' clock (issue #377)", async () => {
+    // Signed in at the auth clock's time; that clock moves past the window,
+    // while the real clock has hardly moved. A route reading another clock
+    // than the sessions would let this through.
+    auth.clock.advance(TOKEN_SIGN_IN_WINDOW_MS + 1000);
+    const late = await call("POST", "/app/api/tokens", { json: { name: `late ${marker()}` } });
+    expect(late.status, late.text).toBe(403);
+    expect((late.json() as { error: string }).error).toBe("sign_in_required");
+    expect(late.text).not.toContain(TOKEN_PREFIX);
+    // A sign-in on the moved clock is fresh again.
+    session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+    await makeToken(`on time ${marker()}`);
+  });
+
   test("new token is shown once and never again", async () => {
     const { res, created } = await makeToken("Upload script on a laptop");
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -728,6 +757,7 @@ describe("API tokens", () => {
       prefix: created.prefix,
       createdAt: created.createdAt,
       lastUsedAt: null,
+      createdBy: { subject: "subject-settings", name: "Synthetic Settings User" },
     });
 
     // It is a working API token, and its use shows as last used.
@@ -738,6 +768,19 @@ describe("API tokens", () => {
       }
     ).tokens.find((t) => t.id === created.id);
     expect(after?.lastUsedAt).not.toBeNull();
+  });
+
+  test("the api_tokens row records who made the token (issue #322)", async () => {
+    const { created } = await makeToken(`creator ${marker()}`);
+    const row = await env.db
+      .selectFrom("apiTokens")
+      .select(["createdBySubject", "createdByName"])
+      .where("id", "=", created.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({
+      createdBySubject: "subject-settings",
+      createdByName: "Synthetic Settings User",
+    });
   });
 
   test("revoking one token leaves the other working and drops it from the list", async () => {
