@@ -10,6 +10,10 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - A .3mf plate in 3D on the model page: Show in 3D under the plate picture, or a click on the picture, shows only that plate's objects, placed as they sit on the plate and coloured by their filament, in the same 3D viewer as an STL, which you can rotate in any direction and zoom; Show picture goes back. The server makes the plate's mesh from the file the first time the plate is opened (both Bambu layouts: meshes in 3D/3dmodel.model, or in parts of their own under 3D/Objects/) and keeps it, so the browser loads that plate alone and never the whole file. A plate that cannot be shown keeps its picture and says why. Strings in English, with Spanish and French machine drafts; schema migration 0010 adds plates.mesh_blob_id (#358).
 
+### Fixed
+
+- The docs now warn that restoring an older database dump, including the upgrade rollback, leaves everything stored since the dump in the bucket with no record in the database, and that the daily 04:00 cleanup deletes it once it is more than 24 hours old, within its limit of 10 objects or a tenth of what it finds, at most 100. Backups and upgrades says what to do: turn on bucket versioning before you need it, copy the bucket before a restore if versioning is off, and upload those files again after the restore. Platehouse has no setting to pause the cleanup. The Storage page's cleanup section carries the same caveat ([#342](https://github.com/jonathanmcohen/platehouse/issues/342), [#359](https://github.com/jonathanmcohen/platehouse/pull/359)).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
