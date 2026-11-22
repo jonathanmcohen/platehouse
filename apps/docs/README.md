@@ -18,7 +18,8 @@ pnpm --filter @platehouse/docs serve    # serve the built site
 ## Where it is published
 
 `.github/workflows/docs-pages.yml` publishes the site to GitHub Pages whenever a change to
-`docs/`, `apps/docs/` or `pnpm-lock.yaml` lands on `main`, and it can be run by hand from the
+`docs/`, `apps/docs/`, `apps/web/public/` (the icons the site serves from it) or
+`pnpm-lock.yaml` lands on `main`, and it can be run by hand from the
 Actions tab (docs-pages, Run workflow, on `main`). Pull requests do not publish anything; the
 ci workflow's "Docs build" job is their check.
 

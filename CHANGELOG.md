@@ -8,7 +8,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Added
 
-- The user docs are published to GitHub Pages: a new workflow, .github/workflows/docs-pages.yml, builds the docs site and deploys it whenever a change to docs/, apps/docs/ or the lockfile lands on main, and can be run by hand from main. The site's address comes from the repository's Pages settings at build time, so nothing in the repository hard-codes it, and the ci workflow's Docs build job stays the pull-request check. GitHub Pages has to be switched on once first (Settings, Pages, Source: GitHub Actions); apps/docs/README.md explains it ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
+- The user docs are published to GitHub Pages: a new workflow, .github/workflows/docs-pages.yml, builds the docs site and deploys it whenever a change to docs/, apps/docs/, apps/web/public/ (the icons the site serves from it) or the lockfile lands on main, and can be run by hand from main. The site's address comes from the repository's Pages settings at build time, so nothing in the repository hard-codes it, and the ci workflow's Docs build job stays the pull-request check. GitHub Pages has to be switched on once first (Settings, Pages, Source: GitHub Actions); apps/docs/README.md explains it ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 
 ### Changed
 
