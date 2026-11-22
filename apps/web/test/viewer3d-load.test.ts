@@ -5,6 +5,9 @@
 // a plate's 3D view can say the file could not be read right now (503) or
 // that the user is signed out (401) rather than blaming the browser (issue
 // #358). These checks fail before WebGL is reached, which jsdom lacks.
+// three.js itself failing to load (the network dropped, or a page older
+// than a redeploy asking for a chunk the new build no longer serves) is a
+// ThreeLoadError, so it is not blamed on the browser either.
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { defaultLoadThree, MeshLoadError } from "../src/model/Viewer3d";
 
@@ -23,6 +26,8 @@ async function failureOf(fetchStub: typeof fetch, signal?: AbortSignal): Promise
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.doUnmock("three/addons/controls/OrbitControls.js");
+  vi.resetModules();
 });
 
 describe("defaultLoadThree", () => {
@@ -57,5 +62,23 @@ describe("defaultLoadThree", () => {
       return new Response("no", { status: 503 });
     }, controller.signal);
     expect(error).not.toBeInstanceOf(MeshLoadError);
+  });
+
+  test("rejects with a ThreeLoadError when three.js cannot be loaded, never as a viewer that cannot start", async () => {
+    // A failed dynamic import of one of three.js's chunks, as a dropped
+    // network or a chunk gone after a redeploy makes it.
+    vi.doMock("three/addons/controls/OrbitControls.js", () => {
+      throw new TypeError("Failed to fetch dynamically imported module");
+    });
+    vi.resetModules();
+    const fresh = await import("../src/model/Viewer3d");
+    const error = await fresh.defaultLoadThree().then(
+      () => {
+        throw new Error("expected three.js to fail to load");
+      },
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(fresh.ThreeLoadError);
+    expect(error).not.toBeInstanceOf(fresh.MeshLoadError);
   });
 });

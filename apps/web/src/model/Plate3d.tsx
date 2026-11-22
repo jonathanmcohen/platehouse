@@ -14,12 +14,14 @@
 // - anything else, no reply, or a body it cannot read: a server error.
 // The GLB itself is then loaded by Viewer3d; when that fails, a MeshLoadError
 // is read the same way by its status (401 signed out, 503 unavailable,
-// anything else, no reply or a mesh it cannot read a server error), and only
-// a viewer that cannot start (no WebGL) is "browser". The request is
-// aborted when the view goes, and an answer that comes after that is
-// dropped, so nothing loads after the view was closed or the page left.
+// anything else, no reply or a mesh it cannot read a server error), a
+// ThreeLoadError (three.js itself not loading: a dropped network, a chunk
+// gone after a redeploy) is a server error too, and only a viewer that
+// cannot start (no WebGL) is "browser". The request is aborted when the
+// view goes, and an answer that comes after that is dropped, so nothing
+// loads after the view was closed or the page left.
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { MeshLoadError, type ThreeLoader, Viewer3d } from "./Viewer3d";
+import { MeshLoadError, ThreeLoadError, type ThreeLoader, Viewer3d } from "./Viewer3d";
 
 /** Why a plate's 3D view could not be shown. */
 export type Plate3dFailure =
@@ -82,6 +84,8 @@ export async function fetchPlateMesh(
 
 /** Why the viewer could not show the plate's GLB. */
 export function viewerFailure(error: unknown): Plate3dFailure {
+  // three.js not loading is the network or a stale page, not the browser.
+  if (error instanceof ThreeLoadError) return "error";
   if (!(error instanceof MeshLoadError)) return "browser";
   if (error.status === 401) return "signedOut";
   if (error.status === 503) return "unavailable";

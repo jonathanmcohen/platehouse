@@ -13,9 +13,11 @@
 // the viewer says so and offers the file's download instead, unless the
 // caller handles the failure itself (onFailed, given what was thrown: a
 // plate goes back to its picture and says why). A mesh that could not be
-// fetched or read is a MeshLoadError carrying the fetch's HTTP status, so
-// the caller can tell it from a viewer that cannot start. actions are
-// buttons of the caller's, put between the view and its own controls.
+// fetched or read is a MeshLoadError carrying the fetch's HTTP status, and
+// three.js that could not be loaded (a dropped network, a chunk gone after
+// a redeploy) is a ThreeLoadError, so the caller can tell either from a
+// viewer that cannot start. actions are buttons of the caller's, put
+// between the view and its own controls.
 import { type ReactNode, useEffect, useRef, useState } from "react";
 // A type-only import, erased from the build, so three.js still loads only
 // through the dynamic imports in defaultLoadThree.
@@ -60,6 +62,19 @@ export class MeshLoadError extends Error {
   }
 }
 
+/**
+ * three.js or one of its add-ons could not be loaded: the network dropped,
+ * or a page opened before a redeploy asked for a chunk the new build no
+ * longer serves. Neither is the browser's fault, so this is not a viewer
+ * that cannot start.
+ */
+export class ThreeLoadError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ThreeLoadError";
+  }
+}
+
 /** How far one press of Rotate turns the model: 22.5 degrees. */
 export const ROTATE_STEP = Math.PI / 8;
 
@@ -72,12 +87,23 @@ export const ZOOM_STEP = 0.8;
  * it, and everything outside sees only the ThreeViewer interface.
  */
 export const defaultLoadThree: ThreeLoader = async () => {
-  const [THREE, stlModule, gltfModule, orbitModule] = await Promise.all([
-    import("three"),
-    import("three/addons/loaders/STLLoader.js"),
-    import("three/addons/loaders/GLTFLoader.js"),
-    import("three/addons/controls/OrbitControls.js"),
-  ]);
+  let modules: [
+    typeof import("three"),
+    typeof import("three/addons/loaders/STLLoader.js"),
+    typeof import("three/addons/loaders/GLTFLoader.js"),
+    typeof import("three/addons/controls/OrbitControls.js"),
+  ];
+  try {
+    modules = await Promise.all([
+      import("three"),
+      import("three/addons/loaders/STLLoader.js"),
+      import("three/addons/loaders/GLTFLoader.js"),
+      import("three/addons/controls/OrbitControls.js"),
+    ]);
+  } catch (error) {
+    throw new ThreeLoadError("three.js could not be loaded", { cause: error });
+  }
+  const [THREE, stlModule, gltfModule, orbitModule] = modules;
 
   /** The model in the mesh's bytes, for the page's element el. */
   async function parse(el: HTMLElement, kind: ThreeSource["kind"], bytes: ArrayBuffer) {
@@ -224,7 +250,8 @@ export interface Viewer3dProps {
   /**
    * Called, in place of the viewer's own message, when the view cannot be
    * shown, with what was thrown: a MeshLoadError for a mesh that could not
-   * be fetched or read, anything else for a viewer that cannot start.
+   * be fetched or read, a ThreeLoadError for three.js that could not be
+   * loaded, anything else for a viewer that cannot start.
    */
   onFailed?: ((error: unknown) => void) | undefined;
   /** The caller's buttons, between the view and its controls. */

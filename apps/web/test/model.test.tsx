@@ -52,7 +52,12 @@ import {
   POLL_MS,
 } from "../src/model/ModelPage";
 import { BAMBU_PROMPT_LINE, type SlicerLink } from "../src/model/OpenInSlicer";
-import { MeshLoadError, type ThreeLoader, type ThreeSource } from "../src/model/Viewer3d";
+import {
+  MeshLoadError,
+  ThreeLoadError,
+  type ThreeLoader,
+  type ThreeSource,
+} from "../src/model/Viewer3d";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
@@ -2314,6 +2319,17 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
     expect(
       container.querySelector(`.studio-viewer a[href="/files/${FILE_3MF}/download"]`),
     ).toBeNull();
+  });
+
+  test("three.js failing to load (a dropped network, a page older than a redeploy) keeps the picture, never blaming the browser", async () => {
+    const failing: ThreeLoader = async () => {
+      throw new ThreeLoadError("three.js could not be loaded");
+    };
+    await render(pageAt(MODEL_ID, { loadThree: failing }));
+    await click(toggle());
+    expect(large()?.getAttribute("src")).toBe(thumb(1));
+    expect(alertText()).toMatch(/because of a server error/);
+    expect(alertText()).not.toMatch(/in this browser/);
   });
 
   test.each([
