@@ -56,6 +56,7 @@ const SHIPPED = [
   "0012_file_preview_status.sql",
   "0013_token_creators.sql",
   "0014_description_source.sql",
+  "0015_plate_mesh.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -906,7 +907,8 @@ describe("0014 description source", () => {
       join(dir, "0014_description_source.sql"),
     );
     await migrateFrom(db, dir);
-    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED);
+    // Up to and including 0014: later migrations are not in this folder.
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 14));
 
     const after = (await sql<Record<string, unknown>>`select * from models order by id`.execute(db))
       .rows;
@@ -919,5 +921,71 @@ describe("0014 description source", () => {
       })),
     );
     expect(await db.selectFrom("upgradeSteps").selectAll().execute()).toEqual([]);
+  });
+});
+
+// Migration 0015 (issue #358) points each plate at the GLB of its 3D view,
+// made the first time the plate is opened. It runs on a database at 0014
+// with plates, changing no row: every plate starts with no mesh. The column
+// is cleared when its blob goes, as a plate's thumbnail is, so deleting a
+// model's blobs never trips over it.
+describe("0015 plate mesh", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 14,
+    );
+    expect(later).toContain("0015_plate_mesh.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0014 with plates, changing no row, and a mesh goes with its blob", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    const model = "0190a0b0-0000-7000-8000-000000000021";
+    const source = "0190a0b0-0000-7000-8000-000000000022";
+    const file = "0190a0b0-0000-7000-8000-000000000023";
+    const plate = "0190a0b0-0000-7000-8000-000000000024";
+    const mesh = "0190a0b0-0000-7000-8000-000000000025";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic plates')`.execute(db);
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${source}, ${model}, ${`models/${model}/${source}`}, 'source', 'model/3mf')
+    `.execute(db);
+    await sql`
+      insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256)
+      values (${file}, ${model}, ${source}, 'a.3mf', 'a.3mf', '3mf', 1, ${Buffer.alloc(32)})
+    `.execute(db);
+    await sql`
+      insert into plates (id, file_id, "index", object_count) values (${plate}, ${file}, 1, 1)
+    `.execute(db);
+    const before = (
+      await sql<Record<string, unknown>>`select * from plates order by id`.execute(db)
+    ).rows;
+
+    await migrate(db);
+
+    const after = (await sql<Record<string, unknown>>`select * from plates order by id`.execute(db))
+      .rows;
+    expect(after).toEqual(before.map((row) => ({ ...row, meshBlobId: null })));
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${mesh}, ${model}, ${`models/${model}/${mesh}`}, 'mesh_glb', 'model/gltf-binary')
+    `.execute(db);
+    await sql`update plates set mesh_blob_id = ${mesh} where id = ${plate}`.execute(db);
+    await sql`delete from blobs where id = ${mesh}`.execute(db);
+    const left = (
+      await sql<{ meshBlobId: string | null }>`
+        select mesh_blob_id from plates where id = ${plate}
+      `.execute(db)
+    ).rows;
+    expect(left).toEqual([{ meshBlobId: null }]);
   });
 });

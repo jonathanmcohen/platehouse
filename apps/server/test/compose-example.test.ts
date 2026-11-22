@@ -11,7 +11,11 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PLATE_MESH_LIMITS } from "@platehouse/threemf";
 import { describe, expect, test } from "vitest";
+import { PLATE_MESH_BUILDS, PLATE_MESH_READ_PEAK_MB } from "../src/plate-mesh/plate-mesh.js";
+import { PLATE_MESH_WORKER_LIMITS } from "../src/plate-mesh/worker-read.js";
+import { MAX_UPLOAD_BYTES } from "../src/uploads/tus.js";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const COMPOSE = readFileSync(join(ROOT, "examples", "docker-compose.yml"), "utf8");
@@ -73,6 +77,47 @@ describe("examples/docker-compose.yml", () => {
     const app = services().get("platehouse") ?? [];
     expect(field(app, "DATABASE_URL")).toMatch(/@platehouse-db:5432\//);
     expect(field(app, "SLICER_URL")).toBe("http://platehouse-slicer:8080");
+  });
+});
+
+const MiB = 1024 * 1024;
+
+/** A Compose byte value ("2g", "512m", "1024k" or plain bytes) in MiB. */
+function mebibytes(value: string | undefined): number {
+  const m = /^(\d+)([bkmg]?)$/i.exec(value ?? "");
+  if (!m) throw new Error(`not a byte value: ${value}`);
+  const unit: Record<string, number> = { "": 1, b: 1, k: 1024, m: MiB, g: 1024 * MiB };
+  const scale = unit[(m[2] ?? "").toLowerCase()] ?? Number.NaN;
+  return (Number(m[1]) * scale) / MiB;
+}
+
+/**
+ * What the platehouse service needs beside its plate mesh reads: the server's
+ * own heap, its requests and its other jobs. An allowance, not a measurement.
+ */
+const SERVER_ALLOWANCE_MB = 512;
+
+// Issue #358 review: a plate mesh worker's heap limit caps only its
+// JavaScript heap. Its mesh arrays and the zip reader's entry records live
+// outside that heap, so the worker limits alone do not keep the server inside
+// its container; the kernel ends the whole server, not one worker, when the
+// container passes mem_limit. So the reads that can run at once must fit,
+// with room left for the server.
+describe("the platehouse service's memory holds its plate mesh reads", () => {
+  test("a read's peak is its heap, its mesh arrays and the biggest file's entry records", () => {
+    const heap = PLATE_MESH_WORKER_LIMITS.maxOldGenerationSizeMb ?? Number.NaN;
+    const young = PLATE_MESH_WORKER_LIMITS.maxYoungGenerationSizeMb ?? Number.NaN;
+    const mesh = PLATE_MESH_LIMITS.meshBytes / MiB;
+    const entries = MAX_UPLOAD_BYTES / MiB;
+    expect(PLATE_MESH_READ_PEAK_MB).toBe(heap + young + mesh + entries);
+  });
+
+  test("the reads that can run at once, and the server's allowance, fit under mem_limit", () => {
+    const app = services().get("platehouse") ?? [];
+    const limit = mebibytes(field(app, "mem_limit"));
+    expect(mebibytes(field(app, "memswap_limit"))).toBe(limit);
+    const needed = PLATE_MESH_BUILDS * PLATE_MESH_READ_PEAK_MB + SERVER_ALLOWANCE_MB;
+    expect(needed).toBeLessThanOrEqual(limit);
   });
 });
 

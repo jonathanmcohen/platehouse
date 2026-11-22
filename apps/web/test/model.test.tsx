@@ -16,7 +16,10 @@
 // - failed plate shows the plain reason and a retry button
 // - open in OrcaSlicer builds orcaslicer://open?file=<encoded link>
 // - open in Bambu Studio on macOS builds bambustudioopen://<encoded link>
-// - .3mf shows no 3D view
+// - a .3mf shows its plate pictures, and a plate's 3D view only once it is
+//   opened (issue #358: Show in 3D or a click on the picture, a mesh the
+//   server makes for that plate alone, closed again with Show picture; a
+//   plate with no 3D view keeps its picture and says why)
 // - the large plate image turns and flips on screen only (requested
 //   2026-11-19): each button applies its transform, Reset clears it, and
 //   another plate, another file or opening the model again clears it, with
@@ -49,7 +52,12 @@ import {
   POLL_MS,
 } from "../src/model/ModelPage";
 import { BAMBU_PROMPT_LINE, type SlicerLink } from "../src/model/OpenInSlicer";
-import type { ThreeLoader, ThreeSource } from "../src/model/Viewer3d";
+import {
+  MeshLoadError,
+  ThreeLoadError,
+  type ThreeLoader,
+  type ThreeSource,
+} from "../src/model/Viewer3d";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
@@ -309,6 +317,12 @@ let mintAnswer: (fileId: string) => Response;
 let retryStatus: number;
 /** While set, GET /app/api/models/:id waits for it before it answers. */
 let modelHeld: Promise<void> | null;
+/** What GET /app/api/plates/:id/mesh answers (issue #358). */
+let meshAnswer: (plateId: string) => Response;
+/** While set, GET /app/api/plates/:id/mesh waits for it before it answers. */
+let meshHeld: Promise<void> | null;
+/** The GLB address the stub server gives a plate. */
+const meshUrl = (plateId: string) => `/blobs/mesh-${plateId}`;
 let navigations: string[];
 let loads: ThreeSource[];
 
@@ -331,6 +345,11 @@ function stubServer() {
       if (answer === undefined) return json({ error: "not_found" }, 404);
       if (typeof answer === "number") return json({ error: "x" }, answer);
       return json(answer);
+    }
+    const meshMatch = /^\/app\/api\/plates\/([^/]+)\/mesh$/.exec(url.pathname);
+    if (method === "GET" && meshMatch) {
+      if (meshHeld !== null) await meshHeld;
+      return meshAnswer(meshMatch[1] ?? "");
     }
     const mintMatch = /^\/app\/api\/files\/([^/]+)\/slicer-link$/.exec(url.pathname);
     if (method === "POST" && mintMatch) return mintAnswer(mintMatch[1] ?? "");
@@ -494,6 +513,8 @@ beforeEach(() => {
   loads = [];
   retryStatus = 202;
   modelHeld = null;
+  meshHeld = null;
+  meshAnswer = (plateId) => json({ url: meshUrl(plateId) });
   models = new Map<string, ModelView | number>([[MODEL_ID, threePlates()]]);
   mintAnswer = () => json({ error: "not_found" }, 404);
   loadThree.mockClear();
@@ -1797,8 +1818,8 @@ describe("open in a slicer", () => {
   });
 });
 
-describe(".3mf shows no 3D view", () => {
-  test("a .3mf shows its plate thumbnail large with a strip of plates, and three.js is never loaded", async () => {
+describe("a .3mf shows its plate pictures until a plate's 3D view is opened", () => {
+  test("a .3mf shows its plate thumbnail large with a strip of plates, and three.js is not loaded until asked for", async () => {
     await render(pageAt(MODEL_ID));
     expect(loadThree).not.toHaveBeenCalled();
     expect(container.querySelector("canvas")).toBeNull();
@@ -2085,6 +2106,295 @@ describe("the large plate image can be rotated and flipped, on screen only", () 
     await render(pageAt(MODEL_ID));
     expect(container.querySelector(".ph-plate-controls")).toBeNull();
     expect(container.querySelector(".ph-viewer-controls")).not.toBeNull();
+  });
+});
+
+describe("a .3mf plate's 3D view (issue #358)", () => {
+  const PLATE_1 = "0198f0c4-0000-7000-8000-00000000d001";
+  const PLATE_3 = "0198f0c4-0000-7000-8000-00000000d003";
+
+  function toggle(): HTMLButtonElement {
+    const found = container.querySelector<HTMLButtonElement>(
+      ".studio-viewer .ph-plate-view-toggle",
+    );
+    if (found === null) throw new Error("no Show in 3D / Show picture button");
+    return found;
+  }
+
+  function large(): HTMLImageElement | null {
+    return container.querySelector<HTMLImageElement>(".studio-viewer img.studio-plate-large");
+  }
+
+  function alertText(): string {
+    return text(container.querySelector('.studio-viewer [role="alert"]'));
+  }
+
+  const meshRequests = () => requests.filter((r) => r.includes("/mesh"));
+
+  test("the picture has a Show in 3D button beside it: a real button in the Tab order, apart from the image controls", async () => {
+    await render(pageAt(MODEL_ID));
+    const open = toggle();
+    expect(text(open)).toBe("Show in 3D");
+    expect(open.tagName).toBe("BUTTON");
+    expect(open.getAttribute("type")).toBe("button");
+    expect(open.classList.contains("studio-button")).toBe(true);
+    expect(open.tabIndex).toBe(0);
+    expect(open.closest(".ph-plate-controls")).toBeNull();
+    expect(meshRequests()).toEqual([]);
+    expect(loadThree).not.toHaveBeenCalled();
+  });
+
+  test("Show in 3D asks the server for that plate's mesh alone and shows it in the 3D viewer with its controls", async () => {
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(meshRequests()).toEqual([`GET /app/api/plates/${PLATE_1}/mesh`]);
+    expect(loads).toEqual([{ kind: "glb", url: meshUrl(PLATE_1) }]);
+    // Nothing but the mesh: never the .3mf's download.
+    expect(requests.some((r) => r.includes("/download"))).toBe(false);
+    const view = container.querySelector(".studio-viewer [data-viewer3d]");
+    expect(view?.getAttribute("role")).toBe("img");
+    expect(view?.getAttribute("aria-label")).toBe("3D view of Base");
+    for (const label of [
+      /^rotate left$/i,
+      /^rotate right$/i,
+      /^zoom in$/i,
+      /^zoom out$/i,
+      /^reset view$/i,
+    ]) {
+      expect(button(label, container.querySelector(".studio-viewer") as HTMLElement)).toBeDefined();
+    }
+    expect(large()).toBeNull();
+    expect(text(toggle())).toBe("Show picture");
+  });
+
+  test("opening the view puts focus on Show picture, and closing it puts focus back on Show in 3D", async () => {
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(document.activeElement).toBe(toggle());
+    expect(text(document.activeElement)).toBe("Show picture");
+    await click(toggle());
+    expect(document.activeElement).toBe(toggle());
+    expect(text(document.activeElement)).toBe("Show in 3D");
+  });
+
+  test("Show picture closes the view, frees it, and the picture's turn and flip buttons work again", async () => {
+    const calls: string[] = [];
+    const recording: ThreeLoader = async () => ({
+      async show(_el, source) {
+        loads.push(source);
+        return {
+          rotate: () => {},
+          zoom: () => {},
+          reset: () => {},
+          dispose: () => calls.push("dispose"),
+        };
+      },
+    });
+    await render(pageAt(MODEL_ID, { loadThree: recording }));
+    await click(toggle());
+    await click(toggle());
+    expect(calls).toEqual(["dispose"]);
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    expect(large()?.getAttribute("src")).toBe(thumb(1));
+    const controls = container.querySelector<HTMLElement>(".studio-viewer .ph-plate-controls");
+    await click(button(/^rotate right$/i, controls as HTMLElement));
+    expect(large()?.style.transform).toBe("rotate(90deg) scale(0.75)");
+  });
+
+  test("clicking the picture opens the view; the picture's button is named but kept out of the Tab order", async () => {
+    await render(pageAt(MODEL_ID));
+    const picture = container.querySelector<HTMLButtonElement>(".studio-viewer .ph-plate-open");
+    expect(picture?.tagName).toBe("BUTTON");
+    expect(picture?.getAttribute("type")).toBe("button");
+    expect(picture?.getAttribute("aria-label")).toBe("Show Base in 3D");
+    expect(picture?.tabIndex).toBe(-1);
+    await click(picture);
+    expect(loads).toEqual([{ kind: "glb", url: meshUrl(PLATE_1) }]);
+  });
+
+  test("says the view is loading while the server makes the mesh", async () => {
+    let release: () => void = () => {};
+    meshHeld = new Promise((resolve) => {
+      release = resolve;
+    });
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(text(container.querySelector(".studio-viewer .studio-viewer-frame"))).toBe(
+      "Loading the 3D view...",
+    );
+    expect(loadThree).not.toHaveBeenCalled();
+    release();
+    await settle();
+    expect(loads).toEqual([{ kind: "glb", url: meshUrl(PLATE_1) }]);
+  });
+
+  test("choosing another plate while the view is open shows that plate in 3D", async () => {
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    const strip = [...container.querySelectorAll<HTMLButtonElement>(".studio-plate-strip button")];
+    await click(strip[2]);
+    expect(meshRequests()).toEqual([
+      `GET /app/api/plates/${PLATE_1}/mesh`,
+      `GET /app/api/plates/${PLATE_3}/mesh`,
+    ]);
+    expect(loads.at(-1)).toEqual({ kind: "glb", url: meshUrl(PLATE_3) });
+    expect(container.querySelector("[data-viewer3d]")?.getAttribute("aria-label")).toBe(
+      "3D view of Lid",
+    );
+  });
+
+  test("a plate with no thumbnail still offers its 3D view", async () => {
+    const bare = { ...plate(1, "Base", { file: fileNumbers(1) }), thumbnail: null };
+    models.set(MODEL_ID, model([threeMf([bare])]));
+    await render(pageAt(MODEL_ID));
+    expect(container.querySelector(".ph-plate-open")).toBeNull();
+    await click(toggle());
+    expect(loads).toEqual([{ kind: "glb", url: meshUrl(PLATE_1) }]);
+  });
+
+  test.each([
+    ["no_plate", /Base has no 3D view: it is not in the file's plate list/],
+    ["no_objects", /Base has no 3D view: there are no objects on it/],
+    ["no_mesh", /Base has no 3D view: this file has no mesh Platehouse can read for its objects/],
+    ["too_large", /Base has no 3D view: its objects are too large to show in the browser/],
+    ["damaged", /Base has no 3D view: the file could not be read/],
+  ])(
+    "a plate whose 3D view cannot be made (%s) keeps its picture and says why",
+    async (code, words) => {
+      meshAnswer = () => json({ error: "no_mesh", code, message: "English from the server" }, 422);
+      await render(pageAt(MODEL_ID));
+      await click(toggle());
+      expect(loadThree).not.toHaveBeenCalled();
+      expect(large()?.getAttribute("src")).toBe(thumb(1));
+      expect(alertText()).toMatch(words);
+      expect(text(toggle())).toBe("Show in 3D");
+      expect(document.activeElement).toBe(toggle());
+    },
+  );
+
+  test("a file that cannot be read right now keeps the picture and says to try again later", async () => {
+    meshAnswer = () => json({ error: "unavailable", message: "x" }, 503);
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(large()).not.toBeNull();
+    expect(alertText()).toMatch(/could not be read right now\. Try again later/);
+  });
+
+  test("a server already making as many 3D views as it holds keeps the picture and says to try again in a moment", async () => {
+    meshAnswer = () =>
+      new Response(JSON.stringify({ error: "busy", message: "x" }), {
+        status: 503,
+        headers: { "content-type": "application/json", "retry-after": "5" },
+      });
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(large()).not.toBeNull();
+    expect(alertText()).toMatch(/making other 3D views right now.*Try again in a moment/);
+    expect(alertText()).not.toMatch(/could not be read/);
+  });
+
+  test("a server error or an answer it cannot read keeps the picture and says so", async () => {
+    for (const answer of [
+      () => json({ error: "internal" }, 500),
+      () => json({ url: "https://elsewhere.test/mesh.glb" }),
+      () => new Response("not json", { status: 200 }),
+    ]) {
+      meshAnswer = answer;
+      await render(pageAt(MODEL_ID));
+      await click(toggle());
+      expect(loadThree).not.toHaveBeenCalled();
+      expect(large()).not.toBeNull();
+      expect(alertText()).toMatch(/because of a server error/);
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      requests = [];
+    }
+  });
+
+  test("a signed-out session keeps the picture and says the user is signed out", async () => {
+    meshAnswer = () => json({ error: "unauthorized" }, 401);
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(large()).not.toBeNull();
+    expect(alertText()).toMatch(/You are signed out/);
+  });
+
+  test("a 3D view the browser cannot start keeps the picture and says so, without offering the whole .3mf", async () => {
+    const failing: ThreeLoader = async () => {
+      throw new Error("no WebGL");
+    };
+    await render(pageAt(MODEL_ID, { loadThree: failing }));
+    await click(toggle());
+    expect(large()?.getAttribute("src")).toBe(thumb(1));
+    expect(alertText()).toMatch(/The 3D view of Base could not be shown in this browser/);
+    expect(
+      container.querySelector(`.studio-viewer a[href="/files/${FILE_3MF}/download"]`),
+    ).toBeNull();
+  });
+
+  test("three.js failing to load (a dropped network, a page older than a redeploy) keeps the picture, never blaming the browser", async () => {
+    const failing: ThreeLoader = async () => {
+      throw new ThreeLoadError("three.js could not be loaded");
+    };
+    await render(pageAt(MODEL_ID, { loadThree: failing }));
+    await click(toggle());
+    expect(large()?.getAttribute("src")).toBe(thumb(1));
+    expect(alertText()).toMatch(/because of a server error/);
+    expect(alertText()).not.toMatch(/in this browser/);
+  });
+
+  test.each([
+    [
+      "the store cannot serve the mesh right now (503)",
+      503,
+      /could not be read right now\. Try again later/,
+    ],
+    ["the session ended before the mesh loaded (401)", 401, /You are signed out/],
+    ["the mesh is missing from the store (404)", 404, /because of a server error/],
+    ["no reply came, or the mesh could not be read", null, /because of a server error/],
+  ])(
+    "a mesh that fails to load when %s keeps the picture and says why, never blaming the browser",
+    async (_case, status, words) => {
+      const failing: ThreeLoader = async () => ({
+        async show() {
+          throw new MeshLoadError(status, "the mesh failed");
+        },
+      });
+      await render(pageAt(MODEL_ID, { loadThree: failing }));
+      await click(toggle());
+      expect(large()?.getAttribute("src")).toBe(thumb(1));
+      expect(alertText()).toMatch(words);
+      expect(alertText()).not.toMatch(/in this browser/);
+    },
+  );
+
+  test("the reason goes when the view is opened again or another plate is chosen", async () => {
+    meshAnswer = () => json({ error: "no_mesh", code: "no_mesh", message: "x" }, 422);
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(alertText()).not.toBe("");
+    const strip = [...container.querySelectorAll<HTMLButtonElement>(".studio-plate-strip button")];
+    await click(strip[1]);
+    expect(container.querySelector('.studio-viewer [role="alert"]')).toBeNull();
+    // Back on the first plate, the reason is not shown again until asked.
+    await click(strip[0]);
+    expect(container.querySelector('.studio-viewer [role="alert"]')).toBeNull();
+    await click(toggle());
+    expect(alertText()).toMatch(/Base has no 3D view/);
+  });
+
+  test("leaving the page while the mesh is being made asks for nothing more and loads nothing", async () => {
+    let release: () => void = () => {};
+    meshHeld = new Promise((resolve) => {
+      release = resolve;
+    });
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    release();
+    await settle();
+    expect(loadThree).not.toHaveBeenCalled();
   });
 });
 
