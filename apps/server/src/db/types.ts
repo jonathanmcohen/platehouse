@@ -146,6 +146,11 @@ export interface EstimatesTable {
   failureDetail: string | null;
   attempts: Generated<number>;
   createdAt: CreatedAt;
+  /**
+   * When the attempt that is running, or that finished, began work (0011);
+   * null before it starts, and on estimates finished before 0011.
+   */
+  startedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   finishedAt: Date | null;
 }
 

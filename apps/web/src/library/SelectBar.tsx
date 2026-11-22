@@ -4,8 +4,9 @@
 // - The count, in a status line, so a screen reader hears it change.
 // - Select all on this page (the cards shown, every one in View all), Select
 //   all matching (every match's id for the search, filters and sort, from
-//   GET /app/api/library/ids, capped at View all's 1000, which it says), and
-//   Clear selection.
+//   GET /app/api/library/ids, capped at View all's 1000, which it says;
+//   marked aria-disabled and ignoring a press while nothing matches, issue
+//   #317), and Clear selection.
 // - The actions, each marked aria-disabled and ignoring a press while
 //   nothing is selected: Add tags (type tags or pick the library's, in a
 //   ChipEditor; a tag typed but not yet added to the list is sent too; a
@@ -25,6 +26,10 @@
 //   filters no longer show them, and in an alert the models that failed and
 //   why. A failed model leaves the selection, as does one moved to the trash
 //   or left alone, and the grid reloads to show the change.
+// - Every note describes the view it was made in, so a new search, filter,
+//   sort, printer or page takes the last action's result, Select all
+//   matching's note and LibraryPage's models-left count away (issue #317,
+//   the rc.3 live check); the grid's reload after an action keeps them.
 // - The selection holds only models the search and filters show (0.1.0-rc.2
 //   live check; LibraryPage checks it), so its count is true: while that
 //   check runs, or after it fails, the actions wait and the toolbar says
@@ -62,6 +67,12 @@ export interface SelectBarProps {
   totalCapped: boolean;
   /** The search, filters and sort, as GET /app/api/library/ids takes them. */
   matching: URLSearchParams;
+  /**
+   * The view shown, as a key that changes with the search, filters, sort,
+   * printer and page (issue #317): when it changes, the last action's result
+   * and Select all matching's note go, as they described the view before.
+   */
+  view: string;
   /** The library's tags, to pick from. */
   tags: string[];
   /**
@@ -358,6 +369,7 @@ export function SelectBar({
   total,
   totalCapped,
   matching,
+  view,
   tags,
   tagsState,
   check,
@@ -377,9 +389,17 @@ export function SelectBar({
   const [result, setResult] = useState<ReturnType<typeof describeBulk> | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [notesFor, setNotesFor] = useState(view);
+  if (notesFor !== view) {
+    setNotesFor(view);
+    setResult(null);
+    setNote(null);
+  }
   const opener = useRef<HTMLButtonElement | null>(null);
   const count = selected.size;
   const none = count === 0;
+  /** Nothing matches the search and filters, so Select all matching has nothing to select. */
+  const noMatches = total === 0;
   /** The actions wait: nothing is selected, or the selection is not yet checked against the view. */
   const off = none || check !== null;
 
@@ -390,7 +410,7 @@ export function SelectBar({
   }
 
   async function selectMatching() {
-    if (picking) return;
+    if (picking || noMatches) return;
     setPicking(true);
     setNote(null);
     // The view it is asked in: if the search, a filter, the sort or the
@@ -409,7 +429,8 @@ export function SelectBar({
         setNote(t("library.select.capped", { count: answer.ids.length }));
       }
     } catch (failure) {
-      setNote(errorText(failure));
+      // A failure for a view no longer shown is not this view's to report.
+      if (asked === era()) setNote(errorText(failure));
     } finally {
       setPicking(false);
     }
@@ -482,7 +503,7 @@ export function SelectBar({
         <button
           type="button"
           className="studio-button ph-small"
-          aria-disabled={picking}
+          aria-disabled={picking || noMatches}
           onClick={selectMatching}
         >
           {allLabel}
