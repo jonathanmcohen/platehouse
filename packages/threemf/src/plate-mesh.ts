@@ -82,8 +82,14 @@ export const PLATE_MESH_LIMITS = Object.freeze({
   vertices: 5_000_000,
   /** Inflated bytes of each model part read. */
   partBytes: 1024 * MiB,
-  /** Meshes placed on one plate. */
+  /** Meshes placed on one plate, counted as each layer of components is expanded. */
   instances: 10_000,
+  /**
+   * Components and build items held over the model parts read. Counted as
+   * each part is scanned, so a flood of tiny <component/> tags is refused
+   * before it is held, whether or not it is on the plate.
+   */
+  components: 100_000,
   /** How deep components may nest. */
   depth: 16,
 });
@@ -347,12 +353,15 @@ interface PartData {
   collected: Set<number>;
   /** The build items, in file order (the root part's). */
   items: Component[];
+  /** Components and build items this part holds, counted against the budget. */
+  held: number;
 }
 
 /** Counts what the reader holds and draws against the limits. */
 class Budget {
   vertices = 0;
   triangles = 0;
+  components = 0;
   readonly maxTriangles: number;
 
   constructor(maxTriangles: number) {
@@ -369,6 +378,18 @@ class Budget {
     if (++this.triangles > this.maxTriangles) {
       throw new PlateMeshError("too_large", "more triangles than the limit");
     }
+  }
+
+  /** A component or build item held. */
+  addComponent(): void {
+    if (++this.components > PLATE_MESH_LIMITS.components) {
+      throw new PlateMeshError("too_large", "more components and build items than the limit");
+    }
+  }
+
+  /** A part read again: its components and build items are no longer held. */
+  releaseComponents(part: PartData): void {
+    this.components -= part.held;
   }
 
   release(mesh: Mesh | null): void {
@@ -463,6 +484,11 @@ async function scanPart(
     meshes: new Map(),
     collected: new Set(collect),
     items: [],
+    held: 0,
+  };
+  const hold = (): void => {
+    budget.addComponent();
+    data.held++;
   };
   if (entry === undefined) return data;
 
@@ -528,7 +554,10 @@ async function scanPart(
       case "component":
         if (components !== null && !tag.closing) {
           const c = component(attrs(tag.raw));
-          if (c !== null) (components as Component[]).push(c);
+          if (c !== null) {
+            hold();
+            (components as Component[]).push(c);
+          }
         }
         return;
       case "build":
@@ -537,7 +566,10 @@ async function scanPart(
       case "item":
         if (inBuild && !tag.closing) {
           const c = component(attrs(tag.raw));
-          if (c !== null) data.items.push(c);
+          if (c !== null) {
+            hold();
+            data.items.push(c);
+          }
         }
         return;
       default:
@@ -604,6 +636,7 @@ async function readFromArchive(
       if (known !== undefined) {
         for (const id of known.collected) want.add(id);
         for (const mesh of known.meshes.values()) budget.release(mesh);
+        budget.releaseComponents(known);
       }
       const read = await scanPart(zip, entries.get(path), want, budget);
       parts.set(path, read);
@@ -657,6 +690,11 @@ async function readFromArchive(
             if (c.transform === null) continue;
             const part = r.part ?? c.objectId;
             if (!printed(settings, r.top, part)) continue;
+            // Checked per component, so one wide object is refused before
+            // its whole layer is expanded, not at the start of the next.
+            if (next.length + leaves.length >= PLATE_MESH_LIMITS.instances) {
+              throw new PlateMeshError("too_large", "more placed meshes than the limit");
+            }
             next.push({
               path: c.path ?? r.path,
               objectId: c.objectId,

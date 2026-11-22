@@ -501,4 +501,93 @@ describe("readPlateMesh limits", () => {
     ]);
     expect(await problemOf(fan, 1)).toBe("too_large");
   });
+
+  /**
+   * Plate 1 holds object 1, a box. Object 2, on no plate, is made of
+   * `count` components naming object 1. The root's build items place both,
+   * so the part holds count + 2 components and build items.
+   */
+  const flood = (count: number): string =>
+    file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [
+            meshObject(1, boxMesh(10)),
+            componentObject(
+              2,
+              Array.from({ length: count }, () => ({ objectId: 1 })),
+            ),
+          ],
+          [buildItem(1, IDENTITY), buildItem(2, IDENTITY)],
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml([{ id: 1 }, { id: 2 }], [{ index: 1, instances: [[1, 0]] }]),
+      },
+    ]);
+
+  it("reads a part holding exactly as many components and build items as the limit", async () => {
+    expect(PLATE_MESH_LIMITS.components).toBeGreaterThan(PLATE_MESH_LIMITS.instances);
+    const mesh = await readPlateMesh(flood(PLATE_MESH_LIMITS.components - 2), 1);
+    expect(mesh.instances).toHaveLength(1);
+  });
+
+  it("says too_large for a part with more components and build items than the limit, while scanning it", async () => {
+    // A few hundred kilobytes of deflated <component/> tags would otherwise
+    // be held whole, even when none of them is on the plate asked for.
+    expect(await problemOf(flood(PLATE_MESH_LIMITS.components - 1), 1)).toBe("too_large");
+  });
+
+  it("says too_large for one object whose components fan out past the instance limit", async () => {
+    const fan = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [
+            meshObject(1, boxMesh(10)),
+            componentObject(
+              2,
+              Array.from({ length: PLATE_MESH_LIMITS.instances + 1 }, () => ({ objectId: 1 })),
+            ),
+          ],
+          [buildItem(2, IDENTITY)],
+        ),
+      },
+      { name: SETTINGS, data: settingsXml([{ id: 2 }], [{ index: 1, instances: [[2, 0]] }]) },
+    ]);
+    expect(await problemOf(fan, 1)).toBe("too_large");
+  });
+
+  it("says too_large as soon as one layer's components pass the instance limit, not a layer later", async () => {
+    // Objects 1 to 17 form a chain as deep as the limit allows, so object
+    // 17's components are expanded on the last layer the reader follows.
+    // Object 17 fans out past the instance limit; a check made only at the
+    // start of each layer would never see that layer's expansion.
+    const last = PLATE_MESH_LIMITS.depth + 1;
+    const chain = Array.from({ length: PLATE_MESH_LIMITS.depth }, (_, i) =>
+      componentObject(i + 1, [{ objectId: i + 2 }]),
+    );
+    const deep = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [
+            ...chain,
+            componentObject(
+              last,
+              Array.from({ length: PLATE_MESH_LIMITS.instances + 1 }, () => ({
+                objectId: last + 1,
+              })),
+            ),
+            meshObject(last + 1, boxMesh(10)),
+          ],
+          [buildItem(1, IDENTITY)],
+        ),
+      },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], [{ index: 1, instances: [[1, 0]] }]) },
+    ]);
+    expect(await problemOf(deep, 1)).toBe("too_large");
+  });
 });
