@@ -61,9 +61,20 @@ which it puts and deletes again when it checks that the bucket can be written to
 
 A daily job at 04:00 deletes objects under `models/` that have no matching file in the database
 and are more than 24 hours old, such as one left behind by a crash between an upload and saving
-it. It is careful: it deletes nothing when the database holds no files at all, or when a run
-would delete more than its limit, which is 10 objects or a tenth of what it found, whichever is
-larger, but never more than 100. It logs why. If you see such a log line, check that the app is
-pointed at the right database and bucket.
+it. It deletes nothing when the database holds no files at all, or when a run would delete more
+than its limit, which is 10 objects or a tenth of what it found, whichever is larger, but never
+more than 100. It logs why. If you see such a log line, check that the app is pointed at the right
+database and bucket.
+
+Those two checks stop a run when the database looks plainly wrong; they do not stop it deleting
+objects that are not really leftovers. After you restore an older database dump, the database
+still holds files, so the first check passes, and every object stored since the dump has no
+matching file. The cleanup deletes those objects once they are more than 24 hours old, as long as
+they fit within the limit, and they are the only copy left of the models the restored database no
+longer knows about. The same happens when the app is pointed at another Platehouse database, or a
+second Platehouse shares the bucket. Platehouse has no setting to pause the cleanup, and a run
+missed while the app was stopped happens when it starts again. Bucket versioning is the
+protection: turn it on before you need it. For what to do after a restore, see
+[Backups and upgrades](./backups-and-upgrades.md#the-database).
 
 To back up the bucket, see [Backups and upgrades](./backups-and-upgrades.md).
