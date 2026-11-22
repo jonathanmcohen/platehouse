@@ -434,9 +434,28 @@ describe("reconvertEvents", () => {
 
   test("reads a count that is missing or not a whole number as 0", () => {
     const [event] = reconvertEvents([
-      { name: "reconvert-descriptions-4", finishedAt: AT, result: { changed: "7", kept: -1 } },
+      {
+        name: "reconvert-descriptions-4",
+        finishedAt: AT,
+        result: { checked: 3, changed: "7", kept: -1 },
+      },
     ]);
-    expect(event).toMatchObject({ converter: 4, checked: 0, changed: 0, kept: 0, unreadable: 0 });
+    expect(event).toMatchObject({ converter: 4, checked: 3, changed: 0, kept: 0, unreadable: 0 });
+  });
+
+  // A new install, or a library with no description to convert, records the
+  // step with nothing checked; the page shows no upgrade that never happened.
+  test("leaves out a run that checked no description", () => {
+    expect(
+      reconvertEvents([
+        {
+          name: "reconvert-descriptions-3",
+          finishedAt: AT,
+          result: { checked: 0, changed: 0, unchanged: 0, kept: 0, unreadable: 0 },
+        },
+        { name: "reconvert-descriptions-4", finishedAt: AT, result: {} },
+      ]),
+    ).toEqual([]);
   });
 
   test("leaves out a step of any other name", () => {

@@ -327,6 +327,9 @@ const RECONVERT_STEP_PREFIX = "reconvert-descriptions-";
  * The finished description re-conversions as events (#357), one per run,
  * from their upgrade_steps rows. A count that is missing or not a whole
  * number of 0 or more reads as 0, and a row of any other name is left out.
+ * So is a run that checked no description: a new install, or a library with
+ * nothing to convert, still records the step so it is not run again, but
+ * there was no upgrade to show.
  */
 export function reconvertEvents(
   steps: ReadonlyArray<{ name: string; finishedAt: Date; result: unknown }>,
@@ -340,12 +343,14 @@ export function reconvertEvents(
     const version = step.name.slice(RECONVERT_STEP_PREFIX.length);
     if (!/^[1-9][0-9]{0,8}$/.test(version)) return [];
     const r = typeof step.result === "object" ? step.result : null;
+    const checked = count(r, "checked");
+    if (checked === 0) return [];
     return [
       {
         type: "descriptions_reconverted",
         at: step.finishedAt.toISOString(),
         converter: Number(version),
-        checked: count(r, "checked"),
+        checked,
         changed: count(r, "changed"),
         unchanged: count(r, "unchanged"),
         kept: count(r, "kept"),
