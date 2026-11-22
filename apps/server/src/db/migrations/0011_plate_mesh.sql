@@ -1,4 +1,4 @@
--- Platehouse schema 0010: the GLB of a .3mf plate's 3D view (0.1.1, issue
+-- Platehouse schema 0011: the GLB of a .3mf plate's 3D view (0.1.1, issue
 -- #358). Hand-written; every statement is read in review (lesson 14). Never
 -- edit it once applied anywhere: a change is a new file.
 --

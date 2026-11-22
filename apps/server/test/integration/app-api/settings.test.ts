@@ -32,6 +32,7 @@ import { recordVersioning, SLICES_PER_MINUTE } from "../../../src/app-api/settin
 import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { uuidv7 } from "../../../src/db/ids.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
 import { plateNumbers } from "../../../src/estimates/display.js";
 import { createEstimates, type Estimates } from "../../../src/estimates/service.js";
@@ -44,7 +45,7 @@ import { createUploads } from "../../../src/uploads/tus.js";
 import { NOT_BUILT } from "../../../src/web/shell.js";
 import { type SlicerStub, STUB_PRINTERS, startSlicerStub } from "../../support/slicer-stub.js";
 import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
-import { marker, rowCounts, seedStoredModel } from "../support/library.js";
+import { labelStored, marker, rowCounts, seedStoredModel } from "../support/library.js";
 import {
   concretePath,
   registeredRoutes,
@@ -837,6 +838,147 @@ describe("organising", () => {
       await call("POST", `/app/api/models/${id}/trash`),
     ];
     expect(refused.map((r) => r.status)).toEqual([404, 404, 404, 404, 404]);
+  });
+});
+
+// Issue #312: a tag or collection can be deleted from the Tags and Collections
+// pages. Deleting takes it off every model that has it, trashed ones included,
+// and changes nothing else about any model. A tag no model has any more is
+// removed when its last model loses it in the app; a model in the trash still
+// has its tags (a restore brings them back), so it keeps the tag. Collections
+// are never removed on their own.
+describe("deleting tags and collections", () => {
+  const q = (name: string) => `?name=${encodeURIComponent(name)}`;
+
+  test("deleting a tag takes it off every model, and the models stay", async () => {
+    const tag = `Doomed ${marker()}`;
+    const other = `Other ${marker()}`;
+    const a = await seedStoredModel(env);
+    const b = await seedStoredModel(env);
+    const trashed = await seedStoredModel(env);
+    for (const m of [a, b, trashed]) {
+      const put = await call("PUT", `/app/api/models/${m.model.id}/tags${q(tag)}`);
+      expect(put.status, put.text).toBe(200);
+    }
+    expect((await call("PUT", `/app/api/models/${a.model.id}/tags${q(other)}`)).status).toBe(200);
+    expect((await call("POST", `/app/api/models/${trashed.model.id}/trash`)).status).toBe(204);
+
+    const gone = await call("DELETE", `/app/api/tags${q(tag.toUpperCase())}`);
+    expect(gone.status, gone.text).toBe(204);
+    expect(await labelStored(env.db, "tags", tag)).toBe(false);
+    expect(await env.repos.tags.forModel(a.model.id)).toEqual([other]);
+    expect(await env.repos.tags.forModel(b.model.id)).toEqual([]);
+    expect(await env.repos.tags.forModel(trashed.model.id)).toEqual([]);
+    for (const m of [a, b, trashed]) {
+      expect(await rowCounts(env.db, m.model.id)).toMatchObject({ models: 1, files: 1 });
+    }
+    expect((await env.repos.models.get(trashed.model.id))?.trashedAt).not.toBeNull();
+    const list = (await call("GET", "/app/api/tags")).json() as { tags: Array<{ name: string }> };
+    expect(list.tags.map((t) => t.name)).not.toContain(tag);
+    // A tag that is not there any more is 404.
+    expect((await call("DELETE", `/app/api/tags${q(tag)}`)).status).toBe(404);
+  });
+
+  test("deleting a collection takes every model out of it, and the models stay", async () => {
+    const shelf = `Doomed shelf ${marker()}`;
+    const a = await seedStoredModel(env);
+    const trashed = await seedStoredModel(env);
+    for (const m of [a, trashed]) {
+      const put = await call("PUT", `/app/api/models/${m.model.id}/collections${q(shelf)}`);
+      expect(put.status, put.text).toBe(200);
+    }
+    expect((await call("POST", `/app/api/models/${trashed.model.id}/trash`)).status).toBe(204);
+
+    const gone = await call("DELETE", `/app/api/collections${q(shelf.toLowerCase())}`);
+    expect(gone.status, gone.text).toBe(204);
+    expect(await labelStored(env.db, "collections", shelf)).toBe(false);
+    expect(await env.repos.collections.forModel(a.model.id)).toEqual([]);
+    expect(await env.repos.collections.forModel(trashed.model.id)).toEqual([]);
+    for (const m of [a, trashed]) {
+      expect(await rowCounts(env.db, m.model.id)).toMatchObject({ models: 1, files: 1 });
+    }
+    expect((await call("DELETE", `/app/api/collections${q(shelf)}`)).status).toBe(404);
+  });
+
+  test('a tag or collection named "." or ".." is deleted through the query', async () => {
+    const seeded = await seedStoredModel(env);
+    const id = seeded.model.id;
+    for (const name of [".", ".."]) {
+      expect((await call("PUT", `/app/api/models/${id}/tags${q(name)}`)).status).toBe(200);
+      expect((await call("PUT", `/app/api/models/${id}/collections${q(name)}`)).status).toBe(200);
+      expect((await call("DELETE", `/app/api/tags${q(name)}`)).status).toBe(204);
+      expect((await call("DELETE", `/app/api/collections${q(name)}`)).status).toBe(204);
+    }
+    expect(await env.repos.tags.forModel(id)).toEqual([]);
+    expect(await env.repos.collections.forModel(id)).toEqual([]);
+    expect(await rowCounts(env.db, id)).toMatchObject({ models: 1 });
+  });
+
+  test("a delete with no name, or a blank one, is refused", async () => {
+    const refused = [
+      await call("DELETE", "/app/api/tags"),
+      await call("DELETE", "/app/api/tags?name=%20"),
+      await call("DELETE", "/app/api/collections"),
+      await call("DELETE", "/app/api/collections?name=%20"),
+    ];
+    expect(refused.map((r) => r.status)).toEqual([400, 400, 400, 400]);
+  });
+
+  test("taking a tag off its last model removes the tag; a trashed model keeps it", async () => {
+    const lonely = `Lonely ${marker()}`;
+    const shared = `Shared ${marker()}`;
+    const shelf = `Kept shelf ${marker()}`;
+    const live = await seedStoredModel(env);
+    const trashed = await seedStoredModel(env);
+    const id = live.model.id;
+    await call("PUT", `/app/api/models/${id}/tags${q(lonely)}`);
+    await call("PUT", `/app/api/models/${id}/tags${q(shared)}`);
+    await call("PUT", `/app/api/models/${trashed.model.id}/tags${q(shared)}`);
+    await call("PUT", `/app/api/models/${id}/collections${q(shelf)}`);
+    expect((await call("POST", `/app/api/models/${trashed.model.id}/trash`)).status).toBe(204);
+
+    expect((await call("DELETE", `/app/api/models/${id}/tags${q(lonely)}`)).status).toBe(204);
+    expect((await call("DELETE", `/app/api/models/${id}/tags${q(shared)}`)).status).toBe(204);
+    expect((await call("DELETE", `/app/api/models/${id}/collections${q(shelf)}`)).status).toBe(204);
+    expect(await labelStored(env.db, "tags", lonely)).toBe(false);
+    expect(await labelStored(env.db, "tags", shared)).toBe(true);
+    expect(await env.repos.tags.forModel(trashed.model.id)).toEqual([shared]);
+    expect(await labelStored(env.db, "collections", shelf)).toBe(true);
+    // Adding the removed tag again makes it again.
+    const again = await call("PUT", `/app/api/models/${id}/tags${q(lonely)}`);
+    expect(again.status, again.text).toBe(200);
+    expect(await env.repos.tags.forModel(id)).toEqual([lonely]);
+  });
+
+  test("the lists show tags and collections no model uses, but not ones only trashed models use", async () => {
+    const unusedTag = `Unused tag ${marker()}`;
+    const emptyShelf = `Empty shelf ${marker()}`;
+    const trashedTag = `Trashed tag ${marker()}`;
+    const trashedShelf = `Trashed shelf ${marker()}`;
+    // A tag no model has, as the public API's untag leaves one.
+    await sql`insert into tags (id, name) values (${uuidv7()}, ${unusedTag})`.execute(env.db);
+    const live = await seedStoredModel(env);
+    const trashed = await seedStoredModel(env);
+    await call("PUT", `/app/api/models/${live.model.id}/collections${q(emptyShelf)}`);
+    await call("DELETE", `/app/api/models/${live.model.id}/collections${q(emptyShelf)}`);
+    await call("PUT", `/app/api/models/${trashed.model.id}/tags${q(trashedTag)}`);
+    await call("PUT", `/app/api/models/${trashed.model.id}/collections${q(trashedShelf)}`);
+    await call("POST", `/app/api/models/${trashed.model.id}/trash`);
+
+    const tags = (await call("GET", "/app/api/tags")).json() as {
+      tags: Array<{ name: string; models: number }>;
+    };
+    expect(tags.tags).toContainEqual({ name: unusedTag, models: 0 });
+    expect(tags.tags.map((t) => t.name)).not.toContain(trashedTag);
+    const collections = (await call("GET", "/app/api/collections")).json() as {
+      collections: Array<{ name: string; models: number }>;
+    };
+    expect(collections.collections).toContainEqual({ name: emptyShelf, models: 0 });
+    expect(collections.collections.map((c) => c.name)).not.toContain(trashedShelf);
+
+    // Both can be deleted from there.
+    expect((await call("DELETE", `/app/api/tags${q(unusedTag)}`)).status).toBe(204);
+    expect((await call("DELETE", `/app/api/collections${q(emptyShelf)}`)).status).toBe(204);
   });
 });
 

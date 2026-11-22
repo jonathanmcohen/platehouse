@@ -37,7 +37,7 @@ import { bossUploadQueue, createUploads, type Uploads } from "../../../src/uploa
 import { type OpenApiDoc, problems } from "../../api/support/openapi-rules.js";
 import { meta, OCTET, TUS } from "../../uploads/support/http.js";
 import { ASCII_STL, build3mf, type IngestEnv, startIngestEnv } from "../support/ingest.js";
-import { marker } from "../support/library.js";
+import { labelStored, marker } from "../support/library.js";
 import {
   type AuthTestApp,
   authTestApp,
@@ -638,6 +638,9 @@ describe("the operations", () => {
     expect(await tagsOf()).toEqual([tag]);
     expect((await call("DELETE", path)).status).toBe(204);
     expect(await tagsOf()).toEqual([]);
+    // The API never deletes anything, so the tag itself stays even though no
+    // model has it now (issue #312: only the app removes an unused tag).
+    expect(await labelStored(env.db, "tags", tag)).toBe(true);
     expect((await call("DELETE", path)).status).toBe(204);
 
     const unknown = "/api/v1/models/0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8e9f/tags/x";
