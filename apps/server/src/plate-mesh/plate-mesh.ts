@@ -34,7 +34,8 @@
 // 3. Builds go through one queue (limit.ts, review finding #385). Opens of
 //    the same plate share one build. A process makes at most
 //    PLATE_MESH_BUILDS plates' meshes at once (each run holds a temp copy of
-//    the .3mf and the plate's meshes in memory), at most PLATE_MESH_WAITING
+//    the .3mf, and up to PLATE_MESH_READ_PEAK_MB of memory while its worker
+//    reads it), at most PLATE_MESH_WAITING
 //    more wait, and an open past that is refused as busy (503, try again)
 //    with nothing started. A waiting build whose browsers have all gone (the
 //    route's signal) is dropped before it starts; a build that has started
@@ -69,7 +70,12 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { PlateMeshError, type PlateMeshProblem, ReadUnavailable } from "@platehouse/threemf";
+import {
+  PLATE_MESH_LIMITS,
+  PlateMeshError,
+  type PlateMeshProblem,
+  ReadUnavailable,
+} from "@platehouse/threemf";
 import type { Kysely, Transaction } from "kysely";
 import type { AppPlateMeshes, PlateMeshAnswer } from "../app-api/plate-mesh.js";
 import { isUuid, uuidv7 } from "../db/ids.js";
@@ -77,9 +83,15 @@ import type { DB } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
+import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE, type PlateGlb } from "./glb.js";
 import { createBuildQueue } from "./limit.js";
-import { PlateMeshBusy, readPlateMeshInWorker, type WorkerReadOptions } from "./worker-read.js";
+import {
+  PLATE_MESH_WORKER_LIMITS,
+  PlateMeshBusy,
+  readPlateMeshInWorker,
+  type WorkerReadOptions,
+} from "./worker-read.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
 
@@ -93,8 +105,34 @@ export const REMEMBERED_PROBLEMS = 1000;
  */
 export const PLATE_MESH_BUSY_RETRY_MS = 10 * 60_000;
 
-/** How many plates' meshes one process makes at once; the rest wait their turn. */
-export const PLATE_MESH_BUILDS = 2;
+const MiB = 1024 * 1024;
+
+/**
+ * The most memory, in MiB, one plate read can hold at once: its worker's
+ * heap (PLATE_MESH_WORKER_LIMITS, worker-read.ts), the reader's mesh arrays
+ * (its budget's PLATE_MESH_LIMITS.meshBytes, 256 MiB), and the zip reader's
+ * entry records, which are at most the file's central directory and so at
+ * most the biggest file Platehouse takes (MAX_UPLOAD_BYTES, 512 MiB; the
+ * inbox has the same cap). That is 1344 MiB. The worker's heap limit covers
+ * only the first: the mesh arrays and entry records are stored outside the
+ * JavaScript heap, and Node does not count them against the worker.
+ */
+export const PLATE_MESH_READ_PEAK_MB =
+  (PLATE_MESH_WORKER_LIMITS.maxOldGenerationSizeMb ?? 0) +
+  (PLATE_MESH_WORKER_LIMITS.maxYoungGenerationSizeMb ?? 0) +
+  PLATE_MESH_LIMITS.meshBytes / MiB +
+  MAX_UPLOAD_BYTES / MiB;
+
+/**
+ * How many plates' meshes one process makes at once; the rest wait their
+ * turn. One: a worker past its heap limit ends only that worker, but the
+ * container's memory limit counts the whole read, and past it the kernel
+ * ends the whole server. One read's PLATE_MESH_READ_PEAK_MB (1344 MiB)
+ * leaves room for the server itself under the 2 GiB mem_limit that
+ * examples/docker-compose.yml gives it; two would not fit
+ * (test/compose-example.test.ts checks it).
+ */
+export const PLATE_MESH_BUILDS = 1;
 
 /** How many more may wait; an open past that is answered busy. */
 export const PLATE_MESH_WAITING = 8;

@@ -14,8 +14,13 @@
 //   later), so the server remembers it only for a short while
 //   (plate-mesh.ts, PLATE_MESH_BUSY_RETRY_MS). A worker that runs out of
 //   heap is a plain too_large: its heap limit is its own, whatever else the
-//   machine is doing. None of it can stop the server: a worker's failure
-//   only ever ends that worker.
+//   machine is doing. A worker's failure ends only that worker. The heap
+//   limit does not cap the worker's whole memory, though: its mesh arrays
+//   and the zip reader's entry records are outside the heap. So the whole
+//   of one read is bounded as PLATE_MESH_READ_PEAK_MB (plate-mesh.ts), and
+//   the reads that run at once (PLATE_MESH_BUILDS) are sized against the
+//   container's memory limit, past which the kernel would end the whole
+//   server, not one worker.
 // - Whatever the worker sends back passes validatePlateMesh (packages/threemf)
 //   here, on the main thread, before it is used: a mesh that fails is the
 //   file's fault (no_mesh or too_large) and nothing is made from it.
@@ -54,12 +59,15 @@ export class PlateMeshBusy extends PlateMeshError {
 export const PLATE_MESH_TIMEOUT_MS = 60_000;
 
 /**
- * The worker's heap: room for the reader's 256 MiB of mesh arrays (outside
- * the JavaScript heap, but counted by Node against the worker), its parsed
- * config and its component lists, and no more.
+ * The worker's JavaScript heap: room for the reader's parsed config, its
+ * component lists and its entry index, and no more. These limits cap the
+ * V8 heap only. The reader's mesh arrays (ArrayBuffers) and the zip
+ * reader's entry records (Buffers) are stored outside it, and Node does
+ * not count them against the worker, so they are bounded elsewhere: see
+ * PLATE_MESH_READ_PEAK_MB in plate-mesh.ts.
  */
 export const PLATE_MESH_WORKER_LIMITS: Readonly<ResourceLimits> = Object.freeze({
-  maxOldGenerationSizeMb: 768,
+  maxOldGenerationSizeMb: 512,
   maxYoungGenerationSizeMb: 64,
   stackSizeMb: 4,
 });
