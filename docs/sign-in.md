@@ -66,8 +66,9 @@ have in any other browser, or one the provider's refusal did not end, lasts unti
 
 Creating an API token needs a recent sign-in: if you signed in more than 5 minutes ago, Settings
 asks you to sign in again first, and that sign-in checks the group. So a removed person cannot
-make a new token with a session they already had, and trying ends that session when Platehouse
-is the one that refuses the sign-in (see above). While your provider is down nobody can make one,
+make a new token with a session they already had. Asking for a token ends nothing by itself;
+following the Sign in again link does end that session when Platehouse is the one that refuses
+the sign-in (see above). While your provider is down nobody can make one,
 and a sign-in that fails because the provider is down never ends anyone's session.
 
 Removing someone does not revoke API tokens. A token never expires and is not checked against
