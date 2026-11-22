@@ -139,6 +139,11 @@ When the slicer's OrcaSlicer version changes, Platehouse re-estimates the librar
 background, since a new version can give different numbers. To go back, set the previous tag
 again.
 
+Pull the slicer image again when you upgrade the app, even if you keep the same tag: a Platehouse
+release ships its slicer changes in the slicer image. The STL and STEP preview pictures added in
+0.1.1 need a slicer image from 0.1.1 or later. With an older one, a preview waits for the slicer,
+for up to 2 hours, and then shows "The slicer is not answering."
+
 ### Postgres
 
 The example pins `postgres:17-alpine`. Minor updates within 17 are safe to pull. Moving to a new
