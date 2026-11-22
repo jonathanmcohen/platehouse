@@ -5,12 +5,19 @@
 // can say it in its language, and anything over the contract's 256 MiB is
 // refused before a byte is sent. The slicer here is a plain node:http server
 // on 127.0.0.1, holding nothing but synthetic bytes.
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { LIMITS } from "@platehouse/slicer-contract";
 import { afterEach, describe, expect, test } from "vitest";
-import { DERIVED_MESSAGES, RenderFailed, type SlicerTarget } from "../../src/derived/client.js";
+import {
+  DERIVED_MESSAGES,
+  RenderFailed,
+  SLICER_NOT_AN_STL,
+  type SlicerTarget,
+} from "../../src/derived/client.js";
 import { meshPreviewOutputs, stlPreviewOutputs } from "../../src/derived/preview.js";
 import { stubGlb } from "../support/slicer-stub.js";
 
@@ -106,6 +113,26 @@ describe("an STL's preview", () => {
     );
     expect(error).toBeInstanceOf(RenderFailed);
     expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ${message}`);
+  });
+
+  // Issue #379: the slicer refuses an STL with no triangles itself, before
+  // OpenSCAD runs, so its sentence follows the preview sentence alone, never
+  // "OpenSCAD said:".
+  test("the slicer's own refusal of an STL with no triangles is not put in OpenSCAD's mouth", async () => {
+    const { target } = await slicer(422, { error: "render_failed", message: SLICER_NOT_AN_STL });
+    const error = await failure(
+      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length),
+    );
+    expect(error).toBeInstanceOf(RenderFailed);
+    expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewFailed} ${SLICER_NOT_AN_STL}`);
+  });
+
+  test("the not-an-STL sentence is the one the slicer writes in apps/slicer/src/scad.ts", async () => {
+    const scad = await readFile(
+      fileURLToPath(new URL("../../../slicer/src/scad.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(scad.replace(/\s+/g, " ")).toContain(`"${SLICER_NOT_AN_STL}"`);
   });
 
   test("a 413 from the slicer says the STL is too large", async () => {

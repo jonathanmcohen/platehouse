@@ -2537,6 +2537,74 @@ describe("a STEP or SCAD render that lands while the page is open", () => {
   });
 });
 
+// Issue #380: an STL's or STEP file's preview picture has its own status,
+// previewStatus, beside derivedStatus (the STEP mesh or the SCAD render).
+// The Files tab says how the picture is doing from previewStatus, and the
+// page keeps asking while a picture is pending.
+describe("an STL or STEP preview picture's own status", () => {
+  const MESH = { kind: "glb" as const, url: "/blobs/0198f0c4-0000-7000-8000-0000000000f2" };
+  const PNG = "/blobs/0198f0c4-0000-7000-8000-0000000000f9";
+  const SAID = "ERROR: STL import: unexpected end of file";
+
+  const STL_PENDING: ModelFile = { ...STL_FILE, previewStatus: "pending", previewMessage: null };
+  const STL_DONE: ModelFile = {
+    ...STL_FILE,
+    previewStatus: "ok",
+    previewMessage: null,
+    preview: PNG,
+  };
+  /** A STEP file whose mesh is fine and whose picture failed. */
+  const STEP_PICTURE_FAILED: ModelFile = {
+    ...STEP_FILE,
+    derivedStatus: "ok",
+    view: MESH,
+    previewStatus: "failed",
+    previewMessage: `The preview picture could not be rendered. OpenSCAD said: ${SAID}`,
+    previewCodes: ["previewRejected"],
+    previewDetail: SAID,
+  };
+
+  function fileRow(name: string): HTMLElement {
+    const row = [...container.querySelectorAll(".studio-list-item")].find((li) =>
+      li.querySelector("h2")?.textContent?.includes(name),
+    );
+    if (!row) throw new Error(`no row for ${name}`);
+    return row as HTMLElement;
+  }
+
+  test("a picture still being made is said so, and the page keeps asking", async () => {
+    expect(isDeriving(STL_PENDING)).toBe(true);
+    expect(needsPolling(model([STL_PENDING]))).toBe(true);
+    expect(isDeriving(STL_DONE)).toBe(false);
+    expect(needsPolling(model([STL_DONE, STEP_PICTURE_FAILED]))).toBe(false);
+    models.set(MODEL_ID, model([STL_PENDING]));
+    await render(pageAt(MODEL_ID));
+    await click(tab("Files"));
+    expect(text(fileRow("Bracket.stl"))).toMatch(/preview picture is still being made/i);
+    expect(text(fileRow("Bracket.stl"))).not.toMatch(/could not/i);
+  });
+
+  test("a STEP file whose picture failed keeps its 3D view and says the picture failed, with why", async () => {
+    models.set(MODEL_ID, model([STEP_PICTURE_FAILED]));
+    await render(pageAt(MODEL_ID));
+    await click(tab("Files"));
+    const row = text(fileRow("Housing.step"));
+    expect(row).toMatch(/preview picture could not be made/i);
+    expect(row).toContain(SAID);
+    // The mesh is fine: nothing says the file could not be rendered.
+    expect(row).not.toMatch(/this file could not be rendered/i);
+    expect(text(container.querySelector('[aria-label="Viewer"]'))).not.toMatch(/could not be/i);
+  });
+
+  test("a finished picture shows in the Files tab with no status line", async () => {
+    models.set(MODEL_ID, model([STL_DONE]));
+    await render(pageAt(MODEL_ID));
+    await click(tab("Files"));
+    expect(fileRow("Bracket.stl").querySelector("img")?.getAttribute("src")).toBe(PNG);
+    expect(text(fileRow("Bracket.stl"))).not.toMatch(/still being made|could not be made/i);
+  });
+});
+
 describe("the app's upload dialog keeps each file's target from when it was added", () => {
   function fileDrop(files: File[]): Event {
     const drop = new Event("drop", { bubbles: true, cancelable: true });
