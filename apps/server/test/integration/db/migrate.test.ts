@@ -693,7 +693,7 @@ describe("0012 file preview status", () => {
     }
   }
 
-  test("on a database at 0011, adds the two columns, null on every file, and changes nothing else", async () => {
+  test("on a database at 0011, adds the preview columns, null on every file, and changes nothing else", async () => {
     const { db } = await pgc.freshDatabase();
     await seedAt0011(db);
     const before = (await sql`select * from files order by id`.execute(db)).rows;
@@ -705,9 +705,19 @@ describe("0012 file preview status", () => {
     expect(after).toHaveLength(FILES.length);
     // The db's CamelCasePlugin names the columns in camelCase.
     for (const [i, row] of after.entries()) {
-      const { previewStatus, previewMessage, ...rest } = row;
+      const {
+        previewStatus,
+        previewMessage,
+        previewSourceBlobId,
+        previewFailureSourceBlobId,
+        previewFailureMessage,
+        ...rest
+      } = row;
       expect(previewStatus).toBeNull();
       expect(previewMessage).toBeNull();
+      expect(previewSourceBlobId).toBeNull();
+      expect(previewFailureSourceBlobId).toBeNull();
+      expect(previewFailureMessage).toBeNull();
       expect(rest).toEqual(before[i]);
     }
   });

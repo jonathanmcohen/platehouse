@@ -108,6 +108,10 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   example. Slicing and STEP files still work. The slicer's log says which.
 - **"The slicer is not answering. The render will need to be started again."**: the slicer was down
   for over 2 hours. Bring it back and upload or replace the file again.
+- **"The slicer is not answering, so the preview picture could not be made. It will be tried again
+  automatically."** (or the same for storage): an STL's or STEP file's preview picture waited over
+  2 hours, or could not be queued. Nothing to do once the slicer or storage is back: the background
+  job tries it again. With a slicer image older than the app, update the slicer image.
 - **"Storage is not answering..."** or **"Storage refused this file..."**: the bucket was down, or
   refused the request (wrong key permissions, missing bucket). Check the storage settings.
 - **A render error with OpenSCAD's own message**: the `.scad` file itself has a problem; the message

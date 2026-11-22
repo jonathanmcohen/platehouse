@@ -62,8 +62,10 @@ pointer, or with the **Rotate**, **Zoom** and **Reset** buttons.
 - Replacing an OpenSCAD, STEP or STL file renders it again. Until the new render is ready, or if
   it fails, an OpenSCAD file's previous STL and image, or a STEP file's previous mesh, stay
   visible and the page says they are from an earlier version. A preview picture of an STL or STEP
-  file does not stay: it is only ever of the file's current version, so if the new one cannot be
-  made the card shows the file-type icon and the **Files** tab says why.
+  file is only ever of the file's current version: it stays while the replacement is being
+  rendered, and stays if the replacement is not saved because the slicer or storage failed, but
+  once a replacement is saved, the card shows the file-type icon until the new picture is made,
+  and the **Files** tab says why if it cannot be.
 
 While a plate is being estimated or a file is being rendered, the page checks again every few
 seconds, so the result appears without a reload.

@@ -101,6 +101,19 @@ export const DERIVED_MESSAGES = {
   previewFailed: PREVIEW_FAILED,
   /** The same, before OpenSCAD's own message when it rejects the STL. */
   previewRejected: `${PREVIEW_FAILED} OpenSCAD said:`,
+  /**
+   * A preview picture whose slicer stayed down past SLICER_DOWN_LIMIT_MS
+   * (issue #379): the preview backfill tries it again by itself, so it says
+   * so rather than asking for something the user cannot do.
+   */
+  previewSlicerDown:
+    "The slicer is not answering, so the preview picture could not be made. It will be tried again automatically.",
+  /** The same, for storage that stayed down. */
+  previewStoreDown:
+    "Storage is not answering, so the preview picture could not be made. It will be tried again automatically.",
+  /** A preview picture whose job could not be queued; the backfill queues it again. */
+  previewQueueFailed:
+    "The preview picture could not be queued. It will be tried again automatically.",
   /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",

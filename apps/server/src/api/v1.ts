@@ -782,8 +782,10 @@ const FILE = {
     previewStatus: {
       ...nullableString,
       description:
-        "For STL and STEP files, the preview picture: pending, ok or failed. Null until one " +
-        "is queued, and for other kinds. It never changes derivedStatus.",
+        "For STL and STEP files, the preview picture of the file's current version: pending, " +
+        "ok or failed (ok once it is stored, pending while it is being made, failed when the " +
+        "last attempt failed). Null when there is none yet and none is queued (one will be), " +
+        "and for other kinds. It never changes derivedStatus.",
     },
     previewMessage: {
       ...nullableString,
