@@ -1,6 +1,7 @@
 // Issue #358, review finding #385: the queue of plate mesh builds. At most
-// two run at once; at most a few wait; a request past that is told the
-// server is busy. Opens of the same plate share one build. A waiting build
+// `running` run at once (the server passes PLATE_MESH_BUILDS, now 1; these
+// tests pass their own sizes); at most a few wait; a request past that is
+// told the server is busy. Opens of the same plate share one build. A waiting build
 // whose callers have all gone is never started; a build already running
 // finishes, so its mesh is still kept.
 import { describe, expect, test } from "vitest";
