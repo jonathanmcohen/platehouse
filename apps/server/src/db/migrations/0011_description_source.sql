@@ -1,4 +1,4 @@
--- Platehouse schema 0010: where a model's description came from, so a fix to
+-- Platehouse schema 0011: where a model's description came from, so a fix to
 -- the MakerWorld converter can reach descriptions already stored (#357), and
 -- a record of the one-time steps run on upgrade.
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
@@ -28,7 +28,9 @@
 -- upgrade_steps holds one row per one-time step that has finished, keyed by
 -- the step's name (reconvert-descriptions-3 for the re-conversion with
 -- converter 3), with what it did as JSON for the Activity page. A step
--- whose row exists is not run again.
+-- whose row exists is not run again. While a step is still going, its
+-- counts so far are kept in a row named progress-<step>, which the app
+-- turns into the step's own row when it finishes (repos/descriptions.ts).
 --
 -- Safe on a live database: three nullable columns with no default (no table
 -- rewrite) and a new table; nothing existing changes.

@@ -51,7 +51,8 @@ const SHIPPED = [
   "0007_my_printers.sql",
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
-  "0010_description_source.sql",
+  "0010_drop_unused_tags.sql",
+  "0011_description_source.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -518,12 +519,11 @@ describe("0009 name sort prefix", () => {
   });
 });
 
-// Migration 0010 adds where a model's description came from (#357) and the
-// upgrade_steps table. It runs on an existing database at 0009, as 0.1.0
-// leaves it, with models that have descriptions; every row keeps every value
-// it had, and the three new columns start as null, so no stored description
-// counts as proved untouched until something records its source.
-describe("0010 description source", () => {
+// Migration 0010 (issue #312) removes the tags no model has, which 0.1.0 left
+// behind whenever a tag came off its last model. A tag a trashed model has is
+// kept, since a restore brings the model back with it, and so is every
+// collection, empty or not, and every model and link.
+describe("0010 drop unused tags", () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -532,7 +532,7 @@ describe("0010 description source", () => {
     const later = (await readdir(dir)).filter(
       (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 9,
     );
-    expect(later).toContain("0010_description_source.sql");
+    expect(later).toContain("0010_drop_unused_tags.sql");
     for (const name of later) await rm(join(dir, name));
   });
 
@@ -540,7 +540,87 @@ describe("0010 description source", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("applies on a database at 0009 with models, keeping every value and leaving the new columns null", async () => {
+  test("on a database at 0009, removes only the tags no model has", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name, trashed_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic live', null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Synthetic trashed', now())
+    `.execute(db);
+    await sql`
+      insert into tags (id, name)
+      values ('0190a0b0-0000-7000-8000-000000000031', 'qa-unused'),
+             ('0190a0b0-0000-7000-8000-000000000032', 'Live tag'),
+             ('0190a0b0-0000-7000-8000-000000000033', 'Trashed tag'),
+             ('0190a0b0-0000-7000-8000-000000000034', 'Another unused')
+    `.execute(db);
+    await sql`
+      insert into model_tags (model_id, tag_id)
+      values ('0190a0b0-0000-7000-8000-000000000021', '0190a0b0-0000-7000-8000-000000000032'),
+             ('0190a0b0-0000-7000-8000-000000000022', '0190a0b0-0000-7000-8000-000000000033')
+    `.execute(db);
+    await sql`
+      insert into collections (id, name)
+      values ('0190a0b0-0000-7000-8000-000000000041', 'QA empty collection'),
+             ('0190a0b0-0000-7000-8000-000000000042', 'Used collection')
+    `.execute(db);
+    await sql`
+      insert into collection_models (collection_id, model_id)
+      values ('0190a0b0-0000-7000-8000-000000000042', '0190a0b0-0000-7000-8000-000000000021')
+    `.execute(db);
+    const models = (await sql`select * from models order by id`.execute(db)).rows;
+    const links = (await sql`select * from model_tags order by model_id, tag_id`.execute(db)).rows;
+    const collections = (await sql`select * from collections order by id`.execute(db)).rows;
+    const members = (await sql`select * from collection_models order by model_id`.execute(db)).rows;
+
+    // Up to 0010 only: a later migration may add columns to models, which
+    // would show here as a changed row though 0010 changed none.
+    await cp(
+      join(MIGRATIONS_DIR, "0010_drop_unused_tags.sql"),
+      join(dir, "0010_drop_unused_tags.sql"),
+    );
+    await migrateFrom(db, dir);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 10));
+
+    const tags = await sql<{ name: string }>`select name from tags order by name`.execute(db);
+    expect(tags.rows.map((r) => r.name)).toEqual(["Live tag", "Trashed tag"]);
+    expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(models);
+    expect(
+      (await sql`select * from model_tags order by model_id, tag_id`.execute(db)).rows,
+    ).toEqual(links);
+    expect((await sql`select * from collections order by id`.execute(db)).rows).toEqual(
+      collections,
+    );
+    expect((await sql`select * from collection_models order by model_id`.execute(db)).rows).toEqual(
+      members,
+    );
+  });
+});
+
+// Migration 0011 adds where a model's description came from (#357) and the
+// upgrade_steps table. It runs on an existing database at 0010, with models
+// that have descriptions; every row keeps every value it had, and the three
+// new columns start as null, so no stored description counts as proved
+// untouched until something records its source.
+describe("0011 description source", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 10,
+    );
+    expect(later).toContain("0011_description_source.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0010 with models, keeping every value and leaving the new columns null", async () => {
     const { db } = await pgc.freshDatabase();
     await migrateFrom(db, dir);
     await sql`
@@ -554,11 +634,11 @@ describe("0010 description source", () => {
     ).rows;
 
     await cp(
-      join(MIGRATIONS_DIR, "0010_description_source.sql"),
-      join(dir, "0010_description_source.sql"),
+      join(MIGRATIONS_DIR, "0011_description_source.sql"),
+      join(dir, "0011_description_source.sql"),
     );
     await migrateFrom(db, dir);
-    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 10));
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 11));
 
     const after = (await sql<Record<string, unknown>>`select * from models order by id`.execute(db))
       .rows;

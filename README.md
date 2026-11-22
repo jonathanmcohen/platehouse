@@ -98,13 +98,18 @@ pnpm --filter @platehouse/docs serve
 
 The built site loads nothing from another site: no analytics, no external fonts or scripts, and
 search is a local index made at build time. CI builds it when `docs/`, `apps/docs` or the
-workspace files change. Nothing deploys it yet.
+workspace files change.
+
+The docs are published to GitHub Pages by `.github/workflows/docs-pages.yml` each time a docs
+change lands on `main`; the site's address is shown under Settings, Pages. Pages must first be
+switched on there (Source: GitHub Actions). See [apps/docs/README.md](apps/docs/README.md).
 
 ## Slicer image
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
 `ghcr.io/jonathanmcohen/platehouse-slicer`. A deployment pins an `orca-X.Y.Z` tag, as
-`examples/docker-compose.yml` does, or follows the `stable` tag.
+`examples/docker-compose.yml` does, or follows the `stable` tag. A test server can follow the
+`rc` tag instead (below).
 
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
@@ -118,6 +123,11 @@ failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publis
 a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a report and never
 fails the run. A version first published by a prerelease tag stays off `stable` until a plain
 release tag or a run by hand: the daily run sees its `orca-X.Y.Z` tag and builds nothing.
+
+A run started from a release tag (its push, a re-run of it, or a run by hand from that tag) also
+tags the image with the release's version, `X.Y.Z` or `X.Y.Z-rc.N`, the same name the app image
+uses, so the slicer built for a release can be found afterwards. Daily runs and runs from main tag
+no version.
 
 When a run fails, the workflow opens an issue titled "Slicer image failed for OrcaSlicer X.Y.Z".
 A failure before tagging creates or moves no tag, and `stable` stays where it was. A failure
@@ -159,6 +169,46 @@ that version instead.
 The daily run leaves a rollback alone: it builds only when an Orca release has no `orca-X.Y.Z`
 tag yet. A plain release tag or a run by hand always builds, and moves `stable` again when its
 smoke slice passes.
+
+### The rc tag
+
+Both images carry an `rc` tag for a test server: set the app to
+`ghcr.io/jonathanmcohen/platehouse:rc` and the slicer to
+`ghcr.io/jonathanmcohen/platehouse-slicer:rc`, and pull to get the newest release candidate. It
+moves, so it is not a pin. `rc` points at the newest version, by version number, that has both
+images published: the highest `vX.Y.Z-rc.N` or plain `vX.Y.Z` tag for which both
+`platehouse:X.Y.Z[-rc.N]` and `platehouse-slicer:X.Y.Z[-rc.N]` exist. Once a run has finished,
+both `rc` tags name builds of the same tag, with the one exception below.
+
+Only `.github/workflows/rc-tag.yml` moves `rc`. It runs after every run of the release or
+slicer-image workflow, one run at a time, and works the answer out again each time from the
+repository's tags and the registry, so the order in which runs finish, re-runs of old tags and
+runs by hand cannot leave `rc` on the wrong tag or the two images on different tags. When the
+answer has not changed it writes nothing. It reads all four tags (both version tags and both
+`rc` tags) before it writes anything, and if it fails after moving one `rc` tag it points that tag
+back at the build it had, so a failed run leaves `rc` where it was until the next run of either
+workflow, or until rc-tag is run by hand (Actions, rc-tag, Run workflow). The exception: if that
+put-back fails too, or the `rc` tag it moved did not exist before (a tag cannot be put back to not
+existing), the two `rc` tags can name different tags until the next successful run. The run then
+fails with an error saying the `rc` tags may name builds of different tags; run rc-tag by hand once
+GHCR answers again.
+
+- A release tag cut for an older version after a newer candidate (a backport, such as `v0.1.1`
+  after `v0.2.0-rc.1`) does not move `rc`, by design: `rc` stays on the newer candidate.
+- Throwaway tags such as `v0.0.0-test` and other prerelease kinds (`-beta.1`, `-rc` with no
+  number) never qualify.
+- A new candidate reaches `rc` only once both of its images are published, so a test server never
+  pulls a new app with an old slicer.
+
+To see where `rc` points, compare digests (the releases page lists neither candidates nor `rc`):
+
+```sh
+docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:rc --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --format '{{.Manifest.Digest}}'
+```
+
+or read the summary of the latest rc-tag run, which lists every candidate tag, whether each image
+is published for it, and where it pointed `rc`.
 
 ## Layout
 

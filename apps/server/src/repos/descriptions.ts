@@ -1,7 +1,7 @@
 // The database side of the description re-conversion (#357,
 // library/reconvert.ts): the candidates, their source files, the
 // compare-and-set write, the counts kept while a run goes, the lock that lets
-// one run go at a time, and the upgrade_steps record (migration 0010).
+// one run go at a time, and the upgrade_steps record (migration 0011).
 //
 // The counts of a step that has not finished are kept in upgrade_steps too,
 // in a row named progress-<step> (progressName), with the last model counted
