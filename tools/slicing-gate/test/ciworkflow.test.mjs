@@ -370,17 +370,45 @@ test("the app image job runs the release workflow's Trivy gate on the image it b
   assert.ok(app.indexOf("test-app-image.sh \"$IMAGE\" healthy") < app.indexOf(`name: ${TRIVY_GATE}`));
 });
 
-// Every Trivy step in both workflows (the gates and release.yml's full report)
-// installs one exact Trivy version, the same in all of them, rather than the
-// action's default, which lags (v0.36.0 of the action installs v0.70.0).
+// Every Trivy step in both workflows (the gates, release.yml's full report and
+// the CI slicer job's report) installs one exact Trivy version, the same in
+// all of them, rather than the action's default, which lags (v0.36.0 of the
+// action installs v0.70.0).
 test("every Trivy step in ci.yml and release.yml sets the same exact Trivy version", () => {
   const steps = [text(), readFileSync(RELEASE, "utf8")].flatMap((t) =>
     t.split(/\n(?= {6}- )/).filter((s) => /\n {8}uses: aquasecurity\/trivy-action@/.test(s)),
   );
-  assert.equal(steps.length, 3, "the CI gate, the release gate and the release full report");
+  assert.equal(steps.length, 4, "the CI gate, the CI slicer report, the release gate and the release full report");
   const versions = steps.map((s) => stepInputs(s).inputs.version);
   for (const v of versions) assert.match(v ?? "", /^v\d+\.\d+\.\d+$/, `an exact version: ${v}`);
   assert.equal(new Set(versions).size, 1, `one version in all of them: ${versions.join(", ")}`);
+});
+
+// Issue #219: a pull request that moves the Ubuntu snapshot (the apt-snapshot
+// workflow) needs a scan of the new slicer image in its own CI. The slicer
+// job ends with the same report slicer-image.yml makes before it publishes:
+// the same action, tag and inputs, on the image the container tests built,
+// and it can never fail the job (the maintainer, 2026-11-15 and 2026-11-21:
+// report only).
+const SLICER_REPORT = "Trivy report (informational, does not fail the job)";
+test("the CI slicer job ends with slicer-image.yml's Trivy report, which never fails the job", () => {
+  const job = jobBlock(text(), "slicer-image");
+  const ours = stepBlock(job, SLICER_REPORT);
+  const theirs = stepBlock(jobBlock(readFileSync(join(ROOT, ".github", "workflows", "slicer-image.yml"), "utf8"), "build"), SLICER_REPORT);
+  const a = stepInputs(ours);
+  const b = stepInputs(theirs);
+  assert.equal(a.uses, b.uses, "the same action at the same tag");
+  assert.equal(a.inputs["image-ref"], "${{ env.SLICER_IMAGE }}", "the image the container tests built");
+  assert.match(job, /\n {6}SLICER_IMAGE: platehouse-slicer:ci\n/);
+  const { "image-ref": _a, ...restA } = a.inputs;
+  const { "image-ref": _b, ...restB } = b.inputs;
+  assert.deepEqual(restA, restB, "every other input as slicer-image.yml has it");
+  assert.equal(a.inputs["exit-code"], '"0"');
+  assert.match(ours, /\n {8}continue-on-error: true\n/);
+  assert.doesNotMatch(ours, /\n {8}if:/, "it runs only when the steps before it passed");
+  const steps = jobSteps(job);
+  assert.ok(steps.at(-1).startsWith(`      - name: ${SLICER_REPORT}\n`), "the job's last step");
+  assert.ok(job.indexOf("- name: Container tests\n") < job.indexOf(`- name: ${SLICER_REPORT}\n`));
 });
 
 // The build cache would otherwise keep the runtime stage's apt-get upgrade
@@ -718,6 +746,8 @@ for (const [name, input, want] of [
         ".github/workflows/slicer-image.yml.orig",
         ".github/workflows/rc-tag.yml.orig",
         ".github/scripts/rc-target.mjs.bak",
+        ".github/workflows/apt-snapshot.yml.orig",
+        ".github/scripts/apt-snapshot.mjs.bak",
         ".github/scripts/other.mjs",
         "apps/server/.node-version",
         ".node-version.bak",
@@ -771,6 +801,10 @@ for (const [name, input, want] of [
   ["a push with no before runs both", { event: "push", before: "", changed: [] }, RUN],
   ["a base commit that is gone (force-push) runs both", { event: "push", before: SHA, baseExists: false, changed: [] }, RUN],
   ["a PR with no base runs both", { event: "pull_request", prBase: "", changed: [] }, RUN],
+  // Issue #219: the apt-snapshot workflow starts ci.yml by hand on its bot
+  // branch. A run by hand has no base (github.event.before is empty), so both
+  // gate jobs run, whatever changed.
+  ["a run by hand runs both", { event: "workflow_dispatch", changed: ["apps/server/src/config.ts"] }, RUN],
 ]) {
   test(`gate jobs decision: ${name}`, () => {
     assert.deepEqual(decideGate(input), want);
@@ -824,6 +858,37 @@ for (const [name, changed, want] of [
   });
 }
 
+// Issue #219: a run by hand (the apt-snapshot workflow's bot branch) has no
+// base commit, so the slicer job and the docs job run too, whatever changed.
+// The slicer step is run here with git stubbed, as decideDocs runs the docs
+// step.
+test("a run by hand runs the slicer job and the docs job (issue #219)", () => {
+  assert.equal(decideDocs({ event: "workflow_dispatch", changed: ["apps/server/src/config.ts"] }), "true");
+  const dir = mkdtempSync(join(tmpdir(), "ci-slicer-"));
+  try {
+    const out = join(dir, "github-output");
+    for (const [env, want] of [
+      [{ EVENT: "workflow_dispatch", PR_BASE: "", PUSH_BEFORE: "" }, "true"],
+      [{ EVENT: "pull_request", PR_BASE: SHA, PUSH_BEFORE: "" }, "false"],
+    ]) {
+      writeFileSync(out, "");
+      const script = [
+        "set -eo pipefail",
+        'git() { case "$1" in cat-file) return 0;; diff) printf "apps/server/src/config.ts\\n";; *) return 99;; esac; }',
+        stepScript(text(), "Decide whether the slicer job runs"),
+      ].join("\n");
+      const r = spawnSync("bash", ["-c", script], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, ...env },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual([...readFileSync(out, "utf8").matchAll(/^slicer=(.*)$/gm)].map((m) => m[1]), [want], env.EVENT);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Issue #222: every file the gate tests read from outside tools/slicing-gate,
 // alone in a PR, runs the gate tests. Only this workflow and .node-version,
 // which the gate image job is built from, also run the image build.
@@ -834,6 +899,8 @@ for (const [file, want] of [
   [".github/workflows/slicer-image.yml", TESTS],
   [".github/workflows/rc-tag.yml", TESTS],
   [".github/scripts/rc-target.mjs", TESTS],
+  [".github/workflows/apt-snapshot.yml", TESTS],
+  [".github/scripts/apt-snapshot.mjs", TESTS],
   ["docker/app.Dockerfile", TESTS],
   ["apps/slicer/Dockerfile", TESTS],
   ["apps/slicer/test/container/smoke.test.ts", TESTS],
@@ -1068,6 +1135,8 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     ".github/workflows/slicer-image.yml",
     ".github/workflows/rc-tag.yml",
     ".github/scripts/rc-target.mjs",
+    ".github/workflows/apt-snapshot.yml",
+    ".github/scripts/apt-snapshot.mjs",
     "docker/app.Dockerfile",
     "apps/slicer/Dockerfile",
     "apps/slicer/test/container/smoke.test.ts",

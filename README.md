@@ -124,6 +124,26 @@ a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a re
 fails the run. A version first published by a prerelease tag stays off `stable` until a plain
 release tag or a run by hand: the daily run sees its `orca-X.Y.Z` tag and builds nothing.
 
+The image installs its Ubuntu packages from one fixed snapshot of the Ubuntu archive,
+`APT_SNAPSHOT` in `apps/slicer/Dockerfile` (the slicing gate image, `tools/slicing-gate/Dockerfile`,
+pins the same one), so every build installs the same packages. To pick up Ubuntu's security
+fixes, `.github/workflows/apt-snapshot.yml` moves the snapshot forward once a month, at 06:00 UTC
+on the 1st. It takes midnight UTC of the newest day snapshot.ubuntu.com has, checks that the
+service has it before changing anything, and opens one pull request from the branch
+`bot/apt-snapshot` saying the old and new dates. If last month's pull request is still open, it is
+closed and replaced by the new one, so there is never more than one. GitHub holds the checks
+of a pull request a workflow opened until someone approves them, so the workflow starts the ci
+workflow on that branch itself: it builds both images, runs the container tests and the slicing
+gate tests, and the slicer job ends with the same Trivy report as above, so the pull request shows
+what is still open in the new image. Review and merge it like any other pull request. Merging does
+not publish anything: the new packages reach the published image with the next build of it (a
+release tag, a new OrcaSlicer version, or a run by hand). The Trivy scans stay reports and never
+fail a build (the slicer has no internet access). The branch belongs to the workflow, which
+replaces it each month, so fix a broken snapshot on another branch. The workflow can also be run by
+hand from main (Actions, apt-snapshot, Run workflow). It needs the repository setting "Allow GitHub
+Actions to create and approve pull requests" (Settings, Actions, General, Workflow permissions);
+without it the run pushes the branch and then fails, saying so.
+
 A run started from a release tag (its push, a re-run of it, or a run by hand from that tag) also
 tags the image with the release's version, `X.Y.Z` or `X.Y.Z-rc.N`, the same name the app image
 uses, so the slicer built for a release can be found afterwards. Daily runs and runs from main tag
