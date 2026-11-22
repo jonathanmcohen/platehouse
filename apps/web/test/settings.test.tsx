@@ -100,6 +100,9 @@ interface FakeState {
   /** The server's clock: GET /app/api/trash answers it as readAt. */
   now: string;
   models: FakeModel[];
+  /** Tags and collections no model uses, listed with 0 as the server lists them (#312). */
+  unusedTags: string[];
+  unusedCollections: string[];
 }
 
 let state: FakeState;
@@ -182,7 +185,27 @@ function counts(key: "tags" | "collections" | "creator") {
     const names = key === "creator" ? (m.creator === null ? [] : [m.creator]) : m[key];
     for (const n of names) byName.set(n, (byName.get(n) ?? 0) + 1);
   }
+  const unused =
+    key === "tags" ? state.unusedTags : key === "collections" ? state.unusedCollections : [];
+  for (const n of unused) if (!byName.has(n)) byName.set(n, 0);
   return [...byName].map(([name, models]) => ({ name, models }));
+}
+
+/**
+ * DELETE /app/api/tags or /collections?name=: takes it off every model and
+ * forgets it, as the server does (#312); 404 when no model and no unused
+ * entry has it.
+ */
+function deleteLabel(key: "tags" | "collections", typed: string | null): Response {
+  if (typed === null || typed.trim() === "") return json(400, { error: "bad_request" });
+  const unusedKey = key === "tags" ? "unusedTags" : "unusedCollections";
+  const known =
+    state.models.some((m) => m[key].some((n) => sameName(n, typed))) ||
+    state[unusedKey].some((n) => sameName(n, typed));
+  if (!known) return json(404, { error: "not_found" });
+  for (const m of state.models) m[key] = m[key].filter((n) => !sameName(n, typed));
+  state[unusedKey] = state[unusedKey].filter((n) => !sameName(n, typed));
+  return json(204);
 }
 
 /**
@@ -336,6 +359,12 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(200, { collections: counts("collections") });
   }
   if (method === "GET" && path === "/app/api/tags") return json(200, { tags: counts("tags") });
+  if (method === "DELETE" && path === "/app/api/tags") {
+    return deleteLabel("tags", url.searchParams.get("name"));
+  }
+  if (method === "DELETE" && path === "/app/api/collections") {
+    return deleteLabel("collections", url.searchParams.get("name"));
+  }
   if (method === "GET" && path === "/app/api/creators") {
     return json(200, { creators: counts("creator") });
   }
@@ -495,6 +524,8 @@ beforeEach(() => {
         files: [{ id: "f2", name: "Hook.stl", kind: "stl" }],
       },
     ],
+    unusedTags: [],
+    unusedCollections: [],
   };
   calls.length = 0;
   issued.length = 0;
@@ -2203,6 +2234,157 @@ describe("keyboard focus when a control is busy, removed or replaced", () => {
       expect(heading.getAttribute("tabindex")).toBe("-1");
     },
   );
+});
+
+// Issue #312: a tag is deleted from the Tags page, a collection from the
+// Collections page or its own page. A Delete asks first, naming how many
+// models still use it, when any do; one no model uses goes at once.
+describe("deleting a tag or a collection", () => {
+  /** The names the list shows, in order. */
+  function listed(): string[] {
+    return [...document.querySelectorAll(".studio-list-item .studio-row a")].map(
+      (a) => a.textContent ?? "",
+    );
+  }
+
+  test("a tag that models still have asks first, naming how many, then comes off them", async () => {
+    state.models[1]?.tags.push("PLA");
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag PLA"));
+    const box = dialog();
+    expect(box?.querySelector("h2")?.textContent).toBe("Delete the tag PLA?");
+    expect(box?.textContent).toContain(
+      "2 models still have this tag. Deleting the tag takes it off them; the models themselves are not changed.",
+    );
+    expect(callsTo("DELETE", "/app/api/tags?name=PLA")).toHaveLength(0);
+    await click(button("Delete tag", box as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/tags?name=PLA")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    expect(listed()).not.toContain("PLA");
+    expect(state.models.every((m) => !m.tags.includes("PLA"))).toBe(true);
+    expect(statusLine().textContent).toBe("Deleted the tag PLA.");
+  });
+
+  test("one model is named in the singular", async () => {
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag PLA"));
+    expect(dialog()?.textContent).toContain(
+      "1 model still has this tag. Deleting the tag takes it off that model; the model itself is not changed.",
+    );
+  });
+
+  test("Cancel deletes nothing", async () => {
+    await show("/tags", <TagsPage />);
+    const opener = button("Delete tag PLA");
+    opener.focus();
+    await click(opener);
+    await click(button("Cancel", dialog() as HTMLElement));
+    expect(dialog()).toBeNull();
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+    expect(listed()).toContain("PLA");
+    expect(document.activeElement).toBe(opener);
+  });
+
+  test("a tag no model has is deleted without asking", async () => {
+    state.unusedTags = ["qa-t28"];
+    await show("/tags", <TagsPage />);
+    expect(text()).toContain("0 models");
+    await click(button("Delete tag qa-t28"));
+    expect(dialog()).toBeNull();
+    expect(callsTo("DELETE", "/app/api/tags?name=qa-t28")).toHaveLength(1);
+    expect(listed()).toEqual(["PLA"]);
+    expect(statusLine().textContent).toBe("Deleted the tag qa-t28.");
+  });
+
+  test("after a delete, focus goes to the next row's Delete, else the status line", async () => {
+    state.unusedTags = ["Alpha", "Beta"];
+    await show("/tags", <TagsPage />);
+    const alpha = button("Delete tag Alpha");
+    alpha.focus();
+    await click(alpha);
+    expect(document.activeElement).toBe(button("Delete tag Beta"));
+    await click(button("Delete tag Beta"));
+    expect(document.activeElement).toBe(button("Delete tag PLA"));
+    await click(button("Delete tag PLA"));
+    await click(button("Delete tag", dialog() as HTMLElement));
+    expect(document.activeElement).toBe(statusLine());
+  });
+
+  test("a delete that fails says why in the dialog and keeps the tag", async () => {
+    failing.add("DELETE /app/api/tags");
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag PLA"));
+    await click(button("Delete tag", dialog() as HTMLElement));
+    expect(dialog()).not.toBeNull();
+    expect(announced()).toContain("This is unavailable right now.");
+    expect(listed()).toContain("PLA");
+  });
+
+  test("a delete without a dialog that fails says why and keeps the tag", async () => {
+    state.unusedTags = ["qa-t28"];
+    failing.add("DELETE /app/api/tags");
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag qa-t28"));
+    expect(announced()).toContain("This is unavailable right now.");
+    expect(listed()).toContain("qa-t28");
+  });
+
+  test("a collection is deleted from the Collections page, and its models stay", async () => {
+    state.unusedCollections = ["QA T28 test"];
+    await show("/collections", <CollectionsPage />);
+    expect(listed()).toEqual(["Desk", "Garage", "QA T28 test"]);
+    await click(button("Delete collection QA T28 test"));
+    expect(callsTo("DELETE", "/app/api/collections?name=QA%20T28%20test")).toHaveLength(1);
+
+    await click(button("Delete collection Garage"));
+    const box = dialog();
+    expect(box?.querySelector("h2")?.textContent).toBe("Delete the collection Garage?");
+    expect(box?.textContent).toContain(
+      "1 model is still in this collection. Deleting the collection takes that model out of it; the model itself is not changed.",
+    );
+    await click(button("Delete collection", box as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/collections?name=Garage")).toHaveLength(1);
+    expect(listed()).toEqual(["Desk"]);
+    expect(state.models.map((m) => m.name)).toEqual(["Cable clip", "Hook"]);
+    expect(state.models[1]?.collections).toEqual(["Desk"]);
+    expect(statusLine().textContent).toBe("Deleted the collection Garage.");
+  });
+
+  test("a collection is deleted from its own page, which then shows the list", async () => {
+    await show("/collections?name=Desk", <CollectionsPage />);
+    await click(button("Delete collection Desk"));
+    const box = dialog();
+    expect(box?.textContent).toContain("2 models are still in this collection.");
+    await click(button("Delete collection", box as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/collections?name=Desk")).toHaveLength(1);
+    expect(document.querySelector("h1")?.textContent).toBe("Collections");
+    expect(listed()).toEqual(["Garage"]);
+    expect(statusLine().textContent).toBe("Deleted the collection Desk.");
+  });
+
+  test("a name with spaces or dots goes in the query", async () => {
+    state.unusedTags = [".."];
+    state.unusedCollections = ["Desk gear & more"];
+    await show("/tags", <TagsPage />);
+    await click(button("Delete tag .."));
+    expect(callsTo("DELETE", "/app/api/tags?name=..")).toHaveLength(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await show("/collections", <CollectionsPage />);
+    await click(button("Delete collection Desk gear & more"));
+    expect(callsTo("DELETE", "/app/api/collections?name=Desk%20gear%20%26%20more")).toHaveLength(1);
+  });
+
+  test("creators cannot be deleted, and a tag's own page has no Delete", async () => {
+    await show("/creators", <CreatorsPage />);
+    expect([...document.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
+      "Delete",
+    );
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await show("/tags?name=PLA", <TagsPage />);
+    expect(() => button("Delete tag PLA")).toThrow();
+  });
 });
 
 describe("the pages' stylesheet", () => {

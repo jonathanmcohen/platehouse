@@ -1,10 +1,18 @@
 // Build plan Task 14, AC-061: tags on a model, and the library filtered by tag.
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createSearch } from "../../../src/library/search.js";
 import { createTags } from "../../../src/library/tags.js";
 import { createTrash } from "../../../src/library/trash.js";
-import { type LibraryEnv, marker, seedStoredModel, startLibraryEnv } from "../support/library.js";
+import { tagsRepo } from "../../../src/repos/tags.js";
+import {
+  type LibraryEnv,
+  labelStored,
+  marker,
+  seedStoredModel,
+  startLibraryEnv,
+} from "../support/library.js";
 
 let env: LibraryEnv;
 
@@ -82,5 +90,117 @@ describe("addTag and removeTag", () => {
     expect(await tags.addTag(model.id, `Late ${marker()}`)).toBe(false);
     expect(await tags.removeTag(model.id, tag)).toBe(false);
     expect(await env.repos.tags.forModel(model.id)).toEqual([tag]);
+  });
+});
+
+/** A gate a test opens: wait() resolves once open() is called. */
+function gate() {
+  let open: () => void = () => {};
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { open, wait: () => opened };
+}
+
+/** Whether p has settled after a short wait. */
+async function settledSoon(p: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void p.then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    },
+  );
+  await sleep(300);
+  return done;
+}
+
+// Issue #312: the app removes a tag its last model loses, and the public
+// API's untag does not (the API never deletes anything).
+describe("unused tags", () => {
+  test("the API's removeTag keeps the tag; the app's removes it once no model has it", async () => {
+    const tag = `Unused ${marker()}`;
+    const { model } = await seedStoredModel(env);
+    await createTags(env.db).addTag(model.id, tag);
+    expect(await createTags(env.db).removeTag(model.id, tag)).toBe(true);
+    expect(await labelStored(env.db, "tags", tag)).toBe(true);
+
+    await createTags(env.db).addTag(model.id, tag);
+    const app = createTags(env.db, { dropUnusedTags: true });
+    expect(await app.removeTag(model.id, tag)).toBe(true);
+    expect(await labelStored(env.db, "tags", tag)).toBe(false);
+    expect(await app.removeTag(model.id, tag)).toBe(false);
+  });
+
+  test("a tag being added to another model while its last model loses it is kept", async () => {
+    const tag = `Race keep ${marker()}`;
+    const a = (await seedStoredModel(env)).model.id;
+    const b = (await seedStoredModel(env)).model.id;
+    await createTags(env.db).addTag(a, tag);
+    const added = gate();
+    const commit = gate();
+    // Tags b and holds its transaction open, as a slow request would.
+    const adding = env.db.transaction().execute(async (trx) => {
+      await tagsRepo(trx).add(b, tag);
+      added.open();
+      await commit.wait();
+    });
+    await added.wait();
+    const removing = createTags(env.db, { dropUnusedTags: true }).removeTag(a, tag);
+    // The removal waits for the add to commit, so it sees b's link.
+    expect(await settledSoon(removing)).toBe(false);
+    commit.open();
+    await adding;
+    expect(await removing).toBe(true);
+    expect(await labelStored(env.db, "tags", tag)).toBe(true);
+    expect(await env.repos.tags.forModel(b)).toEqual([tag]);
+    expect(await env.repos.tags.forModel(a)).toEqual([]);
+  });
+
+  test("a tag added while a removal of it is still uncommitted is made again", async () => {
+    const tag = `Race remake ${marker()}`;
+    const a = (await seedStoredModel(env)).model.id;
+    const b = (await seedStoredModel(env)).model.id;
+    await createTags(env.db).addTag(a, tag);
+    const removed = gate();
+    const commit = gate();
+    const removing = env.db.transaction().execute(async (trx) => {
+      expect(await tagsRepo(trx).remove(a, tag, { dropUnused: true })).toBe(true);
+      removed.open();
+      await commit.wait();
+    });
+    await removed.wait();
+    const adding = createTags(env.db).addTag(b, tag);
+    expect(await settledSoon(adding)).toBe(false);
+    commit.open();
+    await removing;
+    expect(await adding).toBe(true);
+    expect(await env.repos.tags.forModel(b)).toEqual([tag]);
+    expect(await labelStored(env.db, "tags", tag)).toBe(true);
+  });
+
+  test("a tag Delete waits for a tagging in flight, then takes the tag off that model too", async () => {
+    const tag = `Race delete ${marker()}`;
+    const a = (await seedStoredModel(env)).model.id;
+    const b = (await seedStoredModel(env)).model.id;
+    await createTags(env.db).addTag(a, tag);
+    const added = gate();
+    const commit = gate();
+    const adding = env.db.transaction().execute(async (trx) => {
+      await tagsRepo(trx).add(b, tag);
+      added.open();
+      await commit.wait();
+    });
+    await added.wait();
+    const deleting = env.repos.tags.delete(tag);
+    expect(await settledSoon(deleting)).toBe(false);
+    commit.open();
+    await adding;
+    expect(await deleting).toBe(tag);
+    expect(await env.repos.tags.forModel(a)).toEqual([]);
+    expect(await env.repos.tags.forModel(b)).toEqual([]);
+    expect(await labelStored(env.db, "tags", tag)).toBe(false);
   });
 });

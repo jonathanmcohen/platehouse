@@ -4,6 +4,7 @@
 // a signed-in session, and every state-changing one Origin = PUBLIC_ORIGIN.
 //
 //   GET    /app/api/creators | /collections | /tags   {<list>: [{name, models}]}
+//   DELETE /app/api/tags?name= | /collections?name=   204 | 404: delete it (#312)
 //   GET    /app/api/organise/models?creator|collection|tag&cursor
 //                                                     {models, nextCursor}
 //   PATCH  /app/api/models/:id   {name}               rename a model
@@ -50,6 +51,17 @@
 // collection the model does not have is 404 too. The lists count live
 // models only, and the model rows are Task 14's search with one filter, a
 // page of up to ROWS_PER_PAGE at a time.
+//
+// Deleting tags and collections (issue #312, the maintainer, 2026-11-21).
+// DELETE /tags and /collections delete one by name, ignoring case, from
+// every model that has it, trashed ones included, and change no model
+// otherwise; 404 when there is no such name. Here, unlike in the public API,
+// taking a tag off its last model (one model's Remove tag, bulk Remove tag)
+// removes the tag, and so does deleting that model for good (trash.ts); a
+// model in the trash still has its tags, so it keeps one. Collections are
+// never removed on their own. The Tags and Collections lists show every tag
+// and collection but one only trashed models use, so one no model uses is
+// listed with 0 and can be deleted.
 //
 // Tags and collections are one per name ignoring case, and the first name
 // written is the one kept, so a PUT answers {name}: the name the tag or
@@ -98,6 +110,8 @@ import {
   TRASH_RETENTION_DAYS,
 } from "../library/trash.js";
 import { bulkRepo, MAX_BULK_IDS, MAX_BULK_TAGS } from "../repos/bulk.js";
+import { collectionsRepo } from "../repos/collections.js";
+import { tagsRepo } from "../repos/tags.js";
 import { viewOf } from "./library.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
@@ -250,27 +264,38 @@ async function creatorCounts(db: Kysely<DB>) {
     .execute();
 }
 
+/**
+ * Tags with how many live models have each, in alphabetical order ignoring
+ * case: every tag but one that only trashed models have (issue #312). A tag
+ * no model has is listed with 0, so it can be deleted; one only trashed
+ * models have is not, as a restore brings it back.
+ */
 async function tagCounts(db: Kysely<DB>) {
   return db
     .selectFrom("tags")
-    .innerJoin("modelTags", "modelTags.tagId", "tags.id")
-    .innerJoin("models", "models.id", "modelTags.modelId")
-    .select(["tags.name", sql<number>`count(*)::int`.as("models")])
-    .where("models.trashedAt", "is", null)
-    .groupBy("tags.name")
+    .leftJoin("modelTags", "modelTags.tagId", "tags.id")
+    .leftJoin("models", (join) =>
+      join.onRef("models.id", "=", "modelTags.modelId").on("models.trashedAt", "is", null),
+    )
+    .select(["tags.name", sql<number>`count(models.id)::int`.as("models")])
+    .groupBy(["tags.id", "tags.name"])
+    .having(sql<boolean>`count(models.id) > 0 or count(model_tags.model_id) = 0`)
     .orderBy(sql`lower(tags.name)`)
     .orderBy("tags.name")
     .execute();
 }
 
+/** As tagCounts, for collections: an empty one is listed with 0 (issue #312). */
 async function collectionCounts(db: Kysely<DB>) {
   return db
     .selectFrom("collections")
-    .innerJoin("collectionModels", "collectionModels.collectionId", "collections.id")
-    .innerJoin("models", "models.id", "collectionModels.modelId")
-    .select(["collections.name", sql<number>`count(*)::int`.as("models")])
-    .where("models.trashedAt", "is", null)
-    .groupBy("collections.name")
+    .leftJoin("collectionModels", "collectionModels.collectionId", "collections.id")
+    .leftJoin("models", (join) =>
+      join.onRef("models.id", "=", "collectionModels.modelId").on("models.trashedAt", "is", null),
+    )
+    .select(["collections.name", sql<number>`count(models.id)::int`.as("models")])
+    .groupBy(["collections.id", "collections.name"])
+    .having(sql<boolean>`count(models.id) > 0 or count(collection_models.model_id) = 0`)
     .orderBy(sql`lower(collections.name)`)
     .orderBy("collections.name")
     .execute();
@@ -410,6 +435,26 @@ export async function registerOrganiseApi(
       collections: await collectionCounts(need(deps).db),
     }));
     scope.get("/tags", async () => ({ tags: await tagCounts(need(deps).db) }));
+
+    // Delete a tag or a collection (issue #312): it comes off every model
+    // that has it, trashed ones too, and no model changes otherwise. The
+    // web app's own session routes; the public API v1 deletes nothing.
+    scope.delete<{ Querystring: NameQuery }>(
+      "/tags",
+      { schema: { querystring: NAME_QUERY } },
+      async (request, reply) => {
+        const gone = await tagsRepo(need(deps).db).delete(request.query.name);
+        return gone === null ? refuse(reply, 404, "not_found") : reply.code(204).send();
+      },
+    );
+    scope.delete<{ Querystring: NameQuery }>(
+      "/collections",
+      { schema: { querystring: NAME_QUERY } },
+      async (request, reply) => {
+        const gone = await collectionsRepo(need(deps).db).delete(request.query.name);
+        return gone === null ? refuse(reply, 404, "not_found") : reply.code(204).send();
+      },
+    );
 
     scope.get<{ Querystring: RowsQuery }>(
       "/organise/models",
@@ -615,7 +660,8 @@ export async function registerOrganiseApi(
 function libraryCalls(db: Kysely<DB>) {
   return {
     ...createRename(db),
-    ...createTags(db),
+    // The app removes a tag its last model loses (issue #312); the API does not.
+    ...createTags(db, { dropUnusedTags: true }),
     ...createCollections(db),
     ...createSearch(db),
   };
