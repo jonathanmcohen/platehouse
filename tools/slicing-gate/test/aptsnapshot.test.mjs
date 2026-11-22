@@ -58,6 +58,15 @@ const fakeTexts = (ts, gateTs = ts, readmeTs = ts) => ({
   "tools/slicing-gate/README.md": `| What | Version |\n|---|---|\n| apt packages | Ubuntu snapshot ${readmeTs} | signed snapshot index (apt) |\n`,
 });
 
+// Test dates and the leftover check. The workflow stops when any tracked
+// file but the three pins names the old snapshot, and the pin only moves
+// forward, so a snapshot written in this file must be one that can never be a
+// pin: a 2020 date, long behind it. A snapshot beyond every candidate is
+// computed here, a century from now, and never written in the file.
+const FAR_YEAR = new Date().getUTCFullYear() + 100;
+const FAR = snapshotFor(new Date(Date.UTC(FAR_YEAR, 11, 31)));
+const FAR_EVE = snapshotFor(new Date(Date.UTC(FAR_YEAR, 11, 30)));
+
 // A stand-in for fetch: answer(url, n) gives a status for the nth call, or
 // throws. Every call is recorded.
 function fakeFetch(answer) {
@@ -98,17 +107,17 @@ test("the slicer image, the slicing gate image and the gate README pin one snaps
 });
 
 for (const [s, want] of [
-  ["20261107T000000Z", true],
-  ["20261231T235959Z", true],
+  ["20201107T000000Z", true],
+  ["20201231T235959Z", true],
   ["20240229T000000Z", true],
   ["20250229T000000Z", false],
-  ["20261301T000000Z", false],
-  ["20261100T000000Z", false],
-  ["20261107T240000Z", false],
-  ["20261107T000000", false],
-  ["2026-11-07T00:00:00Z", false],
-  [" 20261107T000000Z", false],
-  ["20261107T000000Z\n", false],
+  ["20201301T000000Z", false],
+  ["20201100T000000Z", false],
+  ["20201107T240000Z", false],
+  ["20201107T000000", false],
+  ["2020-11-07T00:00:00Z", false],
+  [" 20201107T000000Z", false],
+  ["20201107T000000Z\n", false],
   ["", false],
   [undefined, false],
 ]) {
@@ -118,29 +127,29 @@ for (const [s, want] of [
 }
 
 test("label reads a snapshot as a date a person reads", () => {
-  assert.equal(label("20261107T000000Z"), "7 November 2026");
-  assert.equal(label("20270101T000000Z"), "1 January 2027");
-  assert.throws(() => label("2026-11-07"), /not a snapshot timestamp/);
+  assert.equal(label("20201107T000000Z"), "7 November 2020");
+  assert.equal(label("20210101T000000Z"), "1 January 2021");
+  assert.throws(() => label("2020-11-07"), /not a snapshot timestamp/);
 });
 
 test("candidates: midnight UTC today, then each day before it, a week in all, newest first", () => {
   assert.equal(LOOKBACK_DAYS, 7);
-  assert.deepEqual(candidates(new Date("2026-12-01T06:00:00Z")), [
-    "20261201T000000Z",
-    "20261130T000000Z",
-    "20261129T000000Z",
-    "20261128T000000Z",
-    "20261127T000000Z",
-    "20261126T000000Z",
-    "20261125T000000Z",
+  assert.deepEqual(candidates(new Date("2020-12-01T06:00:00Z")), [
+    "20201201T000000Z",
+    "20201130T000000Z",
+    "20201129T000000Z",
+    "20201128T000000Z",
+    "20201127T000000Z",
+    "20201126T000000Z",
+    "20201125T000000Z",
   ]);
   // Across a year end, and at the last second of a day: still that UTC day.
-  assert.deepEqual(candidates(new Date("2027-01-02T23:59:59Z")).slice(0, 3), [
-    "20270102T000000Z",
-    "20270101T000000Z",
-    "20261231T000000Z",
+  assert.deepEqual(candidates(new Date("2021-01-02T23:59:59Z")).slice(0, 3), [
+    "20210102T000000Z",
+    "20210101T000000Z",
+    "20201231T000000Z",
   ]);
-  assert.equal(snapshotFor(new Date("2026-03-09T00:00:00.000Z")), "20260309T000000Z");
+  assert.equal(snapshotFor(new Date("2020-03-09T00:00:00.000Z")), "20200309T000000Z");
   assert.throws(() => candidates(new Date("nope")), /not a date/);
 });
 
@@ -148,7 +157,7 @@ test("candidates: midnight UTC today, then each day before it, a week in all, ne
 // the future when the run asks for it: a future timestamp would resolve to a
 // different archive state on every build.
 test("candidates: never later than now", () => {
-  for (const iso of ["2026-12-01T00:00:00Z", "2026-12-01T00:00:01Z", "2026-12-01T23:59:59Z"]) {
+  for (const iso of ["2020-12-01T00:00:00Z", "2020-12-01T00:00:01Z", "2020-12-01T23:59:59Z"]) {
     const now = new Date(iso);
     for (const ts of candidates(now)) {
       const t = Date.UTC(+ts.slice(0, 4), +ts.slice(4, 6) - 1, +ts.slice(6, 8));
@@ -158,26 +167,26 @@ test("candidates: never later than now", () => {
 });
 
 test("dockerfilePin: exactly one ARG APT_SNAPSHOT= line holding a timestamp", () => {
-  assert.equal(dockerfilePin("ARG APT_SNAPSHOT=20261107T000000Z\nARG APT_SNAPSHOT\n"), "20261107T000000Z");
+  assert.equal(dockerfilePin("ARG APT_SNAPSHOT=20201107T000000Z\nARG APT_SNAPSHOT\n"), "20201107T000000Z");
   assert.throws(() => dockerfilePin("ARG APT_SNAPSHOT\n", "f"), /f has 0 ARG APT_SNAPSHOT= lines/);
   assert.throws(
-    () => dockerfilePin("ARG APT_SNAPSHOT=20261107T000000Z\nARG APT_SNAPSHOT=20261108T000000Z\n", "f"),
+    () => dockerfilePin("ARG APT_SNAPSHOT=20201107T000000Z\nARG APT_SNAPSHOT=20201108T000000Z\n", "f"),
     /f has 2 ARG APT_SNAPSHOT= lines/,
   );
   assert.throws(() => dockerfilePin("ARG APT_SNAPSHOT=latest\n", "f"), /not a snapshot timestamp/);
 });
 
 test("currentPin: the files must agree, and each must pin exactly once", () => {
-  assert.equal(currentPin(fakeTexts("20261107T000000Z")), "20261107T000000Z");
+  assert.equal(currentPin(fakeTexts("20201107T000000Z")), "20201107T000000Z");
   assert.throws(
-    () => currentPin(fakeTexts("20261107T000000Z", "20261108T000000Z")),
-    /disagree: apps\/slicer\/Dockerfile 20261107T000000Z, tools\/slicing-gate\/Dockerfile 20261108T000000Z/,
+    () => currentPin(fakeTexts("20201107T000000Z", "20201108T000000Z")),
+    /disagree: apps\/slicer\/Dockerfile 20201107T000000Z, tools\/slicing-gate\/Dockerfile 20201108T000000Z/,
   );
-  assert.throws(() => currentPin(fakeTexts("20261107T000000Z", "20261107T000000Z", "20261101T000000Z")), /disagree/);
-  const two = fakeTexts("20261107T000000Z");
-  two[GATE_README] += "| more | Ubuntu snapshot 20261107T000000Z |\n";
+  assert.throws(() => currentPin(fakeTexts("20201107T000000Z", "20201107T000000Z", "20201101T000000Z")), /disagree/);
+  const two = fakeTexts("20201107T000000Z");
+  two[GATE_README] += "| more | Ubuntu snapshot 20201107T000000Z |\n";
   assert.throws(() => currentPin(two), /lists 2 "Ubuntu snapshot" pins/);
-  const missing = fakeTexts("20261107T000000Z");
+  const missing = fakeTexts("20201107T000000Z");
   delete missing["tools/slicing-gate/Dockerfile"];
   assert.throws(() => currentPin(missing), /tools\/slicing-gate\/Dockerfile was not read/);
 });
@@ -185,7 +194,7 @@ test("currentPin: the files must agree, and each must pin exactly once", () => {
 test("rewritePins changes the pin lines and nothing else", () => {
   const before = repoTexts();
   const from = currentPin(before);
-  const to = "20991231T000000Z";
+  const to = FAR;
   const after = rewritePins(before, from, to);
   assert.equal(currentPin(after), to);
   for (const f of Object.keys(before)) {
@@ -201,17 +210,17 @@ test("rewritePins changes the pin lines and nothing else", () => {
 
 test("reachable: ok when every suite's InRelease answers 200, asked with HEAD", async () => {
   const f = fakeFetch(() => 200);
-  assert.deepEqual(await reachable("20261201T000000Z", f.fn, noSleep), { state: "ok", detail: "" });
+  assert.deepEqual(await reachable("20201201T000000Z", f.fn, noSleep), { state: "ok", detail: "" });
   assert.deepEqual(
     f.calls.map((c) => c.url),
-    SUITES.map((s) => `https://snapshot.ubuntu.com/ubuntu/20261201T000000Z/dists/${s}/InRelease`),
+    SUITES.map((s) => `https://snapshot.ubuntu.com/ubuntu/20201201T000000Z/dists/${s}/InRelease`),
   );
   for (const c of f.calls) assert.equal(c.init.method, "HEAD");
 });
 
 test("reachable: a 404 for any suite means the snapshot is missing, without retrying", async () => {
   const f = fakeFetch((url) => (url.includes("noble-security") ? 404 : 200));
-  const r = await reachable("20261201T000000Z", f.fn, noSleep);
+  const r = await reachable("20201201T000000Z", f.fn, noSleep);
   assert.equal(r.state, "missing");
   assert.match(r.detail, /noble-security\/InRelease answered 404/);
   assert.equal(f.calls.length, 3);
@@ -224,7 +233,7 @@ test("reachable: a passing 5xx or network error is retried", async () => {
     return 200;
   });
   const slept = [];
-  const r = await reachable("20261201T000000Z", f.fn, async (ms) => slept.push(ms));
+  const r = await reachable("20201201T000000Z", f.fn, async (ms) => slept.push(ms));
   assert.equal(r.state, "ok");
   assert.equal(f.calls.length, 5, "noble three times, then the other two once");
   assert.deepEqual(slept, [5000, 10000]);
@@ -233,7 +242,7 @@ test("reachable: a passing 5xx or network error is retried", async () => {
 test("reachable: a suite that keeps erroring is an error, not a missing snapshot", async () => {
   for (const status of [503, 302, 500]) {
     const f = fakeFetch(() => status);
-    const r = await reachable("20261201T000000Z", f.fn, noSleep);
+    const r = await reachable("20201201T000000Z", f.fn, noSleep);
     assert.equal(r.state, "error", String(status));
     assert.match(r.detail, new RegExp(`answered ${status} \\(${ATTEMPTS} attempts\\)$`));
     assert.equal(f.calls.length, ATTEMPTS);
@@ -241,56 +250,56 @@ test("reachable: a suite that keeps erroring is an error, not a missing snapshot
   const thrown = fakeFetch(() => {
     throw new Error("getaddrinfo ENOTFOUND");
   });
-  const r = await reachable("20261201T000000Z", thrown.fn, noSleep);
+  const r = await reachable("20201201T000000Z", thrown.fn, noSleep);
   assert.equal(r.state, "error");
   assert.match(r.detail, /ENOTFOUND/);
 });
 
-const NOW = new Date("2026-12-01T06:00:00Z");
+const NOW = new Date("2020-12-01T06:00:00Z");
 
 test("pickSnapshot: the newest day that exists, today when it does", async () => {
   const f = fakeFetch(() => 200);
-  assert.equal(await pickSnapshot("20261107T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }), "20261201T000000Z");
+  assert.equal(await pickSnapshot("20201107T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }), "20201201T000000Z");
 });
 
 test("pickSnapshot: a day the service does not have is passed over for the day before", async () => {
-  const f = fakeFetch((url) => (dayOf(url) === "20261201T000000Z" ? 404 : 200));
+  const f = fakeFetch((url) => (dayOf(url) === "20201201T000000Z" ? 404 : 200));
   const logged = [];
-  const ts = await pickSnapshot("20261107T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep, log: (m) => logged.push(m) });
-  assert.equal(ts, "20261130T000000Z");
-  assert.match(logged.join("\n"), /20261201T000000Z is not on the service/);
+  const ts = await pickSnapshot("20201107T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep, log: (m) => logged.push(m) });
+  assert.equal(ts, "20201130T000000Z");
+  assert.match(logged.join("\n"), /20201201T000000Z is not on the service/);
 });
 
 test("pickSnapshot: an error from the service stops the refresh, never settling for an older day", async () => {
-  const f = fakeFetch((url) => (dayOf(url) === "20261201T000000Z" ? 503 : 200));
+  const f = fakeFetch((url) => (dayOf(url) === "20201201T000000Z" ? 503 : 200));
   await assert.rejects(
-    pickSnapshot("20261107T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }),
-    /could not tell whether snapshot 20261201T000000Z exists: .* answered 503 \(4 attempts\); nothing was changed/,
+    pickSnapshot("20201107T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }),
+    /could not tell whether snapshot 20201201T000000Z exists: .* answered 503 \(4 attempts\); nothing was changed/,
   );
-  assert.ok(f.calls.every((c) => dayOf(c.url) === "20261201T000000Z"), "no older day was asked");
+  assert.ok(f.calls.every((c) => dayOf(c.url) === "20201201T000000Z"), "no older day was asked");
 });
 
 test("pickSnapshot: only days newer than the pin count; none newer means nothing to do", async () => {
   const f = fakeFetch(() => 200);
-  assert.equal(await pickSnapshot("20261201T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }), null);
-  assert.equal(await pickSnapshot("20991231T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }), null);
+  assert.equal(await pickSnapshot("20201201T000000Z", NOW, { fetchFn: f.fn, sleep: noSleep }), null);
+  assert.equal(await pickSnapshot(FAR, NOW, { fetchFn: f.fn, sleep: noSleep }), null);
   assert.equal(f.calls.length, 0, "nothing was asked");
   // Pinned at 28 November: only 1 December, 30 and 29 November are newer.
   const missing = fakeFetch(() => 404);
   await assert.rejects(
-    pickSnapshot("20261128T000000Z", NOW, { fetchFn: missing.fn, sleep: noSleep }),
-    /no snapshot newer than 20261128T000000Z exists/,
+    pickSnapshot("20201128T000000Z", NOW, { fetchFn: missing.fn, sleep: noSleep }),
+    /no snapshot newer than 20201128T000000Z exists/,
   );
   assert.deepEqual(
     [...new Set(missing.calls.map((c) => dayOf(c.url)))],
-    ["20261201T000000Z", "20261130T000000Z", "20261129T000000Z"],
+    ["20201201T000000Z", "20201130T000000Z", "20201129T000000Z"],
   );
 });
 
 // The rule from issue #219's brief: a snapshot date that does not exist on
 // snapshot.ubuntu.com is never written. The service is asked before any
 // write.
-function refreshWith(answer, texts = fakeTexts("20261107T000000Z")) {
+function refreshWith(answer, texts = fakeTexts("20201107T000000Z")) {
   const written = {};
   const f = fakeFetch(answer);
   const run = refresh({
@@ -311,9 +320,9 @@ function refreshWith(answer, texts = fakeTexts("20261107T000000Z")) {
 
 test("refresh: moves all three pins to the new snapshot, asking the service first", async () => {
   const { run, written } = refreshWith(() => 200);
-  assert.deepEqual(await run, { old: "20261107T000000Z", new: "20261201T000000Z" });
+  assert.deepEqual(await run, { old: "20201107T000000Z", new: "20201201T000000Z" });
   assert.deepEqual(Object.keys(written).sort(), [...DOCKERFILES, GATE_README].sort());
-  assert.equal(currentPin(written), "20261201T000000Z");
+  assert.equal(currentPin(written), "20201201T000000Z");
 });
 
 test("refresh: a date that does not exist on snapshot.ubuntu.com is not written", async () => {
@@ -323,15 +332,15 @@ test("refresh: a date that does not exist on snapshot.ubuntu.com is not written"
     (url) => (url.includes("noble-security") ? 404 : 200),
   ]) {
     const { run, written } = refreshWith(answer);
-    await assert.rejects(run, /no snapshot newer than 20261107T000000Z exists/);
+    await assert.rejects(run, /no snapshot newer than 20201107T000000Z exists/);
     assert.deepEqual(written, {}, "nothing was written");
   }
 });
 
 test("refresh: today missing but yesterday there writes yesterday, never today", async () => {
-  const { run, written } = refreshWith((url) => (dayOf(url) === "20261201T000000Z" ? 404 : 200));
-  assert.equal((await run).new, "20261130T000000Z");
-  for (const t of Object.values(written)) assert.doesNotMatch(t, /20261201T000000Z/);
+  const { run, written } = refreshWith((url) => (dayOf(url) === "20201201T000000Z" ? 404 : 200));
+  assert.equal((await run).new, "20201130T000000Z");
+  for (const t of Object.values(written)) assert.doesNotMatch(t, /20201201T000000Z/);
 });
 
 test("refresh: a service error writes nothing", async () => {
@@ -341,15 +350,15 @@ test("refresh: a service error writes nothing", async () => {
 });
 
 test("refresh: files that disagree stop it before the service is asked", async () => {
-  const { run, written, calls } = refreshWith(() => 200, fakeTexts("20261107T000000Z", "20261108T000000Z"));
+  const { run, written, calls } = refreshWith(() => 200, fakeTexts("20201107T000000Z", "20201108T000000Z"));
   await assert.rejects(run, /disagree/);
   assert.deepEqual(written, {});
   assert.equal(calls.length, 0);
 });
 
 test("refresh: already at the newest day changes nothing", async () => {
-  const { run, written } = refreshWith(() => 200, fakeTexts("20261201T000000Z"));
-  assert.deepEqual(await run, { old: "20261201T000000Z", new: null });
+  const { run, written } = refreshWith(() => 200, fakeTexts("20201201T000000Z"));
+  assert.deepEqual(await run, { old: "20201201T000000Z", new: null });
   assert.deepEqual(written, {});
 });
 
@@ -372,19 +381,19 @@ function writeTree(dir, texts) {
 
 test("the command line prints old=, new=, old_label= and new_label= and changes nothing when up to date", () => {
   inScratch((dir) => {
-    const texts = fakeTexts("20991231T000000Z");
+    const texts = fakeTexts(FAR);
     writeTree(dir, texts);
     const r = spawnSync(process.execPath, [SCRIPT, "refresh"], { cwd: dir, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.stdout, "old=20991231T000000Z\nnew=\nold_label=31 December 2099\nnew_label=\n");
-    assert.match(r.stderr, /current snapshot: 20991231T000000Z/);
+    assert.equal(r.stdout, `old=${FAR}\nnew=\nold_label=31 December ${FAR_YEAR}\nnew_label=\n`);
+    assert.match(r.stderr, new RegExp(`current snapshot: ${FAR}`));
     for (const [p, t] of Object.entries(texts)) assert.equal(readFileSync(join(dir, p), "utf8"), t, p);
   });
 });
 
 test("the command line fails with an error annotation, and prints no outputs, when the pins disagree", () => {
   inScratch((dir) => {
-    writeTree(dir, fakeTexts("20991231T000000Z", "20991230T000000Z"));
+    writeTree(dir, fakeTexts(FAR, FAR_EVE));
     const r = spawnSync(process.execPath, [SCRIPT, "refresh"], { cwd: dir, encoding: "utf8" });
     assert.equal(r.status, 1);
     assert.equal(r.stdout, "");
@@ -586,20 +595,20 @@ test("apt-snapshot: the main-only check runs first and refuses any other ref", (
 
 test("apt-snapshot pick: hands the script's answer to the outputs, and says when it is up to date", () => {
   const answer = (n) =>
-    `node() { printf '%s\\n' old=20261107T000000Z new=${n} 'old_label=7 November 2026' 'new_label=${n ? "1 December 2026" : ""}'; }`;
-  const moved = runStep("refresh", "Pick the new snapshot and rewrite the pins", { stubs: [answer("20261201T000000Z")] });
+    `node() { printf '%s\\n' old=20201107T000000Z new=${n} 'old_label=7 November 2020' 'new_label=${n ? "1 December 2020" : ""}'; }`;
+  const moved = runStep("refresh", "Pick the new snapshot and rewrite the pins", { stubs: [answer("20201201T000000Z")] });
   assert.equal(moved.status, 0, moved.log);
   assert.deepEqual(moved.outputs, {
-    old: "20261107T000000Z",
-    new: "20261201T000000Z",
-    old_label: "7 November 2026",
-    new_label: "1 December 2026",
+    old: "20201107T000000Z",
+    new: "20201201T000000Z",
+    old_label: "7 November 2020",
+    new_label: "1 December 2020",
   });
   assert.equal(moved.summary, "");
   const same = runStep("refresh", "Pick the new snapshot and rewrite the pins", { stubs: [answer("")] });
   assert.equal(same.status, 0, same.log);
   assert.equal(same.outputs.new, "");
-  assert.match(same.summary, /Up to date: the Ubuntu snapshot is `20261107T000000Z`; nothing was pushed/);
+  assert.match(same.summary, /Up to date: the Ubuntu snapshot is `20201107T000000Z`; nothing was pushed/);
   const failed = runStep("refresh", "Pick the new snapshot and rewrite the pins", {
     stubs: ["node() { echo '::error::no snapshot' >&2; return 1; }"],
   });
@@ -612,13 +621,13 @@ test("apt-snapshot pick: hands the script's answer to the outputs, and says when
 test("apt-snapshot pick: runs the script at the repo root and passes its outputs through", () => {
   const r = runStep("refresh", "Pick the new snapshot and rewrite the pins", {
     setup: (work) => {
-      writeTree(work, fakeTexts("20991231T000000Z"));
+      writeTree(work, fakeTexts(FAR));
       mkdirSync(join(work, ".github", "scripts"), { recursive: true });
       copyFileSync(SCRIPT, join(work, ".github", "scripts", "apt-snapshot.mjs"));
     },
   });
   assert.equal(r.status, 0, r.log);
-  assert.equal(r.outputs.old, "20991231T000000Z");
+  assert.equal(r.outputs.old, FAR);
   assert.equal(r.outputs.new, "");
   assert.match(r.summary, /Up to date/);
 });
@@ -659,10 +668,10 @@ const prRun = (env = {}) =>
     env: {
       GH_TOKEN: FAKE_TOKEN,
       REPO: "o/r",
-      OLD: "20261107T000000Z",
-      NEW: "20261201T000000Z",
-      OLD_LABEL: "7 November 2026",
-      NEW_LABEL: "1 December 2026",
+      OLD: "20201107T000000Z",
+      NEW: "20201201T000000Z",
+      OLD_LABEL: "7 November 2020",
+      NEW_LABEL: "1 December 2020",
       SERVER_URL: "https://github.com",
       RUN_URL: "https://github.com/o/r/actions/runs/99",
       CHANGED: THREE,
@@ -675,7 +684,7 @@ const prRun = (env = {}) =>
     },
   });
 const callLines = (r, prefix) => r.calls.split("\n").filter((l) => l.startsWith(prefix));
-const TITLE = "Move the slicer's Ubuntu snapshot to 1 December 2026 for security fixes";
+const TITLE = "Move the slicer's Ubuntu snapshot to 1 December 2020 for security fixes";
 
 test("apt-snapshot pr: a first run pushes the branch and opens the pull request; ci runs", () => {
   const r = prRun();
@@ -691,14 +700,14 @@ test("apt-snapshot pr: a first run pushes the branch and opens the pull request;
     `gh pr create --repo o/r --base main --head bot/apt-snapshot --title ${TITLE} --body-file body.md`,
   ]);
   assert.match(r.summary, /pull request: #412/);
-  assert.match(r.files["commit-message.txt"], /^Move the Ubuntu snapshot to 20261201T000000Z\n\n/);
-  assert.match(r.files["commit-message.txt"], /from the snapshot of 1 December 2026 instead of 7 November\s+2026/);
+  assert.match(r.files["commit-message.txt"], /^Move the Ubuntu snapshot to 20201201T000000Z\n\n/);
+  assert.match(r.files["commit-message.txt"], /from the snapshot of 1 December 2020 instead of 7 November\s+2020/);
   assert.match(r.files["commit-message.txt"], /Made by https:\/\/github\.com\/o\/r\/actions\/runs\/99\n$/);
 });
 
 test("apt-snapshot pr: the body says what moved, why, and where the checks and the Trivy report are", () => {
   const body = prRun().files["posted.md"];
-  assert.match(body, /from 7 November 2026 \(`20261107T000000Z`\) to 1 December 2026 \(`20261201T000000Z`\)/);
+  assert.match(body, /from 7 November 2020 \(`20201107T000000Z`\) to 1 December 2020 \(`20201201T000000Z`\)/);
   assert.match(body, /only get Ubuntu's security fixes when the snapshot moves forward/);
   assert.match(
     body,
@@ -747,7 +756,7 @@ test("apt-snapshot pr: a newer change replaces the branch: close the open PR, de
     "git push -q origin HEAD:refs/heads/bot/apt-snapshot",
     `gh pr create --repo o/r --base main --head bot/apt-snapshot --title ${TITLE} --body-file body.md`,
   ]);
-  assert.match(callLines(r, "gh pr close")[0], /--comment Replaced by a newer snapshot, 1 December 2026 \(`20261201T000000Z`\)/);
+  assert.match(callLines(r, "gh pr close")[0], /--comment Replaced by a newer snapshot, 1 December 2020 \(`20201201T000000Z`\)/);
   assert.match(callLines(r, "gh pr list")[0], /--head bot\/apt-snapshot --base main --state open/);
   assert.match(r.files["posted.md"], /This replaces #300, which proposed an older snapshot and was not merged\./);
   assert.match(r.summary, /replaced and closed: #300/);
@@ -800,9 +809,9 @@ test("apt-snapshot pr: a failed push fails the step before any PR is opened", ()
 
 test("apt-snapshot pr: malformed dates or unexpected changed files push nothing", () => {
   for (const env of [
-    { NEW: "20261201" },
+    { NEW: "20201201" },
     { OLD: "" },
-    { NEW: "20261201T000000Z; rm -rf /" },
+    { NEW: "20201201T000000Z; rm -rf /" },
     { CHANGED: "apps/slicer/Dockerfile\n" },
     { CHANGED: `${THREE}apps/server/src/x.ts\n` },
   ]) {
@@ -817,10 +826,70 @@ test("apt-snapshot pr: malformed dates or unexpected changed files push nothing"
 test("apt-snapshot pr: any other file still naming the old snapshot stops the run", () => {
   const r = prRun({ LEFT: "docs/security.md" });
   assert.equal(r.status, 1);
-  assert.match(r.log, /::error::these files still name the old snapshot 20261107T000000Z/);
+  assert.match(r.log, /::error::these files still name the old snapshot 20201107T000000Z/);
   assert.match(r.log, /docs\/security\.md/);
   assert.deepEqual(callLines(r, "git push"), []);
-  assert.deepEqual(callLines(prRun(), "git grep"), ["git grep -l -F 20261107T000000Z -- . :!CHANGELOG.md"]);
+  assert.deepEqual(callLines(prRun(), "git grep"), ["git grep -l -F 20201107T000000Z -- . :!CHANGELOG.md"]);
+});
+
+// The two tests below read every tracked file with real git, from the repo
+// root. That root is reached with git -C and a cd in the script, not a cwd:
+// option, on purpose: the gate jobs scan in ciworkflow.test.mjs takes a cwd:
+// at the repo root for a workflow step reading the files its script names,
+// and these read the whole tree, which no path in the changes job's tests list
+// can stand for. They run where a stale fixture would be added (any change
+// under tools/slicing-gate runs the gate tests) and on every bot pull request
+// (ci with no base commit runs every job), which is where a hit elsewhere
+// would otherwise first stop a run.
+
+// The tracked files that name a snapshot timestamp, as [file, timestamp]
+// pairs (CHANGELOG.md left out, as the leftover check leaves it out).
+function trackedSnapshots() {
+  const r = spawnSync("git", ["-C", ROOT, "grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"], {
+    encoding: "utf8",
+  });
+  assert.ok(r.status === 0 || r.status === 1, `git grep failed (exit ${r.status}): ${r.stderr}`);
+  return r.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => [l.slice(0, l.lastIndexOf(":")), l.slice(l.lastIndexOf(":") + 1)]);
+}
+
+// The PR step's leftover check, its own line run with real git (no stub) over
+// this repo at today's pin. Before the rewrite, only the three pinned files
+// may name the pin, as the rewrite moves exactly those; any other hit, a test
+// fixture above all, would stop the monthly run before it pushed anything.
+test("apt-snapshot pr: the real leftover check over this repo at today's pin finds only the three pinned files", () => {
+  const pin = currentPin(repoTexts());
+  const step = stepScript(jobBlock(text(), "refresh"), "Push the branch and open the pull request");
+  const check = step.split("\n").find((l) => l.startsWith('left="$(git grep '));
+  assert.ok(check, "the step's leftover check");
+  const script = ["set -eo pipefail", 'cd "$REPO_ROOT"', "status=0", check, 'printf "%s|%s" "$status" "$left"'].join("\n");
+  const r = spawnSync("bash", ["-c", script], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, REPO_ROOT: ROOT, OLD: pin },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const [status, left] = r.stdout.split("|");
+  assert.equal(status, "0", `git grep found the pin ${pin}: ${r.stderr}`);
+  assert.deepEqual(left.split("\n").filter(Boolean).sort(), [...DOCKERFILES, GATE_README].sort());
+});
+
+// The pin only moves forward, so a timestamp before it can never be a pin
+// again, while one at or after it may be next month's: a later run's leftover
+// check would find it and stop. Fixtures here use past dates, or a far date
+// computed at run time, never written in the file.
+test("apt-snapshot: no tracked file but the three pins names a snapshot at or after today's pin", () => {
+  const pin = currentPin(repoTexts());
+  const pinned = new Set([...DOCKERFILES, GATE_README]);
+  const found = trackedSnapshots();
+  assert.deepEqual(
+    found.filter(([f]) => pinned.has(f)).map(([f, ts]) => `${f} ${ts}`).sort(),
+    [...pinned].map((f) => `${f} ${pin}`).sort(),
+    "the git grep reads the pins",
+  );
+  const ahead = found.filter(([f, ts]) => !pinned.has(f) && ts >= pin).map(([f, ts]) => `${f} ${ts}`);
+  assert.deepEqual(ahead, [], `files naming a snapshot at or after ${pin}`);
 });
 
 // The token reaches git only in the environment of the commands that need it.
