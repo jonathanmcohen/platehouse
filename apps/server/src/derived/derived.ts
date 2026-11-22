@@ -162,6 +162,13 @@
 //   and the orphan sweep skips an object that has a row. The check deletes
 //   them, object first, then row, so a run that fails part way is finished
 //   by the next one.
+// - A preview picture can be left 'pending' with no job behind it: one
+//   committed while a newer replacement was queued, whose conversion then
+//   died, or a preview job that found the file changed under it and did
+//   nothing. With no job of the file queued or running, the check settles
+//   it: 'ok' when the picture is of the file's current source, else none,
+//   for the preview backfill to queue again. A replacement's conversion
+//   that ends with a final failure (commitSlicerError) settles it at once.
 //
 // derived_status is 'pending' while a .scad's render or a STEP file's mesh
 // conversion is queued or running, then 'ok' or 'failed'; it stays null for
@@ -1234,6 +1241,45 @@ export function createDerived(deps: DerivedDeps) {
     };
   }
 
+  /**
+   * What a preview picture left 'pending' with nothing queued to settle it
+   * becomes: 'ok' when render_png is a picture of the file's current source
+   * (swapIn stamps a render row with its source's created_at), else null, so
+   * the card shows the icon and the preview backfill can queue a new one.
+   * Never 'failed': nothing about the file failed, a job that would have
+   * written the picture's state simply went away without writing it (a
+   * preview committed while a newer replacement was queued, whose
+   * conversion then ended with no new mesh, or a preview job that found the
+   * file changed under it). Read in trx with the file row locked.
+   */
+  async function strandedPreview(
+    trx: Transaction<DB>,
+    row: Pick<ModelFile, "blobId" | "renderPngBlobId">,
+  ): Promise<{ status: DerivedStatus | null; message: null }> {
+    if (row.renderPngBlobId === null) return { status: null, message: null };
+    const { rows } = await sql<{ current: boolean }>`
+      select exists (
+        select 1 from blobs d, blobs s
+         where d.id = ${row.renderPngBlobId}
+           and s.id = ${row.blobId}
+           and d.created_at >= s.created_at
+      ) as current
+    `.execute(trx);
+    return { status: rows[0]?.current ? "ok" : null, message: null };
+  }
+
+  /** Whether a job of one of the preview kinds is queued or running for the file, read in trx. */
+  async function previewJobLive(trx: Transaction<DB>, fileId: string): Promise<boolean> {
+    return (await jobsOfFile(trx, fileId)).some((j) => {
+      const kind = j.data?.kind;
+      return (
+        Object.hasOwn(STATUS_OF, kind) &&
+        STATUS_OF[kind] === PREVIEW_STATE &&
+        LIVE_STATES.has(j.state)
+      );
+    });
+  }
+
   /** The file row's source and render columns, locked for the pending write that follows. */
   async function lockedRenders(
     trx: Transaction<DB>,
@@ -1333,7 +1379,9 @@ export function createDerived(deps: DerivedDeps) {
    * though the job did not see the commit's answer) is left as it is. When
    * the renders the file keeps are from an earlier source than its own (a
    * replacement the program rejected), the message starts with the sentence
-   * saying so (keepingPrevious; issue #104).
+   * saying so (keepingPrevious; issue #104). A STEP conversion that ends
+   * here also settles a preview picture left 'pending' with no preview job
+   * to finish it (strandedPreview).
    */
   async function commitSlicerError(
     jobKind: DerivedKind,
@@ -1371,9 +1419,24 @@ export function createDerived(deps: DerivedDeps) {
         { status: "failed", message: sentence === null ? message : `${sentence} ${message}` },
         sentence,
       );
+      // A STEP conversion that ends here makes no new mesh, so it queues no
+      // picture. A picture still 'pending' with no preview job queued or
+      // running (one committed while this replacement was queued, which
+      // settledOutcome left pending) would then stay pending for good, so it
+      // is settled with the conversion. While a newer replacement is still
+      // queued, that one's conversion settles it instead.
+      const settlePicture =
+        jobKind === DERIVED_KINDS.convertStep &&
+        row.previewStatus === "pending" &&
+        outcome.status !== "pending" &&
+        !(await previewJobLive(trx, row.id));
+      const picture = settlePicture ? await strandedPreview(trx, row) : undefined;
       await trx
         .updateTable("files")
         .set({
+          ...(picture === undefined
+            ? {}
+            : stateSet(PREVIEW_STATE, picture.status, picture.message)),
           ...stateSet(cols, outcome.status, outcome.message),
           updatedAt: sql<Date>`now()`,
         })
@@ -1686,6 +1749,53 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /**
+   * A preview picture still 'pending' when no job of the file is queued or
+   * running, and whose newest preview job did not end failed (that case is
+   * settleLost's): every write that sets a picture 'pending' sends, in the
+   * same transaction, a job that will settle it, or is made while a newer
+   * job of the file is queued (settledOutcome), so a picture left pending
+   * with no live job is one whose job went away without settling it. That
+   * happens when a preview job finds the file changed under it (runJob's
+   * stale return) or a replacement's conversion ends with no new mesh. It
+   * is not a render that did not finish, so it is not marked failed: it
+   * gets strandedPreview's state ('ok' for a picture of the current source,
+   * else none, for the backfill to queue again). Returns whether it settled
+   * one.
+   */
+  async function settleStrandedPreview(fileId: string, modelId: string): Promise<boolean> {
+    return db.transaction().execute(async (trx) => {
+      if (!(await lockModel(trx, modelId, false))) return false;
+      const row = await trx
+        .selectFrom("files")
+        .select(["id", "blobId", "renderPngBlobId"])
+        .where("id", "=", fileId)
+        .where("previewStatus", "=", "pending")
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return false;
+      // Any live job of the file, a STEP conversion included: one queued
+      // for a newer replacement settles the picture itself.
+      const jobs = await jobsOfFile(trx, row.id);
+      if (jobs.some((j) => LIVE_STATES.has(j.state))) return false;
+      const previews = jobs.filter((j) => {
+        const kind = j.data?.kind;
+        return Object.hasOwn(STATUS_OF, kind) && STATUS_OF[kind] === PREVIEW_STATE;
+      });
+      if (previews.at(-1)?.state === "failed") return false;
+      const picture = await strandedPreview(trx, row);
+      await trx
+        .updateTable("files")
+        .set({
+          ...stateSet(PREVIEW_STATE, picture.status, picture.message),
+          updatedAt: sql<Date>`now()`,
+        })
+        .where("id", "=", row.id)
+        .execute();
+      return true;
+    });
+  }
+
+  /**
    * Issue #90: deletes a staged replacement source (kind 'source', state
    * 'stored') that no file points at and no queued or active job names: its
    * object first, then its row, with the row locked throughout. A store
@@ -1734,6 +1844,10 @@ export function createDerived(deps: DerivedDeps) {
    * - a pending file whose newest job ended failed is marked failed with
    *   DERIVED_MESSAGES.renderLost (replaceLost for a replacement), and is
    *   not queued again;
+   * - a preview picture still pending with no job of the file queued or
+   *   running, and whose newest preview job did not end failed, is settled
+   *   (settleStrandedPreview): 'ok' when it is of the current source, else
+   *   none;
    * - a staged replacement source no file points at and no live job names
    *   is deleted, object first, then row.
    * One item that fails is logged and left for the next run; the others go
@@ -1774,7 +1888,9 @@ export function createDerived(deps: DerivedDeps) {
     }
 
     // A render, a mesh or a preview picture left pending by a job that died
-    // (each pair of status columns on its own, issue #380).
+    // (each pair of status columns on its own, issue #380), and a picture
+    // left pending by a job that went away without settling it.
+    const pictures: string[] = [];
     for (const cols of [DERIVED_STATE, PREVIEW_STATE]) {
       const pending = await db
         .selectFrom("files as f")
@@ -1787,7 +1903,15 @@ export function createDerived(deps: DerivedDeps) {
         .execute();
       for (const f of pending) {
         await attempt("file", () => settleLost(f.id, f.modelId, cols), result.failed, f.id);
+        if (cols === PREVIEW_STATE) {
+          await attempt("picture", () => settleStrandedPreview(f.id, f.modelId), pictures, f.id);
+        }
       }
+    }
+    if (pictures.length > 0) {
+      console.info(
+        `render check: settled ${pictures.length} preview picture(s) left pending with no job`,
+      );
     }
 
     const { rows: staged } = await sql<{ id: string; modelId: string }>`

@@ -790,3 +790,192 @@ describe("after a rejected STEP replacement, a later failure keeps the previous-
     await expectPending(fileId, before, rejectedBlobId);
   });
 });
+
+// PR #363 review: a STEP file's picture could be left 'pending' with no job
+// behind it, and the model page then polled every 5 s for good. A picture
+// committed while a newer replacement's conversion is queued is stored
+// 'pending' (settledOutcome); when that conversion then ends with no new
+// mesh, nothing queued a picture and nothing settled the old one. The same
+// is left by a preview job that finds the file changed under it.
+describe("a STEP preview picture left pending with no job behind it is settled", () => {
+  /** A derived whose queue holds each job an hour, so only the test runs it. */
+  function holding(overrides: Partial<DerivedDeps> = {}) {
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    return createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+      retryDelaySeconds: 1,
+      ...overrides,
+    });
+  }
+
+  /** The file's one held job of kind, taken off the queue so only the test runs it. */
+  async function takeHeld(fileId: string, kind: DerivedJob["kind"]) {
+    const held = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
+      (j) => j.state === "created" && j.data.kind === kind,
+    );
+    expect(held).toHaveLength(1);
+    const job = held[0];
+    if (!job) throw new Error(`no held ${kind} job`);
+    await env.boss.cancel(QUEUE.slicer, job.id);
+    return job;
+  }
+
+  /**
+   * A STEP file with its first mesh stored and its picture's job held, then
+   * a replacement staged with its conversion held.
+   */
+  async function meshThenReplacement(label: string) {
+    const { fileId } = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, uniqueStep(`${label}, original`)),
+      originalName: "Housing.step",
+      target: "new",
+    });
+    const original = await env.repos.files.get(fileId);
+    if (!original) throw new Error("file not stored");
+    const derived = holding();
+    expect(
+      await derived.runJob(
+        { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: original.blobId },
+        { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+      ),
+    ).toEqual({ status: "ok" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      derivedStatus: "ok",
+      previewStatus: "pending",
+      renderPngBlobId: null,
+    });
+    const staged = await derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStep(`${label}, replacement`)),
+    );
+    return { fileId, derived, original, stagedBlobId: staged.sourceBlobId };
+  }
+
+  /** Runs the held picture job of the original, which commits while the replacement is queued. */
+  async function previewWhileQueued(fileId: string, derived: ReturnType<typeof createDerived>) {
+    const job = await takeHeld(fileId, DERIVED_KINDS.previewStep);
+    expect(await derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit })).toEqual({
+      status: "ok",
+    });
+    const file = await env.repos.files.get(fileId);
+    // The picture is stored, and left 'pending' while the replacement waits.
+    expect(file).toMatchObject({ derivedStatus: "pending", previewStatus: "pending" });
+    expect(file?.renderPngBlobId).not.toBeNull();
+    return file?.renderPngBlobId ?? "";
+  }
+
+  test("a picture committed while a replacement was queued is ok once that replacement's conversion ends with a slicer error", async () => {
+    const { fileId, derived, original, stagedBlobId } = await meshThenReplacement("slicer error");
+    const png = await previewWhileQueued(fileId, derived);
+
+    env.stub.renders.always("/v1/step/glb", { kind: "drop" });
+    const convert = await takeHeld(fileId, DERIVED_KINDS.convertStep);
+    expect(convert.data.sourceBlobId).toBe(stagedBlobId);
+    expect(
+      await derived.runJob(convert.data, {
+        retryCount: convert.retryLimit,
+        retryLimit: convert.retryLimit,
+      }),
+    ).toEqual({ status: "failed", reason: "slicer_error" });
+
+    // The replacement is dropped; the original keeps its mesh and the
+    // picture made from it, which is no longer waiting on anything.
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: original.blobId,
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.replaceFailed,
+      previewStatus: "ok",
+      previewMessage: null,
+      renderPngBlobId: png,
+    });
+  });
+
+  test("a picture whose own job is still queued stays pending when the replacement's conversion ends with a slicer error", async () => {
+    const { fileId, derived, original } = await meshThenReplacement("picture still queued");
+
+    env.stub.renders.always("/v1/step/glb", { kind: "drop" });
+    const convert = await takeHeld(fileId, DERIVED_KINDS.convertStep);
+    expect(
+      await derived.runJob(convert.data, {
+        retryCount: convert.retryLimit,
+        retryLimit: convert.retryLimit,
+      }),
+    ).toEqual({ status: "failed", reason: "slicer_error" });
+
+    // The original's picture job still owns the picture's state.
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: original.blobId,
+      derivedStatus: "failed",
+      previewStatus: "pending",
+      renderPngBlobId: null,
+    });
+    await takeHeld(fileId, DERIVED_KINDS.previewStep);
+  });
+
+  test("the render check marks ok a picture of the current source left pending when the replacement's conversion died", async () => {
+    const { fileId, derived, original } = await meshThenReplacement("conversion died");
+    const png = await previewWhileQueued(fileId, derived);
+    const convert = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).find(
+      (j) => j.state === "created" && j.data.kind === DERIVED_KINDS.convertStep,
+    );
+    if (!convert) throw new Error("no held conversion");
+    await env.boss.fail(QUEUE.slicer, convert.id, { message: "the process died mid-conversion" });
+
+    const result = await env.derived.checkRenders(
+      new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
+    );
+    // The conversion did not finish; the picture did, so it is not failed.
+    expect(result.failed).toContain(fileId);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: original.blobId,
+      derivedStatus: "failed",
+      derivedMessage: DERIVED_MESSAGES.replaceLost,
+      previewStatus: "ok",
+      previewMessage: null,
+      renderPngBlobId: png,
+    });
+  });
+
+  test("the render check clears a picture left pending by a preview job that found the file changed under it", async () => {
+    const { fileId, derived, stagedBlobId } = await meshThenReplacement("stale preview");
+    // The replacement is rejected: it becomes the source and the original's
+    // mesh stays, with no picture made from it yet.
+    env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "STEP import failed" });
+    const convert = await takeHeld(fileId, DERIVED_KINDS.convertStep);
+    expect(
+      await derived.runJob(convert.data, { retryCount: 0, retryLimit: convert.retryLimit }),
+    ).toEqual({ status: "failed", reason: "render_failed" });
+    // The original's picture job then finds the source changed and does nothing.
+    const preview = await takeHeld(fileId, DERIVED_KINDS.previewStep);
+    expect(
+      await derived.runJob(preview.data, { retryCount: 0, retryLimit: preview.retryLimit }),
+    ).toEqual({ status: "skipped", reason: "stale" });
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: stagedBlobId,
+      previewStatus: "pending",
+      renderPngBlobId: null,
+    });
+
+    const result = await env.derived.checkRenders(
+      new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
+    );
+    expect(result.failed).not.toContain(fileId);
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: stagedBlobId,
+      derivedStatus: "failed",
+      previewStatus: null,
+      previewMessage: null,
+      renderPngBlobId: null,
+    });
+    expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
+  });
+});
