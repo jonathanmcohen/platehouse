@@ -7,7 +7,10 @@
 //   the system's CSPRNG. createToken hands it back once and stores only its
 //   SHA-256 (of the whole token, prefix included) and its first 8
 //   characters, so the list can tell tokens apart; the token itself is never
-//   stored, logged or shown again.
+//   stored, logged or shown again. It also records who made it, the OIDC
+//   subject and display name of the session (issue #322), so Sign out
+//   everywhere can revoke one user's tokens with revokeAllFrom. A token made
+//   before that was recorded has no maker and is never revoked that way.
 // - authenticate reads the Authorization header strictly: the scheme Bearer
 //   (any case), one space, then the token, with nothing before or after it.
 //   A header that is not token-shaped is refused without a lookup. A
@@ -34,7 +37,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import type { ApiToken, DB } from "../db/types.js";
-import { type NewToken, tokensRepo } from "../repos/tokens.js";
+import { type NewToken, type TokenCreator, tokensRepo } from "../repos/tokens.js";
 import type { AuthHook } from "../uploads/tus.js";
 
 /** Every token starts with these letters. */
@@ -71,6 +74,8 @@ export interface TokenStore {
   findByHash(hash: Buffer): Promise<ApiToken | undefined>;
   /** False when the token is unknown or already revoked. */
   revoke(id: string): Promise<boolean>;
+  /** Revokes every live token this subject made; returns how many. */
+  revokeForCreator(subject: string): Promise<number>;
   touchLastUsed(id: string, at: Date): Promise<void>;
 }
 
@@ -81,10 +86,15 @@ export interface CreatedToken {
 }
 
 export interface Tokens {
-  /** A new token for one client; RangeError for a name outside 1 to 100 characters. */
-  createToken(name: string): Promise<CreatedToken>;
+  /**
+   * A new token for one client, recording who made it (left out or null: the
+   * maker is unknown); RangeError for a name outside 1 to 100 characters.
+   */
+  createToken(name: string, createdBy?: TokenCreator | null): Promise<CreatedToken>;
   /** Ends one token; false when it is unknown or already revoked. */
   revokeToken(id: string): Promise<boolean>;
+  /** Ends every live token this subject made (Sign out everywhere); returns how many. */
+  revokeAllFrom(subject: string): Promise<number>;
   /** The live token an Authorization header carries, or undefined. */
   authenticate(authorization: string | string[] | undefined): Promise<ApiToken | undefined>;
 }
@@ -116,6 +126,7 @@ export function dbTokenStore(db: Kysely<DB>): TokenStore {
     create: (input) => repo.create(input),
     findByHash: (hash) => repo.findByHash(hash),
     revoke: (id) => repo.revoke(id),
+    revokeForCreator: (subject) => repo.revokeForCreator(subject),
     touchLastUsed: (id, at) => repo.touchLastUsed(id, at),
   };
 }
@@ -135,7 +146,7 @@ export function createTokens(deps: {
   const log = deps.log ?? ((line: string) => console.warn(line));
 
   return {
-    async createToken(name) {
+    async createToken(name, createdBy) {
       const trimmed = name.trim();
       if (trimmed === "" || trimmed.length > MAX_TOKEN_NAME_LENGTH) {
         throw new RangeError(`A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters`);
@@ -145,11 +156,14 @@ export function createTokens(deps: {
         name: trimmed,
         prefix: token.slice(0, DISPLAY_PREFIX_LENGTH),
         tokenHash: hashToken(token),
+        createdBy: createdBy ?? null,
       });
       return { id: row.id, token };
     },
 
     revokeToken: (id) => store.revoke(id),
+
+    revokeAllFrom: (subject) => store.revokeForCreator(subject),
 
     async authenticate(authorization) {
       const presented = bearerToken(authorization);

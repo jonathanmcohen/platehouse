@@ -9,6 +9,10 @@ import type { DB, Session } from "../db/types.js";
 export interface NewSession {
   id: string;
   subject: string;
+  /** The display name the issuer gave at sign-in (auth/oidc.ts displayNameOf), or null. */
+  displayName?: string | null;
+  /** When the user signed in; the database's now() when left out. */
+  createdAt?: Date;
   expiresAt: Date;
   idleExpiresAt: Date;
 }
@@ -46,6 +50,15 @@ export function sessionsRepo(db: Kysely<DB>) {
     async delete(id: string): Promise<boolean> {
       const result = await db.deleteFrom("sessions").where("id", "=", id).executeTakeFirst();
       return result.numDeletedRows > 0n;
+    },
+
+    /** Ends every session of one subject (Sign out everywhere); returns how many. */
+    async deleteForSubject(subject: string): Promise<number> {
+      const result = await db
+        .deleteFrom("sessions")
+        .where("subject", "=", subject)
+        .executeTakeFirst();
+      return Number(result.numDeletedRows);
     },
   };
 }

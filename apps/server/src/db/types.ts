@@ -209,6 +209,10 @@ export interface ApiTokensTable {
   createdAt: CreatedAt;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+  /** The OIDC subject that made the token (0013); null when made before it was recorded. */
+  createdBySubject: ColumnType<string | null, string | null | undefined, never>;
+  /** The maker's display name when the token was made (0013), or null. */
+  createdByName: ColumnType<string | null, string | null | undefined, never>;
 }
 
 export interface SessionsTable {
@@ -217,6 +221,8 @@ export interface SessionsTable {
   createdAt: CreatedAt;
   expiresAt: Date;
   idleExpiresAt: Date;
+  /** The display name the issuer gave at sign-in (0013), or null. */
+  displayName: ColumnType<string | null, string | null | undefined, never>;
 }
 
 export interface DB {

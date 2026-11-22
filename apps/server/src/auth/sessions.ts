@@ -63,6 +63,8 @@ export interface SessionStore {
   /** The session, unless it is past its absolute or idle expiry at now. */
   get(id: string, now: Date): Promise<Session | undefined>;
   delete(id: string): Promise<boolean>;
+  /** Deletes every session of one subject; returns how many. */
+  deleteForSubject(subject: string): Promise<number>;
   /** Moves a session's idle expiry to idleExpiresAt. */
   touch(id: string, idleExpiresAt: Date): Promise<void>;
 }
@@ -74,6 +76,7 @@ export function dbSessionStore(db: Kysely<DB>): SessionStore {
     create: (input) => repo.create(input),
     get: (id, now) => repo.get(id, now),
     delete: (id) => repo.delete(id),
+    deleteForSubject: (subject) => repo.deleteForSubject(subject),
     async touch(id, idleExpiresAt) {
       await db.updateTable("sessions").set({ idleExpiresAt }).where("id", "=", id).execute();
     },
@@ -87,8 +90,12 @@ export interface StartedSession {
 }
 
 export interface Sessions {
-  /** A new session for subject; its cookie value is 32 random bytes in base64url. */
-  start(subject: string): Promise<StartedSession>;
+  /**
+   * A new session for subject, signed in now, with the display name the
+   * issuer gave (null or left out when it gave none); its cookie value is 32
+   * random bytes in base64url.
+   */
+  start(subject: string, displayName?: string | null): Promise<StartedSession>;
   /**
    * The live session behind this cookie value, its idle expiry moved on;
    * undefined when there is none. The session's id is its row id.
@@ -96,6 +103,8 @@ export interface Sessions {
   find(cookie: string | undefined): Promise<Session | undefined>;
   /** Ends the session behind this cookie value; nothing happens when there is none. */
   end(cookie: string | undefined): Promise<void>;
+  /** Ends every session of one subject (Sign out everywhere); returns how many. */
+  endAllFor(subject: string): Promise<number>;
 }
 
 /**
@@ -116,13 +125,17 @@ export function createSessions(deps: { store: SessionStore; now?: () => Date }):
   const now = deps.now ?? (() => new Date());
 
   return {
-    async start(subject) {
+    async start(subject, displayName) {
       const at = now().getTime();
       const cookie = randomBytes(32).toString("base64url");
       const expiresAt = new Date(at + SESSION_ABSOLUTE_MS);
       await store.create({
         id: sessionRowId(cookie),
         subject,
+        displayName: displayName ?? null,
+        // The sign-in time, from the same clock as the expiries: a new API
+        // token needs a sign-in this recent (app-api/tokens.ts).
+        createdAt: new Date(at),
         expiresAt,
         idleExpiresAt: new Date(at + SESSION_IDLE_MS),
       });
@@ -147,5 +160,7 @@ export function createSessions(deps: { store: SessionStore; now?: () => Date }):
     async end(cookie) {
       if (isSessionId(cookie)) await store.delete(sessionRowId(cookie));
     },
+
+    endAllFor: (subject) => store.deleteForSubject(subject),
   };
 }

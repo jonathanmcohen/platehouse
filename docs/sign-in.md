@@ -13,9 +13,11 @@ own short-lived key. See [Security](./security.md).
 - **Flow:** authorization code with PKCE (S256), plus a state and a nonce.
 - **Scopes:** `openid email profile groups`.
 - **Client authentication:** a client secret sent with HTTP Basic (`client_secret_basic`).
-- **Claims:** a subject, `email_verified` set to true (the string `"true"` is accepted too), and a
-  `groups` claim that holds the group in `OIDC_GROUP`. Platehouse reads these from the ID token,
-  and from the userinfo endpoint when the ID token leaves them out.
+- **Claims:** a subject (`sub`) of at most 255 characters, the most OpenID Connect allows,
+  `email_verified` set to true (the string `"true"` is accepted too), and a `groups` claim that
+  holds the group in `OIDC_GROUP`. Platehouse reads these from the ID token, and from the
+  userinfo endpoint when the ID token leaves them out. A longer subject is refused with a page
+  that says so.
 - **Discovery:** the provider must publish `/.well-known/openid-configuration` under its issuer
   URL.
 
@@ -50,26 +52,32 @@ and for the token exchange.
 
 Only a user whose `groups` claim holds `OIDC_GROUP` exactly gets in. Everyone else sees a plain
 page saying why they were refused. To let someone in, add them to the group at your provider;
-to take access away, remove them. Removing someone stops their next sign-in, but a Platehouse
-session they already have lasts until it expires (7 days without use, 30 days at most) or they
-sign out. Platehouse 0.1.0 has no button to end another person's session.
+to take access away, remove them. Platehouse checks the group each time someone signs in, and
+only then. Removing someone stops their next sign-in, but a Platehouse session they already have
+lasts until it expires (7 days without use, 30 days at most), they sign out, or someone uses
+**Sign out everywhere** in **Settings** on them.
 
-Removing someone does not touch API tokens. A token belongs to the library, not to the person who
-made it, never expires and is not checked against the group, so a token they made or used keeps
-reading, uploading and tagging after they are removed. While their session lasts they can also
-make new tokens in **Settings**. To cut someone off completely:
+Creating an API token needs a recent sign-in: if you signed in more than 5 minutes ago, Settings
+asks you to sign in again first, and that sign-in checks the group. So a removed person cannot
+make a new token with a session they already had, and while your provider is down nobody can
+make one.
+
+Removing someone does not revoke API tokens. A token never expires and is not checked against
+the group, so a token they made or had a copy of keeps reading, uploading and tagging after they
+are removed, until it is revoked. Settings shows who made each token. A token made with
+Platehouse 0.1.0, before it recorded that, shows "Made by an unknown user".
+
+To cut someone off completely:
 
 1. Remove them from the group at your provider.
-2. End their sessions: in Platehouse's database, delete their rows from the `sessions` table with
-   `delete from sessions where subject = '<their user id>';`, where the user id is the `sub` your
-   provider gives them. Do this before step 3, or they can make a new token in the meantime.
-3. In **Settings**, revoke every API token they made or had a copy of, and any token you cannot
-   account for.
+2. In **Settings**, under **Sign out everywhere**, press **Sign out** beside their name, tick the
+   box to also revoke the API tokens they made, and press **Sign out everywhere**. Every session
+   they have ends at once, and every token they made stops working.
+3. In the API token list, revoke any token they had a copy of but did not make, and any token
+   made by an unknown user that you cannot account for.
 
-Platehouse 0.1.0 does not record who made a token or end someone's sessions for you; that is
-planned ([#322](https://github.com/jonathanmcohen/platehouse/issues/322)).
-
-Everyone who signs in sees and changes the same library. There are no roles.
+Everyone who signs in sees and changes the same library. There are no roles: anyone who can sign
+in can revoke any token and sign anyone out everywhere, themselves included.
 
 ## Sessions
 
@@ -78,11 +86,15 @@ Everyone who signs in sees and changes the same library. There are no roles.
   only a hash of it.
 - Sign out from the app. Signing out needs a request from the Platehouse page itself, so another
   site cannot sign you out.
+- **Sign out everywhere** in **Settings** ends every session of one person, on every browser, and
+  can also revoke the API tokens they made. The list beside it shows everyone with a live session
+  or a token they made, by the name your provider gave at their last sign-in.
 
 ## When the provider is down
 
 Platehouse starts and keeps running while the provider is unreachable. People who are already
 signed in keep working. A new sign-in shows "Login is unavailable right now" until the provider
-answers again. API tokens keep working throughout.
+answers again. API tokens keep working throughout, but no new one can be made: that needs a
+fresh sign-in.
 
 If sign-in fails, see [Troubleshooting](./troubleshooting.md#sign-in).
