@@ -8,6 +8,10 @@
 #
 # Layout inside the image, /app, is the workspace's own:
 #   apps/server/dist/src/main.js           the entry point (CMD)
+#   apps/server/dist/src/plate-mesh/worker.js
+#                                          the thread a plate's mesh is read
+#                                          in, started from worker-read.js
+#                                          beside it (#358)
 #   apps/server/dist/src/db/migrations/    the SQL migrations, copied next to
 #                                          the built migrate.js, which reads
 #                                          ./migrations beside itself (#31)
@@ -97,6 +101,7 @@ RUN node_modules/.bin/tsc -b apps/server \
  && test -f packages/i18n/locales/en.json \
  && test -f apps/server/dist/src/db/migrate.js \
  && test -f apps/server/dist/src/db/migrations/0001_init.sql \
+ && test -f apps/server/dist/src/plate-mesh/worker.js \
  && test -f apps/web/dist/index.html \
  && test -d apps/web/dist/assets \
  && test -f apps/web/dist/favicon.ico \
@@ -163,11 +168,12 @@ RUN mkdir -p /data/inbox /data/tmp \
 
 USER node
 
-# The same checks as the node user: it can read the server, the migrations
-# and the web build with its icons and manifest, and write the data folders.
+# The same checks as the node user: it can read the server, the plate mesh
+# worker, the migrations and the web build with its icons and manifest, and write the data folders.
 RUN test "$(id -u)" != 0 \
  && test -r /app/apps/server/dist/src/main.js \
  && test -r /app/apps/server/dist/src/db/migrations/0001_init.sql \
+ && test -r /app/apps/server/dist/src/plate-mesh/worker.js \
  && test -r /app/apps/web/dist/index.html \
  && test -r /app/apps/web/dist/favicon.ico \
  && test -r /app/apps/web/dist/favicon.svg \
