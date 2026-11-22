@@ -26,6 +26,11 @@
 //    REMEMBERED_PROBLEMS plates and is gone after a restart, so a later
 //    version that reads more files tries them again.
 // 3. Opens of the same plate while it is being made share the one run.
+//    A process makes at most PLATE_MESH_BUILDS plates' meshes at once (each
+//    run holds a temp copy of the .3mf and the plate's meshes in memory);
+//    the rest wait their turn, and a run that waited looks the plate up
+//    again first, so one made meanwhile is answered without reading the
+//    file. A run finishes even when the browser stops waiting for it.
 // 4. The source .3mf is copied from the store to a temp folder of its own
 //    under tmpDir (the reader needs random access) and checked against its
 //    recorded size, so a short read is never taken for a damaged file;
@@ -61,11 +66,15 @@ import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE } from "./glb.js";
+import { createLimit } from "./limit.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
 
 /** How many plates' problems one process remembers; the oldest is forgotten first. */
 export const REMEMBERED_PROBLEMS = 1000;
+
+/** How many plates' meshes one process makes at once; the rest wait their turn. */
+export const PLATE_MESH_BUILDS = 2;
 
 export interface PlateMeshDeps {
   db: Kysely<DB>;
@@ -106,6 +115,7 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   const { db, store } = deps;
   const repos = createRepos(db);
   const running = new Map<string, Promise<PlateMeshAnswer>>();
+  const builds = createLimit(PLATE_MESH_BUILDS);
   const problems = new Map<string, PlateMeshProblem>();
 
   function remember(plateId: string, problem: PlateMeshProblem): void {
@@ -285,7 +295,13 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
       if (known !== undefined) return { status: "no_mesh", problem: known };
       let run = running.get(row.id);
       if (run === undefined) {
-        run = make(row).finally(() => running.delete(row.id));
+        run = builds(async () => {
+          // The plate may have been made, or its model trashed, while this waited.
+          const now = await lookup(row.id);
+          if (now === undefined) return NOT_FOUND;
+          if (now.meshId !== null) return { status: "ok", blobId: now.meshId } as const;
+          return make(now);
+        }).finally(() => running.delete(row.id));
         running.set(row.id, run);
       }
       return run;

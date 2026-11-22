@@ -11,9 +11,13 @@ import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import Fastify, { type FastifyInstance } from "fastify";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
-import { createPlateMeshes, type PlateMeshStore } from "../../../src/plate-mesh/plate-mesh.js";
+import {
+  createPlateMeshes,
+  PLATE_MESH_BUILDS,
+  type PlateMeshStore,
+} from "../../../src/plate-mesh/plate-mesh.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
 import { trashDaysAgo } from "../support/library.js";
@@ -25,6 +29,9 @@ let app: FastifyInstance;
 let sourceReads = 0;
 /** While true, the store's reads fail as an unreachable store does. */
 let storeDown = false;
+/** While set, every source read waits for it; readsHeld counts the reads waiting. */
+let readGate: Promise<void> | null = null;
+let readsHeld = 0;
 
 async function ingest(name: string, bytes: Buffer) {
   const tmpPath = await writeUpload(env, bytes);
@@ -68,6 +75,11 @@ beforeAll(async () => {
     async getBlobStream(key): Promise<Readable> {
       sourceReads += 1;
       if (storeDown) throw new StoreUnavailable("GetObject", "ECONNREFUSED");
+      if (readGate !== null) {
+        readsHeld += 1;
+        await readGate;
+        readsHeld -= 1;
+      }
       return env.store.getBlobStream(key);
     },
   };
@@ -202,6 +214,30 @@ describe("GET /app/api/plates/:id/mesh", () => {
     await trashDaysAgo(env.db, stored.modelId, 0);
     expect((await meshOf(plate.id)).statusCode).toBe(404);
     expect((await meshOf("01900000-0000-7000-8000-00000000dead")).statusCode).toBe(404);
+  });
+
+  test("makes at most PLATE_MESH_BUILDS plates' meshes at once, and the others wait their turn", async () => {
+    const stored = await ingest("Many plates.3mf", buildSliceable({ plates: 4, filaments: 1 }));
+    const plates = await platesOf(stored.fileId);
+    expect(plates.length).toBeGreaterThan(PLATE_MESH_BUILDS);
+    let release: () => void = () => undefined;
+    readGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      const opens = plates.map((p) => meshOf(p.id));
+      await vi.waitFor(() => expect(readsHeld).toBe(PLATE_MESH_BUILDS));
+      // Time for a run past the limit to reach the store, if one could.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(readsHeld).toBe(PLATE_MESH_BUILDS);
+      expect(await readdir(tmpDir)).toHaveLength(PLATE_MESH_BUILDS);
+      release();
+      const answers = await Promise.all(opens);
+      expect(answers.map((a) => a.statusCode)).toEqual(plates.map(() => 200));
+    } finally {
+      release();
+      readGate = null;
+    }
   });
 
   test("leaves no temp file behind", async () => {
