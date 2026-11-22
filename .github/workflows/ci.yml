@@ -18,9 +18,10 @@
 # The docs job builds the user docs site (apps/docs, Docusaurus, reading the
 # pages in docs/) and fails on a broken link or anchor. It runs, by the same
 # changes job, only when docs/, apps/docs, the workspace files its install
-# reads, this workflow or .node-version changes. It only builds: nothing is
-# deployed or published, and there is no GitHub Pages step (publishing waits
-# for the public repository). Nothing depends on it.
+# reads, this workflow or .node-version changes. It only builds, at the
+# placeholder address: it is the pull-request check, and nothing here is
+# deployed. Publishing to GitHub Pages is docs-pages.yml, on main only.
+# Nothing depends on it.
 #
 # The two slicing gate jobs keep their own path scoping, decided by the changes
 # job (issue #222). The gate tests are quick, so they run when tools/slicing-gate

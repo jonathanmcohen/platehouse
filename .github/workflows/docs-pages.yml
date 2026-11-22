@@ -1,0 +1,107 @@
+# Publishes the user docs site to GitHub Pages.
+#
+# The site is the Docusaurus package apps/docs, which builds the pages in
+# docs/. The ci workflow's "Docs build" job stays the pull-request check; this
+# workflow only publishes what has landed on main. It runs on a push to main
+# that changes docs/, apps/docs/, the lockfile or this file, and by hand
+# (Actions, docs-pages, Run workflow) from main only: a run started on any
+# other branch skips both jobs.
+#
+# Before the first run, GitHub Pages has to be switched on for the
+# repository: Settings, Pages, Build and deployment, Source: GitHub Actions.
+# Until then the "Configure Pages" step fails, and so does any run of this
+# workflow, including the one the merge that adds it starts.
+#
+# The site's address comes from the Pages setup, not from this repository:
+# actions/configure-pages reports the origin and the base path, and the build
+# step passes them to docusaurus.config.mjs as DOCS_SITE_URL and
+# DOCS_BASE_PATH. So a renamed or moved repository, or a custom domain set in
+# the Pages settings, needs no change here.
+#
+# Permissions: the build job reads the repository and the Pages setup
+# (actions/configure-pages calls the Pages API, which needs pages: read).
+# Only the deploy job can publish: pages: write and id-token: write, and
+# nothing else. No secret is used.
+name: docs-pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "apps/docs/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/docs-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One publish at a time, and a deploy in progress is never cancelled. A run
+# that starts while another is going waits for it; if a third starts in the
+# meantime, GitHub drops the waiting one in favour of the newest, which
+# builds main as it then is.
+concurrency:
+  group: docs-pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build the docs site for Pages
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v6.0.0
+      # Only the docs site and what it depends on, as in the ci docs job.
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter @platehouse/docs
+      # docusaurus.config.mjs fails the build on a broken link or anchor, and
+      # on an empty or malformed DOCS_SITE_URL or DOCS_BASE_PATH.
+      - name: Build the docs site
+        env:
+          DOCS_SITE_URL: ${{ steps.pages.outputs.origin }}
+          DOCS_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: pnpm --filter @platehouse/docs run build
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: apps/docs/build
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5.0.1
