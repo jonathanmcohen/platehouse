@@ -221,11 +221,7 @@ describe("the preview backfill (issue #316)", () => {
       .where("id", "=", trashed.modelId)
       .execute();
     const failed = await legacyStl("Failed bracket");
-    await env.db
-      .updateTable("files")
-      .set({ previewStatus: "failed", previewMessage: "The slicer could not render this file." })
-      .where("id", "=", failed.fileId)
-      .execute();
+    await failedAttempt(failed.fileId, "The slicer could not render this file.");
     env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "no shapes" });
     const unconverted = await env.ingestDerived.ingestFile({
       tmpPath: await writeUpload(env, uniqueStep("Unconverted housing")),
@@ -255,25 +251,44 @@ describe("the preview backfill (issue #316)", () => {
     for (const id of ignored) expect(await previewJobs(id)).toHaveLength(0);
   });
 
+  /**
+   * Leaves the facts a failed picture attempt for the file's current source
+   * records, and the status recomputePreview works out from them (issue
+   * #389): failed, with the attempt's reason.
+   */
+  async function failedAttempt(
+    fileId: string,
+    message: string,
+    times: { createdAt?: Date; updatedAt?: Date } = {},
+  ) {
+    await env.db
+      .updateTable("files")
+      .set((eb) => ({
+        previewFailureSourceBlobId: eb.ref("blobId"),
+        previewFailureMessage: message,
+        previewStatus: "failed",
+        previewMessage: message,
+        ...times,
+      }))
+      .where("id", "=", fileId)
+      .execute();
+  }
+
   test("a preview that failed because the slicer or storage stayed down, or could not be queued, is tried again", async () => {
     // A slicer image older than the app answers the preview route 404, which
-    // waits like a slicer that is down and then ends with the slicerDown
-    // sentence. None of these says anything about the file.
+    // waits like a slicer that is down and then ends with the
+    // previewSlicerDown sentence. None of these says anything about the file.
+    // Each is written as the facts a failed attempt for the file's current
+    // source leaves, with the status worked out from them (issue #389).
     const slicerDown = await legacyStl("Slicer down bracket");
     const queueFailed = await legacyStl("Queue failed bracket");
     const storeDown = await legacyStep("Store down housing");
     const outages: [string, string][] = [
-      [slicerDown.fileId, DERIVED_MESSAGES.slicerDown],
-      [queueFailed.fileId, DERIVED_MESSAGES.queueFailed],
-      [storeDown.fileId, DERIVED_MESSAGES.storeDown],
+      [slicerDown.fileId, DERIVED_MESSAGES.previewSlicerDown],
+      [queueFailed.fileId, DERIVED_MESSAGES.previewQueueFailed],
+      [storeDown.fileId, DERIVED_MESSAGES.previewStoreDown],
     ];
-    for (const [id, message] of outages) {
-      await env.db
-        .updateTable("files")
-        .set({ previewStatus: "failed", previewMessage: message })
-        .where("id", "=", id)
-        .execute();
-    }
+    for (const [id, message] of outages) await failedAttempt(id, message);
     env.stub.renders.reset();
 
     const result = await env.derived.backfillPreviews(later());
@@ -298,16 +313,10 @@ describe("the preview backfill (issue #316)", () => {
     const stl = await legacyStl("Just failed bracket");
     const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
     // Stored long ago, failed just now.
-    await env.db
-      .updateTable("files")
-      .set({
-        previewStatus: "failed",
-        previewMessage: DERIVED_MESSAGES.slicerDown,
-        createdAt: old,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", stl.fileId)
-      .execute();
+    await failedAttempt(stl.fileId, DERIVED_MESSAGES.previewSlicerDown, {
+      createdAt: old,
+      updatedAt: new Date(),
+    });
 
     const now = await env.derived.backfillPreviews(new Date());
     expect(now.queued).not.toContain(stl.fileId);
@@ -336,13 +345,7 @@ describe("the preview backfill (issue #316)", () => {
       [refused.fileId, DERIVED_MESSAGES.storeRefused],
       [stepRejected.fileId, `${DERIVED_MESSAGES.previewRejected} bad mesh`],
     ];
-    for (const [id, message] of kept) {
-      await env.db
-        .updateTable("files")
-        .set({ previewStatus: "failed", previewMessage: message })
-        .where("id", "=", id)
-        .execute();
-    }
+    for (const [id, message] of kept) await failedAttempt(id, message);
 
     const run = await env.derived.backfillPreviews(later());
     for (const [id, message] of kept) {

@@ -9,6 +9,8 @@
 // preview is deleted, so the card shows the icon again rather than a picture
 // of another file.
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   createDerived,
@@ -190,7 +192,12 @@ describe("STL previews (issue #316)", () => {
     env.stub.renders.queue("/v1/stl/png", { kind: "failed", message });
     const next = uniqueStl("rejected replacement, after");
     const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, next));
-    const after = await settledFile(env, fileId);
+    // The picture stays ok while the replacement waits (issue #389), so wait
+    // for the replacement itself to become the file's source.
+    const after = await until(
+      () => env.repos.files.get(fileId),
+      (f) => f?.blobId === sourceBlobId && f.previewStatus !== "pending",
+    );
 
     expect(after).toMatchObject({
       blobId: sourceBlobId,
@@ -210,8 +217,16 @@ describe("STL previews (issue #316)", () => {
     const { fileId } = await uploadStl(uniqueStl("again, before"));
     await settledFile(env, fileId);
     env.stub.renders.queue("/v1/stl/png", { kind: "failed", message: "ERROR: bad STL" });
-    await env.derived.replaceFile(fileId, await writeUpload(env, uniqueStl("again, rejected")));
-    expect(await settledFile(env, fileId)).toMatchObject({ previewStatus: "failed" });
+    const rejected = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStl("again, rejected")),
+    );
+    expect(
+      await until(
+        () => env.repos.files.get(fileId),
+        (f) => f?.blobId === rejected.sourceBlobId && f.previewStatus !== "pending",
+      ),
+    ).toMatchObject({ previewStatus: "failed" });
     await until(
       () => env.boss.findJobs(QUEUE.slicer, { data: { fileId } }),
       (js) => js.every((j) => j.state === "completed"),
@@ -292,10 +307,16 @@ describe("a picture that failed because the slicer stayed down says it will be t
         startAfter: 3600,
       });
     }) as typeof env.boss.send;
+    // A port just closed, so the connection is refused (SlicerDown); fetch
+    // refuses a well-known port such as 9 outright, which is not an outage.
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = probe.address() as AddressInfo;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
     const down = createDerived({
       db: env.db,
       store: env.store,
-      slicerUrl: "http://127.0.0.1:9",
+      slicerUrl: `http://127.0.0.1:${port}`,
       queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
       retryDelaySeconds: 1,
       now: () => new Date(clock),
