@@ -5,20 +5,29 @@
 // can say it in its language, and anything over the contract's 256 MiB is
 // refused before a byte is sent. The slicer here is a plain node:http server
 // on 127.0.0.1, holding nothing but synthetic bytes.
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { LIMITS } from "@platehouse/slicer-contract";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   DERIVED_MESSAGES,
   RenderFailed,
   SLICER_NOT_AN_STL,
   type SlicerTarget,
 } from "../../src/derived/client.js";
-import { meshPreviewOutputs, stlPreviewOutputs } from "../../src/derived/preview.js";
+import {
+  type MeshPreviewInput,
+  meshPreviewOutputs,
+  PREVIEW_MESH_MAX_BYTES,
+  STEP_PREVIEW_PEAK_MB,
+  stlPreviewOutputs,
+} from "../../src/derived/preview.js";
+import { memoryGate } from "../../src/plate-mesh/limit.js";
 import { stubGlb } from "../support/slicer-stub.js";
 
 let server: Server | undefined;
@@ -32,21 +41,28 @@ afterEach(async () => {
   }
 });
 
-/** A slicer that answers every request with status and body, recording what it got. */
+/**
+ * A slicer that answers every request with status and body, recording what
+ * it got. onRequest is called as each request's body ends; the answer waits
+ * for answerAfter when it is given.
+ */
 async function slicer(
   status: number,
   body: Buffer | object,
+  opts: { onRequest?: () => void; answerAfter?: Promise<void> } = {},
 ): Promise<{ target: SlicerTarget; got: { path: string; type: string; body: Buffer }[] }> {
   const got: { path: string; type: string; body: Buffer }[] = [];
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
+    req.on("end", async () => {
       got.push({
         path: req.url ?? "",
         type: req.headers["content-type"] ?? "",
         body: Buffer.concat(chunks),
       });
+      opts.onRequest?.();
+      await opts.answerAfter;
       if (Buffer.isBuffer(body)) {
         res.writeHead(status, { "content-type": "image/png" });
         res.end(body);
@@ -144,10 +160,29 @@ describe("an STL's preview", () => {
   });
 });
 
+let tmp = "";
+beforeAll(async () => {
+  tmp = await mkdtemp(join(tmpdir(), "preview-test-"));
+});
+afterAll(async () => {
+  await rm(tmp, { recursive: true, force: true });
+});
+
+/** A STEP preview's input: glb as the stored mesh, with a gate that lets everything through. */
+function mesh(glb: Buffer, more: Partial<MeshPreviewInput> = {}): MeshPreviewInput {
+  return {
+    size: glb.length,
+    read: async () => glb,
+    hold: (task) => task(),
+    tmpDir: tmp,
+    ...more,
+  };
+}
+
 describe("a STEP file's preview, from its stored mesh", () => {
   test("sends the mesh as a binary STL and gives back one render_png", async () => {
     const { target, got } = await slicer(200, PNG);
-    const outputs = await meshPreviewOutputs(target, async () => stubGlb("mesh"));
+    const outputs = await meshPreviewOutputs(target, mesh(stubGlb("mesh")));
     expect(outputs).toEqual([{ kind: "render_png", contentType: "image/png", bytes: PNG }]);
     expect(got).toHaveLength(1);
     expect(got[0]?.path).toBe("/v1/stl/png");
@@ -158,13 +193,13 @@ describe("a STEP file's preview, from its stored mesh", () => {
   });
 
   test("a mesh that cannot be read fails with the preview sentence, and nothing is sent", async () => {
-    const error = await failure(meshPreviewOutputs(NOWHERE, async () => Buffer.from("not a glb")));
+    const error = await failure(meshPreviewOutputs(NOWHERE, mesh(Buffer.from("not a glb"))));
     expect(error).toBeInstanceOf(RenderFailed);
     expect((error as Error).message.startsWith(`${DERIVED_MESSAGES.previewFailed} `)).toBe(true);
   });
 
   test("a mesh whose STL would be over the limit fails with the preview sentence, and nothing is sent", async () => {
-    const error = await failure(meshPreviewOutputs(NOWHERE, async () => stubGlb("mesh"), 100));
+    const error = await failure(meshPreviewOutputs(NOWHERE, mesh(stubGlb("mesh"), { limit: 100 })));
     expect(error).toBeInstanceOf(RenderFailed);
     const message = (error as Error).message;
     expect(message.startsWith(`${DERIVED_MESSAGES.previewFailed} `)).toBe(true);
@@ -174,7 +209,223 @@ describe("a STEP file's preview, from its stored mesh", () => {
   test("OpenSCAD's refusal is shown after the preview sentence", async () => {
     const message = "ERROR: CGAL error";
     const { target } = await slicer(422, { error: "render_failed", message });
-    const error = await failure(meshPreviewOutputs(target, async () => stubGlb("mesh")));
+    const error = await failure(meshPreviewOutputs(target, mesh(stubGlb("mesh"))));
     expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ${message}`);
+  });
+
+  // The 0.1.1 memory budget: the mesh is read whole into memory, so a mesh
+  // stored larger than PREVIEW_MESH_MAX_BYTES (its size from its blob row)
+  // is refused before it is read, and what the read can hold at its peak is
+  // what the budget counts (STEP_PREVIEW_PEAK_MB).
+  test("a mesh stored over PREVIEW_MESH_MAX_BYTES is refused before it is read or the gate is taken", async () => {
+    let read = false;
+    let held = false;
+    const error = await failure(
+      meshPreviewOutputs(
+        NOWHERE,
+        mesh(stubGlb("mesh"), {
+          size: PREVIEW_MESH_MAX_BYTES + 1,
+          read: async () => {
+            read = true;
+            return stubGlb("mesh");
+          },
+          hold: (task) => {
+            held = true;
+            return task();
+          },
+        }),
+      ),
+    );
+    expect(error).toBeInstanceOf(RenderFailed);
+    const message = (error as Error).message;
+    expect(message.startsWith(`${DERIVED_MESSAGES.previewFailed} `)).toBe(true);
+    expect(message).toMatch(/too large/i);
+    expect(read).toBe(false);
+    expect(held).toBe(false);
+  });
+
+  test("its peak is the mesh's chunks and their joined copy: twice PREVIEW_MESH_MAX_BYTES", () => {
+    expect(PREVIEW_MESH_MAX_BYTES).toBe(LIMITS.stlBodyBytes);
+    expect(STEP_PREVIEW_PEAK_MB).toBe((2 * PREVIEW_MESH_MAX_BYTES) / (1024 * 1024));
+  });
+});
+
+/** A wait long enough for the gate, the temp file and a local request to move on. */
+const settleLong = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+// The 0.1.1 memory gate (review of PR #409): a STEP preview's mesh read and
+// the plate mesh builds share one gate (plate-mesh/limit.ts, memoryGate), so
+// at most one of them holds its memory at a time. The preview holds the gate
+// only while it reads the mesh and writes the STL to a temp file, never
+// while it sends it, so it never holds the slicer while it waits for the
+// gate, and a plate build never waits for the slicer.
+describe("a STEP file's preview and the memory gate", () => {
+  test("reads the mesh and writes its STL only inside the gate, and sends it after letting go", async () => {
+    let inside = false;
+    const seen: string[] = [];
+    const { target, got } = await slicer(200, PNG, {
+      onRequest: () => seen.push(inside ? "sent inside the gate" : "sent outside the gate"),
+    });
+    const outputs = await meshPreviewOutputs(
+      target,
+      mesh(stubGlb("mesh"), {
+        read: async () => {
+          seen.push(inside ? "read inside the gate" : "read outside the gate");
+          return stubGlb("mesh");
+        },
+        hold: async (task) => {
+          inside = true;
+          try {
+            return await task();
+          } finally {
+            inside = false;
+          }
+        },
+      }),
+    );
+    expect(outputs).toHaveLength(1);
+    expect(seen).toEqual(["read inside the gate", "sent outside the gate"]);
+    expect(got[0]?.body.length).toBe(134);
+  });
+
+  test("leaves no temp folder behind, sent or failed", async () => {
+    const { target } = await slicer(200, PNG);
+    await meshPreviewOutputs(target, mesh(stubGlb("mesh")));
+    await failure(meshPreviewOutputs(NOWHERE, mesh(stubGlb("mesh"))));
+    await failure(meshPreviewOutputs(NOWHERE, mesh(Buffer.from("not a glb"))));
+    expect(await readdir(tmp)).toEqual([]);
+  });
+
+  test("a preview started while a plate build runs reads and sends nothing until the build ends", async () => {
+    const order: string[] = [];
+    const { target, got } = await slicer(200, PNG, { onRequest: () => order.push("preview sent") });
+    let finishBuild!: () => void;
+    const build = memoryGate.run(
+      "plate-a",
+      () =>
+        new Promise<string>((resolve) => {
+          order.push("build holds its memory");
+          finishBuild = () => {
+            order.push("build lets go");
+            resolve("mesh");
+          };
+        }),
+      new AbortController().signal,
+    );
+    const preview = meshPreviewOutputs(
+      target,
+      mesh(stubGlb("mesh"), {
+        read: async () => {
+          order.push("preview reads its mesh");
+          return stubGlb("mesh");
+        },
+        hold: (task) =>
+          memoryGate.run("step-preview:file-1", task, new AbortController().signal, {
+            first: true,
+          }),
+      }),
+    );
+    await settleLong();
+    expect(order).toEqual(["build holds its memory"]);
+    expect(got).toHaveLength(0);
+    finishBuild();
+    await build;
+    await preview;
+    expect(order).toEqual([
+      "build holds its memory",
+      "build lets go",
+      "preview reads its mesh",
+      "preview sent",
+    ]);
+  });
+
+  test("a plate build started while a preview holds the gate runs once the STL is written, before the slicer answers", async () => {
+    const order: string[] = [];
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    const { target } = await slicer(200, PNG, {
+      onRequest: () => order.push("preview sent"),
+      answerAfter: answered,
+    });
+    let releaseRead!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const preview = meshPreviewOutputs(
+      target,
+      mesh(stubGlb("mesh"), {
+        read: async () => {
+          order.push("preview reads its mesh");
+          await reading;
+          return stubGlb("mesh");
+        },
+        hold: (task) =>
+          memoryGate.run("step-preview:file-2", task, new AbortController().signal, {
+            first: true,
+          }),
+      }),
+    );
+    await settleLong();
+    const build = memoryGate.run(
+      "plate-b",
+      async () => {
+        order.push("build holds its memory");
+        return "mesh";
+      },
+      new AbortController().signal,
+    );
+    await settleLong();
+    // The build waits while the preview holds its memory...
+    expect(order).toEqual(["preview reads its mesh"]);
+    releaseRead();
+    // ...and runs once the STL is on disk, while the slicer has not answered.
+    await build;
+    await settleLong();
+    expect(order).toEqual(["preview reads its mesh", "build holds its memory", "preview sent"]);
+    answer();
+    await expect(preview).resolves.toHaveLength(1);
+  });
+
+  test("neither starves: a preview waits only for the build running, and the builds waiting run after it", async () => {
+    const order: string[] = [];
+    const { target } = await slicer(200, PNG);
+    const holds: Array<() => void> = [];
+    const plate = (name: string) =>
+      memoryGate.run(
+        name,
+        () =>
+          new Promise<string>((resolve) => {
+            order.push(name);
+            holds.push(() => resolve(name));
+          }),
+        new AbortController().signal,
+      );
+    const builds = [plate("plate-1"), plate("plate-2"), plate("plate-3")];
+    const preview = meshPreviewOutputs(
+      target,
+      mesh(stubGlb("mesh"), {
+        read: async () => {
+          order.push("preview");
+          return stubGlb("mesh");
+        },
+        hold: (task) =>
+          memoryGate.run("step-preview:file-3", task, new AbortController().signal, {
+            first: true,
+          }),
+      }),
+    );
+    await settleLong();
+    expect(order).toEqual(["plate-1"]);
+    holds.shift()?.();
+    await preview;
+    await settleLong();
+    expect(order).toEqual(["plate-1", "preview", "plate-2"]);
+    holds.shift()?.();
+    await settleLong();
+    holds.shift()?.();
+    await Promise.all(builds);
+    expect(order).toEqual(["plate-1", "preview", "plate-2", "plate-3"]);
   });
 });

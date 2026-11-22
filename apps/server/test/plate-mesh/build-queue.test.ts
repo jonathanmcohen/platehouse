@@ -5,7 +5,13 @@
 // whose callers have all gone is never started; a build already running
 // finishes, so its mesh is still kept.
 import { describe, expect, test } from "vitest";
-import { BuildQueueBusy, createBuildQueue } from "../../src/plate-mesh/limit.js";
+import {
+  BuildQueueBusy,
+  createBuildQueue,
+  memoryGate,
+  PLATE_MESH_BUILDS,
+  PLATE_MESH_WAITING,
+} from "../../src/plate-mesh/limit.js";
 
 /** A build that runs until finish() is called, recording that it started. */
 function held(value = "mesh") {
@@ -190,5 +196,166 @@ describe("createBuildQueue", () => {
     [{ running: 1.5, waiting: 1 }],
   ])("refuses sizes %o", (sizes) => {
     expect(() => createBuildQueue(sizes)).toThrow(RangeError);
+  });
+});
+
+// The 0.1.1 memory gate: a STEP preview's mesh read goes through the same
+// queue as the plate builds (derived/derived.ts), run first. It waits only
+// for the job that is running, never for the builds waiting, takes no
+// waiting place from them and is never refused as busy.
+describe("a job run first", () => {
+  test("goes ahead of the waiting builds and runs as soon as the running one ends", async () => {
+    const q = createBuildQueue({ running: 1, waiting: 8 });
+    const running = held("running");
+    const waitingA = held("a");
+    const waitingB = held("b");
+    const preview = held("preview");
+    const order: string[] = [];
+    const track = (name: string, b: ReturnType<typeof held>) => () => {
+      order.push(name);
+      return b.task();
+    };
+    const runs = [
+      q.run("plate-1", track("running", running), caller().signal),
+      q.run("plate-2", track("a", waitingA), caller().signal),
+      q.run("plate-3", track("b", waitingB), caller().signal),
+    ];
+    const p = q.run("preview-1", track("preview", preview), caller().signal, { first: true });
+    await settle();
+    expect(order).toEqual(["running"]);
+    running.finish();
+    await settle();
+    expect(order).toEqual(["running", "preview"]);
+    preview.finish();
+    await expect(p).resolves.toBe("preview");
+    await settle();
+    expect(order).toEqual(["running", "preview", "a"]);
+    waitingA.finish();
+    waitingB.finish();
+    await Promise.all(runs);
+    expect(order).toEqual(["running", "preview", "a", "b"]);
+  });
+
+  test("is never refused as busy and takes no waiting place from the builds", async () => {
+    const q = createBuildQueue({ running: 1, waiting: 1 });
+    const running = held();
+    const waiting = held();
+    const preview = held("preview");
+    const a = q.run("plate-1", running.task, caller().signal);
+    const b = q.run("plate-2", waiting.task, caller().signal);
+    // The one waiting place is taken, so a build is refused...
+    await expect(q.run("plate-3", held().task, caller().signal)).rejects.toBeInstanceOf(
+      BuildQueueBusy,
+    );
+    // ...but a job run first still queues,
+    const p = q.run("preview-1", preview.task, caller().signal, { first: true });
+    await settle();
+    expect(q.waiting()).toBe(2);
+    // and the build refused above is refused the same way while it waits.
+    await expect(q.run("plate-4", held().task, caller().signal)).rejects.toBeInstanceOf(
+      BuildQueueBusy,
+    );
+    running.finish();
+    await a;
+    await settle();
+    expect(preview.starts).toBe(1);
+    expect(waiting.starts).toBe(0);
+    preview.finish();
+    await expect(p).resolves.toBe("preview");
+    await settle();
+    waiting.finish();
+    await b;
+  });
+
+  test("two jobs run first keep their order, both ahead of the waiting builds", async () => {
+    const q = createBuildQueue({ running: 1, waiting: 8 });
+    const order: string[] = [];
+    const quick = (name: string) => async () => {
+      order.push(name);
+      return name;
+    };
+    const blocker = held();
+    const a = q.run("plate-1", blocker.task, caller().signal);
+    const runs = [
+      q.run("plate-2", quick("plate-2"), caller().signal),
+      q.run("first-1", quick("first-1"), caller().signal, { first: true }),
+      q.run("first-2", quick("first-2"), caller().signal, { first: true }),
+    ];
+    blocker.finish();
+    await a;
+    await Promise.all(runs);
+    expect(order).toEqual(["first-1", "first-2", "plate-2"]);
+  });
+
+  test("a waiting build is passed by a job run first at most once for each job that runs", async () => {
+    // Starvation check: jobs run first come one at a time (the slicer queue
+    // runs one job at a time), each after the last has ended. The waiting
+    // build still starts after the one job run first that queued ahead of it.
+    const q = createBuildQueue({ running: 1, waiting: 8 });
+    const order: string[] = [];
+    const blocker = held();
+    const build = held("build");
+    const a = q.run("plate-1", blocker.task, caller().signal);
+    const b = q.run(
+      "plate-2",
+      () => {
+        order.push("build");
+        return build.task();
+      },
+      caller().signal,
+    );
+    const first = held("first");
+    const p1 = q.run(
+      "first-1",
+      () => {
+        order.push("first-1");
+        return first.task();
+      },
+      caller().signal,
+      { first: true },
+    );
+    blocker.finish();
+    await a;
+    await settle();
+    first.finish();
+    await p1;
+    // The next job run first arrives once the build has started: it waits.
+    await settle();
+    expect(order).toEqual(["first-1", "build"]);
+    const next = held("next");
+    const p2 = q.run(
+      "first-2",
+      () => {
+        order.push("first-2");
+        return next.task();
+      },
+      caller().signal,
+      { first: true },
+    );
+    await settle();
+    expect(order).toEqual(["first-1", "build"]);
+    build.finish();
+    await b;
+    await settle();
+    next.finish();
+    await p2;
+    expect(order).toEqual(["first-1", "build", "first-2"]);
+  });
+});
+
+describe("the process's memory gate", () => {
+  test("is one queue of PLATE_MESH_BUILDS jobs at once and PLATE_MESH_WAITING builds waiting", async () => {
+    expect(PLATE_MESH_BUILDS).toBe(1);
+    expect(PLATE_MESH_WAITING).toBe(8);
+    const builds = Array.from({ length: 1 + PLATE_MESH_WAITING }, () => held());
+    const runs = builds.map((b, i) => memoryGate.run(`gate-${i}`, b.task, caller().signal));
+    await settle();
+    expect(builds.map((b) => b.starts)).toEqual([1, ...Array(PLATE_MESH_WAITING).fill(0)]);
+    await expect(memoryGate.run("gate-late", held().task, caller().signal)).rejects.toBeInstanceOf(
+      BuildQueueBusy,
+    );
+    for (const b of builds) b.finish();
+    await Promise.all(runs);
+    expect(memoryGate.waiting()).toBe(0);
   });
 });
