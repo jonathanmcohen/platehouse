@@ -4,6 +4,17 @@ All notable changes to Platehouse are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Settings shows who made each API token: the name your sign-in provider gave them and their user id. Tokens made with 0.1.0, before Platehouse recorded this, show "Made by an unknown user". Migration 0010 adds the columns; existing tokens and sessions keep every value they had ([#322](https://github.com/jonathanmcohen/platehouse/issues/322)).
+- Sign out everywhere in Settings: pick a person from the list of everyone with a live session or a token they made, and end every session they have, on every browser, at once; tick the box to also revoke every API token they made. Anyone who can sign in may use it, as anyone can already revoke any token: Platehouse has no roles ([#322](https://github.com/jonathanmcohen/platehouse/issues/322)).
+
+### Fixed
+
+- A user removed from the sign-in group (OIDC_GROUP) could keep making API tokens for as long as their old session lasted, up to 30 days, and those tokens never expired. Creating a token now needs a sign-in from the last 5 minutes; with an older session, Settings asks you to sign in again and comes back to Settings afterwards, and that sign-in checks the group, so a removed user is refused. While the sign-in provider cannot be reached, no token can be made. To cut someone off, remove them from the group, then use Sign out everywhere with its revoke box ticked, and revoke by hand any token they had a copy of; see the sign-in page of the docs ([#322](https://github.com/jonathanmcohen/platehouse/issues/322)).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
@@ -118,7 +129,6 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Known issues
 
-- Removing a user from the group Platehouse lets in (OIDC_GROUP) does not end their access. Platehouse checks the group only when someone signs in, so a removed user keeps the sessions they already have until those expire (7 days without a request, or 30 days at most), and while a session lasts they can still create API tokens in Settings. API tokens are separate from sessions: a token belongs to no user, never expires and is not checked against the group, so a token made before or after the removal keeps API access (reading the library, uploading, changing tags and collections) until it is revoked. The 30-day bound applies to sessions only. To cut someone off, first delete their rows from the sessions table in Platehouse's database (the subject column holds their user id from your identity provider), so they cannot make new tokens, and then revoke in Settings every token you cannot account for. The maintainer accepted the session limit for 0.1.0 on 2026-11-11 ([#113](https://github.com/jonathanmcohen/platehouse/issues/113)).
 - The slicer's network is internal, so the slicer cannot reach the internet, but depending on your Docker and firewall setup it can still open connections to ports the Docker host itself listens on, through that network's gateway address. That matters if the host runs services that trust any caller. On a host where that should not be possible, block traffic from the slicer network to the host with a firewall rule, or create the network with the bridge option com.docker.network.bridge.inhibit_ipv4 so the host has no address on it. It is accepted for 0.1.0 on hosts that cannot be reached from the internet. See the slicer section of docs/security.md.
 - The slicer image installs its Ubuntu packages from a frozen snapshot, so its builds are reproducible but it does not pick up Ubuntu security fixes until the snapshot date is moved forward. How and how often that happens is not decided yet; the image workflow's Trivy scan reports findings without failing the build ([#219](https://github.com/jonathanmcohen/platehouse/issues/219)).
 - Tags and collections cannot be deleted. A tag or collection that no model uses any more stops being listed on the Tags and Collections pages, but its row stays in the database, and adding the same name again reuses it ([#312](https://github.com/jonathanmcohen/platehouse/issues/312)).

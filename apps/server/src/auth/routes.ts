@@ -13,14 +13,19 @@
 //   the header size limit, it first clears every login cookie the request
 //   carries that is forged or expired, and of the rest all but the newest
 //   MAX_PENDING_LOGINS - 1. When the issuer cannot be reached the answer is
-//   503 "Login is unavailable right now".
+//   503 "Login is unavailable right now". A next= query naming a plain
+//   path (returnPath: segments of letters, digits, - and _) rides in the
+//   signed cookie, and the callback sends the browser there instead of the
+//   start page; anything else in next= is ignored. Settings uses it to come
+//   back after the fresh sign-in a new API token needs (issue #322).
 // - GET /auth/callback finds the login cookie by the state in its query and
 //   spends that one cookie whatever happens, leaving any other login's
 //   alone. A state that is not a plain token is 400 and names no cookie. It
 //   then exchanges the code against the callback URL rebuilt on
 //   PUBLIC_ORIGIN with only the request's query (so redirect_uri never comes
-//   from the Host header), and on success starts a session, sets
-//   __Host-ph_session and sends the browser to PUBLIC_ORIGIN/. A missing,
+//   from the Host header), and on success starts a session with the display
+//   name the claims give, sets __Host-ph_session and sends the browser to
+//   PUBLIC_ORIGIN/ (or the login's next path on PUBLIC_ORIGIN). A missing,
 //   forged or expired login cookie, or a response that does not check out,
 //   is 400; a user not let in is 403 with the reason; the issuer unreachable
 //   is 503.
@@ -122,6 +127,27 @@ interface LoginState {
   n: string;
   /** When the login expires, in ms since the epoch. */
   e: number;
+  /** Where the callback sends the browser (a returnPath), when not the start page. */
+  r?: string;
+}
+
+/**
+ * A path GET /auth/login?next= may send the browser back to after the login:
+ * slash-separated segments of letters, digits, - and _ only, so no other
+ * host, no dot segment, escape, backslash, doubled slash or query can get
+ * in. The callback builds the URL on PUBLIC_ORIGIN (absoluteUrl) all the
+ * same. Settings uses it to come back after the fresh sign-in a new API
+ * token needs (issue #322).
+ */
+const RETURN_PATH = /^(?:\/[A-Za-z0-9_-]+)+$/;
+
+/** The longest next= path the login keeps. */
+const MAX_RETURN_PATH = 200;
+
+/** next, when it is a path the login may return to; undefined otherwise. */
+export function returnPath(next: string | null | undefined): string | undefined {
+  if (typeof next !== "string" || next.length > MAX_RETURN_PATH) return undefined;
+  return RETURN_PATH.test(next) ? next : undefined;
 }
 
 function escapeHtml(text: string): string {
@@ -181,16 +207,22 @@ function unavailable(reply: FastifyReply, tr: Translator) {
   return sendPage(reply, tr, 503, ["login.unavailable.title"], ["login.unavailable.issuer"]);
 }
 
-/** The login cookie's checks, or undefined when it is missing, forged, malformed or expired. */
+/**
+ * The login cookie's checks and return path, or undefined when it is
+ * missing, forged, malformed or expired.
+ */
 function readLoginCookie(
   request: FastifyRequest,
   name: string,
   now: Date,
-): LoginChecks | undefined {
+): { checks: LoginChecks; next: string | undefined } | undefined {
   const state = readLoginState(request, name, now);
   return state === undefined
     ? undefined
-    : { codeVerifier: state.v, state: state.s, nonce: state.n };
+    : {
+        checks: { codeVerifier: state.v, state: state.s, nonce: state.n },
+        next: returnPath(state.r),
+      };
 }
 
 /** The login cookie's signed value, or undefined when it is missing, forged, malformed or expired. */
@@ -270,11 +302,13 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       request.log.warn({ err: error }, "auth: login is unavailable: the issuer cannot be reached");
       return unavailable(reply, await words(request));
     }
+    const next = returnPath(new URLSearchParams(queryOf(request.url)).get("next"));
     const state: LoginState = {
       v: begun.checks.codeVerifier,
       s: begun.checks.state,
       n: begun.checks.nonce,
       e: now().getTime() + LOGIN_COOKIE_MS,
+      ...(next === undefined ? {} : { r: next }),
     };
     clearOldLogins(request, reply, now());
     reply.setCookie(
@@ -292,15 +326,15 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
 
   app.get("/auth/callback", async (request, reply) => {
     const state = new URLSearchParams(queryOf(request.url)).get("state") ?? "";
-    let checks: LoginChecks | undefined;
+    let login: ReturnType<typeof readLoginCookie>;
     if (STATE_PATTERN.test(state)) {
       // This login's cookie is spent whatever happens next; another login's
       // cookie is left for its own callback.
       const name = loginCookieName(state);
       reply.clearCookie(name, LOGIN_COOKIE_OPTIONS);
-      checks = readLoginCookie(request, name, now());
+      login = readLoginCookie(request, name, now());
     }
-    if (checks === undefined) {
+    if (login === undefined) {
       return sendPage(
         reply,
         await words(request),
@@ -311,8 +345,9 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     }
     const callbackUrl = new URL(`${deps.absoluteUrl("/auth/callback")}${queryOf(request.url)}`);
     let subject: string;
+    let displayName: string | null | undefined;
     try {
-      ({ subject } = await deps.oidc.finish(callbackUrl, checks));
+      ({ subject, name: displayName } = await deps.oidc.finish(callbackUrl, login.checks));
     } catch (error) {
       const failure = error instanceof LoginError ? error.failure : "failed";
       request.log.warn({ failure }, "auth: login refused");
@@ -347,7 +382,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     }
     let started: Awaited<ReturnType<Sessions["start"]>>;
     try {
-      started = await deps.sessions.start(subject);
+      started = await deps.sessions.start(subject, displayName ?? null);
       // A session the browser already had is replaced, not kept beside it.
       await deps.sessions.end(request.cookies[SESSION_COOKIE]).catch(() => undefined);
     } catch (error) {
@@ -365,7 +400,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       maxAge: SESSION_ABSOLUTE_MS / 1000,
     });
     reply.header("cache-control", "no-store");
-    return reply.redirect(deps.absoluteUrl("/"), 302);
+    return reply.redirect(deps.absoluteUrl(login.next ?? "/"), 302);
   });
 
   app.post("/auth/logout", async (request, reply) => {

@@ -116,6 +116,8 @@ export interface ConfirmDialogProps {
   onConfirm(): Promise<void>;
   onCancel(): void;
   returnFocusTo?: RefObject<HTMLElement | null>;
+  /** Choices shown under the message, such as Sign out everywhere's revoke box. */
+  children?: ReactNode;
 }
 
 export function ConfirmDialog({
@@ -125,6 +127,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   returnFocusTo,
+  children,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
   const errorText = useErrorText();
@@ -158,6 +161,7 @@ export function ConfirmDialog({
       {...(returnFocusTo === undefined ? {} : { returnFocusTo })}
     >
       <p>{message}</p>
+      {children}
       {error === undefined ? null : (
         <p role="alert" className="studio-alert studio-alert-alert">
           {error}

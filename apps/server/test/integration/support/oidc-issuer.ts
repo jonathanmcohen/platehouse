@@ -23,7 +23,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { allowInsecureRequests } from "openid-client";
 import type { TokenStore } from "../../../src/api/tokens.js";
 import type { ApiDeps } from "../../../src/api/v1.js";
-import { type AppAuth, type AppDeps, buildApp } from "../../../src/app.js";
+import { type AppApiDeps, type AppAuth, type AppDeps, buildApp } from "../../../src/app.js";
 import type { ListedToken } from "../../../src/app-api/tokens.js";
 import type { KnownUser } from "../../../src/app-api/users.js";
 import { createOidc, type OidcClient } from "../../../src/auth/oidc.js";
@@ -348,7 +348,11 @@ export function memorySessionStore(): MemoryStore {
     gets: 0,
     async create(input) {
       if (store.failWith) throw store.failWith;
-      const row: Session = { ...input, createdAt: new Date() };
+      const row: Session = {
+        ...input,
+        displayName: input.displayName ?? null,
+        createdAt: input.createdAt ?? new Date(),
+      };
       rows.set(input.id, row);
       return row;
     },
@@ -576,7 +580,7 @@ export async function authTestApp(
     /** buildApp's logger: a stream here lets a test read every log line. */
     logger?: AppDeps["logger"];
     /** The /app/api modules, built from the test's auth (its session store and sessions). */
-    appApi?: (auth: TestAuth) => AppDeps["appApi"];
+    appApi?: (auth: TestAuth) => Partial<AppApiDeps>;
   } = {},
 ): Promise<AuthTestApp> {
   const t = await testAuth(opts);

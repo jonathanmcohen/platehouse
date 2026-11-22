@@ -501,9 +501,7 @@ beforeEach(() => {
         createdBy: null,
       },
     ],
-    users: [
-      { subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true },
-    ],
+    users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
     signInRequired: false,
     trash: [
       {
@@ -1346,9 +1344,7 @@ describe("the settings page", () => {
     expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(0);
 
     await click(button("Sign out Synthetic Gone everywhere"));
-    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>(
-      'input[type="checkbox"]',
-    );
+    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(box?.checked).toBe(false);
     await click(button("Sign out everywhere", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
@@ -1379,9 +1375,7 @@ describe("the settings page", () => {
     });
     await show("/settings", <SettingsPage />);
     await click(button("Sign out Synthetic Gone everywhere"));
-    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>(
-      'input[type="checkbox"]',
-    );
+    const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(box).not.toBeNull();
     await click(box as HTMLInputElement);
     await click(button("Sign out everywhere", dialog() as HTMLElement));

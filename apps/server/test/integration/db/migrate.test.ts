@@ -546,8 +546,12 @@ describe("0010 token creators", () => {
       insert into sessions (id, subject, expires_at, idle_expires_at)
       values (${"G".repeat(43)}, 'subject-old', now() + interval '1 day', now() + interval '1 day')
     `.execute(db);
-    const tokensBefore = (await sql`select * from api_tokens order by id`.execute(db)).rows;
-    const sessionsBefore = (await sql`select * from sessions order by id`.execute(db)).rows;
+    const tokensBefore = (
+      await sql<Record<string, unknown>>`select * from api_tokens order by id`.execute(db)
+    ).rows;
+    const sessionsBefore = (
+      await sql<Record<string, unknown>>`select * from sessions order by id`.execute(db)
+    ).rows;
 
     await migrate(db);
 

@@ -143,6 +143,9 @@ describe("who made a token", () => {
   });
 
   test("a session with no display name records the subject and a null name", async () => {
+    // No name claim and no email (the name falls back to the email address).
+    const { email: _email, ...noEmail } = t.issuer.user;
+    t.issuer.user = noEmail;
     const cookie = await signIn("subject-no-name");
     const created = await makeToken(cookie, "Desk script");
     expect(created.createdBy).toEqual({ subject: "subject-no-name", name: null });
@@ -212,15 +215,21 @@ describe("a new token needs a fresh sign-in", () => {
   test("while the issuer cannot be reached no new token can be made, and the sign-in it asks for fails", async () => {
     const cookie = await signIn("subject-issuer-down");
     ageSession(cookie, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
-    await t.issuer.stop();
 
+    // The sign-in it asks for: the issuer goes down before the code exchange,
+    // so the callback is 503 and no fresh session is made.
+    const again = await runLogin(t, {
+      loginPath: "/auth/login?next=/settings",
+      beforeCallback: () => t.issuer.stop(),
+    });
+    expect(again.callback.statusCode).toBe(503);
+    expect(again.sessionCookie).toBeUndefined();
+
+    // The old session is still refused; nothing asks the issuer or lets it through.
     const res = await call("POST", "/app/api/tokens", cookie, { name: "while down" });
     expect(res.status, res.text).toBe(403);
     expect((res.json() as { error: string }).error).toBe("sign_in_required");
     expect(tokenStore.rows.size).toBe(0);
-
-    const login = await t.app.inject({ method: "GET", url: "/auth/login?next=/settings" });
-    expect(login.statusCode).toBe(503);
   });
 
   test("the sign-in it asks for comes back to Settings", async () => {

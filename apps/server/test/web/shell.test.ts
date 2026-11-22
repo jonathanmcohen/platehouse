@@ -561,6 +561,7 @@ describe("the icon files at the root", () => {
           },
           find: async () => undefined,
           end: async () => {},
+          endAllFor: async () => 0,
         },
         publicOrigin: "https://platehouse.test",
         absoluteUrl: (path) => `https://platehouse.test${path}`,

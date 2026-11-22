@@ -32,12 +32,21 @@ Each API client, such as a script or another tool on one computer, gets its own 
 
 - Create tokens in **Settings**. A token starts with `ph_` and is shown once, when it is made. Copy
   it then; Platehouse cannot show it again.
+- Creating a token needs a sign-in from the last 5 minutes. Platehouse checks the group only at
+  sign-in, so this is what stops someone removed from the group from making a token with a
+  session they already had. If your sign-in is older, Settings asks you to sign in again; while
+  your provider is down, no token can be made.
 - Platehouse stores only a SHA-256 hash of each token and its first 8 characters, so you can tell
   tokens apart. A stolen database does not give working tokens.
+- Each token records who made it: the user id (`sub`) your provider gave them and their name at
+  the time, shown in **Settings**. Tokens made with Platehouse 0.1.0 show "Made by an unknown
+  user".
 - Revoke a token in **Settings** when a client no longer needs it, if it may have leaked, or when
   someone who made or used it is removed from the group: removing a person does not revoke their
-  tokens (see [Sign-in](./sign-in.md#the-allowed-group)). Revoking one leaves the others working.
-  Each token shows when it was last used.
+  tokens. Revoking one leaves the others working. Each token shows when it was last used.
+- **Sign out everywhere** in **Settings** ends every session of one person and can revoke every
+  token they made in the same step. See [Sign-in](./sign-in.md#the-allowed-group) for how to cut
+  someone off completely.
 - A token is sent as `Authorization: Bearer <token>`. Cookies never count for the API, and tokens
   never appear in the app's log.
 - A token can read the library, upload files and change tags and collections. It cannot delete,

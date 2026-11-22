@@ -17,6 +17,13 @@
 //   dropped a string claim and login became an opaque "denied"). Groups and
 //   email_verified are read from the ID token, and from userinfo when the ID
 //   token leaves either out.
+// - The group is checked at every login and only then. Sessions keep no
+//   token from the issuer, so a session cannot ask the issuer again later;
+//   what needs a current check, such as making an API token, needs a fresh
+//   login instead (app-api/tokens.ts; issue #322).
+// - finish also returns a display name for the session (displayNameOf: name,
+//   else preferred_username, else email), which labels the API tokens the
+//   session makes. It never decides who gets in.
 import {
   authorizationCodeGrant,
   buildAuthorizationUrl,
@@ -63,8 +70,40 @@ export class LoginError extends Error {
 export interface OidcClient {
   /** The issuer's authorize URL for a new login, and the checks to keep. */
   begin(): Promise<{ url: URL; checks: LoginChecks }>;
-  /** Exchanges the code in callbackUrl and returns the subject let in. */
-  finish(callbackUrl: URL, checks: LoginChecks): Promise<{ subject: string }>;
+  /**
+   * Exchanges the code in callbackUrl and returns the subject let in, with
+   * the display name the claims give (displayNameOf), or null.
+   */
+  finish(callbackUrl: URL, checks: LoginChecks): Promise<{ subject: string; name?: string | null }>;
+}
+
+/** The longest display name a session keeps (the schema's limit, migration 0010). */
+export const MAX_DISPLAY_NAME = 200;
+
+/** text with each control character (C0, DEL and C1) made a space. */
+function spaceControls(text: string): string {
+  return Array.from(text, (ch) => {
+    const code = ch.codePointAt(0) ?? 0;
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : ch;
+  }).join("");
+}
+
+/**
+ * The name to show for whoever signed in (issue #322): the first of the
+ * name, preferred_username and email claims that is a string with something
+ * in it once control characters are taken out and white space is trimmed
+ * and collapsed, cut to MAX_DISPLAY_NAME characters; null when none is. It
+ * only labels a session and the tokens it makes: nothing is let in or kept
+ * out by it.
+ */
+export function displayNameOf(claims: Record<string, unknown>): string | null {
+  for (const key of ["name", "preferred_username", "email"]) {
+    const value = claims[key];
+    if (typeof value !== "string") continue;
+    const clean = spaceControls(value).replace(/\s+/g, " ").trim();
+    if (clean !== "") return Array.from(clean).slice(0, MAX_DISPLAY_NAME).join("");
+  }
+  return null;
 }
 
 export interface OidcOptions {
@@ -195,11 +234,13 @@ export function createOidc(opts: OidcOptions): OidcClient {
           const info: Record<string, unknown> = {
             ...(await fetchUserInfo(config, tokens.access_token, subject)),
           };
-          for (const key of ["groups", "email_verified"]) {
+          // The name claims come along when userinfo is asked anyway; they
+          // only label the session (displayNameOf), never decide entry.
+          for (const key of ["groups", "email_verified", "name", "preferred_username", "email"]) {
             if (!(key in claims) && key in info) claims[key] = info[key];
           }
         }
-        return admit(claims, opts.group);
+        return { ...admit(claims, opts.group), name: displayNameOf(claims) };
       } catch (error) {
         throw asLoginError(error);
       }
