@@ -5,9 +5,18 @@
 #   detect: pick the Orca version -> resolve its pins -> check the registry
 #   build:  build (load) -> smoke slice -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
-#           -> tag orca-X.Y.Z and the run tag -> move stable
+#           -> tag orca-X.Y.Z and the run tag -> move stable -> move rc
 #   report-failure: when detect or build failed, open an issue (or comment on
 #           the open one with the same title)
+#
+# Two moving tags. stable is the slicer a production server follows. rc is
+# the slicer a test server follows: set the image to :rc and pull to get the
+# newest release candidate (the maintainer, 2026-11-21). rc moves only on a
+# pushed release tag: a release candidate vX.Y.Z-rc.N, or a plain vX.Y.Z, so
+# a server on rc never runs anything older than the newest release. Daily
+# runs, runs by hand (from main or from a tag) and any other prerelease tag,
+# such as v0.0.0-test, never move rc. The app image's rc in release.yml
+# follows the same rule.
 #
 # When it runs:
 # - daily at 05:00 UTC. It reads OrcaSlicer's latest release (the API leaves
@@ -20,13 +29,15 @@
 #   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and its run tag but
 #   leaves stable alone (the maintainer, 2026-11-15); a plain vX.Y.Z tag moves it. The
 #   daily run never promotes such a version, as its orca-X.Y.Z exists; the
-#   run's summary says so.
+#   run's summary says so. A release candidate tag (vX.Y.Z-rc.N) and a plain
+#   vX.Y.Z tag also move rc; any other prerelease tag leaves rc alone.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
 #   release. It must be started from main or a release tag (like release.yml,
 #   it refuses any other branch before anything is built, so unreviewed slicer
 #   code never reaches stable); from main or a plain vX.Y.Z tag it always
 #   builds and moves stable, from a prerelease tag it leaves stable alone, as
-#   a push of that tag would. force_fail fails the smoke
+#   a push of that tag would. A run by hand never moves rc, whatever ref it
+#   starts from. force_fail fails the smoke
 #   slice on purpose after it ran, to test the failure path.
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
@@ -57,7 +68,8 @@
 # and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
 # on a re-run, which keeps the run number; issue #221), are pointed at that
 # digest and read back, and
-# only then stable (not on a prerelease tag). Before any push a Trivy scan
+# only then stable (not on a prerelease tag), then rc (only on a pushed
+# vX.Y.Z-rc.N or plain vX.Y.Z tag), each read back. Before any push a Trivy scan
 # reports fixable HIGH and CRITICAL findings in the job log; it is a report
 # and never fails the job. imagetools create runs with --prefer-index=false so each
 # tag is a carbon copy of the pushed manifest (by default a single source is
@@ -65,7 +77,7 @@
 # digest check leaves the pushed digest untagged in the package; nothing points
 # at it and it can be deleted by hand. A failure before the tag step touches no
 # tag. A failure inside it (a readback, or a passing GHCR error) can leave
-# orca-X.Y.Z, and stable if it had got that far, at the new digest; the step
+# orca-X.Y.Z, and stable and rc if it had got that far, at the new digest; the step
 # records the tags it reached and the failure issue lists them. The daily run
 # then sees orca-X.Y.Z and never retries, so the issue says to run by hand.
 #
@@ -128,6 +140,7 @@ jobs:
     outputs:
       version: ${{ steps.pick.outputs.version }}
       stable: ${{ steps.pick.outputs.stable }}
+      rc: ${{ steps.pick.outputs.rc }}
       orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}
       orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}
       build: ${{ steps.registry.outputs.build }}
@@ -157,7 +170,10 @@ jobs:
             # so it must start from main or a release tag, as release.yml's
             # gate requires: a dispatch from any other branch would publish
             # unreviewed code as orca-X.Y.Z and stable.
+            # rc moves only on a pushed release candidate tag vX.Y.Z-rc.N or
+            # a plain vX.Y.Z tag; never on a daily run or a run by hand.
             stable=true
+            rc=false
             if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ] && [[ "$REF" != refs/tags/* ]]; then
               echo "::error::${REF} is not main or a release tag; a run by hand must start from main or a vX.Y.Z tag, so nothing is built"
               exit 1
@@ -172,8 +188,17 @@ jobs:
                 stable=false
                 echo "${REF#refs/tags/} is a prerelease tag: stable will not move"
               fi
+              rc_re='^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'
+              if [ "$EVENT" = "push" ] && [[ "$REF" =~ $rc_re ]]; then
+                rc=true
+                echo "${REF#refs/tags/} moves rc"
+              fi
+            fi
+            if [ "$rc" = "false" ]; then
+              echo "rc will not move: only a pushed vX.Y.Z-rc.N or vX.Y.Z tag moves it"
             fi
             echo "stable=${stable}" >>"$GITHUB_OUTPUT"
+            echo "rc=${rc}" >>"$GITHUB_OUTPUT"
             if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
               if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 echo "::error::orca_version '${INPUT_VERSION}' is not X.Y.Z"
@@ -526,8 +551,9 @@ jobs:
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/check.log"
 
       # 5) The version tags, read back; then stable, read back, unless this is
-      #    a prerelease tag's run (MOVE_STABLE false). A carbon copy each
-      #    (--prefer-index=false), so every tag is the tested digest.
+      #    a prerelease tag's run (MOVE_STABLE false); then rc, read back, only
+      #    on a pushed vX.Y.Z-rc.N or plain vX.Y.Z tag (MOVE_RC true). A carbon
+      #    copy each (--prefer-index=false), so every tag is the tested digest.
       - name: Tag the image and move stable
         id: tag
         env:
@@ -535,6 +561,7 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           MOVE_STABLE: ${{ needs.detect.outputs.stable }}
+          MOVE_RC: ${{ needs.detect.outputs.rc }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
@@ -553,6 +580,10 @@ jobs:
             if [ "$RUN_ATTEMPT" -gt 1 ]; then run_tag="${run_tag}.${RUN_ATTEMPT}"; fi
             if [ "$MOVE_STABLE" != "true" ] && [ "$MOVE_STABLE" != "false" ]; then
               echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
+              exit 1
+            fi
+            if [ "$MOVE_RC" != "true" ] && [ "$MOVE_RC" != "false" ]; then
+              echo "::error::detect gave no rc decision ('${MOVE_RC}'); nothing is tagged"
               exit 1
             fi
             src="${IMAGE}@${DIGEST}"
@@ -581,6 +612,14 @@ jobs:
             else
               echo "A prerelease tag's run: stable is left where it was"
             fi
+            if [ "$MOVE_RC" = "true" ]; then
+              tags="${tags}, rc"
+              echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
+              docker buildx imagetools create --prefer-index=false -t "${IMAGE}:rc" "$src"
+              readback "${IMAGE}:rc"
+            else
+              echo "Not a pushed vX.Y.Z-rc.N or vX.Y.Z tag: rc is left where it was"
+            fi
             {
               echo "### Published ${IMAGE} for OrcaSlicer ${VERSION}"
               echo ""
@@ -588,6 +627,9 @@ jobs:
               echo "- tags: ${tags}"
               if [ "$MOVE_STABLE" != "true" ]; then
                 echo "- stable not moved (prerelease tag). The daily run will not move it either: it sees orca-${VERSION} and builds nothing. stable reaches this version on a plain release tag or a run by hand."
+              fi
+              if [ "$MOVE_RC" != "true" ]; then
+                echo "- rc not moved. Only a pushed release candidate tag (vX.Y.Z-rc.N) or plain release tag (vX.Y.Z) moves rc; daily runs and runs by hand never do."
               fi
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Published ${tags} at ${DIGEST}"
@@ -677,6 +719,7 @@ jobs:
           TAGGED: ${{ needs.build.outputs.tagged }}
           DIGEST: ${{ needs.build.outputs.digest }}
           STABLE: ${{ needs.detect.outputs.stable }}
+          RC: ${{ needs.detect.outputs.rc }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           version="$VERSION"
@@ -706,6 +749,10 @@ jobs:
               else
                 echo "stable was not touched and still points at the last image that passed."
               fi
+              if [[ ", ${TAGGED}," == *", rc,"* ]]; then
+                echo ""
+                echo "rc may now point at that digest too, so a test server following rc may pull it."
+              fi
             fi
             echo ""
             echo "Run: ${RUN_URL}"
@@ -716,13 +763,26 @@ jobs:
             printf '%s\n' "$tail"
             echo '```'
             echo ""
-            if [ -n "$TAGGED" ] && [ "$STABLE" = "false" ]; then
+            if [ -n "$TAGGED" ] && { [ "$STABLE" = "false" ] || [ "$RC" = "true" ]; }; then
               # The placeholder sits in a code span, single-quoted so bash keeps
               # the backticks: bare, GitHub would strip <run> as an HTML tag.
               # Only the tag step sets TAGGED, so detect succeeded. Re-run failed jobs
               # re-runs build and the jobs after it and keeps detect's outputs
-              # (version, pins, stable=false); Re-run all jobs would run detect again.
-              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and leaves stable alone; a run by hand would move stable. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+              # (version, pins, stable and rc); Re-run all jobs would run detect
+              # again. A run by hand would get stable wrong on a prerelease tag
+              # and never moves rc, so a tag run that should move rc re-runs too.
+              if [ "$STABLE" = "false" ]; then
+                effect="leaves stable alone"
+                hand="a run by hand would move stable"
+              else
+                effect="moves stable"
+                hand="a run by hand"
+              fi
+              if [ "$RC" = "true" ]; then
+                effect="${effect} and moves rc"
+                if [ "$STABLE" = "false" ]; then hand="${hand} and would not move rc"; else hand="${hand} would not move rc"; fi
+              fi
+              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and ${effect}; ${hand}. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
             elif [ -n "$TAGGED" ]; then
               echo "To fix: read the run's log, fix the cause, then run the workflow by hand (Actions, slicer-image, Run workflow, orca_version ${version}). The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date and never moves stable to this version."
             elif [ "$EVENT" = "schedule" ]; then

@@ -27,6 +27,20 @@
 # is no hand-written latest entry: it would publish latest even for a tag that
 # is not valid semver.
 #
+# rc is a moving tag for a test server: set the image to :rc and pull to get
+# the newest release candidate (the maintainer, 2026-11-21). It moves on a
+# release candidate tag vX.Y.Z-rc.N and on a plain release tag vX.Y.Z, so a
+# server on rc never runs anything older than the newest release; any other
+# prerelease, such as the throwaway v0.0.0-test, leaves it alone. The merge
+# job's "Does this tag move rc" step decides it from github.ref with a strict
+# regex, and metadata-action adds rc through type=raw only when that step says
+# true. An enable= expression cannot do this itself: version is not an
+# Actions context, and a test of github.ref_name cannot check semver. Because
+# the step only says true for a valid semver tag, type=semver (priority 900)
+# always runs first and keeps the version output and the latest decision; the
+# raw entry (priority 200) only adds rc beside them. Known limit, shared with
+# latest: a backport release tag cut after a newer one moves rc back to it.
+#
 # workflow_dispatch is for the plan's first release step: dispatching this
 # workflow against a throwaway tag (gh workflow run release.yml --ref
 # v0.0.0-test). The gate job refuses any run whose ref is not a semver tag
@@ -249,6 +263,24 @@ jobs:
           path: digests
           merge-multiple: true
 
+      # rc moves on vX.Y.Z-rc.N and on a plain vX.Y.Z, nothing else (see the
+      # header). Decided from github.ref here, because metadata-action's
+      # enable= cannot run a regex.
+      - name: Does this tag move rc
+        id: rc
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          re='^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'
+          if [[ "$REF" =~ $re ]]; then
+            move=true
+            echo "${REF#refs/tags/} moves rc"
+          else
+            move=false
+            echo "${REF#refs/tags/} is not a release candidate or a plain release: rc stays where it is"
+          fi
+          echo "move=${move}" >>"$GITHUB_OUTPUT"
+
       - name: Tags for this ref
         id: meta
         uses: docker/metadata-action@v6.2.0
@@ -256,6 +288,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=semver,pattern={{version}}
+            type=raw,value=rc,enable=${{ steps.rc.outputs.move == 'true' }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4.4.1
@@ -270,11 +303,14 @@ jobs:
       # The manifest list from exactly the two arch digests, with the tags
       # metadata-action gave; then read back from the registry: the version
       # tag must list both platforms at those digests, and latest, when this
-      # is a stable tag, must be the same manifest list.
+      # is a stable tag, must be the same manifest list. rc is checked on both
+      # sides: before anything is tagged, the tag list must hold rc exactly
+      # when the rc step said it moves; after, rc must be that manifest list.
       - name: Create the manifest list and check it
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           VERSION: ${{ steps.meta.outputs.version }}
+          MOVE_RC: ${{ steps.rc.outputs.move }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -286,6 +322,15 @@ jobs:
           mapfile -t tags < <(printf '%s\n' "$TAGS" | sed '/^$/d')
           [ "${#tags[@]}" -ge 1 ] || { echo "::error::metadata-action gave no tags for ${GITHUB_REF}"; exit 1; }
           [ -n "$VERSION" ] || { echo "::error::metadata-action gave no version for ${GITHUB_REF}"; exit 1; }
+          [ "$VERSION" != "rc" ] || { echo "::error::metadata-action took rc as the version for ${GITHUB_REF}; nothing is tagged"; exit 1; }
+          [ "$MOVE_RC" = "true" ] || [ "$MOVE_RC" = "false" ] ||
+            { echo "::error::the rc step gave no decision ('${MOVE_RC}'); nothing is tagged"; exit 1; }
+          has_rc=false
+          for t in "${tags[@]}"; do
+            if [ "$t" = "${IMAGE}:rc" ]; then has_rc=true; fi
+          done
+          [ "$has_rc" = "$MOVE_RC" ] ||
+            { echo "::error::rc should move: ${MOVE_RC}, but metadata-action's tags hold rc: ${has_rc} (${tags[*]}); nothing is tagged"; exit 1; }
           targs=()
           for t in "${tags[@]}"; do targs+=(-t "$t"); done
           echo "Tagging ${tags[*]}"
@@ -304,6 +349,11 @@ jobs:
             d="$(docker buildx imagetools inspect "$t" --format '{{.Manifest.Digest}}')"
             [ "$d" = "$index" ] || { echo "::error::$t is ${d}, not ${index}"; exit 1; }
           done
+          if [ "$MOVE_RC" = "true" ]; then
+            d="$(docker buildx imagetools inspect "${IMAGE}:rc" --format '{{.Manifest.Digest}}')"
+            [ "$d" = "$index" ] || { echo "::error::${IMAGE}:rc is ${d}, not the published ${index}"; exit 1; }
+            echo "${IMAGE}:rc points at ${index}"
+          fi
           {
             echo "### Published ${IMAGE}:${VERSION}"
             echo ""
@@ -311,5 +361,8 @@ jobs:
             echo "- linux/amd64: \`${amd64}\`"
             echo "- linux/arm64: \`${arm64}\`"
             echo "- tags: ${tags[*]}"
+            if [ "$MOVE_RC" != "true" ]; then
+              echo "- rc not moved: ${GITHUB_REF#refs/tags/} is not a release candidate (vX.Y.Z-rc.N) or a plain release"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Published ${tags[*]} at ${index} (amd64 ${amd64}, arm64 ${arm64})"

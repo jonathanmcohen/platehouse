@@ -104,7 +104,8 @@ workspace files change. Nothing deploys it yet.
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
 `ghcr.io/jonathanmcohen/platehouse-slicer`. A deployment pins an `orca-X.Y.Z` tag, as
-`examples/docker-compose.yml` does, or follows the `stable` tag.
+`examples/docker-compose.yml` does, or follows the `stable` tag. A test server can follow the
+`rc` tag instead (below).
 
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
@@ -119,15 +120,25 @@ a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a re
 fails the run. A version first published by a prerelease tag stays off `stable` until a plain
 release tag or a run by hand: the daily run sees its `orca-X.Y.Z` tag and builds nothing.
 
+`rc` is for a test server: set its slicer image to `platehouse-slicer:rc` and pull to get the
+newest release candidate, with no tag to edit. It moves, so it is not a pin. A pushed release
+candidate tag (`vX.Y.Z-rc.N`) and a pushed plain release tag (`vX.Y.Z`) both point `rc` at the
+image that run published, so a server on `rc` never runs anything older than the newest release.
+Daily runs, runs by hand and any other prerelease tag (such as `v0.0.0-test`) leave `rc` where it
+is. A release tag cut for an older version after a newer one moves `rc` back to it, the same way it
+moves `stable`. The app image, `ghcr.io/jonathanmcohen/platehouse`, has an `rc` tag that moves on
+the same tags; see `docs/backups-and-upgrades.md`.
+
 When a run fails, the workflow opens an issue titled "Slicer image failed for OrcaSlicer X.Y.Z".
 A failure before tagging creates or moves no tag, and `stable` stays where it was. A failure
 while tagging (a readback that does not match, or a passing GHCR error) can leave `orca-X.Y.Z`,
-and `stable` if it had got that far, at the new digest; the issue then
+and `stable` and `rc` if it had got that far, at the new digest; the issue then
 lists the tags it had already pointed at the new digest. Once `orca-X.Y.Z` exists the daily run
 will not retry that version, so the issue says to run the workflow by hand. For a prerelease
-tag's run the issue suggests Re-run failed jobs instead, as a run by hand would move `stable`. It
-re-runs the build job with the first attempt's version and pins, so it builds the failed version
-again and leaves `stable` alone. The issue warns against Re-run all jobs, which runs the
+tag's run, and for any release tag's run that should move `rc`, the issue suggests Re-run failed jobs
+instead, as a run by hand would move `stable` on a prerelease and never moves `rc`. It
+re-runs the build job with the first attempt's version, pins and `stable` and `rc` decisions, so
+it builds the failed version again and moves the same tags. The issue warns against Re-run all jobs, which runs the
 detect job again and so reads OrcaSlicer's latest release again: if Orca has shipped a newer
 version since, that re-run builds the newer one and leaves the failed version as the first
 attempt left it.
@@ -159,6 +170,9 @@ that version instead.
 The daily run leaves a rollback alone: it builds only when an Orca release has no `orca-X.Y.Z`
 tag yet. A plain release tag or a run by hand always builds, and moves `stable` again when its
 smoke slice passes.
+
+`rc` rolls back the same way: use `platehouse-slicer:rc` in place of `platehouse-slicer:stable`
+in both commands. The next release candidate or release tag moves it again.
 
 ## Layout
 
