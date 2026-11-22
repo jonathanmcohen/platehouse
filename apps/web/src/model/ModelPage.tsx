@@ -13,9 +13,10 @@
 //   (Viewer3d) at once. three.js is loaded only when a 3D view is shown.
 //   View in the Files tab moves the viewer to another file.
 // - Everything comes from one request, GET /app/api/models/:id. While any
-//   plate is estimating (isEstimating) or any STEP or SCAD file is still
-//   having its mesh or render made (isDeriving, derivedStatus 'pending'),
-//   the page asks again every POLL_MS (5 s), on one timer for both
+//   plate is estimating (isEstimating) or any STEP, SCAD or STL file is still
+//   having its mesh, render or preview made (isDeriving: derivedStatus or
+//   previewStatus 'pending'), the page asks again every POLL_MS (5 s), on one
+//   timer for both
 //   (needsPolling). So a render that lands after an upload shows in the
 //   viewer, with View in the Files tab, without a reload, and a render that
 //   fails shows its reason. Polling stops when nothing is estimating or
@@ -157,6 +158,17 @@ export interface ModelFile {
   derivedCodes?: string[];
   /** What derivedMessage holds after those sentences: the program's own words. */
   derivedDetail?: string | null;
+  /**
+   * An STL's or STEP file's preview picture (issue #380): null, pending, ok
+   * or failed, apart from derivedStatus; absent from an older answer.
+   */
+  previewStatus?: string | null;
+  /** Why the picture failed, as the server wrote it; null with none. */
+  previewMessage?: string | null;
+  /** Platehouse's own sentences at the start of previewMessage, by code. */
+  previewCodes?: string[];
+  /** What previewMessage holds after those sentences. */
+  previewDetail?: string | null;
   download: string;
   view: { kind: "stl" | "glb"; url: string } | null;
   preview: string | null;
@@ -221,12 +233,15 @@ export function isEstimating(plate: Pick<ModelPlate, "numbers" | "estimatePendin
 }
 
 /**
- * Whether a STEP's mesh or a SCAD's render is still being made: its
- * derivedStatus is 'pending' while the job is queued or running, then 'ok'
- * or 'failed' (null for a .3mf or an STL, which have nothing derived).
+ * Whether a STEP's mesh, a SCAD's render or an STL's or STEP's preview
+ * picture is still being made: derivedStatus (the mesh or render) or
+ * previewStatus (the picture, issue #380) is 'pending' while its job is
+ * queued or running, then 'ok' or 'failed'. derivedStatus is null for a
+ * .3mf and an STL; previewStatus is null for every kind but STL and STEP,
+ * and before a picture is queued.
  */
 export function isDeriving(file: ModelFile): boolean {
-  return file.derivedStatus === "pending";
+  return file.derivedStatus === "pending" || file.previewStatus === "pending";
 }
 
 /** Whether the page should ask again: a plate is estimating or a file is being rendered. */

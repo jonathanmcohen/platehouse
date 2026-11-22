@@ -149,7 +149,13 @@ export function fakeLandrun(
     | { kind: "big"; bytes: number }
     | { kind: "fsize" }
     /** Leaves the output as a symlink to target, as code inside OpenSCAD could. */
-    | { kind: "symlink"; target: string },
+    | { kind: "symlink"; target: string }
+    /**
+     * Writes the .scad it was given, then the input.stl beside it, as the
+     * output, so a test sees the wrapper the STL route writes and the STL
+     * body that reached the job folder.
+     */
+    | { kind: "inputs" },
   opts: { probe?: ProbeMode; abi?: AbiMode } = {},
 ): {
   bin: string;
@@ -193,6 +199,11 @@ exit 1
       break;
     case "symlink":
       tail = `ln -s '${mode.target}' "$out"
+exit 0
+`;
+      break;
+    case "inputs":
+      tail = `{ cat "$input"; cat "$(dirname "$input")/input.stl"; } > "$out"
 exit 0
 `;
       break;

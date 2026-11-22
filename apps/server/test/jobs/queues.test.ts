@@ -6,6 +6,7 @@
 import type { PgBoss } from "pg-boss";
 import { describe, expect, test, vi } from "vitest";
 import {
+  BACKFILL_PREVIEWS_CRON,
   INGEST_CONCURRENCY,
   MAINTENANCE_TASKS,
   POLL_ORCA_CRON,
@@ -121,6 +122,47 @@ describe("startQueues", () => {
         ),
       ).resolves.toBeUndefined();
       expect(logged).toHaveBeenCalledWith(expect.stringContaining("startup Orca poll"));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  // Issue #316: the preview backfill is scheduled every 5 minutes, one batch
+  // a run, and also runs once at startup, after the workers start, so a
+  // restart starts the first batch at once.
+  test("schedules the preview backfill every 5 minutes and runs it once at startup, after the workers", async () => {
+    const { boss, calls } = fakeBoss();
+    const backfillPreviews = vi.fn(async (_now: Date) => {
+      calls.push("backfillPreviews");
+    });
+    await startQueues(boss, deps({ backfillPreviews }));
+    expect(backfillPreviews).toHaveBeenCalledTimes(1);
+    expect(calls).toContain(`schedule ${MAINTENANCE_TASKS.backfillPreviews}`);
+    expect(calls.indexOf("backfillPreviews")).toBeGreaterThan(
+      calls.indexOf(`work ${QUEUE.maintenance}`),
+    );
+    expect(BACKFILL_PREVIEWS_CRON).toBe("*/5 * * * *");
+    const scheduled = (boss.schedule as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => (c[2] as { task: string }).task === MAINTENANCE_TASKS.backfillPreviews,
+    );
+    expect(scheduled?.[1]).toBe(BACKFILL_PREVIEWS_CRON);
+  });
+
+  test("a startup backfill that fails is logged and does not stop the queues", async () => {
+    const { boss } = fakeBoss();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        startQueues(
+          boss,
+          deps({
+            backfillPreviews: async () => {
+              throw new Error("connect ECONNREFUSED");
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("startup preview backfill"));
     } finally {
       logged.mockRestore();
     }

@@ -55,9 +55,18 @@ pointer, or with the **Rotate**, **Zoom** and **Reset** buttons.
 - A STEP file is converted to a mesh for the viewer.
 - An OpenSCAD file is rendered to an STL and a preview image with OpenSCAD. Both can be viewed and
   downloaded. If the render fails, the page shows OpenSCAD's own message.
-- Replacing an OpenSCAD or STEP file renders it again. Until the new render is ready, or if it
-  fails, the previous version's renders stay visible and the page says they are from an earlier
-  version.
+- An STL or STEP file gets a preview picture, rendered with OpenSCAD from the STL, or from the
+  STEP file's mesh. It is the model's picture on its library card and shows in the **Files** tab.
+  If it cannot be rendered, the card keeps the file-type icon and the **Files** tab says why; a
+  STEP file's 3D view still works. Files added before Platehouse 0.1.1 get their preview in the
+  background, a few at a time, after the upgrade.
+- Replacing an OpenSCAD, STEP or STL file renders it again. Until the new render is ready, or if
+  it fails, an OpenSCAD file's previous STL and image, or a STEP file's previous mesh, stay
+  visible and the page says they are from an earlier version. A preview picture of an STL or STEP
+  file is only ever of the file's current version: it stays while the replacement is being
+  rendered, and stays if the replacement is not saved because the slicer or storage failed, but
+  once a replacement is saved, the card shows the file-type icon until the new picture is made,
+  and the **Files** tab says why if it cannot be.
 
 While a plate is being estimated or a file is being rendered, the page checks again every few
 seconds, so the result appears without a reload.

@@ -226,7 +226,9 @@ function EventBody({
             <strong>
               {event.kind === "scad"
                 ? t("activity.event.renderFailed")
-                : t("activity.event.conversionFailed")}
+                : event.kind === "preview"
+                  ? t("activity.event.previewFailed")
+                  : t("activity.event.conversionFailed")}
             </strong>
             <When at={event.at} />
           </div>

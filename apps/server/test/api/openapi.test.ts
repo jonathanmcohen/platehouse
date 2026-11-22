@@ -293,6 +293,27 @@ describe("the OpenAPI document", () => {
     );
   });
 
+  // Issue #380 (the maintainer, 2026-11-22): derivedStatus keeps its 0.1.0
+  // meaning, word for word, and a file's preview picture is reported as
+  // previewStatus and previewMessage beside it, always sent.
+  test("a file keeps derivedStatus as in 0.1.0 and documents previewStatus and previewMessage", () => {
+    const example = doc.paths["/files/{id}"]?.get?.responses?.["200"]?.content?.[
+      "application/json"
+    ] as { schema: Record<string, unknown>; example: Record<string, unknown> } | undefined;
+    const schema = example?.schema as {
+      properties: Record<string, { description?: string; type?: unknown; enum?: unknown }>;
+      required: string[];
+    };
+    expect(schema.properties.derivedStatus?.description).toBe(
+      "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds.",
+    );
+    expect(schema.properties.previewStatus?.description).toMatch(/STL and STEP/);
+    expect(schema.properties.previewStatus?.description).toMatch(/pending, ok or failed/);
+    expect(schema.properties.previewMessage?.description).toMatch(/why/i);
+    expect(schema.required).toEqual(expect.arrayContaining(["previewStatus", "previewMessage"]));
+    expect(example?.example).toMatchObject({ previewStatus: null, previewMessage: null });
+  });
+
   test("states the request time limit and the upload cap from the constants the server uses", () => {
     expect(doc.paths["/uploads/{id}"]?.patch?.description).toContain(
       `A single request may take up to ${REQUEST_LIMIT}.`,

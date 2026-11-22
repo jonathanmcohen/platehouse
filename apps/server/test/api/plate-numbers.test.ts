@@ -49,6 +49,8 @@ const FILES = Array.from({ length: FILE_COUNT }, (_, i) => ({
   parse_status: "ok",
   derived_status: null,
   derived_message: null,
+  preview_status: null,
+  preview_message: null,
   mesh_blob_id: null,
   render_stl_blob_id: null,
   render_png_blob_id: null,

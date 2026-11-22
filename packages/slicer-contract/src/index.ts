@@ -10,16 +10,36 @@
 //                                              | 422 renderError
 //   POST /v1/step/glb                       -> model/gltf-binary | 409 busy | 413 too_large
 //                                              | 422 convertError
+//   POST /v1/stl/png                        -> image/png | 409 busy | 413 too_large
+//                                              | 422 renderError
+//
+// POST /v1/stl/png (issue #316) renders a preview picture of an STL, binary
+// or ASCII, sent as application/octet-stream: the same OpenSCAD, sandbox,
+// time cap and 800 x 800 image as /v1/scad/png, on a .scad the slicer writes
+// itself, a single import of the STL. A body that is not an STL with at
+// least one triangle is 422 renderError before OpenSCAD runs (OpenSCAD would
+// draw an empty picture of it); one OpenSCAD cannot read is 422 renderError
+// with OpenSCAD's own message.
+//
+// Versioning. CONTRACT_VERSION is the number /v1/health reports. It stays 1
+// while the contract only grows in ways an app built for an older v1 never
+// sees: a new route, or a new limit for a new route. Anything that changes
+// what an existing route takes or answers, or removes one, is a new number,
+// and the schemas below then refuse the old one (health takes only its own
+// number). /v1/stl/png was added that way, so contract 1 still describes a
+// slicer without it: an app that calls it on an older slicer image gets 404
+// not_found, which the app treats as a slicer that cannot render yet, not as
+// a fault of the file.
 //
 // 413 too_large comes before the body is read when its Content-Length is
 // over the route's limit (LIMITS), and as soon as it passes the limit when
 // there is none. Any route answers an unexpected server error with 500 and a
 // plain-text body, not an error schema.
 //
-// The slicer runs one heavy job at a time: a slice, a render or a STEP
-// conversion. A POST to any of those three routes while one runs is 409
-// busy, answered at once without reading the body; the caller retries
-// later. health.busy is true while one runs.
+// The slicer runs one heavy job at a time: a slice, a render (a .scad's or
+// an STL preview) or a STEP conversion. A POST to any of those routes while
+// one runs is 409 busy, answered at once without reading the body; the
+// caller retries later. health.busy is true while one runs.
 //
 // Where the plan leaves a case open, these schemas settle it, and the PR
 // says so: a malformed query or an unknown printer is 400 bad_request, an
@@ -47,6 +67,12 @@ export const LIMITS = Object.freeze({
   scadBodyBytes: 1_048_576,
   /** Largest STEP file POST /v1/step/glb takes (256 MiB). */
   stepBodyBytes: 268_435_456,
+  /**
+   * Largest STL POST /v1/stl/png takes (256 MiB): the same as a STEP file,
+   * about 5 million triangles of binary STL, and the most a render may
+   * write, so an STL preview fits /work beside its PNG.
+   */
+  stlBodyBytes: 268_435_456,
   /** Plates are numbered 1 to 128 (AC-023). */
   maxPlate: 128,
   /** A failed slice's detail is Orca's error_string, cut to this length. */
