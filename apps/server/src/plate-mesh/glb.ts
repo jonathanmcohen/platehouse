@@ -17,6 +17,12 @@
 //   colour, with the roughness and metalness of the STL view's material.
 // Every bufferView starts on a 4-byte boundary, the JSON chunk is padded with
 // spaces and the BIN chunk with zeros, as the GLB format requires.
+//
+// The GLB is handed over as a list of chunks to write one after another, the
+// mesh data as views of the reader's own arrays, never copied into one
+// buffer (review of PR #368). Those arrays are what the reader's memory
+// budget counts; a GLB joined into one buffer, and that into another, held
+// up to three times the budget per build, outside it.
 import type { PlateMesh } from "@platehouse/threemf";
 
 export const GLB_CONTENT_TYPE = "model/gltf-binary";
@@ -78,8 +84,14 @@ function bounds(positions: Float32Array): { min: number[]; max: number[] } {
   return { min, max };
 }
 
-/** The plate's objects as GLB bytes. */
-export function encodePlateGlb(mesh: PlateMesh): Buffer {
+/** A GLB as the chunks to write in order, and their total length. */
+export interface PlateGlb {
+  chunks: Buffer[];
+  byteLength: number;
+}
+
+/** The plate's objects as GLB bytes (see the file comment: no mesh data is copied). */
+export function encodePlateGlb(mesh: PlateMesh): PlateGlb {
   const materials: object[] = [];
   const materialOf = new Map<string, number>();
   const bufferViews: object[] = [];
@@ -167,20 +179,27 @@ export function encodePlateGlb(mesh: PlateMesh): Buffer {
   };
 
   const jsonBytes = pad(Buffer.from(JSON.stringify(json), "utf8"), 0x20);
-  const binBytes = pad(Buffer.concat(chunks, offset), 0);
+  // The views are whole 4-byte words, so the BIN chunk needs no padding;
+  // any would be zeros after the last view.
+  const binPadding = Buffer.alloc((4 - (offset % 4)) % 4, 0);
+  const binLength = offset + binPadding.length;
+  const byteLength = 12 + 8 + jsonBytes.length + 8 + binLength;
   const header = Buffer.alloc(12);
   header.writeUInt32LE(0x46546c67, 0); // "glTF"
   header.writeUInt32LE(2, 4);
-  header.writeUInt32LE(12 + 8 + jsonBytes.length + 8 + binBytes.length, 8);
-  return Buffer.concat([
+  header.writeUInt32LE(byteLength, 8);
+  const out = [
     header,
     chunkHeader(jsonBytes.length, 0x4e4f534a), // "JSON"
     jsonBytes,
-    chunkHeader(binBytes.length, 0x004e4942), // "BIN\0"
-    binBytes,
-  ]);
+    chunkHeader(binLength, 0x004e4942), // "BIN\0"
+    ...chunks,
+  ];
+  if (binPadding.length > 0) out.push(binPadding);
+  return { chunks: out, byteLength };
 }
 
+/** The JSON padded to a 4-byte boundary; it is small, so it is joined. */
 function pad(bytes: Buffer, fill: number): Buffer {
   const extra = (4 - (bytes.length % 4)) % 4;
   return extra === 0 ? bytes : Buffer.concat([bytes, Buffer.alloc(extra, fill)]);

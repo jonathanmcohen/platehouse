@@ -5,7 +5,12 @@
 // of each piece and the colour of its material.
 import type { PlateMesh } from "@platehouse/threemf";
 import { describe, expect, test } from "vitest";
-import { DEFAULT_COLOUR, encodePlateGlb, GLB_CONTENT_TYPE } from "../../src/plate-mesh/glb.js";
+import {
+  DEFAULT_COLOUR,
+  encodePlateGlb,
+  GLB_CONTENT_TYPE,
+  type PlateGlb,
+} from "../../src/plate-mesh/glb.js";
 
 interface Gltf {
   asset: { version: string };
@@ -34,7 +39,9 @@ interface Gltf {
   }>;
 }
 
-function readGlb(bytes: Buffer): { json: Gltf; bin: Buffer } {
+function readGlb(glb: PlateGlb): { json: Gltf; bin: Buffer } {
+  const bytes = Buffer.concat(glb.chunks);
+  expect(bytes.length).toBe(glb.byteLength);
   expect(bytes.readUInt32LE(0)).toBe(0x46546c67); // "glTF"
   expect(bytes.readUInt32LE(4)).toBe(2);
   expect(bytes.readUInt32LE(8)).toBe(bytes.length);
@@ -156,6 +163,30 @@ describe("encodePlateGlb", () => {
     const grey = Number.parseInt(DEFAULT_COLOUR.slice(1, 3), 16) / 255;
     const linear = grey <= 0.04045 ? grey / 12.92 : ((grey + 0.055) / 1.055) ** 2.4;
     expect(colourOf(1)).toEqual([linear, linear, linear, 1].map((n) => Math.round(n * 1e4) / 1e4));
+  });
+
+  test("hands over the mesh data as views of the mesh's own arrays, never a copy", () => {
+    // The arrays are the reader's, inside its memory budget; a GLB made by
+    // copying them into one buffer, and then into another, held up to three
+    // times the budget per build (review of PR #368).
+    const glb = encodePlateGlb(mesh);
+    for (const piece of mesh.pieces) {
+      for (const array of [piece.positions, piece.indices]) {
+        const view = glb.chunks.find(
+          (c) => c.buffer === array.buffer && c.byteOffset === array.byteOffset,
+        );
+        expect(view?.byteLength).toBe(array.byteLength);
+      }
+    }
+    // Everything else is the header, the JSON and the chunk headers.
+    const meshBytes = mesh.pieces.reduce(
+      (n, p) => n + p.positions.byteLength + p.indices.byteLength,
+      0,
+    );
+    const { json } = readGlb(glb);
+    expect(glb.byteLength - meshBytes).toBeLessThanOrEqual(
+      12 + 8 + Buffer.byteLength(JSON.stringify(json)) + 3 + 8 + 3,
+    );
   });
 
   test("shares one material between pieces of the same colour", () => {

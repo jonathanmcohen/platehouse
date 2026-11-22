@@ -594,8 +594,9 @@ class MeshBuilder {
 
   /**
    * The mesh, as views of the builder's own arrays (no copy), or null when
-   * it has no triangles or anything in it cannot be read; then its arrays
-   * are freed.
+   * it has no triangles, more vertices than its triangles could use (three
+   * each; the rest would only be bytes in the GLB, review of PR #368), or
+   * anything in it cannot be read; then its arrays are freed.
    */
   done(): Mesh | null {
     const mesh: Mesh = {
@@ -603,7 +604,10 @@ class MeshBuilder {
       indices: this.indices.subarray(0, 3 * this.triangleCount),
     };
     const unreadable =
-      this.broken || this.triangleCount === 0 || mesh.indices.some((i) => i >= this.vertexCount);
+      this.broken ||
+      this.triangleCount === 0 ||
+      this.vertexCount > 3 * this.triangleCount ||
+      mesh.indices.some((i) => i >= this.vertexCount);
     if (unreadable) {
       this.drop();
       return null;

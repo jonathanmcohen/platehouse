@@ -355,6 +355,28 @@ describe("readPlateMesh on a file with no readable mesh", () => {
       ),
     ],
     [
+      // Each triangle uses at most three vertices, so the rest are only
+      // bytes for the GLB and the browser to carry (review of PR #368).
+      "the mesh has more vertices than its triangles could use",
+      modelXml(
+        [
+          meshObject(
+            1,
+            meshXml(
+              [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+              ],
+              [[0, 1, 2]],
+            ),
+          ),
+        ],
+        [buildItem(1)],
+      ),
+    ],
+    [
       "a vertex is not a number",
       modelXml(
         [

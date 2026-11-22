@@ -38,7 +38,9 @@
 // 4. The source .3mf is copied from the store to a temp folder of its own
 //    under tmpDir (the reader needs random access) and checked against its
 //    recorded size, so a short read is never taken for a damaged file;
-//    readPlateMesh reads the plate, encodePlateGlb makes the GLB.
+//    readPlateMesh reads the plate, encodePlateGlb makes the GLB as chunks
+//    that are views of the plate's mesh arrays, which are streamed to the
+//    store as they are, so the GLB is never a second copy of the meshes.
 // 5. The GLB's object is put first, then one transaction records its blob
 //    row and points the plate at it, holding the model row for share (the
 //    order a purge takes its locks in) and the plate row for update. If the
@@ -69,7 +71,7 @@ import type { DB } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
-import { encodePlateGlb, GLB_CONTENT_TYPE } from "./glb.js";
+import { encodePlateGlb, GLB_CONTENT_TYPE, type PlateGlb } from "./glb.js";
 import { createBuildQueue } from "./limit.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
@@ -239,12 +241,12 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   }
 
   /** Stores the GLB and points the plate at it (steps 5 and 6 of the file comment). */
-  async function storeGlb(row: PlateRow, glb: Buffer): Promise<PlateMeshAnswer> {
+  async function storeGlb(row: PlateRow, glb: PlateGlb): Promise<PlateMeshAnswer> {
     const id = uuidv7();
     const key = blobKey(row.modelId, id);
-    const put = await store.putBlob(Readable.from([glb]), {
+    const put = await store.putBlob(Readable.from(glb.chunks), {
       key,
-      size: glb.length,
+      size: glb.byteLength,
       contentType: GLB_CONTENT_TYPE,
     });
     // Set when the transaction's own work threw, so it rolled back.
@@ -277,7 +279,7 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
     try {
       const path = join(dir, "source.3mf");
       await copySource(row.sourceBlobId, path);
-      let glb: Buffer;
+      let glb: PlateGlb;
       try {
         glb = encodePlateGlb(await readPlateMesh(path, row.index));
       } catch (error) {
