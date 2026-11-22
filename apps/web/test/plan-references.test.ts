@@ -6,13 +6,19 @@
 // the rule itself, in plain words, instead.
 //
 // What counts as a reference (REFERENCES below):
-// - a plan task: the word Task or Tasks followed by a number;
+// - a plan task: the word Task or Tasks, in any case, followed by a number;
+// - a short plan task id, T and one or two digits, beside a plan word: after
+//   plan, plan's or plan (, before 's, form or recipe, or a range of two;
 // - the words build and plan side by side;
 // - a requirement id: AC, a hyphen and three digits;
-// - two section names of that plan (see the pattern);
+// - a numbered lesson of the private requirements: lesson and a number;
+// - the plan's section names: two by name (see the pattern), and its parts,
+//   Part or Parts and a capital A to D (two parts joined by an ampersand, as
+//   in a model's title, are left alone);
 // - the earlier private parser project by name, or its Ruby source files;
 // - any repository of the owner other than platehouse and platehouse-slicer,
-//   and the private projects named in issues #325 and #329.
+//   and the private projects named in issues #325 and #329;
+// - a commit of one of those private projects, by its short hash alone.
 // A comment wrapped across two lines (the first word at the end of one line,
 // the second at the start of the next) still counts: the comment marker
 // between the words is skipped.
@@ -36,10 +42,29 @@ interface Reference {
 }
 
 const REFERENCES: Reference[] = [
-  { what: "a plan task", pattern: new RegExp(String.raw`\bTasks?${WRAP}\d+`, "g") },
+  { what: "a plan task", pattern: new RegExp(String.raw`\bTasks?${WRAP}\d+`, "gi") },
+  {
+    what: "a short plan task id",
+    pattern: new RegExp(
+      [
+        String.raw`\bplan(?:'s)?${WRAP}\(?T\d{1,2}\b`,
+        String.raw`\bT\d{1,2}(?:'s\b|${WRAP}(?:form|recipe)\b)`,
+        String.raw`\bT\d{1,2}[ ]?(?:-|to)[ ]?T\d{1,2}\b`,
+      ].join("|"),
+      "g",
+    ),
+  },
   { what: "the words build and plan", pattern: new RegExp(String.raw`\bbuild${WRAP}plan\b`, "gi") },
   { what: "a requirement id", pattern: /\bAC-\d{3}\b/g },
+  { what: "a numbered lesson", pattern: new RegExp(String.raw`\blessons?${WRAP}\d+`, "gi") },
   { what: "a plan section", pattern: /\b(?:Review[ ]Focus|Global[ ]Constraints)\b/g },
+  {
+    what: "a plan part",
+    pattern: new RegExp(
+      String.raw`(?<!&[a-z;]*\s*)\bParts?${WRAP}[A-D](?:${WRAP}(?:and|to|-)${WRAP}[A-D])?\b(?!\s*&)`,
+      "g",
+    ),
+  },
   {
     what: "the earlier private parser project",
     pattern: new RegExp(String.raw`\bBambu${WRAP}Plates\b|\bparser(?:_test)?\.rb\b`, "gi"),
@@ -50,7 +75,7 @@ const REFERENCES: Reference[] = [
       [
         String.raw`\bjonathanmcohen\/(?!platehouse(?:-slicer)?\b)[A-Za-z0-9._-]+`,
         String.raw`\bmanyfold-(?:studio|bambu)`,
-        String.raw`\bmakerworld-meta(?:data)\b`,
+        String.raw`\bmakerworld-meta(?:data)?\b`,
         String.raw`\bautomation\s+Manyfold\/`,
         // The private automation repository cited by a commit after its
         // name (issue #329).
@@ -58,6 +83,13 @@ const REFERENCES: Reference[] = [
       ].join("|"),
       "gi",
     ),
+  },
+  {
+    // The known commits of the private projects, by hash alone (the
+    // stylesheet project's and the automation repository's). Each hash is
+    // written with its last digit in brackets so this line holds none of them.
+    what: "a private project's commit",
+    pattern: /\b(?:4076a6[7]|136fd6[1]|1ce8c5[7])[0-9a-f]{0,33}\b/gi,
   },
 ];
 
@@ -96,13 +128,23 @@ const ALLOWED: Record<string, { lastLine: (text: string) => number; why: string 
  * from starting (only the rewordings listed in PREVIOUS_CHECKSUMS are
  * accepted, and that list is closed). So these keep their comments; any new
  * migration is checked like every other file.
+ *
+ * These are the nine that shipped in v0.1.0 (0001 to 0009), so every 0.1.0
+ * server has applied them. Each still cites a numbered lesson, and 0001 the
+ * plan too. 0010 onward shipped in no published image (the release workflow
+ * publishes only from a version tag, and no tag holds them), so they were
+ * reworded instead and are checked like every other file.
  */
 const APPLIED_MIGRATIONS = [
   "apps/server/src/db/migrations/0001_init.sql",
   "apps/server/src/db/migrations/0002_purge_started.sql",
   "apps/server/src/db/migrations/0003_estimate_filament_profiles.sql",
+  "apps/server/src/db/migrations/0004_files_sha256.sql",
   "apps/server/src/db/migrations/0005_model_name_source.sql",
   "apps/server/src/db/migrations/0006_model_name_source_user.sql",
+  "apps/server/src/db/migrations/0007_my_printers.sql",
+  "apps/server/src/db/migrations/0008_library_sort.sql",
+  "apps/server/src/db/migrations/0009_name_sort_prefix.sql",
 ];
 for (const file of APPLIED_MIGRATIONS) {
   ALLOWED[file] = {
@@ -134,16 +176,31 @@ describe("no citation of a private plan, requirement or project", () => {
       `// the ${"Global"} Constraints`,
       `// a port of the ${"Bambu"} Plates parser`,
       `// parser${".rb"} reads it`,
-      `// see ${"jonathanmcohen"}/automation at 1ce8c57`,
+      `// see ${"jonathanmcohen"}/automation at ${"1ce8"}c57`,
       `// ported from ${"manyfold"}-studio`,
       `// in automation ${"Manyfold"}/${"makerworld"}-metadata`,
-      `// the prior art manyfold.mjs at ${"automation"} 1ce8c57`,
+      `// the prior art manyfold.mjs at ${"automation"} ${"1ce8"}c57`,
+      `// the ${"makerworld"}-meta script`,
+      `// the estimates (${"task"} 12) queue`,
+      `// the auth hooks belong to ${"Part"} C, so`,
+      `// ${"Parts"} C and D hold the sign-in work`,
+      `// the ${"T"}11 form, run as evidence`,
+      `// ${"T"}26's runtime hardening`,
+      `// the plan (${"T"}11) does not use them`,
+      `// the pages arrive with ${"T"}19 to ${"T"}21`,
+      `-- every statement is read in review (${"lesson"} 14)`,
+      `-- every statement is read in review (${"lesson"}\n-- 14). Never edit it`,
+      `// where they are compared with ${"4076"}a67`,
+      `// the earlier theme at ${"136f"}d61`,
     ];
     const lookAlikes = [
       "// a task queue, the planner, AC power, AC-31, TAC-031",
       "// the gate's plan step, a plan id, Bambu Studio plates",
       "// github.com/jonathanmcohen/platehouse and ghcr.io/jonathanmcohen/platehouse-slicer",
       "// T0 = new Date(), Q9, a 1:1 task",
+      "// Example Kit Alpha | Part A & Part B, Example Kit | Part A &amp;amp; Part B",
+      "// Part 2, Part E, Party C, a part C, function pair<T1, T2>(a: T1, b: T2)",
+      "// a lesson learned, the lessons of 0.1.0, makerworld-metaverse",
     ];
     const text = [...named, ...lookAlikes].join("\n");
     // The line each named sample starts on: every one is found, and nothing

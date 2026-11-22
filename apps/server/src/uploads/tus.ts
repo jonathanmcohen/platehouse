@@ -1,7 +1,8 @@
 // Resumable uploads, shared by the UI and the API so a large file completes either way. One tus 1.0.0
 // handler, mounted twice: /app/uploads for the UI behind its session and
 // /api/v1/uploads for the API behind a bearer token.
-// The auth hooks belong to Part C, so registerTus takes one as a parameter;
+// The auth hooks live in app.ts (requireSession for /app/uploads, apiUploadHook
+// for /api/v1/uploads), so registerTus takes one as a parameter;
 // it runs on every request before anything else, so a refused request stores
 // nothing.
 //
@@ -150,7 +151,8 @@ export function uploadsDir(tmpDir: string): string {
 
 /**
  * A Fastify onRequest hook for one mount: the session check for /app/uploads,
- * the bearer check for /api/v1/uploads (Part C). It lets a request through by
+ * the bearer check for /api/v1/uploads (app.ts passes requireSession and
+ * apiUploadHook). It lets a request through by
  * returning, or answers it itself (401), and then nothing else runs.
  */
 export type AuthHook = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;

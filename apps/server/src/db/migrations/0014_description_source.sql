@@ -1,8 +1,9 @@
 -- Platehouse schema 0014: where a model's description came from, so a fix to
 -- the MakerWorld converter can reach descriptions already stored (#357), and
 -- a record of the one-time steps run on upgrade.
--- Hand-written; every statement is read in review (lesson 14). Never edit it
--- once applied anywhere: a change is a new file.
+-- Hand-written; every statement is read in review, since generated DDL can
+-- hide a destructive change. Never edit it once applied anywhere: a change is
+-- a new file.
 --
 -- A stored description was converted from a .3mf once, at import, and never
 -- again, so the 0.1.0 converter fixes reached only files imported after

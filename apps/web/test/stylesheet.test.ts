@@ -7,7 +7,7 @@
 // are the ones that theme shipped. The palettes take their
 // accent tokens from the accent scheme (the maintainer, 2026-11-19); here they are read
 // with the default scheme filled in, or with Green, the studio's own colour,
-// where they are compared with 4076a67. accent-palette.test.ts checks all
+// where they are compared with the earlier studio theme. accent-palette.test.ts checks all
 // twelve.
 // Issue #245 added the thumbnail backdrop: pure black and pure white are
 // each at least 3:1 on it in every palette, and every picture frame draws it.
@@ -157,7 +157,7 @@ const STUDIO_DARK: Palette = {
   "--thumb-edge": "#6b717a",
 };
 
-// Light differs from 4076a67 in the accent fill only, on purpose: #00ae42 is
+// Light differs from the earlier studio theme in the accent fill only, on purpose: #00ae42 is
 // 2.94:1 on white, under the 3:1 a button fill and a progress bar need, so
 // the light theme fills with the maintainer's button green, #00873a, behind white text
 // (4.64:1). The logo keeps #00ae42.
@@ -182,7 +182,7 @@ const STUDIO_LIGHT: Palette = {
   "--thumb-edge": "#767c85",
 };
 
-// Every border-radius in studio.css at 4076a67, by selector, less the brand
+// Every border-radius in the earlier studio theme's studio.css, by selector, less the brand
 // dot's 50%: the logo (Logo.tsx) replaced the dot, and its rule is gone.
 const STUDIO_RADII: Array<[string, string]> = [
   [":focus-visible", "6px"],
@@ -242,7 +242,7 @@ describe("palettes", () => {
     }
   });
 
-  test("dark with Green is the studio dark palette at 4076a67, plus the logo colour and the thumbnail backdrop", () => {
+  test("dark with Green is the earlier studio theme's dark palette, plus the logo colour and the thumbnail backdrop", () => {
     expect(palette(DARK, GREEN_SCHEME)).toEqual(STUDIO_DARK);
   });
 
