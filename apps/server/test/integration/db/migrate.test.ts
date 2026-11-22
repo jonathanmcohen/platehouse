@@ -53,7 +53,8 @@ const SHIPPED = [
   "0009_name_sort_prefix.sql",
   "0010_drop_unused_tags.sql",
   "0011_estimate_started_at.sql",
-  "0015_description_source.sql",
+  "0012_file_preview_status.sql",
+  "0014_description_source.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -651,21 +652,128 @@ describe("0011 estimate started_at", () => {
   });
 });
 
-// Migration 0015 adds where a model's description came from (#357) and the
-// upgrade_steps table. It runs on a database with every migration before
-// it applied and models that have descriptions; every row keeps every value it had, and the three
-// new columns start as null, so no stored description counts as proved
-// untouched until something records its source.
-describe("0015 description source", () => {
+// Migration 0012 (issue #380) gives an STL's or STEP file's preview picture
+// its own status, preview_status and preview_message, so derived_status
+// keeps its 0.1.0 meaning. Every existing file starts with neither: none has
+// a picture yet. Nothing else on a file changes.
+describe("0012 file preview status", () => {
   let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
     await cp(MIGRATIONS_DIR, dir, { recursive: true });
     const later = (await readdir(dir)).filter(
-      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) >= 15,
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 11,
     );
-    expect(later).toContain("0015_description_source.sql");
+    expect(later).toContain("0012_file_preview_status.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const MODEL = "0190a0b0-0000-7000-8000-000000000051";
+  const FILES = [
+    {
+      id: "0190a0b0-0000-7000-8000-000000000061",
+      blob: "0190a0b0-0000-7000-8000-000000000071",
+      kind: "stl",
+      status: null,
+    },
+    {
+      id: "0190a0b0-0000-7000-8000-000000000062",
+      blob: "0190a0b0-0000-7000-8000-000000000072",
+      kind: "step",
+      status: "ok",
+    },
+    {
+      id: "0190a0b0-0000-7000-8000-000000000063",
+      blob: "0190a0b0-0000-7000-8000-000000000073",
+      kind: "step",
+      status: "failed",
+    },
+  ];
+
+  async function seedAt0011(db: Kysely<DB>) {
+    await migrateFrom(db, dir);
+    await sql`insert into models (id, name) values (${MODEL}, 'Synthetic preview model')`.execute(
+      db,
+    );
+    for (const f of FILES) {
+      await sql`
+        insert into blobs (id, model_id, key, kind, size, sha256, content_type, state)
+        values (${f.blob}, ${MODEL}, ${`models/${MODEL}/${f.blob}`}, 'source', 3,
+                decode(repeat('ab', 32), 'hex'), 'application/octet-stream', 'stored')
+      `.execute(db);
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           derived_status, derived_message)
+        values (${f.id}, ${MODEL}, ${f.blob}, ${`synthetic.${f.kind}`}, ${`synthetic.${f.kind}`},
+                ${f.kind}, 3, decode(repeat('ab', 32), 'hex'), ${f.status},
+                ${f.status === "failed" ? "STEP import failed" : null})
+      `.execute(db);
+    }
+  }
+
+  test("on a database at 0011, adds the preview columns, null on every file, and changes nothing else", async () => {
+    const { db } = await pgc.freshDatabase();
+    await seedAt0011(db);
+    const before = (await sql`select * from files order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    const after = (await sql<Record<string, unknown>>`select * from files order by id`.execute(db))
+      .rows;
+    expect(after).toHaveLength(FILES.length);
+    // The db's CamelCasePlugin names the columns in camelCase.
+    for (const [i, row] of after.entries()) {
+      const {
+        previewStatus,
+        previewMessage,
+        previewSourceBlobId,
+        previewFailureSourceBlobId,
+        previewFailureMessage,
+        ...rest
+      } = row;
+      expect(previewStatus).toBeNull();
+      expect(previewMessage).toBeNull();
+      expect(previewSourceBlobId).toBeNull();
+      expect(previewFailureSourceBlobId).toBeNull();
+      expect(previewFailureMessage).toBeNull();
+      expect(rest).toEqual(before[i]);
+    }
+  });
+
+  test("preview_status takes only pending, ok and failed", async () => {
+    const { db } = await pgc.freshDatabase();
+    await seedAt0011(db);
+    await migrate(db);
+    const id = FILES[0]?.id ?? "";
+    for (const status of ["pending", "ok", "failed"]) {
+      await sql`update files set preview_status = ${status} where id = ${id}`.execute(db);
+    }
+    await expect(
+      sql`update files set preview_status = 'done' where id = ${id}`.execute(db),
+    ).rejects.toThrow(/check constraint/);
+  });
+});
+
+// Migration 0014 adds where a model's description came from (#357) and the
+// upgrade_steps table. It runs on a database with every migration before
+// it applied and models that have descriptions; every row keeps every value it had, and the three
+// new columns start as null, so no stored description counts as proved
+// untouched until something records its source.
+describe("0014 description source", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) >= 14,
+    );
+    expect(later).toContain("0014_description_source.sql");
     for (const name of later) await rm(join(dir, name));
   });
 
@@ -687,8 +795,8 @@ describe("0015 description source", () => {
     ).rows;
 
     await cp(
-      join(MIGRATIONS_DIR, "0015_description_source.sql"),
-      join(dir, "0015_description_source.sql"),
+      join(MIGRATIONS_DIR, "0014_description_source.sql"),
+      join(dir, "0014_description_source.sql"),
     );
     await migrateFrom(db, dir);
     expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED);

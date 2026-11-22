@@ -37,7 +37,8 @@
 //   (Task 17's route), and only a stored blob of this model and of the
 //   kind its place calls for is ever named: a plate's thumbnail (thumbnail),
 //   an STL's own bytes (source), a STEP's mesh (mesh_glb), a SCAD's
-//   rendered STL (render_stl) and preview (render_png). Anything else is
+//   rendered STL (render_stl), and the preview picture (render_png) of a
+//   SCAD, an STL or a STEP file (issue #316). Anything else is
 //   null, so the page shows no image rather than another file's bytes. A
 //   .3mf has no 3D view (AC-051).
 // - Each plate's numbers are Task 12's plateNumbers, with the display
@@ -66,6 +67,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
+import { hasPreviewPicture, isPictureShown } from "../derived/picture.js";
 import {
   type DisplayContext,
   type PlateNumbers,
@@ -136,11 +138,22 @@ export interface ModelFileView {
   derivedCodes: string[];
   /** What derivedMessage holds after those sentences (the program's own words), or null. */
   derivedDetail: string | null;
+  /**
+   * An STL's or STEP file's preview picture (issue #380): null, pending, ok
+   * or failed. derivedStatus never says anything about it.
+   */
+  previewStatus: string | null;
+  /** Why the picture failed, cleaned as derivedMessage is; null with none. */
+  previewMessage: string | null;
+  /** Platehouse's own sentences at the start of previewMessage, by code. */
+  previewCodes: string[];
+  /** What previewMessage holds after those sentences, or null. */
+  previewDetail: string | null;
   /** Task 17's download route for the file. */
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
   view: { kind: "stl" | "glb"; url: string } | null;
-  /** A SCAD file's rendered preview image; null otherwise. */
+  /** A SCAD, STL or STEP file's rendered preview image (issue #316 for STL and STEP); null otherwise. */
   preview: string | null;
   /** The project filament list of a .3mf (file_filaments). */
   filaments: Array<{ slot: number; type: string; color: string | null }>;
@@ -251,6 +264,8 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             "parseStatus",
             "derivedStatus",
             "derivedMessage",
+            "previewStatus",
+            "previewMessage",
             "blobId",
             "meshBlobId",
             "renderStlBlobId",
@@ -373,7 +388,16 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                   ? f.renderStlBlobId
                   : null;
           const viewBlob = viewFrom === undefined ? null : stored(viewSource, viewFrom.kind);
-          const previewBlob = f.kind === "scad" ? stored(f.renderPngBlobId, "render_png") : null;
+          // A SCAD's rendered PNG, or an STL's or STEP's preview picture
+          // (issue #316), which is shown only while its own status is ok or
+          // pending (a picture being made again keeps the current one), never
+          // once it failed or before it was queued (issue #380).
+          const pictureShown = hasPreviewPicture(f.kind)
+            ? isPictureShown(f.previewStatus)
+            : f.kind === "scad";
+          const previewBlob = pictureShown ? stored(f.renderPngBlobId, "render_png") : null;
+          const previewMessage = scrubDerivedMessage(f.previewMessage);
+          const previewParts = derivedParts(previewMessage);
           return {
             id: f.id,
             name: f.name,
@@ -383,6 +407,10 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             derivedStatus: f.derivedStatus,
             derivedMessage: scrubDerivedMessage(f.derivedMessage),
             ...derivedParts(scrubDerivedMessage(f.derivedMessage)),
+            previewStatus: f.previewStatus,
+            previewMessage,
+            previewCodes: previewParts.derivedCodes,
+            previewDetail: previewParts.derivedDetail,
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null

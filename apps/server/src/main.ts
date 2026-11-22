@@ -423,6 +423,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       pollOrca: () => estimates.pollOrca(),
       onIngested,
       checkRenders: (now: Date) => derived.checkRenders(now),
+      backfillPreviews: (now: Date) => derived.backfillPreviews(now),
       purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
       reconvertDescriptions: (stop: () => boolean, signal: AbortSignal) =>
         reconvert.run(stop, signal),

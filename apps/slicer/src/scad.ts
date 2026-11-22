@@ -57,6 +57,52 @@ export type RenderResult =
 /** The name the .scad takes inside its job folder. */
 export const SCAD_INPUT = "input.scad";
 
+/** The name an STL to preview takes inside its job folder (POST /v1/stl/png). */
+export const STL_INPUT = "input.stl";
+
+/** What /v1/stl/png answers for a body stlProblem refuses. */
+export const NOT_AN_STL =
+  "The file is not an STL with at least one triangle, so there is nothing to render.";
+
+/** How much of an STL stlProblem reads to find an ASCII STL's first facet. */
+const STL_HEAD_BYTES = 64 * 1024;
+
+/**
+ * Why dir/STL_INPUT cannot be previewed, or null when it can. OpenSCAD
+ * writes a PNG of an empty scene when an import gives it nothing to draw (as
+ * the image did for a body of plain text, CI run 44975403164), so a body
+ * with no triangles would come back as a blank picture. This passes an
+ * ASCII STL ("solid", then a "facet" in its first 64 KiB) and a binary STL
+ * with at least one whole 50-byte facet after its 84-byte header, whatever
+ * its count field says, as the app's own STL check does
+ * (apps/server/src/ingest/detect.ts); anything else is refused before
+ * OpenSCAD runs. The file is read without following a symlink.
+ */
+export function stlProblem(dir: string): string | null {
+  const fd = openSync(join(dir, STL_INPUT), constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const { size } = fstatSync(fd);
+    const head = Buffer.alloc(Math.min(size, STL_HEAD_BYTES));
+    const read = readSync(fd, head, 0, head.length, 0);
+    const text = head.subarray(0, read).toString("latin1");
+    if (/^\s*solid\b/.test(text) && /\bfacet\b/.test(text)) return null;
+    if (size > 84 && (size - 84) % 50 === 0) return null;
+    return NOT_AN_STL;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Writes the .scad an STL preview renders: one import of STL_INPUT, beside
+ * it in the same job folder (issue #316). The text is fixed, so nothing in
+ * the request body is ever read as OpenSCAD code; the STL is only ever data
+ * that import() reads, under the same sandbox as any render.
+ */
+export function writeStlImport(dir: string): void {
+  writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(STL_INPUT)});\n`);
+}
+
 const MIB = 1024 * 1024;
 
 // The render output cap lives in sandbox.ts beside the prlimit limits it

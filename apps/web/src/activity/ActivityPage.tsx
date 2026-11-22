@@ -92,7 +92,8 @@ export type ActivityEvent =
   | {
       type: "render_failed";
       at: string;
-      kind: "scad" | "step";
+      /** preview: an STL's or a STEP file's preview picture (issue #316). */
+      kind: "scad" | "step" | "preview";
       model: { id: string; name: string };
       file: { id: string; name: string };
       message: string | null;
@@ -370,6 +371,7 @@ const SCHEDULE_KEYS: Readonly<Record<string, MessageKey>> = {
   "sweep-uploads": "activity.schedule.sweepUploads",
   "poll-orca": "activity.schedule.pollOrca",
   "check-renders": "activity.schedule.checkRenders",
+  "backfill-previews": "activity.schedule.backfillPreviews",
   "reconvert-descriptions": "activity.schedule.reconvertDescriptions",
 };
 

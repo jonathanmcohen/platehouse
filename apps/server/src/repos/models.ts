@@ -65,7 +65,7 @@ export interface FoundMetadata {
   /**
    * Where descriptionMd was converted from (ingest only): the .3mf and the
    * converter version. When the description is filled, its SHA-256, this
-   * version and this file are stored with it (migration 0015), so the
+   * version and this file are stored with it (migration 0014), so the
    * re-conversion (library/reconvert.ts) can tell later that it is still
    * exactly what the converter wrote. Left out, as for the API's
    * create-model, a description filled is recorded as from no converter.

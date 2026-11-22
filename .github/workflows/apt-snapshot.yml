@@ -1,0 +1,297 @@
+# Ubuntu snapshot refresh (issue #219; the maintainer's decision, 2026-11-21).
+#
+# The slicer image (apps/slicer/Dockerfile) and the slicing gate image
+# (tools/slicing-gate/Dockerfile) install every Ubuntu package from one
+# snapshot of the archive, ARG APT_SNAPSHOT, which keeps their builds
+# reproducible but leaves out every Ubuntu security fix published after it.
+# Once a month this workflow moves that snapshot forward in a pull request:
+#
+#   refresh:     run only from main -> pick the new snapshot and rewrite the
+#                pins (.github/scripts/apt-snapshot.mjs) -> push the bot branch
+#                and open its one pull request
+#   dispatch-ci: start the ci workflow on the bot branch
+#
+# The new snapshot is midnight UTC of the newest day, today back over the
+# last week, that snapshot.ubuntu.com has for noble, noble-updates and
+# noble-security. The service is asked before any file is written: a date it
+# answers 404 for is passed over for the day before and never written, and
+# any other error fails the run with nothing changed. The two Dockerfiles and
+# the slicing gate README's pins table move together, and the script refuses
+# to run when they disagree. When the newest day is not newer than the pin,
+# nothing is pushed. After the rewrite, the leftover check (node
+# .github/scripts/apt-snapshot.mjs leftovers, the same command the ci
+# workflow runs on every pull request) stops the run before it pushes when
+# any other tracked file but CHANGELOG.md, or a pinned file anywhere but its
+# pin, names the old snapshot or a later one.
+#
+# The pull request. At most one open, from the fixed branch bot/apt-snapshot
+# into main, holding one commit on the current main. When the branch already
+# holds the same change (a second run the same day), nothing is pushed and
+# an open pull request is left as it is (one is opened if none is). When the
+# branch holds anything else (last month's change, merged or not), the branch
+# is replaced rather than moved: the open pull request from it, if any, is
+# closed with a comment, the branch is deleted, pushed again from main, and a
+# new pull request is opened that names the one it replaces. GitHub refuses a
+# job token's push that changes files under .github/workflows, and moving
+# last month's branch onto the current main would usually carry such
+# changes; a fresh branch adds only the snapshot commit. The branch is the
+# workflow's: a fix pushed to it is lost at the next run, so fix a broken
+# snapshot on another branch.
+#
+# CI on the bot pull request. Events made with the job's GITHUB_TOKEN start no
+# workflow run, with two documented exceptions: a workflow_dispatch always
+# does, and a pull_request opened or updated by the token starts its runs
+# only once someone with write access approves them. So dispatch-ci starts
+# ci.yml on the bot branch with workflow_dispatch (ci.yml accepts it). With
+# no base commit to compare, the ci workflow's changes job runs every
+# path-scoped job: the slicer image and container tests, both slicing gate
+# jobs, the app image and the docs build, besides the lint-to-e2e chain. The
+# slicer job ends with a Trivy report of the new image (report only, as
+# everywhere else; the maintainer, 2026-11-21). No personal token, GitHub
+# App or new secret is used. Opening the pull request needs the repository
+# setting "Allow GitHub Actions to create and approve pull requests"
+# (Settings, Actions, General, Workflow permissions); without it the open
+# step fails and says so.
+#
+# When it runs: at 06:00 UTC on the 1st of each month, and by hand from main
+# (workflow_dispatch); any other branch is refused before anything runs.
+# GitHub runs a schedule or a dispatch only for a workflow file on the
+# default branch. One concurrency group, never cancelled part way, so two
+# runs never push the branch or open a pull request at the same time.
+#
+# Permissions: contents: read at the top; refresh alone holds contents: write
+# (the push) and pull-requests: write, and dispatch-ci alone actions: write
+# (starting ci.yml). Actions are pinned to the exact tags the other workflows
+# use. The checkout keeps no token on disk; the push, and the fetch before
+# it, pass the job token to git in the environment of that one command.
+name: apt-snapshot
+
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-snapshot
+  cancel-in-progress: false
+
+env:
+  BRANCH: bot/apt-snapshot
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  refresh:
+    name: Move the Ubuntu snapshot forward in a pull request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      ci: ${{ steps.pr.outputs.ci }}
+    steps:
+      # A run by hand from any other branch would push that branch's code to
+      # the bot branch and propose it as a snapshot move.
+      - name: Run only from main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::${REF} is not main; apt-snapshot runs only from main, so nothing is changed"
+            exit 1
+          fi
+
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+
+      # Prints old=, new= (empty when there is nothing newer), old_label= and
+      # new_label= for the outputs; its log goes to stderr.
+      - name: Pick the new snapshot and rewrite the pins
+        id: snapshot
+        run: |
+          out="$(node .github/scripts/apt-snapshot.mjs refresh)"
+          printf '%s\n' "$out" >>"$GITHUB_OUTPUT"
+          old="$(sed -n 's/^old=//p' <<<"$out")"
+          new="$(sed -n 's/^new=//p' <<<"$out")"
+          if [ -z "$new" ]; then
+            echo "Up to date: the snapshot is ${old}, and no newer day exists yet"
+            echo "Up to date: the Ubuntu snapshot is \`${old}\`; nothing was pushed." >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      # One commit on the current main, holding the three changed files and
+      # nothing else; pushed only when the bot branch does not already hold
+      # the same tree. A bot branch holding anything else is replaced, never
+      # moved (see the header), closing its open pull request first. Then a
+      # pull request is opened unless one is open for this same change.
+      # ci=true when there is something new for CI to run: a push, or a pull
+      # request opened for a branch pushed earlier (say, before the setting
+      # above was turned on).
+      - name: Push the branch and open the pull request
+        id: pr
+        if: ${{ steps.snapshot.outputs.new != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OLD: ${{ steps.snapshot.outputs.old }}
+          NEW: ${{ steps.snapshot.outputs.new }}
+          OLD_LABEL: ${{ steps.snapshot.outputs.old_label }}
+          NEW_LABEL: ${{ steps.snapshot.outputs.new_label }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          re='^[0-9]{8}T[0-9]{6}Z$'
+          if [[ ! "$OLD" =~ $re || ! "$NEW" =~ $re ]]; then
+            echo "::error::the snapshot step gave old '${OLD}' and new '${NEW}', not snapshot timestamps; nothing is pushed"
+            exit 1
+          fi
+          expected="$(printf '%s\n' apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md)"
+          changed="$(git diff --name-only | sort)"
+          if [ "$changed" != "$(sort <<<"$expected")" ]; then
+            echo "::error::the rewrite changed these files, not exactly the three pins:"
+            printf '%s\n' "$changed"
+            exit 1
+          fi
+          # The leftover check (issue #391): a file other than the three pins
+          # that names the old snapshot, or a later one, is a copy of the pin
+          # the rewrite left behind. The same command the ci workflow's
+          # "Ubuntu snapshot pin check" job runs on every pull request; the
+          # CHANGELOG's history is the one place allowed to name old pins.
+          status=0
+          node .github/scripts/apt-snapshot.mjs leftovers "$OLD" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the leftover check failed (exit ${status}); nothing is pushed"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -q -C "$BRANCH"
+          git add apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md
+          git commit -q -F - <<EOF
+          Move the Ubuntu snapshot to ${NEW}
+
+          The slicer and slicing gate images now install their Ubuntu packages
+          from the snapshot of ${NEW_LABEL} instead of ${OLD_LABEL}, so they
+          pick up the Ubuntu security fixes published in between (#219).
+
+          Made by ${RUN_URL}
+          EOF
+          # authgit: git with the job token as an HTTP header, passed in the
+          # environment of that one command, so it is never written to disk
+          # or put on a command line. The header value is masked in the log.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::${basic}"
+          authgit() {
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.${SERVER_URL}/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}" git "$@"
+          }
+          remote="$(authgit ls-remote origin "refs/heads/${BRANCH}" | awk '{ print $1 }')"
+          # --head matches the branch name only, whoever owns the branch, and
+          # anyone can open a pull request from a fork branch of the same
+          # name; only one from this repository is the bot's.
+          existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository | not)][0].number // empty')"
+          pushed=false
+          replaced=""
+          if [ -n "$remote" ] && authgit fetch -q origin "refs/heads/${BRANCH}" &&
+            [ "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+            echo "${BRANCH} already holds this change on this main; nothing is pushed"
+          else
+            if [ -n "$remote" ]; then
+              # Replaced, not moved: close its open pull request (deleting
+              # the branch would close it anyway, with no word why), then
+              # delete the branch, if it is still where it was read.
+              if [ -n "$existing" ]; then
+                gh pr close "$existing" --repo "$REPO" --comment "Replaced by a newer snapshot, ${NEW_LABEL} (\`${NEW}\`): the apt-snapshot workflow opens a new pull request from the same branch. ${RUN_URL}"
+                echo "Closed pull request #${existing}; a new one replaces it"
+                replaced="$existing"
+                existing=""
+              fi
+              authgit push -q --force-with-lease="refs/heads/${BRANCH}:${remote}" origin ":refs/heads/${BRANCH}"
+              echo "Deleted ${BRANCH} (was ${remote})"
+            fi
+            authgit push -q origin "HEAD:refs/heads/${BRANCH}"
+            pushed=true
+            echo "Pushed ${BRANCH} at $(git rev-parse HEAD)"
+          fi
+
+          title="Move the slicer's Ubuntu snapshot to ${NEW_LABEL} for security fixes"
+          runs="${SERVER_URL}/${REPO}/actions/workflows/ci.yml?query=branch%3A${BRANCH//\//%2F}"
+          {
+            echo "The slicer image and the slicing gate image install their Ubuntu packages from a fixed snapshot of the Ubuntu archive. That keeps their builds repeatable, but they only get Ubuntu's security fixes when the snapshot moves forward. This monthly pull request moves it from ${OLD_LABEL} (\`${OLD}\`) to ${NEW_LABEL} (\`${NEW}\`)."
+            echo ""
+            echo "**What changed:** \`APT_SNAPSHOT\` in apps/slicer/Dockerfile and tools/slicing-gate/Dockerfile, and the pins table in tools/slicing-gate/README.md. Nothing else."
+            echo ""
+            echo "**Checks:** GitHub holds the usual pull request checks of a pull request a workflow opened until someone approves them, so the workflow has started the full ci workflow on this branch itself: ${runs}. It builds both images and runs the slicer's container tests and the slicing gate tests. The \"Slicer image and container tests\" job ends with a Trivy report, in its log, of the fixable HIGH and CRITICAL findings still in the new image; it is a report and never fails the job. If the merge box offers to approve workflows for this pull request, approving runs the same checks a second time; it is not needed."
+            echo ""
+            echo "**To merge:** merge when ci is green. Merging publishes nothing: the published slicer image gets the new packages with its next build (a release tag, a new OrcaSlicer version, or a run of the slicer-image workflow by hand). If the new snapshot breaks a build or a test, fix it on another branch, because the next run replaces this one, or close this pull request; the next monthly run opens a new one."
+            if [ -n "$replaced" ]; then
+              echo ""
+              echo "This replaces #${replaced}, which proposed an older snapshot and was not merged."
+            fi
+            echo ""
+            echo "Opened by the apt-snapshot workflow: ${RUN_URL}"
+          } >body.md
+
+          ci="$pushed"
+          if [ -n "$existing" ]; then
+            echo "Pull request #${existing} already proposes this change; left as it is"
+            number="$existing"
+          else
+            status=0
+            url="$(gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "$title" --body-file body.md 2>pr-error.txt)" || status=$?
+            if [ "$status" -ne 0 ]; then
+              cat pr-error.txt
+              if [ -n "$replaced" ]; then echo "Pull request #${replaced} was closed as replaced before this failure."; fi
+              if grep -qi 'not permitted to create or approve pull requests' pr-error.txt; then
+                echo "::error::GitHub refused to let the workflow open the pull request. Turn on Settings, Actions, General, Workflow permissions, \"Allow GitHub Actions to create and approve pull requests\", then run apt-snapshot again by hand from main. ${BRANCH} is pushed and holds the change."
+              else
+                echo "::error::gh pr create failed (exit ${status}); ${BRANCH} is pushed and holds the change, so run apt-snapshot again by hand from main"
+              fi
+              exit 1
+            fi
+            number="${url##*/}"
+            ci=true
+            echo "Opened pull request #${number}: ${url}"
+          fi
+          echo "ci=${ci}" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Ubuntu snapshot ${OLD} -> ${NEW}"
+            echo ""
+            echo "- pull request: #${number}"
+            echo "- branch pushed: ${pushed}"
+            if [ -n "$replaced" ]; then echo "- replaced and closed: #${replaced}"; fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # Starts ci.yml on the bot branch, as the bot's own pull request event
+  # waits for an approval. Only this job may start workflows.
+  dispatch-ci:
+    name: Start CI on the bot branch
+    needs: refresh
+    if: ${{ !cancelled() && needs.refresh.result == 'success' && needs.refresh.outputs.ci == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Start the ci workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          gh workflow run ci.yml --repo "$REPO" --ref "$BRANCH"
+          runs="${SERVER_URL}/${REPO}/actions/workflows/ci.yml?query=branch%3A${BRANCH//\//%2F}"
+          echo "Started ci.yml on ${BRANCH}: ${runs}"
+          echo "Started ci on \`${BRANCH}\`: ${runs}" >>"$GITHUB_STEP_SUMMARY"

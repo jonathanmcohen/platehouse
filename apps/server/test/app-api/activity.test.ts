@@ -46,7 +46,7 @@ import {
   scheduleText,
 } from "../../src/app-api/activity.js";
 import type { DB } from "../../src/db/types.js";
-import { PREVIOUS_RENDERS_SENTENCE } from "../../src/derived/client.js";
+import { DERIVED_MESSAGES, PREVIOUS_RENDERS_SENTENCE } from "../../src/derived/client.js";
 import { reasonFileText } from "../../src/inbox/watch.js";
 import { duplicateMessage } from "../../src/ingest/duplicates.js";
 import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
@@ -95,6 +95,18 @@ describe("queueRows", () => {
       step: [5, 0, 0],
       scheduled: [0, 1, 4],
     });
+  });
+
+  // Issue #316: an STL's preview and a STEP mesh's preview are OpenSCAD
+  // renders too, so they count there, not as other slicer work.
+  test("counts STL and STEP preview jobs as OpenSCAD renders", () => {
+    const rows = queueRows([
+      { queue: "slicer", kind: "render-stl", state: "created", n: 7 },
+      { queue: "slicer", kind: "preview-step", state: "active", n: 1 },
+    ]);
+    const by = Object.fromEntries(rows.map((r) => [r.id, [r.waiting, r.active, r.failed]]));
+    expect(by.renders).toEqual([7, 1, 0]);
+    expect(by.other).toBeUndefined();
   });
 
   test("puts a slicer job of a kind it does not know in its own row", () => {
@@ -314,8 +326,11 @@ describe("a failed render on the Activity page", () => {
   const MESSAGE = `${PREVIOUS_RENDERS_SENTENCE.scad} OpenSCAD said: ${OUTPUT}`;
   const HIDDEN = ["/tmp/", "render-a7", "input.scad", "parts.scad"];
 
-  /** The settings row and one failed .scad file; every other read answers no rows. */
-  function scriptedDb(): Kysely<DB> {
+  /** The settings row and the failed files (one .scad by default); every other read answers no rows. */
+  function scriptedDb(
+    failed: Array<{ kind: string; message: string }> = [{ kind: "scad", message: MESSAGE }],
+    previews: Array<{ kind: string; message: string }> = [],
+  ): Kysely<DB> {
     const connection: DatabaseConnection = {
       async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
         let rows: unknown[] = [];
@@ -328,18 +343,27 @@ describe("a failed render on the Activity page", () => {
               updated_at: FAILED_AT,
             },
           ];
+        } else if (/"f"\."preview_status"/.test(query.sql)) {
+          // The pictures that failed, from their own column (issue #380).
+          rows = previews.map((f) => ({
+            file_id: FILE_ID,
+            file_name: "bracket",
+            kind: f.kind,
+            model_id: MODEL_ID,
+            model_name: "Bracket",
+            message: f.message,
+            at: FAILED_AT,
+          }));
         } else if (/"f"\."derived_status"/.test(query.sql)) {
-          rows = [
-            {
-              file_id: FILE_ID,
-              file_name: "bracket",
-              kind: "scad",
-              model_id: MODEL_ID,
-              model_name: "Bracket",
-              message: MESSAGE,
-              at: FAILED_AT,
-            },
-          ];
+          rows = failed.map((f) => ({
+            file_id: FILE_ID,
+            file_name: "bracket",
+            kind: f.kind,
+            model_id: MODEL_ID,
+            model_name: "Bracket",
+            message: f.message,
+            at: FAILED_AT,
+          }));
         }
         return { rows } as QueryResult<R>;
       },
@@ -369,9 +393,12 @@ describe("a failed render on the Activity page", () => {
     });
   }
 
-  async function renderEvents() {
+  async function renderEvents(
+    failed?: Array<{ kind: string; message: string }>,
+    previews?: Array<{ kind: string; message: string }>,
+  ) {
     const view = await createAppActivity({
-      db: scriptedDb(),
+      db: scriptedDb(failed, previews),
       boss: { getSchedules: async () => [] },
       slicer: {
         health: async () => {
@@ -400,6 +427,34 @@ describe("a failed render on the Activity page", () => {
     expect(message?.endsWith(ERROR_SHOWN)).toBe(true);
     expect(message).not.toContain("...");
     for (const hidden of HIDDEN) expect(JSON.stringify(event)).not.toContain(hidden);
+  });
+
+  // Issue #316: a failed preview picture is listed as one, for an STL and
+  // for a STEP file whose mesh was made; a STEP conversion that failed is
+  // still a conversion.
+  // Issue #380: a picture's failure is read from its own column, whatever its
+  // message says, so a slicer failure on a STEP file's picture is a preview
+  // failure too, not a conversion failure.
+  test("lists a failed STL or STEP picture as a preview, and a failed conversion as a conversion", async () => {
+    const said = `${DERIVED_MESSAGES.previewRejected} ERROR: STL import failed`;
+    const events = await renderEvents(
+      [{ kind: "step", message: "STEP import failed: no shapes found" }],
+      [
+        { kind: "stl", message: said },
+        { kind: "step", message: DERIVED_MESSAGES.slicerError },
+      ],
+    );
+    expect(
+      events.map((e) => (e.type === "render_failed" ? [e.kind, e.message] : null)).sort(),
+    ).toEqual(
+      [
+        ["preview", said],
+        ["preview", DERIVED_MESSAGES.slicerError],
+        ["step", "STEP import failed: no shapes found"],
+      ].sort(),
+    );
+    const stl = events.find((e) => e.type === "render_failed" && e.message === said);
+    expect(stl?.type === "render_failed" ? stl.messageCodes : null).toEqual(["previewRejected"]);
   });
 });
 

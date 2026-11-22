@@ -28,9 +28,10 @@ The pages in this section:
 The library at `/` shows a card for each model: plate 1's thumbnail, the name, the creator, the
 plate count, and the total print time and weight when every plate has numbers. The totals are for
 the printer named in the library header: your default printer, unless you pick another there.
-A card says "partial" when some plates have no numbers yet. STL, STEP and OpenSCAD models show a
-file-type icon instead of a thumbnail. Pictures of prints sit on a neutral grey backdrop, so a
-black or white print stays visible in both themes.
+A card says "partial" when some plates have no numbers yet. STL and STEP models show a preview
+picture of the model instead of a thumbnail, once it has been rendered, and a file-type icon until
+then or if it could not be rendered. OpenSCAD models show a file-type icon. Pictures of prints sit
+on a neutral grey backdrop, so a black or white print stays visible in both themes.
 
 Search in the top bar matches names, captions, creators and tags, best match first. Pick a tag
 chip to filter by tag, and **All** to turn the tag filter off. The tag you are filtering by keeps

@@ -37,13 +37,13 @@ the banner.
 
 ## What is stored where
 
-| Where            | What                                                                                                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **The bucket**   | Every uploaded file, unchanged; plate thumbnails taken from `.3mf` files; the STL and preview image rendered from each OpenSCAD file; the mesh made from each STEP file. |
-| **Postgres**     | Models, files and their names, plates, filaments, estimates, tags, collections, the trash, settings, API token hashes, sessions and the job queues.                      |
-| **`data/inbox`** | Files you drop in to be imported, and `inbox/failed/` for any that could not be. An imported file is deleted from the inbox once its stored copy is checked.             |
-| **`data/tmp`**   | Unfinished uploads (deleted after 24 hours untouched) and working copies, deleted after each job.                                                                        |
-| **The slicer**   | Nothing kept. Its `/work` is a memory-backed folder that is emptied after every job.                                                                                     |
+| Where            | What                                                                                                                                                                                                                    |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The bucket**   | Every uploaded file, unchanged; plate thumbnails taken from `.3mf` files; the STL and preview image rendered from each OpenSCAD file; the mesh made from each STEP file; the preview picture of each STL and STEP file. |
+| **Postgres**     | Models, files and their names, plates, filaments, estimates, tags, collections, the trash, settings, API token hashes, sessions and the job queues.                                                                     |
+| **`data/inbox`** | Files you drop in to be imported, and `inbox/failed/` for any that could not be. An imported file is deleted from the inbox once its stored copy is checked.                                                            |
+| **`data/tmp`**   | Unfinished uploads (deleted after 24 hours untouched) and working copies, deleted after each job.                                                                                                                       |
+| **The slicer**   | Nothing kept. Its `/work` is a memory-backed folder that is emptied after every job.                                                                                                                                    |
 
 Objects are stored under `models/<model id>/<blob id>`, two random IDs with no file name or
 extension in them. Renaming a model or file in Platehouse changes only its display name; the

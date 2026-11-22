@@ -730,6 +730,29 @@ describe("recent events", () => {
     expect(s).toContain("Where a model came from");
   });
 
+  // Issue #316: a failed STL or STEP preview picture is named as one.
+  test("names a failed preview picture as one", async () => {
+    answer = () => {
+      const v = busyView();
+      v.events.items = [
+        {
+          type: "render_failed",
+          at: "2026-11-19T11:58:00.000Z",
+          kind: "preview",
+          model: { id: LIVE_MODEL, name: "Air Dry - AMS" },
+          file: { id: "f3", name: "Hook.stl" },
+          message: "The preview picture could not be rendered. OpenSCAD said: ERROR: bad STL",
+        },
+      ];
+      return v;
+    };
+    await render();
+    const li = section("Recent events").querySelector("ol > li") as HTMLElement;
+    expect(text(li)).toContain("Preview picture failed");
+    expect(text(li)).toContain("Hook.stl");
+    expect(text(li)).not.toContain("STEP conversion failed");
+  });
+
   test("warns when the inbox's failed folder could not be read", async () => {
     answer = () => {
       const v = busyView();

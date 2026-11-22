@@ -1,6 +1,6 @@
 // The description re-conversion on upgrade (#357) against a real Postgres 17
 // and S3 test server: ingest records where a description came from
-// (migration 0015), and a run converts stored descriptions again from their
+// (migration 0014), and a run converts stored descriptions again from their
 // .3mf in the bucket, leaves every description it cannot prove untouched as
 // it is, and records itself so a second run does nothing. The decisions
 // themselves are unit-tested in test/library/reconvert.test.ts.

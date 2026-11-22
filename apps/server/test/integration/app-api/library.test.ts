@@ -62,7 +62,7 @@ import {
   startIngestEnv,
   writeUpload,
 } from "../support/ingest.js";
-import { marker } from "../support/library.js";
+import { marker, storeBlob } from "../support/library.js";
 import { type TestAuth, testAuth } from "../support/oidc-issuer.js";
 
 const P1S: Printer = {
@@ -292,7 +292,7 @@ describe("library render requests no model file", () => {
     for (const id of fileIds) expect(text).not.toContain(id);
   });
 
-  test("STL and STEP cards have no thumbnail and name their file type for the icon", async () => {
+  test("STL and STEP cards with no preview yet have no thumbnail and name their file type for the icon", async () => {
     const word = marker();
     const stl = await ingest(`Hook ${word}.stl`, ASCII_STL);
     const step = await ingest(`Gear ${word}.stp`, STEP_TEXT);
@@ -307,6 +307,112 @@ describe("library render requests no model file", () => {
         partial: false,
       });
     }
+  });
+});
+
+// Issue #316: an STL or STEP card shows the preview picture rendered for
+// the file it stands for, a stored render_png blob of the same model, in
+// place of the file-type icon. A SCAD card keeps the icon (build plan Task
+// 19's choice, which the issue leaves as it is), and nothing but a stored
+// render_png of the card's own model is ever named.
+describe("STL and STEP previews on the card (issue #316)", () => {
+  async function attachPreview(modelId: string, fileId: string, bytes = Buffer.from("png")) {
+    const png = await storeBlob(env, modelId, "render_png", bytes);
+    await env.db
+      .updateTable("files")
+      .set({ renderPngBlobId: png.id, previewStatus: "ok" })
+      .where("id", "=", fileId)
+      .execute();
+    return png;
+  }
+
+  // Issue #380: the card reads the picture's own status. A picture that
+  // failed, or was never queued, shows the icon; one being made again keeps
+  // showing the current version's picture until the new one lands.
+  // Issue #389: ok is exactly "a picture of the current source is stored",
+  // so the card shows a stored picture only then; pending, failed and none
+  // all mean there is no picture of the current source to show.
+  test("an STL card follows previewStatus: the picture when ok, the icon otherwise", async () => {
+    const word = marker();
+    const stl = await ingest(`Preview status ${word}.stl`, ASCII_STL);
+    const png = await attachPreview(stl.modelId, stl.fileId);
+    const setStatus = (previewStatus: string | null) =>
+      env.db.updateTable("files").set({ previewStatus }).where("id", "=", stl.fileId).execute();
+    const thumbnail = async () => card(await library(`?q=${word}`), stl.modelId).thumbnail;
+    expect(await thumbnail()).toBe(`/blobs/${png.id}`);
+    await setStatus("pending");
+    expect(await thumbnail()).toBeNull();
+    await setStatus("failed");
+    expect(await thumbnail()).toBeNull();
+    await setStatus(null);
+    expect(await thumbnail()).toBeNull();
+  });
+
+  test("an STL or STEP card shows its rendered preview as its thumbnail", async () => {
+    const word = marker();
+    const stl = await ingest(`Preview hook ${word}.stl`, ASCII_STL);
+    const step = await ingest(`Preview gear ${word}.step`, STEP_TEXT);
+    const stlPng = await attachPreview(stl.modelId, stl.fileId);
+    const stepPng = await attachPreview(step.modelId, step.fileId);
+    const page = await library(`?q=${word}`);
+    expect(card(page, stl.modelId)).toMatchObject({
+      thumbnail: `/blobs/${stlPng.id}`,
+      fileKind: "stl",
+      plateCount: 0,
+    });
+    expect(card(page, step.modelId)).toMatchObject({
+      thumbnail: `/blobs/${stepPng.id}`,
+      fileKind: "step",
+      plateCount: 0,
+    });
+  });
+
+  test("a SCAD card keeps the file-type icon even with a rendered preview", async () => {
+    const word = marker();
+    const scad = await ingest(`Preview part ${word}.scad`, "cube([10, 10, 10]);\n");
+    await attachPreview(scad.modelId, scad.fileId);
+    const page = await library(`?q=${word}`);
+    expect(card(page, scad.modelId)).toMatchObject({ thumbnail: null, fileKind: "scad" });
+  });
+
+  test("a .3mf card keeps its plate thumbnail when the model also holds a previewed STL", async () => {
+    const word = marker();
+    const plated = await ingest(`Preview plated ${word}.3mf`, build3mf({ plates: 1 }));
+    const extra = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, ASCII_STL),
+      originalName: "Extra.stl",
+      target: { modelId: plated.modelId },
+    });
+    const png = await attachPreview(plated.modelId, extra.fileId);
+    const shown = card(await library(`?q=${word}`), plated.modelId);
+    expect(shown.fileKind).toBe("3mf");
+    expect(shown.thumbnail).not.toBe(`/blobs/${png.id}`);
+  });
+
+  test("a preview of another model, of another kind or not yet stored is never named", async () => {
+    const word = marker();
+    const other = await ingest(`Preview other ${word}.stl`, ASCII_STL);
+    const stl = await ingest(`Preview wrong ${word}.stl`, ASCII_STL);
+    const foreign = await storeBlob(env, other.modelId, "render_png", Buffer.from("png"));
+    const setPreview = (id: string) =>
+      env.db
+        .updateTable("files")
+        .set({ renderPngBlobId: id, previewStatus: "ok" })
+        .where("id", "=", stl.fileId)
+        .execute();
+    await setPreview(foreign.id);
+    expect(card(await library(`?q=${word}`), stl.modelId).thumbnail).toBeNull();
+    const thumbnail = await storeBlob(env, stl.modelId, "thumbnail", Buffer.from("png"));
+    await setPreview(thumbnail.id);
+    expect(card(await library(`?q=${word}`), stl.modelId).thumbnail).toBeNull();
+    const pending = await env.repos.blobs.insertPending({
+      modelId: stl.modelId,
+      kind: "render_png",
+      contentType: "image/png",
+      size: 3,
+    });
+    await setPreview(pending.id);
+    expect(card(await library(`?q=${word}`), stl.modelId).thumbnail).toBeNull();
   });
 });
 

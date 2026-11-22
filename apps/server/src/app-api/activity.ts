@@ -40,7 +40,7 @@ import { isReason, reasonWords } from "../estimates/reasons.js";
 import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
 import { MAINTENANCE_TASKS, QUEUE, UPGRADE_TASKS } from "../jobs/queues.js";
-import { activityRepo, type QueueCount } from "../repos/activity.js";
+import { activityRepo, type FailedDerived, type QueueCount } from "../repos/activity.js";
 import { descriptionsRepo } from "../repos/descriptions.js";
 import { settingsRepo } from "../repos/settings.js";
 import { scrubDerivedMessage, scrubDetail, scrubText } from "../scrub.js";
@@ -162,8 +162,11 @@ export type ActivityEvent =
   | {
       type: "render_failed";
       at: string;
-      /** scad: an OpenSCAD render; step: a STEP conversion. */
-      kind: "scad" | "step";
+      /**
+       * scad: an OpenSCAD render; step: a STEP conversion; preview: an STL's
+       * preview picture, or a STEP file's made from its mesh (issue #316).
+       */
+      kind: "scad" | "step" | "preview";
       model: { id: string; name: string };
       file: { id: string; name: string };
       /** The renderer's message as the app stored it, scrubbed; null with none. */
@@ -259,6 +262,9 @@ const SLICER_KIND_ROWS: Readonly<Record<string, QueueRowId>> = {
   slice: "estimates",
   "render-scad": "renders",
   "convert-step": "step",
+  // Preview pictures (issue #316) are OpenSCAD renders as well.
+  "render-stl": "renders",
+  "preview-step": "renders",
 };
 
 /** pg-boss's live counts as the page's rows; "other" only when a slicer job of an unknown kind is live. */
@@ -440,6 +446,7 @@ export const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
   [MAINTENANCE_TASKS.sweepUploads]: "Sweep of unfinished uploads",
   [MAINTENANCE_TASKS.pollOrca]: "Slicer version check",
   [MAINTENANCE_TASKS.checkRenders]: "Render check",
+  [MAINTENANCE_TASKS.backfillPreviews]: "Preview pictures for older STL and STEP files",
   // Listed only while the step is pending (#382), so an unfinished
   // re-conversion shows on the page, not only in the server log.
   [UPGRADE_TASKS.reconvertDescriptions]: "MakerWorld description re-conversion (until it finishes)",
@@ -451,6 +458,7 @@ const SCHEDULE_ORDER: readonly string[] = [
   MAINTENANCE_TASKS.purgeSessions,
   MAINTENANCE_TASKS.sweepUploads,
   MAINTENANCE_TASKS.checkRenders,
+  MAINTENANCE_TASKS.backfillPreviews,
   MAINTENANCE_TASKS.pollOrca,
   UPGRADE_TASKS.reconvertDescriptions,
 ];
@@ -520,6 +528,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         const models = await repo.recentModels(QUEUE.ingest, EVENT_LIMIT);
         const estimates = await repo.failedEstimates(settings.printerId, version, EVENT_LIMIT);
         const derived = await repo.failedDerived(EVENT_LIMIT);
+        const previews = await repo.failedPreviews(EVENT_LIMIT);
         const upgrades = await descriptionsRepo(trx).finishedSteps(
           RECONVERT_STEP_PREFIX,
           EVENT_LIMIT,
@@ -533,6 +542,7 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           models,
           estimates,
           derived,
+          previews,
           upgrades,
         };
       });
@@ -547,8 +557,18 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         inboxFailures(),
         deps.boss.getSchedules(QUEUE.maintenance),
       ]);
-      const { settings, library, counts, queues, lastRuns, models, estimates, derived, upgrades } =
-        data;
+      const {
+        settings,
+        library,
+        counts,
+        queues,
+        lastRuns,
+        models,
+        estimates,
+        derived,
+        previews,
+        upgrades,
+      } = data;
 
       const progress = progressOf(counts, now);
       const rows = queueRows(queues);
@@ -587,17 +607,29 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         reasonCode: isReason(e.failureReason) ? e.failureReason : "slicer_error",
         detail: scrubDetail(e.failureDetail),
       }));
-      const renderEvents: ActivityEvent[] = derived
-        .filter((d) => d.kind === "scad" || d.kind === "step")
-        .map((d) => ({
+      const renderEvent = (d: FailedDerived, kind: "scad" | "step" | "preview"): ActivityEvent => {
+        const message = scrubDerivedMessage(d.message);
+        return {
           type: "render_failed",
           at: d.at.toISOString(),
-          kind: d.kind === "scad" ? "scad" : "step",
+          kind,
           model: { id: d.modelId, name: d.modelName },
           file: { id: d.fileId, name: d.fileName },
-          message: scrubDerivedMessage(d.message),
-          ...renderParts(scrubDerivedMessage(d.message)),
-        }));
+          message,
+          ...renderParts(message),
+        };
+      };
+      // A .scad's render or a STEP file's conversion from derived_status,
+      // and an STL's or STEP file's picture from its own preview_status
+      // (issue #380), whatever its message says.
+      const renderEvents: ActivityEvent[] = [
+        ...derived
+          .filter((d) => d.kind === "scad" || d.kind === "step")
+          .map((d) => renderEvent(d, d.kind === "scad" ? "scad" : "step")),
+        ...previews
+          .filter((d) => d.kind === "stl" || d.kind === "step")
+          .map((d) => renderEvent(d, "preview")),
+      ];
 
       const working =
         progress.pending + progress.running > 0 || rows.some((r) => r.waiting + r.active > 0);
