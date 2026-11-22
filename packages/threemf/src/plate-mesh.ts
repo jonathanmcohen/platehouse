@@ -557,9 +557,13 @@ class MeshBuilder {
   }
 
   vertex(a: Map<string, string>): void {
-    const x = Number(a.get("x"));
-    const y = Number(a.get("y"));
-    const z = Number(a.get("z"));
+    // Narrowed to 32 bits before the check, since that is how they are
+    // stored: a double past about 3.4e38 is finite but becomes Infinity in
+    // the Float32Array, and the GLB would get infinite positions and null
+    // bounds (review of PR #368).
+    const x = Math.fround(Number(a.get("x")));
+    const y = Math.fround(Number(a.get("y")));
+    const z = Math.fround(Number(a.get("z")));
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       this.broken = true;
       return;

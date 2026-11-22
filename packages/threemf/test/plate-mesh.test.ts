@@ -396,6 +396,28 @@ describe("readPlateMesh on a file with no readable mesh", () => {
       ),
     ],
     [
+      // Finite as a double but Infinity once stored as a 32-bit float, which
+      // would put infinite positions and null bounds in the GLB (review of
+      // PR #368).
+      "a vertex is too big for a 32-bit float",
+      modelXml(
+        [
+          meshObject(
+            1,
+            meshXml(
+              [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1e39, 1, 0],
+              ],
+              [[0, 1, 2]],
+            ),
+          ),
+        ],
+        [buildItem(1)],
+      ),
+    ],
+    [
       "the component's part is missing",
       modelXml(
         [componentObject(1, [{ objectId: 1, path: "/3D/Objects/missing.model" }])],
