@@ -22,7 +22,10 @@
 // pushes; the ci workflow checks it on every pull request, so a file that
 // would stop a later monthly run fails that pull request instead. Both run
 // the same command below. It reads the tracked files with git grep, leaves
-// out CHANGELOG.md (its history may name old pins), and asks no network.
+// out CHANGELOG.md (its history may name old pins), and asks no network. It
+// counts only midnight UTC timestamps, the only kind a refresh writes, and
+// the exact one it starts from, so another time of day, such as an AWS
+// X-Amz-Date, is not taken for a copy of the pin.
 //
 // Command line, run at the repo root:
 //   node apt-snapshot.mjs refresh   rewrites the pins when there is a newer
@@ -262,12 +265,20 @@ export async function refresh({ now, fetchFn = fetch, sleep = wait, read, write,
   return { old, new: next };
 }
 
-// The git grep the leftover check runs, at the repo root: every snapshot-like
-// string in a tracked file, CHANGELOG.md left out, one "<file>:<match>" per
-// line.
-export const GREP_ARGS = ["grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"];
+// The git grep the leftover check from since runs, at the repo root, one
+// "<file>:<match>" per line, CHANGELOG.md left out. It matches only what can
+// be a copy of a pin: a timestamp at midnight UTC, the only kind a refresh
+// writes (snapshotFor), and since itself, which a pin set by hand may not be.
+// Any other compact ISO 8601 UTC time, such as an AWS SigV4 X-Amz-Date in a
+// presigned URL, is not a snapshot and is not matched. since is the current
+// pin in the ci workflow, and the old pin, whose copies the rewrite would
+// leave behind, in the monthly run, whose new pin is always at midnight.
+export function grepArgs(since) {
+  if (!isSnapshot(since)) throw new Error(`${since} is not a snapshot timestamp`);
+  return ["grep", "-o", "-E", "-e", "[0-9]{8}T000000Z", "-e", since, "--", ".", ":!CHANGELOG.md"];
+}
 
-// The leftovers in git grep output (GREP_ARGS), as "<file> <timestamp>"
+// The leftovers in git grep output (grepArgs), as "<file> <timestamp>"
 // strings, sorted and without repeats: every real snapshot timestamp at or
 // after since that a file other than the three pinned ones names, and every
 // one a pinned file names when it names more than one. The rewrite moves only
@@ -305,7 +316,7 @@ export function leftovers(root, since = undefined) {
       ),
     );
   if (!isSnapshot(from)) throw new Error(`${from} is not a snapshot timestamp`);
-  const r = spawnSync("git", ["-C", root, ...GREP_ARGS], { encoding: "utf8" });
+  const r = spawnSync("git", ["-C", root, ...grepArgs(from)], { encoding: "utf8" });
   // git grep exits 1 when nothing matches.
   if (r.status !== 0 && r.status !== 1) {
     throw new Error(`git grep failed (exit ${r.status}): ${r.stderr || r.error?.message || ""}`);

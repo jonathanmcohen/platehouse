@@ -15,7 +15,6 @@ import {
   ATTEMPTS,
   DOCKERFILES,
   GATE_README,
-  GREP_ARGS,
   LOOKBACK_DAYS,
   SNAPSHOT_URL,
   SUITES,
@@ -23,6 +22,7 @@ import {
   currentPin,
   dockerfilePin,
   findLeftovers,
+  grepArgs,
   isSnapshot,
   label,
   leftovers,
@@ -907,7 +907,65 @@ test("findLeftovers: other files naming a snapshot at or after the pin; the pins
   ]);
   assert.deepEqual(findLeftovers("", since), []);
   assert.throws(() => findLeftovers(out, "2020-11-07"), /not a snapshot timestamp/);
-  assert.deepEqual(GREP_ARGS, ["grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"]);
+});
+
+// A refresh only ever writes midnight UTC (snapshotFor), so the grep matches
+// only midnight timestamps, plus the exact one the check starts from, which a
+// pin set by hand may not be at midnight. Any other compact ISO 8601 UTC time,
+// such as an AWS SigV4 X-Amz-Date, is not a copy of the pin.
+test("grepArgs: midnight timestamps and the exact one the check starts from, CHANGELOG.md left out", () => {
+  assert.deepEqual(grepArgs("20201107T000000Z"), [
+    "grep",
+    "-o",
+    "-E",
+    "-e",
+    "[0-9]{8}T000000Z",
+    "-e",
+    "20201107T000000Z",
+    "--",
+    ".",
+    ":!CHANGELOG.md",
+  ]);
+  assert.deepEqual(grepArgs("20201107T120000Z").slice(3, 7), ["-e", "[0-9]{8}T000000Z", "-e", "20201107T120000Z"]);
+  assert.throws(() => grepArgs("20201107"), /not a snapshot timestamp/);
+});
+
+// With real git: a time of day after the pin that is not midnight, such as a
+// presigned URL's X-Amz-Date in a test fixture, passes; a midnight copy does
+// not, nor does a copy of a pin set by hand off midnight. The later dates are
+// computed (FAR), never written here, so this file stays clear of the check.
+test("leftovers: a timestamp after the pin that is not midnight, such as an X-Amz-Date, is not a leftover", () => {
+  const day = FAR.slice(0, 8);
+  inScratch((dir) => {
+    const git = (...a) => {
+      const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    git("init", "-q");
+    writeTree(dir, fakeTexts("20201107T000000Z"));
+    writeTree(dir, {
+      "fixture.ts": `const url = "https://bucket.example/x?X-Amz-Date=${day}T093015Z&X-Amz-Expires=300";\n`,
+    });
+    git("add", "-A");
+    assert.deepEqual(leftovers(dir), { since: "20201107T000000Z", leftovers: [] });
+    writeTree(dir, { "fixture.ts": `pinned ${FAR}\n` });
+    git("add", "-A");
+    assert.deepEqual(leftovers(dir).leftovers, [`fixture.ts ${FAR}`]);
+  });
+  inScratch((dir) => {
+    const git = (...a) => {
+      const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    git("init", "-q");
+    writeTree(dir, fakeTexts("20201107T120000Z"));
+    writeTree(dir, { "docs/security.md": "installs from 20201107T120000Z\n" });
+    git("add", "-A");
+    assert.deepEqual(leftovers(dir), {
+      since: "20201107T120000Z",
+      leftovers: ["docs/security.md 20201107T120000Z"],
+    });
+  });
 });
 
 // The rewrite moves only the ARG line and the pins cell, so a pinned file may
