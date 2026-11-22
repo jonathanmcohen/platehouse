@@ -420,7 +420,7 @@ const REQUEST_LIMIT =
   `about ${Math.round(REQUEST_TIMEOUT_MS / 60_000)} minutes, enough to send ` +
   `${MAX_UPLOAD_BYTES / 2 ** 20} MiB at ${(SLOW_LINK_BYTES_PER_SECOND * 8) / 1_000_000} Mbit/s`;
 
-/** The tus upload routes' operations, by method and path (Public API v1 contract). */
+/** The tus upload routes' operations, by method and path, in the Public API v1's OpenAPI document. */
 const TUS_DOCS: Record<string, FastifySchema> = {
   [`POST ${API_PREFIX}/uploads`]: {
     summary: "Start an upload",

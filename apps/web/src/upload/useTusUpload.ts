@@ -4,9 +4,10 @@
 // - Every file goes to /app/uploads (session-class; the browser sends the
 //   session cookie and Origin, which the gate checks) in 5 MiB chunks, so a
 //   phone that loses its connection resends at most one chunk.
-// - The metadata names the target (the Public API v1 contract): nothing for
-//   a new model of its own, modelId for an existing model, or batch with
-//   combine for the "Combine into one model" batch.
+// - The metadata names the target (as uploads/tus.ts reads it and
+//   api/openapi.ts documents it): nothing for a new model of its own,
+//   modelId for an existing model, or batch with combine for the "Combine
+//   into one model" batch.
 // - tus-js-client keeps a resume fingerprint in localStorage, so a dropped
 //   upload resumes when the same file is sent again. The fingerprint
 //   includes the target, so the same file sent to a different target starts

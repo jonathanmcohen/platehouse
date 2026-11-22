@@ -53,7 +53,7 @@ const emptyLibrary: ApiLibrary = {
   removeFromCollection: async () => false,
 };
 
-/** The operations of the Public API v1 contract, as Fastify registers them. */
+/** The Public API v1's operations (api/v1.ts, documented in api/openapi.ts), as Fastify registers them. */
 const CONTRACT: Array<[string, string]> = [
   ["/api/v1/openapi.json", "GET"],
   ["/api/v1/models", "GET"],

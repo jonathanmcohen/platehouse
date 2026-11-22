@@ -10,7 +10,7 @@
 //   Origin check passes) and goes to the protocol URL that route answers:
 //   open.orca for OrcaSlicer, open.bambuMac on a Mac and open.bambuOther
 //   elsewhere for Bambu Studio. Those URLs carry the link encoded exactly
-//   once by the server (the Slicer link contract); the page never encodes,
+//   once by the server (delivery/links.ts); the page never encodes,
 //   builds or signs a link itself. A URL that does not start with the
 //   expected scheme is refused rather than followed.
 // - A link that cannot be made is said in the page (role alert), never in a

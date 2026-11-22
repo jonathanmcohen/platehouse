@@ -55,7 +55,7 @@ const ACCENTED = String.fromCodePoint(
   0x672c,
 );
 
-/** What a link's name segment never carries (the Slicer link contract). */
+/** What a link's name segment never carries (linkSegment in delivery/links.ts). */
 const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}]/gu;
 /** The same, for one test (no global flag, so no state between calls). */
 const UNSAFE_CHAR = /[/\\%?#;\p{Cc}\p{Cf}]/u;

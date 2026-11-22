@@ -17,7 +17,7 @@ import {
 import type { DB } from "../../../src/db/types.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
 
-// Every table in the Database schema contract, plus the migrator's own record.
+// Every table the migrations in src/db/migrations create, plus the migrator's own record.
 const TABLES = [
   "api_tokens",
   "blobs",

@@ -159,12 +159,13 @@ export type AuthHook = (request: FastifyRequest, reply: FastifyReply) => Promise
 
 /**
  * What the ingest queue reports for an upload, and GET <prefix>/:id/result
- * answers. On /api/v1/uploads the answer is the Public API v1 contract: a
- * failure carries a code only when it is a skipped duplicate (publicResult
- * removes every other code). On /app/uploads, the web app's own mount, a
- * failure also carries the ingest's own code (unsupported_type,
- * model_not_found, storage_unavailable, ingest_failed, upload_failed), so
- * the page can say it in its language (the maintainer, 2026-11-19).
+ * answers. On /api/v1/uploads the answer is the one api/openapi.ts documents
+ * for the Public API v1: a failure carries a code only when it is a skipped
+ * duplicate (publicResult removes every other code). On /app/uploads, the
+ * web app's own mount, a failure also carries the ingest's own code
+ * (unsupported_type, model_not_found, storage_unavailable, ingest_failed,
+ * upload_failed), so the page can say it in its language (the maintainer,
+ * 2026-11-19).
  */
 export type UploadResult =
   | { status: "pending" }

@@ -27,8 +27,8 @@
 //                                       after its own confirmation; nothing
 //                                       runs it on its own
 //
-// - Every route is session-class (the Route classes contract: /app/api is
-//   unlisted, so session); the gate (auth/gate.ts) refuses a request without
+// - Every route is session-class (the route classes table in auth/gate.ts:
+//   /app/api is unlisted, so session); the gate refuses a request without
 //   a session before these handlers run, and each POST, which changes state,
 //   also needs Origin to be PUBLIC_ORIGIN. The Open buttons mint their link
 //   at POST /app/api/files/:id/slicer-link (delivery/links.ts), not here.
@@ -99,7 +99,7 @@ const PLAN_BODY_LIMIT = 1024;
 /** The planId of a plan with no renames (the SHA-256 of "[]"). */
 const EMPTY_PLAN_ID = createHash("sha256").update("[]").digest("hex");
 
-/** The model page's routes, every one session-class (the Route classes contract). */
+/** The model page's routes, every one session-class (the route classes table in auth/gate.ts). */
 export const MODEL_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/models/:id",
   "/app/api/estimates/:id/retry",

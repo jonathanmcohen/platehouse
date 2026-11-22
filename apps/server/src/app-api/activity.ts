@@ -7,8 +7,8 @@
 //                           and the newest events (a description
 //                           re-conversion on upgrade among them, #357)
 //
-// - Session-class like every /app/api route (the Route classes contract:
-//   /app/api is unlisted), so the gate refuses a request without a live
+// - Session-class like every /app/api route (the route classes table in
+//   auth/gate.ts: /app/api is unlisted), so the gate refuses a request without a live
 //   session before this handler runs. It changes nothing. Nothing is added
 //   under /api/v1.
 // - Built only from what the database, pg-boss and the inbox's failed/
@@ -55,7 +55,7 @@ function renderParts(message: string | null): {
   return { messageCodes: derivedCodes, messageDetail: derivedDetail };
 }
 
-/** The Activity page's route, session-class (the Route classes contract). */
+/** The Activity page's route, session-class (the route classes table in auth/gate.ts). */
 export const ACTIVITY_API_PATHS: readonly string[] = Object.freeze(["/app/api/activity"]);
 
 /** Most events the page is sent, across every kind. */

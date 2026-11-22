@@ -15,6 +15,9 @@
 // - the plan's section names: two by name (see the pattern), and its parts,
 //   Part or Parts and a capital A to D (two parts joined by an ampersand, as
 //   in a model's title, are left alone);
+// - the plan's four contracts, cited by name: route classes, database
+//   schema, slicer link and Public API v1, each with the word contract after
+//   it (the code names the file that holds the rule instead);
 // - the earlier private parser project by name, or its Ruby source files;
 // - any repository of the owner other than platehouse and platehouse-slicer,
 //   and the private projects named in issues #325 and #329;
@@ -58,6 +61,13 @@ const REFERENCES: Reference[] = [
   { what: "a requirement id", pattern: /\bAC-\d{3}\b/g },
   { what: "a numbered lesson", pattern: new RegExp(String.raw`\blessons?${WRAP}\d+`, "gi") },
   { what: "a plan section", pattern: /\b(?:Review[ ]Focus|Global[ ]Constraints)\b/g },
+  {
+    what: "a plan contract",
+    pattern: new RegExp(
+      String.raw`\b(?:Route${WRAP}classes|Database${WRAP}schema|Slicer${WRAP}link|Public${WRAP}API${WRAP}v1)${WRAP}contract\b`,
+      "gi",
+    ),
+  },
   {
     what: "a plan part",
     pattern: new RegExp(
@@ -192,6 +202,10 @@ describe("no citation of a private plan, requirement or project", () => {
       `-- every statement is read in review (${"lesson"}\n-- 14). Never edit it`,
       `// where they are compared with ${"4076"}a67`,
       `// the earlier theme at ${"136f"}d61`,
+      `// session-class (the ${"Route"} classes contract)`,
+      `/** The session cookie (${"Database"} schema contract). */`,
+      `// encoded once by the server (the ${"slicer"} link\n// contract)`,
+      `// the answer is the ${"Public"} API v1 contract: a`,
     ];
     const lookAlikes = [
       "// a task queue, the planner, AC power, AC-31, TAC-031",
@@ -201,6 +215,7 @@ describe("no citation of a private plan, requirement or project", () => {
       "// Example Kit Alpha | Part A & Part B, Example Kit | Part A &amp;amp; Part B",
       "// Part 2, Part E, Party C, a part C, function pair<T1, T2>(a: T1, b: T2)",
       "// a lesson learned, the lessons of 0.1.0, makerworld-metaverse",
+      "// the route classes table, slicer contract v1, the Slicer HTTP contract, a slicer link, the Public API v1's document",
     ];
     const text = [...named, ...lookAlikes].join("\n");
     // The line each named sample starts on: every one is found, and nothing

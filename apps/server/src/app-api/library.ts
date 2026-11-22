@@ -119,7 +119,7 @@ import {
   type SortPrinter,
 } from "../repos/models.js";
 
-/** The library's routes, every one session-class (the Route classes contract). */
+/** The library's routes, every one session-class (the route classes table in auth/gate.ts). */
 export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/library",
   "/app/api/library/ids",

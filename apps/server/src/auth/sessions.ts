@@ -25,7 +25,7 @@ import type { Kysely } from "kysely";
 import type { DB, Session } from "../db/types.js";
 import { type NewSession, sessionsRepo } from "../repos/sessions.js";
 
-/** The session cookie (Database schema contract). */
+/** The session cookie (the sessions table in db/migrations/0001_init.sql). */
 export const SESSION_COOKIE = "__Host-ph_session";
 
 const DAY_MS = 24 * 60 * 60 * 1000;

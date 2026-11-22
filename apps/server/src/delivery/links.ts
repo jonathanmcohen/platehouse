@@ -88,7 +88,7 @@ const UNSAFE_IN_SEGMENT = /[/\\%?#;\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 /** The HKDF label of the link key; the login cookie's is "platehouse login cookie v1". */
 const LINK_KEY_LABEL = "platehouse slicer link v1";
 
-/** What the MAC covers before the file id and expiry (the Slicer link contract). */
+/** What the MAC covers before the file id and expiry (the token format at the top of this file). */
 const MAC_PREFIX = Buffer.from("ph-link-v1", "ascii");
 
 const ID_BYTES = 16;
