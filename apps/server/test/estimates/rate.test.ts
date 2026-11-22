@@ -3,12 +3,14 @@
 // a minute, with a fallback while too few have finished.
 //
 // The slicer works one plate at a time, so while it is busy the time between
-// two finishes is one plate's slice. The rate is read from the middle (the
-// median) of those gaps, so the idle time between two runs, one long gap
-// among many short ones, does not slow it.
+// two finishes is one plate's slice. A gap longer than BUSY_GAP_MS is idle
+// time and is left out; the rate is read from the middle (the median) of the
+// gaps that remain, and there is none while too few remain.
 import { describe, expect, test } from "vitest";
 import {
+  BUSY_GAP_MS,
   FALLBACK_SLICES_PER_MINUTE,
+  MIN_BUSY_GAPS,
   MIN_FINISHES_FOR_RATE,
   RATE_SAMPLE,
   sliceRate,
@@ -71,9 +73,60 @@ describe("sliceRate", () => {
     expect(rate).toBeLessThanOrEqual(60);
   });
 
-  test("a very slow slicer still has a rate above zero", () => {
-    // A plate every 20 minutes.
-    expect(sliceRate(finishes(20, 1_200_000))).toBe(0.1);
+  test("a gap longer than five minutes is idle time, not a slice", () => {
+    expect(BUSY_GAP_MS).toBe(5 * 60_000);
+    expect(MIN_BUSY_GAPS).toBe(MIN_FINISHES_FOR_RATE - 1);
+    // A plate every 20 minutes is models added now and then, not a slow
+    // slicer: no gap is a slice, so there is no measured rate.
+    expect(sliceRate(finishes(20, 1_200_000))).toBeNull();
+  });
+
+  test("the slowest rate measured is one plate in five minutes", () => {
+    expect(sliceRate(finishes(20, BUSY_GAP_MS))).toBe(0.2);
+  });
+
+  test("single-plate models added one at a time give no rate, not a crawl", () => {
+    // The newest 50 finishes are each an upload's only slice, hours apart.
+    const isolated = Array.from(
+      { length: RATE_SAMPLE },
+      (_, i) => new Date(END - i * 3 * 3_600_000),
+    );
+    expect(sliceRate(isolated)).toBeNull();
+  });
+
+  test("mostly isolated finishes give no rate while too few gaps are slices", () => {
+    // Eight two-plate uploads an hour apart (8 slice gaps of 6.5 seconds),
+    // then older single-plate uploads: fewer slice gaps than MIN_BUSY_GAPS.
+    const pairs = Array.from({ length: 8 }, (_, i) => [
+      new Date(END - i * 3_600_000),
+      new Date(END - i * 3_600_000 - 6_500),
+    ]).flat();
+    const oldest = END - 8 * 3_600_000;
+    const isolated = Array.from(
+      { length: RATE_SAMPLE - pairs.length },
+      (_, i) => new Date(oldest - i * 3_600_000),
+    );
+    expect(MIN_BUSY_GAPS).toBeGreaterThan(8);
+    expect(sliceRate([...pairs, ...isolated])).toBeNull();
+  });
+
+  test("idle gaps that outnumber the slices do not slow the rate", () => {
+    // Two-plate uploads an hour apart: 25 slice gaps of 6.5 seconds among 24
+    // idle hours. Counting every gap, the median would be an hour.
+    const pairs = Array.from({ length: RATE_SAMPLE / 2 }, (_, i) => [
+      new Date(END - i * 3_600_000),
+      new Date(END - i * 3_600_000 - 6_500),
+    ]).flat();
+    expect(sliceRate(pairs)).toBe(9.2);
+  });
+
+  test("just enough slice gaps among idle ones give a measured rate", () => {
+    // MIN_BUSY_GAPS + 1 back-to-back finishes, then isolated ones an hour apart.
+    const run = finishes(MIN_BUSY_GAPS + 1, 6_500);
+    const oldest = END - MIN_BUSY_GAPS * 6_500;
+    const isolated = Array.from({ length: 20 }, (_, i) => new Date(oldest - (i + 1) * 3_600_000));
+    expect(sliceRate([...run, ...isolated])).toBe(9.2);
+    expect(sliceRate([...run.slice(1), ...isolated])).toBeNull();
   });
 
   test("the fallback is 6 plates a minute", () => {

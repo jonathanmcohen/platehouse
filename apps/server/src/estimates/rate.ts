@@ -24,18 +24,33 @@ export const FALLBACK_SLICES_PER_MINUTE = 6;
 /** The shortest gap between two finishes the rate counts: at most 60 plates a minute. */
 const MIN_GAP_MS = 1_000;
 
-/** The lowest rate given, so a very slow slicer never reads as 0 plates a minute. */
-const MIN_RATE = 0.1;
+/**
+ * The longest gap between two finishes the rate counts as the slicer at work.
+ * A longer gap is idle time (models added now and then, one or two plates
+ * each) and is left out. A live run sliced a plate every 6.5 to 9 seconds and
+ * the 4-CPU test host one every 20, so five minutes is well above one plate's
+ * slice; the slowest rate measured is 0.2 plates a minute.
+ */
+export const BUSY_GAP_MS = 5 * 60_000;
+
+/**
+ * Fewer gaps of BUSY_GAP_MS or less than this give no measured rate: the
+ * gaps of one run of MIN_FINISHES_FOR_RATE back-to-back finishes.
+ */
+export const MIN_BUSY_GAPS = MIN_FINISHES_FOR_RATE - 1;
 
 /**
  * Plates a minute, from finished slices' end times in any order, rounded to
- * one decimal place; null with fewer than MIN_FINISHES_FOR_RATE.
+ * one decimal place; null with fewer than MIN_FINISHES_FOR_RATE, or with
+ * fewer than MIN_BUSY_GAPS gaps that are the slicer at work.
  *
  * Only the newest RATE_SAMPLE count. The slicer works one plate at a time, so
  * while it is busy the time between two finishes is one plate's slice (plus
  * any render or mesh that ran between them, which the page's queue counts
- * too). The rate is read from the median of those gaps, so the idle time
- * between two runs, one long gap among many short ones, does not slow it.
+ * too). A gap longer than BUSY_GAP_MS is idle time and is left out, however
+ * many there are: an install that adds a model now and then has mostly idle
+ * gaps, and their median would read as a slicer taking hours a plate. The
+ * rate is read from the median of the gaps that remain.
  */
 export function sliceRate(finishedAt: readonly Date[]): number | null {
   const newest = finishedAt
@@ -46,13 +61,14 @@ export function sliceRate(finishedAt: readonly Date[]): number | null {
   if (newest.length < MIN_FINISHES_FOR_RATE) return null;
   const gaps: number[] = [];
   for (let i = 1; i < newest.length; i += 1) {
-    gaps.push(Math.max((newest[i - 1] as number) - (newest[i] as number), MIN_GAP_MS));
+    const gap = (newest[i - 1] as number) - (newest[i] as number);
+    if (gap <= BUSY_GAP_MS) gaps.push(Math.max(gap, MIN_GAP_MS));
   }
+  if (gaps.length < MIN_BUSY_GAPS) return null;
   gaps.sort((a, b) => a - b);
   const middle = gaps.length / 2;
   const median = Number.isInteger(middle)
     ? ((gaps[middle - 1] as number) + (gaps[middle] as number)) / 2
     : (gaps[Math.floor(middle)] as number);
-  const perMinute = Math.round((60_000 / median) * 10) / 10;
-  return Math.max(perMinute, MIN_RATE);
+  return Math.round((60_000 / median) * 10) / 10;
 }

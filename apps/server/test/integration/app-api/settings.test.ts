@@ -404,6 +404,13 @@ describe("the settings page", () => {
       expect(await slicesPerMinute()).toBe(9.2);
     });
 
+    test("finishes an hour apart are idle time, so the page gets the fallback rate", async () => {
+      // Models added one at a time: no gap between two finishes is a slice.
+      await upload12();
+      expect(await spaceFinishes(3_600_000)).toBeGreaterThanOrEqual(MIN_FINISHES_FOR_RATE);
+      expect(await slicesPerMinute()).toBe(FALLBACK_SLICES_PER_MINUTE);
+    });
+
     /** Uploads a synthetic twelve-plate .3mf and lets every plate be sliced. */
     async function upload12() {
       const tmpPath = await writeUpload(env, build3mf({ plates: 12 }));
