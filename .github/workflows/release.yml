@@ -27,6 +27,11 @@
 # is no hand-written latest entry: it would publish latest even for a tag that
 # is not valid semver.
 #
+# This workflow never moves rc. .github/workflows/rc-tag.yml runs after every
+# run of this workflow or slicer-image.yml and points both images' rc at the
+# highest vX.Y.Z or vX.Y.Z-rc.N whose app and slicer version tags both exist;
+# the version tag this workflow publishes is what it reads.
+#
 # workflow_dispatch is for the plan's first release step: dispatching this
 # workflow against a throwaway tag (gh workflow run release.yml --ref
 # v0.0.0-test). The gate job refuses any run whose ref is not a semver tag
