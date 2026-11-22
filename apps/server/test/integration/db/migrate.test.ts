@@ -495,7 +495,14 @@ describe("0009 name sort prefix", () => {
     `.execute(db);
     const before = (await sql`select * from models order by id`.execute(db)).rows;
 
-    await migrate(db);
+    // Up to 0009 only: a later migration may add columns to models, which
+    // would show here as a changed row though 0009 changed none.
+    await cp(
+      join(MIGRATIONS_DIR, "0009_name_sort_prefix.sql"),
+      join(dir, "0009_name_sort_prefix.sql"),
+    );
+    await migrateFrom(db, dir);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 9));
 
     expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(before);
     const def = await nameIndex(db);
@@ -508,5 +515,61 @@ describe("0009 name sort prefix", () => {
     await sql`
       update models set name = ${cjk} where id = '0190a0b0-0000-7000-8000-000000000011'
     `.execute(db);
+  });
+});
+
+// Migration 0010 adds where a model's description came from (#357) and the
+// upgrade_steps table. It runs on an existing database at 0009, as 0.1.0
+// leaves it, with models that have descriptions; every row keeps every value
+// it had, and the three new columns start as null, so no stored description
+// counts as proved untouched until something records its source.
+describe("0010 description source", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 9,
+    );
+    expect(later).toContain("0010_description_source.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0009 with models, keeping every value and leaving the new columns null", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name, description_md, trashed_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic described', 'A synthetic description.', null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Synthetic bare', null, null),
+             ('0190a0b0-0000-7000-8000-000000000023', 'Synthetic trashed', 'Trashed text.', now())
+    `.execute(db);
+    const before = (
+      await sql<Record<string, unknown>>`select * from models order by id`.execute(db)
+    ).rows;
+
+    await cp(
+      join(MIGRATIONS_DIR, "0010_description_source.sql"),
+      join(dir, "0010_description_source.sql"),
+    );
+    await migrateFrom(db, dir);
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 10));
+
+    const after = (await sql<Record<string, unknown>>`select * from models order by id`.execute(db))
+      .rows;
+    expect(after).toEqual(
+      before.map((row) => ({
+        ...row,
+        descriptionSha256: null,
+        descriptionConverter: null,
+        descriptionFileId: null,
+      })),
+    );
+    expect(await db.selectFrom("upgradeSteps").selectAll().execute()).toEqual([]);
   });
 });
