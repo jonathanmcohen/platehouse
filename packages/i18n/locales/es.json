@@ -80,7 +80,7 @@
   "activity.rate.none": "Todav\u00eda no hay estimaciones para esta impresora.",
   "activity.rate.unknown": "No hay suficiente progreso reciente para estimar el tiempo restante.",
   "activity.reconvert.changed": "{changed, plural, one {# descripci\u00f3n cambiada} many {# descripciones cambiadas} other {# descripciones cambiadas}}, de {checked} revisadas.",
-  "activity.reconvert.left": "{unchanged} ya estaban bien. {kept} se dejaron como estaban: editadas, o no escritas a partir de su archivo. {unreadable} cuyo archivo no se pudo leer.",
+  "activity.reconvert.left": "{unchanged, plural, one {# ya estaba bien} many {# ya estaban bien} other {# ya estaban bien}}. {kept, plural, one {# se dej\u00f3 como estaba: editada, o no escrita a partir de su archivo} many {# se dejaron como estaban: editadas, o no escritas a partir de su archivo} other {# se dejaron como estaban: editadas, o no escritas a partir de su archivo}}. {unreadable, plural, one {# cuyo archivo no se pudo leer} many {# cuyos archivos no se pudieron leer} other {# cuyos archivos no se pudieron leer}}.",
   "activity.refresh": "Actualizar",
   "activity.refreshFailed": "No se pudo actualizar la actividad en este momento. Lo que se muestra puede no estar al d\u00eda.",
   "activity.retryNotRetryable": "{model}, {plate}: ya no se puede reintentar. Ya se est\u00e1 estimando de nuevo, o su impresora o su archivo han cambiado.",

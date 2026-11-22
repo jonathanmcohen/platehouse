@@ -859,7 +859,7 @@ describe("a description re-conversion", () => {
     expect(text(li)).toContain("MakerWorld descriptions converted again");
     expect(text(li)).toContain("66 descriptions changed, of 120 checked.");
     expect(text(li)).toContain(
-      "40 already right. 12 left as they were: edited, or not written from their file. 2 whose file could not be read.",
+      "40 already right. 12 left as they were: edited, or not written from their file. 2 whose files could not be read.",
     );
   });
 
@@ -868,6 +868,17 @@ describe("a description re-conversion", () => {
     await render();
     const li = section("Recent events").querySelector("ol > li");
     expect(text(li)).toContain("1 description changed, of 1 checked.");
+  });
+
+  // Issue #398: the second line's counts were put in raw, so a count of 1
+  // read "1 left as they were ... their file".
+  test("says one kept or unreadable description in the singular too", async () => {
+    answer = () => withRun({ checked: 3, changed: 0, unchanged: 1, kept: 1, unreadable: 1 });
+    await render();
+    const li = section("Recent events").querySelector("ol > li");
+    expect(text(li)).toContain(
+      "1 already right. 1 left as it was: edited, or not written from its file. 1 whose file could not be read.",
+    );
   });
 });
 

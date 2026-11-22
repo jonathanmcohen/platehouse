@@ -73,7 +73,7 @@
   "activity.rate.none": "No estimates for this printer yet.",
   "activity.rate.unknown": "Not enough recent progress to estimate the time left.",
   "activity.reconvert.changed": "{changed, plural, one {# description changed} other {# descriptions changed}}, of {checked} checked.",
-  "activity.reconvert.left": "{unchanged} already right. {kept} left as they were: edited, or not written from their file. {unreadable} whose file could not be read.",
+  "activity.reconvert.left": "{unchanged, plural, one {# already right} other {# already right}}. {kept, plural, one {# left as it was: edited, or not written from its file} other {# left as they were: edited, or not written from their file}}. {unreadable, plural, one {# whose file could not be read} other {# whose files could not be read}}.",
   "activity.refresh": "Refresh",
   "activity.refreshFailed": "The activity could not be refreshed right now. What is shown may be out of date.",
   "activity.retryNotRetryable": "{model}, {plate} can no longer be retried. It is already being estimated again, or its printer or file has changed.",
