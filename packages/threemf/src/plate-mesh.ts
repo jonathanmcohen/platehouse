@@ -656,10 +656,22 @@ async function readFromArchive(
         throw new PlateMeshError("no_plate", `the file lists no plate ${plate}`);
       }
       if (instances.length === 0) throw new PlateMeshError("no_objects", `plate ${plate} is empty`);
+      // Each object's build items in file order, indexed once: filtering
+      // every item for every instance is items * instances steps that never
+      // yield, which a small crafted file can make billions.
+      const itemsOf = new Map<number, Component[]>();
+      for (const item of root.items) {
+        const list = itemsOf.get(item.objectId);
+        if (list === undefined) itemsOf.set(item.objectId, [item]);
+        else list.push(item);
+      }
       requests = [];
       for (const { objectId, instance } of instances) {
-        const item = root.items.filter((i) => i.objectId === objectId)[instance];
+        const item = itemsOf.get(objectId)?.[instance];
         if (item === undefined || item.transform === null) continue;
+        if (requests.length >= PLATE_MESH_LIMITS.instances) {
+          throw new PlateMeshError("too_large", "more placed meshes than the limit");
+        }
         requests.push({
           path: item.path ?? ROOT,
           objectId,
@@ -678,7 +690,11 @@ async function readFromArchive(
         throw new PlateMeshError("too_large", "more placed meshes than the limit");
       }
       const byPath = new Map<string, number[]>();
-      for (const r of requests) byPath.set(r.path, [...(byPath.get(r.path) ?? []), r.objectId]);
+      for (const r of requests) {
+        const ids = byPath.get(r.path);
+        if (ids === undefined) byPath.set(r.path, [r.objectId]);
+        else ids.push(r.objectId);
+      }
       for (const [path, ids] of byPath) await partData(path, ids);
       const next: Request[] = [];
       for (const r of requests) {

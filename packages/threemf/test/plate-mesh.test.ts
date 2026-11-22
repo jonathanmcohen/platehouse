@@ -590,4 +590,78 @@ describe("readPlateMesh limits", () => {
     ]);
     expect(await problemOf(deep, 1)).toBe("too_large");
   });
+
+  it("says too_large for a plate listing more instances than the limit, without matching each against every build item", async () => {
+    // One object placed by COUNT build items, and a plate listing every one
+    // of them. Matching each model_instance by filtering all the build
+    // items is COUNT * COUNT steps that never yield to the event loop
+    // (about a billion here, far past the test's timeout); indexing the
+    // items once and refusing the plate at the instance limit is not.
+    const COUNT = 30_000;
+    const many = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10))],
+          Array.from({ length: COUNT }, () => buildItem(1, IDENTITY)),
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          [{ id: 1 }],
+          [
+            {
+              index: 1,
+              instances: Array.from({ length: COUNT }, (_, i): [number, number] => [1, i]),
+            },
+          ],
+        ),
+      },
+    ]);
+    const started = performance.now();
+    expect(await problemOf(many, 1)).toBe("too_large");
+    expect(performance.now() - started).toBeLessThan(3_000);
+  });
+
+  it("matches each model instance to its object's build item in file order, among other objects' items", async () => {
+    const mixed = file([
+      {
+        name: ROOT,
+        data: modelXml(
+          [meshObject(1, boxMesh(10)), meshObject(2, boxMesh(4))],
+          [
+            buildItem(1, moved(0, 0, 0)),
+            buildItem(2, moved(100, 0, 0)),
+            buildItem(1, moved(10, 0, 0)),
+            buildItem(2, moved(110, 0, 0)),
+            buildItem(1, moved(20, 0, 0)),
+          ],
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }],
+          [
+            {
+              index: 1,
+              instances: [
+                [1, 2],
+                [2, 1],
+                [1, 0],
+                [1, 7],
+              ],
+            },
+          ],
+        ),
+      },
+    ]);
+    const mesh = await readPlateMesh(mixed, 1);
+    expect(placed(mesh).map((p) => [p.transform[9], p.triangles])).toEqual([
+      [0, 12],
+      [20, 12],
+      [110, 12],
+    ]);
+  });
 });
