@@ -142,7 +142,8 @@ again.
 Pull the slicer image again when you upgrade the app, even if you keep the same tag: a Platehouse
 release ships its slicer changes in the slicer image. The STL and STEP preview pictures added in
 0.1.1 need a slicer image from 0.1.1 or later. With an older one, a preview waits for the slicer,
-for up to 2 hours, and then shows "The slicer is not answering."
+for up to 2 hours, and then shows "The slicer is not answering." It is tried again in the
+background, so the picture appears once the slicer image is updated.
 
 ### Postgres
 

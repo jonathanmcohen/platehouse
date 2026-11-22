@@ -12,6 +12,7 @@ import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
   createDerived,
+  DERIVED_MESSAGES,
   type DerivedDeps,
   type DerivedJob,
   RENDER_CHECK_GRACE_MS,
@@ -245,5 +246,103 @@ describe("the preview backfill (issue #316)", () => {
     const run = await env.derived.backfillPreviews(later());
     for (const id of ignored) expect(run.queued).not.toContain(id);
     for (const id of ignored) expect(await previewJobs(id)).toHaveLength(0);
+  });
+
+  test("a preview that failed because the slicer or storage stayed down, or could not be queued, is tried again", async () => {
+    // A slicer image older than the app answers the preview route 404, which
+    // waits like a slicer that is down and then ends with the slicerDown
+    // sentence. None of these says anything about the file.
+    const slicerDown = await legacyStl("Slicer down bracket");
+    const queueFailed = await legacyStl("Queue failed bracket");
+    const storeDown = await legacyStep("Store down housing");
+    const outages: [string, string][] = [
+      [slicerDown.fileId, DERIVED_MESSAGES.slicerDown],
+      [queueFailed.fileId, DERIVED_MESSAGES.queueFailed],
+      [storeDown.fileId, DERIVED_MESSAGES.storeDown],
+    ];
+    for (const [id, message] of outages) {
+      await env.db
+        .updateTable("files")
+        .set({ derivedStatus: "failed", derivedMessage: message })
+        .where("id", "=", id)
+        .execute();
+    }
+    env.stub.renders.reset();
+
+    const result = await env.derived.backfillPreviews(later());
+    for (const [id] of outages) expect(result.queued).toContain(id);
+
+    for (const [id] of outages) {
+      const file = await settledFile(env, id);
+      expect(file).toMatchObject({ derivedStatus: "ok", derivedMessage: null });
+      expect(file.renderPngBlobId).not.toBeNull();
+    }
+    // The STEP file's preview came from its stored mesh, with no second conversion.
+    expect(await env.repos.files.get(storeDown.fileId)).toMatchObject({
+      meshBlobId: storeDown.meshBlobId,
+    });
+    expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(0);
+    expect((await previewJobs(storeDown.fileId)).map((j) => j.data.kind)).toEqual(["preview-step"]);
+  });
+
+  test("an outage failure waits out the grace period before it is tried again", async () => {
+    const stl = await legacyStl("Just failed bracket");
+    const old = new Date(Date.now() - 2 * RENDER_CHECK_GRACE_MS);
+    // Stored long ago, failed just now.
+    await env.db
+      .updateTable("files")
+      .set({
+        derivedStatus: "failed",
+        derivedMessage: DERIVED_MESSAGES.slicerDown,
+        createdAt: old,
+        updatedAt: new Date(),
+      })
+      .where("id", "=", stl.fileId)
+      .execute();
+
+    const now = await env.derived.backfillPreviews(new Date());
+    expect(now.queued).not.toContain(stl.fileId);
+    expect(await previewJobs(stl.fileId)).toHaveLength(0);
+
+    await env.db
+      .updateTable("files")
+      .set({ updatedAt: old })
+      .where("id", "=", stl.fileId)
+      .execute();
+    const run = await env.derived.backfillPreviews(new Date());
+    expect(run.queued).toContain(stl.fileId);
+    expect(await settledFile(env, stl.fileId)).toMatchObject({ derivedStatus: "ok" });
+  });
+
+  test("a preview the program rejected, or that failed in a way a file can cause, is not tried again", async () => {
+    // A slicer error or a render that did not finish is how a file that
+    // crashes or hangs the slicer ends, so it is never queued again (issue #90).
+    const rejected = await legacyStl("Rejected bracket");
+    const lost = await legacyStl("Lost bracket");
+    const refused = await legacyStl("Refused bracket");
+    const stepRejected = await legacyStep("Rejected housing");
+    const kept: [string, string][] = [
+      [rejected.fileId, `${DERIVED_MESSAGES.previewRejected} bad mesh`],
+      [lost.fileId, DERIVED_MESSAGES.renderLost],
+      [refused.fileId, DERIVED_MESSAGES.storeRefused],
+      [stepRejected.fileId, `${DERIVED_MESSAGES.previewRejected} bad mesh`],
+    ];
+    for (const [id, message] of kept) {
+      await env.db
+        .updateTable("files")
+        .set({ derivedStatus: "failed", derivedMessage: message })
+        .where("id", "=", id)
+        .execute();
+    }
+
+    const run = await env.derived.backfillPreviews(later());
+    for (const [id, message] of kept) {
+      expect(run.queued).not.toContain(id);
+      expect(await previewJobs(id)).toHaveLength(0);
+      expect(await env.repos.files.get(id)).toMatchObject({
+        derivedStatus: "failed",
+        derivedMessage: message,
+      });
+    }
   });
 });

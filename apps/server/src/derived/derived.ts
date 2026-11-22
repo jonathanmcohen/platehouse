@@ -24,7 +24,10 @@
 //   conversion the program rejects deletes the earlier preview, and the card
 //   shows the icon until a render succeeds (KEPT_ON_FAILURE).
 // - Files stored before previews existed get one from backfillPreviews, a
-//   maintenance task that queues one batch at a time.
+//   maintenance task that queues one batch at a time. It also queues again
+//   a preview that failed because the slicer or the store stayed down, or
+//   its job could not be queued (PREVIEW_RETRIED), so an outage or an old
+//   slicer image does not leave a file with no picture for good.
 //
 // The jobs are kinds on the slicer queue (DERIVED_KINDS): the queue's one
 // worker hands each to its handler from derivedJobHandlers, beside Task 12's
@@ -315,6 +318,25 @@ const BODY_LIMIT: Readonly<Partial<Record<DerivableKind, number>>> = {
  * this many backfill jobs ever sit ahead of an upload or a slice.
  */
 export const BACKFILL_BATCH = 10;
+
+/**
+ * The failures of an STL's or a STEP file's preview that the backfill
+ * queues again (backfillPreviews): a slicer or a store that stayed down
+ * past SLICER_DOWN_LIMIT_MS (a slicer image older than the app, which
+ * answers the preview route 404, ends this way too), and a job that could
+ * not be queued. None of them says anything about the file. A slicer error
+ * and a render that did not finish are left out on purpose: they are how a
+ * file that crashes or hangs the slicer ends, and such a file is never
+ * queued again (issue #90). A store refusal is left out as well, since a
+ * missing or refused object does not pass on a retry. A preview's failure
+ * message is always the sentence alone: the preview kinds keep no earlier
+ * renders, so no sentence about earlier renders goes before it.
+ */
+const PREVIEW_RETRIED: readonly string[] = [
+  DERIVED_MESSAGES.slicerDown,
+  DERIVED_MESSAGES.storeDown,
+  DERIVED_MESSAGES.queueFailed,
+];
 
 export type DerivedStore = Pick<BlobStore, "putBlob" | "getBlobStream" | "deleteBlobs">;
 
@@ -1719,11 +1741,19 @@ export function createDerived(deps: DerivedDeps) {
    * queue its preview), and a STEP file whose conversion is done, whose mesh
    * is stored and of its current source, and which has no preview. Each in a
    * live model, written before cutoff (so an upload's own afterUpload has had
-   * its turn). The same test is made again, holding the row's lock, before a
-   * file is queued, and the two must agree, or a file the second test refuses
-   * would be picked every run and hold a batch's place.
+   * its turn). An STL or such a STEP file whose preview failed with one of
+   * the PREVIEW_RETRIED sentences (a slicer or a store that stayed down, or a
+   * job that could not be queued) is taken again too, once that failure was
+   * written before cutoff, so an outage, or a slicer image older than the
+   * app, does not leave it with no picture for good. The same test is made
+   * again, holding the row's lock, before a file is queued, and the two must
+   * agree, or a file the second test refuses would be picked every run and
+   * hold a batch's place.
    */
   function backfillCandidates(cutoff: Date) {
+    const retried = sql`(f.derived_status = 'failed'
+           and f.derived_message in (${sql.join(PREVIEW_RETRIED)})
+           and f.updated_at < ${cutoff})`;
     return sql`
       select f.id, f.model_id as "modelId", f.kind, f.blob_id as "blobId",
              f.created_at as "createdAt"
@@ -1732,8 +1762,8 @@ export function createDerived(deps: DerivedDeps) {
        where m.trashed_at is null and m.purge_started_at is null
          and f.created_at < ${cutoff}
          and (
-           (f.kind = 'stl' and f.derived_status is null)
-           or (f.kind = 'step' and f.derived_status = 'ok'
+           (f.kind = 'stl' and (f.derived_status is null or ${retried}))
+           or (f.kind = 'step' and (f.derived_status = 'ok' or ${retried})
                and f.render_png_blob_id is null
                and exists (
                  select 1 from blobs mb, blobs sb
@@ -1793,10 +1823,11 @@ export function createDerived(deps: DerivedDeps) {
    * while any job of an earlier batch is still waiting, so an upload or a
    * slice waits behind at most one batch. It is safe to run twice, at once
    * or later: each file is queued in a transaction holding its row, only
-   * while it has no status (an STL) or no preview (a STEP file) and no job,
-   * and a queued file is 'pending' from then on. Once every file has a
-   * preview or a recorded failure, a run finds nothing and queues nothing. A
-   * file that fails is logged and left for the next run; the others go on.
+   * while it has no status (an STL) or no preview (a STEP file), or a
+   * preview that failed with a PREVIEW_RETRIED sentence, and no job, and a
+   * queued file is 'pending' from then on. Once every file has a preview or
+   * a failure that is not retried, a run finds nothing and queues nothing.
+   * A file that fails is logged and left for the next run; the others go on.
    */
   async function backfillPreviews(now: Date): Promise<BackfillResult> {
     const result: BackfillResult = { queued: [] };
