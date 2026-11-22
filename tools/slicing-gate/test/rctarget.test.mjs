@@ -149,7 +149,9 @@ test("property: the per-run design breaks the invariant (negative control)", () 
 // registry and points both rc tags at it. GitHub may drop a pending rc run
 // when a newer one queues behind it, and an rc run may itself fail, so in
 // the model the rc job runs after a random subset of finishes, sometimes
-// failing (changing nothing); the run queued by the last finish always runs,
+// failing (changing nothing: the point step reads every tag before it writes
+// and puts back an rc tag it moved when a later step fails, which
+// ciworkflow.test.mjs tests); the run queued by the last finish always runs,
 // and the property is judged after it succeeds, which is what settled means.
 function rcJobDesign({ pushed, runs, r }) {
   const appPublished = new Set();

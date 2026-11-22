@@ -25,9 +25,10 @@
 #     from that release tag.
 # .github/scripts/rc-target.mjs filters and orders the tags and picks T (a
 # pure function, unit- and property-tested in
-# tools/slicing-gate/test/rctarget.test.mjs). Then each rc tag that is not
-# already at T's build is pointed at it, by digest, and read back. When T and
-# both digests are unchanged, nothing is written.
+# tools/slicing-gate/test/rctarget.test.mjs). Then all four tags, both
+# version tags and both rc tags, are read before anything is written, and
+# each rc tag that is not already at T's build is pointed at it, by digest,
+# and read back. When T and both digests are unchanged, nothing is written.
 #
 # When it runs: after every run of release or slicer-image finishes, whatever
 # its result (a failed run changes nothing in the registry that counts, and
@@ -44,7 +45,11 @@
 # registry answer other than found or "not found" stops the run before
 # anything moves. Cost: two registry reads per qualifying tag.
 #
-# A failed run here leaves rc where it was; it fixes itself on the next
+# A failed run here leaves rc where it was: a failure after one rc tag has
+# moved points that tag back at the build it had, so a failed run does not
+# leave the two rc tags on different tags. Only when that put-back fails too
+# (or an rc tag that did not exist before cannot be removed again) can they
+# differ, and the run's error says so. Either way rc fixes itself on the next
 # successful run of release or slicer-image, or when this workflow is run by
 # hand. Actions are pinned to the exact tags release.yml uses.
 name: rc-tag
@@ -166,9 +171,10 @@ jobs:
             echo "No vX.Y.Z or vX.Y.Z-rc.N tag has both images published"
           fi
 
-      # Each rc tag not already at T's build is pointed at it by digest (a
-      # carbon copy, --prefer-index=false) and read back; one already there
-      # is left alone.
+      # All four tags are read first. Then each rc tag not already at T's
+      # build is pointed at it by digest (a carbon copy, --prefer-index=false)
+      # and read back; one already there is left alone. A failure after a
+      # move puts every rc tag the run tried to move back where it was.
       - name: Point rc at the target
         id: point
         env:
@@ -187,7 +193,8 @@ jobs:
             exit 1
           fi
           version="${TARGET#v}"
-          # digest: $1's manifest digest, or empty when it does not exist.
+          # lookup: sets digest to $1's manifest digest, or to empty when it
+          # does not exist; on any other answer prints it and returns 1.
           lookup() {
             local out status=0
             out="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
@@ -198,32 +205,107 @@ jobs:
             else
               printf '%s\n' "$out"
               echo "::error::could not read $1 (exit ${status})"
-              exit 1
+              return 1
             fi
           }
-          summary=()
-          for image in "$APP_IMAGE" "$SLICER_IMAGE"; do
-            lookup "${image}:${version}"
-            want="$digest"
-            if [ -z "$want" ]; then
+          # First read all four tags, both version tags and both rc tags, so
+          # a registry error or a missing version tag stops the run before
+          # either rc tag moves. Index 0 is the app, 1 the slicer.
+          images=("$APP_IMAGE" "$SLICER_IMAGE")
+          want=()
+          before=()
+          for i in 0 1; do
+            image="${images[$i]}"
+            if ! lookup "${image}:${version}"; then
+              echo "::error::rc is not moved"
+              exit 1
+            fi
+            if [ -z "$digest" ]; then
               echo "::error::${image}:${version} is gone since it was found; rc is not moved"
               exit 1
             fi
-            lookup "${image}:rc"
-            if [ "$digest" = "$want" ]; then
-              echo "${image}:rc is already ${TARGET}'s build (${want})"
-              summary+=("- ${image}:rc already at ${TARGET}: \`${want}\`")
-              continue
-            fi
-            echo "Moving ${image}:rc from ${digest:-nothing} to ${TARGET}'s build ${want}"
-            docker buildx imagetools create --prefer-index=false -t "${image}:rc" "${image}@${want}"
-            lookup "${image}:rc"
-            if [ "$digest" != "$want" ]; then
-              echo "::error::${image}:rc is ${digest:-missing} after the move, not ${want}"
+            want[i]="$digest"
+            if ! lookup "${image}:rc"; then
+              echo "::error::rc is not moved"
               exit 1
             fi
-            summary+=("- ${image}:rc moved to ${TARGET}: \`${want}\`")
+            before[i]="$digest"
           done
+          # put_back: after a failure part way, points every rc tag this run
+          # tried to move back at the build it named before, and reads it
+          # back. Returns 1 when any of them could not be put back.
+          put_back() {
+            local i image prev ok=0
+            for i in "${moved[@]}"; do
+              image="${images[$i]}"
+              prev="${before[$i]}"
+              if [ -z "$prev" ]; then
+                if lookup "${image}:rc" && [ -z "$digest" ]; then
+                  echo "${image}:rc still does not exist"
+                  continue
+                fi
+                echo "::error::${image}:rc did not exist before this run, so it cannot be put back; it may now name ${TARGET}'s build"
+                ok=1
+                continue
+              fi
+              if lookup "${image}:rc" && [ "$digest" = "$prev" ]; then
+                echo "${image}:rc is still on ${prev}"
+                continue
+              fi
+              echo "Putting ${image}:rc back on ${prev}"
+              if docker buildx imagetools create --prefer-index=false -t "${image}:rc" "${image}@${prev}" &&
+                lookup "${image}:rc" && [ "$digest" = "$prev" ]; then
+                echo "${image}:rc is back on ${prev}"
+              else
+                echo "::error::could not put ${image}:rc back on ${prev}"
+                ok=1
+              fi
+            done
+            return "$ok"
+          }
+          # Then move each rc tag that is not at the target's build, and read
+          # it back. A failure stops the moves and puts back what moved.
+          summary=()
+          moved=()
+          failed=""
+          for i in 0 1; do
+            image="${images[$i]}"
+            if [ "${before[$i]}" = "${want[$i]}" ]; then
+              echo "${image}:rc is already ${TARGET}'s build (${want[$i]})"
+              summary+=("- ${image}:rc already at ${TARGET}: \`${want[$i]}\`")
+              continue
+            fi
+            echo "Moving ${image}:rc from ${before[$i]:-nothing} to ${TARGET}'s build ${want[$i]}"
+            moved+=("$i")
+            if ! docker buildx imagetools create --prefer-index=false -t "${image}:rc" "${image}@${want[$i]}"; then
+              echo "::error::could not point ${image}:rc at ${want[$i]}"
+              failed=1
+              break
+            fi
+            if ! lookup "${image}:rc"; then
+              failed=1
+              break
+            fi
+            if [ "$digest" != "${want[$i]}" ]; then
+              echo "::error::${image}:rc is ${digest:-missing} after the move, not ${want[$i]}"
+              failed=1
+              break
+            fi
+            summary+=("- ${image}:rc moved to ${TARGET}: \`${want[$i]}\`")
+          done
+          if [ -n "$failed" ]; then
+            if put_back; then
+              result="rc-tag failed part way; every rc tag it had moved is back where it was"
+            else
+              result="the rc tags may now name builds of different tags; run rc-tag by hand (Actions, rc-tag, Run workflow) once the registry answers, and it points both at ${TARGET}'s builds"
+            fi
+            echo "::error::${result}"
+            {
+              echo ""
+              echo "rc-tag failed part way while pointing rc at **${TARGET}**: ${result}."
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           {
             echo ""
             echo "rc target: **${TARGET}**"

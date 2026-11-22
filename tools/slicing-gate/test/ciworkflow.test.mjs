@@ -2586,13 +2586,16 @@ test("rc-tag target: a registry error other than not found stops the run before 
 });
 
 // The point step. The registry is a file of ref=digest lines (the last line
-// for a ref wins); create appends one unless CREATE_NOOP is set, and an
-// inspect of a ref with no line answers not found, or BROKEN's error.
+// for a ref wins); create appends one unless CREATE_NOOP is 1 or the ref it
+// tags, and an inspect of a ref with no line answers not found, or BROKEN's
+// error. CREATE_FAIL lists ref#n tokens: the nth create of that ref fails.
+// BROKEN_AFTER_CREATE is a ref whose inspect errors once it has been created.
 const RC_POINT_STUB = [
   "docker() {",
   '  echo "docker $*" >> "$CALLS"',
   '  if [ "$1 $2 $3" = "buildx imagetools inspect" ]; then',
   '    if [ -n "$BROKEN" ] && [ "$4" = "$BROKEN" ]; then echo "ERROR: denied: denied" >&2; return 1; fi',
+  '    if [ -n "$BROKEN_AFTER_CREATE" ] && [ "$4" = "$BROKEN_AFTER_CREATE" ] && grep -qF -- "-t $4 " "$CALLS"; then echo "ERROR: denied: denied" >&2; return 1; fi',
   '    local d',
   '    d="$(grep -F "$4=" "$REGISTRY" | sed -n "s|^$4=||p" | tail -n 1)"',
   '    if [ -n "$d" ]; then echo "$d"; return 0; fi',
@@ -2600,7 +2603,10 @@ const RC_POINT_STUB = [
   "    return 1",
   "  fi",
   '  if [ "$1 $2 $3" = "buildx imagetools create" ]; then',
-  '    if [ "$CREATE_NOOP" = 1 ]; then return 0; fi',
+  '    local n',
+  '    n="$(grep -cF -- "-t $6 " "$CALLS")"',
+  '    case " $CREATE_FAIL " in *" $6#$n "*) echo "ERROR: failed to push $6" >&2; return 1 ;; esac',
+  '    if [ "$CREATE_NOOP" = 1 ] || [ "$CREATE_NOOP" = "$6" ]; then return 0; fi',
   '    echo "$6=${7#*@}" >> "$REGISTRY"',
   "  fi",
   "}",
@@ -2612,7 +2618,7 @@ const S_OLD = `sha256:${"e".repeat(64)}`;
 const pointRun = (env, registry) =>
   runRcStep("rc", "Point rc at the target", {
     stubs: RC_POINT_STUB,
-    env: { BROKEN: "", CREATE_NOOP: "", ...env },
+    env: { BROKEN: "", BROKEN_AFTER_CREATE: "", CREATE_NOOP: "", CREATE_FAIL: "", ...env },
     setup: (work) => writeFileSync(join(work, "registry"), registry.map(([k, v]) => `${k}=${v}\n`).join("")),
   });
 // REGISTRY is relative to the step's directory, which setup writes into.
@@ -2627,13 +2633,14 @@ const inspect = (ref) => `docker buildx imagetools inspect ${ref} --format {{.Ma
 test("rc-tag point: no rc yet: both rc tags are pointed at the target's builds by digest and read back", () => {
   const r = pointRun(pointEnv(), VERSION_TAGS);
   assert.equal(r.status, 0, r.log);
+  // All four tags are read before either rc tag is written.
   assert.deepEqual(r.calls.trim().split("\n"), [
     inspect(`${RC_APP}:0.2.0-rc.1`),
     inspect(`${RC_APP}:rc`),
-    createRc(RC_APP, A_NEW),
-    inspect(`${RC_APP}:rc`),
     inspect(`${RC_SLICER}:0.2.0-rc.1`),
     inspect(`${RC_SLICER}:rc`),
+    createRc(RC_APP, A_NEW),
+    inspect(`${RC_APP}:rc`),
     createRc(RC_SLICER, S_NEW),
     inspect(`${RC_SLICER}:rc`),
   ]);
@@ -2678,6 +2685,11 @@ for (const [name, env, registry, want] of [
   ["a malformed target fails before any registry call", { TARGET: "v0.2.0-beta.1" }, VERSION_TAGS, { msg: /is not vX\.Y\.Z or vX\.Y\.Z-rc\.N/, noCall: true }],
   ["a target with shell in it fails before any registry call", { TARGET: "v0.2.0;id" }, VERSION_TAGS, { msg: /is not vX\.Y\.Z or vX\.Y\.Z-rc\.N/, noCall: true }],
   ["a registry error reading rc fails before any move", { BROKEN: `${RC_APP}:rc` }, VERSION_TAGS, { msg: /::error::could not read ghcr\.io\/jonathanmcohen\/platehouse:rc/, noCreate: true }],
+  // The slicer's tags are read before the app's rc moves, so a failure
+  // reading them moves nothing.
+  ["a registry error reading the slicer's rc fails before any move", { BROKEN: `${RC_SLICER}:rc` }, VERSION_TAGS, { msg: /::error::could not read ghcr\.io\/jonathanmcohen\/platehouse-slicer:rc/, noCreate: true }],
+  ["a registry error reading the slicer's version tag fails before any move", { BROKEN: `${RC_SLICER}:0.2.0-rc.1` }, VERSION_TAGS, { msg: /::error::could not read ghcr\.io\/jonathanmcohen\/platehouse-slicer:0\.2\.0-rc\.1/, noCreate: true }],
+  ["a slicer version tag gone since it was found fails before any move", {}, [[`${RC_APP}:0.2.0-rc.1`, A_NEW]], { msg: /platehouse-slicer:0\.2\.0-rc\.1 is gone since it was found/, noCreate: true }],
 ]) {
   test(`rc-tag point: ${name}`, () => {
     const r = pointRun(pointEnv(env), registry);
@@ -2687,3 +2699,73 @@ for (const [name, env, registry, want] of [
     if (want.noCall) assert.equal(r.calls, "");
   });
 }
+
+// A failure in the slicer's turn after the app's rc moved puts the app's rc
+// back on the build it had, so a failed run never leaves the two rc tags on
+// different tags (PR #360 review).
+const OLD_RC = [...VERSION_TAGS, [`${RC_APP}:rc`, A_OLD], [`${RC_SLICER}:rc`, S_OLD]];
+const rcNow = (r, img) => {
+  const calls = r.calls.trim().split("\n");
+  return calls.filter((c) => c.startsWith(`docker buildx imagetools create --prefer-index=false -t ${img}:rc `)).map((c) => c.split("@")[1]);
+};
+for (const [name, env] of [
+  ["the slicer's create fails", { CREATE_FAIL: `${RC_SLICER}:rc#1` }],
+  ["the slicer's read-back does not match", { CREATE_NOOP: `${RC_SLICER}:rc` }],
+]) {
+  test(`rc-tag point: ${name} after the app's rc moved: the app's rc is put back`, () => {
+    const r = pointRun(pointEnv(env), OLD_RC);
+    assert.notEqual(r.status, 0, r.log);
+    // The app's rc went to the new build, then back to the old one.
+    assert.deepEqual(rcNow(r, RC_APP), [A_NEW, A_OLD], r.calls);
+    const calls = r.calls.trim().split("\n");
+    const back = calls.lastIndexOf(createRc(RC_APP, A_OLD));
+    assert.equal(calls[back + 1], inspect(`${RC_APP}:rc`), "the put-back is read back");
+    assert.match(r.log, /platehouse:rc is back on sha256:c{64}/);
+    assert.match(r.log, /::error::rc-tag failed part way; every rc tag it had moved is back where it was/);
+    assert.doesNotMatch(r.log, /different tags/);
+    assert.match(r.summary, /failed part way/);
+  });
+}
+
+test("rc-tag point: a registry error reading the slicer's rc back puts the app's rc back and says the slicer's could not be confirmed", () => {
+  const r = pointRun(pointEnv({ BROKEN_AFTER_CREATE: `${RC_SLICER}:rc` }), OLD_RC);
+  assert.notEqual(r.status, 0, r.log);
+  assert.deepEqual(rcNow(r, RC_APP), [A_NEW, A_OLD], r.calls);
+  assert.match(r.log, /platehouse:rc is back on sha256:c{64}/);
+  // The slicer's rc is pointed back too, but the registry will not say
+  // where it is, so the run cannot claim the tags agree.
+  assert.deepEqual(rcNow(r, RC_SLICER), [S_NEW, S_OLD], r.calls);
+  assert.match(r.log, /::error::could not put ghcr\.io\/jonathanmcohen\/platehouse-slicer:rc back on sha256:e{64}/);
+  assert.match(r.log, /::error::the rc tags may now name builds of different tags/);
+});
+
+test("rc-tag point: a slicer rc that the failed create left alone is not rewritten", () => {
+  const r = pointRun(pointEnv({ CREATE_FAIL: `${RC_SLICER}:rc#1` }), OLD_RC);
+  assert.notEqual(r.status, 0, r.log);
+  assert.deepEqual(rcNow(r, RC_SLICER), [S_NEW], "only the failed attempt");
+  assert.match(r.log, /platehouse-slicer:rc is still on sha256:e{64}/);
+});
+
+test("rc-tag point: an app rc that did not exist before cannot be put back, and the run says the tags may differ", () => {
+  const r = pointRun(pointEnv({ CREATE_FAIL: `${RC_SLICER}:rc#1` }), [...VERSION_TAGS, [`${RC_SLICER}:rc`, S_OLD]]);
+  assert.notEqual(r.status, 0, r.log);
+  assert.deepEqual(rcNow(r, RC_APP), [A_NEW]);
+  assert.match(r.log, /::error::ghcr\.io\/jonathanmcohen\/platehouse:rc did not exist before this run, so it cannot be put back/);
+  assert.match(r.log, /::error::the rc tags may now name builds of different tags/);
+});
+
+test("rc-tag point: a put-back that fails too says the tags may differ and how to fix them", () => {
+  const r = pointRun(pointEnv({ CREATE_FAIL: `${RC_SLICER}:rc#1 ${RC_APP}:rc#2` }), OLD_RC);
+  assert.notEqual(r.status, 0, r.log);
+  assert.match(r.log, /::error::could not put ghcr\.io\/jonathanmcohen\/platehouse:rc back on sha256:c{64}/);
+  assert.match(r.log, /::error::the rc tags may now name builds of different tags; run rc-tag by hand \(Actions, rc-tag, Run workflow\)/);
+  assert.match(r.summary, /may now name builds of different tags/);
+});
+
+test("rc-tag point: a failure moving the app's rc, the first write, leaves the slicer's rc alone", () => {
+  const r = pointRun(pointEnv({ CREATE_FAIL: `${RC_APP}:rc#1` }), OLD_RC);
+  assert.notEqual(r.status, 0, r.log);
+  assert.doesNotMatch(r.calls, new RegExp(`-t ${RC_SLICER}:rc `));
+  assert.match(r.log, /::error::could not point ghcr\.io\/jonathanmcohen\/platehouse:rc at sha256:a{64}/);
+  assert.match(r.log, /every rc tag it had moved is back where it was/);
+});

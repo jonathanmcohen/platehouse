@@ -177,15 +177,21 @@ Both images carry an `rc` tag for a test server: set the app to
 `ghcr.io/jonathanmcohen/platehouse-slicer:rc`, and pull to get the newest release candidate. It
 moves, so it is not a pin. `rc` points at the newest version, by version number, that has both
 images published: the highest `vX.Y.Z-rc.N` or plain `vX.Y.Z` tag for which both
-`platehouse:X.Y.Z[-rc.N]` and `platehouse-slicer:X.Y.Z[-rc.N]` exist. Both `rc` tags always name
-builds of the same tag.
+`platehouse:X.Y.Z[-rc.N]` and `platehouse-slicer:X.Y.Z[-rc.N]` exist. Once a run has finished,
+both `rc` tags name builds of the same tag, with the one exception below.
 
 Only `.github/workflows/rc-tag.yml` moves `rc`. It runs after every run of the release or
 slicer-image workflow, one run at a time, and works the answer out again each time from the
-repository's tags and the registry, so the order in which runs finish, re-runs of old tags, runs
-by hand and failures cannot leave `rc` on the wrong tag or the two images on different tags. When
-the answer has not changed it writes nothing. A failed run leaves `rc` where it was until the
-next run of either workflow, or until rc-tag is run by hand (Actions, rc-tag, Run workflow).
+repository's tags and the registry, so the order in which runs finish, re-runs of old tags and
+runs by hand cannot leave `rc` on the wrong tag or the two images on different tags. When the
+answer has not changed it writes nothing. It reads all four tags (both version tags and both
+`rc` tags) before it writes anything, and if it fails after moving one `rc` tag it points that tag
+back at the build it had, so a failed run leaves `rc` where it was until the next run of either
+workflow, or until rc-tag is run by hand (Actions, rc-tag, Run workflow). The exception: if that
+put-back fails too, or the `rc` tag it moved did not exist before (a tag cannot be put back to not
+existing), the two `rc` tags can name different tags until the next successful run. The run then
+fails with an error saying the `rc` tags may name builds of different tags; run rc-tag by hand once
+GHCR answers again.
 
 - A release tag cut for an older version after a newer candidate (a backport, such as `v0.1.1`
   after `v0.2.0-rc.1`) does not move `rc`, by design: `rc` stays on the newer candidate.

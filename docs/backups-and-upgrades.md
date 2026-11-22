@@ -144,8 +144,11 @@ again.
 Both images also carry an `rc` tag, meant for a test server. Unlike a version tag it moves. It
 points at the newest version, by version number, that has both images published: the highest
 release candidate (`vX.Y.Z-rc.N`) or release (`vX.Y.Z`) whose app image and slicer image were
-both built. Both `rc` tags always point at builds of the same version, so a test server never
-runs a new app with an old slicer.
+both built. Both `rc` tags point at builds of the same version, so a test server does not run a
+new app with an old slicer. The workflow that moves them reads both before it moves either, and if
+it fails after moving one, it moves that one back. Only if moving it back fails too can the two
+differ for a while, until the workflow next succeeds; compare the digests (below) if a candidate
+behaves as if app and slicer do not match.
 
 To follow it, set both images in `docker-compose.yml` to `rc`:
 
