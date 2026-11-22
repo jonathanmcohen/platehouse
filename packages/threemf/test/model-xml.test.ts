@@ -1,17 +1,33 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { type RangeSource, ReadUnavailable, readMakerWorldXml, readProject } from "../src/index.js";
-import { build3mf, MiB, MODEL_XML, png, seededBytes, writeTmp } from "./support/fixture-builder.js";
+import {
+  build3mf,
+  buildZip,
+  MiB,
+  MODEL_XML,
+  png,
+  projectEntries,
+  seededBytes,
+  writeTmp,
+} from "./support/fixture-builder.js";
 
 // readMakerWorldXml reads only what the MakerWorld details need, 3D/3dmodel.model
 // up to <resources, through ranged reads, so the description re-conversion
 // (#357) can read a stored .3mf without downloading all of it.
 
-/** A range source over bytes in memory that records every range asked for. */
+/**
+ * A range source over bytes in memory that records every range asked for. It
+ * refuses an empty or backwards range, as the object store's getBlobRange
+ * does, so a read past the end of the file shows here as it would in the server.
+ */
 function memorySource(bytes: Buffer): { source: RangeSource; read: () => number } {
   let read = 0;
   return {
     source: async (start, end) => {
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start) {
+        throw new RangeError("the range must be whole byte offsets with start < end");
+      }
       read += end - start;
       return Readable.from([bytes.subarray(start, end)]);
     },
@@ -100,5 +116,49 @@ describe("readMakerWorldXml", () => {
     const err = await readMakerWorldXml(source, bytes.length).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ReadUnavailable);
     expect((err as Error).cause).toBe(dropped);
+  });
+
+  // A damaged or crafted file whose offsets point at or past its end must read
+  // as damaged (null), as readProject reads it, and never ask the store for an
+  // empty range, which the store refuses as an error.
+  describe("an offset at or past the end of the file is damage, not a failed read", () => {
+    const onePlate = { plates: [{ index: 1 }] };
+    const cases: { name: string; file: () => Buffer }[] = [
+      {
+        name: "a central directory offset at the end of the file",
+        file: () => {
+          const size = build3mf(onePlate).length;
+          return build3mf(onePlate, { cdOffset: size });
+        },
+      },
+      {
+        name: "a central directory offset past the end of the file",
+        file: () => build3mf(onePlate, { cdOffset: 0x7fffffff }),
+      },
+      {
+        name: "a model local header offset past the end of the file",
+        file: () =>
+          buildZip(
+            projectEntries(onePlate).map((e) =>
+              e.name === "3D/3dmodel.model" ? { ...e, localOffset: 0x7fffffff } : e,
+            ),
+          ),
+      },
+      {
+        name: "a Zip64 end-record offset past the end of the file",
+        file: () => build3mf(onePlate, { zip64EndAt: 0xffffffn }),
+      },
+      {
+        name: "an impossible Zip64 end-record offset",
+        file: () => build3mf(onePlate, { zip64EndAt: 2n ** 62n }),
+      },
+    ];
+    for (const { name, file } of cases) {
+      it(`is null for ${name}`, async () => {
+        const bytes = file();
+        const { source } = memorySource(bytes);
+        expect(await readMakerWorldXml(source, bytes.length)).toBeNull();
+      });
+    }
   });
 });

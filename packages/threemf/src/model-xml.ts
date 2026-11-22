@@ -63,6 +63,15 @@ class SourceReader extends yauzl.RandomAccessReader {
     position: number,
     callback: (err: Error | null, bytesRead?: number) => void,
   ): void {
+    // A read at or past the end of the file gets no bytes back, as fs.read
+    // gives, so yauzl reports unexpected EOF and the file reads as damaged.
+    // An offset there comes only from a damaged or crafted end record or
+    // central directory, which yauzl does not bounds-check; asking the source
+    // for that empty range would be refused as a failed read instead.
+    if (position >= this.size) {
+      callback(null, 0);
+      return;
+    }
     const w = this.window;
     if (w && position >= w.start && position + length <= w.start + w.bytes.length) {
       w.bytes.copy(buffer, offset, position - w.start, position - w.start + length);
