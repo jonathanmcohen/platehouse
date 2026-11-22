@@ -29,13 +29,9 @@ Use your own `DB_USER` and `DB_NAME`. Run it on a schedule and keep several days
 somewhere other than the server. The dump holds API token hashes and session hashes, but no
 secret values.
 
-To restore into an empty database:
-
-```bash
-docker compose stop platehouse
-docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --clean --if-exists < platehouse-2026-01-01.dump
-docker compose start platehouse
-```
+Restoring an older dump can delete files uploaded since it was taken, and that can happen as soon
+as the restored app starts. Read the warning below and do its steps before you run the restore
+commands under it.
 
 :::warning Restoring an older dump can delete newer uploads
 
@@ -48,26 +44,41 @@ The daily cleanup at 04:00 (see [Storage](./storage.md#cleanup)) treats them as 
 deletes them once they are more than 24 hours old, as long as there are no more of them than its
 limit: 10 objects or a tenth of the objects it finds, whichever is larger, but never more than 100.
 Platehouse has no setting to pause the cleanup, and stopping the app does not skip it: a run
-missed while the app was stopped happens as soon as it starts again. So the next run after a
-restore can be the one that deletes them.
+missed while the app was stopped happens as soon as it starts again.
+
+The cleanup can run as soon as the restored app starts, not only at the next 04:00. The job queue
+lives in the same database, so the restore puts it back as it was when the dump was taken. If a
+04:00 run was due between the dump and the restore, the restored app counts that run as missed and
+runs it when it starts. With a dump older than the last 04:00, the first start after the restore
+can delete the newer objects.
 
 - **Before you ever need a restore**, turn on bucket versioning (see
   [Storage](./storage.md#turn-on-versioning)). An object the cleanup deletes then keeps its old
   version for your retention period, and you can get it back.
-- **Before you restore**, if versioning is off, copy the bucket to a second location, so the newer
-  objects survive the cleanup.
-- **After you restore**, before the next cleanup, upload the files of every model added since the
-  dump again, through the browser or the [inbox folder](./using/adding-files.md#the-inbox-folder).
-  Objects already in the bucket cannot be linked back to the restored database, so importing the
-  files again is the only way to get those models back into the library. If you have no other copy
-  of a file, take it from the bucket copy or the old versions: an uploaded file is stored
-  unchanged, but under a random name with no extension.
+- **Before you restore**, check that versioning is on. If it is off, copy the bucket to a second
+  location before you run the restore commands, so the newer objects survive the cleanup.
+- **After you restore**, upload the files of every model added since the dump again, through the
+  browser or the [inbox folder](./using/adding-files.md#the-inbox-folder). Objects already in the
+  bucket cannot be linked back to the restored database, so importing the files again is the only
+  way to get those models back into the library. The cleanup may already have deleted the objects
+  by then, so if you have no other copy of a file, take it from the bucket copy or the old
+  versions: an uploaded file is stored unchanged, but under a random name with no extension.
 
 When the cleanup finds more of these objects than its limit, it deletes nothing and logs why. That
 is not protection: the limit rises as the library grows, up to 100, and a later run that finds
 them within it deletes them all.
 
 :::
+
+To restore into an empty database, once you have done the steps above:
+
+```bash
+docker compose stop platehouse
+docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --clean --if-exists < platehouse-2026-01-01.dump
+docker compose start platehouse
+```
+
+Then upload the files of the models added since the dump again, as the warning says.
 
 ### The bucket
 
@@ -95,16 +106,21 @@ Platehouse follows semantic versioning. Read the [changelog](./changelog.md) bef
 4. Check it came up: `docker compose ps` shows the app `healthy`, and
    `docker compose logs platehouse` shows no errors.
 
-The app applies any database changes itself when it starts. They only move forward, so to go back
-to an older version, restore the database dump you took in step 1.
+The app applies any database changes itself when it starts. They only move forward, so going back
+to an older version means restoring the database dump you took in step 1. Read the warning below
+before you restore it.
 
 :::warning Going back can delete what was uploaded since step 1
 
 Restoring the step 1 dump puts the database back to before the upgrade, but not the bucket.
-Anything uploaded after step 1 stays in the bucket with no record in the database, and the daily
-04:00 cleanup deletes it once it is more than 24 hours old, within its limit. Before the next
-cleanup, follow the warning under [restoring the database](#the-database): check that versioning
-is on, and upload those files again after you go back.
+Anything uploaded after step 1 stays in the bucket with no record in the database, and the cleanup
+deletes it once it is more than 24 hours old, within its limit. The restore also puts back the job
+queue as it was at step 1, so if a 04:00 run was due since then, the cleanup can run as soon as the
+app starts on the restored database, not only at the next 04:00.
+
+Before you restore the step 1 dump, check that versioning is on, and copy the bucket to a second
+location if it is off. After you go back, upload those files again. The warning under
+[restoring the database](#the-database) has the details.
 
 :::
 
