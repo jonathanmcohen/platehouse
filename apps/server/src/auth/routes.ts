@@ -30,7 +30,9 @@
 //   is 400; a user not let in is 403 with the reason (not in the group,
 //   email not verified, or a user id over MAX_SUBJECT_LENGTH characters,
 //   which the log records by its length, never its value); the issuer
-//   unreachable is 503.
+//   unreachable is 503. A 403 refusal also ends the session the browser
+//   presented, if any, and clears its cookie, as a sign-in that succeeds
+//   replaces it (issue #395); a 400 or a 503 ends nothing.
 // - POST /auth/logout needs Origin to equal PUBLIC_ORIGIN, as every state-
 //   changing request on a session route does (gate.ts), or it is 403 and the
 //   session and its cookie are left alone, so another site cannot sign the user
@@ -52,7 +54,13 @@ import {
 } from "@platehouse/i18n";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createLocales, englishMessages, type Locales } from "../locales/locales.js";
-import { type LoginChecks, LoginError, MAX_SUBJECT_LENGTH, type OidcClient } from "./oidc.js";
+import {
+  type LoginChecks,
+  LoginError,
+  type LoginFailure,
+  MAX_SUBJECT_LENGTH,
+  type OidcClient,
+} from "./oidc.js";
 import {
   SESSION_ABSOLUTE_MS,
   SESSION_COOKIE,
@@ -88,6 +96,19 @@ export const MAX_PENDING_LOGINS = 5;
 
 /** What /auth/login shows, with status 503, when the issuer cannot be reached. */
 export const LOGIN_UNAVAILABLE: string = englishMessages()["login.unavailable.title"] ?? "";
+
+/**
+ * The refusals that say the person signing in is no longer let in (issue
+ * #395). On these the callback also ends the session the browser presented
+ * and clears its cookie. "unavailable" (the issuer could not be reached) and
+ * "failed" (the callback did not check out) say nothing about the person, so
+ * they end nothing.
+ */
+const NOT_LET_IN: ReadonlySet<LoginFailure> = new Set<LoginFailure>([
+  "subject_too_long",
+  "not_in_group",
+  "email_not_verified",
+]);
 
 /** The login cookie's attributes; the clearing one carries them too. */
 const LOGIN_COOKIE_OPTIONS = SESSION_COOKIE_OPTIONS;
@@ -296,6 +317,27 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     }
   }
 
+  /**
+   * Ends the session behind the session cookie this request carries, and
+   * clears the cookie, as a sign-in that succeeds replaces it (issue #395).
+   * Only that one session: the person's sessions in other browsers are for
+   * Sign out everywhere. No cookie, nothing happens; a cookie with no session
+   * behind it is only cleared. When the session cannot be ended (the
+   * database is down) the failure is logged and the cookie is cleared all
+   * the same, so this browser is signed out at once; the row then lives
+   * until it expires, and Sign out everywhere can still end it.
+   */
+  async function endPresentedSession(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const cookie = request.cookies[SESSION_COOKIE];
+    if (cookie === undefined) return;
+    try {
+      await deps.sessions.end(cookie);
+    } catch (error) {
+      request.log.warn({ err: error }, "auth: could not end the refused user's session");
+    }
+    reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
+  }
+
   app.get("/auth/login", async (request, reply) => {
     let begun: Awaited<ReturnType<OidcClient["begin"]>>;
     try {
@@ -358,6 +400,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
         subjectLength === undefined ? { failure } : { failure, subjectLength },
         "auth: login refused",
       );
+      if (NOT_LET_IN.has(failure)) await endPresentedSession(request, reply);
       switch (failure) {
         case "unavailable":
           return unavailable(reply, await words(request));

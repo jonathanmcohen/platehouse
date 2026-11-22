@@ -7,7 +7,9 @@
 //   TOKEN_SIGN_IN_WINDOW_MS ago is refused with 403 sign_in_required, and the
 //   page sends the user through /auth/login?next=/settings. That sign-in
 //   checks the group again, so a user who has left it gets no fresh session
-//   and no new API access. Sessions keep nothing from the issuer
+//   and no new API access; the refusal also ends the session the browser
+//   held, so the old cookie stops working at once (issue #395). Sessions
+//   keep nothing from the issuer
 //   (sessions.ts), so the check is a new sign-in, not a userinfo call; while
 //   the issuer cannot be reached that sign-in fails, so nothing new is made.
 // - Sign out everywhere (POST /app/api/users/sign-out) ends every session of
@@ -30,6 +32,7 @@ import {
   memoryTokenStore,
   memoryUserList,
   runLogin,
+  setCookie,
   TEST_GROUP,
   TEST_ORIGIN,
 } from "../support/oidc-issuer.js";
@@ -200,11 +203,13 @@ describe("a new token needs a fresh sign-in", () => {
     t.issuer.user = { ...t.issuer.user, groups: ["other"] };
     const again = await runLogin(t, { headers: { cookie: `${SESSION_COOKIE}=${cookie}` } });
     expect(again.callback.statusCode).toBe(403);
-    expect(again.sessionCookie).toBeUndefined();
+    // The refusal clears the cookie (Max-Age=0) rather than setting a new one.
+    expect(again.sessionCookie).toBe("");
 
+    // Issue #395: the refused sign-in ended the session the browser held, so
+    // the old cookie no longer gets in at all.
     const res = await call("POST", "/app/api/tokens", cookie, { name: "after removal" });
-    expect(res.status, res.text).toBe(403);
-    expect((res.json() as { error: string }).error).toBe("sign_in_required");
+    expect(res.status, res.text).toBe(401);
     expect(tokenStore.rows.size).toBe(0);
   });
 
@@ -220,16 +225,20 @@ describe("a new token needs a fresh sign-in", () => {
     const cookie = await signIn("subject-issuer-down");
     ageSession(cookie, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
 
-    // The sign-in it asks for: the issuer goes down before the code exchange,
-    // so the callback is 503 and no fresh session is made.
+    // The sign-in it asks for, from the browser that holds the old session:
+    // the issuer goes down before the code exchange, so the callback is 503
+    // and no fresh session is made.
     const again = await runLogin(t, {
       loginPath: "/auth/login?next=/settings",
+      headers: { cookie: `${SESSION_COOKIE}=${cookie}` },
       beforeCallback: () => t.issuer.stop(),
     });
     expect(again.callback.statusCode).toBe(503);
     expect(again.sessionCookie).toBeUndefined();
 
-    // The old session is still refused; nothing asks the issuer or lets it through.
+    // An outage says nothing about the user, so the old session lives on
+    // (issue #395); it is still refused a new token, and nothing asks the
+    // issuer or lets it through.
     const res = await call("POST", "/app/api/tokens", cookie, { name: "while down" });
     expect(res.status, res.text).toBe(403);
     expect((res.json() as { error: string }).error).toBe("sign_in_required");
@@ -256,6 +265,125 @@ describe("a new token needs a fresh sign-in", () => {
     const run = await runLogin(t, { loginPath: `/auth/login?next=${encodeURIComponent(next)}` });
     expect(run.callback.statusCode).toBe(302);
     expect(run.callback.headers.location).toBe(`${TEST_ORIGIN}/`);
+  });
+});
+
+// Issue #395: a sign-in the issuer refuses because the person is no longer
+// let in ends the session the browser presented, and clears its cookie, the
+// way a sign-in that succeeds replaces it. Only that one session ends; the
+// person's other sessions are for Sign out everywhere. An issuer outage or a
+// callback that does not check out says nothing about the person, so it
+// ends nothing.
+describe("a refused sign-in ends the session the browser holds", () => {
+  const tooLong = `subject-too-long-${"z".repeat(239)}`;
+
+  /** What the issuer says on the refused sign-in, by the reason it is refused for. */
+  const refusals: [reason: string, change: Partial<typeof t.issuer.user>][] = [
+    ["not_in_group", { groups: ["other"] }],
+    ["email_not_verified", { email_verified: false }],
+    ["subject_too_long", { sub: tooLong }],
+  ];
+
+  /** Signs in again from a browser holding this session cookie, as the issuer now describes the user. */
+  async function signInAgain(cookie: string, change: Partial<typeof t.issuer.user>) {
+    t.issuer.user = { ...t.issuer.user, ...change };
+    return runLogin(t, { headers: { cookie: `${SESSION_COOKIE}=${cookie}` } });
+  }
+
+  test.each(refusals)(
+    "refused for %s, the old cookie is cleared and no longer gets in",
+    async (reason, change) => {
+      const stale = await signIn("subject-stale", "Synthetic Stale");
+      ageSession(stale, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+      expect((await call("GET", "/app/api/tokens", stale)).status).toBe(200);
+
+      const again = await signInAgain(stale, change);
+      expect(again.callback.statusCode, again.callback.body).toBe(403);
+      const refused = lines.find((line) => line.includes("auth: login refused"));
+      expect(refused).toContain(`"failure":"${reason}"`);
+
+      // The cookie is cleared with the attributes it was set with.
+      const cleared = setCookie(again.callback, SESSION_COOKIE);
+      expect(cleared?.value).toBe("");
+      expect(cleared?.attributes.get("max-age")).toBe("0");
+      expect(cleared?.attributes.get("path")).toBe("/");
+      expect(cleared?.attributes.get("secure")).toBe(true);
+      expect(cleared?.attributes.get("httponly")).toBe(true);
+      expect(cleared?.attributes.get("samesite")).toBe("Lax");
+
+      // The session row is gone, so the old cookie is 401 everywhere.
+      expect(t.store.rows.has(sessionRowId(stale))).toBe(false);
+      expect((await call("GET", "/app/api/tokens", stale)).status).toBe(401);
+    },
+  );
+
+  test("only the session the browser presented ends, not the person's other sessions", async () => {
+    const here = await signIn("subject-two-browsers");
+    const elsewhere = await signIn("subject-two-browsers");
+    const someoneElse = await signIn("subject-bystander");
+
+    const again = await signInAgain(here, { groups: ["other"] });
+    expect(again.callback.statusCode).toBe(403);
+
+    expect((await call("GET", "/app/api/tokens", here)).status).toBe(401);
+    expect((await call("GET", "/app/api/tokens", elsewhere)).status).toBe(200);
+    expect((await call("GET", "/app/api/tokens", someoneElse)).status).toBe(200);
+  });
+
+  test("an issuer outage ends nothing: the session lives on and its cookie stays", async () => {
+    const stale = await signIn("subject-outage");
+    t.issuer.user = { ...t.issuer.user, groups: ["other"] };
+    const again = await runLogin(t, {
+      headers: { cookie: `${SESSION_COOKIE}=${stale}` },
+      beforeCallback: () => t.issuer.stop(),
+    });
+    expect(again.callback.statusCode).toBe(503);
+    expect(setCookie(again.callback, SESSION_COOKIE)).toBeUndefined();
+    expect((await call("GET", "/app/api/tokens", stale)).status).toBe(200);
+  });
+
+  test("a callback that does not check out ends nothing: the session lives on and its cookie stays", async () => {
+    const stale = await signIn("subject-forged-callback");
+    const again = await signInAgain(stale, { forge: { nonce: "not-the-login-nonce" } });
+    expect(again.callback.statusCode).toBe(400);
+    expect(setCookie(again.callback, SESSION_COOKIE)).toBeUndefined();
+    expect((await call("GET", "/app/api/tokens", stale)).status).toBe(200);
+  });
+
+  test("with no session cookie the refusal is the same page, and nobody's session ends", async () => {
+    const bystander = await signIn("subject-bystander");
+    t.issuer.user = { ...t.issuer.user, sub: "subject-no-cookie", groups: ["other"] };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(403);
+    expect(run.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+    expect(setCookie(run.callback, SESSION_COOKIE)).toBeUndefined();
+    expect(t.store.rows.size).toBe(1);
+    expect((await call("GET", "/app/api/tokens", bystander)).status).toBe(200);
+  });
+
+  test.each([
+    ["a well-formed cookie with no session behind it", "A".repeat(43)],
+    ["a malformed cookie", "not-a-session"],
+  ])("with %s the refusal clears it and nobody's session ends", async (_why, unknown) => {
+    const bystander = await signIn("subject-bystander");
+    const again = await signInAgain(unknown, { sub: "subject-unknown-cookie", groups: ["other"] });
+    expect(again.callback.statusCode).toBe(403);
+    expect(setCookie(again.callback, SESSION_COOKIE)?.attributes.get("max-age")).toBe("0");
+    expect(t.store.rows.size).toBe(1);
+    expect((await call("GET", "/app/api/tokens", bystander)).status).toBe(200);
+  });
+
+  test("when the session cannot be ended the refusal still shows, the cookie is still cleared, and the failure is logged", async () => {
+    const stale = await signIn("subject-db-down");
+    t.store.failWith = new Error("the database is down");
+    const again = await signInAgain(stale, { groups: ["other"] });
+    expect(again.callback.statusCode).toBe(403);
+    expect(again.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+    expect(setCookie(again.callback, SESSION_COOKIE)?.attributes.get("max-age")).toBe("0");
+    expect(
+      lines.some((line) => line.includes("auth: could not end the refused user's session")),
+    ).toBe(true);
+    expect(lines.join("\n")).not.toContain(stale);
   });
 });
 
