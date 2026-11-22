@@ -247,6 +247,7 @@
   "library.count.showing": "{shown} affich\u00e9s sur {matches} {total, plural, one {mod\u00e8le} many {de mod\u00e8les} other {mod\u00e8les}}",
   "library.empty.noMatch": "Aucun mod\u00e8le ne correspond. Essayez une autre recherche ou une autre \u00e9tiquette.",
   "library.empty.none": "Aucun mod\u00e8le pour l'instant. D\u00e9posez des fichiers ici ou utilisez Ajouter.",
+  "library.empty.showAll": "Afficher tous les mod\u00e8les",
   "library.failed": "Impossible de charger la biblioth\u00e8que.",
   "library.filter.clearCollection": "Retirer le filtre de collection",
   "library.filter.clearCreator": "Retirer le filtre de cr\u00e9ateur",

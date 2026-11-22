@@ -124,7 +124,7 @@ export interface PlatesTable {
   name: string | null;
   objectCount: number;
   thumbnailBlobId: string | null;
-  /** The GLB of the plate's 3D view, made the first time it is opened (0011); null until then. */
+  /** The GLB of the plate's 3D view, made the first time it is opened (0012); null until then. */
   meshBlobId: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
@@ -148,6 +148,11 @@ export interface EstimatesTable {
   failureDetail: string | null;
   attempts: Generated<number>;
   createdAt: CreatedAt;
+  /**
+   * When the attempt that is running, or that finished, began work (0011);
+   * null before it starts, and on estimates finished before 0011.
+   */
+  startedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   finishedAt: Date | null;
 }
 

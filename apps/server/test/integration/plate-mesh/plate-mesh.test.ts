@@ -2,7 +2,7 @@
 // server. Files come in through ingest from generated .3mf files (no
 // designer file). GET /app/api/plates/:id/mesh makes the plate's GLB the
 // first time a plate is opened, stores it as a mesh_glb blob of the model
-// and records it on the plate (plates.mesh_blob_id, migration 0011); every
+// and records it on the plate (plates.mesh_blob_id, migration 0012); every
 // later open answers the same blob. The browser then loads the GLB from
 // /blobs/<id>, never the whole .3mf.
 import { mkdtemp, readdir, rm } from "node:fs/promises";
