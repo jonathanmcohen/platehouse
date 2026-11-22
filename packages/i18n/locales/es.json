@@ -171,6 +171,7 @@
   "groups.collections.deleteConfirm": "Eliminar colecci\u00f3n",
   "groups.collections.deleteLabel": "Eliminar la colecci\u00f3n {name}",
   "groups.collections.deleteMessage": "{count, plural, one {# modelo todav\u00eda est\u00e1 en esta colecci\u00f3n. Al eliminarla, ese modelo sale de ella; el modelo en s\u00ed no cambia.} many {# modelos todav\u00eda est\u00e1n en esta colecci\u00f3n. Al eliminarla, salen de ella; los modelos en s\u00ed no cambian.} other {# modelos todav\u00eda est\u00e1n en esta colecci\u00f3n. Al eliminarla, salen de ella; los modelos en s\u00ed no cambian.}}",
+  "groups.collections.deleteMessageUnknown": "No se pudo comprobar cu\u00e1ntos modelos est\u00e1n en esta colecci\u00f3n. Al eliminarla, los modelos que tenga salen de ella; los modelos en s\u00ed no cambian.",
   "groups.collections.deleteTitle": "\u00bfEliminar la colecci\u00f3n {name}?",
   "groups.collections.deleted": "Se elimin\u00f3 la colecci\u00f3n {name}.",
   "groups.collections.empty": "Todav\u00eda no hay colecciones. A\u00f1ade un modelo a una colecci\u00f3n para crearla.",

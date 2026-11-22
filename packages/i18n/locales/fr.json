@@ -171,6 +171,7 @@
   "groups.collections.deleteConfirm": "Supprimer la collection",
   "groups.collections.deleteLabel": "Supprimer la collection {name}",
   "groups.collections.deleteMessage": "{count, plural, one {# mod\u00e8le est encore dans cette collection. La supprimer l'en retire ; le mod\u00e8le lui-m\u00eame n'est pas modifi\u00e9.} many {# de mod\u00e8les sont encore dans cette collection. La supprimer les en retire ; les mod\u00e8les eux-m\u00eames ne sont pas modifi\u00e9s.} other {# mod\u00e8les sont encore dans cette collection. La supprimer les en retire ; les mod\u00e8les eux-m\u00eames ne sont pas modifi\u00e9s.}}",
+  "groups.collections.deleteMessageUnknown": "Impossible de v\u00e9rifier combien de mod\u00e8les sont dans cette collection. La supprimer en retire tous ses mod\u00e8les ; les mod\u00e8les eux-m\u00eames ne sont pas modifi\u00e9s.",
   "groups.collections.deleteTitle": "Supprimer la collection {name} ?",
   "groups.collections.deleted": "Collection {name} supprim\u00e9e.",
   "groups.collections.empty": "Aucune collection pour l'instant. Ajoutez un mod\u00e8le \u00e0 une collection pour la cr\u00e9er.",

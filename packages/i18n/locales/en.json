@@ -164,6 +164,7 @@
   "groups.collections.deleteConfirm": "Delete collection",
   "groups.collections.deleteLabel": "Delete collection {name}",
   "groups.collections.deleteMessage": "{count, plural, one {# model is still in this collection. Deleting the collection takes that model out of it; the model itself is not changed.} other {# models are still in this collection. Deleting the collection takes them out of it; the models themselves are not changed.}}",
+  "groups.collections.deleteMessageUnknown": "How many models are in this collection could not be checked. Deleting the collection takes any models out of it; the models themselves are not changed.",
   "groups.collections.deleteTitle": "Delete the collection {name}?",
   "groups.collections.deleted": "Deleted the collection {name}.",
   "groups.collections.empty": "No collections yet. Add a model to a collection to make one.",

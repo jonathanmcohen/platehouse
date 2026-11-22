@@ -265,7 +265,9 @@ function GroupList({
  * A collection's own page's Delete. It reads how many live models the
  * collection holds from the Collections list (the page's own rows stop at
  * the first 100), asks first when any do, and once it is deleted goes back
- * to the list, which says so.
+ * to the list, which says so. When the list fails to load, the count is
+ * unknown, so it asks first all the same, saying the count could not be
+ * checked (PR #367 review), rather than staying disabled with no reason.
  */
 function DeleteCollection({
   listPath,
@@ -292,6 +294,8 @@ function DeleteCollection({
   const found =
     listed.find((c) => c.name === name) ?? listed.find((c) => c.name.toLowerCase() === lower);
   const group: Group = { name, models: found?.models ?? 0 };
+  const loading = list.data === undefined && list.error === undefined;
+  const countUnknown = list.data === undefined && list.error !== undefined;
 
   async function remove() {
     await deleteGroup(listPath, name);
@@ -301,9 +305,9 @@ function DeleteCollection({
   }
 
   async function press() {
-    if (busy || list.data === undefined) return;
+    if (busy || loading) return;
     setError(undefined);
-    if (group.models > 0) {
+    if (countUnknown || group.models > 0) {
       setAsking(true);
       return;
     }
@@ -322,7 +326,7 @@ function DeleteCollection({
         type="button"
         className="studio-button ph-small ph-button-danger"
         aria-label={t(words.label, { name })}
-        aria-disabled={busy || list.data === undefined}
+        aria-disabled={busy || loading}
         onClick={() => void press()}
       >
         {t(words.confirm)}
@@ -335,6 +339,7 @@ function DeleteCollection({
       {asking ? (
         <ConfirmDialog
           {...confirmText(i18n, words, group)}
+          {...(countUnknown ? { message: t("groups.collections.deleteMessageUnknown") } : {})}
           onConfirm={remove}
           onCancel={() => setAsking(false)}
         />

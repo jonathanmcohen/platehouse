@@ -2362,6 +2362,24 @@ describe("deleting a tag or a collection", () => {
     expect(statusLine().textContent).toBe("Deleted the collection Desk.");
   });
 
+  test("on its own page, a collection whose count did not load still asks, then deletes", async () => {
+    failing.add("GET /app/api/collections");
+    await show("/collections?name=Desk", <CollectionsPage />);
+    const opener = button("Delete collection Desk");
+    expect(opener.getAttribute("aria-disabled")).toBe("false");
+    await click(opener);
+    const box = dialog();
+    expect(box?.textContent).toContain(
+      "How many models are in this collection could not be checked. Deleting the collection takes any models out of it; the models themselves are not changed.",
+    );
+    expect(callsTo("DELETE", "/app/api/collections?name=Desk")).toHaveLength(0);
+    failing.delete("GET /app/api/collections");
+    await click(button("Delete collection", box as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/collections?name=Desk")).toHaveLength(1);
+    expect(document.querySelector("h1")?.textContent).toBe("Collections");
+    expect(statusLine().textContent).toBe("Deleted the collection Desk.");
+  });
+
   test("a name with spaces or dots goes in the query", async () => {
     state.unusedTags = [".."];
     state.unusedCollections = ["Desk gear & more"];
