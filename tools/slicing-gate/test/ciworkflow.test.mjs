@@ -774,6 +774,53 @@ for (const [name, input, want] of [
   });
 }
 
+// Runs the changes job's docs step in bash with git stubbed, and returns the
+// docs output it wrote.
+function decideDocs({ event, prBase = "", before = "", changed = [] }) {
+  const dir = mkdtempSync(join(tmpdir(), "ci-docs-"));
+  try {
+    const out = join(dir, "github-output");
+    writeFileSync(out, "");
+    const script = [
+      "set -eo pipefail",
+      'git() { case "$1" in cat-file) return 0;; diff) printf "%s" "$CHANGED";; *) return 99;; esac; }',
+      stepScript(text(), "Decide whether the docs job runs"),
+    ].join("\n");
+    const r = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        EVENT: event,
+        PR_BASE: prBase,
+        PUSH_BEFORE: before,
+        CHANGED: changed.map((f) => `${f}\n`).join(""),
+        GITHUB_OUTPUT: out,
+      },
+    });
+    assert.equal(r.status, 0, `exit ${r.status}: ${r.stderr}`);
+    const all = [...readFileSync(out, "utf8").matchAll(/^docs=(.*)$/gm)];
+    assert.equal(all.length, 1, "one docs output written");
+    return all[0][1];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// PR #362 review: the docs site serves the ICO favicon, the Apple touch icon
+// and the social card from apps/web/public (staticDirectories), so a change
+// there alone must run the docs job, as a change to docs/ or apps/docs/ does.
+for (const [name, changed, want] of [
+  ["a PR touching only apps/web/public runs the docs job", ["apps/web/public/apple-touch-icon.png"], "true"],
+  ["a PR touching only docs/ runs the docs job", ["docs/storage.md"], "true"],
+  ["a PR touching only apps/docs/ runs the docs job", ["apps/docs/docusaurus.config.mjs"], "true"],
+  ["a PR touching only the web app source skips the docs job", ["apps/web/src/main.tsx"], "false"],
+  ["a look-alike of apps/web/public skips the docs job", ["apps/web/public-old/x.png", "apps/web/src/public/x.png"], "false"],
+]) {
+  test(`docs job decision: ${name}`, () => {
+    assert.equal(decideDocs({ event: "pull_request", prBase: SHA, changed }), want);
+  });
+}
+
 // Issue #222: every file the gate tests read from outside tools/slicing-gate,
 // alone in a PR, runs the gate tests. Only this workflow and .node-version,
 // which the gate image job is built from, also run the image build.

@@ -17,10 +17,11 @@
 #
 # The docs job builds the user docs site (apps/docs, Docusaurus, reading the
 # pages in docs/) and fails on a broken link or anchor. It runs, by the same
-# changes job, only when docs/, apps/docs, the workspace files its install
-# reads, this workflow or .node-version changes. It only builds: nothing is
-# deployed or published, and there is no GitHub Pages step (publishing waits
-# for the public repository). Nothing depends on it.
+# changes job, only when docs/, apps/docs, apps/web/public (the icons it
+# serves), the workspace files its install reads, this workflow or
+# .node-version changes. It only builds, at the placeholder address: it is
+# the pull-request check, and nothing here is deployed. Publishing to GitHub Pages is docs-pages.yml, on main only.
+# Nothing depends on it.
 #
 # The two slicing gate jobs keep their own path scoping, decided by the changes
 # job (issue #222). The gate tests are quick, so they run when tools/slicing-gate
@@ -159,8 +160,9 @@ jobs:
           echo "slicer=${slicer}" >>"$GITHUB_OUTPUT"
 
       # The same rule for the docs job, with the same base commit and the same
-      # safe default. It runs when the pages (docs/) or the site (apps/docs)
-      # change, or anything its install reads: the root workspace files, this
+      # safe default. It runs when the pages (docs/), the site (apps/docs) or
+      # the icons it serves from apps/web/public change, or anything its
+      # install reads: the root workspace files, this
       # workflow and .node-version.
       - name: Decide whether the docs job runs
         id: docs
@@ -175,7 +177,7 @@ jobs:
             echo "No usable base commit (${base:-none}); the docs job runs."
           else
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
-            if grep -Eq '^(docs/|apps/docs/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
+            if grep -Eq '^(docs/|apps/docs/|apps/web/public/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.github/workflows/ci\.yml$|\.node-version$)' <<<"$changed"; then
               echo "The docs, the docs site or an input of its install changed; the docs job runs."
             else
               docs=false
