@@ -11,9 +11,11 @@
 // fetched from /blobs/<id> with the page's session, and the fetch is aborted
 // when the viewer goes. If anything fails (no WebGL, the store unavailable),
 // the viewer says so and offers the file's download instead, unless the
-// caller handles the failure itself (onFailed: a plate goes back to its
-// picture and says why). actions are buttons of the caller's, put between
-// the view and its own controls.
+// caller handles the failure itself (onFailed, given what was thrown: a
+// plate goes back to its picture and says why). A mesh that could not be
+// fetched or read is a MeshLoadError carrying the fetch's HTTP status, so
+// the caller can tell it from a viewer that cannot start. actions are
+// buttons of the caller's, put between the view and its own controls.
 import { type ReactNode, useEffect, useRef, useState } from "react";
 // A type-only import, erased from the build, so three.js still loads only
 // through the dynamic imports in defaultLoadThree.
@@ -43,6 +45,21 @@ export interface ThreeViewer {
 
 export type ThreeLoader = () => Promise<ThreeViewer>;
 
+/**
+ * The mesh could not be fetched or read: status is the HTTP status of a
+ * failed fetch, or null when no reply came or the mesh could not be read.
+ * Any other failure of show (no WebGL) is not one of these.
+ */
+export class MeshLoadError extends Error {
+  readonly status: number | null;
+
+  constructor(status: number | null, message: string) {
+    super(message);
+    this.name = "MeshLoadError";
+    this.status = status;
+  }
+}
+
 /** How far one press of Rotate turns the model: 22.5 degrees. */
 export const ROTATE_STEP = Math.PI / 8;
 
@@ -62,31 +79,50 @@ export const defaultLoadThree: ThreeLoader = async () => {
     import("three/addons/controls/OrbitControls.js"),
   ]);
 
+  /** The model in the mesh's bytes, for the page's element el. */
+  async function parse(el: HTMLElement, kind: ThreeSource["kind"], bytes: ArrayBuffer) {
+    if (kind === "glb") return (await new gltfModule.GLTFLoader().parseAsync(bytes, "")).scene;
+    const geometry = new stlModule.STLLoader().parse(bytes);
+    geometry.computeVertexNormals();
+    const accent = getComputedStyle(el).getPropertyValue("--accent").trim();
+    const material = new THREE.MeshStandardMaterial({
+      ...(accent === "" ? {} : { color: accent }),
+      roughness: 0.6,
+      metalness: 0.05,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    // Print files are Z-up; three.js is Y-up.
+    mesh.rotation.x = -Math.PI / 2;
+    return mesh;
+  }
+
   return {
     async show(el, source, signal) {
-      const res = await fetch(source.url, {
-        credentials: "same-origin",
-        ...(signal === undefined ? {} : { signal }),
-      });
-      if (!res.ok) throw new Error(`the mesh answered ${res.status}`);
-      const bytes = await res.arrayBuffer();
+      // An abort is passed on as it is; the viewer drops it.
+      const meshFailed = (error: unknown, message: string): unknown =>
+        signal?.aborted ? error : new MeshLoadError(null, message);
+      let res: Response;
+      let bytes: ArrayBuffer;
+      try {
+        res = await fetch(source.url, {
+          credentials: "same-origin",
+          ...(signal === undefined ? {} : { signal }),
+        });
+      } catch (error) {
+        throw meshFailed(error, "the mesh could not be fetched");
+      }
+      if (!res.ok) throw new MeshLoadError(res.status, `the mesh answered ${res.status}`);
+      try {
+        bytes = await res.arrayBuffer();
+      } catch (error) {
+        throw meshFailed(error, "the mesh could not be fetched");
+      }
 
       let object: Object3D;
-      if (source.kind === "stl") {
-        const geometry = new stlModule.STLLoader().parse(bytes);
-        geometry.computeVertexNormals();
-        const accent = getComputedStyle(el).getPropertyValue("--accent").trim();
-        const material = new THREE.MeshStandardMaterial({
-          ...(accent === "" ? {} : { color: accent }),
-          roughness: 0.6,
-          metalness: 0.05,
-        });
-        const mesh = new THREE.Mesh(geometry, material);
-        // Print files are Z-up; three.js is Y-up.
-        mesh.rotation.x = -Math.PI / 2;
-        object = mesh;
-      } else {
-        object = (await new gltfModule.GLTFLoader().parseAsync(bytes, "")).scene;
+      try {
+        object = await parse(el, source.kind, bytes);
+      } catch (error) {
+        throw meshFailed(error, "the mesh could not be read");
       }
       signal?.throwIfAborted();
 
@@ -185,8 +221,12 @@ export interface Viewer3dProps {
   /** The file's download, offered when the view cannot be shown. */
   download: string;
   loadThree?: ThreeLoader | undefined;
-  /** Called, in place of the viewer's own message, when the view cannot be shown. */
-  onFailed?: (() => void) | undefined;
+  /**
+   * Called, in place of the viewer's own message, when the view cannot be
+   * shown, with what was thrown: a MeshLoadError for a mesh that could not
+   * be fetched or read, anything else for a viewer that cannot start.
+   */
+  onFailed?: ((error: unknown) => void) | undefined;
   /** The caller's buttons, between the view and its controls. */
   actions?: ReactNode;
 }
@@ -222,11 +262,11 @@ export function Viewer3d({ source, label, download, loadThree, onFailed, actions
         }
         shown = made;
         setHandle(made);
-      } catch {
+      } catch (error) {
         if (cancelled) return;
         const handOver = failedRef.current;
         if (handOver === undefined) setFailed(true);
-        else handOver();
+        else handOver(error);
       }
     })();
     return () => {

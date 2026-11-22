@@ -12,11 +12,14 @@
 // - 401: the session ended;
 // - 503: the file could not be read right now;
 // - anything else, no reply, or a body it cannot read: a server error.
-// A viewer that cannot start (no WebGL) is "browser". The request is
+// The GLB itself is then loaded by Viewer3d; when that fails, a MeshLoadError
+// is read the same way by its status (401 signed out, 503 unavailable,
+// anything else, no reply or a mesh it cannot read a server error), and only
+// a viewer that cannot start (no WebGL) is "browser". The request is
 // aborted when the view goes, and an answer that comes after that is
 // dropped, so nothing loads after the view was closed or the page left.
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { type ThreeLoader, Viewer3d } from "./Viewer3d";
+import { MeshLoadError, type ThreeLoader, Viewer3d } from "./Viewer3d";
 
 /** Why a plate's 3D view could not be shown. */
 export type Plate3dFailure =
@@ -77,6 +80,14 @@ export async function fetchPlateMesh(
   return { failure: "error" };
 }
 
+/** Why the viewer could not show the plate's GLB. */
+export function viewerFailure(error: unknown): Plate3dFailure {
+  if (!(error instanceof MeshLoadError)) return "browser";
+  if (error.status === 401) return "signedOut";
+  if (error.status === 503) return "unavailable";
+  return "error";
+}
+
 export interface Plate3dProps {
   plateId: string;
   /** The plate's name or "Plate N", for the view's label. */
@@ -118,7 +129,7 @@ export function Plate3d({ plateId, label, download, loadThree, onFailed, actions
       label={label}
       download={download}
       loadThree={loadThree}
-      onFailed={() => failedRef.current("browser")}
+      onFailed={(error) => failedRef.current(viewerFailure(error))}
       actions={actions}
     />
   );

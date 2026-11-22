@@ -52,7 +52,7 @@ import {
   POLL_MS,
 } from "../src/model/ModelPage";
 import { BAMBU_PROMPT_LINE, type SlicerLink } from "../src/model/OpenInSlicer";
-import type { ThreeLoader, ThreeSource } from "../src/model/Viewer3d";
+import { MeshLoadError, type ThreeLoader, type ThreeSource } from "../src/model/Viewer3d";
 import { PRINTER_CHOICE_KEY } from "../src/settings/PrinterSwitch";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import type { StartUpload, UploadTarget } from "../src/upload/useTusUpload";
@@ -2315,6 +2315,31 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
       container.querySelector(`.studio-viewer a[href="/files/${FILE_3MF}/download"]`),
     ).toBeNull();
   });
+
+  test.each([
+    [
+      "the store cannot serve the mesh right now (503)",
+      503,
+      /could not be read right now\. Try again later/,
+    ],
+    ["the session ended before the mesh loaded (401)", 401, /You are signed out/],
+    ["the mesh is missing from the store (404)", 404, /because of a server error/],
+    ["no reply came, or the mesh could not be read", null, /because of a server error/],
+  ])(
+    "a mesh that fails to load when %s keeps the picture and says why, never blaming the browser",
+    async (_case, status, words) => {
+      const failing: ThreeLoader = async () => ({
+        async show() {
+          throw new MeshLoadError(status, "the mesh failed");
+        },
+      });
+      await render(pageAt(MODEL_ID, { loadThree: failing }));
+      await click(toggle());
+      expect(large()?.getAttribute("src")).toBe(thumb(1));
+      expect(alertText()).toMatch(words);
+      expect(alertText()).not.toMatch(/in this browser/);
+    },
+  );
 
   test("the reason goes when the view is opened again or another plate is chosen", async () => {
     meshAnswer = () => json({ error: "no_mesh", code: "no_mesh", message: "x" }, 422);
