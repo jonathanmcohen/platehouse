@@ -325,6 +325,30 @@ describe("Sign out everywhere", () => {
     expect((await call("GET", "/app/api/users", me)).status).toBe(401);
   });
 
+  test("a user whose subject is over 255 characters can be listed and signed out everywhere", async () => {
+    // Sign-in takes a subject of any length, as 0.1.0 did, so the token and
+    // the sign-out take one too: a user who can sign in can always be cut off.
+    const long = `subject-long-${"x".repeat(300)}`;
+    const me = await signIn("subject-admin", "Synthetic Admin");
+    const theirs = await signIn(long, "Synthetic Long");
+    const made = await makeToken(theirs, "Long script");
+    expect(made.createdBy).toEqual({ subject: long, name: "Synthetic Long" });
+
+    const list = await call("GET", "/app/api/users", me);
+    expect((list.json() as { users: Array<{ subject: string }> }).users).toEqual(
+      expect.arrayContaining([expect.objectContaining({ subject: long, sessions: 1, tokens: 1 })]),
+    );
+
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: long,
+      revokeTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect((await call("GET", "/app/api/tokens", theirs)).status).toBe(401);
+    expect(await v1Status(made.token)).toBe(401);
+  });
+
   test("a user with nothing live is 200 with nothing ended", async () => {
     const me = await signIn("subject-admin");
     const res = await call("POST", "/app/api/users/sign-out", me, {
@@ -338,7 +362,6 @@ describe("Sign out everywhere", () => {
   test.each([
     ["no subject", { revokeTokens: true }],
     ["an empty subject", { subject: "", revokeTokens: true }],
-    ["a subject over 255 characters", { subject: "x".repeat(256), revokeTokens: true }],
     ["no revokeTokens", { subject: "someone" }],
     ["a revokeTokens that is not a boolean", { subject: "someone", revokeTokens: "yes" }],
   ])("refuses a body with %s", async (_why, body) => {

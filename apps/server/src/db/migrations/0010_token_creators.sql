@@ -10,8 +10,10 @@
 -- out everywhere can revoke one user's tokens.
 --
 -- - api_tokens.created_by_subject: the OIDC subject (sub) that made the
---   token, at most 255 characters as OIDC allows. Null for a token made
---   before this migration: its maker is unknown, and Settings says so.
+--   token, never empty. No length cap, like sessions.subject: sign-in takes
+--   a subject of any length, so a cap here would make token creation fail
+--   for a user who signed in. Null for a token made before this migration:
+--   its maker is unknown, and Settings says so.
 -- - api_tokens.created_by_name: the maker's display name when the token was
 --   made, at most 200 characters, or null when the session had none. Only
 --   set together with a subject.
@@ -24,7 +26,7 @@
 -- row is rewritten, every existing value is kept, and nothing else changes.
 alter table api_tokens
   add column created_by_subject text
-    check (created_by_subject <> '' and char_length(created_by_subject) <= 255),
+    check (created_by_subject <> ''),
   add column created_by_name text
     check (created_by_name <> '' and char_length(created_by_name) <= 200),
   add constraint api_tokens_name_needs_subject

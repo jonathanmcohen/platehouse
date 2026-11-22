@@ -567,7 +567,7 @@ describe("0010 token creators", () => {
     expect(sessionsAfter).toEqual(sessionsBefore.map((row) => ({ ...row, displayName: null })));
   });
 
-  test("the new columns refuse an empty or over-long value, and a name with no subject", async () => {
+  test("the new columns refuse an empty value, an over-long name, and a name with no subject", async () => {
     const { db } = await pgc.freshDatabase();
     await migrate(db);
     const token = (n: number, subject: string | null, name: string | null) => sql`
@@ -577,9 +577,11 @@ describe("0010 token creators", () => {
     `;
     await token(1, "subject-ok", "Synthetic Name").execute(db);
     await token(2, "subject-ok", null).execute(db);
+    // No length cap on the subject: sign-in takes one of any length
+    // (sessions.subject has none), so the token it makes must take it too.
+    await token(4, "x".repeat(300), null).execute(db);
     for (const [n, subject, name] of [
       [3, "", null],
-      [4, "x".repeat(256), null],
       [5, "subject-ok", ""],
       [6, "subject-ok", "x".repeat(201)],
       [7, null, "Name without a subject"],

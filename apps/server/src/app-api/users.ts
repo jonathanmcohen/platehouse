@@ -32,9 +32,6 @@ import type { Sessions } from "../auth/sessions.js";
 import type { DB } from "../db/types.js";
 import { appApiScope, need } from "./settings.js";
 
-/** The longest subject the sign-out takes: OIDC allows 255 ASCII characters. */
-export const MAX_SUBJECT_LENGTH = 255;
-
 /** One user as the list shows them. */
 export interface KnownUser {
   /** Their OIDC subject (sub). */
@@ -111,7 +108,10 @@ export function dbUserList(db: Kysely<DB>): (now: Date) => Promise<KnownUser[]> 
 const SIGN_OUT = {
   type: "object",
   properties: {
-    subject: { type: "string", minLength: 1, maxLength: MAX_SUBJECT_LENGTH },
+    // No length cap: sign-in takes a subject of any length (auth/oidc.ts
+    // admit; sessions.subject has none), so a cap here could leave someone
+    // signed in whom Sign out everywhere cannot reach.
+    subject: { type: "string", minLength: 1 },
     revokeTokens: { type: "boolean" },
   },
   required: ["subject", "revokeTokens"],
