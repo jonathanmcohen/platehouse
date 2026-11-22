@@ -369,6 +369,19 @@ describe("card shows time and weight only when every plate is known", () => {
     expect(li.textContent).not.toMatch(/partial|plates?\b/);
   });
 
+  // Issue #316: once the server names an STL's or STEP's rendered preview as
+  // the card's thumbnail, the card shows that picture in place of the icon.
+  test.each([
+    ["STL", STL],
+    ["STEP", STEP],
+  ])("an %s card with a rendered preview shows it instead of the icon", async (_label, card) => {
+    const thumbnail = "/blobs/0198f0c4-0000-7000-8000-0000000000f1";
+    const li = await renderCard({ ...card, thumbnail });
+    expect(li.querySelector(".studio-card-media img")?.getAttribute("src")).toBe(thumbnail);
+    expect(li.querySelector(".studio-card-media svg")).toBeNull();
+    expect(li.textContent).not.toMatch(/partial|plates?\b/);
+  });
+
   test("time and weight read the way the card shows them", () => {
     expect(formatDuration(3000)).toBe("50m");
     expect(formatDuration(5100)).toBe("1h 25m");

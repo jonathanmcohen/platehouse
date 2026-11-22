@@ -1010,6 +1010,136 @@ describe("OpenSCAD and STEP", () => {
   });
 });
 
+// STL previews (issue #316): POST /v1/stl/png renders a PNG of an STL with
+// the same OpenSCAD, sandbox, time cap and limits as a .scad render. The STL
+// is saved as input.stl in a fresh job folder, and the server writes the
+// .scad itself, a single fixed import("input.stl"), so nothing in the body is
+// ever read as OpenSCAD code.
+describe("STL previews", () => {
+  const binaryStl = () => {
+    // An 80-byte header, a count of 1 and one 50-byte facet: a valid binary STL.
+    const b = Buffer.alloc(84 + 50);
+    b.write("platehouse test", 0, "latin1");
+    b.writeUInt32LE(1, 80);
+    for (const [i, v] of [0, 0, 0, 10, 0, 0, 0, 10, 0].entries()) b.writeFloatLE(v, 96 + i * 4);
+    return b;
+  };
+  const preview = (base: string, body: Buffer | string) =>
+    fetch(`${base}/v1/stl/png`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body,
+    });
+
+  test("stl/png renders the STL through a fixed import under landrun and prlimit, and returns image/png", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "inputs" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const stl = binaryStl();
+    const res = await preview(base, stl);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    // The fake writes the .scad it was given, then the STL beside it: the
+    // wrapper is the fixed import, and the body reached input.stl byte for byte.
+    const out = Buffer.from(await res.arrayBuffer());
+    const wrapper = 'import("input.stl");\n';
+    expect(out.subarray(0, wrapper.length).toString("utf8")).toBe(wrapper);
+    expect(out.subarray(wrapper.length).equals(stl)).toBe(true);
+    // OpenSCAD's PNG arguments, on the wrapper, with the same limits as a .scad render.
+    const args = readFileSync(lr.argsLog, "utf8").trimEnd().split("\n");
+    const at = args.indexOf("--");
+    expect(args.slice(at + 1)).toEqual([
+      "/opt/openscad/AppRun",
+      "--imgsize=800,800",
+      "--viewall",
+      "--autocenter",
+      "-o",
+      "output.png",
+      "input.scad",
+    ]);
+    expect(args).toContain("--best-effort");
+    const limits = readFileSync(s.prlimit.argsLog, "utf8").trimEnd().split("\n");
+    expect(limits.slice(0, limits.indexOf("--"))).toEqual([
+      "--cpu=180",
+      "--as=4294967296",
+      "--nproc=512",
+      "--fsize=268435456",
+      "--core=0",
+    ]);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("an STL OpenSCAD cannot read is 422 render_failed with OpenSCAD's own message", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, {
+      kind: "fail",
+      stderr: "ERROR: STL import: unexpected end of file in input.stl",
+    });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await preview(base, "not an stl");
+    expect(res.status).toBe(422);
+    const body = slicerContract.renderError.parse(await res.json());
+    expect(body.message).toContain("unexpected end of file");
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("an STL over 256 MiB is 413 before its body is read", async () => {
+    const base = await start(setup().config);
+    const res = await headersOnly(`${base}/v1/stl/png`, {
+      "content-type": "application/octet-stream",
+      "content-length": String(LIMITS.stlBodyBytes + 1),
+    });
+    expect(res.status).toBe(413);
+    expect(JSON.parse(res.body)).toEqual({ error: "too_large" });
+  });
+
+  test("stl/png waits for the sandbox self-test and is refused while it fails, as a .scad render is", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "inputs" }, { probe: "read" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await preview(base, binaryStl());
+    expect(res.status).toBe(422);
+    const body = slicerContract.renderError.parse(await res.json());
+    expect(body.message.startsWith("OpenSCAD renders are off:")).toBe(true);
+    // the self-test ran and no render did
+    expect(readFileSync(lr.runsLog, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+  });
+
+  test("stl/png is 409 busy while a slice runs, and renders once it is done", async () => {
+    const s = setup({ sliceTimeoutSeconds: 3 }, { kind: "sleep" });
+    const lr = fakeLandrun(s.stubs, { kind: "inputs" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const first = postSlice(base, sliceable());
+    await waitForFile(s.fake.pids);
+    const busy = await preview(base, binaryStl());
+    expect(busy.status).toBe(409);
+    expect(slicerContract.error.parse(await busy.json())).toEqual({ error: "busy" });
+    expect((await first).status).toBe(200);
+    expect((await preview(base, binaryStl())).status).toBe(200);
+  });
+
+  test("a slice, a STEP and a .scad render are 409 busy while an STL preview runs", async () => {
+    const s = setup({ scadTimeoutSeconds: 2 });
+    // The self-test hangs until the cap, so the preview holds the lock.
+    const lr = fakeLandrun(s.stubs, { kind: "inputs" }, { probe: "hang" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const first = preview(base, binaryStl());
+    await waitForFile(lr.runsLog);
+    for (const res of [
+      await postSlice(base, sliceable()),
+      await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" }),
+      await fetch(`${base}/v1/scad/png`, { method: "POST", body: "cube(10);" }),
+      await preview(base, binaryStl()),
+    ]) {
+      expect(res.status).toBe(409);
+      await res.body?.cancel();
+    }
+    expect((await first).status).toBe(422);
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+});
+
 // The container runs one heavy job at a time: a slice, an OpenSCAD render
 // (with its sandbox self-test) or a STEP conversion. Its 4g memory limit is
 // sized from a single slice. A request for any of them while one runs gets
