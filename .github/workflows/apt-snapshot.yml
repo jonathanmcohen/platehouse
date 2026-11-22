@@ -209,11 +209,23 @@ jobs:
             echo "${BRANCH} already holds this change on this main; nothing is pushed"
           else
             if [ -n "$remote" ]; then
+              # The snapshot the branch proposed, read from the fetched
+              # branch. Run by hand twice on one day with main moved in
+              # between, it is the same as NEW: the branch is replaced
+              # because main moved, not because a newer snapshot exists.
+              previous="$(git show 'FETCH_HEAD:apps/slicer/Dockerfile' 2>/dev/null | sed -n 's/^ARG APT_SNAPSHOT=//p' | head -n 1)" || previous=""
+              if [ "$previous" = "$NEW" ]; then
+                why="Replaced because main moved since it was opened: it proposed this same snapshot, ${NEW_LABEL} (\`${NEW}\`), on an older main"
+                was="proposed the same snapshot on an older main"
+              else
+                why="Replaced by a newer snapshot, ${NEW_LABEL} (\`${NEW}\`)"
+                was="proposed an older snapshot"
+              fi
               # Replaced, not moved: close its open pull request (deleting
               # the branch would close it anyway, with no word why), then
               # delete the branch, if it is still where it was read.
               if [ -n "$existing" ]; then
-                gh pr close "$existing" --repo "$REPO" --comment "Replaced by a newer snapshot, ${NEW_LABEL} (\`${NEW}\`): the apt-snapshot workflow opens a new pull request from the same branch. ${RUN_URL}"
+                gh pr close "$existing" --repo "$REPO" --comment "${why}: the apt-snapshot workflow opens a new pull request from the same branch. ${RUN_URL}"
                 echo "Closed pull request #${existing}; a new one replaces it"
                 replaced="$existing"
                 existing=""
@@ -238,7 +250,7 @@ jobs:
             echo "**To merge:** merge when ci is green. Merging publishes nothing: the published slicer image gets the new packages with its next build (a release tag, a new OrcaSlicer version, or a run of the slicer-image workflow by hand). If the new snapshot breaks a build or a test, fix it on another branch, because the next run replaces this one, or close this pull request; the next monthly run opens a new one."
             if [ -n "$replaced" ]; then
               echo ""
-              echo "This replaces #${replaced}, which proposed an older snapshot and was not merged."
+              echo "This replaces #${replaced}, which ${was} and was not merged."
             fi
             echo ""
             echo "Opened by the apt-snapshot workflow: ${RUN_URL}"

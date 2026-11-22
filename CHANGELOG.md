@@ -40,6 +40,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - Every dialog takes its frame and backdrop from one stylesheet, so how a dialog looks no longer depends on which of two stylesheets the browser loaded last; the upload dialog keeps its own width and spacing ([#329](https://github.com/jonathanmcohen/platehouse/issues/329)).
 - The Traefik guide and the end-to-end suite's README no longer say the guide's full setup is tested end to end: the suite runs a minimal Traefik with no middleware, which proves the cookieless routes get through but not the guide's timeouts, headers or encoded-slash settings ([#329](https://github.com/jonathanmcohen/platehouse/issues/329)).
 - The Activity page's "MakerWorld descriptions converted again" event now says one kept or unreadable description in the singular ("1 left as it was ... its file"), in English, Spanish and French, and the Activity docs list that event and the re-conversion's temporary scheduled job ([#398](https://github.com/jonathanmcohen/platehouse/issues/398)).
+- The apt-snapshot workflow, run by hand twice on one day with main moved in between, no longer closes its open pull request as "replaced by a newer snapshot" or calls it "an older snapshot": both propose the same date, so it now says the pull request was replaced because main moved ([#390](https://github.com/jonathanmcohen/platehouse/issues/390)).
 
 ## [0.1.0] - 2026-11-21
 
