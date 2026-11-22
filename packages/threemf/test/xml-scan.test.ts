@@ -77,6 +77,19 @@ describe("TagScanner", () => {
     expect(attrs(component?.raw ?? "").get("path")).toBe("/3D/Objects/a&b.model");
   });
 
+  it("tells onScan of every character before it looks, an unfinished tag counted each time it is looked at", () => {
+    const seen: number[] = [];
+    const scanner = new TagScanner(
+      () => undefined,
+      (chars) => seen.push(chars),
+    );
+    scanner.write(Buffer.from('<vertex x="1', "utf8"));
+    scanner.write(Buffer.from('" y="2"/><a/>', "utf8"));
+    scanner.end();
+    // 12 new, then the 12 carried over again with 13 new, then the end.
+    expect(seen).toEqual([12, 25, 0]);
+  });
+
   it("refuses a DOCTYPE as damage, wherever the chunk cuts it", () => {
     for (const n of [1, 4, 100]) {
       expect(() => scan('<?xml version="1.0"?><!DOCTYPE m [<!ENTITY a "b">]><m/>', n)).toThrow(

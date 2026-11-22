@@ -11,6 +11,7 @@
 // every inflated byte handed out by the zip layer (pump, wrapped), with the
 // name of each entry read. The reader's own report (onBudget) must agree
 // with those meters, and stay within the limits it was given.
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 const meters = vi.hoisted(() => ({ inflated: 0, reads: [] as string[] }));
@@ -38,7 +39,15 @@ import {
   readPlateMesh,
 } from "../src/index.js";
 import { writeTmp } from "./support/fixture-builder.js";
-import { FAMILIES, type Family, hostile } from "./support/hostile.js";
+import { FAMILIES, type Family, hostile, overlappingZip, stripMesh } from "./support/hostile.js";
+import {
+  buildItem,
+  componentObject,
+  meshObject,
+  modelXml,
+  moved,
+  settingsXml,
+} from "./support/plate-models.js";
 
 const MiB = 1024 * 1024;
 
@@ -46,7 +55,7 @@ const MiB = 1024 * 1024;
 const LIMITS: Partial<PlateMeshLimits> = {
   meshBytes: 4 * MiB,
   inflateBytes: 8 * MiB,
-  work: 3_000_000,
+  work: 50_000_000,
   triangles: 150_000,
   instances: 2_000,
   components: 20_000,
@@ -76,14 +85,14 @@ async function metered(bytes: Buffer, limits: Partial<PlateMeshLimits> = LIMITS)
   const RealU32 = globalThis.Uint32Array;
   let allocated = 0;
   class F32 extends RealF32 {
-    constructor(...args: ConstructorParameters<typeof Float32Array>) {
-      super(...(args as [number]));
+    constructor(...args: unknown[]) {
+      super(...(args as unknown as [number]));
       allocated += allocates(args, this.byteLength);
     }
   }
   class U32 extends RealU32 {
-    constructor(...args: ConstructorParameters<typeof Uint32Array>) {
-      super(...(args as [number]));
+    constructor(...args: unknown[]) {
+      super(...(args as unknown as [number]));
       allocated += allocates(args, this.byteLength);
     }
   }
@@ -144,10 +153,14 @@ describe("readPlateMesh keeps every limit on hostile files", () => {
     // Memory: the peak of live mesh arrays, and every allocation charged.
     expect(report.peakLiveBytes, what).toBeLessThanOrEqual(LIMITS.meshBytes as number);
     expect(run.allocated, `${what}: arrays allocated but not charged`).toBe(report.allocatedBytes);
-    // Inflate: the total across every part and every read.
+    // Inflate: the total across every part and every read, every inflated
+    // byte charged but the one chunk refused when the total is reached.
     expect(report.inflatedBytes, what).toBeLessThanOrEqual(LIMITS.inflateBytes as number);
-    expect(run.inflated, what).toBeLessThanOrEqual((LIMITS.inflateBytes as number) + CHUNK_SLACK);
-    // Work.
+    expect(run.inflated - report.inflatedBytes, what).toBeGreaterThanOrEqual(0);
+    expect(run.inflated - report.inflatedBytes, what).toBeLessThanOrEqual(CHUNK_SLACK);
+    // Work: every inflated character was charged as it was scanned (the files
+    // are ASCII, one character a byte), and the total stays within the limit.
+    expect(report.work, what).toBeGreaterThanOrEqual(report.inflatedBytes);
     expect(report.work, what).toBeLessThanOrEqual(LIMITS.work as number);
     // Nothing left charged but what the result holds.
     expect(report.liveBytes, what).toBe(
@@ -178,7 +191,9 @@ describe("the review findings, by name", () => {
   it("#384: the bytes inflated across every part and read stay within the total", async () => {
     const file = hostile("overlapping", 6);
     const run = await metered(file.bytes);
-    expect(run.inflated, file.label).toBeLessThanOrEqual((LIMITS.inflateBytes as number) + CHUNK_SLACK);
+    expect(run.inflated, file.label).toBeLessThanOrEqual(
+      (LIMITS.inflateBytes as number) + CHUNK_SLACK,
+    );
     expect(run.outcome, file.label).toBeInstanceOf(PlateMeshError);
     expect((run.outcome as PlateMeshError).problem).toBe("too_large");
   });
@@ -202,6 +217,72 @@ describe("the review findings, by name", () => {
   });
 });
 
+describe("each mesh is read once and only what the result uses is kept", () => {
+  /** A project with root objects and plate 1's instances, every mesh in 3D/3dmodel.model. */
+  function rootOnly(
+    resources: string[],
+    items: string[],
+    instances: Array<[number, number]>,
+  ): Buffer {
+    const ids = [...new Set(instances.map(([id]) => id))];
+    return overlappingZip([
+      { name: "3D/3dmodel.model", data: modelXml(resources, items) },
+      {
+        name: "Metadata/model_settings.config",
+        data: settingsXml(
+          ids.map((id) => ({ id })),
+          [{ index: 1, instances }],
+        ),
+      },
+    ]);
+  }
+
+  it("a mesh taken on a part's first read is not read again when the part is read for another", async () => {
+    // A (big, a plate object: taken on the root's first read) and B, made of
+    // the small mesh C, which is found needed only after that read.
+    const alone = await metered(
+      rootOnly([meshObject(1, stripMesh(20_000))], [buildItem(1)], [[1, 0]]),
+    );
+    const both = await metered(
+      rootOnly(
+        [
+          meshObject(1, stripMesh(20_000)),
+          meshObject(3, stripMesh(10)),
+          componentObject(2, [{ objectId: 3 }]),
+        ],
+        [buildItem(1), buildItem(2, moved(50, 0))],
+        [
+          [1, 0],
+          [2, 0],
+        ],
+      ),
+    );
+    expect(both.reads.filter((n) => n === "3D/3dmodel.model")).toHaveLength(2);
+    // Only C's small arrays on top of A's: A was not read a second time.
+    expect(both.allocated - alone.allocated).toBeLessThanOrEqual(2 * 3 * 256 * 4);
+  });
+
+  it("a mesh read but placed nowhere is freed before the result is handed back", async () => {
+    // Object 1's mesh is taken on the root's first read, as a plate object,
+    // but its instance 5 has no build item, so nothing places it.
+    const run = await metered(
+      rootOnly(
+        [meshObject(1, stripMesh(5_000)), meshObject(2, stripMesh(10))],
+        [buildItem(1), buildItem(2, moved(50, 0))],
+        [
+          [1, 5],
+          [2, 0],
+        ],
+      ),
+    );
+    expect(run.outcome).not.toBeInstanceOf(PlateMeshError);
+    const mesh = run.outcome as PlateMesh;
+    expect(mesh.pieces).toHaveLength(1);
+    expect(run.report?.liveBytes).toBe(liveBytesOf(mesh));
+    expect(run.report?.peakLiveBytes ?? 0).toBeGreaterThan(liveBytesOf(mesh));
+  });
+});
+
 describe("the limits a caller may set", () => {
   it("can be lowered but never raised past the defaults", async () => {
     const file = hostile("hugeMesh", 1);
@@ -214,5 +295,38 @@ describe("the limits a caller may set", () => {
     const lowered = await metered(file.bytes, { meshBytes: 64 * 1024 });
     expect(lowered.report?.limits.meshBytes).toBe(64 * 1024);
     expect((lowered.outcome as PlateMeshError).problem).toBe("too_large");
+  });
+});
+
+describe("the limits hold by construction", () => {
+  const source = readFileSync(new URL("../src/plate-mesh.ts", import.meta.url), "utf8");
+  /** The text of a top-level class or function, up to the next one. */
+  const body = (start: string): string => {
+    const at = source.indexOf(start);
+    expect(at, start).toBeGreaterThanOrEqual(0);
+    const next = source.slice(at + start.length).search(/\n(class|async function|function) /);
+    return source.slice(at, next < 0 ? undefined : at + start.length + next);
+  };
+
+  it("makes mesh arrays only inside the budget, which charges before it allocates", () => {
+    const allocations = [...source.matchAll(/new (Float32Array|Uint32Array)\(/g)];
+    expect(allocations).toHaveLength(2);
+    const budget = body("class Budget {");
+    for (const a of allocations) expect(budget).toContain(a[0]);
+    const charge = budget.indexOf("this.charge(length * 4);");
+    expect(charge).toBeGreaterThanOrEqual(0);
+    expect(charge).toBeLessThan(budget.indexOf("new Float32Array("));
+    // No other way to a typed array: no slice, from, of or copy of one.
+    expect(source).not.toMatch(/\.slice\(0, 3 \*|Float32Array\.from|Uint32Array\.from/);
+  });
+
+  it("inflates only through inflateEntry, which charges each chunk before handing it on", () => {
+    expect([...source.matchAll(/\bpump\(/g)]).toHaveLength(1);
+    const inflate = body("async function inflateEntry(");
+    expect(inflate).toContain("pump(");
+    const charge = inflate.indexOf("budget.inflate(chunk.length);");
+    expect(charge).toBeGreaterThanOrEqual(0);
+    expect(charge).toBeLessThan(inflate.indexOf("take(chunk);"));
+    expect(source).not.toMatch(/readCapped/);
   });
 });

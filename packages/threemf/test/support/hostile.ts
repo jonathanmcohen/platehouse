@@ -229,9 +229,11 @@ export function hostile(family: Family, seed: number): HostileFile {
         seed,
         label: `chain of ${depth} over a ${vertices}-vertex mesh in a part`,
         bytes: overlappingZip(
-          project([comps(300, [{ objectId: 200, path: `/${part}` }])], [300], [
-            { name: part, data: model(objects, null) },
-          ]),
+          project(
+            [comps(300, [{ objectId: 200, path: `/${part}` }])],
+            [300],
+            [{ name: part, data: model(objects, null) }],
+          ),
         ),
       };
     }
@@ -271,9 +273,11 @@ export function hostile(family: Family, seed: number): HostileFile {
         seed,
         label: `${depth} levels through p:path to the part they are in`,
         bytes: overlappingZip(
-          project([comps(300, [{ objectId: 500, path: `/${part}` }])], [300], [
-            { name: part, data: model(objects, null) },
-          ]),
+          project(
+            [comps(300, [{ objectId: 500, path: `/${part}` }])],
+            [300],
+            [{ name: part, data: model(objects, null) }],
+          ),
         ),
       };
     }
@@ -293,10 +297,15 @@ export function hostile(family: Family, seed: number): HostileFile {
         label: `${n} names for one part inflating to ${padding} bytes`,
         bytes: overlappingZip(
           project(
-            [comps(300, names.map((name) => ({ objectId: 1, path: `/${name}` })))],
+            [
+              comps(
+                300,
+                names.map((name) => ({ objectId: 1, path: `/${name}` })),
+              ),
+            ],
             [300],
             names.map((name, i) =>
-              i === 0 ? { name, data: body } : { name, data: "", sameBytesAs: names[0] },
+              i === 0 ? { name, data: body } : { name, data: "", sameBytesAs: names[0] as string },
             ),
           ),
         ),

@@ -31,14 +31,23 @@ export interface Tag {
   raw: string;
 }
 
-/** Hands each tag to onTag as the text arrives; call write per chunk, then end. */
+/**
+ * Hands each tag to onTag as the text arrives; call write per chunk, then
+ * end. onScan, when given, is told how many characters each step is about
+ * to look at, before it looks: the new text plus any unfinished tag carried
+ * over from the last chunk, which is looked at again. A caller that counts
+ * these has counted every character the scanner ever handles, so a file of
+ * very long tags split over many chunks costs what it really costs.
+ */
 export class TagScanner {
   private readonly decoder = new StringDecoder("utf8");
   private pending = "";
   private readonly onTag: (tag: Tag) => void;
+  private readonly onScan: ((chars: number) => void) | undefined;
 
-  constructor(onTag: (tag: Tag) => void) {
+  constructor(onTag: (tag: Tag) => void, onScan?: (chars: number) => void) {
     this.onTag = onTag;
+    this.onScan = onScan;
   }
 
   write(chunk: Buffer): void {
@@ -52,6 +61,7 @@ export class TagScanner {
   }
 
   private scan(text: string): void {
+    this.onScan?.(this.pending.length + text.length);
     const s = this.pending === "" ? text : this.pending + text;
     let i = 0;
     const n = s.length;

@@ -19,19 +19,40 @@
 //   instances has one build item per instance, and instance_id counts them
 //   from 0 in file order.
 //
-// Rules, carried from parse.ts where they apply:
+// The limits hold by construction (review findings #383, #384). One Budget
+// per call is the only way the reader allocates a mesh array or takes an
+// inflated byte, and each is charged before it happens:
+// - memory: every Float32Array and Uint32Array of mesh data is made by
+//   Budget.float32 or Budget.uint32, which refuse one that would take the
+//   arrays alive past limits.meshBytes, and is freed through Budget.free.
+//   A mesh is read at most once and never replaced, so no copy is held
+//   that the budget does not count;
+// - inflate: every byte inflated, the config entries and every read of
+//   every model part, is charged to Budget.inflate before it is used, against
+//   one total, limits.inflateBytes;
+// - work: every character the tag scanner looks at (an unfinished tag that
+//   is looked at again counted again), every config character parsed and
+//   every step of the component walk is charged to Budget.step;
+// - placing: each mesh placed on the plate charges its triangles (counted
+//   while its part was first read, before the mesh itself is read) against
+//   limits.triangles, and each component followed counts against
+//   limits.instances, when it is placed, not when the result is assembled.
+// When a charge would pass a limit, the read stops there with too_large, and
+// everything it held is freed. Each model part is read at most twice: once
+// for its objects (collecting the meshes already known to be needed), and
+// once more only if the walk later finds other meshes in it are needed.
+//
+// Other rules, carried from parse.ts where they apply:
 // - entries are found by their raw name bytes, and only the parts the plate
 //   needs are inflated: 3D/3dmodel.model and the parts its components name;
-// - every cap counts bytes actually inflated, and the mesh limits below
-//   count what is held, so a hostile file cannot make the reader hold more;
 // - a model part is read as a stream of tags (xml-scan.ts), never whole;
 // - a filesystem error is ReadUnavailable and never a problem with the file;
 // - anything else wrong with the file is a PlateMeshError with its problem:
 //   no_plate (the file lists no such plate), no_objects (the plate is
 //   empty), no_mesh (nothing on the plate has a mesh that can be read),
-//   too_large (over a limit below) or damaged (the archive or a part it
-//   needs cannot be read). A plate where some objects can be read and
-//   others cannot shows the ones that can.
+//   too_large (over a limit) or damaged (the archive or a part it needs
+//   cannot be read). A plate where some objects can be read and others
+//   cannot shows the ones that can.
 //
 // Colours: an object prints with filament 1 unless it names another; a part
 // naming filament 0 or none uses its object's. A colour is kept only as
@@ -42,15 +63,7 @@
 import { open } from "node:fs/promises";
 import { XMLParser } from "fast-xml-parser";
 import type yauzl from "yauzl";
-import {
-  HandleReader,
-  listEntries,
-  openArchive,
-  ownRead,
-  pump,
-  readCapped,
-  unavailableOr,
-} from "./archive.js";
+import { HandleReader, listEntries, openArchive, ownRead, pump, unavailableOr } from "./archive.js";
 import { Damaged } from "./errors.js";
 import { LIMITS } from "./limits.js";
 import { attrs, TagScanner } from "./xml-scan.js";
@@ -75,24 +88,48 @@ export class PlateMeshError extends Error {
   }
 }
 
-export const PLATE_MESH_LIMITS = Object.freeze({
-  /** Triangles drawn on one plate, every instance counted, and triangles held. */
-  triangles: 5_000_000,
-  /** Vertices held over the plate's meshes. */
-  vertices: 5_000_000,
-  /** Inflated bytes of each model part read. */
-  partBytes: 1024 * MiB,
-  /** Meshes placed on one plate, counted as each layer of components is expanded. */
-  instances: 10_000,
-  /**
-   * Components and build items held over the model parts read. Counted as
-   * each part is scanned, so a flood of tiny <component/> tags is refused
-   * before it is held, whether or not it is on the plate.
-   */
-  components: 100_000,
+export interface PlateMeshLimits {
+  /** Triangles drawn on the plate, every placed copy counted. */
+  triangles: number;
+  /** Bytes of mesh arrays alive at any moment. */
+  meshBytes: number;
+  /** Bytes inflated in all, over the config entries and every read of every model part. */
+  inflateBytes: number;
+  /** Parsing work: characters scanned and parsed, and steps of the component walk. */
+  work: number;
+  /** Meshes placed on one plate, counted as components are followed. */
+  instances: number;
+  /** Components and build items held over the model parts read. */
+  components: number;
   /** How deep components may nest. */
+  depth: number;
+}
+
+export const PLATE_MESH_LIMITS: Readonly<PlateMeshLimits> = Object.freeze({
+  triangles: 5_000_000,
+  meshBytes: 256 * MiB,
+  inflateBytes: 1024 * MiB,
+  work: 2_000_000_000,
+  instances: 10_000,
+  components: 100_000,
   depth: 16,
 });
+
+/** What one read used, for a caller that wants to see it (the tests). */
+export interface PlateMeshBudgetReport {
+  /** The limits the read ran under. */
+  limits: Readonly<PlateMeshLimits>;
+  /** The most bytes of mesh arrays alive at once. */
+  peakLiveBytes: number;
+  /** Bytes of mesh arrays still alive when the read ended: the result's, or 0. */
+  liveBytes: number;
+  /** Bytes of mesh arrays allocated in all. */
+  allocatedBytes: number;
+  inflatedBytes: number;
+  work: number;
+  /** Triangles drawn, every placed copy counted. */
+  drawnTriangles: number;
+}
 
 /** One mesh, in its object's own coordinates. */
 export interface MeshPiece {
@@ -124,12 +161,16 @@ export interface PlateMesh {
 }
 
 export interface PlateMeshOptions {
-  /**
-   * Lowers the triangle limit; it cannot raise it past
-   * PLATE_MESH_LIMITS.triangles. A value that is not a positive finite
-   * number is ignored.
-   */
+  /** Lowers limits.triangles; the same as limits: { triangles }. */
   maxTriangles?: number;
+  /**
+   * Lowers any limit. A value that is not a positive finite number, or is
+   * above the default (PLATE_MESH_LIMITS), is ignored: a limit can only be
+   * lowered.
+   */
+  limits?: Partial<PlateMeshLimits>;
+  /** Told what the read used when it ends, however it ends. */
+  onBudget?: (report: PlateMeshBudgetReport) => void;
 }
 
 /**
@@ -148,6 +189,7 @@ export async function readPlateMesh(
   } catch (err) {
     throw unavailableOr(err);
   }
+  const budget = new Budget(limitsOf(opts));
   try {
     let size: number;
     try {
@@ -156,8 +198,11 @@ export async function readPlateMesh(
       throw unavailableOr(err);
     }
     try {
-      return await readFromArchive(new HandleReader(handle), size, plate, triangleLimit(opts));
+      const mesh = await readFromArchive(new HandleReader(handle), size, plate, budget);
+      budget.keepOnly(mesh);
+      return mesh;
     } catch (err) {
+      budget.freeAll();
       // Damaged comes only from the zip reader, inflate, the config caps and
       // the tag scanner; a ReadUnavailable or a bug reaches the caller as is.
       if (err instanceof Damaged) throw new PlateMeshError("damaged", err.message);
@@ -165,15 +210,150 @@ export async function readPlateMesh(
     }
   } finally {
     await handle.close().catch(() => undefined);
+    opts.onBudget?.(budget.report());
   }
 }
 
-function triangleLimit(opts: PlateMeshOptions): number {
-  const asked = opts.maxTriangles;
-  if (asked === undefined || !Number.isFinite(asked) || asked <= 0) {
-    return PLATE_MESH_LIMITS.triangles;
+function limitsOf(opts: PlateMeshOptions): PlateMeshLimits {
+  const asked: Partial<PlateMeshLimits> = { ...opts.limits };
+  if (opts.maxTriangles !== undefined) asked.triangles = opts.maxTriangles;
+  const out = { ...PLATE_MESH_LIMITS };
+  for (const key of Object.keys(out) as Array<keyof PlateMeshLimits>) {
+    const v = asked[key];
+    if (v !== undefined && Number.isFinite(v) && v > 0 && v <= out[key]) out[key] = v;
   }
-  return Math.min(asked, PLATE_MESH_LIMITS.triangles);
+  return out;
+}
+
+// --- The budget -------------------------------------------------------------------
+
+/**
+ * Everything one read may use, charged before it is used. The only maker
+ * of mesh arrays and the only taker of inflated bytes in this file.
+ */
+class Budget {
+  readonly limits: Readonly<PlateMeshLimits>;
+  private readonly owned = new Set<Float32Array | Uint32Array>();
+  private live = 0;
+  private peak = 0;
+  private allocated = 0;
+  private inflated = 0;
+  private worked = 0;
+  private drawn = 0;
+  private held = 0;
+
+  constructor(limits: PlateMeshLimits) {
+    this.limits = Object.freeze(limits);
+  }
+
+  private over(what: string): never {
+    throw new PlateMeshError("too_large", `${what} over the limit`);
+  }
+
+  private charge(bytes: number): void {
+    if (this.live + bytes > this.limits.meshBytes) this.over("mesh memory");
+    this.live += bytes;
+    this.allocated += bytes;
+    if (this.live > this.peak) this.peak = this.live;
+  }
+
+  float32(length: number): Float32Array {
+    this.charge(length * 4);
+    const a = new Float32Array(length);
+    this.owned.add(a);
+    return a;
+  }
+
+  uint32(length: number): Uint32Array {
+    this.charge(length * 4);
+    const a = new Uint32Array(length);
+    this.owned.add(a);
+    return a;
+  }
+
+  /** Frees an array this budget made; anything else is ignored. */
+  free(a: Float32Array | Uint32Array): void {
+    if (!this.owned.delete(a)) return;
+    this.live -= a.byteLength;
+  }
+
+  freeAll(): void {
+    for (const a of [...this.owned]) this.free(a);
+  }
+
+  /** Frees every array the mesh does not use. */
+  keepOnly(mesh: PlateMesh): void {
+    const used = new Set<ArrayBufferLike>();
+    for (const p of mesh.pieces) {
+      used.add(p.positions.buffer);
+      used.add(p.indices.buffer);
+    }
+    for (const a of [...this.owned]) if (!used.has(a.buffer)) this.free(a);
+  }
+
+  inflate(bytes: number): void {
+    if (this.inflated + bytes > this.limits.inflateBytes) this.over("bytes inflated");
+    this.inflated += bytes;
+  }
+
+  step(units = 1): void {
+    if (this.worked + units > this.limits.work) this.over("parsing work");
+    this.worked += units;
+  }
+
+  place(triangles: number): void {
+    if (this.drawn + triangles > this.limits.triangles) this.over("triangles drawn");
+    this.drawn += triangles;
+  }
+
+  component(): void {
+    if (++this.held > this.limits.components) this.over("components and build items");
+  }
+
+  report(): PlateMeshBudgetReport {
+    return {
+      limits: this.limits,
+      peakLiveBytes: this.peak,
+      liveBytes: this.live,
+      allocatedBytes: this.allocated,
+      inflatedBytes: this.inflated,
+      work: this.worked,
+      drawnTriangles: this.drawn,
+    };
+  }
+}
+
+/** Inflates an entry through the budget, handing each chunk on once it is charged. */
+async function inflateEntry(
+  zip: yauzl.ZipFile,
+  entry: yauzl.Entry,
+  budget: Budget,
+  take: (chunk: Buffer) => void,
+): Promise<void> {
+  await pump(zip, entry, Number.POSITIVE_INFINITY, (chunk) => {
+    budget.inflate(chunk.length);
+    take(chunk);
+    return true;
+  });
+}
+
+/** A config entry's text, within its own cap (damage past it) and the budget. */
+async function configText(
+  zip: yauzl.ZipFile,
+  entry: yauzl.Entry | undefined,
+  budget: Budget,
+): Promise<string | null> {
+  if (entry === undefined) return null;
+  const chunks: Buffer[] = [];
+  let total = 0;
+  await inflateEntry(zip, entry, budget, (chunk) => {
+    total += chunk.length;
+    if (total > LIMITS.configBytes) throw new Damaged(`entry over ${LIMITS.configBytes} bytes`);
+    chunks.push(chunk);
+  });
+  const text = Buffer.concat(chunks).toString("utf8");
+  budget.step(text.length);
+  return text;
 }
 
 // --- Transforms ---------------------------------------------------------------
@@ -343,65 +523,28 @@ interface Mesh {
   indices: Uint32Array;
 }
 
+/**
+ * What the reader knows of one model part. Its objects, components and
+ * build items come from its first read and never change; meshes are added
+ * as they are read, each at most once.
+ */
 interface PartData {
   /** Objects made of components, by id. */
   components: Map<number, Component[]>;
-  /** Objects with a <mesh>, read or not. */
-  meshIds: Set<number>;
-  /** The meshes of the ids collected, by id; null for one that cannot be read. */
+  /** Objects with a <mesh>, read or not, and the triangles each mesh has. */
+  triangles: Map<number, number>;
+  /** The meshes read so far, by id; null for one that cannot be read. */
   meshes: Map<number, Mesh | null>;
-  collected: Set<number>;
   /** The build items, in file order (the root part's). */
   items: Component[];
-  /** Components and build items this part holds, counted against the budget. */
-  held: number;
+  /** How many times the part has been read; at most 2. */
+  reads: number;
 }
 
-/** Counts what the reader holds and draws against the limits. */
-class Budget {
-  vertices = 0;
-  triangles = 0;
-  components = 0;
-  readonly maxTriangles: number;
-
-  constructor(maxTriangles: number) {
-    this.maxTriangles = maxTriangles;
-  }
-
-  addVertex(): void {
-    if (++this.vertices > PLATE_MESH_LIMITS.vertices) {
-      throw new PlateMeshError("too_large", "more vertices than the limit");
-    }
-  }
-
-  addTriangle(): void {
-    if (++this.triangles > this.maxTriangles) {
-      throw new PlateMeshError("too_large", "more triangles than the limit");
-    }
-  }
-
-  /** A component or build item held. */
-  addComponent(): void {
-    if (++this.components > PLATE_MESH_LIMITS.components) {
-      throw new PlateMeshError("too_large", "more components and build items than the limit");
-    }
-  }
-
-  /** A part read again: its components and build items are no longer held. */
-  releaseComponents(part: PartData): void {
-    this.components -= part.held;
-  }
-
-  release(mesh: Mesh | null): void {
-    if (mesh === null) return;
-    this.vertices -= mesh.positions.length / 3;
-    this.triangles -= mesh.indices.length / 3;
-  }
-}
-
+/** A mesh being read; its arrays are the budget's, and grow by doubling. */
 class MeshBuilder {
-  private positions = new Float32Array(3 * 256);
-  private indices = new Uint32Array(3 * 256);
+  private positions: Float32Array;
+  private indices: Uint32Array;
   private vertexCount = 0;
   private triangleCount = 0;
   private broken = false;
@@ -409,6 +552,8 @@ class MeshBuilder {
 
   constructor(budget: Budget) {
     this.budget = budget;
+    this.positions = budget.float32(3 * 256);
+    this.indices = budget.uint32(3 * 256);
   }
 
   vertex(a: Map<string, string>): void {
@@ -419,8 +564,12 @@ class MeshBuilder {
       this.broken = true;
       return;
     }
-    this.budget.addVertex();
-    if (3 * (this.vertexCount + 1) > this.positions.length) this.positions = grow(this.positions);
+    if (3 * (this.vertexCount + 1) > this.positions.length) {
+      const bigger = this.budget.float32(this.positions.length * 2);
+      bigger.set(this.positions);
+      this.budget.free(this.positions);
+      this.positions = bigger;
+    }
     this.positions.set([x, y, z], 3 * this.vertexCount);
     this.vertexCount++;
   }
@@ -433,32 +582,39 @@ class MeshBuilder {
       this.broken = true;
       return;
     }
-    this.budget.addTriangle();
-    if (3 * (this.triangleCount + 1) > this.indices.length) this.indices = grow(this.indices);
+    if (3 * (this.triangleCount + 1) > this.indices.length) {
+      const bigger = this.budget.uint32(this.indices.length * 2);
+      bigger.set(this.indices);
+      this.budget.free(this.indices);
+      this.indices = bigger;
+    }
     this.indices.set([v1, v2, v3], 3 * this.triangleCount);
     this.triangleCount++;
   }
 
-  /** The mesh, or null when it has no triangles or anything in it cannot be read. */
+  /**
+   * The mesh, as views of the builder's own arrays (no copy), or null when
+   * it has no triangles or anything in it cannot be read; then its arrays
+   * are freed.
+   */
   done(): Mesh | null {
     const mesh: Mesh = {
-      positions: this.positions.slice(0, 3 * this.vertexCount),
-      indices: this.indices.slice(0, 3 * this.triangleCount),
+      positions: this.positions.subarray(0, 3 * this.vertexCount),
+      indices: this.indices.subarray(0, 3 * this.triangleCount),
     };
     const unreadable =
       this.broken || this.triangleCount === 0 || mesh.indices.some((i) => i >= this.vertexCount);
     if (unreadable) {
-      this.budget.release(mesh);
+      this.drop();
       return null;
     }
     return mesh;
   }
-}
 
-function grow<T extends Float32Array | Uint32Array>(a: T): T {
-  const bigger = new (a.constructor as new (n: number) => T)(a.length * 2);
-  bigger.set(a);
-  return bigger;
+  drop(): void {
+    this.budget.free(this.positions);
+    this.budget.free(this.indices);
+  }
 }
 
 /** A p:path value as an entry name: /3D/Objects/a.model is 3D/Objects/a.model. */
@@ -468,33 +624,36 @@ function entryName(path: string | undefined): string | null {
 }
 
 /**
- * Reads one model part as a stream of tags: every object's components and
- * whether it has a mesh, the build items, and the meshes of the ids in
- * collect. A part that is not in the archive is empty.
+ * Reads one model part as a stream of tags. On its first read (part has no
+ * data yet) it records every object's components and the triangles of each
+ * mesh, and the build items; on any read it reads the meshes of the ids in
+ * collect that are not read yet, each into arrays of the budget. A part that
+ * is not in the archive is empty.
  */
-async function scanPart(
+async function readPart(
   zip: yauzl.ZipFile,
   entry: yauzl.Entry | undefined,
-  collect: Set<number>,
+  known: PartData | undefined,
+  collect: ReadonlySet<number>,
   budget: Budget,
 ): Promise<PartData> {
-  const data: PartData = {
+  const first = known === undefined;
+  const data: PartData = known ?? {
     components: new Map(),
-    meshIds: new Set(),
+    triangles: new Map(),
     meshes: new Map(),
-    collected: new Set(collect),
     items: [],
-    held: 0,
+    reads: 0,
   };
-  const hold = (): void => {
-    budget.addComponent();
-    data.held++;
-  };
+  data.reads++;
+  if (data.reads > 2) throw new Error(`a model part was read ${data.reads} times`);
   if (entry === undefined) return data;
 
   let objectId: number | null = null;
   let components: Component[] | null = null;
   let builder: MeshBuilder | null = null;
+  let triangles = 0;
+  let inMesh = false;
   let inBuild = false;
   const component = (a: Map<string, string>): Component | null => {
     const id = whole(a.get("objectid"));
@@ -506,87 +665,96 @@ async function scanPart(
     };
   };
   const endObject = (): void => {
-    if (objectId !== null && components !== null && !data.components.has(objectId)) {
+    if (first && objectId !== null && components !== null && !data.components.has(objectId)) {
       data.components.set(objectId, components);
     }
+    // An object closed inside its mesh never finished it.
+    builder?.drop();
     objectId = null;
     components = null;
     builder = null;
+    inMesh = false;
+  };
+  const endMesh = (): void => {
+    if (objectId === null) return;
+    if (first && !data.triangles.has(objectId)) data.triangles.set(objectId, triangles);
+    if (builder !== null) data.meshes.set(objectId, builder.done());
+    builder = null;
+    inMesh = false;
   };
 
-  const scanner = new TagScanner((tag) => {
-    switch (tag.name) {
-      case "object":
-        if (tag.closing) {
-          endObject();
-        } else {
-          objectId = whole(attrs(tag.raw).get("id"));
-          components = null;
-          if (tag.selfClosing) endObject();
-        }
-        return;
-      case "mesh":
-        if (objectId === null) return;
-        if (tag.closing) {
-          if (builder !== null && !data.meshes.has(objectId))
-            data.meshes.set(objectId, builder.done());
-          builder = null;
+  const scanner = new TagScanner(
+    (tag) => {
+      switch (tag.name) {
+        case "object":
+          if (tag.closing) {
+            endObject();
+          } else {
+            endObject();
+            objectId = whole(attrs(tag.raw).get("id"));
+            if (tag.selfClosing) endObject();
+          }
           return;
-        }
-        data.meshIds.add(objectId);
-        if (collect.has(objectId) && !data.meshes.has(objectId)) {
-          builder = new MeshBuilder(budget);
-          if (tag.selfClosing) {
-            data.meshes.set(objectId, builder.done());
-            builder = null;
+        case "mesh":
+          if (objectId === null) return;
+          if (tag.closing) {
+            endMesh();
+            return;
           }
-        }
-        return;
-      case "vertex":
-        if (builder !== null && !tag.closing) (builder as MeshBuilder).vertex(attrs(tag.raw));
-        return;
-      case "triangle":
-        if (builder !== null && !tag.closing) (builder as MeshBuilder).triangle(attrs(tag.raw));
-        return;
-      case "components":
-        if (objectId !== null && !tag.closing) components ??= [];
-        return;
-      case "component":
-        if (components !== null && !tag.closing) {
-          const c = component(attrs(tag.raw));
-          if (c !== null) {
-            hold();
-            (components as Component[]).push(c);
+          inMesh = true;
+          triangles = 0;
+          if (collect.has(objectId) && !data.meshes.has(objectId)) {
+            builder = new MeshBuilder(budget);
           }
-        }
-        return;
-      case "build":
-        inBuild = !tag.closing && !tag.selfClosing;
-        return;
-      case "item":
-        if (inBuild && !tag.closing) {
-          const c = component(attrs(tag.raw));
-          if (c !== null) {
-            hold();
-            data.items.push(c);
+          if (tag.selfClosing) endMesh();
+          return;
+        case "vertex":
+          if (builder !== null && !tag.closing) builder.vertex(attrs(tag.raw));
+          return;
+        case "triangle":
+          if (!inMesh || tag.closing) return;
+          triangles++;
+          if (builder !== null) builder.triangle(attrs(tag.raw));
+          return;
+        case "components":
+          if (first && objectId !== null && !tag.closing) components ??= [];
+          return;
+        case "component":
+          if (components !== null && !tag.closing) {
+            const c = component(attrs(tag.raw));
+            if (c !== null) {
+              budget.component();
+              components.push(c);
+            }
           }
-        }
-        return;
-      default:
-        return;
-    }
-  });
+          return;
+        case "build":
+          inBuild = !tag.closing && !tag.selfClosing;
+          return;
+        case "item":
+          if (first && inBuild && !tag.closing) {
+            const c = component(attrs(tag.raw));
+            if (c !== null) {
+              budget.component();
+              data.items.push(c);
+            }
+          }
+          return;
+        default:
+          return;
+      }
+    },
+    (chars) => budget.step(chars),
+  );
 
-  let inflated = 0;
-  await pump(zip, entry, Number.POSITIVE_INFINITY, (chunk) => {
-    inflated += chunk.length;
-    if (inflated > PLATE_MESH_LIMITS.partBytes) {
-      throw new PlateMeshError("too_large", "a model part over the size limit");
-    }
-    scanner.write(chunk);
-    return true;
-  });
-  scanner.end();
+  try {
+    await inflateEntry(zip, entry, budget, (chunk) => scanner.write(chunk));
+    scanner.end();
+  } finally {
+    // A mesh left unfinished by an error, or by the part ending inside it.
+    // (A cast: the scanner's callback assigns builder, which narrowing cannot see.)
+    (builder as MeshBuilder | null)?.drop();
+  }
   return data;
 }
 
@@ -602,8 +770,7 @@ interface Request {
   part: number | null;
 }
 
-interface Leaf {
-  mesh: Mesh;
+interface Placed {
   path: string;
   objectId: number;
   transform: Transform;
@@ -614,65 +781,65 @@ async function readFromArchive(
   reader: yauzl.RandomAccessReader,
   size: number,
   plate: number,
-  maxTriangles: number,
+  budget: Budget,
 ): Promise<PlateMesh> {
   const zip = await openArchive(reader, size);
   try {
     const entries = await ownRead(() => listEntries(zip));
-    const configText = async (name: string): Promise<string | null> => {
-      const entry = entries.get(name);
-      return entry ? (await readCapped(zip, entry, LIMITS.configBytes)).toString("utf8") : null;
-    };
-    const settings = readSettings(await configText(MODEL_SETTINGS));
-    const colours = readColours(await configText(PROJECT_SETTINGS));
-    const budget = new Budget(maxTriangles);
-
+    const settings = readSettings(await configText(zip, entries.get(MODEL_SETTINGS), budget));
+    const colours = readColours(await configText(zip, entries.get(PROJECT_SETTINGS), budget));
     const parts = new Map<string, PartData>();
-    /** The part's data with the meshes of ids collected, reading it again only for ids it lacks. */
-    const partData = async (path: string, ids: Iterable<number>): Promise<PartData> => {
-      const known = parts.get(path);
-      const want = new Set(ids);
-      if (known !== undefined && [...want].every((id) => known.collected.has(id))) return known;
-      if (known !== undefined) {
-        for (const id of known.collected) want.add(id);
-        for (const mesh of known.meshes.values()) budget.release(mesh);
-        budget.releaseComponents(known);
-      }
-      const read = await scanPart(zip, entries.get(path), want, budget);
-      parts.set(path, read);
-      return read;
-    };
 
-    // The plate's objects: its model instances, or every build item when
-    // the file lists no plates and plate 1 is asked for.
-    const root = await partData(ROOT, []);
-    let requests: Request[];
-    if (settings.plates === null) {
-      if (plate !== 1) throw new PlateMeshError("no_plate", `the file lists no plate ${plate}`);
-      requests = itemsAsRequests(root.items, () => true);
-    } else {
-      const instances = settings.plates.get(plate);
-      if (instances === undefined) {
-        throw new PlateMeshError("no_plate", `the file lists no plate ${plate}`);
+    // The plate's own objects are known from the settings, so the root's
+    // first read already takes their meshes.
+    const instances = settings.plates === null ? null : settings.plates.get(plate);
+    if (settings.plates !== null && instances === undefined) {
+      throw new PlateMeshError("no_plate", `the file lists no plate ${plate}`);
+    }
+    if (instances !== null && instances !== undefined && instances.length === 0) {
+      throw new PlateMeshError("no_objects", `plate ${plate} is empty`);
+    }
+    if (instances === null && plate !== 1) {
+      throw new PlateMeshError("no_plate", `the file lists no plate ${plate}`);
+    }
+    const tops = new Set((instances ?? []).map((i) => i.objectId));
+    const root = await readPart(zip, entries.get(ROOT), undefined, tops, budget);
+    parts.set(ROOT, root);
+
+    // The plate's requests: its model instances matched to build items, or
+    // every build item when the file lists no plates and plate 1 is asked for.
+    let requests: Request[] = [];
+    const request = (r: Request): void => {
+      budget.step();
+      if (requests.length >= budget.limits.instances) {
+        throw new PlateMeshError("too_large", "placed meshes over the limit");
       }
-      if (instances.length === 0) throw new PlateMeshError("no_objects", `plate ${plate} is empty`);
-      // Each object's build items in file order, indexed once: filtering
-      // every item for every instance is items * instances steps that never
-      // yield, which a small crafted file can make billions.
+      requests.push(r);
+    };
+    if (instances === null || instances === undefined) {
+      for (const i of root.items) {
+        if (i.transform === null) continue;
+        request({
+          path: i.path ?? ROOT,
+          objectId: i.objectId,
+          transform: i.transform,
+          top: i.objectId,
+          part: null,
+        });
+      }
+    } else {
+      // Each object's build items in file order, indexed once.
       const itemsOf = new Map<number, Component[]>();
       for (const item of root.items) {
+        budget.step();
         const list = itemsOf.get(item.objectId);
         if (list === undefined) itemsOf.set(item.objectId, [item]);
         else list.push(item);
       }
-      requests = [];
       for (const { objectId, instance } of instances) {
         const item = itemsOf.get(objectId)?.[instance];
         if (item === undefined || item.transform === null) continue;
-        if (requests.length >= PLATE_MESH_LIMITS.instances) {
-          throw new PlateMeshError("too_large", "more placed meshes than the limit");
-        }
-        requests.push({
+        request({
           path: item.path ?? ROOT,
           objectId,
           transform: item.transform,
@@ -682,34 +849,40 @@ async function readFromArchive(
       }
     }
 
-    // Follow components layer by layer, reading each part once for every
-    // object the layer needs from it.
-    const leaves: Array<Omit<Leaf, "mesh"> & { mesh: Mesh | null }> = [];
-    for (let depth = 0; requests.length > 0 && depth <= PLATE_MESH_LIMITS.depth; depth++) {
-      if (requests.length + leaves.length > PLATE_MESH_LIMITS.instances) {
-        throw new PlateMeshError("too_large", "more placed meshes than the limit");
-      }
-      const byPath = new Map<string, number[]>();
+    // Walk the components layer by layer. A part not read yet is read once,
+    // taking the meshes this layer asks of it; a mesh found is placed at
+    // once, its triangles charged from the count its part's first read
+    // made, so no mesh needs to be held to be counted.
+    const placed: Placed[] = [];
+    /** Mesh ids the walk placed but whose part has not read them yet, by part. */
+    const unread = new Map<string, Set<number>>();
+    for (let depth = 0; requests.length > 0 && depth <= budget.limits.depth; depth++) {
+      const firstReads = new Map<string, Set<number>>();
       for (const r of requests) {
-        const ids = byPath.get(r.path);
-        if (ids === undefined) byPath.set(r.path, [r.objectId]);
-        else ids.push(r.objectId);
+        if (parts.has(r.path)) continue;
+        let ids = firstReads.get(r.path);
+        if (ids === undefined) {
+          ids = new Set();
+          firstReads.set(r.path, ids);
+        }
+        ids.add(r.objectId);
       }
-      for (const [path, ids] of byPath) await partData(path, ids);
+      for (const [path, ids] of firstReads) {
+        parts.set(path, await readPart(zip, entries.get(path), undefined, ids, budget));
+      }
       const next: Request[] = [];
       for (const r of requests) {
-        const data = parts.get(r.path);
-        if (data === undefined) continue;
+        budget.step();
+        const data = parts.get(r.path) as PartData;
         const comps = data.components.get(r.objectId);
         if (comps !== undefined) {
           for (const c of comps) {
+            budget.step();
             if (c.transform === null) continue;
             const part = r.part ?? c.objectId;
             if (!printed(settings, r.top, part)) continue;
-            // Checked per component, so one wide object is refused before
-            // its whole layer is expanded, not at the start of the next.
-            if (next.length + leaves.length >= PLATE_MESH_LIMITS.instances) {
-              throw new PlateMeshError("too_large", "more placed meshes than the limit");
+            if (next.length + placed.length >= budget.limits.instances) {
+              throw new PlateMeshError("too_large", "placed meshes over the limit");
             }
             next.push({
               path: c.path ?? r.path,
@@ -719,39 +892,44 @@ async function readFromArchive(
               part,
             });
           }
-        } else if (data.meshIds.has(r.objectId)) {
-          leaves.push({
-            mesh: data.meshes.get(r.objectId) ?? null,
-            path: r.path,
-            objectId: r.objectId,
-            transform: r.transform,
-            colour: colourOf(settings, colours, r.top, r.part),
-          });
+          continue;
+        }
+        const triangles = data.triangles.get(r.objectId);
+        if (triangles === undefined) continue;
+        budget.place(triangles);
+        if (next.length + placed.length >= budget.limits.instances) {
+          throw new PlateMeshError("too_large", "placed meshes over the limit");
+        }
+        placed.push({
+          path: r.path,
+          objectId: r.objectId,
+          transform: r.transform,
+          colour: colourOf(settings, colours, r.top, r.part),
+        });
+        if (!data.meshes.has(r.objectId)) {
+          let ids = unread.get(r.path);
+          if (ids === undefined) {
+            ids = new Set();
+            unread.set(r.path, ids);
+          }
+          ids.add(r.objectId);
         }
       }
       requests = next;
     }
 
-    const readable = leaves.filter((l): l is Leaf => l.mesh !== null);
-    if (readable.length === 0) {
-      throw new PlateMeshError("no_mesh", `nothing on plate ${plate} has a mesh that can be read`);
+    // The meshes placed but not read yet: one more read of each such part,
+    // taking only those.
+    for (const [path, ids] of unread) {
+      const data = parts.get(path) as PartData;
+      const missing = new Set([...ids].filter((id) => !data.meshes.has(id)));
+      if (missing.size > 0) await readPart(zip, entries.get(path), data, missing, budget);
     }
-    return assemble(plate, readable, maxTriangles);
+
+    return assemble(plate, placed, parts, budget);
   } finally {
     zip.close();
   }
-}
-
-function itemsAsRequests(items: Component[], keep: (c: Component) => boolean): Request[] {
-  return items
-    .filter((i) => keep(i) && i.transform !== null)
-    .map((i) => ({
-      path: i.path ?? ROOT,
-      objectId: i.objectId,
-      transform: i.transform as Transform,
-      top: i.objectId,
-      part: null,
-    }));
 }
 
 /** Whether a part of a plate object is printed: anything but a normal part is not. */
@@ -772,28 +950,32 @@ function colourOf(
 }
 
 /** The pieces, one per mesh and colour, and the instances that place them. */
-function assemble(plate: number, leaves: Leaf[], maxTriangles: number): PlateMesh {
+function assemble(
+  plate: number,
+  placed: Placed[],
+  parts: Map<string, PartData>,
+  budget: Budget,
+): PlateMesh {
   const pieces: MeshPiece[] = [];
   const pieceOf = new Map<string, number>();
   const instances: MeshInstance[] = [];
   let triangles = 0;
-  for (const leaf of leaves) {
-    triangles += leaf.mesh.indices.length / 3;
-    if (triangles > maxTriangles) {
-      throw new PlateMeshError("too_large", "more triangles drawn than the limit");
-    }
-    const key = `${leaf.path}\u0000${leaf.objectId}\u0000${leaf.colour ?? ""}`;
+  for (const p of placed) {
+    budget.step();
+    const mesh = parts.get(p.path)?.meshes.get(p.objectId) ?? null;
+    if (mesh === null) continue;
+    triangles += mesh.indices.length / 3;
+    const key = `${p.path}\u0000${p.objectId}\u0000${p.colour ?? ""}`;
     let piece = pieceOf.get(key);
     if (piece === undefined) {
       piece = pieces.length;
-      pieces.push({
-        positions: leaf.mesh.positions,
-        indices: leaf.mesh.indices,
-        colour: leaf.colour,
-      });
+      pieces.push({ positions: mesh.positions, indices: mesh.indices, colour: p.colour });
       pieceOf.set(key, piece);
     }
-    instances.push({ piece, transform: leaf.transform });
+    instances.push({ piece, transform: p.transform });
+  }
+  if (instances.length === 0) {
+    throw new PlateMeshError("no_mesh", `nothing on plate ${plate} has a mesh that can be read`);
   }
   return { plate, pieces, instances, triangles };
 }
