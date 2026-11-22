@@ -805,12 +805,12 @@ describe("the 3D view's sources (AC-050, AC-051)", () => {
     });
   });
 
-  test("a picture is named only while its status is ok or pending", async () => {
+  test("a picture is named only while its status is ok", async () => {
     const { modelId, fileId } = await ingest(`Preview shown ${marker()}.stl`, ASCII_STL);
     const png = await storeBlob(env, modelId, "render_png", Buffer.from("png"));
     for (const [previewStatus, shown] of [
       ["ok", true],
-      ["pending", true],
+      ["pending", false],
       ["failed", false],
       [null, false],
     ] as const) {

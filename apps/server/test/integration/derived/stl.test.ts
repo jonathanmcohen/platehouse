@@ -10,7 +10,12 @@
 // of another file.
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { DERIVED_MESSAGES, type DerivedJob } from "../../../src/derived/derived.js";
+import {
+  createDerived,
+  DERIVED_MESSAGES,
+  type DerivedJob,
+  RENDER_CHECK_GRACE_MS,
+} from "../../../src/derived/derived.js";
 import { QUEUE } from "../../../src/jobs/queues.js";
 import { BlobNotFound } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
@@ -234,5 +239,88 @@ describe("STL previews (issue #316)", () => {
       );
     expect((error as { code?: string } | null)?.code).toBe("wrong_type");
     expect(await keysOf(env, modelId)).toEqual(keys);
+  });
+});
+
+// The sequences two review rounds found, kept as named tests beside the
+// property test (preview-invariant.test.ts).
+describe("a replacement that is not saved leaves the picture's status alone (issue #389)", () => {
+  test("an STL replacement the slicer fails on through every retry keeps the current picture shown", async () => {
+    const { modelId, fileId } = await uploadStl(uniqueStl("389 kept"));
+    const before = await settledFile(env, fileId);
+    expect(before).toMatchObject({ previewStatus: "ok" });
+    const png = before.renderPngBlobId;
+    expect(png).not.toBeNull();
+
+    env.stub.renders.always("/v1/stl/png", { kind: "busy" });
+    const { sourceBlobId } = await env.derived.replaceFile(
+      fileId,
+      await writeUpload(env, uniqueStl("389 replacement")),
+    );
+    // The replacement's job uses every retry, then ends with the slicer's
+    // failure, and the replacement is not saved.
+    await until(
+      () => env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { sourceBlobId } }),
+      (js) => js.length > 0 && js.every((j) => j.state === "completed"),
+    );
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: before.blobId,
+      renderPngBlobId: png,
+      previewStatus: "ok",
+      previewMessage: null,
+    });
+    expect(await env.repos.blobs.get(sourceBlobId)).toBeUndefined();
+    // The kept picture is still stored and still the current source's.
+    const blob = (await blobsOf(env, modelId)).find((b) => b.id === png);
+    expect(blob?.kind).toBe("render_png");
+  });
+});
+
+describe("a picture that failed because the slicer stayed down says it will be tried again", () => {
+  test("its message says it is tried again automatically, and the backfill does", async () => {
+    const stored = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, uniqueStl("outage wording")),
+      originalName: "Outage.stl",
+      target: "new",
+    });
+    let clock = Date.now();
+    // Jobs held an hour, so only this test runs them; the slicer takes no connection.
+    const send: typeof env.boss.send = (async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, object, Record<string, unknown>];
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    }) as typeof env.boss.send;
+    const down = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: "http://127.0.0.1:9",
+      queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
+      retryDelaySeconds: 1,
+      now: () => new Date(clock),
+    });
+    const runHeld = async () => {
+      const held = (
+        await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId: stored.fileId } })
+      ).filter((j) => j.state === "created");
+      const job = held[0];
+      if (!job) throw new Error("no held job");
+      await env.boss.cancel(QUEUE.slicer, job.id);
+      return down.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+    };
+    await down.renderStl(stored.fileId);
+    expect(await runHeld()).toEqual({ status: "requeued", reason: "slicer_down" });
+    clock += 3 * 60 * 60 * 1000;
+    expect(await runHeld()).toEqual({ status: "failed", reason: "slicer_down" });
+
+    const file = await env.repos.files.get(stored.fileId);
+    expect(file?.previewStatus).toBe("failed");
+    expect(file?.previewMessage).toMatch(/tried again automatically/i);
+    expect(file?.previewMessage).not.toMatch(/started again/i);
+    const run = await env.derived.backfillPreviews(
+      new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
+    );
+    expect(run.queued).toContain(stored.fileId);
   });
 });

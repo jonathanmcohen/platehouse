@@ -871,8 +871,10 @@ describe("a STEP preview picture left pending with no job behind it is settled",
       status: "ok",
     });
     const file = await env.repos.files.get(fileId);
-    // The picture is stored, and left 'pending' while the replacement waits.
-    expect(file).toMatchObject({ derivedStatus: "pending", previewStatus: "pending" });
+    // The picture is stored and is of the current source, so it is ok and
+    // shown while the replacement waits: a replacement not yet saved changes
+    // nothing about the current source (issue #389).
+    expect(file).toMatchObject({ derivedStatus: "pending", previewStatus: "ok" });
     expect(file?.renderPngBlobId).not.toBeNull();
     return file?.renderPngBlobId ?? "";
   }
@@ -960,14 +962,22 @@ describe("a STEP preview picture left pending with no job behind it is settled",
     expect(
       await derived.runJob(convert.data, { retryCount: 0, retryLimit: convert.retryLimit }),
     ).toEqual({ status: "failed", reason: "render_failed" });
-    // The original's picture job then finds the source changed and does nothing.
+    // The original's picture job is for a source that is no longer the
+    // file's, so it does not make the picture pending (issue #389): with no
+    // picture, job or failure for the current source, there is none.
+    expect(await env.repos.files.get(fileId)).toMatchObject({
+      blobId: stagedBlobId,
+      previewStatus: null,
+      renderPngBlobId: null,
+    });
+    // When it runs, it finds the source changed and does nothing.
     const preview = await takeHeld(fileId, DERIVED_KINDS.previewStep);
     expect(
       await derived.runJob(preview.data, { retryCount: 0, retryLimit: preview.retryLimit }),
     ).toEqual({ status: "skipped", reason: "stale" });
     expect(await env.repos.files.get(fileId)).toMatchObject({
       blobId: stagedBlobId,
-      previewStatus: "pending",
+      previewStatus: null,
       renderPngBlobId: null,
     });
 

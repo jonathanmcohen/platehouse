@@ -27,7 +27,14 @@ export interface DerivedEnv extends IngestEnv {
  * so three retries fit in a test's time; the limit and backoff stay.
  */
 export async function startDerivedEnv(
-  opts: { retryDelaySeconds?: number } = {},
+  opts: {
+    retryDelaySeconds?: number;
+    /**
+     * False starts no slicer worker, so jobs stay queued until a test runs
+     * them itself (the preview property test, issue #389).
+     */
+    slicerWorker?: boolean;
+  } = {},
 ): Promise<DerivedEnv> {
   const env = await startIngestEnv();
   let boss: PgBoss | undefined;
@@ -50,7 +57,7 @@ export async function startDerivedEnv(
       purgeExpired: async () => ({}),
       sweepOrphans: async () => ({}),
       sweepUploads: async () => ({}),
-      slicerJobs: derivedJobHandlers(derived),
+      ...(opts.slicerWorker === false ? {} : { slicerJobs: derivedJobHandlers(derived) }),
       pollingIntervalSeconds: 0.5,
     });
     const startedBoss = boss;

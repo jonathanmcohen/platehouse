@@ -120,6 +120,13 @@ export interface RenderStub {
   queue(route: RenderRoute, ...answers: RenderAnswer[]): void;
   /** What a route answers once its queue is empty; render when never set. */
   always(route: RenderRoute, answer: RenderAnswer): void;
+  /**
+   * Decides the answer from the body that arrived, for a request no queue or
+   * always script answers: a render or a failure, as a file's own content
+   * would (issue #389's property test marks some sources broken this way).
+   * Undefined keeps the default render. Cleared by reset().
+   */
+  decide(fn: ((route: RenderRoute, body: Buffer) => RenderAnswer | undefined) | null): void;
   /** Clears every script and the recorded calls. */
   reset(): void;
   callsTo(route: RenderRoute): RenderCall[];
@@ -403,9 +410,11 @@ export async function startSlicerStub(
   const renderCalls: RenderCall[] = [];
   const renderQueue = new Map<RenderRoute, RenderAnswer[]>();
   const renderAlways = new Map<RenderRoute, RenderAnswer>();
+  let decideFn: ((route: RenderRoute, body: Buffer) => RenderAnswer | undefined) | null = null;
 
   async function render(req: IncomingMessage, res: ServerResponse, route: RenderRoute) {
-    const answer = renderQueue.get(route)?.shift() ?? renderAlways.get(route) ?? { kind: "render" };
+    const scripted = renderQueue.get(route)?.shift() ?? renderAlways.get(route);
+    let answer: RenderAnswer = scripted ?? { kind: "render" };
     const contentType = req.headers["content-type"];
     if (answer.kind === "busy") {
       renderCalls.push({ route, contentType, body: Buffer.alloc(0), answer: answer.kind });
@@ -421,6 +430,7 @@ export async function startSlicerStub(
       chunks.push(chunk as Buffer);
     }
     const body = Buffer.concat(chunks);
+    if (scripted === undefined && decideFn !== null) answer = decideFn(route, body) ?? answer;
     renderCalls.push({ route, contentType, body, answer: answer.kind });
     switch (answer.kind) {
       case "render": {
@@ -457,9 +467,13 @@ export async function startSlicerStub(
     always(route, answer) {
       renderAlways.set(route, answer);
     },
+    decide(fn) {
+      decideFn = fn;
+    },
     reset() {
       renderQueue.clear();
       renderAlways.clear();
+      decideFn = null;
       renderCalls.length = 0;
     },
     callsTo(route) {

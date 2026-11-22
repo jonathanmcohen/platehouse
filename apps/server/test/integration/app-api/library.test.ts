@@ -329,7 +329,10 @@ describe("STL and STEP previews on the card (issue #316)", () => {
   // Issue #380: the card reads the picture's own status. A picture that
   // failed, or was never queued, shows the icon; one being made again keeps
   // showing the current version's picture until the new one lands.
-  test("an STL card follows previewStatus: the picture when ok or pending, the icon when failed or unset", async () => {
+  // Issue #389: ok is exactly "a picture of the current source is stored",
+  // so the card shows a stored picture only then; pending, failed and none
+  // all mean there is no picture of the current source to show.
+  test("an STL card follows previewStatus: the picture when ok, the icon otherwise", async () => {
     const word = marker();
     const stl = await ingest(`Preview status ${word}.stl`, ASCII_STL);
     const png = await attachPreview(stl.modelId, stl.fileId);
@@ -338,7 +341,7 @@ describe("STL and STEP previews on the card (issue #316)", () => {
     const thumbnail = async () => card(await library(`?q=${word}`), stl.modelId).thumbnail;
     expect(await thumbnail()).toBe(`/blobs/${png.id}`);
     await setStatus("pending");
-    expect(await thumbnail()).toBe(`/blobs/${png.id}`);
+    expect(await thumbnail()).toBeNull();
     await setStatus("failed");
     expect(await thumbnail()).toBeNull();
     await setStatus(null);
