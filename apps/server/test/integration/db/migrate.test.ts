@@ -397,8 +397,8 @@ describe("0007 My printers", () => {
     // numbers. Migrating to the latest also runs 0010, which adds started_at
     // and leaves it empty on rows that already existed.
     const after = (await estimateRows(db)) as Array<Record<string, unknown>>;
-    expect(after.map((row) => row.startedAt ?? row.started_at)).toEqual([null, null]);
-    expect(after.map(({ startedAt: _camel, started_at: _snake, ...rest }) => rest)).toEqual(before);
+    expect(after.map((row) => row.startedAt)).toEqual([null, null]);
+    expect(after.map(({ startedAt: _started, ...rest }) => rest)).toEqual(before);
   });
 
   test("a fresh database gets the P1S 0.4 default as its one printer", async () => {
