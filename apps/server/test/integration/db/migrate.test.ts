@@ -907,7 +907,8 @@ describe("0014 description source", () => {
       join(dir, "0014_description_source.sql"),
     );
     await migrateFrom(db, dir);
-    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED);
+    // Up to and including 0014: later migrations are not in this folder.
+    expect((await applied(db)).map((r) => r.name)).toEqual(SHIPPED.slice(0, 14));
 
     const after = (await sql<Record<string, unknown>>`select * from models order by id`.execute(db))
       .rows;
