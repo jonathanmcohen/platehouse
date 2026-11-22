@@ -93,7 +93,8 @@ its plates has numbers, so a model still marked "partial" is in that last group 
 **Select**, above the cards, turns on Select mode: each card becomes a checkbox (click it, or press
 Space on it) and a toolbar appears above the grid with the number selected.
 
-- **Select all on this page** adds the cards shown (every card, in View all). **Select all
+- **Select all on this page** adds the cards shown (every card, in View all); when the page shows
+  none it is greyed out. **Select all
   matching** adds every model that matches the search and filters, up to 1000; if more match, the
   toolbar says only the first 1000 were selected. When nothing matches it is greyed out.
   **Clear selection** empties it.
