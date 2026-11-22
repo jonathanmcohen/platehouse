@@ -356,9 +356,18 @@ describe("the settings page", () => {
     expect(FALLBACK_SLICES_PER_MINUTE).toBe(6);
   });
 
-  describe("the slicer's rate, measured from recent finished slices (issue #317)", () => {
-    /** Every finished Platehouse slice, oldest first, a fixed gap apart, ending a minute ago. */
-    async function spaceFinishes(gapMs: number, idleAfter?: { index: number; ms: number }) {
+  describe("the slicer's rate, measured from each slice's own working time (issues #317, #375)", () => {
+    /**
+     * Gives every successful Platehouse slice, oldest first, a working time of
+     * sliceMs, with idleMs between one's finish and the next one's start
+     * (idleAfter adds a longer idle stretch after the slice at that index);
+     * the newest finishes a minute ago.
+     */
+    async function timeSlices(
+      sliceMs: number,
+      idleMs = 0,
+      idleAfter?: { index: number; ms: number },
+    ) {
       const rows = await env.db
         .selectFrom("estimates")
         .select("id")
@@ -366,15 +375,17 @@ describe("the settings page", () => {
         .where("status", "=", "ok")
         .orderBy("id")
         .execute();
-      let at = Date.now() - 60_000 - rows.length * gapMs - (idleAfter?.ms ?? 0);
+      let at = Date.now() - 60_000 - rows.length * (sliceMs + idleMs) - (idleAfter?.ms ?? 0);
       for (const [i, row] of rows.entries()) {
-        at += gapMs;
-        if (idleAfter !== undefined && i === idleAfter.index) at += idleAfter.ms;
+        const startedAt = new Date(at);
+        at += sliceMs;
         await env.db
           .updateTable("estimates")
-          .set({ finishedAt: new Date(at) })
+          .set({ startedAt, finishedAt: new Date(at) })
           .where("id", "=", row.id)
           .execute();
+        at += idleMs;
+        if (idleAfter !== undefined && i === idleAfter.index) at += idleAfter.ms;
       }
       return rows.length;
     }
@@ -385,30 +396,59 @@ describe("the settings page", () => {
       return (res.json() as { slicesPerMinute: unknown }).slicesPerMinute;
     }
 
-    test("with fewer finished slices than it needs, the page gets the fallback rate", async () => {
-      await sql`update estimates set finished_at = null where source = 'platehouse'`.execute(
-        env.db,
-      );
+    test("a slice records when it began work and when it finished", async () => {
+      const before = new Date(Date.now() - 1_000);
+      await upload12();
+      const rows = await env.db
+        .selectFrom("estimates")
+        .select(["startedAt", "finishedAt", "createdAt"])
+        .where("source", "=", "platehouse")
+        .where("status", "=", "ok")
+        .where("finishedAt", ">=", before)
+        .execute();
+      expect(rows.length).toBeGreaterThanOrEqual(12);
+      for (const row of rows) {
+        expect(row.startedAt).toBeInstanceOf(Date);
+        const started = row.startedAt?.getTime() ?? Number.NaN;
+        expect(started).toBeGreaterThanOrEqual(row.createdAt.getTime());
+        expect(started).toBeLessThanOrEqual(row.finishedAt?.getTime() ?? Number.NaN);
+      }
+    });
+
+    test("with fewer timed slices than it needs, the page gets the fallback rate", async () => {
+      // Slices finished before migration 0010 have no start time.
+      await sql`update estimates set started_at = null where source = 'platehouse'`.execute(env.db);
       expect(await slicesPerMinute()).toBe(FALLBACK_SLICES_PER_MINUTE);
     });
 
-    test("a plate every 6.5 seconds reads as about 9.2 plates a minute, not the fallback", async () => {
+    test("slices of 6.5 seconds read as about 9.2 plates a minute, not the fallback", async () => {
       await upload12();
-      expect(await spaceFinishes(6_500)).toBeGreaterThanOrEqual(MIN_FINISHES_FOR_RATE);
+      expect(await timeSlices(6_500)).toBeGreaterThanOrEqual(MIN_FINISHES_FOR_RATE);
       expect(await slicesPerMinute()).toBe(9.2);
     });
 
     test("an idle hour between two runs does not slow the rate", async () => {
       await upload12();
-      await spaceFinishes(6_500, { index: 5, ms: 3_600_000 });
+      await timeSlices(6_500, 0, { index: 5, ms: 3_600_000 });
       expect(await slicesPerMinute()).toBe(9.2);
     });
 
-    test("finishes an hour apart are idle time, so the page gets the fallback rate", async () => {
-      // Models added one at a time: no gap between two finishes is a slice.
+    test("slices 2 minutes apart, the idle time between them left out, still read 9.2", async () => {
       await upload12();
-      expect(await spaceFinishes(3_600_000)).toBeGreaterThanOrEqual(MIN_FINISHES_FOR_RATE);
-      expect(await slicesPerMinute()).toBe(FALLBACK_SLICES_PER_MINUTE);
+      await timeSlices(6_500, 2 * 60_000 - 6_500);
+      expect(await slicesPerMinute()).toBe(9.2);
+    });
+
+    test("slices an hour apart give the slicer's own speed, not the fallback", async () => {
+      await upload12();
+      await timeSlices(6_500, 3_600_000);
+      expect(await slicesPerMinute()).toBe(9.2);
+    });
+
+    test("slow slices of 6 minutes count", async () => {
+      await upload12();
+      await timeSlices(6 * 60_000);
+      expect(await slicesPerMinute()).toBe(0.17);
     });
 
     /** Uploads a synthetic twelve-plate .3mf and lets every plate be sliced. */

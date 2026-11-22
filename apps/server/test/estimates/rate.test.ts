@@ -1,135 +1,136 @@
-// The slicer's rate for the settings page's "about how long" (issue #317):
-// measured from the most recent finished slices rather than a fixed 3 plates
-// a minute, with a fallback while too few have finished.
+// The slicer's rate for the settings page's "about how long" (issues #317 and
+// #375): the slicer's throughput while busy, from each successful slice's own
+// working time (finished_at - started_at), with a fallback while too few
+// slices have one. Idle time between jobs never counts, however short or
+// long, and a slow slice always counts, however slow.
 //
-// The slicer works one plate at a time, so while it is busy the time between
-// two finishes is one plate's slice. A gap longer than BUSY_GAP_MS is idle
-// time and is left out; the rate is read from the middle (the median) of the
-// gaps that remain, and there is none while too few remain.
+// The named cases from both review rounds of PR #361 are kept here with what
+// they now give: idle hours (round 1) and idle minutes (round 2, issue #375)
+// between slices leave the rate alone, and slow slices are never dropped.
+// rate-simulation.test.ts checks the rule against random workloads.
 import { describe, expect, test } from "vitest";
 import {
-  BUSY_GAP_MS,
   FALLBACK_SLICES_PER_MINUTE,
-  MIN_BUSY_GAPS,
   MIN_FINISHES_FOR_RATE,
   RATE_SAMPLE,
   sliceRate,
+  type TimedSlice,
 } from "../../src/estimates/rate.js";
 
 const END = Date.parse("2026-11-21T20:00:00Z");
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
-/** n finishes, newest first, gapMs apart, the newest at END. */
-function finishes(n: number, gapMs: number): Date[] {
-  return Array.from({ length: n }, (_, i) => new Date(END - i * gapMs));
+/**
+ * n slices, newest first, each taking sliceMs, with idleMs between one's
+ * finish and the next one's start; the newest finishes at end.
+ */
+function slices(n: number, sliceMs: number, idleMs = 0, end = END): TimedSlice[] {
+  const out: TimedSlice[] = [];
+  let finish = end;
+  for (let i = 0; i < n; i += 1) {
+    out.push({ startedAt: new Date(finish - sliceMs), finishedAt: new Date(finish) });
+    finish -= sliceMs + idleMs;
+  }
+  return out;
 }
 
 describe("sliceRate", () => {
   test("a plate every 6.5 seconds is about 9.2 plates a minute", () => {
-    expect(sliceRate(finishes(20, 6_500))).toBe(9.2);
+    expect(sliceRate(slices(20, 6_500))).toBe(9.2);
   });
 
   test("a plate every 20 seconds is 3 plates a minute", () => {
-    expect(sliceRate(finishes(20, 20_000))).toBe(3);
+    expect(sliceRate(slices(20, 20_000))).toBe(3);
   });
 
-  test("is rounded to one decimal place", () => {
+  test("is rounded to two significant figures", () => {
     // 60 / 7 = 8.571...
-    expect(sliceRate(finishes(20, 7_000))).toBe(8.6);
+    expect(sliceRate(slices(20, 7_000))).toBe(8.6);
+    // 60 / 4.8 = 12.5
+    expect(sliceRate(slices(20, 4_800))).toBe(13);
+    // 1 / 7 minutes = 0.1428...
+    expect(sliceRate(slices(20, 7 * MINUTE))).toBe(0.14);
   });
 
-  test("with fewer finishes than MIN_FINISHES_FOR_RATE there is no rate", () => {
+  test("with fewer slices than MIN_FINISHES_FOR_RATE there is no rate", () => {
     expect(MIN_FINISHES_FOR_RATE).toBe(10);
     expect(sliceRate([])).toBeNull();
-    expect(sliceRate(finishes(1, 6_500))).toBeNull();
-    expect(sliceRate(finishes(MIN_FINISHES_FOR_RATE - 1, 6_500))).toBeNull();
-    expect(sliceRate(finishes(MIN_FINISHES_FOR_RATE, 6_500))).toBe(9.2);
+    expect(sliceRate(slices(1, 6_500))).toBeNull();
+    expect(sliceRate(slices(MIN_FINISHES_FOR_RATE - 1, 6_500))).toBeNull();
+    expect(sliceRate(slices(MIN_FINISHES_FOR_RATE, 6_500))).toBe(9.2);
   });
 
-  test("an idle hour between two runs does not slow the rate", () => {
-    const first = finishes(10, 6_500);
-    const later = finishes(10, 6_500).map((d) => new Date(d.getTime() + 3_600_000));
-    expect(sliceRate([...later, ...first])).toBe(9.2);
+  test("the order the slices come in does not matter", () => {
+    expect(sliceRate([...slices(20, 6_500)].reverse())).toBe(9.2);
   });
 
-  test("the order the finishes come in does not matter", () => {
-    const list = finishes(20, 6_500);
-    expect(sliceRate([...list].reverse())).toBe(9.2);
-  });
-
-  test("only the newest RATE_SAMPLE finishes count", () => {
+  test("only the newest RATE_SAMPLE slices count", () => {
     expect(RATE_SAMPLE).toBe(50);
-    const fast = finishes(RATE_SAMPLE, 6_500);
-    const oldest = fast.at(-1)?.getTime() ?? END;
-    // 100 older, slow finishes before them: a plate a minute.
-    const slow = Array.from({ length: 100 }, (_, i) => new Date(oldest - (i + 1) * 60_000));
+    const fast = slices(RATE_SAMPLE, 6_500);
+    const oldest = fast.at(-1)?.startedAt.getTime() ?? END;
+    // 100 older slices of a minute each.
+    const slow = slices(100, MINUTE, 0, oldest);
     expect(sliceRate([...fast, ...slow])).toBe(9.2);
   });
 
-  test("finishes at the same instant never give an endless rate", () => {
-    const same = Array.from({ length: 20 }, () => new Date(END));
-    const rate = sliceRate(same);
-    expect(rate).not.toBeNull();
-    expect(Number.isFinite(rate)).toBe(true);
-    expect(rate).toBeLessThanOrEqual(60);
-  });
-
-  test("a gap longer than five minutes is idle time, not a slice", () => {
-    expect(BUSY_GAP_MS).toBe(5 * 60_000);
-    expect(MIN_BUSY_GAPS).toBe(MIN_FINISHES_FOR_RATE - 1);
-    // A plate every 20 minutes is models added now and then, not a slow
-    // slicer: no gap is a slice, so there is no measured rate.
-    expect(sliceRate(finishes(20, 1_200_000))).toBeNull();
-  });
-
-  test("the slowest rate measured is one plate in five minutes", () => {
-    expect(sliceRate(finishes(20, BUSY_GAP_MS))).toBe(0.2);
-  });
-
-  test("single-plate models added one at a time give no rate, not a crawl", () => {
-    // The newest 50 finishes are each an upload's only slice, hours apart.
-    const isolated = Array.from(
-      { length: RATE_SAMPLE },
-      (_, i) => new Date(END - i * 3 * 3_600_000),
-    );
-    expect(sliceRate(isolated)).toBeNull();
-  });
-
-  test("mostly isolated finishes give no rate while too few gaps are slices", () => {
-    // Eight two-plate uploads an hour apart (8 slice gaps of 6.5 seconds),
-    // then older single-plate uploads: fewer slice gaps than MIN_BUSY_GAPS.
-    const pairs = Array.from({ length: 8 }, (_, i) => [
-      new Date(END - i * 3_600_000),
-      new Date(END - i * 3_600_000 - 6_500),
-    ]).flat();
-    const oldest = END - 8 * 3_600_000;
-    const isolated = Array.from(
-      { length: RATE_SAMPLE - pairs.length },
-      (_, i) => new Date(oldest - i * 3_600_000),
-    );
-    expect(MIN_BUSY_GAPS).toBeGreaterThan(8);
-    expect(sliceRate([...pairs, ...isolated])).toBeNull();
-  });
-
-  test("idle gaps that outnumber the slices do not slow the rate", () => {
-    // Two-plate uploads an hour apart: 25 slice gaps of 6.5 seconds among 24
-    // idle hours. Counting every gap, the median would be an hour.
-    const pairs = Array.from({ length: RATE_SAMPLE / 2 }, (_, i) => [
-      new Date(END - i * 3_600_000),
-      new Date(END - i * 3_600_000 - 6_500),
-    ]).flat();
-    expect(sliceRate(pairs)).toBe(9.2);
-  });
-
-  test("just enough slice gaps among idle ones give a measured rate", () => {
-    // MIN_BUSY_GAPS + 1 back-to-back finishes, then isolated ones an hour apart.
-    const run = finishes(MIN_BUSY_GAPS + 1, 6_500);
-    const oldest = END - MIN_BUSY_GAPS * 6_500;
-    const isolated = Array.from({ length: 20 }, (_, i) => new Date(oldest - (i + 1) * 3_600_000));
-    expect(sliceRate([...run, ...isolated])).toBe(9.2);
-    expect(sliceRate([...run.slice(1), ...isolated])).toBeNull();
+  test("slices that took no time give no rate rather than an endless one", () => {
+    const instant = Array.from({ length: 20 }, () => ({
+      startedAt: new Date(END),
+      finishedAt: new Date(END),
+    }));
+    expect(sliceRate(instant)).toBeNull();
   });
 
   test("the fallback is 6 plates a minute", () => {
     expect(FALLBACK_SLICES_PER_MINUTE).toBe(6);
+  });
+
+  describe("idle time never counts (round 1: idle hours)", () => {
+    test("an idle hour between two runs does not slow the rate", () => {
+      const later = slices(10, 6_500);
+      const first = slices(10, 6_500, 0, END - 10 * 6_500 - HOUR);
+      expect(sliceRate([...later, ...first])).toBe(9.2);
+    });
+
+    test("single-plate models added one at a time, hours apart, give the slicer's own speed", () => {
+      expect(sliceRate(slices(RATE_SAMPLE, 6_500, 3 * HOUR))).toBe(9.2);
+    });
+
+    test("idle gaps that outnumber the slices do not slow the rate", () => {
+      // Two-plate uploads an hour apart: 25 pairs, each pair back to back.
+      const pairs = Array.from({ length: RATE_SAMPLE / 2 }, (_, i) =>
+        slices(2, 6_500, 0, END - i * HOUR),
+      ).flat();
+      expect(sliceRate(pairs)).toBe(9.2);
+    });
+  });
+
+  describe("idle time never counts (round 2, issue #375: idle minutes)", () => {
+    test("single-plate models queued 2 minutes apart, each after the last finished, give the slicer's own speed", () => {
+      // Every finish is about 2 minutes after the last; the old gap rule read 0.5 a minute.
+      expect(sliceRate(slices(RATE_SAMPLE, 6_500, 2 * MINUTE - 6_500))).toBe(9.2);
+    });
+
+    test.each([1, 2, 3, 4, 5])("idle gaps of %d minutes leave the rate alone", (minutes) => {
+      expect(sliceRate(slices(RATE_SAMPLE, 6_500, minutes * MINUTE))).toBe(9.2);
+    });
+  });
+
+  describe("a slow slice always counts (round 2, issue #375)", () => {
+    test("on a host where every plate takes 6 minutes, the rate is 1 in 6 minutes, not the fallback", () => {
+      expect(sliceRate(slices(20, 6 * MINUTE))).toBe(0.17);
+    });
+
+    test("a slice of 20 minutes counts", () => {
+      expect(sliceRate(slices(20, 20 * MINUTE))).toBe(0.05);
+    });
+
+    test("some slow plates among fast ones slow the rate by their share of the time", () => {
+      // 25 plates of 6.5 seconds and 25 of 6 minutes: 50 plates in 9162.5 seconds.
+      const fast = slices(25, 6_500);
+      const slow = slices(25, 6 * MINUTE, 0, END - 25 * 6_500);
+      expect(sliceRate([...fast, ...slow])).toBe(0.33);
+    });
   });
 });

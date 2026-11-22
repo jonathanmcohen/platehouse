@@ -1,0 +1,17 @@
+-- Platehouse schema 0010: when a slice began work, so the settings page can
+-- measure the slicer's real speed (issues #317 and #375).
+-- Hand-written; every statement is read in review (lesson 14). Never edit it
+-- once applied anywhere: a change is a new file.
+--
+-- started_at is set when a slice job marks its estimate running, and again
+-- after the job has waited out a slicer or storage outage, so for a finished
+-- slice finished_at - started_at is the time the slicer spent on the attempt
+-- that finished. The settings page's rate is how many of the newest
+-- successful slices there are over the sum of those times
+-- (estimates/rate.ts): the slicer's throughput while busy, with idle time
+-- between jobs never counted. Estimates finished before this migration have
+-- no start time and are left out of the rate.
+--
+-- Safe on a live database: a nullable column with no default adds no data to
+-- existing rows and changes none of them.
+alter table estimates add column started_at timestamptz;

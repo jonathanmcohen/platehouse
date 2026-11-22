@@ -923,9 +923,12 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         .execute();
       return;
     }
+    // started_at is when this attempt began work (0010): finished_at minus it
+    // is the slicer's time on the plate, which the settings page's rate is
+    // measured from (rate.ts). A retry or a requeue sets it again here.
     await db
       .updateTable("estimates")
-      .set({ status: "running", attempts: sql`attempts + 1` })
+      .set({ status: "running", attempts: sql`attempts + 1`, startedAt: sql`now()` })
       .where("id", "=", estimate.id)
       .execute();
     const full: Estimate = { ...estimate, filaments: [] };
@@ -957,7 +960,17 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         if (outage !== null) {
           // The slicer never saw this plate, or its file could not be read
           // (at the start or partway through): no retry is used.
-          if (await outageOver(outage, waitUntil)) continue;
+          if (await outageOver(outage, waitUntil)) {
+            // The wait was the outage, not the slicer at work: the attempt
+            // starts again now.
+            await db
+              .updateTable("estimates")
+              .set({ startedAt: sql`now()` })
+              .where("id", "=", estimate.id)
+              .where("status", "=", "running")
+              .execute();
+            continue;
+          }
           await requeue(full, job.priority, carried, outage);
           return;
         }
@@ -1291,18 +1304,26 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   }
 
   async function recentSliceRate(): Promise<number | null> {
-    // Successful slices only: a burst of quick failures (the store down, say)
-    // would read as a fast slicer.
+    // Successful slices only (a burst of quick failures, the store down say,
+    // would read as a fast slicer), and only those with a start time: ones
+    // finished before migration 0010 have none.
     const rows = await db
       .selectFrom("estimates")
-      .select("finishedAt")
+      .select(["startedAt", "finishedAt"])
       .where("source", "=", "platehouse")
       .where("status", "=", "ok")
+      .where("startedAt", "is not", null)
       .where("finishedAt", "is not", null)
       .orderBy("finishedAt", "desc")
       .limit(RATE_SAMPLE)
       .execute();
-    return sliceRate(rows.flatMap((r) => (r.finishedAt === null ? [] : [r.finishedAt])));
+    return sliceRate(
+      rows.flatMap((r) =>
+        r.startedAt === null || r.finishedAt === null
+          ? []
+          : [{ startedAt: r.startedAt, finishedAt: r.finishedAt }],
+      ),
+    );
   }
 
   /** The display context for printerId, or for the default printer when it is left out. */

@@ -50,6 +50,7 @@ const SHIPPED = [
   "0007_my_printers.sql",
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
+  "0010_estimate_started_at.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -506,5 +507,46 @@ describe("0009 name sort prefix", () => {
     await sql`
       update models set name = ${cjk} where id = '0190a0b0-0000-7000-8000-000000000011'
     `.execute(db);
+  });
+});
+
+// Migration 0010 adds estimates.started_at, when a slice began work, for the
+// settings page's measured rate (issues #317 and #375). It runs on a database
+// at 0009, as 0.1.0 leaves it; the column is nullable with no default, so no
+// existing row changes and estimates finished before it have no start time.
+describe("0010 estimate started_at", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 9,
+    );
+    expect(later).toContain("0010_estimate_started_at.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0009 and adds a nullable timestamptz with no default", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name) values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic')
+    `.execute(db);
+    const before = (await sql`select * from models order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(before);
+    const { rows } = await sql<{ dataType: string; nullable: string; def: string | null }>`
+      select data_type as "dataType", is_nullable as nullable, column_default as def
+        from information_schema.columns
+       where table_name = 'estimates' and column_name = 'started_at'
+    `.execute(db);
+    expect(rows).toEqual([{ dataType: "timestamp with time zone", nullable: "YES", def: null }]);
   });
 });

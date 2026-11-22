@@ -18,13 +18,14 @@ nozzle, as the default. Every printer is named in full, such as "Bambu Lab P1S, 
   plate at a time, so a large library can take an hour or more. The page says how many plates were
   queued and about how long they will take, counting any other work already queued ahead of them.
   Each printer in the list shows the plates it still has waiting and about how long is left.
-- **How the time is worked out**: from how fast your slicer has actually been going, measured over
-  its 50 most recent successful slices. A gap of more than 5 minutes between two finishes counts as
-  idle time and is left out. Until at least 10 plates have been sliced, or while fewer than 9 of
-  those gaps are 5 minutes or less (for example when models are added one at a time), the page
-  assumes 6 plates a minute. In 0.1.0 the page always assumed 3 plates a minute, which made every
-  time about 3 times too long
-  ([#317](https://github.com/jonathanmcohen/platehouse/issues/317)).
+- **How the time is worked out**: from how fast your slicer works while it is busy. Platehouse
+  records when each slice starts and finishes, and takes the 50 most recent successful slices: the
+  rate is how many there are divided by the time the slicer spent on them. Time when the slicer
+  was waiting for work is never counted, however long, and a slow plate always counts, however
+  slow. Until 10 slices have been timed this way, the page assumes 6 plates a minute; slices from
+  before 0.1.1 have no start time, so after an upgrade the page uses 6 a minute until 10 new ones
+  have finished. In 0.1.0 the page always assumed 3 plates a minute, which made every time about 3
+  times too long ([#317](https://github.com/jonathanmcohen/platehouse/issues/317)).
 - **The order**: **Up** and **Down** move a printer in the list. The list order is the order the
   printer switch offers them in.
 - **One default**: one printer is marked **Default**. Its numbers are shown first on the library
