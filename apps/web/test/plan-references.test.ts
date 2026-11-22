@@ -26,13 +26,27 @@
 //
 // The patterns are written so they do not match their own text, and the
 // samples in the self-test are put together at run time, so neither file
-// holds a reference or needs an allow-list entry.
+// holds a reference or needs an allow-list entry. The names (projects,
+// repositories, commits, tooling) are listed by hash only, so neither file
+// holds one: the self-test proves each name shape on neutral stand-ins, and
+// against the real names when PLATEHOUSE_PLAN_NAMES gives them.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { REFERENCES, referencesIn } from "./plan-references.support.js";
+import {
+  isNameEntry,
+  type NameReference,
+  type Names,
+  nameEntry,
+  nameText,
+  REFERENCES,
+  referencesIn,
+  SHAPES,
+  type Shape,
+  sha256,
+} from "./plan-references.support.js";
 
 /**
  * Files that may still hold references, each with the last line the check
@@ -99,6 +113,59 @@ function trackedFiles(): string[] {
     .filter((f) => f !== "" && existsSync(join(ROOT, f)) && f !== "pnpm-lock.yaml");
 }
 
+// Neutral stand-ins, hashed at test time, prove each shape a name entry
+// finds without the real names: one name per shape, lines that hold it, and
+// look-alikes that must be left alone.
+const NEUTRAL: Record<Shape, { name: string; found: string[]; lookAlikes: string[] }> = {
+  word: {
+    name: "quokka",
+    found: ["// quokka's theme bug showed only on a fresh load", "// (quokka login loop)"],
+    lookAlikes: ["// quokkas, a quokka_x, xquokka, quokka1"],
+  },
+  pair: {
+    name: "blue heron",
+    found: [
+      "// a port of the blue heron parser",
+      "// a port of the blue\n// heron parser",
+      "-- the blue\n-- heron",
+      " * the blue\n * heron",
+    ],
+    lookAlikes: ["// blue herons, a blue-heron, blueheron, the blue sky heron, a blue_heron"],
+  },
+  hyphen: {
+    name: "blue-heron",
+    found: ["// live checks are blue-heron's", "// the x-blue-heron-y job"],
+    lookAlikes: ["// blue-herons, blue heron, a blue-heronx, blue_heron, blue--heron"],
+  },
+  commit: {
+    name: "c0ffee1",
+    found: [
+      "// where they are compared with c0ffee1",
+      `// the full commit ${"c0ffee1".padEnd(40, "0")} here`,
+    ],
+    lookAlikes: [`// c0ffee, c0ffee1g, xc0ffee1, 0c0ffee1, ${"c0ffee1".padEnd(41, "0")}`],
+  },
+  wordBeforeCommit: {
+    name: "quokka",
+    found: [
+      "// the prior art a.mjs at quokka 0123abc",
+      "// ported from a.mjs at quokka\n// 0123abc",
+    ],
+    lookAlikes: ["// quokka abc, quokka 0123ab, quokka-0123abc, quokka"],
+  },
+  pairBeforeSlash: {
+    name: "blue heron",
+    found: ["// in blue heron/x-meta", "// in blue\n// heron/x"],
+    lookAlikes: ["// blue heron x/, blue heron /x, blue-heron/x, blue heron"],
+  },
+};
+
+/** A name entry's copy that holds only its shape's stand-in name. */
+function neutralEntry(what: string, names: Names): NameReference {
+  const { shape, caseless } = names;
+  return nameEntry(what, shape, caseless, [sha256(nameText(NEUTRAL[shape].name, shape, caseless))]);
+}
+
 describe("no citation of a private plan, requirement or project", () => {
   // One or more synthetic samples per known form, each with the REFERENCES
   // entry that must find it. Built at run time, so this file holds none.
@@ -157,31 +224,14 @@ describe("no citation of a private plan, requirement or project", () => {
     ["a plan contract", `// sets nothing beyond what the ${"contract"} defaults say`],
     ["a plan part", `// the auth hooks belong to ${"Part"} C, so`],
     ["a plan part", `// ${"Parts"} C and D hold the sign-in work`],
-    [
-      "another of the owner's projects",
-      `// ${"Parch"}ment's theme bug showed only on a fresh load`,
-    ],
-    ["another of the owner's projects", `// (${"Cai"}rn's login loop)`],
-    ["the earlier private parser project", `// a port of the ${"Bambu"} Plates parser`],
     ["the earlier private parser project", `// parser${".rb"} reads it`],
-    ["the earlier private parser project", `// passed over, as ${"thumbnail"}_from does`],
     [
       "the earlier private parser project",
       `// never the file (${"test"}_garbage_model_settings_returns_nil)`,
     ],
     ["the earlier private parser project", `    ${"issue"}: "#5",`],
     ["the earlier private parser project", `//   #${"6"}  no plate limit`],
-    ["a private repository", `// see ${"jonathanmcohen"}/automation at the tip`],
-    ["a private repository", `// ported from ${"manyfold"}-studio`],
-    ["a private repository", `// in automation ${"Manyfold"}/${"makerworld"}-metadata`],
-    ["a private repository", `// the prior art manyfold.mjs at ${"automation"} ${"1ce8"}c57`],
-    ["a private repository", `// ported from manyfold.mjs at ${"automation"}\n// ${"1ce8"}c57`],
-    ["a private repository", `// the ${"makerworld"}-meta script`],
-    ["a private project's commit", `// where they are compared with ${"4076"}a67`],
-    ["a private project's commit", `// the earlier theme at ${"136f"}d61`],
-    ["the maintainer's own tooling or setup", `// live checks are ${"qa"}-engineer's`],
-    ["the maintainer's own tooling or setup", `// ${"pr"}-review found this three times`],
-    ["the maintainer's own tooling or setup", `# so the fleet ${"restart"}-loop alert sees it`],
+    ["a private repository", `// see ${"jonathanmcohen"}/example at the tip`],
     ["the maintainer's own tooling or setup", `// the live ${"dry"} run skipped such a file`],
   ];
 
@@ -192,25 +242,58 @@ describe("no citation of a private plan, requirement or project", () => {
     expect(missed).toEqual([]);
   });
 
-  test("every pattern has a sample, so none is untested", () => {
+  test("every readable pattern has a sample, so none is untested", () => {
+    // A name entry is proven by the neutral stand-ins below instead.
     const sampled = new Set(FORMS.map(([what]) => what));
-    expect(REFERENCES.map((r) => r.what).filter((what) => !sampled.has(what))).toEqual([]);
+    expect(
+      REFERENCES.filter((r) => !r.names)
+        .map((r) => r.what)
+        .filter((what) => !sampled.has(what)),
+    ).toEqual([]);
+  });
+
+  test("each name entry finds a stand-in name in its shape, wrapped too, and leaves look-alikes alone", () => {
+    const entries = REFERENCES.filter(isNameEntry);
+    // Every shape is in use, so each is proven here.
+    expect(new Set(entries.map((r) => r.names.shape))).toEqual(new Set(Object.keys(SHAPES)));
+    for (const { what, names } of entries) {
+      const { found, lookAlikes } = NEUTRAL[names.shape];
+      const neutral = [neutralEntry(what, names)];
+      for (const line of found) {
+        expect(referencesIn("sample", line, undefined, neutral), `${what}: ${line}`).toHaveLength(
+          1,
+        );
+        // In another case: found only by a caseless entry.
+        expect(
+          referencesIn("sample", line.toUpperCase(), undefined, neutral),
+          `${what}: ${line.toUpperCase()}`,
+        ).toHaveLength(names.caseless ? 1 : 0);
+      }
+      expect(referencesIn("sample", lookAlikes.join("\n"), undefined, neutral), what).toEqual([]);
+    }
+  });
+
+  test("the name list is well formed", () => {
+    for (const { what, names } of REFERENCES.filter(isNameEntry)) {
+      expect(names.sha256.size, what).toBeGreaterThan(0);
+      for (const h of names.sha256) expect(h, what).toMatch(/^[0-9a-f]{64}$/);
+    }
   });
 
   test("look-alikes are left alone", () => {
     const lookAlikes = [
       "// a task queue, the planner, AC power, AC-31, TAC-031",
-      "// the gate's plan step, a plan id, Bambu Studio plates",
+      "// the gate's plan step, a plan id",
       "// github.com/jonathanmcohen/platehouse and ghcr.io/jonathanmcohen/platehouse-slicer",
       "// T0 = new Date(), T0.getTime(), Q9, a 1:1 task, mint(key, T0)",
       "// Example Kit Alpha | Part A & Part B, Example Kit | Part A &amp;amp; Part B",
       "// Part 2, Part E, Party C, a part C, function pair<T1, T2>(a: T1, b: T2)",
-      "// a lesson learned, the lessons of 0.1.0, makerworld-metaverse",
+      "// a lesson learned, the lessons of 0.1.0",
       "// the route classes table, slicer contract v1, the Slicer HTTP contract, a slicer link, the Public API v1's document",
       "// the importer: the plan skips it, the plan compares names, the plan's renames, the plan has changed, the plan is no longer that one",
       "// the maintainer's decision, needs-decision 0, decision 0, failed 0",
       "// the contract's reasons, the contract's 256 MiB limit, the contract's own zod schemas",
-      "// a Bambu Lab Q9 0.4 nozzle, a tech stack, a cairns trail, requirements in the RFC",
+      "// a Bambu Lab Q9 0.4 nozzle, a tech stack, requirements in the RFC",
       "// inbox_test_disk_full, test_one_two, the S3 test server, issue #78, platehouse #78",
     ].join("\n");
     expect(referencesIn("sample", lookAlikes)).toEqual([]);
@@ -254,5 +337,42 @@ describe("no citation of a private plan, requirement or project", () => {
         referencesIn(file, readFileSync(join(ROOT, file), "utf8")).length === 0,
     );
     expect(stale).toEqual([]);
+  });
+  // The proof that the name entries find the real names. The names live
+  // outside the repository: give them in PLATEHOUSE_PLAN_NAMES, one per line,
+  // written as nameText() reads them, and this checks that each name hashes
+  // to an entry, that every entry's hash has a name, and that a line holding
+  // each name is found by its entry. Nothing it prints holds a name, only
+  // hashes.
+  //
+  // Without the variable, as in CI, the same steps run over the neutral
+  // stand-ins, one copy of each entry. The real hashes are then covered by
+  // the tests above: each shape is read and matched the way the stand-ins
+  // prove, and the list is well formed.
+  test("each listed name is found, from PLATEHOUSE_PLAN_NAMES or the neutral stand-ins", () => {
+    const given = process.env.PLATEHOUSE_PLAN_NAMES;
+    const real = REFERENCES.filter(isNameEntry);
+    const list = given ? real : real.map(({ what, names }) => neutralEntry(what, names));
+    const names = given
+      ? given.split(/\r?\n|,/)
+      : [...new Set(Object.values(NEUTRAL).map((n) => n.name))];
+    const hashOf = (name: string, e: NameReference) =>
+      sha256(nameText(name, e.names.shape, e.names.caseless));
+    const named = new Set<string>();
+    const unknown: string[] = [];
+    const missed: string[] = [];
+    for (const name of names.map((n) => n.trim()).filter((n) => n !== "")) {
+      const holders = list.filter((e) => e.names.sha256.has(hashOf(name, e)));
+      if (holders.length === 0) unknown.push(sha256(name));
+      for (const e of holders) {
+        named.add(hashOf(name, e));
+        const line = SHAPES[e.names.shape].example(name);
+        if (referencesIn("sample", line, undefined, [e]).length === 0) missed.push(sha256(name));
+      }
+    }
+    expect(unknown).toEqual([]);
+    expect(missed).toEqual([]);
+    // Every listed hash has a name.
+    expect(list.flatMap((e) => [...e.names.sha256]).filter((h) => !named.has(h))).toEqual([]);
   });
 });
