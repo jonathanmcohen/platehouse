@@ -8,7 +8,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Added
 
-- A moving `rc` tag on both images, `ghcr.io/jonathanmcohen/platehouse:rc` and `ghcr.io/jonathanmcohen/platehouse-slicer:rc`, so a test server can follow the newest release candidate by pulling instead of editing a tag. A release candidate tag (`vX.Y.Z-rc.N`) and a plain release tag (`vX.Y.Z`) both point `rc` at that build, so a server on `rc` never runs anything older than the newest release. Daily, manual and main-branch runs of the slicer workflow, and any other prerelease tag, never move it; the version tags, `latest` and the slicer's `stable` are unchanged. Both workflows read `rc` back from the registry after tagging, and the slicer's failure issue lists `rc` when a run had already moved it.
+- A moving `rc` tag on both images, `ghcr.io/jonathanmcohen/platehouse:rc` and `ghcr.io/jonathanmcohen/platehouse-slicer:rc`, so a test server can follow the newest release candidate by pulling instead of editing a tag. A release candidate tag (`vX.Y.Z-rc.N`) and a plain release tag (`vX.Y.Z`) both point `rc` at that build, so a server on `rc` never runs anything older than the newest release. Daily, manual and main-branch runs of the slicer workflow, and any other prerelease tag, never move it; the version tags, `latest` and the slicer's `stable` are unchanged. Both workflows read `rc` back from the registry after tagging, and the slicer's failure issue lists `rc` when a run had already moved it ([#360](https://github.com/jonathanmcohen/platehouse/pull/360)).
 
 ## [0.1.0] - 2026-11-21
 
