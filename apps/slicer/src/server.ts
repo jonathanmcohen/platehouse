@@ -61,6 +61,7 @@ import {
   SCAD_INPUT,
   STL_INPUT,
   sandboxSelfTest,
+  stlProblem,
   writeStlImport,
 } from "./scad.js";
 import { runStepWorker, STEP_INPUT } from "./step.js";
@@ -692,6 +693,9 @@ export function createSlicer(config: SlicerConfig): Slicer {
       // self-test, landrun rules, prlimit limits and time cap.
       case "POST /v1/stl/png":
         return withBody(req, res, config.limits.stlBodyBytes, STL_INPUT, async (job) => {
+          // No triangles would render as a blank picture (stlProblem).
+          const problem = stlProblem(job.dir);
+          if (problem !== null) return send(res, 422, { error: "render_failed", message: problem });
           const check = await sandboxReady(job);
           if (!check.ok) {
             return send(res, 422, {

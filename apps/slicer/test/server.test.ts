@@ -1076,11 +1076,44 @@ describe("STL previews", () => {
       stderr: "ERROR: STL import: unexpected end of file in input.stl",
     });
     const base = await start({ ...s.config, landrunBin: lr.bin });
-    const res = await preview(base, "not an stl");
+    const res = await preview(base, binaryStl());
     expect(res.status).toBe(422);
     const body = slicerContract.renderError.parse(await res.json());
     expect(body.message).toContain("unexpected end of file");
     expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  // OpenSCAD writes a PNG of an empty scene when an import gives it nothing
+  // to draw (seen in the image, CI run 44975403164), so a body with no
+  // triangles would come back as a blank picture. It is refused before
+  // OpenSCAD runs.
+  test.each([
+    ["text that is not an STL", "this is not an STL file\n"],
+    ["an ASCII STL with no facets", "solid empty\nendsolid empty\n"],
+    ["a binary STL header with no facets", Buffer.alloc(84)],
+    ["fewer bytes than a binary STL header", Buffer.from("solid")],
+  ])("%s is 422 render_failed and OpenSCAD never runs", async (_label, body) => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "inputs" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const res = await preview(base, body);
+    expect(res.status).toBe(422);
+    const parsed = slicerContract.renderError.parse(await res.json());
+    expect(parsed.message).toBe(
+      "The file is not an STL with at least one triangle, so there is nothing to render.",
+    );
+    expect(() => readFileSync(lr.argsLog)).toThrow();
+    expect(readdirSync(s.workDir)).toEqual([]);
+  });
+
+  test("an ASCII STL with facets is rendered", async () => {
+    const s = setup();
+    const lr = fakeLandrun(s.stubs, { kind: "inputs" });
+    const base = await start({ ...s.config, landrunBin: lr.bin });
+    const ascii =
+      "solid t\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n" +
+      "   vertex 0 1 0\n  endloop\n endfacet\nendsolid t\n";
+    expect((await preview(base, ascii)).status).toBe(200);
   });
 
   test("an STL over 256 MiB is 413 before its body is read", async () => {

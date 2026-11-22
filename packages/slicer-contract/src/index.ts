@@ -16,8 +16,10 @@
 // POST /v1/stl/png (issue #316) renders a preview picture of an STL, binary
 // or ASCII, sent as application/octet-stream: the same OpenSCAD, sandbox,
 // time cap and 800 x 800 image as /v1/scad/png, on a .scad the slicer writes
-// itself, a single import of the STL. A body OpenSCAD cannot read is 422
-// renderError with OpenSCAD's own message.
+// itself, a single import of the STL. A body that is not an STL with at
+// least one triangle is 422 renderError before OpenSCAD runs (OpenSCAD would
+// draw an empty picture of it); one OpenSCAD cannot read is 422 renderError
+// with OpenSCAD's own message.
 //
 // Versioning. CONTRACT_VERSION is the number /v1/health reports. It stays 1
 // while the contract only grows in ways an app built for an older v1 never

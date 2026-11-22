@@ -100,10 +100,15 @@ async function legacyStep(label: string) {
   return { ...stored, meshBlobId: file.meshBlobId };
 }
 
+/**
+ * The preview jobs the backfill queued for a file. Only those: a STEP file
+ * made by legacyStep was uploaded the normal way, so its conversion already
+ * queued (and ran) a preview of its own before the test removed the picture.
+ */
 async function previewJobs(fileId: string) {
   const kinds: readonly string[] = ["render-stl", "preview-step"];
-  return (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter((j) =>
-    kinds.includes(j.data.kind),
+  return (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
+    (j) => kinds.includes(j.data.kind) && j.data.backfill === true,
   );
 }
 

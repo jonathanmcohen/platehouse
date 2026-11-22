@@ -93,14 +93,21 @@ describe("STL previews in the image", () => {
     expect(line).toMatch(/sandbox self-test: ok: Landlock ABI \d+/);
   });
 
-  test("a body that is not an STL is 422 render_failed with OpenSCAD's own words", async () => {
-    const res = await preview("this is not an STL file\n");
+  // The image's OpenSCAD writes a PNG of an empty scene for an import that
+  // gives it nothing to draw (CI run 44975403164: 200 for plain text), so
+  // the server refuses a body with no triangles before OpenSCAD runs, rather
+  // than send back a blank picture.
+  test.each([
+    ["text that is not an STL", "this is not an STL file\n"],
+    ["an ASCII STL with no facets", "solid empty\nendsolid empty\n"],
+  ])("%s is 422 render_failed, not a blank picture", async (_label, body) => {
+    const res = await preview(body);
     expect(res.status).toBe(422);
-    const body = slicerContract.renderError.parse(await res.json());
-    expect(body.error).toBe("render_failed");
-    expect(body.message.length).toBeGreaterThan(0);
-    // OpenSCAD answered, not the sandbox: renders are still on.
-    expect(body.message).not.toMatch(/renders are off/);
+    const parsed = slicerContract.renderError.parse(await res.json());
+    expect(parsed.error).toBe("render_failed");
+    expect(parsed.message).toBe(
+      "The file is not an STL with at least one triangle, so there is nothing to render.",
+    );
   });
 
   test("the job folder is gone after each preview", () => {
