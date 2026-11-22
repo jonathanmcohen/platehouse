@@ -63,11 +63,22 @@ export function ensureImage(): void {
   built = true;
 }
 
+/**
+ * Runs one program in a fresh throwaway container from the slicer image, as
+ * root with Docker's default capabilities, and removes the container after.
+ * For checks of what is in the image itself, which do not need the hardened
+ * runtime startSlicer gives: root there has no capabilities, so it cannot
+ * read every folder in the image.
+ */
+export function runInImage(program: string, args: string[]): Run {
+  ensureImage();
+  return docker(["run", "--rm", "-u", "0", "--entrypoint", program, IMAGE, ...args]);
+}
+
 export interface RunningSlicer {
   id: string;
   base: string;
-  /** docker exec in the container; user runs it as another user (as docker exec -u does). */
-  exec(args: string[], options?: { user?: string }): Run;
+  exec(args: string[]): Run;
   health(): string;
   /** The server's output so far (docker logs), stdout and stderr together. */
   logs(): string;
@@ -153,8 +164,7 @@ export async function startSlicer(): Promise<RunningSlicer> {
     return {
       id,
       base: `http://127.0.0.1:${port}`,
-      exec: (args, options) =>
-        docker(["exec", ...(options?.user === undefined ? [] : ["-u", options.user]), id, ...args]),
+      exec: (args) => docker(["exec", id, ...args]),
       health,
       logs: () => {
         const r = docker(["logs", id]);

@@ -12,7 +12,7 @@
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { landrunArgs } from "../../src/sandbox.js";
-import { type RunningSlicer, startSlicer } from "./support/slicer.js";
+import { type RunningSlicer, runInImage, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
 beforeAll(async () => {
@@ -239,14 +239,20 @@ describe("OpenSCAD in the image", () => {
   });
 
   // Issue #153 item 5: the image's build strips every setuid and setgid bit
-  // and fails if any is left; this checks the image as it runs. The scan runs
-  // as root, and find's errors are kept in the output, so a folder the scan
-  // could not search shows up as a failure instead of being skipped quietly.
+  // and fails if any is left; this checks the built image. The check is about
+  // what is in the image, not how it runs, so it does not need the hardened
+  // runtime: it runs in a fresh throwaway container from the same image, as
+  // root with Docker's default capabilities, which can read every folder
+  // (root in the hardened container has no capabilities, and cannot). No
+  // folder is left out, and any error find reports (a folder it could not
+  // search) fails the test, as a found file does.
   test("no file in the image is setuid or setgid", () => {
-    const r = slicer.exec(["sh", "-c", "find / -xdev -perm /6000 -type f 2>&1; echo done"], {
-      user: "0",
+    const r = runInImage("find", ["/", "-xdev", "-perm", "/6000", "-type", "f"]);
+    expect({ code: r.code, stdout: r.stdout, stderr: r.stderr }).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
     });
-    expect(r.stdout.trim()).toBe("done");
   });
 
   // The job folders' tmpfs carries noexec, nosuid and nodev, as the reference
