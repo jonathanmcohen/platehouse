@@ -1,4 +1,4 @@
--- Platehouse schema 0011: who made each API token, the name each session
+-- Platehouse schema 0014: who made each API token, the name each session
 -- signed in with, and one length limit for every stored OIDC subject
 -- (issues #322 and #378).
 -- Hand-written; every statement is read in review (lesson 14). Never edit it

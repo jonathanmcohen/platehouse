@@ -146,6 +146,11 @@ export interface EstimatesTable {
   failureDetail: string | null;
   attempts: Generated<number>;
   createdAt: CreatedAt;
+  /**
+   * When the attempt that is running, or that finished, began work (0011);
+   * null before it starts, and on estimates finished before 0011.
+   */
+  startedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   finishedAt: Date | null;
 }
 
@@ -194,9 +199,9 @@ export interface ApiTokensTable {
   createdAt: CreatedAt;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
-  /** The OIDC subject that made the token (0011); null when made before it was recorded. */
+  /** The OIDC subject that made the token (0014); null when made before it was recorded. */
   createdBySubject: ColumnType<string | null, string | null | undefined, never>;
-  /** The maker's display name when the token was made (0011), or null. */
+  /** The maker's display name when the token was made (0014), or null. */
   createdByName: ColumnType<string | null, string | null | undefined, never>;
 }
 
@@ -206,7 +211,7 @@ export interface SessionsTable {
   createdAt: CreatedAt;
   expiresAt: Date;
   idleExpiresAt: Date;
-  /** The display name the issuer gave at sign-in (0011), or null. */
+  /** The display name the issuer gave at sign-in (0014), or null. */
   displayName: ColumnType<string | null, string | null | undefined, never>;
 }
 

@@ -3,7 +3,7 @@
 // sub is longer than MAX_SUBJECT_LENGTH characters, with the reason
 // subject_too_long and the length (never the subject) on the error. Every
 // column and index that stores a subject then holds at most 255 characters
-// (migration 0011). 0.1.0 took any non-empty string as sub, so nothing else
+// (migration 0014). 0.1.0 took any non-empty string as sub, so nothing else
 // is refused: a subject of up to 255 characters of any script still signs in.
 // Characters are counted as Postgres's char_length counts them, by code
 // point, not by UTF-16 unit.
