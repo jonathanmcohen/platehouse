@@ -69,7 +69,7 @@ export type LoginFailure =
  * The longest OIDC subject (sub) Platehouse takes, in characters: OpenID
  * Connect Core limits sub to 255 ASCII characters (issue #378). admit()
  * refuses a longer one, so every column and index that stores a subject
- * (sessions.subject, api_tokens.created_by_subject; migration 0014) and the
+ * (sessions.subject, api_tokens.created_by_subject; migration 0013) and the
  * Sign out everywhere body hold at most this many. Counted by code point,
  * as Postgres's char_length counts. 0.1.0 took any non-empty string, so
  * nothing else about a subject is refused.
@@ -108,7 +108,7 @@ export interface OidcClient {
   finish(callbackUrl: URL, checks: LoginChecks): Promise<{ subject: string; name?: string | null }>;
 }
 
-/** The longest display name a session keeps (the schema's limit, migration 0014). */
+/** The longest display name a session keeps (the schema's limit, migration 0013). */
 export const MAX_DISPLAY_NAME = 200;
 
 /** text with each control character (C0, DEL and C1) made a space. */

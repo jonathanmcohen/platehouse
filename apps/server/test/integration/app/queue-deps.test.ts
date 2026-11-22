@@ -14,6 +14,7 @@ const full: ServerQueueDeps = {
   pollOrca: async () => undefined,
   onIngested: async () => undefined,
   checkRenders: async () => undefined,
+  backfillPreviews: async () => undefined,
 };
 
 describe("ServerQueueDeps", () => {
@@ -27,6 +28,11 @@ describe("ServerQueueDeps", () => {
     const noOnIngested: ServerQueueDeps = { ...rest, slicerJobs, pollOrca, checkRenders };
     // @ts-expect-error -- the render check would have no schedule
     const noCheck: ServerQueueDeps = { ...rest, slicerJobs, pollOrca, onIngested };
-    expect([noSlicer, noPoll, noOnIngested, noCheck].every((d) => d !== undefined)).toBe(true);
+    const { backfillPreviews: _backfill, ...withoutBackfill } = full;
+    // @ts-expect-error -- the preview backfill (issue #316) would have no schedule
+    const noBackfill: ServerQueueDeps = withoutBackfill;
+    expect(
+      [noSlicer, noPoll, noOnIngested, noCheck, noBackfill].every((d) => d !== undefined),
+    ).toBe(true);
   });
 });

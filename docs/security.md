@@ -109,6 +109,14 @@ container, the slicer, which is locked down.
   produce wrong numbers for that plate.
 - It is a container, not a virtual machine. It shares the host's kernel, so a kernel bug could
   still be used to escape it. Keep your host's kernel and Docker up to date.
+- It does not get Ubuntu's security fixes the day they ship. The slicer image installs its Ubuntu
+  packages from a fixed snapshot of the Ubuntu archive, so each build is repeatable. Once a month a
+  workflow moves that snapshot forward in a pull request, and the published image gets the newer
+  packages with its next build after that change is merged: a Platehouse release, a new OrcaSlicer
+  version, or a build run by hand. The image builds scan for known high and critical problems with
+  a fix available and report them without failing the build; the slicer's lack of internet access
+  is why that is acceptable. To get the fixes, pull your slicer image tag again when you update
+  Platehouse.
 - OpenSCAD can still read the system libraries, fonts and programs it needs to run; the sandbox
   keeps it away from your data, not from the operating system files inside its own container.
 - Some limits are documented in the code as known: for example, the sandbox does not block UDP.

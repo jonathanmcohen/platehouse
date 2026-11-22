@@ -103,6 +103,16 @@ export interface FilesTable {
   parseStatus: Generated<ParseStatus>;
   derivedStatus: string | null;
   derivedMessage: string | null;
+  /** An STL's or STEP file's preview picture: null, 'pending', 'ok' or 'failed' (migration 0012). */
+  previewStatus: string | null;
+  /** Why the preview picture failed, in derived_message's form; null with none. */
+  previewMessage: string | null;
+  /** The source blob render_png_blob_id was made from (an STL's or STEP file's picture). */
+  previewSourceBlobId: string | null;
+  /** The source the newest failed picture attempt was for. */
+  previewFailureSourceBlobId: string | null;
+  /** Why that attempt failed, in derived_message's form. */
+  previewFailureMessage: string | null;
   meshBlobId: string | null;
   renderStlBlobId: string | null;
   renderPngBlobId: string | null;
@@ -199,9 +209,9 @@ export interface ApiTokensTable {
   createdAt: CreatedAt;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
-  /** The OIDC subject that made the token (0014); null when made before it was recorded. */
+  /** The OIDC subject that made the token (0013); null when made before it was recorded. */
   createdBySubject: ColumnType<string | null, string | null | undefined, never>;
-  /** The maker's display name when the token was made (0014), or null. */
+  /** The maker's display name when the token was made (0013), or null. */
   createdByName: ColumnType<string | null, string | null | undefined, never>;
 }
 
@@ -211,7 +221,7 @@ export interface SessionsTable {
   createdAt: CreatedAt;
   expiresAt: Date;
   idleExpiresAt: Date;
-  /** The display name the issuer gave at sign-in (0014), or null. */
+  /** The display name the issuer gave at sign-in (0013), or null. */
   displayName: ColumnType<string | null, string | null | undefined, never>;
 }
 

@@ -52,7 +52,8 @@ const SHIPPED = [
   "0009_name_sort_prefix.sql",
   "0010_drop_unused_tags.sql",
   "0011_estimate_started_at.sql",
-  "0014_token_creators.sql",
+  "0012_file_preview_status.sql",
+  "0013_token_creators.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -629,7 +630,114 @@ describe("0011 estimate started_at", () => {
   });
 });
 
-// Migration 0014 (issue #322) records who made each API token and the display
+// Migration 0012 (issue #380) gives an STL's or STEP file's preview picture
+// its own status, preview_status and preview_message, so derived_status
+// keeps its 0.1.0 meaning. Every existing file starts with neither: none has
+// a picture yet. Nothing else on a file changes.
+describe("0012 file preview status", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 11,
+    );
+    expect(later).toContain("0012_file_preview_status.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const MODEL = "0190a0b0-0000-7000-8000-000000000051";
+  const FILES = [
+    {
+      id: "0190a0b0-0000-7000-8000-000000000061",
+      blob: "0190a0b0-0000-7000-8000-000000000071",
+      kind: "stl",
+      status: null,
+    },
+    {
+      id: "0190a0b0-0000-7000-8000-000000000062",
+      blob: "0190a0b0-0000-7000-8000-000000000072",
+      kind: "step",
+      status: "ok",
+    },
+    {
+      id: "0190a0b0-0000-7000-8000-000000000063",
+      blob: "0190a0b0-0000-7000-8000-000000000073",
+      kind: "step",
+      status: "failed",
+    },
+  ];
+
+  async function seedAt0011(db: Kysely<DB>) {
+    await migrateFrom(db, dir);
+    await sql`insert into models (id, name) values (${MODEL}, 'Synthetic preview model')`.execute(
+      db,
+    );
+    for (const f of FILES) {
+      await sql`
+        insert into blobs (id, model_id, key, kind, size, sha256, content_type, state)
+        values (${f.blob}, ${MODEL}, ${`models/${MODEL}/${f.blob}`}, 'source', 3,
+                decode(repeat('ab', 32), 'hex'), 'application/octet-stream', 'stored')
+      `.execute(db);
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           derived_status, derived_message)
+        values (${f.id}, ${MODEL}, ${f.blob}, ${`synthetic.${f.kind}`}, ${`synthetic.${f.kind}`},
+                ${f.kind}, 3, decode(repeat('ab', 32), 'hex'), ${f.status},
+                ${f.status === "failed" ? "STEP import failed" : null})
+      `.execute(db);
+    }
+  }
+
+  test("on a database at 0011, adds the preview columns, null on every file, and changes nothing else", async () => {
+    const { db } = await pgc.freshDatabase();
+    await seedAt0011(db);
+    const before = (await sql`select * from files order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    const after = (await sql<Record<string, unknown>>`select * from files order by id`.execute(db))
+      .rows;
+    expect(after).toHaveLength(FILES.length);
+    // The db's CamelCasePlugin names the columns in camelCase.
+    for (const [i, row] of after.entries()) {
+      const {
+        previewStatus,
+        previewMessage,
+        previewSourceBlobId,
+        previewFailureSourceBlobId,
+        previewFailureMessage,
+        ...rest
+      } = row;
+      expect(previewStatus).toBeNull();
+      expect(previewMessage).toBeNull();
+      expect(previewSourceBlobId).toBeNull();
+      expect(previewFailureSourceBlobId).toBeNull();
+      expect(previewFailureMessage).toBeNull();
+      expect(rest).toEqual(before[i]);
+    }
+  });
+
+  test("preview_status takes only pending, ok and failed", async () => {
+    const { db } = await pgc.freshDatabase();
+    await seedAt0011(db);
+    await migrate(db);
+    const id = FILES[0]?.id ?? "";
+    for (const status of ["pending", "ok", "failed"]) {
+      await sql`update files set preview_status = ${status} where id = ${id}`.execute(db);
+    }
+    await expect(
+      sql`update files set preview_status = 'done' where id = ${id}`.execute(db),
+    ).rejects.toThrow(/check constraint/);
+  });
+});
+
+// Migration 0013 (issue #322) records who made each API token and the display
 // name each session signed in with. It runs on the database every migration
 // before it leaves, holding a live token, a revoked one and a session: they keep
 // every value they had, and their new columns are null, so the tokens list
@@ -637,16 +745,16 @@ describe("0011 estimate started_at", () => {
 // stored subject at 255 characters (issue #378, as admit() now does at
 // sign-in): a 0.1.0 session whose subject is longer is deleted, since that
 // user can no longer sign in, and every other session is kept as it was.
-describe("0014 token creators", () => {
+describe("0013 token creators", () => {
   let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
     await cp(MIGRATIONS_DIR, dir, { recursive: true });
     const later = (await readdir(dir)).filter(
-      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 13,
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 12,
     );
-    expect(later).toContain("0014_token_creators.sql");
+    expect(later).toContain("0013_token_creators.sql");
     for (const name of later) await rm(join(dir, name));
   });
 
