@@ -15,10 +15,10 @@
 // changes nothing.
 //
 // The leftover check (issue #391). Only the three pinned files may name a
-// snapshot at or after the pin: the pin only moves forward, so a timestamp
-// before it can never be a pin again, while one at or after it is the pin, or
-// may be a later one, and a file naming it is a copy the rewrite would leave
-// behind. The monthly run checks this after its rewrite and stops before it
+// snapshot at or after the pin, and each only once, in its pin: the pin only
+// moves forward, so a timestamp before it can never be a pin again, while one
+// at or after it is the pin, or may be a later one, and any other copy of it
+// is one the rewrite would leave behind. The monthly run checks this after its rewrite and stops before it
 // pushes; the ci workflow checks it on every pull request, so a file that
 // would stop a later monthly run fails that pull request instead. Both run
 // the same command below. It reads the tracked files with git grep, leaves
@@ -35,7 +35,8 @@
 //   node apt-snapshot.mjs leftovers [<ts>]
 //                                   the leftover check from <ts>, or from the
 //                                   current pin when none is given: exits 0
-//                                   when no other file names a snapshot at
+//                                   when no other file, and no pinned file
+//                                   beside its pin, names a snapshot at
 //                                   or after it, 1 with the files and the
 //                                   timestamps they name when one does, 2
 //                                   when git or the arguments fail (the
@@ -266,19 +267,29 @@ export async function refresh({ now, fetchFn = fetch, sleep = wait, read, write,
 // line.
 export const GREP_ARGS = ["grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"];
 
-// The leftovers in git grep output (GREP_ARGS): the files other than the
-// three pinned ones that name a real snapshot timestamp at or after since, as
-// "<file> <timestamp>" strings, sorted and without repeats.
+// The leftovers in git grep output (GREP_ARGS), as "<file> <timestamp>"
+// strings, sorted and without repeats: every real snapshot timestamp at or
+// after since that a file other than the three pinned ones names, and every
+// one a pinned file names when it names more than one. The rewrite moves only
+// a pinned file's ARG APT_SNAPSHOT= line or pins cell, so that pin is the one
+// such timestamp the file may hold; a second copy, such as a comment or a
+// sentence in the gate README, would be left behind. git grep -o gives no
+// line, so all of that file's timestamps are listed, its pin among them.
 export function findLeftovers(grepOutput, since) {
   if (!isSnapshot(since)) throw new Error(`${since} is not a snapshot timestamp`);
-  const pinned = new Set([...DOCKERFILES, GATE_README]);
+  const pinned = Object.fromEntries([...DOCKERFILES, GATE_README].map((f) => [f, []]));
   const out = new Set();
   for (const line of grepOutput.split("\n")) {
     const at = line.lastIndexOf(":");
     if (at <= 0) continue;
     const file = line.slice(0, at);
     const ts = line.slice(at + 1);
-    if (!pinned.has(file) && isSnapshot(ts) && ts >= since) out.add(`${file} ${ts}`);
+    if (!isSnapshot(ts) || ts < since) continue;
+    if (Object.hasOwn(pinned, file)) pinned[file].push(ts);
+    else out.add(`${file} ${ts}`);
+  }
+  for (const [file, found] of Object.entries(pinned)) {
+    if (found.length > 1) for (const ts of found) out.add(`${file} ${ts}`);
   }
   return [...out].sort();
 }
@@ -317,7 +328,7 @@ function leftoversCommand(args) {
   if (r.leftovers.length > 0) {
     const files = [DOCKERFILES[0], DOCKERFILES[1], GATE_README].join(", ");
     process.stderr.write(
-      `::error::these files name the Ubuntu snapshot ${r.since} or a later one, which only ${files} may: the monthly apt-snapshot run would leave them behind and stop before it pushes. Take the date out of them, use a date before ${r.since}, or teach .github/scripts/apt-snapshot.mjs about them:\n`,
+      `::error::these files name the Ubuntu snapshot ${r.since} or a later one, which only ${files} may, each once in its pin: the monthly apt-snapshot run would leave them behind and stop before it pushes. Take the date out of them, use a date before ${r.since}, or teach .github/scripts/apt-snapshot.mjs about them:\n`,
     );
     process.stderr.write(`${r.leftovers.join("\n")}\n`);
     process.exit(1);

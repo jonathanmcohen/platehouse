@@ -202,10 +202,11 @@ jobs:
 
   # Issue #391: only the three files that pin the Ubuntu snapshot
   # (apps/slicer/Dockerfile, tools/slicing-gate/Dockerfile and the gate
-  # README's pins table) may name the current pin or a later snapshot. The
-  # monthly apt-snapshot workflow stops before it pushes when any other
-  # tracked file does, so a pull request adding such a copy, anywhere in the
-  # tree, fails here instead of stopping next month's run. It runs on every
+  # README's pins table) may name the current pin or a later snapshot, each
+  # once, in its pin. The monthly apt-snapshot workflow stops before it
+  # pushes when any other tracked file does, or a pinned file names one a
+  # second time, so a pull request adding such a copy, anywhere in the tree,
+  # fails here instead of stopping next month's run. It runs on every
   # pull request and push, whatever changed: no paths scope it and nothing
   # gates it. It is the same command the monthly workflow runs after its
   # rewrite: a git grep over the tracked files, CHANGELOG.md left out, with

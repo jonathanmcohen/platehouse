@@ -21,8 +21,8 @@
 # nothing is pushed. After the rewrite, the leftover check (node
 # .github/scripts/apt-snapshot.mjs leftovers, the same command the ci
 # workflow runs on every pull request) stops the run before it pushes when
-# any other tracked file but CHANGELOG.md names the old snapshot or a later
-# one.
+# any other tracked file but CHANGELOG.md, or a pinned file anywhere but its
+# pin, names the old snapshot or a later one.
 #
 # The pull request. At most one open, from the fixed branch bot/apt-snapshot
 # into main, holding one commit on the current main. When the branch already
@@ -198,7 +198,10 @@ jobs:
               GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}" git "$@"
           }
           remote="$(authgit ls-remote origin "refs/heads/${BRANCH}" | awk '{ print $1 }')"
-          existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          # --head matches the branch name only, whoever owns the branch, and
+          # anyone can open a pull request from a fork branch of the same
+          # name; only one from this repository is the bot's.
+          existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository | not)][0].number // empty')"
           pushed=false
           replaced=""
           if [ -n "$remote" ] && authgit fetch -q origin "refs/heads/${BRANCH}" &&

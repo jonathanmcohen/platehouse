@@ -145,8 +145,9 @@ Actions to create and approve pull requests" (Settings, Actions, General, Workfl
 without it the run pushes the branch and then fails, saying so.
 
 Only those three places, the two Dockerfiles and the pins table in `tools/slicing-gate/README.md`,
-may name the current snapshot or a later one; `CHANGELOG.md` is left out. The monthly run stops
-before it pushes when any other tracked file does, as the rewrite would leave that copy behind. So
+may name the current snapshot or a later one, each once, in its pin; `CHANGELOG.md` is left out.
+The monthly run stops before it pushes when any other tracked file does, or one of those files
+names it a second time (a comment, a sentence), as the rewrite would leave that copy behind. So
 the ci workflow's Ubuntu snapshot pin check job runs the same check,
 `node .github/scripts/apt-snapshot.mjs leftovers`, on every pull request: to write a snapshot date
 anywhere else, use one before the current pin.

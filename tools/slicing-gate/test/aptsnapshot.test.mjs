@@ -638,10 +638,11 @@ test("apt-snapshot pick: runs the script at the repo root and passes its outputs
 // The PR step. git, gh and node are stubs: git diff lists CHANGED,
 // ls-remote gives REMOTE (empty: no branch yet), the fetched tree equals
 // HEAD's when SAME_TREE is 1, push exits PUSH_STATUS; the leftover check
-// (node) fails listing LEFT when it is set; gh pr list gives EXISTING, gh pr
-// create prints a URL or, with CREATE_ERROR, fails with that message. Every
-// call is recorded, in order. The leftover check itself is tested against
-// real git below.
+// (node) fails listing LEFT when it is set; gh pr list gives EXISTING or,
+// when PRS is set, runs its own --jq filter with jq over PRS, a JSON list of
+// open pull requests; gh pr create prints a URL or, with CREATE_ERROR, fails
+// with that message. Every call is recorded, in order. The leftover check
+// itself is tested against real git below.
 const PR_STUBS = [
   "node() {",
   '  echo "node $*" >>"$CALLS"',
@@ -661,7 +662,10 @@ const PR_STUBS = [
   "gh() {",
   '  echo "gh $*" >>"$CALLS"',
   '  case "$1 $2" in',
-  '    "pr list") printf "%s" "$EXISTING" ;;',
+  '    "pr list")',
+  '      if [ -z "$PRS" ]; then printf "%s" "$EXISTING"; return 0; fi',
+  '      filter=""; prev=""; for a in "$@"; do if [ "$prev" = --jq ]; then filter="$a"; fi; prev="$a"; done',
+  '      jq -r "$filter" <<<"$PRS" ;;',
   '    "pr edit") cp body.md posted.md ;;',
   '    "pr create") cp body.md posted.md; if [ -n "$CREATE_ERROR" ]; then echo "$CREATE_ERROR" >&2; return 1; fi; echo "https://github.com/o/r/pull/412" ;;',
   "    *) return 0 ;;",
@@ -687,6 +691,7 @@ const prRun = (env = {}) =>
       REMOTE: "",
       SAME_TREE: "0",
       EXISTING: "",
+      PRS: "",
       CREATE_ERROR: "",
       ...env,
     },
@@ -769,6 +774,36 @@ test("apt-snapshot pr: a newer change replaces the branch: close the open PR, de
   assert.match(r.files["posted.md"], /This replaces #300, which proposed an older snapshot and was not merged\./);
   assert.match(r.summary, /replaced and closed: #300/);
   assert.deepEqual(callLines(r, "gh pr edit"), [], "no PR is moved onto a rewritten branch");
+});
+
+// gh pr list --head matches the branch name only, and anyone can open a
+// pull request from a fork branch also named bot/apt-snapshot. Only a pull
+// request from this repository is the bot's: a fork's is never closed, and
+// never stands in for the bot's own.
+test("apt-snapshot pr: a pull request from a fork's branch of the same name is never taken for the bot's", () => {
+  const fork = { number: 301, isCrossRepository: true };
+  const own = { number: 300, isCrossRepository: false };
+  const remote = "e".repeat(40);
+  const replaced = prRun({ REMOTE: remote, SAME_TREE: "0", PRS: JSON.stringify([fork, own]) });
+  assert.equal(replaced.status, 0, replaced.log);
+  assert.deepEqual(
+    callLines(replaced, "gh pr close").map((l) => l.split(" --comment ")[0]),
+    ["gh pr close 300 --repo o/r"],
+  );
+  assert.match(callLines(replaced, "gh pr list")[0], /--json number,isCrossRepository /);
+  for (const env of [
+    { REMOTE: "", SAME_TREE: "0" },
+    { REMOTE: remote, SAME_TREE: "0" },
+    { REMOTE: remote, SAME_TREE: "1" },
+  ]) {
+    const r = prRun({ ...env, PRS: JSON.stringify([fork]) });
+    assert.equal(r.status, 0, r.log);
+    assert.deepEqual(callLines(r, "gh pr close"), [], JSON.stringify(env));
+    assert.doesNotMatch(r.log, /already proposes this change/, JSON.stringify(env));
+    assert.equal(callLines(r, "gh pr create").length, 1, JSON.stringify(env));
+    assert.doesNotMatch(r.files["posted.md"], /This replaces #/, JSON.stringify(env));
+    assert.match(r.summary, /pull request: #412/, JSON.stringify(env));
+  }
 });
 
 test("apt-snapshot pr: last month's branch with no open PR (merged) is deleted and pushed fresh", () => {
@@ -875,6 +910,61 @@ test("findLeftovers: other files naming a snapshot at or after the pin; the pins
   assert.deepEqual(GREP_ARGS, ["grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"]);
 });
 
+// The rewrite moves only the ARG line and the pins cell, so a pinned file may
+// name a snapshot at or after since once, in its pin; a second copy, such as
+// a Dockerfile comment or a sentence in the gate README, is left behind.
+test("findLeftovers: a pinned file naming the snapshot a second time, beside its pin, is a leftover", () => {
+  const since = "20201107T000000Z";
+  const out = [
+    "apps/slicer/Dockerfile:20201107T000000Z",
+    "apps/slicer/Dockerfile:20201107T000000Z",
+    "tools/slicing-gate/Dockerfile:20201107T000000Z",
+    "tools/slicing-gate/Dockerfile:20200101T000000Z",
+    "tools/slicing-gate/README.md:20201201T000000Z",
+    "tools/slicing-gate/README.md:20201107T000000Z",
+    "",
+  ].join("\n");
+  assert.deepEqual(findLeftovers(out, since), [
+    "apps/slicer/Dockerfile 20201107T000000Z",
+    "tools/slicing-gate/README.md 20201107T000000Z",
+    "tools/slicing-gate/README.md 20201201T000000Z",
+  ]);
+});
+
+// The monthly run's case, with real git: a stale copy in each kind of pinned
+// file survives the rewrite, and the check from the old pin finds both.
+test("leftovers: a second copy of the pin inside a pinned file is found after the rewrite", () => {
+  inScratch((dir) => {
+    const git = (...a) => {
+      const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    git("init", "-q");
+    const before = fakeTexts("20201107T000000Z");
+    before["apps/slicer/Dockerfile"] = before["apps/slicer/Dockerfile"].replace(
+      "# about the snapshot\n",
+      "# pinned 20201107T000000Z, see the gate README\n",
+    );
+    before["tools/slicing-gate/README.md"] += "\nThe images install from 20201107T000000Z.\n";
+    writeTree(dir, before);
+    git("add", "-A");
+    assert.deepEqual(leftovers(dir).leftovers, [
+      "apps/slicer/Dockerfile 20201107T000000Z",
+      "tools/slicing-gate/README.md 20201107T000000Z",
+    ]);
+    writeTree(dir, rewritePins(before, "20201107T000000Z", "20201201T000000Z"));
+    assert.deepEqual(leftovers(dir, "20201107T000000Z").leftovers, [
+      "apps/slicer/Dockerfile 20201107T000000Z",
+      "apps/slicer/Dockerfile 20201201T000000Z",
+      "tools/slicing-gate/README.md 20201107T000000Z",
+      "tools/slicing-gate/README.md 20201201T000000Z",
+    ]);
+    // With the copies gone, the pins alone pass.
+    writeTree(dir, rewritePins(fakeTexts("20201107T000000Z"), "20201107T000000Z", "20201201T000000Z"));
+    assert.deepEqual(leftovers(dir, "20201107T000000Z").leftovers, []);
+  });
+});
+
 // The check with real git, over a scratch repo: tracked files only,
 // CHANGELOG.md left out, the pin read from the pinned files by default.
 test("leftovers: real git over a scratch repo finds the copy, not the CHANGELOG or untracked files", () => {
@@ -921,7 +1011,7 @@ test("leftovers: this repo's tree names the pin only in the three pinned files",
     control.some((l) => l.startsWith("tools/slicing-gate/test/aptsnapshot.test.mjs ")),
     `the control finds this file's 2020 fixtures: ${control.slice(0, 5).join(", ")}`,
   );
-  assert.ok(!control.some((l) => DOCKERFILES.includes(l.split(" ")[0])), "the pinned files never count");
+  assert.ok(!control.some((l) => DOCKERFILES.includes(l.split(" ")[0])), "the pinned files count only beside their pin");
 });
 
 // The command both workflows run, as they run it: at the repo root, with no
