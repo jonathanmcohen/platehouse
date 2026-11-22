@@ -40,7 +40,9 @@
 //   rendered STL (render_stl), and the preview picture (render_png) of a
 //   SCAD, an STL or a STEP file (issue #316). Anything else is
 //   null, so the page shows no image rather than another file's bytes. A
-//   .3mf has no 3D view (AC-051).
+//   .3mf's own view is null: each of its plates' 3D views is asked for when
+//   it is opened, at GET /app/api/plates/:id/mesh (app-api/plate-mesh.ts,
+//   issue #358).
 // - Each plate's numbers are Task 12's plateNumbers, with the display
 //   context (the settings row and the printer menu, readDisplayContext)
 //   read once per page, as the library page does (app-api/library.ts).

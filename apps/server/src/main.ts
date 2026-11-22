@@ -97,6 +97,7 @@ import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
 import { createDescriptionReconvert, storeTextReader } from "./library/reconvert.js";
 import { createTrash } from "./library/trash.js";
 import { createLocales } from "./locales/locales.js";
+import { createPlateMeshes } from "./plate-mesh/plate-mesh.js";
 import { descriptionsRepo } from "./repos/descriptions.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
@@ -522,6 +523,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         displayContext,
         retryEstimate: (estimateId) => estimates.retryEstimate(estimateId),
       }),
+      // A .3mf plate's 3D view (issue #358), made on first open.
+      plateMeshes: createPlateMeshes({ db, store, tmpDir: config.tmpDir }),
       // The settings, trash and organising pages (Task 21), and Sign out
       // everywhere on the settings page (issue #322). Every module is passed:
       // satisfies AppApiDeps catches one left out.

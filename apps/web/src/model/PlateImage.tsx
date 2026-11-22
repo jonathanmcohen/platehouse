@@ -25,7 +25,16 @@
 // changes layout, so nothing around it moves.
 // The buttons are the 3D view's pattern (Viewer3d): a fieldset with a
 // hidden legend, text studio-buttons, studio.css's focus ring and tokens.
-import { useState } from "react";
+//
+// The plate's 3D view (issue #358): with onOpen, a click on the picture
+// opens it. That is a button laid over the picture, named openLabel and
+// kept out of the Tab order (tabindex -1), because the visible Show in 3D
+// button the caller passes in actions does the same for the keyboard; a
+// second Tab stop for one action would only be in the way. The overlay sits
+// beside the image rather than around it, so studio.css's rules for the
+// image as the frame's own child still hold. actions go between the picture
+// and its turn and flip buttons.
+import { type ReactNode, useState } from "react";
 import { useI18n } from "../i18n/I18n";
 
 /** Height over width of studio.css's .studio-viewer-frame (aspect-ratio: 4 / 3). */
@@ -91,9 +100,15 @@ export function cssTransform(t: PlateTransform, ratio: number | null): string {
 export interface PlateImageProps {
   src: string;
   alt: string;
+  /** Opens the plate's 3D view; with it, a click on the picture does. */
+  onOpen?: (() => void) | undefined;
+  /** The name of the picture's open button, such as "Show Base in 3D". */
+  openLabel?: string | undefined;
+  /** The caller's buttons, between the picture and its turn and flip buttons. */
+  actions?: ReactNode;
 }
 
-export function PlateImage({ src, alt }: PlateImageProps) {
+export function PlateImage({ src, alt, onOpen, openLabel, actions }: PlateImageProps) {
   const { t } = useI18n();
   const [transform, setTransform] = useState<PlateTransform>(UNTURNED);
   /** The picture's height over its width, once it has loaded. */
@@ -112,7 +127,17 @@ export function PlateImage({ src, alt }: PlateImageProps) {
             setRatio(naturalWidth > 0 && naturalHeight > 0 ? naturalHeight / naturalWidth : null);
           }}
         />
+        {onOpen === undefined ? null : (
+          <button
+            type="button"
+            className="ph-plate-open"
+            tabIndex={-1}
+            aria-label={openLabel}
+            onClick={onOpen}
+          />
+        )}
       </div>
+      {actions}
       <fieldset className="studio-actions ph-viewer-controls ph-plate-controls">
         <legend className="studio-visually-hidden">{t("model.plateImage.controls")}</legend>
         <button type="button" className="studio-button" onClick={() => setTransform(rotateLeft)}>

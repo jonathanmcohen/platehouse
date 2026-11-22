@@ -7,10 +7,11 @@
 //   an ARIA tablist: the arrow keys, Home and End move between them, and
 //   only the chosen tab is in the Tab order.
 // - The viewer starts on the first .3mf, whose plate thumbnails show large
-//   with a strip of plates (PlateViewer; never a 3D view). An STL, a STEP's
-//   mesh or a SCAD's rendered STL shows in the 3D viewer (Viewer3d), which
-//   loads three.js only then. View in the Files tab moves the viewer to
-//   another file.
+//   with a strip of plates (PlateViewer). Show in 3D, or a click on the
+//   picture, shows that plate's objects in the 3D viewer (issue #358). An
+//   STL, a STEP's mesh or a SCAD's rendered STL shows in the 3D viewer
+//   (Viewer3d) at once. three.js is loaded only when a 3D view is shown.
+//   View in the Files tab moves the viewer to another file.
 // - Everything comes from one request, GET /app/api/models/:id. While any
 //   plate is estimating (isEstimating) or any STEP, SCAD or STL file is still
 //   having its mesh, render or preview made (isDeriving: derivedStatus or
@@ -721,7 +722,9 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
     );
   }
   if (file.kind === "3mf") {
-    return <PlateViewer file={file} selected={plateIndex} onSelect={onPlate} />;
+    return (
+      <PlateViewer file={file} selected={plateIndex} onSelect={onPlate} loadThree={loadThree} />
+    );
   }
   if (file.view !== null) {
     return (
