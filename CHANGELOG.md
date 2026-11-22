@@ -9,6 +9,11 @@ All notable changes to Platehouse are recorded here. The format follows
 ### Added
 
 - A moving `rc` tag on both images, `ghcr.io/jonathanmcohen/platehouse:rc` and `ghcr.io/jonathanmcohen/platehouse-slicer:rc`, so a test server can follow the newest release candidate by pulling instead of editing a tag. A release candidate tag (`vX.Y.Z-rc.N`) and a plain release tag (`vX.Y.Z`) both point `rc` at that build, so a server on `rc` also gets each release; `rc` follows the last such tag pushed, so a patch release cut during a candidate moves it back, which the upgrade docs warn about. Daily, manual and main-branch runs of the slicer workflow, and any other prerelease tag, never move it; the version tags, `latest` and the slicer's `stable` are unchanged. Both workflows read `rc` back from the registry after tagging, and the slicer's failure issue lists `rc` when a run had already moved it ([#360](https://github.com/jonathanmcohen/platehouse/pull/360)).
+- The user docs are published to GitHub Pages: a new workflow, .github/workflows/docs-pages.yml, builds the docs site and deploys it whenever a change to docs/, apps/docs/, apps/web/public/ (the icons the site serves from it) or the lockfile lands on main, and can be run by hand from main. The site's address comes from the repository's Pages settings at build time, so nothing in the repository hard-codes it, and the ci workflow's Docs build job stays the pull-request check. GitHub Pages has to be switched on once first (Settings, Pages, Source: GitHub Actions); apps/docs/README.md explains it ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
+
+### Changed
+
+- The docs site now shows only Platehouse's own icons: besides the logo and SVG favicon it already had, it carries the app's ICO favicon and Apple touch icon, uses the app icon as the social card when a page is shared, and sets the browser theme colour to the Platehouse accent. They are served from the files tools/brand already writes for the web app, not copied ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 
 ### Fixed
 
