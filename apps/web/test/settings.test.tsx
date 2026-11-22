@@ -706,11 +706,12 @@ function announced(): string {
   return [...document.querySelectorAll('[role="alert"]')].map((el) => el.textContent).join(" ");
 }
 
-/** The link whose text is name. */
 /** What Sign out everywhere's live status line says after a change (role="status"). */
 function signOutStatus(): string {
   return document.querySelector("[data-sign-out-status]")?.textContent ?? "";
 }
+
+/** The link whose text is name. */
 function link(name: string): HTMLAnchorElement {
   const found = [...document.querySelectorAll("a")].find((a) => a.textContent?.trim() === name);
   if (found === undefined) throw new Error(`no link named ${JSON.stringify(name)}`);
