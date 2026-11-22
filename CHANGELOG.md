@@ -8,8 +8,13 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Added
 
+- The user docs are published to GitHub Pages: a new workflow, .github/workflows/docs-pages.yml, builds the docs site and deploys it whenever a change to docs/, apps/docs/, apps/web/public/ (the icons the site serves from it) or the lockfile lands on main, and can be run by hand from main. The site's address comes from the repository's Pages settings at build time, so nothing in the repository hard-codes it, and the ci workflow's Docs build job stays the pull-request check. GitHub Pages has to be switched on once first (Settings, Pages, Source: GitHub Actions); apps/docs/README.md explains it ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 - Settings shows who made each API token: the name your sign-in provider gave them and their user id. Tokens made with 0.1.0, before Platehouse recorded this, show "Made by an unknown user". Migration 0010 adds the columns; existing tokens and sessions keep every value they had ([#322](https://github.com/jonathanmcohen/platehouse/issues/322), [#364](https://github.com/jonathanmcohen/platehouse/pull/364)).
 - Sign out everywhere in Settings: pick a person from the list of everyone with a live session or a token they made, and end every session they have, on every browser, at once; tick the box to also revoke every API token they made. Anyone who can sign in may use it, as anyone can already revoke any token: Platehouse has no roles ([#322](https://github.com/jonathanmcohen/platehouse/issues/322), [#364](https://github.com/jonathanmcohen/platehouse/pull/364)).
+
+### Changed
+
+- The docs site now shows only Platehouse's own icons: besides the logo and SVG favicon it already had, it carries the app's ICO favicon and Apple touch icon, uses the app icon as the social card when a page is shared, and sets the browser theme colour to the Platehouse accent. They are served from the files tools/brand already writes for the web app, not copied ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 
 ### Fixed
 
