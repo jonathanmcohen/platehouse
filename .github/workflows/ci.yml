@@ -9,7 +9,8 @@
 # did.
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
-# run), the chain above, gate-tests (Slicing gate tests), gate-image (Slicing
+# run), snapshot-pins (Ubuntu snapshot pin check, on every run, below), the
+# chain above, gate-tests (Slicing gate tests), gate-image (Slicing
 # gate image build), slicer-image (Slicer image and container tests) and
 # app-image (App image (amd64) and App image (arm64), build plan Task 24: the
 # image build, its healthy and unhealthy checks, then the release workflow's
@@ -36,10 +37,19 @@
 # used. No designer file comes near any job: every test builds its own
 # fixtures, and the one outside file, the slicer's STEP sample, is public NIST
 # test data checked against its sha256.
+#
+# It also runs by hand (workflow_dispatch) on any branch. The apt-snapshot
+# workflow uses that to run CI on its monthly bot pull request (issue #219),
+# whose own pull_request runs GitHub holds for approval because the job token
+# opened it. A run by hand has no base commit to compare, so the changes job
+# runs every path-scoped job. It reads the repo only, like every run here.
 name: ci
 
 on:
   pull_request:
+  # By hand, on any branch: the apt-snapshot workflow starts it on its bot
+  # pull request (see above).
+  workflow_dispatch:
   # Pushes only to the branches that take merges: a push to a PR branch is
   # already run by pull_request, and ran twice without this (issue #8).
   push:
@@ -76,16 +86,19 @@ jobs:
           fetch-depth: 0
 
       # A pull request is compared with its base commit, a push with the commit
-      # the branch pointed at before it. With no usable base (a new branch, or
-      # a force-push whose old commit is gone) both gate jobs run, to be safe.
+      # the branch pointed at before it. With no usable base (a new branch, a
+      # force-push whose old commit is gone, or a run by hand, which has none)
+      # both gate jobs run, to be safe.
       # --no-renames lists both paths of a move: with rename detection on (git's
       # default) only the new path is listed, so a file moved out of the gate
       # would leave no gate path in the list and skip the jobs.
       # The tests list holds tools/slicing-gate and every file the gate tests
       # read from outside it (issue #222), all in
-      # tools/slicing-gate/test/ciworkflow.test.mjs and rctarget.test.mjs: this
-      # workflow, .node-version, release.yml, slicer-image.yml, rc-tag.yml,
-      # .github/scripts/rc-target.mjs, docker/app.Dockerfile,
+      # tools/slicing-gate/test/ciworkflow.test.mjs, rctarget.test.mjs and
+      # aptsnapshot.test.mjs: this workflow, .node-version, release.yml,
+      # slicer-image.yml, rc-tag.yml, apt-snapshot.yml,
+      # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
+      # docker/app.Dockerfile,
       # apps/slicer/Dockerfile, two slicer container test files, README.md and
       # CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
@@ -115,7 +128,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag)\.yml$|\.github/scripts/rc-target\.mjs$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false
@@ -186,6 +199,36 @@ jobs:
             fi
           fi
           echo "docs=${docs}" >>"$GITHUB_OUTPUT"
+
+  # Issue #391: only the three files that pin the Ubuntu snapshot
+  # (apps/slicer/Dockerfile, tools/slicing-gate/Dockerfile and the gate
+  # README's pins table) may name the current pin or a later snapshot, each
+  # once, in its pin. The monthly apt-snapshot workflow stops before it
+  # pushes when any other tracked file does, or a pinned file names one a
+  # second time, so a pull request adding such a copy, anywhere in the tree,
+  # fails here instead of stopping next month's run. It runs on every
+  # pull request and push, whatever changed: no paths scope it and nothing
+  # gates it. It is the same command the monthly workflow runs after its
+  # rewrite: a git grep over the tracked files, CHANGELOG.md left out, with
+  # no network and no install. Nothing depends on it.
+  snapshot-pins:
+    name: Ubuntu snapshot pin check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: No file but the pins names the snapshot pin
+        run: |
+          node .github/scripts/apt-snapshot.mjs leftovers
 
   lint:
     name: Lint (Biome)
@@ -637,6 +680,25 @@ jobs:
           path: report.json
           if-no-files-found: ignore
           retention-days: 14
+      # A report only (the maintainer, 2026-11-15 and 2026-11-21): fixable
+      # HIGH and CRITICAL findings in the image the container tests built, as
+      # a table in this log, so a pull request that moves the Ubuntu snapshot
+      # (the apt-snapshot workflow, issue #219) shows what is still open in
+      # the new image. The same inputs as slicer-image.yml's report. It never
+      # fails the job: exit-code 0, and continue-on-error covers the action
+      # itself failing (a Trivy database download, say). It runs only after
+      # the tests passed, so the image exists.
+      - name: Trivy report (informational, does not fail the job)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.SLICER_IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          version: v0.76.2
 
   # The app image (build plan Task 24; this job approved by the maintainer, 2026-11-13):
   # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
