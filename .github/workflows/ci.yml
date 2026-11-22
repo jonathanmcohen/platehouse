@@ -9,7 +9,8 @@
 # did.
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
-# run), the chain above, gate-tests (Slicing gate tests), gate-image (Slicing
+# run), snapshot-pins (Ubuntu snapshot pin check, on every run, below), the
+# chain above, gate-tests (Slicing gate tests), gate-image (Slicing
 # gate image build), slicer-image (Slicer image and container tests) and
 # app-image (App image (amd64) and App image (arm64), build plan Task 24: the
 # image build, its healthy and unhealthy checks, then the release workflow's
@@ -198,6 +199,35 @@ jobs:
             fi
           fi
           echo "docs=${docs}" >>"$GITHUB_OUTPUT"
+
+  # Issue #391: only the three files that pin the Ubuntu snapshot
+  # (apps/slicer/Dockerfile, tools/slicing-gate/Dockerfile and the gate
+  # README's pins table) may name the current pin or a later snapshot. The
+  # monthly apt-snapshot workflow stops before it pushes when any other
+  # tracked file does, so a pull request adding such a copy, anywhere in the
+  # tree, fails here instead of stopping next month's run. It runs on every
+  # pull request and push, whatever changed: no paths scope it and nothing
+  # gates it. It is the same command the monthly workflow runs after its
+  # rewrite: a git grep over the tracked files, CHANGELOG.md left out, with
+  # no network and no install. Nothing depends on it.
+  snapshot-pins:
+    name: Ubuntu snapshot pin check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: No file but the pins names the snapshot pin
+        run: |
+          node .github/scripts/apt-snapshot.mjs leftovers
 
   lint:
     name: Lint (Biome)

@@ -390,6 +390,42 @@ test("every Trivy step in ci.yml and release.yml sets the same exact Trivy versi
 // the same action, tag and inputs, on the image the container tests built,
 // and it can never fail the job (the maintainer, 2026-11-15 and 2026-11-21:
 // report only).
+// Issue #391: the leftover check, that no tracked file but the three pins
+// names the Ubuntu snapshot pin or a later one, must run on every pull
+// request, not only when the path-scoped gate tests run, or a copy of the pin
+// added to, say, docs/ merges green and stops the next monthly run. So it is
+// a job of its own that nothing scopes or gates, and it runs the very command
+// the monthly workflow runs, from one shared script, so the two cannot drift.
+const LEFTOVERS = "node .github/scripts/apt-snapshot.mjs leftovers";
+test("the snapshot-pins job runs the shared leftover check on every pull request (issue #391)", () => {
+  const t = text();
+  const job = jobBlock(t, "snapshot-pins");
+  assert.match(job, /\n {4}name: Ubuntu snapshot pin check\n/);
+  assert.match(job, /\n {4}runs-on: ubuntu-24\.04\n/);
+  assert.doesNotMatch(job, /\n {4}(needs|if):/, "no needs and no condition: it runs on every run");
+  // The triggers carry no paths filter (tested above), so every pull request
+  // starts it.
+  assert.match(onBlock(t), /^ {2}pull_request:\n(?! {4})/m, "pull_request with nothing nested under it");
+  const steps = jobSteps(job);
+  assert.deepEqual(
+    steps.map((s) => s.match(/^ {6}- name: (.+)$/m)[1]),
+    ["Check out", "Set up Node", "No file but the pins names the snapshot pin"],
+  );
+  assert.equal(stepScript(job, "No file but the pins names the snapshot pin"), `${LEFTOVERS}\n`);
+  assert.doesNotMatch(job, /run: .*(pnpm|npm|curl|wget)/, "no install and no network");
+  // The monthly workflow runs the same command after its rewrite, from the
+  // old pin, and has no grep of its own.
+  const monthly = readFileSync(join(ROOT, ".github", "workflows", "apt-snapshot.yml"), "utf8");
+  const pr = stepScript(jobBlock(monthly, "refresh"), "Push the branch and open the pull request");
+  assert.ok(pr.includes(`${LEFTOVERS} "$OLD"`), "the monthly run calls the shared check");
+  for (const [name, block] of [["the snapshot-pins job", job], ["apt-snapshot.yml", monthly]]) {
+    assert.doesNotMatch(block, /git grep/, `${name} runs no grep of its own`);
+  }
+  // The shared script has the command.
+  const script = readFileSync(join(ROOT, ".github", "scripts", "apt-snapshot.mjs"), "utf8");
+  assert.match(script, /if \(cmd === "leftovers"\)/);
+});
+
 const SLICER_REPORT = "Trivy report (informational, does not fail the job)";
 test("the CI slicer job ends with slicer-image.yml's Trivy report, which never fails the job", () => {
   const job = jobBlock(text(), "slicer-image");

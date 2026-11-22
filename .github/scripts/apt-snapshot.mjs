@@ -14,15 +14,35 @@
 // settling for an older day. A day that is not newer than the current pin
 // changes nothing.
 //
-// Command line, used by the workflow (run at the repo root):
+// The leftover check (issue #391). Only the three pinned files may name a
+// snapshot at or after the pin: the pin only moves forward, so a timestamp
+// before it can never be a pin again, while one at or after it is the pin, or
+// may be a later one, and a file naming it is a copy the rewrite would leave
+// behind. The monthly run checks this after its rewrite and stops before it
+// pushes; the ci workflow checks it on every pull request, so a file that
+// would stop a later monthly run fails that pull request instead. Both run
+// the same command below. It reads the tracked files with git grep, leaves
+// out CHANGELOG.md (its history may name old pins), and asks no network.
+//
+// Command line, run at the repo root:
 //   node apt-snapshot.mjs refresh   rewrites the pins when there is a newer
 //                                   snapshot, then prints old=<ts> and
 //                                   new=<ts> (new= is empty when nothing
 //                                   changed), and old_label= and new_label=,
 //                                   the same dates as a person reads them,
 //                                   on stdout for $GITHUB_OUTPUT; everything
-//                                   else goes to stderr
+//                                   else goes to stderr (the monthly workflow)
+//   node apt-snapshot.mjs leftovers [<ts>]
+//                                   the leftover check from <ts>, or from the
+//                                   current pin when none is given: exits 0
+//                                   when no other file names a snapshot at
+//                                   or after it, 1 with the files and the
+//                                   timestamps they name when one does, 2
+//                                   when git or the arguments fail (the
+//                                   monthly workflow, with the old pin after
+//                                   its rewrite; the ci workflow, with none)
 
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -241,10 +261,78 @@ export async function refresh({ now, fetchFn = fetch, sleep = wait, read, write,
   return { old, new: next };
 }
 
+// The git grep the leftover check runs, at the repo root: every snapshot-like
+// string in a tracked file, CHANGELOG.md left out, one "<file>:<match>" per
+// line.
+export const GREP_ARGS = ["grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"];
+
+// The leftovers in git grep output (GREP_ARGS): the files other than the
+// three pinned ones that name a real snapshot timestamp at or after since, as
+// "<file> <timestamp>" strings, sorted and without repeats.
+export function findLeftovers(grepOutput, since) {
+  if (!isSnapshot(since)) throw new Error(`${since} is not a snapshot timestamp`);
+  const pinned = new Set([...DOCKERFILES, GATE_README]);
+  const out = new Set();
+  for (const line of grepOutput.split("\n")) {
+    const at = line.lastIndexOf(":");
+    if (at <= 0) continue;
+    const file = line.slice(0, at);
+    const ts = line.slice(at + 1);
+    if (!pinned.has(file) && isSnapshot(ts) && ts >= since) out.add(`${file} ${ts}`);
+  }
+  return [...out].sort();
+}
+
+// Runs the leftover check over the repo at root with real git. since defaults
+// to the current pin. Returns { since, leftovers }; throws when git fails.
+export function leftovers(root, since = undefined) {
+  const from =
+    since ??
+    currentPin(
+      Object.fromEntries(
+        [...DOCKERFILES, GATE_README].map((f) => [f, readFileSync(join(root, f), "utf8")]),
+      ),
+    );
+  if (!isSnapshot(from)) throw new Error(`${from} is not a snapshot timestamp`);
+  const r = spawnSync("git", ["-C", root, ...GREP_ARGS], { encoding: "utf8" });
+  // git grep exits 1 when nothing matches.
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`git grep failed (exit ${r.status}): ${r.stderr || r.error?.message || ""}`);
+  }
+  return { since: from, leftovers: findLeftovers(r.stdout, from) };
+}
+
+function leftoversCommand(args) {
+  if (args.length > 1 || (args.length === 1 && !isSnapshot(args[0]))) {
+    process.stderr.write("usage: node apt-snapshot.mjs leftovers [YYYYMMDDTHHMMSSZ]\n");
+    process.exit(2);
+  }
+  let r;
+  try {
+    r = leftovers(process.cwd(), args[0]);
+  } catch (e) {
+    process.stderr.write(`::error::${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(2);
+  }
+  if (r.leftovers.length > 0) {
+    const files = [DOCKERFILES[0], DOCKERFILES[1], GATE_README].join(", ");
+    process.stderr.write(
+      `::error::these files name the Ubuntu snapshot ${r.since} or a later one, which only ${files} may: the monthly apt-snapshot run would leave them behind and stop before it pushes. Take the date out of them, use a date before ${r.since}, or teach .github/scripts/apt-snapshot.mjs about them:\n`,
+    );
+    process.stderr.write(`${r.leftovers.join("\n")}\n`);
+    process.exit(1);
+  }
+  process.stderr.write(`No file but the three pins names the snapshot ${r.since} or a later one\n`);
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const [cmd] = process.argv.slice(2);
-  if (cmd !== "refresh") {
-    process.stderr.write("usage: node apt-snapshot.mjs refresh\n");
+  const [cmd, ...args] = process.argv.slice(2);
+  if (cmd === "leftovers") {
+    leftoversCommand(args);
+    process.exit(0);
+  }
+  if (cmd !== "refresh" || args.length > 0) {
+    process.stderr.write("usage: node apt-snapshot.mjs refresh | leftovers [YYYYMMDDTHHMMSSZ]\n");
     process.exit(2);
   }
   const root = process.cwd();

@@ -18,7 +18,11 @@
 # any other error fails the run with nothing changed. The two Dockerfiles and
 # the slicing gate README's pins table move together, and the script refuses
 # to run when they disagree. When the newest day is not newer than the pin,
-# nothing is pushed.
+# nothing is pushed. After the rewrite, the leftover check (node
+# .github/scripts/apt-snapshot.mjs leftovers, the same command the ci
+# workflow runs on every pull request) stops the run before it pushes when
+# any other tracked file but CHANGELOG.md names the old snapshot or a later
+# one.
 #
 # The pull request. At most one open, from the fixed branch bot/apt-snapshot
 # into main, holding one commit on the current main. When the branch already
@@ -160,18 +164,15 @@ jobs:
             printf '%s\n' "$changed"
             exit 1
           fi
-          # A file that still names the old snapshot after the rewrite is a
-          # copy of the pin the script does not know, and would be left
-          # behind; the CHANGELOG's history is the one place allowed to.
+          # The leftover check (issue #391): a file other than the three pins
+          # that names the old snapshot, or a later one, is a copy of the pin
+          # the rewrite left behind. The same command the ci workflow's
+          # "Ubuntu snapshot pin check" job runs on every pull request; the
+          # CHANGELOG's history is the one place allowed to name old pins.
           status=0
-          left="$(git grep -l -F "$OLD" -- . ':!CHANGELOG.md')" || status=$?
-          if [ "$status" -gt 1 ]; then
-            echo "::error::git grep failed (exit ${status}); nothing is pushed"
-            exit 1
-          fi
-          if [ -n "$left" ]; then
-            echo "::error::these files still name the old snapshot ${OLD}, which the refresh does not rewrite; teach .github/scripts/apt-snapshot.mjs about them, or take the date out of them:"
-            printf '%s\n' "$left"
+          node .github/scripts/apt-snapshot.mjs leftovers "$OLD" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the leftover check failed (exit ${status}); nothing is pushed"
             exit 1
           fi
           git config user.name "github-actions[bot]"

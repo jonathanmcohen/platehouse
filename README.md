@@ -144,6 +144,13 @@ hand from main (Actions, apt-snapshot, Run workflow). It needs the repository se
 Actions to create and approve pull requests" (Settings, Actions, General, Workflow permissions);
 without it the run pushes the branch and then fails, saying so.
 
+Only those three places, the two Dockerfiles and the pins table in `tools/slicing-gate/README.md`,
+may name the current snapshot or a later one; `CHANGELOG.md` is left out. The monthly run stops
+before it pushes when any other tracked file does, as the rewrite would leave that copy behind. So
+the ci workflow's Ubuntu snapshot pin check job runs the same check,
+`node .github/scripts/apt-snapshot.mjs leftovers`, on every pull request: to write a snapshot date
+anywhere else, use one before the current pin.
+
 A run started from a release tag (its push, a re-run of it, or a run by hand from that tag) also
 tags the image with the release's version, `X.Y.Z` or `X.Y.Z-rc.N`, the same name the app image
 uses, so the slicer built for a release can be found afterwards. Daily runs and runs from main tag

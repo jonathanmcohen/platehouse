@@ -15,14 +15,17 @@ import {
   ATTEMPTS,
   DOCKERFILES,
   GATE_README,
+  GREP_ARGS,
   LOOKBACK_DAYS,
   SNAPSHOT_URL,
   SUITES,
   candidates,
   currentPin,
   dockerfilePin,
+  findLeftovers,
   isSnapshot,
   label,
+  leftovers,
   pickSnapshot,
   reachable,
   refresh,
@@ -632,17 +635,22 @@ test("apt-snapshot pick: runs the script at the repo root and passes its outputs
   assert.match(r.summary, /Up to date/);
 });
 
-// The PR step. git and gh are stubs: git diff lists CHANGED, git grep lists
-// LEFT, ls-remote gives REMOTE (empty: no branch yet), the fetched tree
-// equals HEAD's when SAME_TREE is 1, push exits PUSH_STATUS; gh pr list gives
-// EXISTING, gh pr create prints a URL or, with CREATE_ERROR, fails with that
-// message. Every call is recorded, in order.
+// The PR step. git, gh and node are stubs: git diff lists CHANGED,
+// ls-remote gives REMOTE (empty: no branch yet), the fetched tree equals
+// HEAD's when SAME_TREE is 1, push exits PUSH_STATUS; the leftover check
+// (node) fails listing LEFT when it is set; gh pr list gives EXISTING, gh pr
+// create prints a URL or, with CREATE_ERROR, fails with that message. Every
+// call is recorded, in order. The leftover check itself is tested against
+// real git below.
 const PR_STUBS = [
+  "node() {",
+  '  echo "node $*" >>"$CALLS"',
+  '  if [ -n "$LEFT" ]; then echo "::error::these files name the Ubuntu snapshot $3 or a later one" >&2; printf "%s\\n" "$LEFT" >&2; return 1; fi',
+  "}",
   "git() {",
   '  echo "git $*" >>"$CALLS"',
   '  case "$1" in',
   '    diff) printf "%s" "$CHANGED" ;;',
-  '    grep) if [ -n "$LEFT" ]; then printf "%s\\n" "$LEFT"; else return 1; fi ;;',
   "    commit) cat >commit-message.txt ;;",
   '    ls-remote) if [ -n "$REMOTE" ]; then printf "%s\\trefs/heads/bot/apt-snapshot\\n" "$REMOTE"; fi ;;',
   '    rev-parse) case "$2" in "FETCH_HEAD^{tree}") if [ "$SAME_TREE" = 1 ]; then echo tree1; else echo tree0; fi ;; "HEAD^{tree}") echo tree1 ;; *) echo headsha ;; esac ;;',
@@ -823,73 +831,119 @@ test("apt-snapshot pr: malformed dates or unexpected changed files push nothing"
   }
 });
 
-test("apt-snapshot pr: any other file still naming the old snapshot stops the run", () => {
-  const r = prRun({ LEFT: "docs/security.md" });
+test("apt-snapshot pr: the shared leftover check, from the old pin, runs after the rewrite and stops the run", () => {
+  const r = prRun({ LEFT: "docs/security.md 20201107T000000Z" });
   assert.equal(r.status, 1);
-  assert.match(r.log, /::error::these files still name the old snapshot 20201107T000000Z/);
-  assert.match(r.log, /docs\/security\.md/);
+  assert.match(r.log, /::error::these files name the Ubuntu snapshot 20201107T000000Z or a later one/);
+  assert.match(r.log, /docs\/security\.md 20201107T000000Z/);
+  assert.match(r.log, /::error::the leftover check failed \(exit 1\); nothing is pushed/);
   assert.deepEqual(callLines(r, "git push"), []);
-  assert.deepEqual(callLines(prRun(), "git grep"), ["git grep -l -F 20201107T000000Z -- . :!CHANGELOG.md"]);
-});
-
-// The two tests below read every tracked file with real git, from the repo
-// root. That root is reached with git -C and a cd in the script, not a cwd:
-// option, on purpose: the gate jobs scan in ciworkflow.test.mjs takes a cwd:
-// at the repo root for a workflow step reading the files its script names,
-// and these read the whole tree, which no path in the changes job's tests list
-// can stand for. They run where a stale fixture would be added (any change
-// under tools/slicing-gate runs the gate tests) and on every bot pull request
-// (ci with no base commit runs every job), which is where a hit elsewhere
-// would otherwise first stop a run.
-
-// The tracked files that name a snapshot timestamp, as [file, timestamp]
-// pairs (CHANGELOG.md left out, as the leftover check leaves it out).
-function trackedSnapshots() {
-  const r = spawnSync("git", ["-C", ROOT, "grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"], {
-    encoding: "utf8",
-  });
-  assert.ok(r.status === 0 || r.status === 1, `git grep failed (exit ${r.status}): ${r.stderr}`);
-  return r.stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => [l.slice(0, l.lastIndexOf(":")), l.slice(l.lastIndexOf(":") + 1)]);
-}
-
-// The PR step's leftover check, its own line run with real git (no stub) over
-// this repo at today's pin. Before the rewrite, only the three pinned files
-// may name the pin, as the rewrite moves exactly those; any other hit, a test
-// fixture above all, would stop the monthly run before it pushed anything.
-test("apt-snapshot pr: the real leftover check over this repo at today's pin finds only the three pinned files", () => {
-  const pin = currentPin(repoTexts());
+  assert.deepEqual(callLines(r, "gh pr create"), []);
+  const ok = prRun();
+  assert.deepEqual(callLines(ok, "node "), ["node .github/scripts/apt-snapshot.mjs leftovers 20201107T000000Z"]);
+  // After the files check and before the commit.
+  const calls = ok.calls.split("\n");
+  const at = (prefix) => calls.findIndex((l) => l.startsWith(prefix));
+  assert.ok(at("git diff") < at("node ") && at("node ") < at("git commit"), ok.calls);
   const step = stepScript(jobBlock(text(), "refresh"), "Push the branch and open the pull request");
-  const check = step.split("\n").find((l) => l.startsWith('left="$(git grep '));
-  assert.ok(check, "the step's leftover check");
-  const script = ["set -eo pipefail", 'cd "$REPO_ROOT"', "status=0", check, 'printf "%s|%s" "$status" "$left"'].join("\n");
-  const r = spawnSync("bash", ["-c", script], {
-    encoding: "utf8",
-    env: { PATH: process.env.PATH, REPO_ROOT: ROOT, OLD: pin },
-  });
-  assert.equal(r.status, 0, r.stderr);
-  const [status, left] = r.stdout.split("|");
-  assert.equal(status, "0", `git grep found the pin ${pin}: ${r.stderr}`);
-  assert.deepEqual(left.split("\n").filter(Boolean).sort(), [...DOCKERFILES, GATE_README].sort());
+  assert.doesNotMatch(step, /git grep/, "no check of its own beside the shared one");
 });
 
-// The pin only moves forward, so a timestamp before it can never be a pin
-// again, while one at or after it may be next month's: a later run's leftover
-// check would find it and stop. Fixtures here use past dates, or a far date
-// computed at run time, never written in the file.
-test("apt-snapshot: no tracked file but the three pins names a snapshot at or after today's pin", () => {
+// The leftover check (issue #391), shared by the monthly run and the ci
+// workflow's snapshot-pins job: findLeftovers reads git grep's output.
+test("findLeftovers: other files naming a snapshot at or after the pin; the pins, older dates and non-dates pass", () => {
+  const since = "20201107T000000Z";
+  const out = [
+    "apps/slicer/Dockerfile:20201107T000000Z",
+    "tools/slicing-gate/Dockerfile:20201107T000000Z",
+    "tools/slicing-gate/README.md:20201107T000000Z",
+    "docs/security.md:20201107T000000Z",
+    "docs/security.md:20201107T000000Z",
+    "apps/server/x.ts:20201201T000000Z",
+    "apps/server/old.ts:20201106T235959Z",
+    "apps/server/notdate.ts:20201399T000000Z",
+    "odd:name.md:20211231T000000Z",
+    "",
+  ].join("\n");
+  assert.deepEqual(findLeftovers(out, since), [
+    "apps/server/x.ts 20201201T000000Z",
+    "docs/security.md 20201107T000000Z",
+    "odd:name.md 20211231T000000Z",
+  ]);
+  assert.deepEqual(findLeftovers("", since), []);
+  assert.throws(() => findLeftovers(out, "2020-11-07"), /not a snapshot timestamp/);
+  assert.deepEqual(GREP_ARGS, ["grep", "-o", "-E", "[0-9]{8}T[0-9]{6}Z", "--", ".", ":!CHANGELOG.md"]);
+});
+
+// The check with real git, over a scratch repo: tracked files only,
+// CHANGELOG.md left out, the pin read from the pinned files by default.
+test("leftovers: real git over a scratch repo finds the copy, not the CHANGELOG or untracked files", () => {
+  inScratch((dir) => {
+    const git = (...a) => {
+      const r = spawnSync("git", ["-C", dir, ...a], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    git("init", "-q");
+    writeTree(dir, fakeTexts("20201107T000000Z"));
+    writeTree(dir, {
+      "CHANGELOG.md": "moved from 20201107T000000Z\n",
+      "docs/security.md": "an older 20200101T000000Z is fine\n",
+    });
+    git("add", "-A");
+    writeTree(dir, { "untracked.md": "20201107T000000Z\n" });
+    assert.deepEqual(leftovers(dir), { since: "20201107T000000Z", leftovers: [] });
+    writeTree(dir, { "docs/security.md": "now 20201107T000000Z\n" });
+    assert.deepEqual(leftovers(dir).leftovers, ["docs/security.md 20201107T000000Z"]);
+    assert.deepEqual(leftovers(dir, "20201201T000000Z").leftovers, []);
+    assert.throws(() => leftovers(dir, "soon"), /not a snapshot timestamp/);
+  });
+  inScratch((dir) => {
+    writeTree(dir, fakeTexts("20201107T000000Z"));
+    assert.throws(() => leftovers(dir), /git grep failed/, "not a git repo");
+  });
+});
+
+// The two tests below run the shared check over this repo's own tree with
+// real git. They reach the repo root with git -C, or a cd in a bash script,
+// not a cwd: option, on purpose: the gate jobs scan in ciworkflow.test.mjs
+// takes a cwd: at the repo root for a workflow step reading the files its
+// script names, and these read the whole tree, which no path in the changes
+// job's tests list can stand for. They run only when the gate tests run.
+// Every pull request, whatever it changes, runs the same check in ci.yml's
+// snapshot-pins job (issue #391), so a copy of the pin added anywhere fails
+// that pull request rather than stopping the next monthly run.
+test("leftovers: this repo's tree names the pin only in the three pinned files", () => {
   const pin = currentPin(repoTexts());
-  const pinned = new Set([...DOCKERFILES, GATE_README]);
-  const found = trackedSnapshots();
-  assert.deepEqual(
-    found.filter(([f]) => pinned.has(f)).map(([f, ts]) => `${f} ${ts}`).sort(),
-    [...pinned].map((f) => `${f} ${pin}`).sort(),
-    "the git grep reads the pins",
+  assert.deepEqual(leftovers(ROOT), { since: pin, leftovers: [] });
+  // The check sees the tree: from a 2020 date, this file's own fixtures count.
+  const control = leftovers(ROOT, "20200101T000000Z").leftovers;
+  assert.ok(
+    control.some((l) => l.startsWith("tools/slicing-gate/test/aptsnapshot.test.mjs ")),
+    `the control finds this file's 2020 fixtures: ${control.slice(0, 5).join(", ")}`,
   );
-  const ahead = found.filter(([f, ts]) => !pinned.has(f) && ts >= pin).map(([f, ts]) => `${f} ${ts}`);
-  assert.deepEqual(ahead, [], `files naming a snapshot at or after ${pin}`);
+  assert.ok(!control.some((l) => DOCKERFILES.includes(l.split(" ")[0])), "the pinned files never count");
+});
+
+// The command both workflows run, as they run it: at the repo root, with no
+// argument (ci.yml) or with a timestamp (the monthly run).
+test("the leftovers command exits 0 on this repo, 1 naming the files when one would stop the run, 2 on a bad argument", () => {
+  const run = (...args) =>
+    spawnSync("bash", ["-c", 'cd "$REPO_ROOT" && node "$SCRIPT" "$@"', "bash", ...args], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, REPO_ROOT: ROOT, SCRIPT },
+    });
+  const pin = currentPin(repoTexts());
+  const ok = run("leftovers");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, "");
+  assert.match(ok.stderr, new RegExp(`No file but the three pins names the snapshot ${pin} or a later one`));
+  const hit = run("leftovers", "20200101T000000Z");
+  assert.equal(hit.status, 1);
+  assert.match(hit.stderr, /^::error::these files name the Ubuntu snapshot 20200101T000000Z or a later one/m);
+  assert.match(hit.stderr, /^tools\/slicing-gate\/test\/aptsnapshot\.test\.mjs 2020\d{4}T\d{6}Z$/m);
+  for (const bad of [["leftovers", "tomorrow"], ["leftovers", "20200101T000000Z", "x"], ["refresh", "x"]]) {
+    assert.equal(run(...bad).status, 2, bad.join(" "));
+  }
 });
 
 // The token reaches git only in the environment of the commands that need it.
