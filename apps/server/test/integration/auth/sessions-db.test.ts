@@ -325,4 +325,28 @@ describe("a login through the app with sessions in Postgres", () => {
     expect(run.callback.statusCode).toBe(302);
     expect((await rowOf(run.sessionCookie ?? ""))?.displayName).toBe("Synthetic Signer");
   });
+
+  // Issue #378: a subject is at most 255 characters (admit, MAX_SUBJECT_LENGTH),
+  // so every subject sign-in lets in fits the subject columns, their checks and
+  // their btree indexes. Four-byte characters make it about 1 KB, the largest
+  // a subject can be.
+  test("a 255-character subject signs in and makes a token, with Postgres", async () => {
+    const sub = String.fromCodePoint(0x1f600).repeat(255);
+    t.issuer.user = { ...t.issuer.user, sub, name: "Synthetic Long" };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(302);
+    expect((await rowOf(run.sessionCookie ?? ""))?.subject).toBe(sub);
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const made = await tokens.createToken("Long script", { subject: sub, name: "Synthetic Long" });
+    expect((await tokens.authenticate(`Bearer ${made.token}`))?.createdBySubject).toBe(sub);
+    expect(await tokens.revokeAllFrom(sub)).toBe(1);
+  });
+
+  test("a 256-character subject is refused at sign-in, and no session row is written", async () => {
+    t.issuer.user = { ...t.issuer.user, sub: "w".repeat(256) };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(403);
+    expect(run.sessionCookie).toBeUndefined();
+    expect(await db.selectFrom("sessions").select("id").execute()).toEqual([]);
+  });
 });

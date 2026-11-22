@@ -514,7 +514,10 @@ describe("0009 name sort prefix", () => {
 // name each session signed in with. It runs on a database at 0009, as 0.1.0
 // leaves it, holding a live token, a revoked one and a session: they keep
 // every value they had, and their new columns are null, so the tokens list
-// their creator as unknown and the session has no name.
+// their creator as unknown and the session has no name. It also caps every
+// stored subject at 255 characters (issue #378, as admit() now does at
+// sign-in): a 0.1.0 session whose subject is longer is deleted, since that
+// user can no longer sign in, and every other session is kept as it was.
 describe("0010 token creators", () => {
   let dir: string;
 
@@ -544,7 +547,8 @@ describe("0010 token creators", () => {
     `.execute(db);
     await sql`
       insert into sessions (id, subject, expires_at, idle_expires_at)
-      values (${"G".repeat(43)}, 'subject-old', now() + interval '1 day', now() + interval '1 day')
+      values (${"G".repeat(43)}, 'subject-old', now() + interval '1 day', now() + interval '1 day'),
+             (${"J".repeat(43)}, ${"m".repeat(255)}, now() + interval '1 day', now() + interval '1 day')
     `.execute(db);
     const tokensBefore = (
       await sql<Record<string, unknown>>`select * from api_tokens order by id`.execute(db)
@@ -552,6 +556,12 @@ describe("0010 token creators", () => {
     const sessionsBefore = (
       await sql<Record<string, unknown>>`select * from sessions order by id`.execute(db)
     ).rows;
+    // A session 0.1.0 let in with a subject longer than 255 characters: the
+    // migration deletes it, as that user can no longer sign in.
+    await sql`
+      insert into sessions (id, subject, expires_at, idle_expires_at)
+      values (${"K".repeat(43)}, ${"n".repeat(256)}, now() + interval '1 day', now() + interval '1 day')
+    `.execute(db);
 
     await migrate(db);
 
@@ -567,7 +577,7 @@ describe("0010 token creators", () => {
     expect(sessionsAfter).toEqual(sessionsBefore.map((row) => ({ ...row, displayName: null })));
   });
 
-  test("the new columns refuse an empty value, an over-long name, and a name with no subject", async () => {
+  test("the columns refuse an empty value, a subject over 255 characters, an over-long name, and a name with no subject", async () => {
     const { db } = await pgc.freshDatabase();
     await migrate(db);
     const token = (n: number, subject: string | null, name: string | null) => sql`
@@ -577,11 +587,13 @@ describe("0010 token creators", () => {
     `;
     await token(1, "subject-ok", "Synthetic Name").execute(db);
     await token(2, "subject-ok", null).execute(db);
-    // No length cap on the subject: sign-in takes one of any length
-    // (sessions.subject has none), so the token it makes must take it too.
-    await token(4, "x".repeat(300), null).execute(db);
+    // A subject is at most 255 characters, the most admit() lets sign in
+    // (issue #378), counted as characters: 255 four-byte ones fit too.
+    await token(4, "x".repeat(255), null).execute(db);
+    await token(8, String.fromCodePoint(0x1f600).repeat(255), null).execute(db);
     for (const [n, subject, name] of [
       [3, "", null],
+      [9, "x".repeat(256), null],
       [5, "subject-ok", ""],
       [6, "subject-ok", "x".repeat(201)],
       [7, null, "Name without a subject"],
@@ -590,11 +602,16 @@ describe("0010 token creators", () => {
         code: "23514",
       });
     }
-    await expect(
-      sql`
-        insert into sessions (id, subject, display_name, expires_at, idle_expires_at)
-        values (${"H".repeat(43)}, 'subject-ok', '', now() + interval '1 day', now() + interval '1 day')
-      `.execute(db),
-    ).rejects.toMatchObject({ code: "23514" });
+    const session = (id: string, subject: string, name: string | null) => sql`
+      insert into sessions (id, subject, display_name, expires_at, idle_expires_at)
+      values (${id}, ${subject}, ${name}, now() + interval '1 day', now() + interval '1 day')
+    `;
+    await expect(session("H".repeat(43), "subject-ok", "").execute(db)).rejects.toMatchObject({
+      code: "23514",
+    });
+    await session("L".repeat(43), String.fromCodePoint(0x1f600).repeat(255), null).execute(db);
+    await expect(session("M".repeat(43), "x".repeat(256), null).execute(db)).rejects.toMatchObject(
+      { code: "23514" },
+    );
   });
 });

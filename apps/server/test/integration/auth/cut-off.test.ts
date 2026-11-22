@@ -39,11 +39,15 @@ const MINUTE = 60_000;
 let t: AuthTestApp;
 let tokenStore: MemoryTokenStore;
 let tokens: Tokens;
+/** Every line the app logged in the current test. */
+let lines: string[] = [];
 
 beforeEach(async () => {
   tokenStore = memoryTokenStore();
   tokens = createTokens({ store: tokenStore, log: () => {} });
+  lines = [];
   t = await authTestApp({
+    logger: { write: (line: string) => lines.push(line) },
     api: { tokens, library: refusingApi.library },
     appApi: (auth) => ({
       tokens: { tokens, list: memoryTokenList(tokenStore) },
@@ -325,10 +329,13 @@ describe("Sign out everywhere", () => {
     expect((await call("GET", "/app/api/users", me)).status).toBe(401);
   });
 
-  test("a user whose subject is over 255 characters can be listed and signed out everywhere", async () => {
-    // Sign-in takes a subject of any length, as 0.1.0 did, so the token and
-    // the sign-out take one too: a user who can sign in can always be cut off.
-    const long = `subject-long-${"x".repeat(300)}`;
+  // Issue #378: a subject is at most 255 characters (MAX_SUBJECT_LENGTH, as
+  // OpenID Connect Core allows). Every subject sign-in lets in fits every
+  // column and index that stores one, so a user who can sign in can always
+  // make a token and always be cut off.
+  test("a user whose subject is 255 characters signs in, makes a token, and can be signed out everywhere", async () => {
+    const long = `subject-long-${"x".repeat(242)}`;
+    expect(long).toHaveLength(255);
     const me = await signIn("subject-admin", "Synthetic Admin");
     const theirs = await signIn(long, "Synthetic Long");
     const made = await makeToken(theirs, "Long script");
@@ -349,6 +356,24 @@ describe("Sign out everywhere", () => {
     expect(await v1Status(made.token)).toBe(401);
   });
 
+  test("a subject over 255 characters is refused at sign-in, before any session row is written", async () => {
+    const tooLong = `subject-too-long-${"y".repeat(239)}`;
+    expect(tooLong).toHaveLength(256);
+    t.issuer.user = { ...t.issuer.user, sub: tooLong, groups: [TEST_GROUP] };
+    const run = await runLogin(t);
+    expect(run.callback.statusCode).toBe(403);
+    expect(run.callback.body).toContain("255");
+    expect(run.callback.body).not.toContain(tooLong);
+    expect(run.sessionCookie).toBeUndefined();
+    expect(t.store.rows.size).toBe(0);
+    // The log names the reason and the length, never the subject.
+    const refused = lines.find((line) => line.includes("auth: login refused"));
+    expect(refused).toBeDefined();
+    expect(refused).toContain('"failure":"subject_too_long"');
+    expect(refused).toContain('"subjectLength":256');
+    expect(lines.join("\n")).not.toContain(tooLong);
+  });
+
   test("a user with nothing live is 200 with nothing ended", async () => {
     const me = await signIn("subject-admin");
     const res = await call("POST", "/app/api/users/sign-out", me, {
@@ -362,6 +387,8 @@ describe("Sign out everywhere", () => {
   test.each([
     ["no subject", { revokeTokens: true }],
     ["an empty subject", { subject: "", revokeTokens: true }],
+    // Nobody with a longer subject can sign in (MAX_SUBJECT_LENGTH).
+    ["a subject over 255 characters", { subject: "x".repeat(256), revokeTokens: true }],
     ["no revokeTokens", { subject: "someone" }],
     ["a revokeTokens that is not a boolean", { subject: "someone", revokeTokens: "yes" }],
   ])("refuses a body with %s", async (_why, body) => {

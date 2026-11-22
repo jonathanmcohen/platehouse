@@ -29,7 +29,11 @@ import { createApiLibrary } from "../../../src/api/v1.js";
 import { buildApp } from "../../../src/app.js";
 import { readDisplayContext } from "../../../src/app-api/library.js";
 import { recordVersioning, SLICES_PER_MINUTE } from "../../../src/app-api/settings.js";
-import { dbTokenList, type ListedToken } from "../../../src/app-api/tokens.js";
+import {
+  dbTokenList,
+  type ListedToken,
+  TOKEN_SIGN_IN_WINDOW_MS,
+} from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
@@ -596,10 +600,27 @@ describe("the settings page", () => {
 
 describe("API tokens", () => {
   // A new token needs a session signed in within TOKEN_SIGN_IN_WINDOW_MS
-  // (issue #322), and the tests above can take longer than that, so each
-  // token test signs in afresh, with a display name to record as creator.
+  // (issue #322). The sessions and the token route both read the test auth's
+  // hand-moved clock (auth.clock, passed to the tokens module as now), so the
+  // window does not depend on how long the tests above took (issue #377).
+  // Each token test still signs in afresh, with a display name to record as
+  // creator.
   beforeEach(async () => {
     session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+  });
+
+  test("the sign-in window is measured on the sessions' clock (issue #377)", async () => {
+    // Signed in at the auth clock's time; that clock moves past the window,
+    // while the real clock has hardly moved. A route reading another clock
+    // than the sessions would let this through.
+    auth.clock.advance(TOKEN_SIGN_IN_WINDOW_MS + 1000);
+    const late = await call("POST", "/app/api/tokens", { json: { name: `late ${marker()}` } });
+    expect(late.status, late.text).toBe(403);
+    expect((late.json() as { error: string }).error).toBe("sign_in_required");
+    expect(late.text).not.toContain(TOKEN_PREFIX);
+    // A sign-in on the moved clock is fresh again.
+    session = (await auth.sessions.start("subject-settings", "Synthetic Settings User")).id;
+    await makeToken(`on time ${marker()}`);
   });
 
   test("new token is shown once and never again", async () => {
