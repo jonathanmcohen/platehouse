@@ -1,7 +1,8 @@
 import { type Kysely, sql } from "kysely";
-import { isUuid, uuidv7 } from "../db/ids.js";
+import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
+import { deleteLabel, ensureLabels } from "./labels.js";
 
 // Collections are flat (Q17) and, like tags, matched ignoring case with
 // Postgres's lower() on both sides. A model can sit in many collections.
@@ -18,26 +19,28 @@ export function collectionsRepo(db: Kysely<DB>) {
     async add(modelId: string, name: string): Promise<void> {
       const collection = collectionName(name);
       await inTransaction(db, async (trx) => {
-        await trx
-          .insertInto("collections")
-          .values({ id: uuidv7(), name: collection })
-          .onConflict((oc) => oc.expression(sql`lower(name)`).doNothing())
-          .execute();
+        // Found or made, and locked, so a Delete of it at the same time
+        // cannot leave the model out of it unseen (labels.ts).
+        const [collectionId] = await ensureLabels(trx, "collections", [collection]);
+        if (collectionId === undefined) {
+          throw new Error(`collections: no row for ${JSON.stringify(collection)}`);
+        }
         await trx
           .insertInto("collectionModels")
-          .columns(["collectionId", "modelId"])
-          .expression((eb) =>
-            eb
-              .selectFrom("collections")
-              .select([
-                "collections.id as collectionId",
-                sql<string>`cast(${modelId} as uuid)`.as("modelId"),
-              ])
-              .where(sql<boolean>`lower(collections.name) = lower(${collection})`),
-          )
+          .values({ collectionId, modelId })
           .onConflict((oc) => oc.columns(["collectionId", "modelId"]).doNothing())
           .execute();
       });
+    },
+
+    /**
+     * Deletes the collection of this name, ignoring case, taking every model
+     * out of it, trashed ones included; no model changes otherwise. The name
+     * as it was stored, or null when there is no such collection. Nothing
+     * else removes a collection: an empty one stays until it is deleted.
+     */
+    async delete(name: string): Promise<string | null> {
+      return deleteLabel(db, "collections", name);
     },
 
     /** Takes a model out of a collection; false when it was not in it. */

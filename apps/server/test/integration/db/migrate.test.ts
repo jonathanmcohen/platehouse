@@ -50,6 +50,7 @@ const SHIPPED = [
   "0007_my_printers.sql",
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
+  "0010_drop_unused_tags.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -506,5 +507,77 @@ describe("0009 name sort prefix", () => {
     await sql`
       update models set name = ${cjk} where id = '0190a0b0-0000-7000-8000-000000000011'
     `.execute(db);
+  });
+});
+
+// Migration 0010 (issue #312) removes the tags no model has, which 0.1.0 left
+// behind whenever a tag came off its last model. A tag a trashed model has is
+// kept, since a restore brings the model back with it, and so is every
+// collection, empty or not, and every model and link.
+describe("0010 drop unused tags", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 9,
+    );
+    expect(later).toContain("0010_drop_unused_tags.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("on a database at 0009, removes only the tags no model has", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name, trashed_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic live', null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Synthetic trashed', now())
+    `.execute(db);
+    await sql`
+      insert into tags (id, name)
+      values ('0190a0b0-0000-7000-8000-000000000031', 'qa-unused'),
+             ('0190a0b0-0000-7000-8000-000000000032', 'Live tag'),
+             ('0190a0b0-0000-7000-8000-000000000033', 'Trashed tag'),
+             ('0190a0b0-0000-7000-8000-000000000034', 'Another unused')
+    `.execute(db);
+    await sql`
+      insert into model_tags (model_id, tag_id)
+      values ('0190a0b0-0000-7000-8000-000000000021', '0190a0b0-0000-7000-8000-000000000032'),
+             ('0190a0b0-0000-7000-8000-000000000022', '0190a0b0-0000-7000-8000-000000000033')
+    `.execute(db);
+    await sql`
+      insert into collections (id, name)
+      values ('0190a0b0-0000-7000-8000-000000000041', 'QA empty collection'),
+             ('0190a0b0-0000-7000-8000-000000000042', 'Used collection')
+    `.execute(db);
+    await sql`
+      insert into collection_models (collection_id, model_id)
+      values ('0190a0b0-0000-7000-8000-000000000042', '0190a0b0-0000-7000-8000-000000000021')
+    `.execute(db);
+    const models = (await sql`select * from models order by id`.execute(db)).rows;
+    const links = (await sql`select * from model_tags order by model_id, tag_id`.execute(db)).rows;
+    const collections = (await sql`select * from collections order by id`.execute(db)).rows;
+    const members = (await sql`select * from collection_models order by model_id`.execute(db)).rows;
+
+    await migrate(db);
+
+    const tags = await sql<{ name: string }>`select name from tags order by name`.execute(db);
+    expect(tags.rows.map((r) => r.name)).toEqual(["Live tag", "Trashed tag"]);
+    expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(models);
+    expect(
+      (await sql`select * from model_tags order by model_id, tag_id`.execute(db)).rows,
+    ).toEqual(links);
+    expect((await sql`select * from collections order by id`.execute(db)).rows).toEqual(
+      collections,
+    );
+    expect((await sql`select * from collection_models order by model_id`.execute(db)).rows).toEqual(
+      members,
+    );
   });
 });

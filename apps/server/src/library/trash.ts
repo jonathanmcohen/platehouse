@@ -27,7 +27,9 @@
 //      purge with ObjectsRemain, which names the first keys left, so an object
 //      outside the layout can be found and removed by hand;
 //   5. only then delete the model's row; its files, plates, estimates, blobs
-//      and tag and collection links go with it (on delete cascade).
+//      and tag and collection links go with it (on delete cascade), and so
+//      does each of its tags that no other model has (issue #312). Its
+//      collections stay, empty or not.
 // A failure at or after step 3 leaves the model in the trash, its marker
 // set: some of its objects may be gone. Deleting an object that is already
 // gone is not an error, so the next run finishes the job: a purge is
@@ -48,6 +50,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { DB } from "../db/types.js";
 import { modelsRepo } from "../repos/models.js";
+import { tagsRepo } from "../repos/tags.js";
 import { isBlobKey } from "../storage/keys.js";
 import type { BlobStore } from "../storage/s3.js";
 
@@ -204,7 +207,13 @@ export function createTrash(deps: { db: Kysely<DB>; store: PurgeStore }) {
         );
       }
 
+      // Its tags are locked before the row goes (model, tag, link: the
+      // order every tag change takes), and those no other model, live or
+      // trashed, has are removed with it (issue #312). Collections stay.
+      const tags = tagsRepo(trx);
+      const tagIds = await tags.lockForModel(modelId);
       await trx.deleteFrom("models").where("id", "=", modelId).execute();
+      await tags.dropUnused(tagIds);
       return true;
     });
   }
