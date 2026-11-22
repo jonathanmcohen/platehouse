@@ -117,8 +117,8 @@ const LOGIN_COOKIE_OPTIONS = SESSION_COOKIE_OPTIONS;
 /**
  * The key the login cookie is signed with. It is derived from LINK_SECRET
  * with HKDF-SHA256 under its own label, so it is independent of the slicer
- * link key and needs no configuration value of its own (the Configuration
- * contract has none), and it survives a restart in the middle of a login.
+ * link key and needs no configuration value of its own (apps/server/src/config.ts
+ * has none), and it survives a restart in the middle of a login.
  */
 export function loginCookieKey(linkSecret: string): Buffer {
   return Buffer.from(

@@ -183,7 +183,7 @@ describe("loadConfig", () => {
     expect(err.keys).toEqual(["DATABASE_URL", "PORT", "LINK_SECRET"]);
   });
 
-  it("applies the contract defaults when optional keys are unset", () => {
+  it("applies the documented defaults when optional keys are unset", () => {
     const config = loadConfig(validEnv());
     expect(config.port).toBe(3000);
     expect(config.oidc.group).toBe("platehouse");

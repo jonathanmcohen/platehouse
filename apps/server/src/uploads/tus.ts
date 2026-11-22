@@ -60,8 +60,8 @@
 //      PATCH take too, so a HEAD never sees the data file gone before the
 //      outcome is written. An upload left untouched for 24 hours, or 24 hours
 //      after its ingest, is deleted by the hourly sweep on the maintenance
-//      queue (sweepStaleUploads); a partial one never becomes a model (Review
-//      Focus 5).
+//      queue (sweepStaleUploads); a partial one never becomes a model, even after a phone
+//      upload was cut off by a network switch.
 //
 // Partial uploads live in TMP_DIR/uploads, one data file and one .json info
 // file per upload, both named by the upload id, a UUIDv7. The UI and API
