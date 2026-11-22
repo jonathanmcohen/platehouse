@@ -20,6 +20,12 @@
 //   wrap, and example blocks scroll inside themselves.
 // - Opened by a link (focusHeading), the page puts focus on its heading, as
 //   SettingsPage explains.
+// - Only the page's heading, back link and intro go through t(). The
+//   reference itself, its section labels and field notes included
+//   ("Parameters", "Request body", "Responses", "required" and the rest),
+//   stays English in 0.1.0 by the maintainer's decision, because the OpenAPI
+//   text it labels is English too (test/i18n-source.test.ts skips this
+//   folder for that reason).
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import "./api-docs.css";

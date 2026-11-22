@@ -1758,12 +1758,10 @@ describe("open in a slicer", () => {
     const target = navigations[0] as string;
     const prefix = "orcaslicer://open?file=";
     expect(target).toBe(`${prefix}${encodeURIComponent(link.url)}`);
-    // Encoded exactly once: one decode gives the link back, whole.
+    // Encoded exactly once: one decode gives the link back, whole. (The
+    // link's own last segment comes from this test's minted() stub, so it is
+    // checked where the server mints it, in the slicer link route's tests.)
     expect(decodeURIComponent(target.slice(prefix.length))).toBe(link.url);
-    // The link's last segment is the file's name, its slash replaced.
-    const segment = link.url.slice(link.url.lastIndexOf("/") + 1);
-    expect(decodeURIComponent(segment)).toBe(HOSTILE_NAME.replace("/", "_"));
-    expect(link.url).not.toContain("?");
   });
 
   test("open in Bambu Studio on macOS builds bambustudioopen://<encoded link>", async () => {
@@ -1800,7 +1798,7 @@ describe("open in a slicer", () => {
 });
 
 describe(".3mf shows no 3D view", () => {
-  test("a .3mf shows its plate thumbnail large with a strip of 72 px plates, and three.js is never loaded", async () => {
+  test("a .3mf shows its plate thumbnail large with a strip of plates, and three.js is never loaded", async () => {
     await render(pageAt(MODEL_ID));
     expect(loadThree).not.toHaveBeenCalled();
     expect(container.querySelector("canvas")).toBeNull();

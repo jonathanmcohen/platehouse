@@ -27,6 +27,7 @@ const sidebars = {
       link: { type: "doc", id: "using/index" },
       items: [
         "using/adding-files",
+        "using/importing-from-manyfold",
         "using/models-files-plates",
         "using/printers-and-estimates",
         "using/open-in-slicer",

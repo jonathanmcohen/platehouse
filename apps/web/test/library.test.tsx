@@ -952,12 +952,12 @@ describe("dropping files on the open upload dialog", () => {
   });
 });
 
-/** An error as tus-js-client gives one for an answer the server refused. */
 /** The Content-Type the tus handler's own refusals carry. */
 const TEXT = "text/plain; charset=utf-8";
 /** The Content-Type of the session gate's answers (auth/gate.ts). */
 const JSON_TYPE = "application/json; charset=utf-8";
 
+/** An error as tus-js-client gives one for an answer the server refused. */
 function refusal(status: number, body: string, contentType?: string): Error {
   const error = new Error(
     `tus: unexpected response while creating upload, originated from request (method: POST, url: https://platehouse.test/app/uploads, response code: ${status}, response text: ${body}, request id: n/a)`,

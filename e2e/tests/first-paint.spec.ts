@@ -1,8 +1,8 @@
 // The theme on the first paint, with no flash. A
 // System theme with prefers-color-scheme light must paint light on the first
-// frame, with no flash of the dark default. Parchment's System-theme bug
-// showed only on a fresh load and vanished after a toggle, so this loads
-// fresh every time and never toggles.
+// frame, with no flash of the dark default. A System-theme bug can show only
+// on a fresh load and vanish after a toggle, so this loads fresh every time
+// and never toggles.
 //
 // The page is loaded with JavaScript off: what paints is only what the
 // server sent, the html element's data-theme, the color-scheme meta and the

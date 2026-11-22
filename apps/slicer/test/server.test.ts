@@ -6,7 +6,6 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   symlinkSync,
@@ -14,11 +13,10 @@ import {
 } from "node:fs";
 import { request } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
 import { MAX_RENDER_OUTPUT_BYTES, readRenderOutput } from "../src/scad.js";
 import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
@@ -33,6 +31,7 @@ import {
   type OrcaMode,
   stubDir,
 } from "./support/stubs.js";
+import { removeTempDirs, tempDir } from "./support/tmp.js";
 
 // node:fs as it is, except that a test can make rmSync fail for the paths it
 // names, the way a recursive delete fails with ENOTEMPTY or EBUSY on a folder
@@ -80,7 +79,11 @@ afterEach(async () => {
   rmFails.calls = [];
   workSpace.free = null;
   while (running.length) await running.pop()?.close();
+  // Every folder setup(), stubDir() and profileTree() made for the test.
+  removeTempDirs();
 });
+
+afterAll(removeTempDirs);
 
 function setup(
   over: Partial<SlicerConfig> = {},
@@ -88,9 +91,9 @@ function setup(
   tree: string = profileTree(),
 ) {
   const stubs = stubDir();
-  const profilesDir = mkdtempSync(join(tmpdir(), "slicer-profiles-"));
+  const profilesDir = tempDir("slicer-profiles-");
   buildProfiles(loadIndex(tree), profilesDir);
-  const workDir = mkdtempSync(join(tmpdir(), "slicer-work-"));
+  const workDir = tempDir("slicer-work-");
   const fake = fakeOrca(stubs, orca);
   const prlimit = fakePrlimit(stubs);
   const sandboxProbe = join(stubs, "sandbox-probe.stl");

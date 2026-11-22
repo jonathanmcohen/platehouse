@@ -518,8 +518,8 @@ jobs:
           fi
 
   # A build of the gate image and its smoke checks, so an image build failure
-  # is found here and not on the test server (the second gate run there,
-  # 2026-11-08, failed while building the image). Runs only when the changes job says the gate,
+  # is found here, before anyone copies the tool to the host that runs the
+  # gate. Runs only when the changes job says the gate,
   # this workflow or .node-version changed, and only after the gate tests
   # passed, as when both were one job. Every change that runs this job also
   # runs the tests (the image list is part of the tests list, pinned by
@@ -546,19 +546,18 @@ jobs:
         with:
           node-version-file: .node-version
 
-      # Every RUN step and build check in the Dockerfile runs here, as on the
-      # test server.
+      # Every RUN step and build check in the Dockerfile runs here, as it does
+      # wherever the gate image is built.
       - name: Build the gate image
         run: docker build --platform linux/amd64 -t "$IMAGE" tools/slicing-gate
 
-      # Each check runs in a fresh container the way the gate runs on the test server:
+      # Each check runs in a fresh container with the slicing gate's own flags:
       # no network, read-only root, a tmpfs scratch dir, no capabilities.
-      # The last ones prove the two gate bugs of gate run 3 (2026-11-08)
-      # fixed: landrun's checks for report item (g), and a crafted cube saved
+      # The last ones prove two earlier gate bugs fixed: landrun's checks for report item (g), and a crafted cube saved
       # for one printer and sliced on the others. The cube is sliced twice:
       # with the image as built, and with Orca's process_full folder hidden by
-      # an empty tmpfs, which is the image as it was for run 3 and must fail
-      # the way run 3 did. Own-printer slices must match between the two.
+      # an empty tmpfs, which is the image as it was before that fix and must
+      # fail the way it did then. Own-printer slices must match between the two.
       - name: Smoke-check the image
         run: |
           gate() {
@@ -595,7 +594,7 @@ jobs:
           chmod 1777 "$results"
           echo "== crafted cube across printers, image as built"
           gate -v "$results:/results" "$IMAGE" node /src/smoke-gate.mjs switch --out /results/fixed.json
-          echo "== crafted cube across printers, control: process_full hidden as in run 3"
+          echo "== crafted cube across printers, control: process_full hidden as before the fix"
           gate -v "$results:/results" --tmpfs /opt/orca/resources/profiles/BBL/process_full:ro,size=1m \
             "$IMAGE" node /src/smoke-gate.mjs switch --control --out /results/control.json
           echo "== own-printer slices with and without process_full"

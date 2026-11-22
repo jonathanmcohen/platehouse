@@ -1543,7 +1543,7 @@ describe("the trash", () => {
     expect(dialog()).toBeNull();
   });
 
-  test("two restores in flight both stay restored, whichever answers last", async () => {
+  test("two restores in flight both stay restored when the first one sent answers last", async () => {
     await show("/trash", <TrashPage />);
     const release = hold("POST /app/api/trash/m-trashed-1/restore");
     await click(button("Restore Old benchy"));

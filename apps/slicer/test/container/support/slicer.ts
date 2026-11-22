@@ -66,7 +66,8 @@ export function ensureImage(): void {
 export interface RunningSlicer {
   id: string;
   base: string;
-  exec(args: string[]): Run;
+  /** docker exec in the container; user runs it as another user (as docker exec -u does). */
+  exec(args: string[], options?: { user?: string }): Run;
   health(): string;
   /** The server's output so far (docker logs), stdout and stderr together. */
   logs(): string;
@@ -152,7 +153,8 @@ export async function startSlicer(): Promise<RunningSlicer> {
     return {
       id,
       base: `http://127.0.0.1:${port}`,
-      exec: (args) => docker(["exec", id, ...args]),
+      exec: (args, options) =>
+        docker(["exec", ...(options?.user === undefined ? [] : ["-u", options.user]), id, ...args]),
       health,
       logs: () => {
         const r = docker(["logs", id]);

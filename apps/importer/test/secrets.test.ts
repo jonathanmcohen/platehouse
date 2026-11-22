@@ -109,6 +109,22 @@ describe("the output never shows a credential or a signed query", () => {
     expectClean(s, r.output);
   });
 
+  it("when Manyfold echoes the URL-encoded client secret back in an error body", async () => {
+    expect(encodeURIComponent(FAKE_KEY)).not.toBe(FAKE_KEY);
+    const s = setup(library());
+    server.use(
+      http.post(
+        `${MANYFOLD}/oauth/token`,
+        () =>
+          new HttpResponse(`invalid_client for ${encodeURIComponent(FAKE_KEY)}`, { status: 401 }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).not.toBe(0);
+    expect(r.output).toContain("401");
+    expectClean(s, r.output);
+  });
+
   it("when the object store echoes its signed URL back in an error body", async () => {
     const s = setup(library());
     server.use(

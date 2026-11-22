@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Copied unchanged from tools/slicing-gate/check-libs.sh.
+# Copied unchanged from tools/slicing-gate/check-libs.sh, apart from this line.
 # Build-time shared-library check, run by the Dockerfile so a library missing
-# from the image fails the build, not every plate on the deploy host.
+# from the image fails the build, not every plate on the host that runs it.
 #
 # Usage: check-libs.sh <elf binary> [<library path>]
 #   <library path> is set as LD_LIBRARY_PATH for ldd, the way the program's

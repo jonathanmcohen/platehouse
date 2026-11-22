@@ -557,7 +557,7 @@
   "tokens.revokeTitle": "R\u00e9voquer ce jeton ?",
   "tokens.rowNeverUsed": "<code>{prefix}</code>... cr\u00e9\u00e9 le <made>{made}</made>, jamais utilis\u00e9",
   "tokens.rowUsed": "<code>{prefix}</code>... cr\u00e9\u00e9 le <made>{made}</made>, derni\u00e8re utilisation <used>{used}</used>",
-  "tokens.showOnce": "C'est la seule fois que le jeton de {name} est affich\u00e9. Copiez-le maintenant et gardez-le en lieu s\u00fbr, par exemple dans 1Password.",
+  "tokens.showOnce": "C'est la seule fois que le jeton de {name} est affich\u00e9. Copiez-le maintenant et gardez-le en lieu s\u00fbr, par exemple dans un gestionnaire de mots de passe.",
   "tokens.signInAgain": "Se reconnecter",
   "tokens.signInRequired": "Pour cr\u00e9er un jeton d'API, reconnectez-vous d'abord. Platehouse v\u00e9rifie \u00e0 la connexion que vous avez toujours acc\u00e8s.",
   "trash.by": "Par {creator}.",

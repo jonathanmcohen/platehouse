@@ -593,7 +593,7 @@ describe("a library with trash, estimates, jobs and failures", () => {
     expect(estimateModels).not.toContain("Trashed Model");
   });
 
-  test("answers the same shape the second time, from one snapshot", async () => {
+  test("a second read of an unchanged library answers the same", async () => {
     const again = await view(env);
     expect(again.library).toEqual(v.library);
     expect(again.estimates.total).toBe(v.estimates.total);

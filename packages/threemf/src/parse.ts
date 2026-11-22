@@ -19,10 +19,11 @@
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - only the parser's own reads of the file (opening the zip, listing it,
-//   inflating an entry), the ceilings and the 32-bit rule above make a
-//   damaged file (null); otherwise broken config XML or JSON costs that
-//   entry only, while a plate index or filament slot past 2147483647 in
-//   valid config costs the whole file;
+//   inflating an entry), the ceilings, the 32-bit rule above and a DTD in
+//   any config entry make a damaged file (null); otherwise broken config XML
+//   or JSON costs that entry only, while a plate index or filament slot past
+//   2147483647 in valid config, or a DOCTYPE in any config entry, costs the
+//   whole file;
 // - a filesystem error is ReadUnavailable and never damage;
 // - anything else reaches the caller unchanged: whatever onThumbnail throws,
 //   and a bug in this file's own code. Neither is a file with no plate data.
@@ -55,8 +56,9 @@ const RESOURCES = Buffer.from("<resources", "latin1");
 const READ_CHUNK = 64 * 1024;
 
 /**
- * Reads one .3mf. Returns null when the file holds no Bambu plate data or
- * breaks any ceiling; the app shows NO_PLATE_DATA_MESSAGE for it. Throws
+ * Reads one .3mf. Returns null when the file holds no Bambu plate data,
+ * breaks any ceiling, or has a DTD in any config entry; the app shows
+ * NO_PLATE_DATA_MESSAGE for it. Throws
  * ReadUnavailable when the file cannot be read right now.
  */
 export async function readProject(path: string, opts: ReadOptions = {}): Promise<Project | null> {

@@ -13,9 +13,9 @@
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
-// - Both routes are session-class (the Route classes contract: /app/api is
-//   unlisted, so session). The gate (auth/gate.ts) refuses a request without
-//   a session before these handlers run. Neither route changes anything, so
+// - Every route is session-class (the route classes table in auth/gate.ts:
+//   /app/api is unlisted, so session). The gate refuses a request without
+//   a session before these handlers run. No route changes anything, so
 //   the gate's Origin check has nothing to check here.
 // - The page is the library's search (library/search.ts): name, caption, creator
 //   and tag, best match first, the tag, collection and creator filters, and

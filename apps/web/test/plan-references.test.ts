@@ -52,6 +52,9 @@ const REFERENCES: Reference[] = [
         String.raw`\bmanyfold-(?:studio|bambu)`,
         String.raw`\bmakerworld-meta(?:data)\b`,
         String.raw`\bautomation\s+Manyfold\/`,
+        // The private automation repository cited by a commit after its
+        // name (issue #329).
+        String.raw`\bautomation\s+[0-9a-f]{7,40}\b`,
       ].join("|"),
       "gi",
     ),
@@ -134,6 +137,7 @@ describe("no citation of a private plan, requirement or project", () => {
       `// see ${"jonathanmcohen"}/automation at 1ce8c57`,
       `// ported from ${"manyfold"}-studio`,
       `// in automation ${"Manyfold"}/${"makerworld"}-metadata`,
+      `// the prior art manyfold.mjs at ${"automation"} 1ce8c57`,
     ];
     const lookAlikes = [
       "// a task queue, the planner, AC power, AC-31, TAC-031",

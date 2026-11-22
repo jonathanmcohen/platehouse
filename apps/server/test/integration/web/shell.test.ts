@@ -17,12 +17,18 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { buildApp } from "../../../src/app.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { uuidv7 } from "../../../src/db/ids.js";
 import { createUploads } from "../../../src/uploads/tus.js";
-import { ACCENT_COOKIE, DEFAULT_ACCENT, THEME_COOKIE } from "../../../src/web/shell.js";
+import {
+  ACCENT_COOKIE,
+  DEFAULT_ACCENT,
+  SHELL_PAGES as SHELL_ROUTES,
+  THEME_COOKIE,
+} from "../../../src/web/shell.js";
 import { TEST_ORIGIN, type TestAuth, testAuth } from "../support/oidc-issuer.js";
 
-/** The sidebar's sections: Library, Creators, Collections and Tags. */
-const SHELL_PAGES = ["/", "/creators", "/collections", "/tags"];
+/** Every shell page the server registers, with a real id for the model page's :id. */
+const SHELL_PAGES = SHELL_ROUTES.map((page) => page.replace(":id", uuidv7()));
 const HTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const SCRIPT = "export const shell = 1;\n";
 const INDEX = [

@@ -239,9 +239,13 @@ describe("OpenSCAD in the image", () => {
   });
 
   // Issue #153 item 5: the image's build strips every setuid and setgid bit
-  // and fails if any is left; this checks the image as it runs.
+  // and fails if any is left; this checks the image as it runs. The scan runs
+  // as root, and find's errors are kept in the output, so a folder the scan
+  // could not search shows up as a failure instead of being skipped quietly.
   test("no file in the image is setuid or setgid", () => {
-    const r = slicer.exec(["sh", "-c", "find / -xdev -perm /6000 -type f 2>/dev/null; echo done"]);
+    const r = slicer.exec(["sh", "-c", "find / -xdev -perm /6000 -type f 2>&1; echo done"], {
+      user: "0",
+    });
     expect(r.stdout.trim()).toBe("done");
   });
 

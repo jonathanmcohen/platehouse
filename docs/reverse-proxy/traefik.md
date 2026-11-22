@@ -1,8 +1,10 @@
 # Traefik
 
 Written against Traefik 3.7. This is the one proxy setup that has run against a real Platehouse
-deployment and through the end-to-end tests. It is still an example to adapt: your entrypoint
-names, certificate resolver and network will differ.
+deployment. The end-to-end tests run a minimal Traefik 3.7 with no middleware, which proves the
+cookieless routes (`/api/v1/` and `/s/`) get through a Traefik router; they do not exercise this
+guide's timeouts, headers or encoded-slash settings. It is still an example to adapt: your
+entrypoint names, certificate resolver and network will differ.
 
 The setup has two parts: the static configuration of the entrypoint, and labels on the app
 container.

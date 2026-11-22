@@ -16,8 +16,9 @@
 // - A user is let in when the claims carry a subject of at most
 //   MAX_SUBJECT_LENGTH (255) characters, the limit OpenID Connect Core sets
 //   (issue #378), groups include
-//   OIDC_GROUP, and email_verified is true or the string "true" (Parchment
-//   dropped a string claim and login became an opaque "denied"). Groups and
+//   OIDC_GROUP, and email_verified is true or the string "true" (some
+//   providers send it as a string; dropping it would make login fail with
+//   an opaque "denied"). Groups and
 //   email_verified are read from the ID token, and from userinfo when the ID
 //   token leaves either out.
 // - The group is checked at every login and only then. Sessions keep no

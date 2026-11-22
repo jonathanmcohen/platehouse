@@ -724,7 +724,7 @@ export function summaryText(report) {
     L.push(`(h) STEP to GLB with occt-import-js 0.0.23 on ${st.sample}: ${st.pass ? `ok, ${st.totalMs} ms, ${st.glbBytes} bytes GLB from ${st.inputBytes} bytes STEP, ${st.meshes} meshes, ${st.triangles} triangles` : `FAILED${st.error ? `: ${st.error}` : ""}`}.`);
   } else L.push("(h) STEP: not run.");
   L.push("");
-  L.push("Delete afterwards: rm -rf /tmp/platehouse-gate and docker image rm platehouse-gate:t1.");
+  L.push("Delete afterwards: bash /tmp/platehouse-gate/tool/run.sh --clean (it also checks both are gone).");
   return `${L.join("\n")}\n`;
 }
 

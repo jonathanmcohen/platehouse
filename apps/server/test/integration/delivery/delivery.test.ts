@@ -540,7 +540,9 @@ describe("hostile file names", () => {
 
 describe("no S3 detail in any answer", () => {
   test("responses carry no S3 host, key or signature", async () => {
-    // Make sure every kind of answer is in the set, then read them all.
+    // Make sure every kind of answer is in the set, then read them all: the
+    // ones this test makes, and any the tests before it recorded.
+    const start = answers.length;
     const seeded = await seedStoredModel(env);
     const link = await mint(seeded.file.id);
     await call("GET", pathOf(link.url));
@@ -571,7 +573,9 @@ describe("no S3 detail in any answer", () => {
       "AWSAccessKeyId",
       "127.0.0.1:9",
     ];
-    expect(answers.length).toBeGreaterThan(20);
+    // At least the six this test makes itself, so it passes or fails on its
+    // own when run alone.
+    expect(answers.length - start).toBeGreaterThanOrEqual(6);
     for (const answer of answers) {
       const headerText = [...answer.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
       for (const name of answer.headers.keys()) {

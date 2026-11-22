@@ -53,6 +53,7 @@ import {
 } from "react";
 import { Link, useInRouterContext } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import "../settings/organise.css";
 import "./upload.css";
 import {
   ACCEPT,
@@ -351,7 +352,7 @@ export function UploadDialog({
     >
       <div
         ref={dialog}
-        className="ph-dialog"
+        className="ph-dialog ph-upload-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

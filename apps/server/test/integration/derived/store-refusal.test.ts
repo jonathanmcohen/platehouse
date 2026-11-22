@@ -13,10 +13,18 @@ import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage
 describe("storeRefusalOf", () => {
   it.each([
     ["InternalError", 500],
-    ["ServiceUnavailable", 501],
+    ["ServiceUnavailable", 503],
     ["Unknown", undefined],
   ] as const)("a %s (HTTP %s) is left to pg-boss to retry", (code, status) => {
     expect(storeRefusalOf(new StoreError("GetObject", code, status))).toBe("retry");
+  });
+
+  // A store that lacks a feature answers 501 NotImplemented, which a retry
+  // cannot clear. storeRefusalOf retries every 5xx, so it is retried today;
+  // this pins that, under its real code, rather than passing it off as a
+  // transient ServiceUnavailable.
+  it("a NotImplemented (HTTP 501) is retried like every 5xx, though a retry cannot clear it", () => {
+    expect(storeRefusalOf(new StoreError("GetObject", "NotImplemented", 501))).toBe("retry");
   });
 
   it.each([

@@ -557,7 +557,7 @@
   "tokens.revokeTitle": "\u00bfRevocar este token?",
   "tokens.rowNeverUsed": "<code>{prefix}</code>... creado el <made>{made}</made>, nunca usado",
   "tokens.rowUsed": "<code>{prefix}</code>... creado el <made>{made}</made>, \u00faltimo uso <used>{used}</used>",
-  "tokens.showOnce": "Esta es la \u00fanica vez que se muestra el token de {name}. C\u00f3pialo ahora y gu\u00e1rdalo en un lugar seguro, como 1Password.",
+  "tokens.showOnce": "Esta es la \u00fanica vez que se muestra el token de {name}. C\u00f3pialo ahora y gu\u00e1rdalo en un lugar seguro, como un gestor de contrase\u00f1as.",
   "tokens.signInAgain": "Volver a iniciar sesi\u00f3n",
   "tokens.signInRequired": "Para crear un token de API, vuelve a iniciar sesi\u00f3n primero. Platehouse comprueba al iniciar sesi\u00f3n que sigues teniendo acceso.",
   "trash.by": "De {creator}.",

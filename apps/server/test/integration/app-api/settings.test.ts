@@ -1388,5 +1388,9 @@ describe("every /app/api route", () => {
       expect(log).not.toContain(made);
       expect(log).not.toContain(made.slice(TOKEN_PREFIX.length));
     }
+    // Tokens this test never saw, such as the ones made on the 500 path,
+    // whose answer it does not read: nothing token-shaped is in the log.
+    const tokenShaped = new RegExp(TOKEN_PATTERN.source.replace(/^\^|\$$/g, ""));
+    expect(log).not.toMatch(tokenShaped);
   });
 });

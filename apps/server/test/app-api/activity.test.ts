@@ -19,7 +19,7 @@
 //   against a scripted database built as the server builds its own
 //   (CamelCasePlugin), which answers the settings row and the failed file
 //   and no rows for every other read. Every id here is made up for the test.
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -41,6 +41,7 @@ import {
   mergeEvents,
   progressOf,
   queueRows,
+  REASON_BYTES,
   readInboxFailures,
   reconvertEvents,
   scheduleText,
@@ -217,7 +218,7 @@ describe("readInboxFailures", () => {
       join(failed, "new.stl.reason.txt"),
       "The upload failed: EACCES: permission denied, open '/data/inbox/new.stl'",
     );
-    // A reason file with no file beside it still counts: the reason is the record.
+    await writeFile(join(failed, "gone.scad"), "x");
     await writeFile(join(failed, "gone.scad.reason.txt"), "Gone.");
     await utimes(join(failed, "old.3mf.reason.txt"), new Date(1_000_000), new Date(1_000_000));
     await utimes(join(failed, "gone.scad.reason.txt"), new Date(2_000_000), new Date(2_000_000));
@@ -258,6 +259,7 @@ describe("readInboxFailures", () => {
       { modelId: DUP_MODEL, modelName: "Clip", fileId: "f1", fileName: "Clip.stl" },
       { modelId: DUP_OTHER, modelName: "Other", fileId: "f2", fileName: "Clip.stl" },
     ])}.`;
+    for (const name of ["a.stl", "b.stl", "c.stl"]) await writeFile(join(failed, name), "x");
     await writeFile(join(failed, "a.stl.reason.txt"), reasonFileText(sentence, "duplicate"));
     // Another code's reason, and an older duplicate file whose words do not parse: no detail.
     await writeFile(
@@ -277,10 +279,40 @@ describe("readInboxFailures", () => {
     expect(byName.get("c.stl")).not.toHaveProperty("duplicate");
   });
 
+  // Issue #329: a retry that moves everything in failed/ back to the inbox,
+  // reason files included, must not leave a made-up failure on the page.
+  test("counts a reason file only while its file is a regular file beside it", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "kept.3mf"), "x");
+    await writeFile(join(failed, "kept.3mf.reason.txt"), "Kept.");
+    // The file was moved back to the inbox: only its reason file is left.
+    await writeFile(join(failed, "retried.3mf.reason.txt"), "Old reason.");
+    // A folder or a symlink under the file's name is not the file.
+    await mkdir(join(failed, "folder.3mf"));
+    await writeFile(join(failed, "folder.3mf.reason.txt"), "Folder.");
+    await symlink(join(failed, "kept.3mf"), join(failed, "link.3mf"));
+    await writeFile(join(failed, "link.3mf.reason.txt"), "Link.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : ""))).toEqual(["kept.3mf"]);
+  });
+
+  test("reads at most REASON_BYTES of a reason file", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "big.3mf"), "x");
+    await writeFile(join(failed, "big.3mf.reason.txt"), "a".repeat(REASON_BYTES * 4));
+    const { items } = await readInboxFailures(dir, 10);
+    const reason = items[0]?.type === "inbox_failed" ? items[0].reason : "";
+    expect(reason.length).toBeGreaterThan(0);
+    expect(reason.length).toBeLessThanOrEqual(REASON_BYTES);
+  });
+
   test("keeps only the newest limit", async () => {
     const failed = join(dir, "failed");
     await mkdir(failed);
     for (let i = 0; i < 5; i++) {
+      await writeFile(join(failed, `f${i}.3mf`), "x");
       const reason = join(failed, `f${i}.3mf.reason.txt`);
       await writeFile(reason, `reason ${i}`);
       await utimes(reason, new Date(1_000_000 * (i + 1)), new Date(1_000_000 * (i + 1)));

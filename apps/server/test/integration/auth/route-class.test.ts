@@ -308,13 +308,17 @@ describe("every registered route", () => {
       const cls = patternClass(route.path);
       if (cls !== "session" && cls !== "bearer") continue;
       for (const method of route.methods) {
+        // Same-origin, as a browser sends it, so a state-changing session
+        // route (an upload's POST or PATCH) meets the session check and not
+        // the Origin check's 403, which a "not 401" alone would let pass.
         const res = await t.app.inject({
           method: method as "GET",
           url: concretePath(route.path),
+          headers: { origin: TEST_ORIGIN },
           cookies: { [SESSION_COOKIE]: sessionCookie },
         });
         const label = `${method} ${route.path} (${cls})`;
-        if (cls === "session") expect(res.statusCode, label).not.toBe(401);
+        if (cls === "session") expect([401, 403], label).not.toContain(res.statusCode);
         else expect(res.statusCode, label).toBe(401);
       }
     }

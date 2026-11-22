@@ -11,6 +11,8 @@ The pages in this section:
 
 - [Adding files](./adding-files.md): uploading in the browser, the inbox folder, the API, how new
   models are named and what happens to duplicates.
+- [Importing from Manyfold](./importing-from-manyfold.md): copying a Manyfold library across once,
+  with the importer.
 - [Models, files and plates](./models-files-plates.md): what a model is and what its page shows.
 - [Printers and estimates](./printers-and-estimates.md): where the time, weight and filament
   numbers come from.

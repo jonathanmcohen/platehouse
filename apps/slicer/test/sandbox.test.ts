@@ -4,10 +4,10 @@
 //   OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--", or it reads OpenSCAD's own -o as a
 //   landrun flag (run 3: "flag provided but not defined: -o").
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   LANDRUN_STRICT_ABI,
   landrunArgs,
@@ -21,6 +21,7 @@ import {
   runsUnderTini,
   scadArgs,
 } from "../src/sandbox.js";
+import { removeTempDirs, tempDir } from "./support/tmp.js";
 
 // runGroup settles on the program's exit, not only on its pipes closing. A
 // helper that calls setsid() leaves the group the kills reach and can keep
@@ -132,7 +133,7 @@ describe("orphans re-parented to PID 1", () => {
     entries: Array<[number, string, number]>,
     extra: Record<string, string> = {},
   ): string {
-    const dir = mkdtempSync(join(tmpdir(), "slicer-proc-"));
+    const dir = tempDir("slicer-proc-");
     for (const [pid, comm, ppid] of entries) {
       mkdirSync(join(dir, String(pid)));
       writeFileSync(
@@ -419,3 +420,6 @@ describe("reading the kernel's Landlock ABI from a strict landrun run", () => {
     expect(readLandlockAbi(r).abi).toBeNull();
   });
 });
+
+// Every fake /proc folder a test made.
+afterEach(removeTempDirs);

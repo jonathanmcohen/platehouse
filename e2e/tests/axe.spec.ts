@@ -1,11 +1,12 @@
 // Accessibility (WCAG AA contrast in both palettes, and every page usable): axe-core finds zero violations
-// on the library, model, settings and trash pages in the dark and the light
-// theme. Each page is loaded fresh with the theme's cookie, so the palette
+// on the library, model, settings, trash and Activity pages in the dark and
+// the light theme. Each page is loaded fresh with the theme's cookie, so the palette
 // is the one the server writes into the first paint, and checked once it has
 // settled. Every rule axe enables by default runs; nothing is excluded.
 //
-// A clean axe run is required and is not proof of accessibility on its own
-// (Verify a Change): keyboard.spec.ts walks the keyboard path.
+// A clean axe run is required, but it is not proof of accessibility on its
+// own: axe cannot see whether a page works by keyboard, so keyboard.spec.ts
+// walks the keyboard path.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { ORIGIN } from "../support/env.js";

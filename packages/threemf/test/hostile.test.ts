@@ -278,8 +278,9 @@ const rows: Row[] = [
     expect: "null",
   },
   {
-    // Distinct 400-digit names must not collapse into one plate and slip
-    // under the 128-plate ceiling: none of them is a plate at all.
+    // Since #78, any one of these names, past 2147483647, is damage on its
+    // own (the row above has one); 129 of them, each different, show that
+    // distinct over-long names are not collapsed into one plate either.
     name: "129 plate png names too long to be safe integers",
     kind: "plate count",
     file: () =>

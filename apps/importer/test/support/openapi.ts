@@ -15,7 +15,11 @@
 // document's response schema, so the importer is tested against the shapes
 // Manyfold documents rather than shapes the tests made up. The checker covers
 // the parts of OpenAPI 3.0 the document uses: $ref, type, properties,
-// required, items, enum and nullable.
+// required, items, enum and oneOf (exactly one branch must pass, as OpenAPI
+// says), plus nullable, which the document does not use today. format is an
+// annotation and is not checked. A keyword it does not support (allOf, anyOf,
+// not, additionalProperties, patternProperties) throws, so a schema it cannot
+// check never passes unchecked.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -45,7 +49,11 @@ type Schema = {
   items?: Schema;
   enum?: unknown[];
   nullable?: boolean;
+  oneOf?: Schema[];
 };
+
+/** Keywords check() cannot judge: meeting one throws rather than passing the value unchecked. */
+const UNSUPPORTED = ["allOf", "anyOf", "not", "additionalProperties", "patternProperties"];
 
 type Operation = {
   responses?: Record<string, { content?: Record<string, { schema?: Schema }> }>;
@@ -88,6 +96,18 @@ function typeOf(value: unknown): string {
 /** Problems with value against schema, as "path: problem" lines; empty when it conforms. */
 export function check(schema: Schema, value: unknown, at = "$"): string[] {
   const s = resolve(schema);
+  for (const keyword of UNSUPPORTED) {
+    if (keyword in s)
+      throw new Error(`openapi: ${at} uses ${keyword}, which check() does not support`);
+  }
+  if (s.oneOf !== undefined) {
+    const passing = s.oneOf.filter((branch) => check(branch, value, at).length === 0).length;
+    if (passing !== 1) {
+      return [
+        `${at}: matches ${passing} of ${s.oneOf.length} oneOf branches, documented as exactly one`,
+      ];
+    }
+  }
   if (value === null) return s.nullable === true ? [] : [`${at}: null`];
   const problems: string[] = [];
   if (s.type !== undefined) {

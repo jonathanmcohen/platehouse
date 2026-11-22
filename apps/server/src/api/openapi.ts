@@ -875,7 +875,9 @@ export async function registerOpenApi(
           "Every request needs an API token, made in Settings, sent as " +
           "Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS " +
           "headers, so a web page on another site cannot call it.\n\n" +
-          "Errors answer JSON with an error code word and, often, a message sentence. JSON " +
+          "Errors answer JSON with an error code word and, often, a message sentence, except " +
+          "the tus upload operations, which answer plain text, and a 414 (a path too long), " +
+          "which uses the server's own shape. JSON " +
           `bodies are at most 1 MiB; uploads are at most ${UPLOAD_CAP}. The guide is docs/api.md ` +
           "in the Platehouse repository.",
       },

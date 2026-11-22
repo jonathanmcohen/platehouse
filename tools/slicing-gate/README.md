@@ -27,7 +27,7 @@ the fallback.
 | `check-libs.sh` | the image | Build-time check: fails the build when ldd fails on a binary or reports a missing shared library. |
 | `need.sh` | the image | Build-time check helper: every path and version check in the Dockerfile goes through `need`, which names the failed check on stderr instead of exiting 1 with no text. |
 | `run.sh` | the test server | Builds the image, runs every plate in its own container, then the checks and the report. `--clean` deletes the scratch dir and the `platehouse-gate:t1` image and checks both are gone; the build cache stays (see step 5). |
-| `smoke-gate.mjs` | CI, in the image | The CI smoke checks for the printer switch and landrun (see below). Never run on the test server. |
+| `smoke-gate.mjs` | CI, mounted into a container from the image (compare runs on the runner) | The CI smoke checks for the printer switch and landrun (see below). It is not copied into the image. Never run on the test server. |
 | `test/` | anywhere | `node --test 'tools/slicing-gate/test/**/*.test.mjs'` (Node 26, no install step). |
 
 CI (`.github/workflows/ci.yml`) runs these tests, builds this image and

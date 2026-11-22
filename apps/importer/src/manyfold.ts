@@ -10,7 +10,8 @@
 //   run before anything is read, in case the OAuth app's settings changed. The token never leaves this module; it
 //   is handed to the sensitive callback so the CLI's redactor knows it.
 // - Every URL Manyfold hands back is rewritten from http: to https: (behind
-//   Traefik it sends http:// links) and must stay on the base origin, so the
+//   a reverse proxy that terminates TLS it may send http:// links) and must
+//   stay on the base origin, so the
 //   token is never sent anywhere else. A link to another origin is refused
 //   before anything is sent there.
 // - A file download is the one exception. Manyfold answers it with a

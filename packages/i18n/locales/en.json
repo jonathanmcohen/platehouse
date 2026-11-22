@@ -550,7 +550,7 @@
   "tokens.revokeTitle": "Revoke this token?",
   "tokens.rowNeverUsed": "<code>{prefix}</code>... made <made>{made}</made>, never used",
   "tokens.rowUsed": "<code>{prefix}</code>... made <made>{made}</made>, last used <used>{used}</used>",
-  "tokens.showOnce": "This is the only time the token for {name} is shown. Copy it now and keep it somewhere safe, such as 1Password.",
+  "tokens.showOnce": "This is the only time the token for {name} is shown. Copy it now and keep it somewhere safe, such as a password manager.",
   "tokens.signInAgain": "Sign in again",
   "tokens.signInRequired": "To create an API token, sign in again first. Platehouse checks that you are still allowed in when you sign in.",
   "trash.by": "By {creator}.",

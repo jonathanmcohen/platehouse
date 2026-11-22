@@ -38,7 +38,7 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
     const sample = [
       "every blob lives under models/<modelId>/<blobId>, two ids",
       "a re-run tags orca-X.Y.Z-r<run number>.<attempt> now",
-      "run it with --model <id> and </closing>",
+      "run it with --model <id> and </closing>, then <constructor>",
       "in code: `models/<modelId>/<blobId>` and ``a `<x>` inside``",
       "a link: <https://example.com/x?a=1> and <name@example.com>",
       "a comparison: a < b and b > a, an arrow -> and <= 3",
@@ -58,6 +58,7 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
       "sample:2: <attempt>",
       "sample:3: <id>",
       "sample:3: </closing>",
+      "sample:3: <constructor>",
     ]);
   });
 

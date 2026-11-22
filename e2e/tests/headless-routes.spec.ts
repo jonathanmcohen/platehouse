@@ -2,8 +2,8 @@
 // no cookie, a slicer link works with no session, and every page still needs
 // a login. Platehouse has two cookieless routes,
 // the Public API v1 and slicer links. If a proxy login or the app's session
-// gate covered either, it would redirect to login and pass every unit test
-// (Cairn's OAuth loop, v0.9.16). Each request here goes through Traefik on
+// gate covered either, it would redirect to login and still pass every unit
+// test, since unit tests never go through the proxy. Each request here goes through Traefik on
 // https://platehouse.e2e.test from a request context with no cookie at all.
 import { type APIRequestContext, expect, request, test } from "@playwright/test";
 import { ISSUER, ORIGIN } from "../support/env.js";
