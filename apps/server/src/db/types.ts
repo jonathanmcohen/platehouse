@@ -54,11 +54,11 @@ export interface ModelsTable {
   nameSource: Generated<NameSource>;
   /** The MakerWorld design ID its .3mf carries, digits only (0005). */
   makerworldDesignId: string | null;
-  /** SHA-256, lowercase hex, of the description as ingest's converter wrote it (0011). */
+  /** SHA-256, lowercase hex, of the description as ingest's converter wrote it (0015). */
   descriptionSha256: string | null;
-  /** The converter version that wrote the description; set with descriptionSha256 (0011). */
+  /** The converter version that wrote the description; set with descriptionSha256 (0015). */
   descriptionConverter: number | null;
-  /** The .3mf the description was converted from; no foreign key (0011). */
+  /** The .3mf the description was converted from; no foreign key (0015). */
   descriptionFileId: string | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;
@@ -152,6 +152,11 @@ export interface EstimatesTable {
   failureDetail: string | null;
   attempts: Generated<number>;
   createdAt: CreatedAt;
+  /**
+   * When the attempt that is running, or that finished, began work (0011);
+   * null before it starts, and on estimates finished before 0011.
+   */
+  startedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   finishedAt: Date | null;
 }
 
@@ -210,7 +215,7 @@ export interface SessionsTable {
   idleExpiresAt: Date;
 }
 
-/** One finished one-time upgrade step (0011), such as reconvert-descriptions-3. */
+/** One finished one-time upgrade step (0015), such as reconvert-descriptions-3. */
 export interface UpgradeStepsTable {
   name: string;
   finishedAt: CreatedAt;

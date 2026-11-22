@@ -244,6 +244,7 @@
   "library.count.showing": "Showing {shown} of {matches} {total, plural, one {model} other {models}}",
   "library.empty.noMatch": "No models match. Try another search or tag.",
   "library.empty.none": "No models yet. Drop files here, or use Add.",
+  "library.empty.showAll": "Show all models",
   "library.failed": "The library could not be loaded.",
   "library.filter.clearCollection": "Clear collection filter",
   "library.filter.clearCreator": "Clear creator filter",

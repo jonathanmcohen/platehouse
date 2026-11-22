@@ -1,4 +1,4 @@
--- Platehouse schema 0011: where a model's description came from, so a fix to
+-- Platehouse schema 0015: where a model's description came from, so a fix to
 -- the MakerWorld converter can reach descriptions already stored (#357), and
 -- a record of the one-time steps run on upgrade.
 -- Hand-written; every statement is read in review (lesson 14). Never edit it

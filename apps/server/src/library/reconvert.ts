@@ -7,7 +7,7 @@
 // description is converted again only when it can be proved to be exactly
 // what a converter wrote:
 // - one ingest wrote from 0.1.1 on carries the SHA-256 of what it wrote, the
-//   converter version and the file it came from (migration 0011). It is
+//   converter version and the file it came from (migration 0015). It is
 //   untouched while its text still has that hash, and is converted again
 //   from that one file;
 // - one written before 0.1.1 has no such record. It is untouched only when

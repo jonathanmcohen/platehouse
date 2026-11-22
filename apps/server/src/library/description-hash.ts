@@ -1,4 +1,4 @@
-// The hash ingest stores beside a description it converted (migration 0011),
+// The hash ingest stores beside a description it converted (migration 0015),
 // in a module of its own so the models repository can use it without the
 // re-conversion's store and zip readers (library/reconvert.ts).
 import { createHash } from "node:crypto";
