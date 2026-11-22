@@ -1,5 +1,6 @@
 -- Platehouse schema 0015: the GLB of a .3mf plate's 3D view (0.1.1, issue
--- #358). Hand-written; every statement is read in review (lesson 14). Never
+-- #358). Hand-written; every statement is read in review, since generated
+-- DDL can hide a destructive change. Never
 -- edit it once applied anywhere: a change is a new file.
 --
 -- The model page shows a plate's objects in 3D. The server makes the plate's

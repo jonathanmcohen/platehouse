@@ -24,12 +24,12 @@
 // - The browser going away (its fetch aborted, the connection closed) aborts
 //   the signal handed to the service, so a build of this plate that is still
 //   waiting, and that no other open is waiting for, is dropped (#385).
-// - Session-class, like every /app/api route (the Route classes contract:
-//   unlisted, so session); the gate refuses a request without a session
+// - Session-class, like every /app/api route (the route classes table in
+//   auth/gate.ts: unlisted, so session); the gate refuses a request without a session
 //   before this handler runs. It is a GET: it changes nothing a user can
 //   see, and making the mesh twice gives the same answer.
-// - The browser then loads the GLB from /blobs/<id> (Task 17's route,
-//   immutable and cached), never the whole .3mf.
+// - The browser then loads the GLB from /blobs/<id> (the delivery route,
+//   delivery/download.ts, immutable and cached), never the whole .3mf.
 // - Answers are JSON and never cached. A failure carries no detail from the
 //   database, the store or the file system.
 import { type PlateMeshProblem, ReadUnavailable } from "@platehouse/threemf";
@@ -39,7 +39,7 @@ import { BuildQueueBusy } from "../plate-mesh/limit.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { BLOB_PREFIX } from "./library.js";
 
-/** The plate view's route, session-class (the Route classes contract). */
+/** The plate view's route, session-class (the route classes table in auth/gate.ts). */
 export const PLATE_MESH_API_PATHS: readonly string[] = Object.freeze(["/app/api/plates/:id/mesh"]);
 
 /** What each problem says in English; the page shows its own words for the code. */
