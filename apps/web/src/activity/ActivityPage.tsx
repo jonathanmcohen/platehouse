@@ -79,6 +79,17 @@ export type ActivityEvent =
       detail: string | null;
     }
   | {
+      /** The description re-conversion on upgrade (#357): what one run did. */
+      type: "descriptions_reconverted";
+      at: string;
+      converter: number;
+      checked: number;
+      changed: number;
+      unchanged: number;
+      kept: number;
+      unreadable: number;
+    }
+  | {
       type: "render_failed";
       at: string;
       kind: "scad" | "step";

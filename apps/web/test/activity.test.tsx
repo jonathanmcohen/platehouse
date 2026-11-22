@@ -803,3 +803,47 @@ describe("refreshing", () => {
     expect(gets()).toBe(2);
   });
 });
+
+// The description re-conversion on upgrade (#357) is an event of its own: how
+// many MakerWorld descriptions it changed, and what it left alone and why.
+describe("a description re-conversion", () => {
+  function withRun(counts: {
+    checked: number;
+    changed: number;
+    unchanged: number;
+    kept: number;
+    unreadable: number;
+  }): ActivityView {
+    const v = emptyView();
+    v.events.items = [
+      {
+        type: "descriptions_reconverted",
+        at: "2026-11-21T09:30:00.000Z",
+        converter: 3,
+        ...counts,
+      },
+    ];
+    return v;
+  }
+
+  test("says how many descriptions it changed and what it left alone", async () => {
+    answer = () => withRun({ checked: 120, changed: 66, unchanged: 40, kept: 12, unreadable: 2 });
+    await render();
+    const items = [...section("Recent events").querySelectorAll("ol > li")];
+    expect(items).toHaveLength(1);
+    const li = items[0] as HTMLElement;
+    expect(li.querySelector("time")?.getAttribute("datetime")).toBe("2026-11-21T09:30:00.000Z");
+    expect(text(li)).toContain("MakerWorld descriptions converted again");
+    expect(text(li)).toContain("66 descriptions changed, of 120 checked.");
+    expect(text(li)).toContain(
+      "40 already right. 12 left as they were: edited, or not written from their file. 2 whose file could not be read.",
+    );
+  });
+
+  test("says one description in the singular", async () => {
+    answer = () => withRun({ checked: 1, changed: 1, unchanged: 0, kept: 0, unreadable: 0 });
+    await render();
+    const li = section("Recent events").querySelector("ol > li");
+    expect(text(li)).toContain("1 description changed, of 1 checked.");
+  });
+});

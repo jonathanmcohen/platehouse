@@ -4,7 +4,8 @@
 //   GET /app/api/activity   ActivityView: the library's numbers, estimate
 //                           progress for the selected printer, the pg-boss
 //                           queues and scheduled jobs, the slicer's health,
-//                           and the newest events
+//                           and the newest events (a description
+//                           re-conversion on upgrade among them, #357)
 //
 // - Session-class like every /app/api route (the Route classes contract:
 //   /app/api is unlisted), so the gate refuses a request without a live
@@ -40,6 +41,7 @@ import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
 import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
 import { activityRepo, type QueueCount } from "../repos/activity.js";
+import { descriptionsRepo } from "../repos/descriptions.js";
 import { settingsRepo } from "../repos/settings.js";
 import { scrubDerivedMessage, scrubDetail, scrubText } from "../scrub.js";
 import { appApiScope, need } from "./settings.js";
@@ -156,6 +158,7 @@ export type ActivityEvent =
       /** The slicer's own detail, scrubbed; null with none. */
       detail: string | null;
     }
+  | DescriptionsReconvertedEvent
   | {
       type: "render_failed";
       at: string;
@@ -170,6 +173,23 @@ export type ActivityEvent =
       /** What message holds after those sentences, or null. */
       messageDetail: string | null;
     };
+
+/** One finished description re-conversion (#357): what it did, from upgrade_steps. */
+export interface DescriptionsReconvertedEvent {
+  type: "descriptions_reconverted";
+  at: string;
+  /** The converter version it converted with (packages/makerworld CONVERTER_VERSION). */
+  converter: number;
+  checked: number;
+  /** Written again with the new converter's text. */
+  changed: number;
+  /** Already what the new converter writes. */
+  unchanged: number;
+  /** Left as they were: edited, or not written by the converter. */
+  kept: number;
+  /** Left as they were because their .3mf could not be read. */
+  unreadable: number;
+}
 
 export interface ActivityView {
   /** The server's clock when the answer was read. */
@@ -298,6 +318,41 @@ export function progressOf(
     perMinute,
     secondsLeft,
   };
+}
+
+/** The upgrade_steps name prefix of the description re-conversion runs. */
+const RECONVERT_STEP_PREFIX = "reconvert-descriptions-";
+
+/**
+ * The finished description re-conversions as events (#357), one per run,
+ * from their upgrade_steps rows. A count that is missing or not a whole
+ * number of 0 or more reads as 0, and a row of any other name is left out.
+ */
+export function reconvertEvents(
+  steps: ReadonlyArray<{ name: string; finishedAt: Date; result: unknown }>,
+): DescriptionsReconvertedEvent[] {
+  const count = (result: unknown, key: string): number => {
+    const v = (result as Record<string, unknown> | null)?.[key];
+    return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0;
+  };
+  return steps.flatMap((step) => {
+    if (!step.name.startsWith(RECONVERT_STEP_PREFIX)) return [];
+    const version = step.name.slice(RECONVERT_STEP_PREFIX.length);
+    if (!/^[1-9][0-9]{0,8}$/.test(version)) return [];
+    const r = typeof step.result === "object" ? step.result : null;
+    return [
+      {
+        type: "descriptions_reconverted",
+        at: step.finishedAt.toISOString(),
+        converter: Number(version),
+        checked: count(r, "checked"),
+        changed: count(r, "changed"),
+        unchanged: count(r, "unchanged"),
+        kept: count(r, "kept"),
+        unreadable: count(r, "unreadable"),
+      },
+    ];
+  });
 }
 
 /** Every kind's events in one list, newest first, at most EVENT_LIMIT. */
@@ -456,7 +511,21 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         const models = await repo.recentModels(QUEUE.ingest, EVENT_LIMIT);
         const estimates = await repo.failedEstimates(settings.printerId, version, EVENT_LIMIT);
         const derived = await repo.failedDerived(EVENT_LIMIT);
-        return { settings, library, counts, queues, lastRuns, models, estimates, derived };
+        const upgrades = await descriptionsRepo(trx).finishedSteps(
+          RECONVERT_STEP_PREFIX,
+          EVENT_LIMIT,
+        );
+        return {
+          settings,
+          library,
+          counts,
+          queues,
+          lastRuns,
+          models,
+          estimates,
+          derived,
+          upgrades,
+        };
       });
   }
 
@@ -469,7 +538,8 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         inboxFailures(),
         deps.boss.getSchedules(QUEUE.maintenance),
       ]);
-      const { settings, library, counts, queues, lastRuns, models, estimates, derived } = data;
+      const { settings, library, counts, queues, lastRuns, models, estimates, derived, upgrades } =
+        data;
 
       const progress = progressOf(counts, now);
       const rows = queueRows(queues);
@@ -549,7 +619,13 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           printerName: printerName(settings.printerId, []),
         },
         events: {
-          items: mergeEvents([modelEvents, estimateEvents, renderEvents, inbox.items]),
+          items: mergeEvents([
+            modelEvents,
+            estimateEvents,
+            renderEvents,
+            inbox.items,
+            reconvertEvents(upgrades),
+          ]),
           limit: EVENT_LIMIT,
           inboxReadable: inbox.readable,
         },

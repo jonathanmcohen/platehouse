@@ -42,6 +42,7 @@ import {
   progressOf,
   queueRows,
   readInboxFailures,
+  reconvertEvents,
   scheduleText,
 } from "../../src/app-api/activity.js";
 import type { DB } from "../../src/db/types.js";
@@ -399,5 +400,131 @@ describe("a failed render on the Activity page", () => {
     expect(message?.endsWith(ERROR_SHOWN)).toBe(true);
     expect(message).not.toContain("...");
     for (const hidden of HIDDEN) expect(JSON.stringify(event)).not.toContain(hidden);
+  });
+});
+
+// The description re-conversion on upgrade (#357) records what it did in
+// upgrade_steps; the page shows each run as an event, so the count of
+// descriptions changed is on the page and not only in the server log.
+describe("reconvertEvents", () => {
+  const AT = new Date("2026-11-21T09:30:00Z");
+
+  test("makes one event per finished run, with its converter and counts", () => {
+    expect(
+      reconvertEvents([
+        {
+          name: "reconvert-descriptions-3",
+          finishedAt: AT,
+          result: { checked: 120, changed: 66, unchanged: 40, kept: 12, unreadable: 2 },
+        },
+      ]),
+    ).toEqual([
+      {
+        type: "descriptions_reconverted",
+        at: AT.toISOString(),
+        converter: 3,
+        checked: 120,
+        changed: 66,
+        unchanged: 40,
+        kept: 12,
+        unreadable: 2,
+      },
+    ] satisfies ActivityEvent[]);
+  });
+
+  test("reads a count that is missing or not a whole number as 0", () => {
+    const [event] = reconvertEvents([
+      { name: "reconvert-descriptions-4", finishedAt: AT, result: { changed: "7", kept: -1 } },
+    ]);
+    expect(event).toMatchObject({ converter: 4, checked: 0, changed: 0, kept: 0, unreadable: 0 });
+  });
+
+  test("leaves out a step of any other name", () => {
+    expect(
+      reconvertEvents([
+        { name: "another-step", finishedAt: AT, result: {} },
+        { name: "reconvert-descriptions-x", finishedAt: AT, result: {} },
+      ]),
+    ).toEqual([]);
+  });
+});
+
+describe("a description re-conversion on the Activity page", () => {
+  const FINISHED_AT = new Date("2026-11-21T09:30:00Z");
+
+  /** The settings row and one finished re-conversion; every other read answers no rows. */
+  function scriptedDb(): Kysely<DB> {
+    const connection: DatabaseConnection = {
+      async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
+        let rows: unknown[] = [];
+        if (/\bfrom "settings"/.test(query.sql)) {
+          rows = [
+            {
+              printer_id: "P1S",
+              last_orca_version: null,
+              bucket_versioning: "unknown",
+              updated_at: FINISHED_AT,
+            },
+          ];
+        } else if (/\bfrom "upgrade_steps"/.test(query.sql)) {
+          rows = [
+            {
+              name: "reconvert-descriptions-3",
+              finished_at: FINISHED_AT,
+              result: { checked: 5, changed: 2, unchanged: 1, kept: 1, unreadable: 1 },
+            },
+          ];
+        }
+        return { rows } as QueryResult<R>;
+      },
+      streamQuery(): never {
+        throw new Error("streamQuery is not scripted");
+      },
+    };
+    const driver: Driver = {
+      async init() {},
+      async acquireConnection() {
+        return connection;
+      },
+      async beginTransaction() {},
+      async commitTransaction() {},
+      async rollbackTransaction() {},
+      async releaseConnection() {},
+      async destroy() {},
+    };
+    return new Kysely<DB>({
+      dialect: {
+        createAdapter: () => new PostgresAdapter(),
+        createDriver: () => driver,
+        createIntrospector: (db) => new PostgresIntrospector(db),
+        createQueryCompiler: () => new PostgresQueryCompiler(),
+      },
+      plugins: [new CamelCasePlugin()],
+    });
+  }
+
+  test("is an event with the number of descriptions it changed", async () => {
+    const view = await createAppActivity({
+      db: scriptedDb(),
+      boss: { getSchedules: async () => [] },
+      slicer: {
+        health: async () => {
+          throw new Error("no slicer in this test");
+        },
+      },
+      now: () => new Date("2026-11-21T12:00:00Z"),
+    }).read();
+    expect(view.events.items.filter((e) => e.type === "descriptions_reconverted")).toEqual([
+      {
+        type: "descriptions_reconverted",
+        at: FINISHED_AT.toISOString(),
+        converter: 3,
+        checked: 5,
+        changed: 2,
+        unchanged: 1,
+        kept: 1,
+        unreadable: 1,
+      },
+    ]);
   });
 });

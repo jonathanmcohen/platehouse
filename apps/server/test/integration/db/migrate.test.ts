@@ -35,6 +35,7 @@ const TABLES = [
   "sessions",
   "settings",
   "tags",
+  "upgrade_steps",
   "user_printers",
 ];
 
@@ -50,6 +51,7 @@ const SHIPPED = [
   "0007_my_printers.sql",
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
+  "0010_description_source.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
