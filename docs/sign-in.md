@@ -53,17 +53,22 @@ and for the token exchange.
 Only a user whose `groups` claim holds `OIDC_GROUP` exactly gets in. Everyone else sees a plain
 page saying why they were refused. To let someone in, add them to the group at your provider;
 to take access away, remove them. Platehouse checks the group each time someone signs in, and
-only then. Removing someone stops their next sign-in. If they try to sign in again and are
-refused (not in the group, email not verified, or a user id that is too long), the session that
-browser already had ends too, and they are signed out there at once. A Platehouse session they
-have in any other browser lasts until it expires (7 days without use, 30 days at most), they sign
-out, or someone uses **Sign out everywhere** in **Settings** on them.
+only then. Removing someone stops their next sign-in. If they try to sign in again and
+Platehouse itself refuses them (the provider let them sign in, but they are not in the group,
+their email is not verified, or their user id is too long), the session that browser already had
+ends too, and they are signed out there at once. A refusal at the provider ends nothing: if you
+also limit the client to the group at the provider (Pocket ID's allowed user groups, an Authentik
+policy binding and the like), or disable the account there, the provider refuses them before
+Platehouse sees a sign-in, and the session that browser had carries on. A Platehouse session they
+have in any other browser, or one the provider's refusal did not end, lasts until it expires
+(7 days without use, 30 days at most), they sign out, or someone uses **Sign out everywhere** in
+**Settings** on them.
 
 Creating an API token needs a recent sign-in: if you signed in more than 5 minutes ago, Settings
 asks you to sign in again first, and that sign-in checks the group. So a removed person cannot
-make a new token with a session they already had, and trying ends that session. While your
-provider is down nobody can make one, and a sign-in that fails because the provider is down never
-ends anyone's session.
+make a new token with a session they already had, and trying ends that session when Platehouse
+is the one that refuses the sign-in (see above). While your provider is down nobody can make one,
+and a sign-in that fails because the provider is down never ends anyone's session.
 
 Removing someone does not revoke API tokens. A token never expires and is not checked against
 the group, so a token they made or had a copy of keeps reading, uploading and tagging after they
@@ -72,9 +77,10 @@ Platehouse 0.1.0, before it recorded that, shows "Made by an unknown user".
 
 To cut someone off completely:
 
-1. Remove them from the group at your provider. From then on, any sign-in they try is refused, and
-   the refusal also ends the session the browser they tried from had. Their sessions in other
-   browsers carry on until the next step.
+1. Remove them from the group at your provider. From then on, any sign-in they try is refused.
+   When Platehouse is the one that refuses it, the refusal also ends the session the browser they
+   tried from had; when the provider refuses it (the client is limited to the group there, or the
+   account is disabled), it ends nothing. Their other sessions carry on until the next step.
 2. In **Settings**, under **Sign out everywhere**, press **Sign out** beside their name, tick the
    box to also revoke the API tokens they made, and press **Sign out everywhere**. Every session
    they have ends at once, and every token they made stops working.

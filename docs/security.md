@@ -36,12 +36,15 @@ Each API client, such as a script or another tool on one computer, gets its own 
   sign-in, so this is what stops someone removed from the group from making a token with a
   session they already had. If your sign-in is older, Settings asks you to sign in again; while
   your provider is down, no token can be made.
-- A sign-in that is refused because the person is no longer let in (not in the group, email not
-  verified, or a user id over 255 characters) also ends the session the browser already had and
-  clears its cookie, so a removed person who tries to sign in again is signed out of that browser
-  at once. It ends only that browser's session; **Sign out everywhere** ends the rest. A sign-in
-  that fails because your provider is down, or whose answer from the provider does not check out,
-  ends nothing.
+- A sign-in that Platehouse refuses because the person is no longer let in (the provider let them
+  sign in, but they are not in the group, their email is not verified, or their user id is over
+  255 characters) also ends the session the browser already had and clears its cookie, so a
+  removed person who tries to sign in again is signed out of that browser at once. It ends only
+  that browser's session; **Sign out everywhere** ends the rest. A refusal at the provider ends
+  nothing: when the client is limited to the group at the provider, or the account is disabled
+  there, the provider refuses the person before Platehouse sees a sign-in. A sign-in that fails
+  because your provider is down, or whose answer from the provider does not check out, ends
+  nothing either.
 - Platehouse stores only a SHA-256 hash of each token and its first 8 characters, so you can tell
   tokens apart. A stolen database does not give working tokens.
 - Each token records who made it: the user id (`sub`) your provider gave them and their name at
