@@ -156,7 +156,7 @@ describe("the description re-conversion on upgrade", () => {
       {
         name: QUEUE.maintenance,
         data: { task: UPGRADE_TASKS.reconvertDescriptions },
-        options: { singletonKey: UPGRADE_TASKS.reconvertDescriptions },
+        options: undefined,
       },
     ]);
     expect(calls.indexOf(`send ${QUEUE.maintenance} ${UPGRADE_TASKS.reconvertDescriptions}`)).toBe(

@@ -165,6 +165,11 @@ export async function decide(
     if (source === undefined) return { kind: "unreadable" };
     const text = await readText(source);
     if (text === null) return { kind: "unreadable" };
+    // The hash proves the text untouched but not where its converted part
+    // ends, so the note counts as added when the text ends with it after a
+    // blank line. Only a MakerWorld description whose own last paragraph is
+    // the licence note, word for word, could be read wrong, and then that
+    // paragraph would show twice.
     return outcome(stored, source.fileId, text, endsWithNote(stored.description, text.note));
   }
   // With no .3mf left to read, nothing can be proved either way.

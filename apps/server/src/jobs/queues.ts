@@ -109,9 +109,13 @@ export const MAINTENANCE_TASKS = {
 /**
  * The maintenance queue's one-time upgrade steps, each a job { task } sent at
  * startup while the step has not finished, never scheduled: the description
- * re-conversion (#357, library/reconvert.ts). The job is sent with its task
- * as singletonKey, so two servers started together queue it once while it
- * waits; a second run would do nothing anyway once the first has finished.
+ * re-conversion (#357, library/reconvert.ts). The maintenance queue's
+ * standard policy does not dedupe jobs (pg-boss enforces singletonKey only
+ * for its short, singleton, stately and exclusive policies), so two servers
+ * started together may each queue it. That is harmless: a run that starts
+ * after another finished does nothing, and two at once each write a
+ * description only through a compare-and-set, so neither writes over the
+ * other.
  */
 export const UPGRADE_TASKS = {
   reconvertDescriptions: "reconvert-descriptions",
@@ -396,11 +400,7 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
   if (deps.reconvertDescriptions && deps.reconvertPending) {
     try {
       if (await deps.reconvertPending()) {
-        await boss.send(
-          QUEUE.maintenance,
-          { task: UPGRADE_TASKS.reconvertDescriptions },
-          { singletonKey: UPGRADE_TASKS.reconvertDescriptions },
-        );
+        await boss.send(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
