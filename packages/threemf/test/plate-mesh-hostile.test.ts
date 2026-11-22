@@ -37,9 +37,19 @@ import {
   PlateMeshError,
   type PlateMeshLimits,
   readPlateMesh,
+  validatePlateMesh,
 } from "../src/index.js";
 import { writeTmp } from "./support/fixture-builder.js";
-import { FAMILIES, type Family, hostile, overlappingZip, stripMesh } from "./support/hostile.js";
+import {
+  FAMILIES,
+  type Family,
+  hostile,
+  overlappingZip,
+  stripMesh,
+  duplicateSkipped,
+  overflowing,
+  wideIndex,
+} from "./support/hostile.js";
 import {
   buildItem,
   componentObject,
@@ -345,5 +355,53 @@ describe("the limits hold by construction", () => {
     expect(charge).toBeGreaterThanOrEqual(0);
     expect(charge).toBeLessThan(inflate.indexOf("take(chunk);"));
     expect(source).not.toMatch(/readCapped/);
+  });
+});
+
+describe("the third round of review findings, by name", () => {
+  it("#392: 9,999 plate instances of an object of 99,990 skipped components take one walk of it, not 9,999", async () => {
+    const started = performance.now();
+    // 9,999 copies and the tetrahedron: exactly the 10,000 requests the instance limit allows.
+    const run = await metered(duplicateSkipped(99_990, 9_999), {});
+    const took = performance.now() - started;
+    expect(run.outcome).not.toBeInstanceOf(PlateMeshError);
+    // The tetrahedron, once; object 50 places nothing.
+    expect((run.outcome as PlateMesh).instances).toHaveLength(1);
+    // Walking object 50 once is about 100,000 steps; once per instance would be 1e9.
+    expect(run.report?.work ?? Number.POSITIVE_INFINITY).toBeLessThan(20_000_000);
+    expect(took).toBeLessThan(5_000);
+  }, 120_000);
+
+  it.each([0, 1, 2, 3])(
+    "#393: transforms that overflow (case %i) place nothing; every transform handed back is finite as a float32",
+    async (variant) => {
+      const run = await metered(overflowing(variant), {});
+      expect(run.outcome).not.toBeInstanceOf(PlateMeshError);
+      const mesh = run.outcome as PlateMesh;
+      for (const inst of mesh.instances) {
+        for (const n of inst.transform) expect(Number.isFinite(Math.fround(n)), String(n)).toBe(true);
+      }
+      // Only the tetrahedron is placed.
+      expect(mesh.instances).toHaveLength(1);
+    },
+  );
+
+  it.each([0xffffffff, 0x100000000, 0x100000001, 2 ** 40])(
+    "#394: a triangle naming vertex %i is refused, never wrapped to a small number",
+    async (index) => {
+      const run = await metered(wideIndex(index, true), {});
+      expect(run.outcome).toBeInstanceOf(PlateMeshError);
+      expect((run.outcome as PlateMeshError).problem).toBe("no_mesh");
+    },
+  );
+});
+
+describe("every result is a mesh that passes the validator, or a verdict on the file", () => {
+  it.each(cases)("%s, seed %i", async (family, seed) => {
+    const file = hostile(family, seed);
+    const run = await metered(file.bytes);
+    if (run.outcome instanceof PlateMeshError) return;
+    // The validator the server runs on the main thread before anything is stored.
+    expect(() => validatePlateMesh(run.outcome, LIMITS), file.label).not.toThrow();
   });
 });

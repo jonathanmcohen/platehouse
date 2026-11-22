@@ -9,6 +9,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
@@ -22,6 +23,18 @@ import {
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
 import { trashDaysAgo } from "../support/library.js";
+
+/**
+ * The worker the plate is read in runs the TypeScript source, as the server
+ * does from source in e2e; the built image runs the compiled worker.
+ */
+const WORKER = {
+  execArgv: [
+    "--conditions=source",
+    "--import",
+    fileURLToPath(new URL("../../support/ts-hooks.ts", import.meta.url)),
+  ],
+};
 
 let env: IngestEnv;
 let tmpDir: string;
@@ -85,7 +98,7 @@ beforeAll(async () => {
     },
   };
   app = Fastify();
-  await registerPlateMeshApi(app, createPlateMeshes({ db: env.db, store, tmpDir }));
+  await registerPlateMeshApi(app, createPlateMeshes({ db: env.db, store, tmpDir, worker: WORKER }));
   await app.ready();
 });
 
@@ -270,6 +283,33 @@ describe("GET /app/api/plates/:id/mesh", () => {
     } finally {
       release();
       readGate = null;
+    }
+  });
+
+  test("a read past the worker's timeout answers too_large, stores nothing and is remembered", async () => {
+    const stored = await ingest("Too slow.3mf", buildSliceable({ plates: 1, filaments: 2 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    const slow = Fastify();
+    await registerPlateMeshApi(
+      slow,
+      createPlateMeshes({
+        db: env.db,
+        store: env.store,
+        tmpDir,
+        worker: { ...WORKER, timeoutMs: 1 },
+      }),
+    );
+    await slow.ready();
+    try {
+      const first = await slow.inject({ method: "GET", url: `/app/api/plates/${plate.id}/mesh` });
+      expect(first.statusCode).toBe(422);
+      expect(first.json()).toMatchObject({ error: "no_mesh", code: "too_large" });
+      expect((await platesOf(stored.fileId))[0]?.meshBlobId).toBeNull();
+      const again = await slow.inject({ method: "GET", url: `/app/api/plates/${plate.id}/mesh` });
+      expect(again.json()).toMatchObject({ code: "too_large" });
+    } finally {
+      await slow.close();
     }
   });
 

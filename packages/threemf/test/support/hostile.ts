@@ -37,6 +37,9 @@ export type Family =
   | "overlapping"
   | "hugeMesh"
   | "longTags"
+  | "duplicateSkipped"
+  | "overflow"
+  | "wideIndex"
   | "mixed";
 
 export const FAMILIES: readonly Family[] = [
@@ -46,6 +49,9 @@ export const FAMILIES: readonly Family[] = [
   "overlapping",
   "hugeMesh",
   "longTags",
+  "duplicateSkipped",
+  "overflow",
+  "wideIndex",
   "mixed",
 ];
 
@@ -213,6 +219,126 @@ function project(
   ];
 }
 
+/**
+ * Review finding #392: plate 1 lists object 50 `duplicates` times (plus the
+ * tetrahedron), and object 50 is `skipped` components the walk can only
+ * skip: nine in ten with a transform that does not parse, one in ten naming
+ * a part the settings mark as a modifier (few enough that the settings file
+ * stays under its 5 MiB cap). Nothing is placed for them, so no instance
+ * limit trips; a walk that redoes object 50 for every duplicate does
+ * duplicates x skipped steps with nothing in between.
+ */
+export function duplicateSkipped(skipped: number, duplicates: number): Buffer {
+  const components: string[] = [];
+  const modifiers: Array<{ id: number; subtype: string }> = [];
+  for (let i = 0; i < skipped; i++) {
+    if (i % 10 !== 0) {
+      components.push(`<component objectid="1" transform="not a transform"/>`);
+    } else {
+      const part = 1_000_000 + i;
+      components.push(`<component objectid="${part}"/>`);
+      modifiers.push({ id: part, subtype: "modifier_part" });
+    }
+  }
+  const instances: Array<[number, number]> = [[1, 0]];
+  for (let i = 0; i < duplicates; i++) instances.push([50, 0]);
+  return overlappingZip([
+    {
+      name: ROOT,
+      data: model(
+        [
+          meshObject(1, TETRA),
+          `<object id="50" type="model"><components>${components.join("")}</components></object>`,
+        ],
+        [item(1), item(50, 50)],
+      ),
+    },
+    {
+      name: SETTINGS,
+      data: settingsXml([{ id: 1 }, { id: 50, parts: modifiers }], [{ index: 1, instances }]),
+    },
+  ]);
+}
+
+/**
+ * Review finding #393: transforms whose every number is finite, but that
+ * overflow: composed (1e200 times 1e200 is Infinity), or once narrowed to
+ * 32 bits, as the GLB and the GPU hold them (3e38 is finite, 3.5e38 is not
+ * a float32). Plate 1 holds object 60 placed that way, and the tetrahedron.
+ */
+export function overflowing(variant: number): Buffer {
+  const big = "1e200 0 0 0 1e200 0 0 0 1e200 0 0 0";
+  const plain = "1 0 0 0 1 0 0 0 1 0 0 0";
+  const cases = [
+    // Each finite; composed, Infinity (and NaN where it meets a 0).
+    { item: big, component: big },
+    // A translation past the largest float32.
+    { item: "1 0 0 0 1 0 0 0 1 3.5e38 0 0", component: plain },
+    // A scale past the largest float32 on the component.
+    { item: plain, component: "4e38 0 0 0 1 0 0 0 1 0 0 0" },
+    // Finite as float32 on its own, Infinity once composed.
+    { item: "3e38 0 0 0 1 0 0 0 1 0 0 0", component: "3e38 0 0 0 1 0 0 0 1 0 0 0" },
+  ];
+  const c = cases[variant % cases.length] as { item: string; component: string };
+  return overlappingZip([
+    {
+      name: ROOT,
+      data: model(
+        [
+          meshObject(1, TETRA),
+          meshObject(100, TETRA),
+          `<object id="60" type="model"><components><component objectid="100" transform="${c.component}"/></components></object>`,
+        ],
+        [item(1), `<item objectid="60" transform="${c.item}" printable="1"/>`],
+      ),
+    },
+    {
+      name: SETTINGS,
+      data: settingsXml(
+        [{ id: 1 }, { id: 60 }],
+        [
+          {
+            index: 1,
+            instances: [
+              [1, 0],
+              [60, 0],
+            ],
+          },
+        ],
+      ),
+    },
+  ]);
+}
+
+/**
+ * Review finding #394: object 100's one triangle names a vertex at
+ * `index`, which a 32-bit index array cannot hold past 0xFFFFFFFF (it would
+ * wrap to a small number). Plate 1 holds object 100, and the tetrahedron
+ * too unless `alone`.
+ */
+export function wideIndex(index: number, alone: boolean): Buffer {
+  const mesh =
+    `<mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>` +
+    `<triangles><triangle v1="${index}" v2="1" v3="2"/></triangles></mesh>`;
+  const tops = alone ? [100] : [1, 100];
+  return overlappingZip([
+    {
+      name: ROOT,
+      data: model(
+        [meshObject(1, TETRA), meshObject(100, mesh)],
+        tops.map((id, i) => item(id, i * 50)),
+      ),
+    },
+    {
+      name: SETTINGS,
+      data: settingsXml(
+        tops.map((id) => ({ id })),
+        [{ index: 1, instances: tops.map((id) => [id, 0] as [number, number]) }],
+      ),
+    },
+  ]);
+}
+
 /** The hostile file for a family and seed. */
 export function hostile(family: Family, seed: number): HostileFile {
   const r = rng(seed);
@@ -356,6 +482,34 @@ export function hostile(family: Family, seed: number): HostileFile {
         seed,
         label: `${count} long tags with no attribute, a long vertex and a long build item`,
         bytes: overlappingZip(files),
+      };
+    }
+    case "duplicateSkipped": {
+      const skipped = r(1_000, 18_000);
+      const duplicates = r(100, 1_900);
+      return {
+        family,
+        seed,
+        label: `${duplicates} plate instances of an object of ${skipped} skipped components`,
+        bytes: duplicateSkipped(skipped, duplicates),
+      };
+    }
+    case "overflow": {
+      const variant = r(0, 3);
+      return {
+        family,
+        seed,
+        label: `transforms that overflow, case ${variant}`,
+        bytes: overflowing(variant),
+      };
+    }
+    case "wideIndex": {
+      const index = 0xffffffff + r(0, 3);
+      return {
+        family,
+        seed,
+        label: `a triangle naming vertex ${index}`,
+        bytes: wideIndex(index, false),
       };
     }
     case "mixed": {
