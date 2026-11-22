@@ -37,6 +37,38 @@ docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --clean --if
 docker compose start platehouse
 ```
 
+:::warning Restoring an older dump can delete newer uploads
+
+Restoring the database does not restore the bucket. Everything Platehouse stored after the dump
+was taken (the files uploaded since, and the thumbnails, renders and meshes made since) stays in
+the bucket, but the restored database no longer knows about it. Those objects are the only copy
+left of the models the restored database lost.
+
+The daily cleanup at 04:00 (see [Storage](./storage.md#cleanup)) treats them as leftovers. It
+deletes them once they are more than 24 hours old, as long as there are no more of them than its
+limit: 10 objects or a tenth of the objects it finds, whichever is larger, but never more than 100.
+Platehouse has no setting to pause the cleanup, and stopping the app does not skip it: a run
+missed while the app was stopped happens as soon as it starts again. So the next run after a
+restore can be the one that deletes them.
+
+- **Before you ever need a restore**, turn on bucket versioning (see
+  [Storage](./storage.md#turn-on-versioning)). An object the cleanup deletes then keeps its old
+  version for your retention period, and you can get it back.
+- **Before you restore**, if versioning is off, copy the bucket to a second location, so the newer
+  objects survive the cleanup.
+- **After you restore**, before the next cleanup, upload the files of every model added since the
+  dump again, through the browser or the [inbox folder](./using/adding-files.md#the-inbox-folder).
+  Objects already in the bucket cannot be linked back to the restored database, so importing the
+  files again is the only way to get those models back into the library. If you have no other copy
+  of a file, take it from the bucket copy or the old versions: an uploaded file is stored
+  unchanged, but under a random name with no extension.
+
+When the cleanup finds more of these objects than its limit, it deletes nothing and logs why. That
+is not protection: the limit rises as the library grows, up to 100, and a later run that finds
+them within it deletes them all.
+
+:::
+
 ### The bucket
 
 - Turn on versioning and keep old versions for 30 days (see [Storage](./storage.md)). That covers
@@ -65,6 +97,16 @@ Platehouse follows semantic versioning. Read the [changelog](./changelog.md) bef
 
 The app applies any database changes itself when it starts. They only move forward, so to go back
 to an older version, restore the database dump you took in step 1.
+
+:::warning Going back can delete what was uploaded since step 1
+
+Restoring the step 1 dump puts the database back to before the upgrade, but not the bucket.
+Anything uploaded after step 1 stays in the bucket with no record in the database, and the daily
+04:00 cleanup deletes it once it is more than 24 hours old, within its limit. Before the next
+cleanup, follow the warning under [restoring the database](#the-database): check that versioning
+is on, and upload those files again after you go back.
+
+:::
 
 ### The slicer
 

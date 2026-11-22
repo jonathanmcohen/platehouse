@@ -4,6 +4,12 @@ All notable changes to Platehouse are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The docs now warn that restoring an older database dump, including the upgrade rollback, leaves everything stored since the dump in the bucket with no record in the database, and that the daily 04:00 cleanup deletes it once it is more than 24 hours old, within its limit of 10 objects or a tenth of what it finds, at most 100. Backups and upgrades says what to do: turn on bucket versioning before you need it, copy the bucket before a restore if versioning is off, and upload those files again after the restore. Platehouse has no setting to pause the cleanup. The Storage page's cleanup section carries the same caveat ([#342](https://github.com/jonathanmcohen/platehouse/issues/342)).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
