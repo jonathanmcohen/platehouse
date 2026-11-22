@@ -15,3 +15,4 @@ export {
   readPlateMesh,
 } from "./plate-mesh.js";
 export type { Filament, Plate, Project, ReadOptions } from "./types.js";
+export { validatePlateMesh } from "./validate.js";

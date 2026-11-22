@@ -90,21 +90,25 @@ describe("readPlateMeshInWorker", () => {
   test("terminates a worker past its timeout, and the plate is too_large", async () => {
     const path = file("slow.3mf", hostile("hugeMesh", 7).bytes);
     let gone: Promise<number> | undefined;
+    let reading = 0;
     const started = performance.now();
     const answer = await verdict(
       readPlateMeshInWorker(path, 1, {
         ...SOURCE,
         timeoutMs: 100,
         onSpawn: (w: Worker) => {
+          reading = performance.now();
           gone = new Promise((resolve) => w.once("exit", resolve));
         },
       }),
     );
     expect(answer).toBe("too_large");
     expect(performance.now() - started).toBeLessThan(3_000);
-    // The worker itself is gone, not left running in the background.
+    // The worker itself was stopped, not left to finish in the background:
+    // a terminated worker exits with 1, one that ran to its end with 0.
     expect(gone).toBeDefined();
-    await gone;
+    expect(await gone).toBe(1);
+    expect(reading).toBeGreaterThan(0);
   });
 
   test("a worker past its heap limit is too_large, and the next read still works", async () => {
@@ -148,8 +152,8 @@ describe("readPlateMeshInWorker", () => {
   });
 
   test("a file that cannot be opened is ReadUnavailable, not a verdict", async () => {
-    await expect(
-      readPlateMeshInWorker(join(dir, "missing.3mf"), 1, SOURCE),
-    ).rejects.toBeInstanceOf(ReadUnavailable);
+    await expect(readPlateMeshInWorker(join(dir, "missing.3mf"), 1, SOURCE)).rejects.toBeInstanceOf(
+      ReadUnavailable,
+    );
   });
 });

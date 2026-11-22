@@ -37,8 +37,12 @@
 //    without reading the file.
 // 4. The source .3mf is copied from the store to a temp folder of its own
 //    under tmpDir (the reader needs random access) and checked against its
-//    recorded size, so a short read is never taken for a damaged file;
-//    readPlateMesh reads the plate, encodePlateGlb makes the GLB as chunks
+//    recorded size, so a short read is never taken for a damaged file.
+//    The plate is read in a worker thread (worker-read.ts: a heap limit,
+//    a timeout past which the worker is terminated and the plate is
+//    too_large, the verdict remembered like any other), never on the main
+//    thread, and what the worker sends back passes validatePlateMesh before
+//    anything is made from it; encodePlateGlb makes the GLB as chunks
 //    that are views of the plate's mesh arrays, which are streamed to the
 //    store as they are, so the GLB is never a second copy of the meshes.
 // 5. The GLB's object is put first, then one transaction records its blob
@@ -58,12 +62,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import {
-  PlateMeshError,
-  type PlateMeshProblem,
-  ReadUnavailable,
-  readPlateMesh,
-} from "@platehouse/threemf";
+import { PlateMeshError, type PlateMeshProblem, ReadUnavailable } from "@platehouse/threemf";
 import type { Kysely, Transaction } from "kysely";
 import type { AppPlateMeshes, PlateMeshAnswer } from "../app-api/plate-mesh.js";
 import { isUuid, uuidv7 } from "../db/ids.js";
@@ -73,6 +72,7 @@ import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE, type PlateGlb } from "./glb.js";
 import { createBuildQueue } from "./limit.js";
+import { readPlateMeshInWorker, type WorkerReadOptions } from "./worker-read.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
 
@@ -90,6 +90,8 @@ export interface PlateMeshDeps {
   store: PlateMeshStore;
   /** TMP_DIR: the source .3mf is copied into a folder of its own here while it is read. */
   tmpDir: string;
+  /** How the plate is read in its worker thread (worker-read.ts); the defaults when left out. */
+  worker?: Partial<WorkerReadOptions>;
 }
 
 interface PlateRow {
@@ -281,7 +283,7 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
       await copySource(row.sourceBlobId, path);
       let glb: PlateGlb;
       try {
-        glb = encodePlateGlb(await readPlateMesh(path, row.index));
+        glb = encodePlateGlb(await readPlateMeshInWorker(path, row.index, deps.worker));
       } catch (error) {
         if (error instanceof PlateMeshError) {
           remember(row.id, error.problem);

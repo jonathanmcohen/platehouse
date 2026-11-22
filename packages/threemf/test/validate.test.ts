@@ -76,10 +76,19 @@ describe("validatePlateMesh", () => {
 
   it.each([
     ["a NaN coordinate", { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, Number.NaN, 0]) }],
-    ["an infinite coordinate", { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, Number.POSITIVE_INFINITY, 0]) }],
-    ["coordinates that are not a Float32Array", { positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) }],
+    [
+      "an infinite coordinate",
+      { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, Number.POSITIVE_INFINITY, 0]) },
+    ],
+    [
+      "coordinates that are not a Float32Array",
+      { positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) },
+    ],
     ["coordinates in a plain list", { positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] }],
-    ["coordinates not a whole number of vertices", { positions: new Float32Array([0, 0, 0, 1, 0]) }],
+    [
+      "coordinates not a whole number of vertices",
+      { positions: new Float32Array([0, 0, 0, 1, 0]) },
+    ],
     ["an index past the last vertex", { indices: new Uint32Array([0, 1, 3]) }],
     ["indices that are not a Uint32Array", { indices: new Float64Array([0, 1, 2 ** 32]) }],
     ["indices not a whole number of triangles", { indices: new Uint32Array([0, 1]) }],

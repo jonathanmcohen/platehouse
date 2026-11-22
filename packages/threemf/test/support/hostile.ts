@@ -278,17 +278,21 @@ export function overflowing(variant: number): Buffer {
     { item: plain, component: "4e38 0 0 0 1 0 0 0 1 0 0 0" },
     // Finite as float32 on its own, Infinity once composed.
     { item: "3e38 0 0 0 1 0 0 0 1 0 0 0", component: "3e38 0 0 0 1 0 0 0 1 0 0 0" },
+    // A mesh placed by its build item alone, nothing composed: the item's
+    // own translation is past the largest float32.
+    { item: "1 0 0 0 1 0 0 0 1 3.5e38 0 0", component: null },
   ];
-  const c = cases[variant % cases.length] as { item: string; component: string };
+  const c = cases[variant % cases.length] as { item: string; component: string | null };
+  // Object 60 holds object 100 through a component, or is the mesh itself.
+  const sixty =
+    c.component === null
+      ? meshObject(60, TETRA)
+      : `<object id="60" type="model"><components><component objectid="100" transform="${c.component}"/></components></object>`;
   return overlappingZip([
     {
       name: ROOT,
       data: model(
-        [
-          meshObject(1, TETRA),
-          meshObject(100, TETRA),
-          `<object id="60" type="model"><components><component objectid="100" transform="${c.component}"/></components></object>`,
-        ],
+        [meshObject(1, TETRA), meshObject(100, TETRA), sixty],
         [item(1), `<item objectid="60" transform="${c.item}" printable="1"/>`],
       ),
     },
@@ -495,7 +499,7 @@ export function hostile(family: Family, seed: number): HostileFile {
       };
     }
     case "overflow": {
-      const variant = r(0, 3);
+      const variant = r(0, 4);
       return {
         family,
         seed,

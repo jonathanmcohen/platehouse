@@ -85,7 +85,8 @@ another plate in the strip to see that plate in 3D, and press **Show picture** t
   Modifiers, negative parts and support blockers are left out, since they are not printed.
 - When a plate cannot be shown in 3D (the file has no mesh Platehouse can read, the plate is empty,
   its objects are too large for the browser, or your browser cannot draw 3D), the picture stays
-  and the page says why.
+  and the page says why. A plate whose file takes Platehouse more than a minute to read counts as
+  too large.
 - Platehouse makes at most two plates' 3D views at once and keeps a few more waiting. When more
   are asked for, the page says it is busy making other 3D views; try again in a moment. A plate
   you stop waiting for (by closing the view or choosing another plate) is not made unless it had

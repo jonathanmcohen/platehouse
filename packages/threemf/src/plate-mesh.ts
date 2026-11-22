@@ -362,13 +362,25 @@ type Transform = number[];
 
 const IDENTITY: Transform = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
 
-/** A transform attribute: identity when absent, null when it is not 12 finite numbers. */
+/**
+ * Whether every number of a transform is finite as a float32, the way the
+ * GLB and the GPU hold it: a double past about 3.4e38 is finite but becomes
+ * Infinity there (review finding #393).
+ */
+function finiteTransform(t: Transform): boolean {
+  return t.every((n) => Number.isFinite(Math.fround(n)));
+}
+
+/**
+ * A transform attribute: identity when absent, null when it is not 12
+ * numbers each finite as a float32.
+ */
 function transformOf(v: string | undefined): Transform | null {
   if (v === undefined) return IDENTITY;
   const parts = v.trim().split(/\s+/);
   if (parts.length !== 12) return null;
   const out = parts.map(Number);
-  return out.every(Number.isFinite) ? out : null;
+  return finiteTransform(out) ? out : null;
 }
 
 /** a, then b: for row vectors, the matrix product a * b. */
@@ -582,7 +594,17 @@ class MeshBuilder {
     const v1 = whole(a.get("v1"));
     const v2 = whole(a.get("v2"));
     const v3 = whole(a.get("v3"));
-    if (v1 === null || v2 === null || v3 === null) {
+    // A Uint32Array holds 0 to 0xFFFFFFFF; a larger index would wrap to a
+    // small one and pass the check against the vertex count (review
+    // finding #394), so it makes the mesh unreadable here.
+    if (
+      v1 === null ||
+      v2 === null ||
+      v3 === null ||
+      v1 > 0xffffffff ||
+      v2 > 0xffffffff ||
+      v3 > 0xffffffff
+    ) {
       this.broken = true;
       return;
     }
@@ -864,6 +886,30 @@ async function readFromArchive(
     const placed: Placed[] = [];
     /** Mesh ids the walk placed but whose part has not read them yet, by part. */
     const unread = new Map<string, Set<number>>();
+    /**
+     * Each object's components that are followed, worked out once for each
+     * distinct (part, object, plate object, part of it): a component whose
+     * transform cannot be read, or whose part is not printed, is skipped
+     * once, charged once, and never looked at again for another request of
+     * the same object (review finding #392: a plate can name one object
+     * thousands of times).
+     */
+    const followed = new Map<string, Component[]>();
+    const childrenOf = (r: Request, comps: Component[]): Component[] => {
+      const key = `${r.path}\u0000${r.objectId}\u0000${r.top}\u0000${r.part ?? ""}`;
+      let kept = followed.get(key);
+      if (kept === undefined) {
+        kept = [];
+        for (const c of comps) {
+          budget.step();
+          if (c.transform === null) continue;
+          if (!printed(settings, r.top, r.part ?? c.objectId)) continue;
+          kept.push(c);
+        }
+        followed.set(key, kept);
+      }
+      return kept;
+    };
     for (let depth = 0; requests.length > 0 && depth <= budget.limits.depth; depth++) {
       const firstReads = new Map<string, Set<number>>();
       for (const r of requests) {
@@ -884,20 +930,22 @@ async function readFromArchive(
         const data = parts.get(r.path) as PartData;
         const comps = data.components.get(r.objectId);
         if (comps !== undefined) {
-          for (const c of comps) {
+          for (const c of childrenOf(r, comps)) {
             budget.step();
-            if (c.transform === null) continue;
-            const part = r.part ?? c.objectId;
-            if (!printed(settings, r.top, part)) continue;
+            // Each number of both is finite, but the product may not be:
+            // 1e200 times 1e200 is Infinity (review finding #393). Such a
+            // copy cannot be drawn, so it is skipped like an unreadable one.
+            const transform = compose(c.transform as Transform, r.transform);
+            if (!finiteTransform(transform)) continue;
             if (next.length + placed.length >= budget.limits.instances) {
               throw new PlateMeshError("too_large", "placed meshes over the limit");
             }
             next.push({
               path: c.path ?? r.path,
               objectId: c.objectId,
-              transform: compose(c.transform, r.transform),
+              transform,
               top: r.top,
-              part,
+              part: r.part ?? c.objectId,
             });
           }
           continue;

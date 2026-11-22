@@ -41,13 +41,13 @@ import {
 } from "../src/index.js";
 import { writeTmp } from "./support/fixture-builder.js";
 import {
+  duplicateSkipped,
   FAMILIES,
   type Family,
   hostile,
+  overflowing,
   overlappingZip,
   stripMesh,
-  duplicateSkipped,
-  overflowing,
   wideIndex,
 } from "./support/hostile.js";
 import {
@@ -372,14 +372,15 @@ describe("the third round of review findings, by name", () => {
     expect(took).toBeLessThan(5_000);
   }, 120_000);
 
-  it.each([0, 1, 2, 3])(
+  it.each([0, 1, 2, 3, 4])(
     "#393: transforms that overflow (case %i) place nothing; every transform handed back is finite as a float32",
     async (variant) => {
       const run = await metered(overflowing(variant), {});
       expect(run.outcome).not.toBeInstanceOf(PlateMeshError);
       const mesh = run.outcome as PlateMesh;
       for (const inst of mesh.instances) {
-        for (const n of inst.transform) expect(Number.isFinite(Math.fround(n)), String(n)).toBe(true);
+        for (const n of inst.transform)
+          expect(Number.isFinite(Math.fround(n)), String(n)).toBe(true);
       }
       // Only the tetrahedron is placed.
       expect(mesh.instances).toHaveLength(1);
