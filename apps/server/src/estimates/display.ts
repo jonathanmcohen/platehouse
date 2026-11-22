@@ -1,4 +1,6 @@
-// What a plate shows for its numbers (build plan Task 12, AC-031 to AC-034).
+// What a plate shows for its numbers: the file's own numbers labelled with
+// their printer, a Platehouse estimate for the selected printer, the
+// estimating state, or the plain reason a plate could not be sliced.
 //
 // A plate can have two sets of numbers:
 // - file: Bambu's own numbers from the .3mf, labelled with the printer the
@@ -12,9 +14,9 @@
 //     stale       that estimate is queued or slicing (or failed), and the
 //                 newest older estimate is shown meanwhile, with staleFor
 //                 naming what it was made for: the previous printer, or the
-//                 previous Orca version when the printer is the same
-//                 (AC-031: "its old one stays visible, marked as for the
-//                 previous printer").
+//                 previous Orca version when the printer is the same, so
+//                 the plate keeps showing numbers, marked with what they
+//                 were made for, while the new estimate runs.
 // A failed estimate for the selected printer gives failure: the slicer's
 // reason, its plain words and Orca's detail for the Details toggle. The
 // detail is stored as the slicer sent it, so it is cleaned here, as it is
@@ -337,7 +339,8 @@ export async function plateNumbers(
 }
 
 /**
- * The AC-032 query: every plate of a live .3mf that has neither the file's
+ * The every-plate-has-numbers query (each plate must show numbers or a
+ * recorded reason): every plate of a live .3mf that has neither the file's
  * own numbers for the selected printer nor a finished or failed Platehouse
  * estimate for the selected printer and the current Orca version. Empty once
  * the slicer queue has drained.

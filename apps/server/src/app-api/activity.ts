@@ -7,8 +7,8 @@
 //                           and the newest events (a description
 //                           re-conversion on upgrade among them, #357)
 //
-// - Session-class like every /app/api route (the Route classes contract:
-//   /app/api is unlisted), so the gate refuses a request without a live
+// - Session-class like every /app/api route (the route classes table in
+//   auth/gate.ts: /app/api is unlisted), so the gate refuses a request without a live
 //   session before this handler runs. It changes nothing. Nothing is added
 //   under /api/v1.
 // - Built only from what the database, pg-boss and the inbox's failed/
@@ -27,7 +27,7 @@
 //   so a slicer that is down makes the page say so rather than hang. The
 //   inbox's failed/ folder is read at most once every INBOX_CACHE_MS.
 // - Events are capped at EVENT_LIMIT, newest first, across every kind.
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Health } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
@@ -55,7 +55,7 @@ function renderParts(message: string | null): {
   return { messageCodes: derivedCodes, messageDetail: derivedDetail };
 }
 
-/** The Activity page's route, session-class (the Route classes contract). */
+/** The Activity page's route, session-class (the route classes table in auth/gate.ts). */
 export const ACTIVITY_API_PATHS: readonly string[] = Object.freeze(["/app/api/activity"]);
 
 /** Most events the page is sent, across every kind. */
@@ -73,8 +73,8 @@ export const SLICER_HEALTH_TIMEOUT_MS = 3_000;
 /** How long one read of the inbox's failed/ folder is reused. */
 export const INBOX_CACHE_MS = 15_000;
 
-/** How much of a reason file is read. */
-const REASON_BYTES = 4_096;
+/** How much of a reason file is read: only this many bytes are ever read from it. */
+export const REASON_BYTES = 4_096;
 
 // ---- What the page is sent ----
 
@@ -374,9 +374,33 @@ export function mergeEvents(lists: ReadonlyArray<readonly ActivityEvent[]>): Act
     .slice(0, EVENT_LIMIT);
 }
 
+/** The first bytes of a file, at most limit of them; nothing past limit is read. */
+async function readStart(path: string, limit: number): Promise<Buffer> {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(limit);
+    let filled = 0;
+    while (filled < limit) {
+      const { bytesRead } = await handle.read(buffer, filled, limit - filled, filled);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return buffer.subarray(0, filled);
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * The inbox's failed files (inbox/watch.ts moves each to failed/<name> with
  * <name>.reason.txt beside it), newest reason file first, at most limit.
+ * A reason file counts only while something is under <name> beside it in
+ * failed/, of any type: a regular file, a folder, a FIFO, a socket or a
+ * symlink (the watcher moves an entry it cannot put back, such as a FIFO
+ * swapped in during an import, into failed/ as it is, issue #402). With
+ * nothing under <name>, someone retried by moving the entry back into the
+ * inbox, reason file included, and the page would otherwise show a failure
+ * for a file that may since have been imported, with an old reason.
  * Each is the file's name and its scrubbed reason; no path is returned.
  * readable is false when no inbox is set up or failed/ cannot be listed,
  * so the page can say its failures may be missing; a failed/ that does not
@@ -391,9 +415,15 @@ export async function readInboxFailures(
   let names: string[];
   try {
     const entries = await readdir(dir, { withFileTypes: true });
+    // Every name in failed/, whatever its type: presence is the test.
+    const present = new Set(entries.map((e) => e.name));
     names = entries
       .filter(
-        (e) => e.isFile() && e.name.endsWith(REASON_SUFFIX) && e.name.length > REASON_SUFFIX.length,
+        (e) =>
+          e.isFile() &&
+          e.name.endsWith(REASON_SUFFIX) &&
+          e.name.length > REASON_SUFFIX.length &&
+          present.has(e.name.slice(0, -REASON_SUFFIX.length)),
       )
       .map((e) => e.name);
   } catch (error) {
@@ -413,8 +443,7 @@ export async function readInboxFailures(
   for (const { name, mtime } of dated.slice(0, limit)) {
     let reason = "";
     try {
-      const handle = await readFile(join(dir, name));
-      reason = handle.subarray(0, REASON_BYTES).toString("utf8");
+      reason = (await readStart(join(dir, name), REASON_BYTES)).toString("utf8");
     } catch {
       reason = "";
     }

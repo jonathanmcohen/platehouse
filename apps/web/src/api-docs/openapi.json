@@ -3,7 +3,7 @@
   "info": {
     "title": "Platehouse API",
     "version": "1.0.0",
-    "description": "The Platehouse public API, for scripts and tools such as AI coding assistants: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence. JSON bodies are at most 1 MiB; uploads are at most 536870912 bytes (512 MiB). The guide is docs/api.md in the Platehouse repository."
+    "description": "The Platehouse public API, for scripts and tools such as AI coding assistants: upload files, search the library, read models, files, plates and their print estimates, and add or remove tags and collection memberships.\n\nIt never deletes, trashes or purges anything, and a model in the trash is invisible to it.\n\nEvery request needs an API token, made in Settings, sent as Authorization: Bearer <token>. Cookies are ignored, and no answer carries CORS headers, so a web page on another site cannot call it.\n\nErrors answer JSON with an error code word and, often, a message sentence, except the tus upload operations, which answer plain text, and a 414 (a path too long), which uses the server's own shape. JSON bodies are at most 1 MiB; uploads are at most 536870912 bytes (512 MiB). The guide is docs/api.md in the Platehouse repository."
   },
   "components": {
     "securitySchemes": {

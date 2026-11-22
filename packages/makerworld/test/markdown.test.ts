@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createMarkdownIt, htmlToMarkdown } from "../src/markdown.js";
 import { DESIGNER_PAYLOADS, htmlEscape } from "./support/payloads.js";
 
-// Ported by behaviour from automation Manyfold/makerworld-metadata
-// test/metadata.test.mjs at 1ce8c57 (the htmlToMarkdown cases). The source
+// Ported by behaviour from the tests of an earlier Manyfold metadata script
+// (the htmlToMarkdown cases). The source
 // escaped for Kramdown 2.5.2 and kramdown-parser-gfm 1.1.0. Platehouse renders
 // with markdown-it 15 (CommonMark plus GFM tables and strikethrough), so the
-// escaping was re-derived for markdown-it (build plan Task 7), and every expected string below is the markdown-it form.
+// escaping was re-derived for markdown-it, and every expected string below is the markdown-it form.
 //
 // What changed from the Kramdown rules, each case marked "CommonMark" below:
 // - < and > are backslash-escaped, not written as &lt; and &gt;, because

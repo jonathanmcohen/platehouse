@@ -1,5 +1,4 @@
-// The default filament per type for a printer (build plan Task 11 Decisions,
-// the maintainer, 2026-11-08: "I use mostly Bambu Filaments"): Bambu's own preset for
+// The default filament per type for a printer (the maintainer, 2026-11-08: "I use mostly Bambu Filaments"): Bambu's own preset for
 // that printer where Orca has one, then the Generic preset for that printer,
 // then the file's own filament (no pick). The first block runs over a digest
 // of the real Orca 2.5.0 BBL profiles (test/fixtures/orca-filaments.json,

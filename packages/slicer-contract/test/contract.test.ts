@@ -1,5 +1,5 @@
-// Slicer HTTP contract v1 (build plan, Contracts). The examples are the
-// plan's own, so a schema that drifts from the plan fails here.
+// Slicer HTTP contract v1. The examples are the ones the contract was
+// written with, so a schema that drifts from it fails here.
 import { describe, expect, test } from "vitest";
 import {
   CONTRACT_VERSION,
@@ -10,7 +10,7 @@ import {
 } from "../src/index.js";
 
 describe("slicer contract v1", () => {
-  test("is version 1 with the plan's body limits", () => {
+  test("is version 1 with the contract's body limits", () => {
     expect(CONTRACT_VERSION).toBe(1);
     expect(LIMITS).toEqual({
       sliceBodyBytes: 536_870_912,
@@ -22,7 +22,7 @@ describe("slicer contract v1", () => {
     });
   });
 
-  test("the reasons are the plan's map as amended, in one closed list", () => {
+  test("the reasons are the contract's map as amended, in one closed list", () => {
     expect([...REASONS].sort()).toEqual(
       [
         "bed_too_small",
@@ -37,7 +37,7 @@ describe("slicer contract v1", () => {
     );
   });
 
-  test("health parses the plan's example and rejects another contract number", () => {
+  test("health parses the contract's example and rejects another contract number", () => {
     const ok = { contract: 1, orca: "2.5.0", openscad: "2026.11-RC0", busy: false };
     expect(slicerContract.health.parse(ok)).toEqual(ok);
     expect(slicerContract.health.safeParse({ ...ok, contract: 2 }).success).toBe(false);
@@ -65,7 +65,7 @@ describe("slicer contract v1", () => {
     expect(slicerContract.profiles.safeParse(noNozzle).success).toBe(false);
   });
 
-  test("a profiles filament with no printer, an empty printer or a field beyond the plan is refused", () => {
+  test("a profiles filament with no printer, an empty printer or a field beyond the contract is refused", () => {
     const body = (filament: Record<string, unknown>) => ({
       contract: 1,
       orca: "2.5.0",
@@ -85,7 +85,7 @@ describe("slicer contract v1", () => {
     }
   });
 
-  test("an ok slice parses the plan's example", () => {
+  test("an ok slice parses the contract's example", () => {
     const body = {
       contract: 1,
       orca: "2.5.0",
@@ -104,7 +104,7 @@ describe("slicer contract v1", () => {
     expect(parsed).toEqual(body);
   });
 
-  test("a sliced filament carries only the plan's slot, type, color and grams", () => {
+  test("a sliced filament carries only the contract's slot, type, color and grams", () => {
     const body = (filament: Record<string, unknown>) => ({
       contract: 1,
       orca: "2.5.0",
@@ -154,7 +154,7 @@ describe("slicer contract v1", () => {
     ).toBe(false);
   });
 
-  test("a failed slice parses the plan's example and every reason", () => {
+  test("a failed slice parses the contract's example and every reason", () => {
     for (const reason of REASONS) {
       const body = {
         contract: 1,
@@ -216,7 +216,7 @@ describe("slicer contract v1", () => {
     expect(q.safeParse({ plate: "1" }).success).toBe(false);
   });
 
-  test("error bodies are the plan's, plus bad_request and not_found", () => {
+  test("error bodies are the contract's, plus bad_request and not_found", () => {
     for (const error of ["busy", "too_large", "not_3mf"]) {
       expect(slicerContract.error.parse({ error })).toEqual({ error });
     }

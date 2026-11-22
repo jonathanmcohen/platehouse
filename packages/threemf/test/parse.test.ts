@@ -1,5 +1,5 @@
-// Behaviour tests for the 3MF reader, ported by behaviour from the Bambu
-// Plates parser (parser.rb@136fd61) plus the fields Platehouse adds:
+// Behaviour tests for the 3MF reader, ported by behaviour from the tests of
+// an earlier plate parser written for Manyfold, plus the fields Platehouse adds:
 // slicedFor, processName and the MakerWorld model prefix. Every fixture is
 // built here; no designer file is used.
 import { chmodSync, unlinkSync } from "node:fs";
@@ -97,7 +97,7 @@ const slicedP1S = (index: number, extra: Partial<SliceSpec> = {}): SliceSpec => 
 });
 
 describe("the contract values", () => {
-  it("LIMITS are the Bambu Plates 0.1.1 ceilings, exactly", () => {
+  it("LIMITS are the hostile-file ceilings, exactly", () => {
     expect(LIMITS).toEqual({
       configBytes: 5 * MiB,
       pngBytes: 10 * MiB,
@@ -206,9 +206,9 @@ describe("the plate list", () => {
     expect(project.plates.map((p) => [p.index, p.name])).toEqual([[1, null]]);
   });
 
-  // fast-xml-parser throws on some broken XML (Nokogiri, under parser.rb,
-  // recovers from all of it). Either way a broken model_settings.config costs
-  // the plate names, never the file (test_garbage_model_settings_returns_nil_or_png_fallback).
+  // fast-xml-parser throws on some broken XML (the earlier parser's XML
+  // library recovered from all of it). Either way a broken model_settings.config costs
+  // the plate names, never the file.
   it.each(MALFORMED_XML)(
     "falls back to the png names when model_settings.config is %j",
     async (modelSettings) => {
@@ -412,7 +412,7 @@ describe("embedded slice data", () => {
     expect(project.slicedFor).toBeUndefined();
   });
 
-  // test_huge_prediction_is_not_sliced: 400 digits is past the float range
+  // 400 digits is past the float range
   // (Number() gives Infinity), not just past the ten-year ceiling.
   it("treats a 400-digit prediction as not sliced, without throwing", async () => {
     const project = await mustRead(
@@ -475,7 +475,7 @@ describe("embedded slice data", () => {
     expect(project.slicedFor).toBeUndefined();
   });
 
-  // test_garbage_slice_info_leaves_plates_unsliced, over XML that makes
+  // Over XML that makes
   // fast-xml-parser throw: broken slice data costs the slice data only.
   it.each(MALFORMED_XML)(
     "leaves the plates unsliced when slice_info.config is %j",
@@ -766,9 +766,9 @@ describe("thumbnails", () => {
     expect(sizes).toEqual([LIMITS.pngBytes]);
   });
 
-  // test_thumbnail_oversized_png_falls_back_to_small: a plate_N.png over the
-  // 10 MiB ceiling is passed over for plate_N_small.png, as thumbnail_from
-  // does in parser.rb@136fd61.
+  // A plate_N.png over the
+  // 10 MiB ceiling is passed over for plate_N_small.png, as the earlier
+  // parser did.
   it("fall back to plate_N_small.png when plate_N.png is over 10 MiB", async () => {
     const seen: Array<[number, string]> = [];
     const project = await readProject(
@@ -802,7 +802,7 @@ describe("thumbnails", () => {
 
   it("count the bytes read from an over-10 MiB plate_N.png against the per-file budget", async () => {
     // The oversized entry costs the 10 MiB ceiling plus one byte (what is
-    // read before it is known to be over), as in parser.rb; the 13-byte
+    // read before it is known to be over), as in the earlier parser; the 13-byte
     // small thumbnail then has to fit what is left.
     const buf = build3mf({
       plates: [{ index: 1 }],
@@ -833,17 +833,16 @@ describe("thumbnails", () => {
     expect(seen).toEqual(["small"]);
   });
 
-  // maxThumbnailBytes is parser.rb's max_thumbnail_bytes: it lowers the
+  // maxThumbnailBytes lowers the
   // per-file budget (LIMITS.thumbnailBytesPerFile), not the per-thumbnail
-  // ceiling. Each fixture thumbnail png("plate_N") is 15 bytes, 45 for three,
-  // as in parser_test.rb.
+  // ceiling. Each fixture thumbnail png("plate_N") is 15 bytes, 45 for three.
   const threeThumbnails = (): Buffer =>
     build3mf({
       plates: range(3).map((index) => ({ index })),
       pngs: Object.fromEntries(range(3).map((i) => [i, png(`plate_${i}`)])),
     });
 
-  it("read thumbnails within a lower maxThumbnailBytes budget (test_thumbnails_within_the_budget_are_read)", async () => {
+  it("read thumbnails within a lower maxThumbnailBytes budget", async () => {
     expect(png("plate_1").length).toBe(15);
     const indexes: number[] = [];
     const project = await readProject(writeTmp(threeThumbnails()), {
@@ -854,14 +853,14 @@ describe("thumbnails", () => {
     expect(indexes).toEqual([1, 2, 3]);
   });
 
-  it("make a file over a lower maxThumbnailBytes budget damaged (test_thumbnails_over_the_budget_make_a_damaged_file)", async () => {
+  it("make a file over a lower maxThumbnailBytes budget damaged", async () => {
     const indexes: number[] = [];
     const project = await readProject(writeTmp(threeThumbnails()), {
       maxThumbnailBytes: 44,
       onThumbnail: async (i) => void indexes.push(i),
     });
     expect(project).toBeNull();
-    // parser.rb hands over plates 1 and 2 before the third crosses the
+    // The earlier parser handed over plates 1 and 2 before the third crossed the
     // budget; this port checks every thumbnail first, so it hands over none.
     expect(indexes).toEqual([]);
   });
@@ -914,8 +913,7 @@ describe("thumbnails", () => {
   });
 });
 
-// A bug in the caller is not a file with no plate data (parser.rb@136fd61,
-// test_read_passes_on_an_error_raised_by_the_block): whatever onThumbnail
+// A bug in the caller is not a file with no plate data: whatever onThumbnail
 // throws reaches the caller as the same object, never null and never
 // ReadUnavailable, and no further thumbnail is read or handed over.
 describe("errors from onThumbnail reach the caller unchanged", () => {
@@ -988,8 +986,7 @@ describe("errors from onThumbnail reach the caller unchanged", () => {
 });
 
 // Only the parser's own zip, inflate and XML reads make a damaged file
-// (parser.rb@136fd61 keeps the same split: READ_ERRORS come only from its own
-// reads). A bug in the parser's own mapping code is not a file with no plate
+// (the earlier parser kept the same split). A bug in the parser's own mapping code is not a file with no plate
 // data, so it reaches the caller instead of "No Bambu plate data in this file".
 // The bug is simulated by making Number.isSafeInteger, which only the
 // parser's integer mapping calls (not yauzl, not fast-xml-parser), throw.
@@ -1334,7 +1331,7 @@ describe("filesystem errors reach the caller as ReadUnavailable (#4)", () => {
   });
 });
 
-// parser_test.rb test_archive_structure_errors_are_a_damaged_file: an error
+// An error
 // the zip reader raises that is not a system error describes the archive,
 // so it is a damaged file, never thrown.
 class BrokenReader extends yauzl.RandomAccessReader {
@@ -1381,8 +1378,8 @@ describe("errors the zip reader raises about the archive are a damaged file", ()
   });
 });
 
-// parser_test.rb test_read_yields_every_thumbnail_in_plate_order_from_one_open
-// and test_read_reads_each_thumbnail_only_after_yielding_the_one_before.
+// Every thumbnail is handed over in plate order from one open of the file,
+// each read only after the one before it was handed over.
 describe("one open serves the plate list and every thumbnail", () => {
   it("opens the file once for the list and all thumbnails", async () => {
     const file = writeTmp(

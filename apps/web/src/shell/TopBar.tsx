@@ -1,11 +1,11 @@
-// The bar above every page (build plan Task 18, AC-071 and AC-064): the
+// The bar above every page, with the search over name, caption, creator and tag: the
 // narrow-screen menu button, the search box, Add and the theme switch.
-// A search goes to the library with ?q=, which the library page (Task 19)
+// A search goes to the library with ?q=, which the library page (LibraryPage.tsx)
 // reads. From a library filtered by creator or collection (?creator=,
-// ?collection=, Task 21's Show in the library) the search keeps those
+// ?collection=, the Creators and Collections pages' Show in the library) the search keeps those
 // filters (issue #194); from any other page it starts a search of its own.
-// Add opens the upload dialog, which Task 19 passes in as onAdd;
-// until then the button is shown disabled.
+// Add opens the upload dialog, which main.tsx passes in as onAdd;
+// the button is disabled only when no onAdd is given (as in tests).
 // The box follows the URL: the shell stays mounted across routes, so on every
 // navigation (a search, Back, Forward, a sidebar link) the box is reset to
 // the new ?q=, and typing between navigations is kept as a draft. It is a
@@ -20,7 +20,7 @@ import { MenuButton } from "./MenuButton";
 import { ThemeSwitch } from "./ThemeSwitch";
 import type { Theme } from "./theme";
 
-/** The longest search the box takes, as in manyfold-studio's top bar. */
+/** The longest search the box takes. */
 export const MAX_QUERY = 200;
 
 export interface TopBarProps {

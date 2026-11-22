@@ -1,4 +1,4 @@
-// Renaming (build plan Task 14; AC-060, Q16). A rename changes the display
+// Renaming. A rename changes the display
 // name only. The bucket key (models/<modelId>/<blobId>) holds no user text
 // and is never renamed, and a file keeps its original_name.
 import { type Kysely, sql } from "kysely";

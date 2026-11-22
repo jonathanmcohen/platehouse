@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { z } from "zod";
 
-// The Configuration contract of the Platehouse build plan. Configuration comes
+// Platehouse's configuration. Configuration comes
 // from the environment only, and the server refuses to start when a required
 // value is missing or any value is invalid.
 //

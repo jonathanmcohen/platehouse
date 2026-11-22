@@ -1,7 +1,7 @@
 /*
- * The settings, trash and organising pages' own pieces (build plan Task 21):
+ * The settings, trash and organising pages' own pieces:
  * the themed dialog, text inputs and selects, removable chips and the token
- * box. Built only from studio.css's tokens and shapes (Task 18), so both
+ * box. Built only from studio.css's tokens and shapes, so both
  * palettes, their contrast checks and the focus ring apply unchanged; no
  * colour value is written here, only var() references to those tokens (the
  * dialog's backdrop is the page's own --bg, mixed toward transparent).

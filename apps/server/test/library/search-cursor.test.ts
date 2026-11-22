@@ -1,4 +1,4 @@
-// The search cursor (build plan Task 14): an opaque base64url string that
+// The search cursor: an opaque base64url string that
 // carries where the last page stopped. Pure functions, so no database here.
 import { describe, expect, test } from "vitest";
 import { uuidv7 } from "../../src/db/ids.js";

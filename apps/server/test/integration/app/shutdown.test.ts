@@ -1,10 +1,10 @@
-// Build plan Task 30: the real process. src/main.ts is started with node,
+// The real process. src/main.ts is started with node,
 // from source (test/support/ts-hooks.ts), with only its environment, the way
 // the app image starts it. Once /healthz answers it gets SIGTERM, and it must
 // exit 0 within 30 s with nothing left running: the port is closed and the
 // server holds no connection to its database.
 //
-// The process requires the web build (Task 24, issue #162), so /healthz is
+// The process requires the web build (issue #162), so /healthz is
 // 200 only when apps/web/dist/index.html is there, beside the server package
 // (defaultWebDir), and 503 while it is not. The integration job does not
 // build the web app, so in CI this checks the 503: the process itself, not

@@ -3,12 +3,13 @@
 // exactly as it runs the real ones, so these tests cover the request
 // handling, the arguments, the mutex and the kill; the container tests cover
 // the real programs.
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./tmp.js";
 
+/** A folder for stub programs, removed by removeTempDirs (support/tmp.ts). */
 export function stubDir(): string {
-  return mkdtempSync(join(tmpdir(), "slicer-stub-"));
+  return tempDir("slicer-stub-");
 }
 
 function writeScript(file: string, body: string): string {

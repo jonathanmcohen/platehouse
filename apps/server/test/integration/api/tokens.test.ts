@@ -1,4 +1,4 @@
-// Build plan Task 16, AC-083: each API client has its own token. A token is
+// Each API client has its own token. A token is
 // ph_ followed by 43 base64url characters (32 random bytes); only its SHA-256
 // and its first 8 characters are stored, so it is shown once, by
 // createToken, and never again. revokeToken ends one token and leaves the

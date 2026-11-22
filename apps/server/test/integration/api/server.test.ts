@@ -1,6 +1,6 @@
-// Build plan Task 16 with Task 30's start(config): the server process wires
+// The Public API v1 on the real server, started with start(config): the server process wires
 // the API. A token made with createToken against the server's own database
-// (as Task 21's settings page will) is accepted by the running server, a
+// (as the settings page does) is accepted by the running server, a
 // revoked one is not, and the API description names PUBLIC_ORIGIN. The
 // server is the real one, against Postgres 17, the S3 test server and the
 // slicer stub.

@@ -1,4 +1,4 @@
-// Build plan Task 17, PR #156 security review: delivery compares an object's
+// From the PR #156 security review: delivery compares an object's
 // real size with the recorded one before it sends a header, so the stream
 // getBlobStream returns carries the size the store answered GetObject with
 // (objectSize). Checked here against the real S3 test server, including an

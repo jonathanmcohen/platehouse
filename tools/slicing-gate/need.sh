@@ -5,8 +5,8 @@
 #   Runs test(1) with the arguments. When the test fails, it prints
 #   "build check failed: test <arguments>" (and " - <reason>" if given) on
 #   stderr and exits 1, so a failed build step names the check that failed
-#   instead of exiting 1 with no text, as the Orca step did on the test
-#   server on 2026-11-08.
+#   instead of exiting 1 with no text, as the Orca step once did
+#   (2026-11-08).
 need() {
   local args=() why=""
   while (($# > 0)); do

@@ -2,8 +2,8 @@
 // against a migrated Postgres 17 and a started pg-boss on the same database,
 // so its queries read the real schema and pg-boss's real job table. The
 // slicer is a fake health() (it is asked for nothing else), and the inbox's
-// failed/ folder is a temporary folder. Sessions are in memory (Task 15's
-// test support). Every model, file and message here is synthetic.
+// failed/ folder is a temporary folder. Sessions are in memory (the login
+// tests' support). Every model, file and message here is synthetic.
 //
 // What it pins:
 // - an empty library answers zeros, no events and nothing working;
@@ -593,7 +593,7 @@ describe("a library with trash, estimates, jobs and failures", () => {
     expect(estimateModels).not.toContain("Trashed Model");
   });
 
-  test("answers the same shape the second time, from one snapshot", async () => {
+  test("a second read of an unchanged library answers the same", async () => {
     const again = await view(env);
     expect(again.library).toEqual(v.library);
     expect(again.estimates.total).toBe(v.estimates.total);

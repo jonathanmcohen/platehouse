@@ -1,7 +1,8 @@
-// Build plan Task 19 (AC-061, AC-064 and AC-073, UI side): the library's app
+// The tag filter, search over name, caption, creator and tag, and cards that
+// never download a model file: the library's app
 // API, GET /app/api/library and GET /app/api/library/tags, against Postgres
 // 17 and the S3 test server. Models come in through ingest from generated
-// files (no designer file), and plate numbers are Task 12's plateNumbers for
+// files (no designer file), and plate numbers are the estimates module's plateNumbers for
 // a selected printer, the P1S with a 0.4 mm nozzle.
 //
 // - The library is rendered from the database alone. The test plays the
@@ -312,8 +313,8 @@ describe("library render requests no model file", () => {
 
 // Issue #316: an STL or STEP card shows the preview picture rendered for
 // the file it stands for, a stored render_png blob of the same model, in
-// place of the file-type icon. A SCAD card keeps the icon (build plan Task
-// 19's choice, which the issue leaves as it is), and nothing but a stored
+// place of the file-type icon. A SCAD card keeps the icon (a choice made with
+// the library page, which the issue leaves as it is), and nothing but a stored
 // render_png of the card's own model is ever named.
 describe("STL and STEP previews on the card (issue #316)", () => {
   async function attachPreview(modelId: string, fileId: string, bytes = Buffer.from("png")) {
@@ -327,8 +328,7 @@ describe("STL and STEP previews on the card (issue #316)", () => {
   }
 
   // Issue #380: the card reads the picture's own status. A picture that
-  // failed, or was never queued, shows the icon; one being made again keeps
-  // showing the current version's picture until the new one lands.
+  // failed, or was never queued, shows the icon.
   // Issue #389: ok is exactly "a picture of the current source is stored",
   // so the card shows a stored picture only then; pending, failed and none
   // all mean there is no picture of the current source to show.

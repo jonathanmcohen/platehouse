@@ -1,5 +1,4 @@
-// The Settings page, /settings (build plan Task 21; AC-013 warning, AC-031
-// menu UI, AC-083 UI, AC-063 UI). It holds, in order: the red banner when
+// The Settings page, /settings. It holds, in order: the red banner when
 // bucket versioning is not on, My printers (PrinterMenu), the API tokens,
 // Model names (the one-off "Use file titles", TitleNames.tsx), and the trash.
 // Everything comes from the session-class app API under /app/api

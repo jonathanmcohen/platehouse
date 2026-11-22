@@ -1,19 +1,20 @@
-// AC-023: a crafted or damaged file must not tie up the app. Every row is a
+// A crafted or damaged file must not tie up the app. Every row is a
 // hostile file built by this suite. Each must come back as null (shown as
 // "No Bambu plate data in this file") without throwing, except three kinds:
 // an over-long print time only makes the plate count as unsliced, a
 // thumbnail over 10 MiB is passed over (for plate_N_small.png when there is
-// one, as parser.rb@136fd61 does) while its bytes still count against the
+// one, as the earlier parser did) while its bytes still count against the
 // per-file budget, and a NUL in a text value is dropped from that value, so
 // the file reads with clean text.
 //
-// Each row cites the Bambu Plates issue it carries over:
-//   #5  a crafted archive (Zip64 offset, truncation, bad sizes) gave a 500
-//   #6  no plate limit
-//   #7  no project filament limit
-//   #11 thumbnails held in memory without a budget
-//   #12 no limit on a sliced plate's filaments, and slice_info claims
-// or, for "platehouse #78", this repo's issue: a value the database cannot
+// Each row names the kind of hostile file it covers, each a hole found in the
+// earlier parser this one was ported from:
+//   crafted archive       a Zip64 offset, a truncation or bad sizes gave a 500
+//   plate count           no plate limit
+//   project filaments     no project filament limit
+//   thumbnail bytes       thumbnails held in memory without a budget
+//   slice data            no limit on a sliced plate's filaments, and slice_info claims
+// or, for "database value (#78)", this repo's issue #78: a value the database cannot
 // store (a NUL in text, a plate index or filament slot past the 32-bit
 // integer columns) failed the save instead of reading as hostile input.
 import { describe, expect, it } from "vitest";
@@ -79,7 +80,13 @@ type Ceiling = keyof typeof LIMITS | "MAX_ZIP_ENTRIES";
 
 interface Row {
   name: string;
-  issue: "#5" | "#6" | "#7" | "#11" | "#12" | "platehouse #78";
+  kind:
+    | "crafted archive"
+    | "plate count"
+    | "project filaments"
+    | "thumbnail bytes"
+    | "slice data"
+    | "database value (#78)";
   /** The ceiling this row's file breaks, for a ceiling row: a LIMITS key or a standalone one. */
   breaks?: Ceiling;
   file: () => Buffer;
@@ -89,11 +96,16 @@ interface Row {
 }
 
 const rows: Row[] = [
-  { name: "random bytes", issue: "#5", file: () => seededBytes(64 * 1024), expect: "null" },
-  { name: "an empty file", issue: "#5", file: () => Buffer.alloc(0), expect: "null" },
+  {
+    name: "random bytes",
+    kind: "crafted archive",
+    file: () => seededBytes(64 * 1024),
+    expect: "null",
+  },
+  { name: "an empty file", kind: "crafted archive", file: () => Buffer.alloc(0), expect: "null" },
   {
     name: "a truncated zip",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => {
       const buf = good();
       return buf.subarray(0, Math.floor(buf.length / 2));
@@ -102,13 +114,13 @@ const rows: Row[] = [
   },
   {
     name: "an impossible Zip64 end-record offset",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => build3mf(onePlate, { zip64EndAt: 2n ** 62n }),
     expect: "null",
   },
   {
     name: "a Zip64 end-record offset past the end of the file",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => build3mf(onePlate, { zip64EndAt: 0xffffffn }),
     expect: "null",
   },
@@ -117,7 +129,7 @@ const rows: Row[] = [
     // Every entry is otherwise sound and the project in it reads, so only
     // the entry ceiling refuses it (parse.test.ts reads one at the ceiling).
     name: "one entry past the 100000-entry ceiling",
-    issue: "#5",
+    kind: "crafted archive",
     breaks: "MAX_ZIP_ENTRIES",
     slow: true,
     file: () => build3mfWithEntries({ ...onePlate, pngs: { 1: png("one") } }, MAX_ZIP_ENTRIES + 1),
@@ -125,7 +137,7 @@ const rows: Row[] = [
   },
   {
     name: "a truncated Zip64 extra field",
-    issue: "#5",
+    kind: "crafted archive",
     file: () =>
       buildZip(
         projectEntries(onePlate).map((e) =>
@@ -141,35 +153,32 @@ const rows: Row[] = [
     expect: "null",
   },
   {
-    // parser_test.rb test_impossible_zip64_offset_is_a_damaged_file
     name: "an impossible Zip64 local header offset on an entry",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => zip64Offset("Metadata/model_settings.config", Buffer.alloc(8, 0xff)),
     expect: "null",
   },
   {
-    // parser_test.rb test_truncated_zip64_offset_field_is_a_damaged_file
     name: "a truncated Zip64 local header offset field on an entry",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => zip64Offset("Metadata/model_settings.config", Buffer.from([0xff, 0xff, 0, 0])),
     expect: "null",
   },
   {
-    // parser_test.rb test_impossible_zip64_offset_on_a_thumbnail_gives_nil
     name: "an impossible Zip64 local header offset on a thumbnail",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => zip64Offset("Metadata/plate_1.png", Buffer.alloc(8, 0xff)),
     expect: "null",
   },
   {
     name: "a central directory past the end of the file",
-    issue: "#5",
+    kind: "crafted archive",
     file: () => build3mf(onePlate, { cdOffset: 0x7fffffff }),
     expect: "null",
   },
   {
     name: "a local header past the end of the file",
-    issue: "#5",
+    kind: "crafted archive",
     file: () =>
       buildZip(
         projectEntries(onePlate).map((e) =>
@@ -180,7 +189,7 @@ const rows: Row[] = [
   },
   {
     name: "a thumbnail's local header past the end of the file",
-    issue: "#5",
+    kind: "crafted archive",
     file: () =>
       buildZip(
         projectEntries({ ...onePlate, pngs: { 1: png("one") } }).map((e) =>
@@ -191,16 +200,16 @@ const rows: Row[] = [
   },
   {
     name: "a config entry over 5 MiB",
-    issue: "#5",
+    kind: "crafted archive",
     breaks: "configBytes",
     file: () => build3mf({ modelSettings: overConfig() }),
     expect: "null",
   },
   {
-    // parser_test.rb test_oversized_slice_info_is_ignored keeps the plates;
-    // the plan's hostile table makes any config over 5 MiB a damaged file.
+    // The earlier parser kept the plates here; Platehouse makes any config
+    // entry over 5 MiB a damaged file.
     name: "a slice_info.config over 5 MiB",
-    issue: "#5",
+    kind: "crafted archive",
     breaks: "configBytes",
     file: () =>
       build3mf({
@@ -214,7 +223,7 @@ const rows: Row[] = [
   },
   {
     name: "a declared-size lie: declares 1 KiB, inflates past 5 MiB",
-    issue: "#5",
+    kind: "crafted archive",
     breaks: "configBytes",
     file: () =>
       buildZip(
@@ -226,7 +235,7 @@ const rows: Row[] = [
   },
   {
     name: "a declared-size lie: declares more than it holds",
-    issue: "#5",
+    kind: "crafted archive",
     file: () =>
       buildZip(
         projectEntries(onePlate).map((e) =>
@@ -237,7 +246,7 @@ const rows: Row[] = [
   },
   {
     name: "a stored entry whose sizes disagree",
-    issue: "#5",
+    kind: "crafted archive",
     file: () =>
       buildZip(
         projectEntries(onePlate).map((e) =>
@@ -248,14 +257,14 @@ const rows: Row[] = [
   },
   {
     name: "129 plates in model_settings.config",
-    issue: "#6",
+    kind: "plate count",
     breaks: "plates",
     file: () => build3mf({ plates: range(129).map((index) => ({ index })) }),
     expect: "null",
   },
   {
     name: "129 plate pngs",
-    issue: "#6",
+    kind: "plate count",
     breaks: "plates",
     file: () => build3mf({ pngs: Object.fromEntries(range(129).map((i) => [i, png(`p${i}`)])) }),
     expect: "null",
@@ -263,16 +272,17 @@ const rows: Row[] = [
   {
     // A 400-digit N is Infinity as a Number; it must not become a plate.
     name: "a plate png name too long to be a safe integer (400 digits)",
-    issue: "#6",
+    kind: "plate count",
     file: () =>
       build3mf({ extra: [{ name: `Metadata/plate_${"9".repeat(400)}.png`, data: png("n") }] }),
     expect: "null",
   },
   {
-    // Distinct 400-digit names must not collapse into one plate and slip
-    // under the 128-plate ceiling: none of them is a plate at all.
+    // Since #78, any one of these names, past 2147483647, is damage on its
+    // own (the row above has one); 129 of them, each different, show that
+    // distinct over-long names are not collapsed into one plate either.
     name: "129 plate png names too long to be safe integers",
-    issue: "#6",
+    kind: "plate count",
     file: () =>
       build3mf({
         extra: range(129).map((i) => ({
@@ -284,7 +294,7 @@ const rows: Row[] = [
   },
   {
     name: "129 plates in slice_info.config",
-    issue: "#6",
+    kind: "plate count",
     breaks: "plates",
     file: () =>
       build3mf({
@@ -295,7 +305,7 @@ const rows: Row[] = [
   },
   {
     name: "257 filaments on a sliced plate",
-    issue: "#12",
+    kind: "slice data",
     breaks: "filaments",
     file: () =>
       build3mf({
@@ -306,14 +316,14 @@ const rows: Row[] = [
   },
   {
     name: "257 filament types in the project",
-    issue: "#7",
+    kind: "project filaments",
     breaks: "filaments",
     file: () => build3mf({ ...onePlate, project: { filament_type: range(257).map(() => "PLA") } }),
     expect: "null",
   },
   {
     name: "257 filament colours in the project",
-    issue: "#7",
+    kind: "project filaments",
     breaks: "filaments",
     file: () =>
       build3mf({ ...onePlate, project: { filament_colour: range(257).map(() => "#FFFFFF") } }),
@@ -321,14 +331,14 @@ const rows: Row[] = [
   },
   {
     name: "a thumbnail over 10 MiB, with no small one to fall back to",
-    issue: "#11",
+    kind: "thumbnail bytes",
     breaks: "pngBytes",
     file: () => build3mf({ ...onePlate, pngs: { 1: png("big", LIMITS.pngBytes + 1) } }),
     expect: "no thumbnail",
   },
   {
     name: "thumbnails over the 128 MiB per-file budget",
-    issue: "#11",
+    kind: "thumbnail bytes",
     breaks: "thumbnailBytesPerFile",
     file: () =>
       build3mf({
@@ -339,7 +349,7 @@ const rows: Row[] = [
   },
   {
     name: "a print time over ten years",
-    issue: "#12",
+    kind: "slice data",
     breaks: "predictionSeconds",
     file: () =>
       build3mf({
@@ -357,13 +367,13 @@ const rows: Row[] = [
   },
   {
     name: "a plater_id past the 32-bit range in model_settings.config",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () => build3mf({ plates: [{ index: 1 }, { index: INT32_MAX + 1 }] }),
     expect: "null",
   },
   {
     name: "a plater_id of 3000000000 in model_settings.config",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () => build3mf({ plates: [{ index: 3000000000 }] }),
     expect: "null",
   },
@@ -371,25 +381,25 @@ const rows: Row[] = [
     // Past Number.MAX_SAFE_INTEGER too: still a whole number the columns
     // cannot hold, so it is damage like any other, never a skipped plate.
     name: "a plater_id too long to be a safe integer (400 digits)",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () => build3mf({ plates: [{ index: 1 }, { index: "9".repeat(400) }] }),
     expect: "null",
   },
   {
     name: "a plate png name past the 32-bit range",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () => build3mf({ pngs: { 1: png("one"), [INT32_MAX + 1]: png("big") } }),
     expect: "null",
   },
   {
     name: "a plate index past the 32-bit range in slice_info.config",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () => build3mf({ ...onePlate, slices: [sliced1, { ...sliced1, index: INT32_MAX + 1 }] }),
     expect: "null",
   },
   {
     name: "a filament slot past the 32-bit range on a sliced plate",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         ...onePlate,
@@ -399,7 +409,7 @@ const rows: Row[] = [
   },
   {
     name: "a filament slot of 3000000000 on a sliced plate",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         ...onePlate,
@@ -409,7 +419,7 @@ const rows: Row[] = [
   },
   {
     name: "a NUL in a plate name",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         plates: [
@@ -423,7 +433,7 @@ const rows: Row[] = [
     // The same NUL written as character references: whatever the XML
     // parser makes of them, no NUL may come out.
     name: "a NUL in a plate name as &#0; and &#x0;",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         modelSettings: modelSettingsXml([
@@ -437,7 +447,7 @@ const rows: Row[] = [
   },
   {
     name: "a NUL in a sliced filament type and the printer model id",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         ...onePlate,
@@ -453,7 +463,7 @@ const rows: Row[] = [
   },
   {
     name: "a NUL in the project filament types and process name",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         ...onePlate,
@@ -466,7 +476,7 @@ const rows: Row[] = [
   },
   {
     name: "a NUL in the MakerWorld fields of 3D/3dmodel.model",
-    issue: "platehouse #78",
+    kind: "database value (#78)",
     file: () =>
       build3mf({
         ...onePlate,
@@ -517,9 +527,9 @@ async function checkRow(row: Row): Promise<void> {
   }
 }
 
-describe("hostile files (AC-023)", () => {
-  it.each(rows.filter((r) => !r.slow))("$name ($issue)", checkRow);
-  it.each(rows.filter((r) => r.slow))("$name ($issue)", checkRow, SLOW_ROW_MS);
+describe("hostile files", () => {
+  it.each(rows.filter((r) => !r.slow))("$name ($kind)", checkRow);
+  it.each(rows.filter((r) => r.slow))("$name ($kind)", checkRow, SLOW_ROW_MS);
 
   it("the healthy control file for the rows above reads", async () => {
     const project = await readProject(writeTmp(good()));

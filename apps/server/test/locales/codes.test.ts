@@ -121,9 +121,16 @@ describe("LOCALES_DIR in the configuration", () => {
   });
 
   test("refuses a relative path, naming the key and not the value", () => {
-    expect(() => loadConfig({ ...BASE, LOCALES_DIR: "locales" })).toThrow(
-      "LOCALES_DIR must be an absolute path",
-    );
+    // A value made for this run, so a message that echoed it would show.
+    const value = `relative-${process.pid}-${Date.now()}`;
+    let message = "";
+    try {
+      loadConfig({ ...BASE, LOCALES_DIR: value });
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("LOCALES_DIR must be an absolute path");
+    expect(message).not.toContain(value);
   });
 });
 

@@ -1,7 +1,7 @@
 // Smoke test for the integration suite itself: proves the CI runner can start
-// both containers the plan names and talk to each. Without at least one test
-// here the integration job's zero-test guard would fail it before Tasks 4 and
-// 5 add the real database and storage tests.
+// both containers the integration tests use and talk to each. It was written
+// first, so the integration job's zero-test guard had a test to count before
+// the real database and storage tests existed.
 import { randomBytes } from "node:crypto";
 import { CreateBucketCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";

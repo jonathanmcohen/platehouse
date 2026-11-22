@@ -1,7 +1,8 @@
-// Resumable uploads (build plan Task 9; AC-020, AC-084). One tus 1.0.0
+// Resumable uploads, shared by the UI and the API so a large file completes either way. One tus 1.0.0
 // handler, mounted twice: /app/uploads for the UI behind its session and
-// /api/v1/uploads for the API behind a bearer token (Public API v1 contract).
-// The auth hooks belong to Part C, so registerTus takes one as a parameter;
+// /api/v1/uploads for the API behind a bearer token.
+// The auth hooks live in app.ts (requireSession for /app/uploads, apiUploadHook
+// for /api/v1/uploads), so registerTus takes one as a parameter;
 // it runs on every request before anything else, so a refused request stores
 // nothing.
 //
@@ -9,7 +10,7 @@
 //   1. POST <prefix> creates an upload. Upload-Length is required and at most
 //      MAX_UPLOAD_BYTES (512 MiB), so an open length cannot dodge the cap.
 //      Upload-Metadata must carry filename, and may carry modelId (into an
-//      existing model) or batch with combine (Task 8's batch target), and
+//      existing model) or batch with combine (ingest's batch target), and
 //      duplicates: skip or allow (approved for 0.1.0 by the maintainer, 2026-11-19).
 //      Left out it is allow, so an API client that never sends it sees no
 //      change; the web dialog sends skip unless the user chose Import anyway.
@@ -19,7 +20,7 @@
 //      the LAN to a VPN, a backgrounded tab). One PATCH may carry the
 //      whole file (curl), or a client may send chunks.
 //   3. When the last byte lands, the upload is queued for ingest on the
-//      ingest queue (Task 8) under the upload's own id, and ingestFile runs
+//      ingest queue under the upload's own id, and ingestFile runs
 //      there. GET <prefix>/<id>/result answers pending, done (modelId,
 //      fileId, and duplicates: the live files that already held the same
 //      bytes, empty when none did) or failed (a message for the user; a duplicate
@@ -52,25 +53,25 @@
 //      the endpoint, not the metadata, so a client that keeps it after
 //      success would resume a stored upload when the same file is later
 //      dropped on another model or batch, and store nothing there. The web
-//      client (Task 19) must therefore either put the target (modelId, batch,
+//      client (apps/web) must therefore either put the target (modelId, batch,
 //      combine) into its fingerprint or drop the fingerprint once an upload
 //      succeeds.
 //      The tidy-up runs under the upload's tus lock, which tus's HEAD and
 //      PATCH take too, so a HEAD never sees the data file gone before the
 //      outcome is written. An upload left untouched for 24 hours, or 24 hours
 //      after its ingest, is deleted by the hourly sweep on the maintenance
-//      queue (sweepStaleUploads); a partial one never becomes a model (Review
-//      Focus 5).
+//      queue (sweepStaleUploads); a partial one never becomes a model, even after a phone
+//      upload was cut off by a network switch.
 //
 // Partial uploads live in TMP_DIR/uploads, one data file and one .json info
 // file per upload, both named by the upload id, a UUIDv7. The UI and API
 // mounts share that folder and one lock per upload (createUploads).
 //
-// Responses carry no CORS headers (AC-085): @tus/server always sets
+// Responses carry no CORS headers, as the API never does: @tus/server always sets
 // Access-Control-* headers, so they are dropped here. Location is relative
 // (<prefix>/<id>) and no forwarded or Host header is read, so no URL comes
-// from the request (AC-091). There is no DELETE, GET or OPTIONS on an upload:
-// the API deletes nothing (AC-084), and an abandoned upload is swept.
+// from the request. There is no DELETE, GET or OPTIONS on an upload:
+// the API deletes nothing, and an abandoned upload is swept.
 import { readdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -150,19 +151,21 @@ export function uploadsDir(tmpDir: string): string {
 
 /**
  * A Fastify onRequest hook for one mount: the session check for /app/uploads,
- * the bearer check for /api/v1/uploads (Part C). It lets a request through by
+ * the bearer check for /api/v1/uploads (app.ts passes requireSession and
+ * apiUploadHook). It lets a request through by
  * returning, or answers it itself (401), and then nothing else runs.
  */
 export type AuthHook = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 
 /**
  * What the ingest queue reports for an upload, and GET <prefix>/:id/result
- * answers. On /api/v1/uploads the answer is the Public API v1 contract: a
- * failure carries a code only when it is a skipped duplicate (publicResult
- * removes every other code). On /app/uploads, the web app's own mount, a
- * failure also carries the ingest's own code (unsupported_type,
- * model_not_found, storage_unavailable, ingest_failed, upload_failed), so
- * the page can say it in its language (the maintainer, 2026-11-19).
+ * answers. On /api/v1/uploads the answer is the one api/openapi.ts documents
+ * for the Public API v1: a failure carries a code only when it is a skipped
+ * duplicate (publicResult removes every other code). On /app/uploads, the
+ * web app's own mount, a failure also carries the ingest's own code
+ * (unsupported_type, model_not_found, storage_unavailable, ingest_failed,
+ * upload_failed), so the page can say it in its language (the maintainer,
+ * 2026-11-19).
  */
 export type UploadResult =
   | { status: "pending" }

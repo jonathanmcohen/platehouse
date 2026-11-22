@@ -1,18 +1,20 @@
 # End-to-end suite
 
-Build plan Task 22. Playwright specs that drive the real Platehouse server
-through a real Traefik v3, set up as the reverse proxy guide in `docs/reverse-proxy` asks, with axe-core for
-accessibility. CI runs them in the e2e job of `.github/workflows/ci.yml`.
+Playwright specs that drive the real Platehouse server
+through a real Traefik v3.7 with no middleware on the Platehouse router, which proves the cookieless
+routes get through, with axe-core for accessibility. The Traefik here leaves out the reverse proxy
+guide's timeouts, headers and encoded-slash settings, so it does not test them. CI runs the specs in
+the e2e job of `.github/workflows/ci.yml`.
 
 ## What it checks
 
 | Spec                            | What must hold                                                                                                                                                                                                                                                  |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/headless-routes.spec.ts` | Through Traefik with no cookie: an API token request succeeds, a slicer link returns the file (a hostile file name too), a page redirects to `/auth/login`, the app API answers 401, and a fresh browser signs in through the issuer (AC-082, AC-041, AC-080).  |
-| `tests/axe.spec.ts`             | Zero axe-core violations on the library, model, settings and trash pages, dark and light (AC-075).                                                                                                                                                              |
-| `tests/first-paint.spec.ts`     | A fresh System-theme load with `prefers-color-scheme: light` paints the light background `#f6f7f9` on the first frame, with JavaScript off; the dark control paints `#121418` (AC-070).                                                                         |
-| `tests/phone-width.spec.ts`     | At 375 px the sidebar is behind the menu button, nothing scrolls sideways and the menu reaches every section (AC-074).                                                                                                                                          |
-| `tests/keyboard.spec.ts`        | Tab reaches every control on every page, each with a visible, non-none outline, in both themes (AC-075).                                                                                                                                                        |
+| `tests/headless-routes.spec.ts` | Through Traefik with no cookie: an API token request succeeds, a slicer link returns the file (a hostile file name too), a page redirects to `/auth/login`, the app API answers 401, and a fresh browser signs in through the issuer.                           |
+| `tests/axe.spec.ts`             | Zero axe-core violations on the library, model, settings, trash and Activity pages, dark and light.                                                                                                                                                             |
+| `tests/first-paint.spec.ts`     | A fresh System-theme load with `prefers-color-scheme: light` paints the light background `#f6f7f9` on the first frame, with JavaScript off; the dark control paints `#121418`.                                                                                  |
+| `tests/phone-width.spec.ts`     | At 375 px the sidebar is behind the menu button, nothing scrolls sideways and the menu reaches every section.                                                                                                                                                   |
+| `tests/keyboard.spec.ts`        | Tab reaches every control on every page, each with a visible, non-none outline, in both themes.                                                                                                                                                                 |
 | `tests/plate-3d.spec.ts`        | Show in 3D on a .3mf plate loads that plate's GLB alone (never the whole file), draws it with the 3D view's controls, follows the plate strip, and Show picture goes back with focus on Show in 3D; zero axe violations with the view open, both themes (#358). |
 
 ## The stack

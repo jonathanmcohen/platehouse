@@ -1,4 +1,4 @@
-// The pages the end-to-end specs walk (build plan Task 22) and how a spec
+// The pages the end-to-end specs walk and how a spec
 // waits for one to settle. The lists are fixed so a spec file declares its
 // tests without the run's seed (Playwright lists tests before the global
 // setup runs); a page's path is read from the seed inside the test.
@@ -26,8 +26,8 @@ const MODEL: AppPage = {
 };
 
 /**
- * The pages the axe spec checks (Task 22: library, model, settings, trash;
- * and the Activity page, 2026-11-19).
+ * The pages the axe spec checks (library, model, settings, trash, and the
+ * Activity page since 2026-11-19).
  */
 export const AXE_PAGES: readonly AppPage[] = [
   page("library", "/", "Library"),

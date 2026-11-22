@@ -1,4 +1,5 @@
-# Release workflow for the app image (build plan Task 24; AC-093, AC-094).
+# Release workflow for the app image. The image carries a healthcheck, and the
+# workflow keeps the release rules: exact action tags and no build attestation.
 #
 # A pushed tag vX.Y.Z builds docker/app.Dockerfile natively for linux/amd64
 # (ubuntu-latest) and linux/arm64 (ubuntu-24.04-arm, no QEMU) and publishes
@@ -39,7 +40,7 @@
 # highest vX.Y.Z or vX.Y.Z-rc.N whose app and slicer version tags both exist;
 # the version tag this workflow publishes is what it reads.
 #
-# workflow_dispatch is for the plan's first release step: dispatching this
+# workflow_dispatch is for trying the release path before a real release: dispatching this
 # workflow against a throwaway tag (gh workflow run release.yml --ref
 # v0.0.0-test). The gate job refuses any run whose ref is not a semver tag
 # before anything is built, so a dispatch from a branch pushes nothing.
@@ -47,7 +48,7 @@
 # Every job after the gate carries if: !cancelled() && needs.<dep>.result ==
 # 'success', so a skipped or failed job stops the chain explicitly, because a
 # skip propagates down a needs chain. Buildx's own provenance attestation is turned off
-# (AC-094: no build attestation), so each arch digest is a plain image.
+# (no build attestation, by the release rules), so each arch digest is a plain image.
 name: release
 
 on:

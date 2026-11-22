@@ -1,4 +1,4 @@
-// The library's tag filter (build plan Task 19, AC-061): a chip per tag that
+// The library's tag filter: a chip per tag that
 // live models carry, and All. A chip is a link that sets ?tag= and keeps the
 // search (?q=) and an active creator or collection filter (?creator=,
 // ?collection=; issue #194), so the filter is in the URL, works with Back

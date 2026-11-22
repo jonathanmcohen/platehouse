@@ -1,4 +1,4 @@
-// The Dark / Light / System theme (build plan Task 18, AC-070). The choice
+// The Dark / Light / System theme, Dark by default, painted on the first frame with no flash. The choice
 // lives in this browser, in the ph_theme cookie; nothing is stored on the
 // server. The server writes it into the html element's data-theme and the
 // color-scheme meta before the page is sent (apps/server/src/web/shell.ts),

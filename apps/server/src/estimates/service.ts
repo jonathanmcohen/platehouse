@@ -1,5 +1,8 @@
-// Estimates, the printer setting and re-estimation (build plan Task 12;
-// AC-031 to AC-034, AC-036; Review Focus 2 and 3).
+// Estimates, the printer setting and re-estimation: slices run in the
+// background and never block a page or an upload, each records the Orca
+// version that made it, a slicer restart mid-slice never leaves a plate
+// estimating forever, and a second printer change supersedes the first's
+// queued estimates so no plate shows numbers labelled for the wrong printer.
 //
 // - The printer menu is /v1/profiles' printer list, read once per Orca
 //   version (listPrinters). My printers (migration 0007) are the printers
@@ -21,7 +24,7 @@
 //   new default's land (display.ts). Reordering, or a new default, slices
 //   nothing, and neither does reading numbers for another printer
 //   (plateNumbers with a printerId: the pages' printer switch).
-// - Each estimate is one job on the singleton slicer queue (Task 8), so one
+// - Each estimate is one job on the singleton slicer queue (jobs/queues.ts), so one
 //   slice runs at a time. A 409 busy or a lost connection uses one of 3
 //   retries (SLICER_RETRY), with backoff; once the last retry is used the
 //   estimate fails with slicer_error. A busy answer is retried by pg-boss
@@ -56,7 +59,7 @@
 //   shows its newest older estimate, marked as made for the previous
 //   printer (display.ts).
 // - The Orca-version poll runs at startup and every 10 minutes (a pg-boss
-//   cron job, Task 8's maintenance queue). When /v1/health.orca differs from
+//   cron job on the maintenance queue). When /v1/health.orca differs from
 //   settings.last_orca_version it stores the new version and re-estimates
 //   every live plate. Every poll also finds slices that were lost (a job gone
 //   while its estimate still says pending or running, as after the app itself
@@ -67,7 +70,7 @@
 //   carries its own numbers for a printer is never fetched for that printer
 //   (libraryPlatesFor), so a library of files sliced for My printers costs
 //   the poll one query per printer, not two per plate.
-// - Each slice records the Orca version that produced it (AC-036) and, for
+// - Each slice records the Orca version that produced it, so a version change can re-estimate, and, for
 //   each filament, the preset the slicer used and where it came from:
 //   Bambu's own, Generic, or the file's own filament (PR #55).
 import { setTimeout as sleep } from "node:timers/promises";
@@ -335,7 +338,7 @@ export interface Estimates {
    * left out. Reading numbers never queues a slice.
    */
   plateNumbers(plateId: string, printerId?: string): Promise<PlateNumbers>;
-  /** The AC-032 query (display.ts), for printerId or the default printer. */
+  /** The plates still without numbers or a reason (display.ts), for printerId or the default printer. */
   platesWithoutNumbers(printerId?: string): Promise<string[]>;
   /** The slice job's handler. */
   runSliceJob(job: JobWithMetadata<SliceJobData>): Promise<void>;

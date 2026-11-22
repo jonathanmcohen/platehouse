@@ -1,6 +1,7 @@
-// File delivery (build plan Task 17; AC-011, AC-012). Every byte reaches a
+// File delivery. Downloads work wherever the app works, and a store outage
+// shows a file as unavailable rather than lost. Every byte reaches a
 // browser or a slicer through the app, streamed from the bucket, never
-// through a presigned URL (plan decision 7), so no bucket host, key, access
+// through a presigned URL, so no bucket credential reaches a browser or a slicer and no bucket host, key, access
 // key or signature is ever in an answer:
 //
 //   GET /files/:id/download   session   the file as an attachment
@@ -8,7 +9,7 @@
 //                                       a file's source), immutable
 //   GET /s/<token>/<name>     link      the file of a slicer link (links.ts)
 //
-// - A file is read through Task 16's library (api/v1.ts createApiLibrary:
+// - A file is read through the Public API's library (api/v1.ts createApiLibrary:
 //   openFile and fileHead), so the download, the slicer link and the API's
 //   own content route find a live file, its stored blob and its headers the
 //   same way. A blob is read here (createDeliveryLibrary) by the same rules:
@@ -36,7 +37,7 @@
 //   the store cannot give the bytes (an outage, a missing object, a refusal)
 //   the answer is 503 "This file is unavailable right now", and nothing is
 //   written anywhere: no row, no status, so an outage never marks a file
-//   missing or damaged (AC-012). Any other failure is logged and answered
+//   missing or damaged. Any other failure is logged and answered
 //   500 with no detail.
 // - A file goes out as an attachment with its name in an ASCII fallback and
 //   in filename*=UTF-8'' (api/v1.ts contentDisposition), so a name with
@@ -86,7 +87,7 @@ export interface LinkFile {
   kind: FileKind;
 }
 
-/** What delivery reads beyond Task 16's file content: blobs, and a file for its link. */
+/** What delivery reads beyond the Public API's file content: blobs, and a file for its link. */
 export interface DeliveryLibrary {
   /** A live file; undefined when unknown, malformed or its model is trashed. */
   linkFile(id: string): Promise<LinkFile | undefined>;
@@ -103,7 +104,7 @@ export interface DeliveryLibrary {
 }
 
 export interface DeliveryDeps {
-  /** Task 16's library (createApiLibrary): a live file's bytes and headers. */
+  /** The Public API's library (createApiLibrary): a live file's bytes and headers. */
   files: Pick<ApiLibrary, "openFile" | "fileHead">;
   library: DeliveryLibrary;
   /** LINK_SECRET; links.ts derives its own key from it. */

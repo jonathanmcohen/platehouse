@@ -1,11 +1,10 @@
-// The ingest pipeline (build plan Task 8; AC-020 server side, AC-022, AC-024,
-// AC-033, AC-012). Every way a file arrives (the tus upload of Task 9 for the
-// UI and the API, the inbox of Task 10, the importer through the API) ends in
+// The ingest pipeline. Every way a file arrives (the tus upload, uploads/tus.ts, for the
+// UI and the API, the inbox watcher, inbox/watch.ts, the importer through the API) ends in
 // ingestFile.
 //
-// The order is the plan's:
+// The order:
 //   1. detect: the name and the first bytes must agree on a supported kind
-//      (detect.ts), or the file is refused and nothing is stored (AC-024);
+//      (detect.ts), or the file is refused and nothing is stored;
 //   2. hash and put the source blob: putBlob hashes while it uploads and
 //      checks the stored size;
 //   3. parse a .3mf (packages/threemf); each plate thumbnail is put as a blob
@@ -13,16 +12,17 @@
 //   4. one transaction: the model (when new), the blob rows, the file, its
 //      filament list, its plates and the file's own numbers (estimates with
 //      source 'file'). Metadata is filled only into empty fields, so nothing
-//      the user set is overwritten (AC-022). A new model is named from the
+//      the user set is overwritten. A new model is named from the
 //      file's MakerWorld title, else its cleaned file name (names.ts); a
 //      model joined takes the title only while nobody has named it;
-//   5. enqueueing estimates (Task 12) and renders (Task 13) comes after the
-//      commit, through the afterCommit hook the caller wires in (Task 13's
+//   5. enqueueing estimates (estimates/) and renders (derived/) comes after the
+//      commit, through the afterCommit hook the caller wires in (the renders'
 //      is derived.afterUpload, which only sends a job). Nothing here calls
-//      the slicer, so ingest returns before any slice runs (AC-033).
+//      the slicer, so ingest returns before any slice runs: an upload never
+//      waits on a slice.
 //
 // No row is written before step 4. A failure at any step deletes the objects
-// already put and leaves no rows (AC-012), with two exceptions, both only
+// already put and leaves no rows, so a failed upload, a store outage included, leaves no half-made model, with two exceptions, both only
 // for a failure after the transaction's callback finished, at COMMIT. Kysely
 // sends COMMIT only once the callback has returned, and rolls back when it
 // throws, so a failure that arrives while the callback is still running
@@ -270,8 +270,7 @@ function baseName(name: string): string {
 }
 
 /**
- * The MakerWorld details of a .3mf as model metadata (AC-022,
- * packages/makerworld), with the design ID (packages/threemf). The caption is
+ * The MakerWorld details of a .3mf as model metadata (packages/makerworld), with the design ID (packages/threemf). The caption is
  * the MakerWorld Title, which also names a new model (names.ts). A file that
  * names no Designer is not a MakerWorld file, so it gives no details, no title
  * and no design ID.
@@ -318,7 +317,7 @@ export interface IngestDeps {
   store: IngestStore;
   /**
    * Called once a file's rows have committed, before ingestFile returns:
-   * Task 13 queues a .scad render or a STEP mesh here. It never runs a
+   * the render jobs (derived/) queue a .scad render or a STEP mesh here. It never runs a
    * render itself, so ingest still returns before any slicer work. An error
    * from it is logged and does not fail the upload, which is stored.
    */
@@ -541,7 +540,7 @@ export function createIngest(deps: IngestDeps) {
         // already be one of the earlier files', and before fillMetadata, so
         // the caption it reads is the earlier files'.
         if (!created) await repos.models.nameFromTitle(modelId, found.caption);
-        // One fill rule for a new model and an existing one (AC-022).
+        // One fill rule for a new model and an existing one: never overwrite a field the user set.
         await repos.models.fillMetadata(modelId, found);
 
         for (const blob of put) {
@@ -632,7 +631,7 @@ export function createIngest(deps: IngestDeps) {
           // The failure that matters is already being thrown, and during an
           // outage this delete fails too. An object left behind has no blob
           // row, so the orphan sweep (orphans.ts) deletes it once it is 24
-          // hours old; AC-010's reconciliation would only count it.
+          // hours old; reconciling the bucket against the file rows would only count it.
         }
       }
       if (error instanceof StoreUnavailable) {

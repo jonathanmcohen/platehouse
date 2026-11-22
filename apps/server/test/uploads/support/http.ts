@@ -1,4 +1,4 @@
-// Helpers for the upload tests (build plan Task 9), shared by the unit tests
+// Helpers for the upload tests, shared by the unit tests
 // (a fake queue) and the integration tests (pg-boss, ingest and the S3 test
 // server): a Fastify app on a loopback port, raw HTTP requests through
 // node:http (fetch cannot set a Host header), tus metadata, and generated
@@ -236,7 +236,7 @@ export function randomBinaryStl(triangles: number): Buffer {
   return out;
 }
 
-/** About 90 MiB, the size of the largest file AC-020 names: 94,371,834 bytes. */
+/** About 90 MiB, the size of the largest real file an upload must complete: 94,371,834 bytes. */
 export const NINETY_MB_TRIANGLES = 1_887_435;
 
 /** 5 MiB, the chunk size of the resumable upload test. */

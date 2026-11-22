@@ -1,4 +1,4 @@
-// The app's client for slicer contract v1 (build plan Task 12). The slicer is
+// The app's client for slicer contract v1 (packages/slicer-contract). The slicer is
 // on the internal network only, has no auth and holds no secrets; nothing the
 // app sends it is secret either (a printer name, a plate number, the .3mf).
 //

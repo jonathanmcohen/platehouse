@@ -319,7 +319,9 @@ describe("the OpenAPI document", () => {
       `A single request may take up to ${REQUEST_LIMIT}.`,
     );
     expect(doc.info.description).toContain(`uploads are at most ${UPLOAD_CAP}.`);
-    // No size or time written out by hand anywhere else in the document.
+    // The upload cap is written as "N MiB" nowhere else in the document, so
+    // a hand-typed copy of it cannot drift. (Only the MiB figure is counted;
+    // the request time limit is checked by the line above, not here.)
     const text = JSON.stringify(doc);
     const mib = `${MAX_UPLOAD_BYTES / 2 ** 20} MiB`;
     expect(text.split(mib).length - 1).toBe(

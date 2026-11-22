@@ -1,4 +1,4 @@
-// Build plan Task 14, AC-063: trash, restore, the 30-day purge and Empty trash.
+// Trash, restore, the 30-day purge and Empty trash.
 // A purge deletes the bucket objects first, then the rows, and is safe to run
 // again after it failed part way.
 import { Readable } from "node:stream";
@@ -157,8 +157,8 @@ describe("trashModel and restoreModel", () => {
     const { model, source, thumbnail } = await seedStoredModel(env);
     const trash = trashFor();
     expect(await trash.trashModel(model.id)).toBe(true);
-    // An object lost some other way than a purge (AC-010 reconciliation
-    // exists for this): the rows say stored, the bucket has no thumbnail.
+    // An object lost some other way than a purge (reconciling the bucket
+    // against the rows exists for this): the rows say stored, the bucket has no thumbnail.
     await env.store.deleteBlobs([thumbnail.key]);
     expect(await purgeStartedAt(model.id)).toBeNull();
 

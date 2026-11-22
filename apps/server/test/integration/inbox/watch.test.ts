@@ -1,4 +1,4 @@
-// Build plan Task 10: the inbox watcher (AC-021), over a real Postgres 17 and
+// The inbox watcher, over a real Postgres 17 and
 // the S3 test server. A supported file placed in the inbox appears in the
 // library with no manual step; once ingest has stored it and the stored size
 // and SHA-256 match the inbox copy, the inbox copy is deleted. A file that

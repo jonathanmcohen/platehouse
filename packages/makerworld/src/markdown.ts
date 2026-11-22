@@ -1,8 +1,8 @@
 // A MakerWorld description (HTML) as Markdown, and Markdown as sanitised HTML
-// for the web app. htmlToMarkdown is ported by behaviour from automation
-// Manyfold/makerworld-metadata at 1ce8c57. That converter escaped text for
+// for the web app. htmlToMarkdown is ported by behaviour from an earlier
+// Manyfold metadata script. That converter escaped text for
 // Kramdown, which Manyfold renders with; Platehouse renders with markdown-it,
-// so the escaping here is re-derived for markdown-it (build plan Task 7)
+// so the escaping here is re-derived for markdown-it,
 // and the tests in test/markdown.test.ts and
 // test/render.test.ts are the contract.
 
@@ -2058,7 +2058,7 @@ export function sanitizeHtml(html: string): string {
 
 // Markdown (a model's description) as HTML safe to put in the page: rendered
 // by createMarkdownIt's setup, then passed through DOMPurify. Used by the web
-// app's About tab (build plan Task 20).
+// app's About tab (the model page).
 export function renderMarkdown(md: string): string {
   getPurifier();
   renderer ??= createMarkdownIt();

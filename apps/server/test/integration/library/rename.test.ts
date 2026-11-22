@@ -1,4 +1,4 @@
-// Build plan Task 14, AC-060: a rename changes the display name only; the
+// A rename changes the display name only; the
 // object in the bucket keeps its key and its bytes.
 import { buffer } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";

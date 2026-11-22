@@ -1,4 +1,5 @@
-// STEP meshes (AC-050, decision 2): the STEP source is streamed from the
+// STEP meshes for the 3D viewer, converted on the server so no browser ever
+// parses a STEP file: the STEP source is streamed from the
 // bucket to the slicer's /v1/step/glb, where occt-import-js converts it, and
 // the GLB that comes back is the only thing a browser loads for a STEP file.
 // A source over the contract's 256 MiB limit is refused here and never sent.

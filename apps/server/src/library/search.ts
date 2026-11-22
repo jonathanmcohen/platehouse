@@ -1,6 +1,6 @@
-// Library search (build plan Task 14; AC-061, AC-062, AC-064): the search box
+// Library search over name, caption, creator and tag: the search box
 // on every page, the library listing and its tag, collection and creator
-// filters, one page at a time. Trashed models never appear (AC-063).
+// filters, one page at a time. Trashed models never appear.
 //
 // The query itself is the models repository's (repos/models.ts, searchRanked);
 // this module adds the opaque cursor and the page shape.

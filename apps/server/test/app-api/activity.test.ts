@@ -19,7 +19,30 @@
 //   against a scripted database built as the server builds its own
 //   (CamelCasePlugin), which answers the settings row and the failed file
 //   and no rows for every other read. Every id here is made up for the test.
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+
+// Every read made through a file handle opened on a reason file, as
+// [path, bytes asked for], so a test can show how much of the file was read.
+// Every other open, and every other fs call, is the real one.
+const reasonReads = vi.hoisted(() => [] as Array<[string, number]>);
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const open: typeof real.open = async (...args) => {
+    const handle = await real.open(...args);
+    const path = String(args[0]);
+    if (!path.endsWith(".reason.txt")) return handle;
+    const read = handle.read.bind(handle);
+    handle.read = ((...readArgs: unknown[]) => {
+      const length = typeof readArgs[2] === "number" ? readArgs[2] : Number.POSITIVE_INFINITY;
+      reasonReads.push([path, length]);
+      return (read as (...a: unknown[]) => ReturnType<typeof handle.read>)(...readArgs);
+    }) as typeof handle.read;
+    return handle;
+  };
+  return { ...real, default: { ...real, open }, open };
+});
+
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,7 +56,7 @@ import {
   PostgresQueryCompiler,
   type QueryResult,
 } from "kysely";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type ActivityEvent,
   createAppActivity,
@@ -41,6 +64,7 @@ import {
   mergeEvents,
   progressOf,
   queueRows,
+  REASON_BYTES,
   readInboxFailures,
   reconvertEvents,
   scheduleText,
@@ -217,7 +241,7 @@ describe("readInboxFailures", () => {
       join(failed, "new.stl.reason.txt"),
       "The upload failed: EACCES: permission denied, open '/data/inbox/new.stl'",
     );
-    // A reason file with no file beside it still counts: the reason is the record.
+    await writeFile(join(failed, "gone.scad"), "x");
     await writeFile(join(failed, "gone.scad.reason.txt"), "Gone.");
     await utimes(join(failed, "old.3mf.reason.txt"), new Date(1_000_000), new Date(1_000_000));
     await utimes(join(failed, "gone.scad.reason.txt"), new Date(2_000_000), new Date(2_000_000));
@@ -258,6 +282,7 @@ describe("readInboxFailures", () => {
       { modelId: DUP_MODEL, modelName: "Clip", fileId: "f1", fileName: "Clip.stl" },
       { modelId: DUP_OTHER, modelName: "Other", fileId: "f2", fileName: "Clip.stl" },
     ])}.`;
+    for (const name of ["a.stl", "b.stl", "c.stl"]) await writeFile(join(failed, name), "x");
     await writeFile(join(failed, "a.stl.reason.txt"), reasonFileText(sentence, "duplicate"));
     // Another code's reason, and an older duplicate file whose words do not parse: no detail.
     await writeFile(
@@ -277,10 +302,59 @@ describe("readInboxFailures", () => {
     expect(byName.get("c.stl")).not.toHaveProperty("duplicate");
   });
 
+  // Issue #329: a retry that moves everything in failed/ back to the inbox,
+  // reason files included, must not leave a made-up failure on the page.
+  // Issue #402: the watcher moves an entry it cannot put back (a FIFO, a
+  // socket, a folder swapped in during an import) into failed/ as it is, so
+  // any entry under the name keeps its reason listed. Only a name with
+  // nothing under it, the file moved back out to retry, is hidden.
+  test("counts a reason file while any entry is under its name, and hides one whose entry was moved out", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "kept.3mf"), "x");
+    await writeFile(join(failed, "kept.3mf.reason.txt"), "Kept.");
+    // The file was moved back to the inbox: only its reason file is left.
+    await writeFile(join(failed, "retried.3mf.reason.txt"), "Old reason.");
+    // A folder, a symlink and a FIFO under the name are entries the watcher moved there.
+    await mkdir(join(failed, "folder.3mf"));
+    await writeFile(join(failed, "folder.3mf.reason.txt"), "Folder.");
+    await symlink(join(failed, "kept.3mf"), join(failed, "link.3mf"));
+    await writeFile(join(failed, "link.3mf.reason.txt"), "Link.");
+    const fifo = spawnSync("mkfifo", [join(failed, "pipe.3mf")]);
+    expect(fifo.status, String(fifo.stderr)).toBe(0);
+    await writeFile(join(failed, "pipe.3mf.reason.txt"), "Pipe.");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : "")).sort()).toEqual([
+      "folder.3mf",
+      "kept.3mf",
+      "link.3mf",
+      "pipe.3mf",
+    ]);
+  });
+
+  test("reads at most REASON_BYTES of a reason file", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "big.3mf"), "x");
+    await writeFile(join(failed, "big.3mf.reason.txt"), "a".repeat(REASON_BYTES * 4));
+    reasonReads.length = 0;
+    const { items } = await readInboxFailures(dir, 10);
+    const reason = items[0]?.type === "inbox_failed" ? items[0].reason : "";
+    expect(reason.length).toBeGreaterThan(0);
+    expect(reason.length).toBeLessThanOrEqual(REASON_BYTES);
+    // The file was read through a handle, and the bytes asked for add up to
+    // REASON_BYTES at most: nothing past it was read. (Reading the whole file
+    // and cutting the text, as before, asks for none through a handle here.)
+    const asked = reasonReads.filter(([path]) => path.endsWith("big.3mf.reason.txt"));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.reduce((sum, [, length]) => sum + length, 0)).toBeLessThanOrEqual(REASON_BYTES);
+  });
+
   test("keeps only the newest limit", async () => {
     const failed = join(dir, "failed");
     await mkdir(failed);
     for (let i = 0; i < 5; i++) {
+      await writeFile(join(failed, `f${i}.3mf`), "x");
       const reason = join(failed, `f${i}.3mf.reason.txt`);
       await writeFile(reason, `reason ${i}`);
       await utimes(reason, new Date(1_000_000 * (i + 1)), new Date(1_000_000 * (i + 1)));

@@ -1,17 +1,17 @@
-// Build plan Task 21: the app API behind the settings, trash and organising
-// pages (AC-013 warning, AC-031 menu, AC-060, AC-061, AC-062, AC-063 UI,
-// AC-083 UI). Every route is under /app/api and session-class: it needs a
+// The app API behind the settings, trash and organising
+// pages: the bucket versioning warning, the printer menu, rename, tags, flat
+// collections, the trash, and per-client API tokens. Every route is under /app/api and session-class: it needs a
 // live session, and every state-changing one needs Origin to be
-// PUBLIC_ORIGIN (Task 15's gate), so the token routes here are for the web UI
+// PUBLIC_ORIGIN (the route-class gate), so the token routes here are for the web UI
 // and separate from the bearer API.
 //
 // Everything is real but the login: a migrated Postgres 17 and a bucket on
 // the S3 test server made without versioning, pg-boss with the ingest and
-// slicer queues, estimates (Task 12) against the contract-faithful slicer
-// stub, tokens in api_tokens (Task 16), and the trash (Task 14). The request
+// slicer queues, estimates against the contract-faithful slicer
+// stub, tokens in api_tokens, and the trash. The request
 // log is captured from buildApp's logger stream, and the last test reads it:
 // no token this file made appears in any line, with or without its prefix.
-// Sessions are in memory (Task 15's test support). Every file is generated.
+// Sessions are in memory (the login tests' support). Every file is generated.
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyInstance } from "fastify";
@@ -1388,5 +1388,9 @@ describe("every /app/api route", () => {
       expect(log).not.toContain(made);
       expect(log).not.toContain(made.slice(TOKEN_PREFIX.length));
     }
+    // Tokens this test never saw, such as the ones made on the 500 path,
+    // whose answer it does not read: nothing token-shaped is in the log.
+    const tokenShaped = new RegExp(TOKEN_PATTERN.source.replace(/^\^|\$$/g, ""));
+    expect(log).not.toMatch(tokenShaped);
   });
 });

@@ -1,4 +1,4 @@
-// The trash (build plan Task 21; AC-063 UI, decided Q11), on its own page
+// The trash, on its own page
 // and on the settings page. Each trashed model shows the day after which
 // the daily purge deletes it for good (30 days after it was trashed) and a
 // Restore button, which brings it back with its files, tags and

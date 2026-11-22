@@ -89,8 +89,8 @@ test("the OpenSCAD calls pass OpenSCAD's own -o through to OpenSCAD", () => {
   assert.deepEqual(byName.inside.command, [gate.PATHS.openscad, "-o", "inside.stl", "inside.scad"]);
   assert.deepEqual(byName.escape.command, [gate.PATHS.openscad, "-o", "escape.stl", "escape.scad"]);
   assert.deepEqual(byName.planFormRo.command, [gate.PATHS.openscad, "-o", "planform.stl", "inside.scad"]);
-  // The T11 form keeps --ro, not --rox, on the OpenSCAD tree: it is recorded
-  // as evidence for T11, whatever it does.
+  // The first slicer design's form keeps --ro, not --rox, on the OpenSCAD
+  // tree: it is recorded as evidence, whatever it does.
   const sep = byName.planFormRo.args.indexOf("--");
   const flags = byName.planFormRo.args.slice(0, sep);
   assert.ok(flags.includes("--ro") && !flags.includes("--rox"), flags.join(" "));

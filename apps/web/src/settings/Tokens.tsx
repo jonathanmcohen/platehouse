@@ -1,4 +1,4 @@
-// API tokens on the settings page (build plan Task 21; AC-083 UI). The user
+// API tokens on the settings page. The user
 // makes one token per API client (each script or assistant, on each machine) and revokes it
 // here. A new token is shown once, in a themed dialog with Copy, and never
 // again: it is held only while that dialog is open, never put in the list,

@@ -1,4 +1,4 @@
-// AC-003: the Manyfold client id and secret, the Manyfold token, the
+// The Manyfold client id and secret, the Manyfold token, the
 // Platehouse token and the signed query of any object-store redirect never
 // appear in what the importer prints, on its happy path or its error paths.
 // stdout and stderr are captured whole and searched for each value, raw,
@@ -106,6 +106,22 @@ describe("the output never shows a credential or a signed query", () => {
     );
     const r = await s.run(["--apply"]);
     expect(r.code).toBe(1);
+    expectClean(s, r.output);
+  });
+
+  it("when Manyfold echoes the URL-encoded client secret back in an error body", async () => {
+    expect(encodeURIComponent(FAKE_KEY)).not.toBe(FAKE_KEY);
+    const s = setup(library());
+    server.use(
+      http.post(
+        `${MANYFOLD}/oauth/token`,
+        () =>
+          new HttpResponse(`invalid_client for ${encodeURIComponent(FAKE_KEY)}`, { status: 401 }),
+      ),
+    );
+    const r = await s.run(["--apply"]);
+    expect(r.code).not.toBe(0);
+    expect(r.output).toContain("401");
     expectClean(s, r.output);
   });
 

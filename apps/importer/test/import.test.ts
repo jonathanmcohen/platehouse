@@ -1,5 +1,5 @@
-// A whole import into the Platehouse stub (build plan Task 23; AC-001,
-// AC-002, AC-004): what lands in Platehouse, re-runs, the trash, sizes, the
+// A whole import into the Platehouse stub: what lands in Platehouse, re-runs
+// that make no duplicates, the trash, sizes that must match Manyfold's, the
 // report and the exit codes.
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
@@ -584,8 +584,10 @@ describe("file names (issue #226)", () => {
   });
 
   it("does not read a dot inside a display-style name as an extension", async () => {
-    // The live dry run skipped such a file as ".5g 5 port wall mount files".
-    const name = "Switch 2.5g 5 Port Wall Mount";
+    // A display name with a dot in it, such as "Bracket 2.5 mm", must not be
+    // read as having the extension ".5 mm" and skipped as a type Platehouse
+    // does not take.
+    const name = "Bracket 2.5 mm Wide";
     const s = setup(
       oneModel([
         file({

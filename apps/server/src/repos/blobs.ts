@@ -16,7 +16,7 @@ export function blobsRepo(db: Kysely<DB>) {
     /**
      * Records a blob before its bytes are uploaded, so an upload that fails
      * half way leaves a row to clean up rather than an orphan object. The key
-     * is models/<modelId>/<blobId> (Bucket key layout); the schema refuses
+     * is models/<modelId>/<blobId> (storage/keys.ts); the schema refuses
      * any other.
      */
     async insertPending(input: NewBlob): Promise<Blob> {

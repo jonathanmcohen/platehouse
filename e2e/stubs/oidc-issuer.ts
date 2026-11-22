@@ -1,4 +1,4 @@
-// A mock OpenID Connect issuer for the end-to-end stack (build plan Task 22),
+// A mock OpenID Connect issuer for the end-to-end stack,
 // standing in for the OIDC provider. It answers discovery, an authorize endpoint
 // that signs in one fixed test user at once (as the OIDC provider does for a browser
 // already signed in to it), a token endpoint that checks the client, the

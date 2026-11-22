@@ -1,4 +1,4 @@
-// Build plan Task 30: GET /healthz on the running server is 200 while the
+// GET /healthz on the running server is 200 while the
 // database answers and 503 once it is stopped, with no detail in the body;
 // and the server still stops within the 30 s shutdown with its database gone.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";

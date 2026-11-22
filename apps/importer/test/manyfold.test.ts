@@ -1,4 +1,5 @@
-// The Manyfold side of an import (build plan Task 23; AC-001, AC-003): one
+// The Manyfold side of an import, which never changes Manyfold and keeps
+// credentials out of the output: one
 // read-scoped token per run, redirects, origin rules, retries and paging,
 // all against the stub built from Manyfold 0.154.1's recorded OpenAPI.
 import { HttpResponse, http } from "msw";
@@ -196,7 +197,7 @@ describe("file downloads", () => {
     expect(rawAuth).toEqual([`Bearer ${s.manyfold.accessToken}`]);
   });
 
-  // The plan: a non-https redirect is refused. That holds on Manyfold's own
+  // A non-https redirect is always refused. That holds on Manyfold's own
   // host too: the redirect is not upgraded to https and followed.
   it("refuse an http:// redirect to Manyfold's own host and import nothing for that file", async () => {
     const s = setup(library());

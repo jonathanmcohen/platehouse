@@ -4,9 +4,9 @@
 // machine: a nozzle preset that is not instantiable, which the printer menu
 // must leave out; and Bambu PLA Basic for the P1S only, so the P1S gets
 // Bambu's preset for PLA while the A1 falls back to its generic one.
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tempDir } from "./tmp.js";
 
 export function put(root: string, rel: string, obj: unknown): void {
   const file = join(root, rel);
@@ -18,7 +18,7 @@ export function put(root: string, rel: string, obj: unknown): void {
 export const TREE_PRINTERS = ["Bambu Lab A1 0.4 nozzle", "Bambu Lab P1S 0.4 nozzle"];
 
 export function profileTree(): string {
-  const root = mkdtempSync(join(tmpdir(), "slicer-prof-"));
+  const root = tempDir("slicer-prof-");
   const m = (name: string, sub = `machine/${name}.json`) => ({ name, sub_path: sub });
   const f = (name: string, sub = `filament/${name}.json`) => ({ name, sub_path: sub });
   const pr = (name: string, sub = `process/${name}.json`) => ({ name, sub_path: sub });

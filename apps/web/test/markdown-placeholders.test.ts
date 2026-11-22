@@ -2,7 +2,7 @@
 // not allow. A placeholder written bare, such as models/<modelId>/<blobId> or
 // orca-X.Y.Z-r<run number>, is raw HTML to the Markdown parser, so it shows
 // on GitHub as "models//" or "orca-X.Y.Z-r" and the text it was written to
-// explain is lost. pr-review found this three times in a row on PR #302
+// explain is lost. Review found this three times in a row on PR #302
 // (issues #306 and #307), so this guards the class, not one line: every
 // tracked .md file must keep each placeholder in a code span or a code block.
 // docs/ is included. Its pages are .md files, which the Docusaurus site reads
@@ -38,7 +38,7 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
     const sample = [
       "every blob lives under models/<modelId>/<blobId>, two ids",
       "a re-run tags orca-X.Y.Z-r<run number>.<attempt> now",
-      "run it with --model <id> and </closing>",
+      "run it with --model <id> and </closing>, then <constructor>",
       "in code: `models/<modelId>/<blobId>` and ``a `<x>` inside``",
       "a link: <https://example.com/x?a=1> and <name@example.com>",
       "a comparison: a < b and b > a, an arrow -> and <= 3",
@@ -58,6 +58,7 @@ describe("no bare placeholder in Markdown that GitHub renders", () => {
       "sample:2: <attempt>",
       "sample:3: <id>",
       "sample:3: </closing>",
+      "sample:3: <constructor>",
     ]);
   });
 

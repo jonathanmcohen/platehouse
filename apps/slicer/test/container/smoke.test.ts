@@ -1,4 +1,4 @@
-// The AC-037 smoke slice (build plan Task 25): every plate of
+// The smoke slice the slicer-image workflow runs before it publishes: every plate of
 // buildSliceable({plates: 2, filaments: 2}) and buildSliceable({plates: 3,
 // filaments: 4}) on the P1S 0.4 must slice with status ok and a time and a
 // weight above zero. .github/workflows/slicer-image.yml runs this file, with

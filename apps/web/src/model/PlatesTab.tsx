@@ -1,8 +1,8 @@
-// The Plates tab (build plan Task 20, AC-030): every plate of every .3mf of
+// The Plates tab: every plate of every .3mf of
 // the model, file by file, each file's plates in plate order, with the
 // plate's thumbnail, its name or "Plate N", and its numbers (Numbers.tsx).
 // Each file has its Open in Bambu Studio and Open in OrcaSlicer buttons
-// (AC-040). A .3mf whose plates could not be read says why in plain words.
+// (OpenInSlicer.tsx). A .3mf whose plates could not be read says why in plain words.
 // At the top, the printer the numbers are for, in full; with more than one
 // of My printers it is a menu that shows another printer's numbers
 // (PrinterSwitch), which reads only and starts no slicing.

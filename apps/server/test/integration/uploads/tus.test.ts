@@ -1,10 +1,11 @@
-// Build plan Task 9: resumable uploads, shared by the UI (/app/uploads, behind
-// its session) and the API (/api/v1/uploads, behind a bearer token). AC-020
-// (a 90 MB file completes, each file its own model unless combined) and
-// AC-084 (the API uploads with the same resumable upload, as a new model or
+// Resumable uploads, shared by the UI (/app/uploads, behind
+// its session) and the API (/api/v1/uploads, behind a bearer token): a 90 MB
+// file completes, each file is its own model unless combined, and the API
+// uploads with the same resumable upload, as a new model or
 // into an existing one; a 90 MB file completes with curl).
 //
-// Everything here is real except the two auth hooks, which belong to Part C:
+// Everything here is real except the two auth hooks, which app.ts supplies
+// (requireSession for /app/uploads, apiUploadHook for /api/v1/uploads):
 // tus over HTTP into TMP_DIR/uploads, the ingest queue on pg-boss, ingestFile
 // into Postgres 17 and the S3 test server. The tests pass their own hooks,
 // one of which refuses.
@@ -59,8 +60,9 @@ let server: TestApp;
 let tmpDir: string;
 let ninety: Buffer;
 
-// The two hooks Part C will replace: a bearer check for the API and a cookie
-// check for the UI. Each answers 401 itself, so nothing behind it runs.
+// Stand-ins for the two hooks app.ts passes (apiUploadHook for the API,
+// requireSession for the UI): a bearer check for the API and a cookie check
+// for the UI. Each answers 401 itself, so nothing behind it runs.
 async function bearerHook(request: FastifyRequest, reply: FastifyReply) {
   if (request.headers.authorization !== TOKEN) {
     return reply.code(401).send({ error: "unauthorized" });

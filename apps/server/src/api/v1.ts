@@ -1,8 +1,10 @@
-// The Public API v1 (build plan Task 16; AC-082, AC-084, AC-085), for
-// scripts, AI assistants and the Manyfold importer (Task 23). Every route is under
+// The Public API v1, for scripts, AI assistants and the Manyfold importer
+// (apps/importer). It works without a cookie, can add and find files but never
+// delete, trash or purge anything, answers a bad token 401 and sends no CORS
+// headers. Every route is under
 // /api/v1, bearer-class (auth/gate.ts) and behind the bearer hook
 // (api/tokens.ts): a token, never a cookie, never a login redirect, and no
-// Origin check. The operations are the contract's:
+// Origin check. The operations are:
 //
 //   GET    /api/v1/openapi.json                    this API's description
 //   GET    /api/v1/models?q&tag&collection&creator&externalRef&cursor&limit
@@ -25,10 +27,10 @@
 //   trash that lands while an upload is under way still wins: ingest refuses
 //   the finished upload (the result says so) and stores nothing.
 // - POST /api/v1/models takes the metadata and externalRef the importer
-//   carries (decision 5). license is an SPDX id. A taken externalRef, on a
+//   carries. license is an SPDX id. A taken externalRef, on a
 //   live or a trashed model, is 409 {"error":"exists","trashed":<bool>}, so
 //   a re-run import skips a model the user trashed rather than recreating it
-//   (Review Focus 4).
+//   or making a duplicate.
 // - externalRef= finds the live model with that reference (zero or one); it
 //   is a lookup, not a filter, so it cannot be combined with the others.
 // - JSON bodies are parsed in this scope only (the root app parses none),
@@ -369,7 +371,7 @@ export function createApiLibrary(deps: {
    * menu (readDisplayContext), read once per request.
    */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
+  /** The estimates module's plateNumbers for one plate with that context (estimates/display.ts). */
   plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
 }): ApiLibrary {
   const { db, store } = deps;

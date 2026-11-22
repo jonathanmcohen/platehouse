@@ -1,12 +1,12 @@
-// OpenSCAD's sandbox (AC-052, build plan Task 11). Every render runs under
+// OpenSCAD's sandbox, so a .scad can read no user, app or job data. Every render runs under
 // landrun v0.1.17 (Linux Landlock) with read and execute access only to what
 // OpenSCAD needs to start, read-only fonts, and write access to its own job
 // folder, which holds the one .scad file. OPENSCADPATH is never set, so no
 // library folder is searched.
 //
 // Two lessons from the slicing gate (runs 3 and 4, 2026-11-08):
-// - every path a binary is executed or mapped from needs --rox: the plan's
-//   form with --ro on the OpenSCAD tree does not run (exit 1);
+// - every path a binary is executed or mapped from needs --rox: the first
+//   design's form with --ro on the OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--": landrun reads flags past the command
 //   until it meets "--", so without it OpenSCAD's own -o was taken as a
 //   landrun flag ("flag provided but not defined: -o").
@@ -151,7 +151,7 @@ export function readLandlockAbi(run: GroupResult): AbiReading {
 }
 
 /**
- * CPUs the slicer container gets (AC-035: --cpus 4 in the deploy, the gate's
+ * CPUs the slicer container gets (--cpus 4 in the deploy, the gate's
  * sizing). CPU time adds up across a program's threads, so a render that
  * uses all of them for its whole wall-clock cap spends this many seconds of
  * CPU per second.
@@ -160,7 +160,7 @@ const SLICER_CPUS = 4;
 /** Added to the CPU-time limit so that the wall-clock cap always fires first. */
 const CPU_MARGIN_SECONDS = 60;
 /**
- * The address-space limit: the container's 4 GiB of memory (AC-035). Virtual
+ * The address-space limit: the container's 4 GiB of memory. Virtual
  * reservations (thread stacks, malloc arenas, Mesa's buffers) count against
  * it as well as memory in use, so it is not set lower. It bounds what
  * OpenSCAD alone can reserve; it does not keep the kernel's OOM killer out.
@@ -441,8 +441,8 @@ export function tailLines(text: string, lines = 20, chars = 2000): string {
 export type ScadOutput = "stl" | "png";
 
 /**
- * OpenSCAD's own arguments. STL uses the Manifold backend (AC-052: the
- * Manifold build); gate item (f) proved --backend=manifold renders headless.
+ * OpenSCAD's own arguments. STL uses the Manifold backend (the image ships
+ * the Manifold build); gate item (f) proved --backend=manifold renders headless.
  * PNG is a fitted 800 x 800 image of the model.
  */
 export function scadArgs(kind: ScadOutput, input: string, output: string): string[] {

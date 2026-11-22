@@ -1,4 +1,4 @@
-// Dark / Light / System (build plan Task 18, AC-070): three buttons in a
+// Dark / Light / System: three buttons in a
 // fieldset named Theme, the current choice marked aria-pressed. A press
 // switches at once with no reload; Shell writes the cookie and the html
 // attribute (theme.ts).

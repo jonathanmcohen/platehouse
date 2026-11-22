@@ -8,12 +8,12 @@
 // guard.ts directly (Node 26 strips the types), and check that the child is
 // still serving after each failure.
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { request } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { Sent } from "./support/http.js";
+import { removeTempDirs, tempDir } from "./support/tmp.js";
 
 const GUARD = new URL("../src/guard.ts", import.meta.url).href;
 
@@ -93,7 +93,7 @@ let base = "";
 let stdout = "";
 
 beforeAll(async () => {
-  const dir = mkdtempSync(join(tmpdir(), "slicer-guard-"));
+  const dir = tempDir("slicer-guard-");
   const script = join(dir, "child.mjs");
   writeFileSync(script, CHILD);
   child = spawn(process.execPath, [script, GUARD], { stdio: ["ignore", "pipe", "pipe", "ipc"] });
@@ -128,6 +128,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   child?.kill("SIGKILL");
+  removeTempDirs();
 });
 
 function get(path: string): Promise<Sent> {

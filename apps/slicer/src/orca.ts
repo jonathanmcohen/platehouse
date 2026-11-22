@@ -1,5 +1,5 @@
-// One plate through the OrcaSlicer 2.5.0 CLI (build plan Task 11, decision
-// 3), the way the slicing gate's gate.mjs slice step ran 332 plates:
+// One plate through the OrcaSlicer 2.5.0 CLI, one plate per request, the way
+// the slicing gate's gate.mjs slice step ran 332 plates:
 //
 //   orca --datadir <job>/data --slice <plate> --export-statistics
 //        --mstpp <SLICE_PLATE_SECONDS> --allow-newer-file --outputdir <job>/out

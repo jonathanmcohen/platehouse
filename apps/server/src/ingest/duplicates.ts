@@ -3,7 +3,7 @@
 // already holds a file with the same SHA-256. Ingest records every file's
 // SHA-256 (files.sha256, indexed by migration 0004), so the lookup is one
 // indexed query. A file in a trashed model never counts: the trash is on its
-// way out, and the API cannot see it at all (AC-063, AC-084).
+// way out, and the API cannot see it at all (a trashed model is invisible to it).
 import type { Kysely } from "kysely";
 import type { DB } from "../db/types.js";
 

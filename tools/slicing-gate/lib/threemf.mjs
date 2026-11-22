@@ -2,9 +2,9 @@
 // plate list, Bambu's own per-plate numbers, the printer the file was sliced
 // for, and the project's filament types and key process values.
 //
-// It follows the Bambu Plates parser (parser.rb@136fd61): entries are read
+// It follows an earlier plate parser written for Manyfold: entries are read
 // only by exact name, every entry is capped on inflated bytes, and the
-// AC-023 ceilings apply. It never returns object names, plate names or any
+// hostile-file ceilings apply. It never returns object names, plate names or any
 // other designer text.
 import { openZip, ZipDamaged } from "./zip.mjs";
 

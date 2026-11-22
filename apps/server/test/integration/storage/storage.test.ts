@@ -1,5 +1,6 @@
-// The storage layer against the real S3 test server (build plan Task 5;
-// AC-010, AC-012, AC-013). The first test proves the server itself keeps
+// The storage layer against the real S3 test server: files live in the
+// bucket, an outage is never taken for a missing file, and the versioning
+// state is read for the settings page. The first test proves the server itself keeps
 // object versions, because the versioning checks below mean nothing on a
 // server that only pretends to.
 import { createHash, randomBytes, randomUUIDv7 } from "node:crypto";

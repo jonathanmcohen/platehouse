@@ -5,9 +5,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-// The package is consumed by name (build plan Task 8: apps/server imports
+// The package is consumed by name (apps/server's ingest imports
 // extractMakerWorld, htmlToMarkdown and mapLicense from @platehouse/makerworld)
-// and the server runs under plain node in the app image (Task 24). Vitest and
+// and the server runs under plain node in the app image (docker/app.Dockerfile). Vitest and
 // tsc both map a ".js" import to the ".ts" file beside it; node does not. So
 // this builds the package with its own build command (tsc -b, as
 // packages/threemf does) and imports it by name in a separate, plain node
@@ -70,7 +70,7 @@ describe("the built package under plain node", () => {
     expect(existsSync(join(PKG, "dist/src/index.js"))).toBe(true);
   });
 
-  it("imports by package name in plain node and exports the Task 7 functions", () => {
+  it("imports by package name in plain node and exports the package's functions", () => {
     let out: string;
     try {
       out = execFileSync(process.execPath, ["--input-type=module", "--eval", PROBE], {

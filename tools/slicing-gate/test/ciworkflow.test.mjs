@@ -1,11 +1,9 @@
 // Pins ci.yml: the CI job that builds the gate image on GitHub, so the next
 // image build failure is found there and not on the test server (run 2, 2026-11-08,
 // failed at the fetch stage's first Node call), the changes job that decides
-// when that job runs, and the workspace jobs with their zero-test guard (build
-// plan Task 3). Read as text: the gate has no YAML parser and needs no install
+// when that job runs, and the workspace jobs with their zero-test guard. Read as text: the gate has no YAML parser and needs no install
 // step. Shell steps are run in bash with their tools stubbed. The tests at the
-// end pin release.yml's pushed-image check and slicer-image.yml (build plan
-// Task 25) the same way.
+// end pin release.yml's pushed-image check and slicer-image.yml the same way.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,7 +39,7 @@ test("the workflow reads the repo only, holds no secrets and pushes nothing", ()
   assert.match(t, /persist-credentials: false/, "checkout keeps no token on disk");
 });
 
-// The one exception is the app image job (build plan Task 24, approved by the maintainer
+// The one exception is the app image job (approved by the maintainer
 // 2026-11-13): it builds and runs the image for amd64 and arm64 natively, so
 // its runs-on is its matrix's runner, and that matrix lists exactly
 // ubuntu-24.04 and ubuntu-24.04-arm.
@@ -70,7 +68,7 @@ test("every action is pinned to an exact release tag", () => {
   for (const u of uses) assert.match(u, /^[\w.-]+\/[\w.-]+@v\d+\.\d+\.\d+$/, `not an exact release tag: ${u}`);
 });
 
-// The maintainer, 2026-11-08 (build plan Task 3): every job takes its Node version from
+// The maintainer, 2026-11-08: every job takes its Node version from
 // .node-version, the one the workspace pins, instead of a hardcoded one.
 test("every setup-node step reads .node-version, which pins Node 26", () => {
   const t = text();
@@ -246,7 +244,7 @@ function jobBlock(t, id) {
   return jobs.slice(at + 1).split(/\n(?= {2}[\w-]+:\n)/)[0];
 }
 
-// Build plan Task 3: lint, typecheck, unit and integration in a chain, and
+// Lint, typecheck, unit and integration in a chain, and
 // every job after the first carries its own !cancelled() condition, because a
 // skip propagates down a needs chain unless a job says otherwise.
 test("lint, typecheck, unit and integration run in a chain, each gated on the one before", () => {
@@ -805,7 +803,7 @@ for (const [name, input, want] of [
   ["a push touching only the README runs the tests, not the image build", { event: "push", before: SHA, changed: ["README.md"] }, TESTS],
   ["a push touching the gate runs both", { event: "push", before: SHA, changed: ["tools/slicing-gate/README.md"] }, RUN],
   // PR #17 review: git diff --name-only lists only the new path of a rename, so
-  // a module moved out of the gate (say into packages/threemf/ in Task 6) left
+  // a module moved out of the gate (say into packages/threemf/) left
   // no gate path in the list and the gate job was skipped. The job passes
   // --no-renames so a move lists its old path too.
   [
@@ -1193,7 +1191,7 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
 
 // PR #227 review, round 2: an import from outside tools/slicing-gate is a read
 // too, and the likeliest one, as gate modules are due to move to
-// packages/threemf (Task 6). The sources below are fakes handed to the scan.
+// packages/threemf. The sources below are fakes handed to the scan.
 // Each is one line with \n escapes, and the dynamic import is built by
 // dynImport, so that the scan, reading this file, does not take them for real
 // imports of its own.
@@ -1373,7 +1371,7 @@ const vitestReport = (total, passed, failed, pending, todo = 0) => ({
   numTodoTests: todo,
 });
 
-// AC-094: CI fails when zero tests ran. Measured with Vitest 5.1.0 on
+// CI fails when zero tests ran. Measured with Vitest 5.1.0 on
 // 2026-11-08: vitest run -t no-such-test skips all 65 tests, exits 0, and
 // still reports numTotalTests 65, so a guard on numTotalTests alone passes.
 for (const [stepName, label] of [
@@ -1435,13 +1433,13 @@ for (const [stepName, label] of [
 }
 
 // ---------------------------------------------------------------------------
-// slicer-image.yml (build plan Task 25; AC-037). Watches OrcaSlicer's releases,
+// slicer-image.yml, which keeps the slicer image current. Watches OrcaSlicer's releases,
 // builds apps/slicer/Dockerfile for a version, smoke-slices generated plates in
 // the built image and, only on a pass, pushes orca-X.Y.Z, orca-X.Y.Z-r<run> and
 // moves stable to that digest; on a failure it opens an issue. Each shell step
 // is run in bash with gh, git, docker and pnpm stubbed. None of this runs the
 // workflow on GitHub: a dispatch or a schedule needs the file on main, and the
-// plan's Steps 1 and 2 are the live proof.
+// first manual run and a run forced to fail are the live proof.
 const SLICER = join(ROOT, ".github", "workflows", "slicer-image.yml");
 const slicerText = () => readFileSync(SLICER, "utf8");
 const SLICER_DOCKERFILE = readFileSync(join(ROOT, "apps", "slicer", "Dockerfile"), "utf8");
@@ -1552,10 +1550,10 @@ test("slicer-image: runs daily at 05:00 UTC, by hand with orca_version and force
   assert.doesNotMatch(on, /branches:|pull_request/, "no branch pushes and no pull requests");
 });
 
-// The plan's permissions are contents: read, packages: write and issues: write.
+// The workflow's permissions are contents: read, packages: write and issues: write.
 // Each job takes only what it uses: the registry check reads packages, only
 // the build job writes them, and only the failure report writes issues.
-test("slicer-image: each job holds only the permissions it uses, within the plan's three", () => {
+test("slicer-image: each job holds only the permissions it uses, within those three", () => {
   const t = slicerText();
   assert.match(t, /^permissions:\n {2}contents: read\n(?! {2}\S)/m, "top-level permissions are contents: read alone");
   const perms = (id) => {
@@ -1939,7 +1937,7 @@ test("slicer-image: both builds pass ORCA_VERSION, ORCA_SHA256 and ORCA_SRC_SHA 
     assert.equal(inputs.file, "apps/slicer/Dockerfile");
     assert.equal(inputs.context, ".");
     assert.equal(inputs.platforms, "linux/amd64", "amd64 only");
-    assert.equal(inputs.provenance, "false", "no build attestation (AC-094)");
+    assert.equal(inputs.provenance, "false", "no build attestation");
     // stepInputs stops at the multi-line build-args, so the cache lines are
     // read directly.
     assert.match(b, /\n {10}cache-from: type=gha,scope=slicer-image\n/);
@@ -2487,7 +2485,7 @@ test("slicer-image issue: with no kept tail it says so, and a tail cannot break 
   assert.doesNotMatch(stepBlock(report, "Open or update the issue"), /\n {8}(if|continue-on-error):/);
 });
 
-// The rollback the plan puts in the README, as a carbon copy so stable's
+// The rollback the README gives, as a carbon copy so stable's
 // digest is the old version's.
 test("slicer-image: the README holds the rollback command, and the workflow points to it", () => {
   const readme = readFileSync(join(ROOT, "README.md"), "utf8");

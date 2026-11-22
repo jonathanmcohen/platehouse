@@ -308,18 +308,18 @@ test("the README pass rule lists -101 and -62 as legitimate refusals by the main
   assert.doesNotMatch(needs, /temperature/);
 });
 
-// PR #11 review: the production slicer image (build plan Task 11) builds from
+// PR #11 review: the production slicer image (apps/slicer) builds from
 // the same Orca 2.5.0 AppImage, so without the process_full folder its first
 // cross-printer slice would fail with code -3 as gate run 3 did. The
-// process_full section binds Task 11 and the daily Orca update workflow to
+// process_full section binds the slicer image and the daily Orca update workflow to
 // generate that folder the same way, with the same build checks, as the
 // profile-source section binds them to its pin.
-test("the process_full section binds Task 11 and the Orca update workflow to the same folder and build checks", () => {
+test("the process_full section binds the slicer image and the Orca update workflow to the same folder and build checks", () => {
   const text = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "README.md"), "utf8");
   const section = text
     .slice(text.indexOf("## Slicing on another printer: Orca's process_full folder"), text.indexOf("## The sample rule"))
     .replace(/\s+/g, " ");
-  assert.match(section, /production slicer image \(build plan Task 11\)/);
+  assert.match(section, /production slicer image \(apps\/slicer\)/);
   assert.match(section, /daily Orca update workflow/);
   assert.match(section, /flatten-profiles\.mjs --process-full/);
   assert.match(section, /same build checks/);

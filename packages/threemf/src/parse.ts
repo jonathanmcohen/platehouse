@@ -1,5 +1,5 @@
-// Reads the plate data of a Bambu Studio .3mf. A port of the Bambu Plates
-// parser (parser.rb@136fd61) with its AC-023 ceilings, plus the printer,
+// Reads the plate data of a Bambu Studio .3mf. A port of an earlier plate
+// parser written for Manyfold, with its hostile-file ceilings, plus the printer,
 // process and MakerWorld fields Platehouse needs.
 //
 // Rules carried from that parser:
@@ -19,10 +19,13 @@
 // - every cap counts bytes actually inflated, never a declared size;
 // - a colour is kept only as #RRGGBB or #RRGGBBAA;
 // - only the parser's own reads of the file (opening the zip, listing it,
-//   inflating an entry), the ceilings and the 32-bit rule above make a
-//   damaged file (null); otherwise broken config XML or JSON costs that
-//   entry only, while a plate index or filament slot past 2147483647 in
-//   valid config costs the whole file;
+//   inflating an entry), the ceilings, the 32-bit rule above and a DTD in
+//   an XML config entry (model_settings.config or slice_info.config) make a
+//   damaged file (null); otherwise broken config XML or JSON costs that entry
+//   only, while a plate index or filament slot past 2147483647 in valid
+//   config, or a DOCTYPE in an XML config entry, costs the whole file
+//   (project_settings.config is JSON, and a DOCTYPE string there is not
+//   checked);
 // - a filesystem error is ReadUnavailable and never damage;
 // - anything else reaches the caller unchanged: whatever onThumbnail throws,
 //   and a bug in this file's own code. Neither is a file with no plate data.
@@ -65,8 +68,10 @@ const MAX_PRINTER_MODEL_ID_LENGTH = 64;
 const RESOURCES = Buffer.from("<resources", "latin1");
 
 /**
- * Reads one .3mf. Returns null when the file holds no Bambu plate data or
- * breaks any ceiling; the app shows NO_PLATE_DATA_MESSAGE for it. Throws
+ * Reads one .3mf. Returns null when the file holds no Bambu plate data,
+ * breaks any ceiling, or has a DTD in an XML config entry
+ * (model_settings.config or slice_info.config); the app shows
+ * NO_PLATE_DATA_MESSAGE for it. Throws
  * ReadUnavailable when the file cannot be read right now.
  */
 export async function readProject(path: string, opts: ReadOptions = {}): Promise<Project | null> {
@@ -170,7 +175,7 @@ async function readArchive(
     // Pass 1: every thumbnail must fit the file's budget before any is
     // handed over, so a caller never stores thumbnails of a file that turns
     // out damaged. Bytes are counted and dropped, never held. As in
-    // parser.rb thumbnail_from: plate_N.png comes first, and an empty one or
+    // the earlier parser: plate_N.png comes first, and an empty one or
     // one over LIMITS.pngBytes gives way to plate_N_small.png; a plate with
     // no usable entry has no thumbnail. Every byte read from a thumbnail
     // entry counts against the budget, a passed-over one included.
@@ -189,7 +194,8 @@ async function readArchive(
         }
       }
     }
-    // Pass 2: hand them over one at a time, in plate order (Bambu Plates #11).
+    // Pass 2: hand them over one at a time, in plate order, so no file's
+    // thumbnails are ever all held in memory at once.
     // The same bytes again, so the checks below hold unless the file changed
     // under the read.
     if (opts.onThumbnail) {
@@ -220,7 +226,7 @@ async function readArchive(
  * Inflates an entry until it ends or limit bytes have come out, and returns
  * how many bytes were taken, at most limit. Bytes past limit in the last
  * chunk are dropped, not counted, so the count is the same however the
- * inflated stream is chunked (parser.rb reads cap + 1 bytes the same way).
+ * inflated stream is chunked (the earlier parser read cap + 1 bytes the same way).
  */
 async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number): Promise<number> {
   let taken = 0;
@@ -246,7 +252,7 @@ export async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): P
 }
 
 /**
- * The per-file thumbnail budget (parser.rb max_thumbnail_bytes):
+ * The per-file thumbnail budget:
  * maxThumbnailBytes when it is a positive finite number, never above
  * LIMITS.thumbnailBytesPerFile. Anything else (NaN from an unset setting,
  * zero, a negative number, Infinity) keeps the default, so the option can
@@ -284,7 +290,7 @@ type Node = Record<string, unknown>;
 /**
  * The <config> element of a config entry, or null when there is none. XML
  * that fast-xml-parser cannot parse counts as the entry being absent, as
- * Nokogiri's recovery does under parser.rb: a broken model_settings.config
+ * the earlier parser's XML recovery did: a broken model_settings.config
  * costs the plate names (the png list takes over) and a broken
  * slice_info.config costs the slice data, never the whole file. A DTD is
  * still damage.

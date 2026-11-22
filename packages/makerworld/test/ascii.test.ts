@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// The build plan's Global Constraints: ASCII only in code and comments. A
+// The project's rule: ASCII only in code and comments. A
 // character outside ASCII is written as an escape (\u2018, not the quote
 // itself). Biome does not check this, so this test does.
 const PKG = fileURLToPath(new URL("..", import.meta.url));

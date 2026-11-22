@@ -1,14 +1,14 @@
-// Build plan Task 20 (AC-030, AC-032 to AC-034 display, AC-040, AC-050,
-// AC-051, AC-072): the model page's app API, against Postgres 17 and the S3
+// Every plate in order, its numbers and where they came from, the Open in
+// slicer buttons and the 3D view's sources: the model page's app API, against Postgres 17 and the S3
 // test server. Models come in through ingest from generated files (no
-// designer file); plate numbers are Task 12's plateNumbers for a selected
+// designer file); plate numbers are the estimates module's plateNumbers for a selected
 // printer, the P1S with a 0.4 mm nozzle.
 //
 //   GET  /app/api/models/:id            the model page's data
 //   POST /app/api/estimates/:id/retry   queue a failed estimate again
 //
 // - Both routes are session-class; the retry changes state, so it also needs
-//   Origin to be PUBLIC_ORIGIN (Task 15's gate).
+//   Origin to be PUBLIC_ORIGIN (the route-class gate).
 // - A model's files come with their plates in plate order, each plate's
 //   thumbnail as /blobs/<id> of a stored thumbnail blob of the model, and
 //   its numbers: Bambu's own, labelled with the printer the file was sliced
@@ -19,7 +19,7 @@
 //   null (a plate's 3D view is its own route, test/integration/plate-mesh).
 //   Only a stored blob of the model and of the right kind is ever named.
 // - A trashed, unknown or malformed model id is 404.
-// - The page's Open buttons mint a link at Task 17's POST
+// - The page's Open buttons mint a link at the slicer link route, POST
 //   /app/api/files/:id/slicer-link; for a file whose name has spaces, a
 //   slash, quotes and non-ASCII characters, the protocol URLs carry the link
 //   encoded exactly once, and the link itself opens the file without a
@@ -300,7 +300,7 @@ describe("the model page's routes", () => {
   });
 });
 
-describe("a .3mf's plates (AC-030, AC-051)", () => {
+describe("a .3mf's plates, every one in order with its thumbnail", () => {
   test("every plate in order with its name, thumbnail, numbers and the project filaments", async () => {
     const word = marker();
     const { modelId, fileId } = await ingest(
@@ -383,7 +383,7 @@ describe("a .3mf's plates (AC-030, AC-051)", () => {
   });
 });
 
-describe("numbers and where they came from (AC-032 to AC-034 display)", () => {
+describe("numbers, where they came from, and why a plate has none", () => {
   test("a file sliced for the X1C shows Bambu's numbers labelled X1C beside the P1S estimate", async () => {
     const { modelId, fileId } = await ingest(
       `Foreign ${marker()}.3mf`,
@@ -708,7 +708,7 @@ describe("POST /app/api/estimates/:id/retry", () => {
   });
 });
 
-describe("the 3D view's sources (AC-050, AC-051)", () => {
+describe("the 3D view's sources (STL and STEP, and none for a .3mf)", () => {
   test("an STL is viewed from its own stored source blob, and has no preview until one is rendered", async () => {
     const { modelId, fileId } = await ingest(`View ${marker()}.stl`, ASCII_STL);
     const file = await env.repos.files.get(fileId);
@@ -945,11 +945,11 @@ describe("View on MakerWorld", () => {
   });
 });
 
-describe("opening a file in a slicer from the model page (AC-040)", () => {
+describe("opening a file in a slicer from the model page", () => {
   test("a name with spaces, a slash, quotes and non-ASCII: the link is encoded exactly once and opens the file", async () => {
     const bytes = build3mf({ plates: 1, sliced: [1] });
     const { modelId, fileId } = await ingest(`Plain ${marker()}.3mf`, bytes);
-    // A rename (AC-060) can give a file and a model any name, a slash included.
+    // A rename can give a file and a model any name, a slash included.
     const hostile = `Big "box" / v2 ${U_UMLAUT}ber ${SNOWMAN}`;
     await env.db
       .updateTable("files")

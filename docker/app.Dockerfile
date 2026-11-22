@@ -1,4 +1,4 @@
-# Platehouse app image (build plan Task 24; AC-093, AC-094): the Fastify
+# Platehouse app image, with a healthcheck: the Fastify
 # server (apps/server) with the built web app (apps/web/dist) beside it, on
 # node:26.13.0-trixie-slim, run as the image's non-root node user.
 #
@@ -28,8 +28,8 @@
 # apps/importer is never copied (its test folder holds Manyfold's AGPL
 # OpenAPI fixture, PR #157), and neither is any test folder.
 #
-# Configuration is the environment only (the plan's Configuration contract);
-# the image sets none of it except what the contract defaults already say.
+# Configuration is the environment only (apps/server/src/config.ts);
+# the image sets none of it except what that file's defaults already say.
 # INBOX_DIR and TMP_DIR default to /data/inbox and /data/tmp, which exist in
 # the image owned by the node user, for a run without the bind mounts.
 
@@ -191,9 +191,9 @@ ENV NODE_ENV=production \
 WORKDIR /app
 EXPOSE 3000
 
-# AC-093: Docker marks the container unhealthy when /healthz stops answering
-# 200 (the database, pg-boss and the web build; Tasks 24 and 30), so the
-# fleet restart-loop alert sees it. A fetch that hangs counts as a failure
+# Docker marks the container unhealthy when /healthz stops answering
+# 200 (the database, pg-boss and the web build), so an orchestrator or
+# monitor watching container health sees it. A fetch that hangs counts as a failure
 # after 4 s. During the start period a check runs every 2 s, so a healthy
 # start shows within seconds.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \

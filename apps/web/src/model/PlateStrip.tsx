@@ -1,5 +1,4 @@
-// The strip of plate thumbnails under a .3mf's large plate image (build plan
-// Task 20, AC-051): one 72 px button per plate, in plate order. Pressing one
+// The strip of plate thumbnails under a .3mf's large plate image: one 72 px button per plate, in plate order. Pressing one
 // shows that plate large; the shown one is aria-pressed. The buttons are in
 // the Tab order, so the strip works by keyboard.
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";

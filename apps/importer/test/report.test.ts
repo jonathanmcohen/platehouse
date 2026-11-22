@@ -1,4 +1,5 @@
-// The report's totals and exit code (AC-001, AC-004).
+// The report's totals (found, imported, skipped, failed), its size rows and
+// its exit code.
 import { describe, expect, it } from "vitest";
 import {
   exitCode,

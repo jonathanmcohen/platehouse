@@ -1,4 +1,4 @@
-// Build plan Task 14, AC-061: tags on a model, and the library filtered by tag.
+// Tags on a model, and the library filtered by tag.
 import { setTimeout as sleep } from "node:timers/promises";
 import { type KyselyPlugin, sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";

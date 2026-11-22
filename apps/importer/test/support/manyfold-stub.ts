@@ -6,12 +6,12 @@
 // and fails the test. Every JSON body a GET answers is checked against the
 // documented 200 schema before it is sent.
 //
-// What it does beyond the document, from how Manyfold behaves behind Traefik
-// (the prior art manyfold.mjs at automation 1ce8c57):
+// What it does beyond the document, from how Manyfold behaves:
 // - POST /oauth/token, the document's clientCredentials tokenUrl, answers a
 //   Doorkeeper-shaped token for the client id and secret it was given.
-// - Absolute links come back as http:// (Traefik terminates TLS), list
-//   members carry relative @id links, and lists page through view.next.
+// - Absolute links come back as http://, as they may behind a reverse proxy
+//   that terminates TLS, list members carry relative @id links, and lists
+//   page through view.next.
 // - A file's contentUrl answers 302 to a presigned URL on the object store,
 //   another host, whose query string is the signature. The object store
 //   refuses a request that carries an Authorization header.
@@ -107,7 +107,7 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
   const { origin, objectOrigin, data } = options;
   const pageSize = options.pageSize ?? 2;
   const host = new URL(origin).host;
-  /** Links as Manyfold sends them behind Traefik: http://, on its own host. */
+  /** Links as Manyfold may send them behind a TLS-terminating proxy: http://, on its own host. */
   const link = (path: string) => `http://${host}${path}`;
   const accessToken = `mf-access-${randomBytes(12).toString("hex")}`;
   const tokenRequests: TokenRequest[] = [];
@@ -322,8 +322,12 @@ export function createManyfoldStub(options: ManyfoldStubOptions) {
   ];
 
   // Every documented method other than GET: recorded and refused. A GET the
-  // handlers above do not serve (nodeinfo, oembed, groups, raw) is left
-  // unhandled, so the importer reaching for it fails the test.
+  // handlers above do not serve (nodeinfo, groups, raw) is left unhandled, so
+  // the importer reaching for it fails the test. The {id}.oembed GETs are the
+  // exception: a :param takes dots, so the /models/:id, /creators/:id and
+  // /collections/:id handlers match them and answer 404, which shows up as a
+  // failed model or a missing creator or collection rather than as an
+  // unhandled request.
   for (const [path, methods] of documentedPaths()) {
     const mswPath = `${origin}${path.replace(/\{([^}]+)\}/g, ":$1")}`;
     for (const method of methods) {

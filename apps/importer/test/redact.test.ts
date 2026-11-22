@@ -1,4 +1,4 @@
-// The redactor every printed line goes through (AC-003), and the cleaning of
+// The redactor every printed line goes through, so no credential is printed, and the cleaning of
 // text that came from Manyfold.
 import { describe, expect, it } from "vitest";
 import { cleanText, createRedactor, quoteBody, REDACTED } from "../src/redact.js";

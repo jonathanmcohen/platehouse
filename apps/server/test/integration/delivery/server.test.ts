@@ -1,12 +1,12 @@
-// Build plan Task 17 with Task 30's entry point: start(config) wires file
+// File delivery on the real server: start(config) wires file
 // delivery and slicer links into the real server (buildApp registers them
 // only when it is given deps.delivery). A .3mf dropped in the inbox becomes
 // a file; a session made in the sessions table mints a link with the
 // server's own LINK_SECRET; the link, with no session, returns the file's
 // bytes, and the download and blob routes answer.
 //
-// Postgres 17, the S3 test server and the slicer stub, as Task 30's server
-// tests use them. Every file and value is generated per run.
+// Postgres 17, the S3 test server and the slicer stub, as the server
+// tests (test/integration/app) use them. Every file and value is generated per run.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createSessions, dbSessionStore, SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import type { SlicerLink } from "../../../src/delivery/links.js";

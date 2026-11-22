@@ -1,7 +1,7 @@
-// API tokens and the bearer check (build plan Task 16; AC-081, AC-083,
-// AC-085). Each API client, such as a script or an AI assistant on one machine, has its own
-// token, made by createToken and ended by revokeToken (Task 21's settings
-// page calls both; nothing in this task makes a token from the UI).
+// API tokens and the bearer check. A missing or bad token is 401, and tokens
+// keep working while the OIDC provider is down. Each API client, such as a script or an AI assistant on one machine, has its own
+// token, made by createToken and ended by revokeToken (the settings page's
+// routes in app-api/tokens.ts call both; this module has no UI of its own).
 //
 // - A token is ph_ followed by 43 base64url characters: 32 random bytes from
 //   the system's CSPRNG. createToken hands it back once and stores only its

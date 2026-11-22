@@ -1,23 +1,23 @@
-// The pg-boss queues (build plan Task 8, decision 6). Background work runs in
+// The pg-boss queues. Background work runs in
 // the same Postgres, so there is no Redis:
 // - ingest: an uploaded file through the ingest pipeline, two at once, never
-//   retried, so a failed upload fails visibly (AC-012);
+//   retried, so a failed upload fails visibly and leaves no half-made model;
 // - slicer: the singleton queue for slicer work, one job at a time, matching
 //   the slicer's own one-job lock (the maintainer, 2026-11-08, PR #49: there is no
-//   SLICER_CONCURRENCY, since the singleton policy made it a no-op). Task 12
-//   adds its slice jobs and Task 13 its render and mesh jobs; the slicer
+//   SLICER_CONCURRENCY, since the singleton policy made it a no-op). The estimates
+//   module adds its slice jobs and derived/ its render and mesh jobs; the slicer
 //   answers 409 busy while any heavy job runs, and those jobs retry on 409
 //   through the queue's own retry settings (SLICER_RETRY). Each job names
 //   its kind, and the worker hands it to that kind's handler (slicerJobs);
 // - after an ingest job stores a file, onIngested queues its estimates
-//   (Task 12), outside the ingest transaction;
-// - maintenance: the cron jobs, one at a time. Task 14's purgeExpired(now)
+//   (estimates/), outside the ingest transaction;
+// - maintenance: the cron jobs, one at a time. The trash's purgeExpired(now)
 //   runs daily at 03:30 local time (issue #38), the orphan sweep
-//   (ingest/orphans.ts) daily at 04:00 local time, Task 9's sweep of
+//   (ingest/orphans.ts) daily at 04:00 local time, the upload handler's sweep of
 //   partial uploads untouched for 24 hours (uploads/tus.ts) every hour,
-//   Task 12's Orca-version poll every 10 minutes, Task 13's render check
+//   the estimates module's Orca-version poll every 10 minutes, the render check
 //   (derived/derived.ts's checkRenders) every 15 minutes (CHECK_RENDERS_CRON),
-//   Task 15's delete of sessions past either expiry daily at 04:35 local
+//   the delete of login sessions past either expiry daily at 04:35 local
 //   time (PURGE_SESSIONS_CRON), and issue #316's preview backfill every 5
 //   minutes (BACKFILL_PREVIEWS_CRON), which also runs once at startup.
 //   The three daily tasks run at 03:30, 04:00 and 04:35, so none shares a
@@ -25,10 +25,10 @@
 //   15-minute schedule either. The 5-minute backfill does share minutes
 //   with all of them; the worker runs one maintenance job at a time in any
 //   case, and a backfill run is a quick query when there is nothing to do.
-// The server (main.ts, Task 30) passes a ServerQueueDeps, which requires
+// The server (main.ts) passes a ServerQueueDeps, which requires
 // slicerJobs, pollOrca, onIngested, checkRenders and backfillPreviews, so it
 // cannot leave a queue without its worker or those schedules without their handlers. The
-// session delete (purgeSessions) is optional in both; the Task 30 server
+// session delete (purgeSessions) is optional in both; the server
 // test checks that the running server schedules and runs every maintenance
 // task, that one included.
 import type { JobWithMetadata, PgBoss } from "pg-boss";
@@ -44,12 +44,12 @@ export const QUEUE = {
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
 
-/** Ingest jobs worked at once (Task 8 Interfaces). */
+/** Ingest jobs worked at once. */
 export const INGEST_CONCURRENCY = 2;
 
 /**
  * How a slicer job is retried when the slicer answers 409 busy or the
- * connection to it is lost (build plan Task 12; Task 13's render and mesh
+ * connection to it is lost (the estimate jobs, and the render and mesh
  * jobs too): three retries with exponential backoff from 10 s, capped at 2
  * minutes, so a slicer that is restarting has time to come back. pg-boss
  * runs them itself, except that a slice job retries a lost connection as a
@@ -78,7 +78,7 @@ export interface QueueSetting {
   work: { localConcurrency: number };
 }
 
-/** How each queue is created and worked. Task 12 works the slicer queue with its setting. */
+/** How each queue is created and worked. The slicer queue is worked with its own setting. */
 export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   return {
     ingest: {
@@ -183,7 +183,7 @@ function reconvertSliceMs(expireInSeconds: number): number {
 export const BACKFILL_PREVIEWS_CRON = "*/5 * * * *";
 
 /**
- * Every 10 minutes (Task 12 decision): the Orca-version poll, which also runs
+ * Every 10 minutes: the Orca-version poll, which also runs
  * once at startup.
  */
 export const POLL_ORCA_CRON = "*/10 * * * *";
@@ -194,15 +194,15 @@ export interface SlicerJob {
 }
 
 /**
- * The slicer queue's handlers by job kind: Task 12's "slice", and Task 13's
- * render and mesh kinds. A handler gets the job with its retry count and
+ * The slicer queue's handlers by job kind: the estimates module's "slice", and the
+ * render and mesh kinds (derived/). A handler gets the job with its retry count and
  * limit, so it can tell the last attempt.
  */
 export type SlicerJobHandlers = Readonly<
   Record<string, (job: JobWithMetadata<SlicerJob>) => Promise<unknown>>
 >;
 
-/** Daily at 03:30, in the time zone the schedule names (Task 14 decision). */
+/** Daily at 03:30, in the time zone the schedule names. */
 export const PURGE_EXPIRED_CRON = "30 3 * * *";
 
 /**
@@ -212,14 +212,14 @@ export const PURGE_EXPIRED_CRON = "30 3 * * *";
 export const SWEEP_ORPHANS_CRON = "0 4 * * *";
 
 /**
- * Daily at 04:35 local time (Task 15, the maintainer, 2026-11-11): the delete of sessions
+ * Daily at 04:35 local time (the maintainer, 2026-11-11): the delete of sessions
  * past their idle or absolute expiry. Expired rows already let nobody in, so
  * the hour only bounds how long they are kept; 04:35 is after the 03:30
  * purge and the 04:00 orphan sweep, and clear of every other schedule.
  */
 export const PURGE_SESSIONS_CRON = "35 4 * * *";
 
-/** Hourly, on the hour (Task 9): the sweep of partial uploads untouched for 24 hours. */
+/** Hourly, on the hour: the sweep of partial uploads untouched for 24 hours. */
 export const SWEEP_UPLOADS_CRON = "0 * * * *";
 
 /**
@@ -233,38 +233,38 @@ export function localTimeZone(): string {
 export interface QueueDeps {
   /** Runs one ingest job: ingest.ts's ingestFile. */
   ingestFile(input: IngestInput): Promise<IngestResult>;
-  /** Task 14's purgeExpired (library/trash.ts). */
+  /** The trash's purgeExpired (library/trash.ts). */
   purgeExpired(now: Date): Promise<unknown>;
   /** The orphan sweep (ingest/orphans.ts's sweepOrphans). */
   sweepOrphans(now: Date): Promise<unknown>;
   /**
-   * The slicer queue's handlers by job kind (Task 12, Task 13). With none,
+   * The slicer queue's handlers by job kind (estimates, renders and meshes). With none,
    * the slicer queue is created but not worked.
    */
   slicerJobs?: SlicerJobHandlers;
   /**
-   * Task 12's Orca-version poll, when given: scheduled every 10 minutes and
+   * The estimates module's Orca-version poll, when given: scheduled every 10 minutes and
    * run once at startup by startQueues itself.
    */
   pollOrca?(): Promise<unknown>;
   /**
-   * Runs after a file is ingested, outside the ingest transaction: Task 12
-   * queues the file's estimates here. A failure is logged, never thrown,
+   * Runs after a file is ingested, outside the ingest transaction: the estimates
+   * module queues the file's estimates here. A failure is logged, never thrown,
    * since the file is already stored.
    */
   onIngested?(result: IngestResult): Promise<unknown>;
-  /** Task 9's sweep of stale partial uploads (uploads/tus.ts's sweepStaleUploads). */
+  /** The sweep of stale partial uploads (uploads/tus.ts's sweepStaleUploads). */
   sweepUploads(now: Date): Promise<unknown>;
   /**
-   * Task 13's render check (derived/derived.ts's checkRenders), when given:
+   * The render check (derived/derived.ts's checkRenders), when given:
    * scheduled every 15 minutes (CHECK_RENDERS_CRON).
    */
   checkRenders?(now: Date): Promise<unknown>;
   /**
-   * Task 15's delete of sessions past either expiry (the sessions
+   * The delete of login sessions past either expiry (the sessions
    * repository's deleteExpired), when given: scheduled daily at 04:35
    * (PURGE_SESSIONS_CRON). Optional here so the tests that start the queues
-   * for other work need not pass it; the server passes it, and the Task 30
+   * for other work need not pass it; the server passes it, and the
    * server test fails if any maintenance task is left unscheduled.
    */
   purgeSessions?(now: Date): Promise<unknown>;
@@ -298,7 +298,7 @@ export interface QueueDeps {
 
 /**
  * QueueDeps with the slicer, poll, ingest and render dependencies required:
- * what the server passes (build plan Task 30). With it, a server that leaves
+ * what the server (main.ts) passes. With it, a server that leaves
  * the slicer queue without its worker, the Orca poll or the render check
  * without its schedule, or an ingested file without its estimates fails to
  * compile.
@@ -566,7 +566,7 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     }
   }
 
-  // The Orca poll's startup run (Task 12 decision: at startup and every 10
+  // The Orca poll's startup run (it runs at startup and every 10
   // minutes), here beside its schedule. It runs after the workers start, so
   // the slices it queues are worked at once. A failure, such as a slicer that
   // is not up yet, is logged and never stops the app: the next scheduled poll

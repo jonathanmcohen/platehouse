@@ -79,8 +79,9 @@ jobs:
       # Only the docs site and what it depends on, as in the ci docs job.
       - name: Install
         run: pnpm install --frozen-lockfile --filter @platehouse/docs
-      # docusaurus.config.mjs fails the build on a broken link or anchor, and
-      # on an empty or malformed DOCS_SITE_URL or DOCS_BASE_PATH.
+      # docusaurus.config.mjs fails the build on a broken link or anchor, on an
+      # empty or malformed DOCS_SITE_URL, and on a malformed DOCS_BASE_PATH (an
+      # empty one is the site root).
       - name: Build the docs site
         env:
           DOCS_SITE_URL: ${{ steps.pages.outputs.origin }}

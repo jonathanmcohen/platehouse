@@ -1,5 +1,5 @@
-// Slicer HTTP contract v1 (build plan, Contracts): the zod schemas the slicer
-// server answers with and the app's slicer client (Task 12) reads with. The
+// Slicer HTTP contract v1: the zod schemas the slicer
+// server answers with and the app's slicer client (apps/server/src/estimates/client.ts) reads with. The
 // slicer is on the internal network only, has no auth and holds no secrets.
 //
 //   GET  /v1/health                         -> health
@@ -41,20 +41,20 @@
 // one runs is 409 busy, answered at once without reading the body; the
 // caller retries later. health.busy is true while one runs.
 //
-// Where the plan leaves a case open, these schemas settle it, and the PR
-// says so: a malformed query or an unknown printer is 400 bad_request, an
+// Where the contract's first description left a case open, these schemas
+// settle it: a malformed query or an unknown printer is 400 bad_request, an
 // unknown path is 404 not_found, a failed slice with no Orca return code (the
 // slicer's own kill, or no result.json) has code null, and an ok slice's
 // process is null when the file names none.
 //
-// Filaments (build plan Task 11 Decisions, the maintainer, 2026-11-08: "I use mostly
+// Filaments (the maintainer, 2026-11-08: "I use mostly
 // Bambu Filaments"): a printer's default filament for a type is Bambu's own
 // preset for that printer where Orca has one, else the Generic preset for
 // that printer. /v1/profiles lists that default once per printer and type,
 // naming the printer; a printer and type with neither is not listed, and a
 // slice keeps the file's own filament there. A slice reports the preset used
 // for each project slot in filamentProfiles (null where the file's own was
-// kept). The filament entries carry only the fields the plan's contract
+// kept). The filament entries carry only the fields contract v1
 // names: where a preset came from is not part of contract v1.
 import { z } from "zod";
 
@@ -73,7 +73,7 @@ export const LIMITS = Object.freeze({
    * write, so an STL preview fits /work beside its PNG.
    */
   stlBodyBytes: 268_435_456,
-  /** Plates are numbered 1 to 128 (AC-023). */
+  /** Plates are numbered 1 to 128 (a file has at most 128 plates). */
   maxPlate: 128,
   /** A failed slice's detail is Orca's error_string, cut to this length. */
   detailChars: 2000,
@@ -82,7 +82,7 @@ export const LIMITS = Object.freeze({
 export type Limits = { [K in keyof typeof LIMITS]: number };
 
 /**
- * Why a plate could not be sliced. The plan's map as amended: Orca v2.5.0's
+ * Why a plate could not be sliced. The reason map as amended: Orca v2.5.0's
  * own codes, with -62 and -101 legitimate refusals (the maintainer, 2026-11-08).
  */
 export const REASONS = [

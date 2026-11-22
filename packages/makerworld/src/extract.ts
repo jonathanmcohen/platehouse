@@ -1,7 +1,6 @@
 // MakerWorld details from the start of a .3mf's 3D/3dmodel.model. Ported by
-// behaviour from extractMakerWorld in automation Manyfold/makerworld-metadata
-// at 1ce8c57; the input is the makerWorldXml string build plan Task 6's
-// readProject returns (the model file read up to <resources, at most 256 KiB).
+// behaviour from an earlier Manyfold metadata script; the input is the
+// makerWorldXml string packages/threemf's readProject returns (the model file read up to <resources, at most 256 KiB).
 
 // Named entities: the five XML ones plus the HTML ones MakerWorld text uses
 // most. Anything else named is left as written. Non-ASCII targets are written

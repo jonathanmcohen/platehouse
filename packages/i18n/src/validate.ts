@@ -1,9 +1,10 @@
 // Checks a translation against the English catalog, the source of truth
-// (the maintainer, 2026-11-19). The same check runs in three places: the CI test over
+// (the maintainer, 2026-11-19). The same check runs in two places: the CI test over
 // the built-in catalogs (strict: every key, the same placeholders, tags and
-// plural cases), the server over a file a self-hoster drops into
+// plural cases), and the server over a file a self-hoster drops into
 // LOCALES_DIR (lenient: missing keys fall back to English, unknown keys are
-// dropped), and pnpm i18n:format.
+// dropped). pnpm i18n:format does not run it: it only rewrites the catalogs
+// into their canonical JSON.
 //
 // A value is refused when it is not a string, is longer than MAX_MESSAGE,
 // holds a control or bidi-override character, does not parse, uses a
@@ -185,7 +186,7 @@ export function checkCatalog(
   return result;
 }
 
-/** Checks the English catalog itself: every message parses, and $meta names en. */
+/** Checks the English catalog itself: every message parses. ($meta is not checked here.) */
 export function checkEnglish(data: unknown): CatalogProblem[] {
   const problems: CatalogProblem[] = [];
   if (typeof data !== "object" || data === null || Array.isArray(data)) {

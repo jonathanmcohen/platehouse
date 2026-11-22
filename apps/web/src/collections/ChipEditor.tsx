@@ -1,5 +1,4 @@
-// Tag and collection chips that can be added and removed (build plan Task
-// 21; AC-061, AC-062). Each chip has its own remove button, named for what
+// Tag and collection chips that can be added and removed. Each chip has its own remove button, named for what
 // it removes; a themed input with its button adds one, and may offer names
 // to pick from while typing (suggestions, a datalist), and tells a form
 // around it what is typed but not yet added (onDraft). Adding a name the

@@ -1,6 +1,6 @@
-// Which uploads Platehouse takes (build plan Task 8; AC-020, AC-024). The
-// supported types are exactly .3mf, .stl, .step, .stp and .scad (Global
-// Constraints). The file name's extension picks the kind, compared without
+// Which uploads Platehouse takes. Any other file type is refused with a
+// message, and nothing is stored. The
+// supported types are exactly .3mf, .stl, .step, .stp and .scad. The file name's extension picks the kind, compared without
 // regard to case, and the first bytes (and for a binary STL the size) must
 // agree with it:
 // - .3mf is a zip: it starts with a zip local file header (PK 03 04);
@@ -90,7 +90,7 @@ function isBinaryStl(firstBytes: Buffer, size: number): boolean {
 /**
  * The kind a file name claims by its extension, before any byte is read, or
  * null when Platehouse takes no file with that extension. An upload is refused
- * on this alone before its bytes are sent (Task 9); detectKind still checks
+ * on this alone before its bytes are sent (uploads/tus.ts); detectKind still checks
  * the bytes once they arrive.
  */
 export function kindFromName(name: string): Kind | null {

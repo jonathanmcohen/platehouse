@@ -1,4 +1,4 @@
-// Build plan Task 10: the inbox watcher's own rules, with a fake ingest so no
+// The inbox watcher's own rules, with a fake ingest so no
 // database or bucket is needed (the real pipeline is under
 // test/integration/inbox/). These pin what the integration tests cannot reach
 // cheaply: the exact settle boundary, every ignored name, the failed-folder
@@ -3207,7 +3207,7 @@ describe("telling a bad file from an outage", () => {
 });
 
 describe("ingest's error codes", () => {
-  // Since Task 9, ingestFile wraps any failure that is not its own (the
+  // Since resumable uploads were added, ingestFile wraps any failure that is not its own (the
   // database, the filesystem, the store refusing) in IngestError
   // ingest_failed, with the original error as its cause. That says nothing
   // about the file, so only unsupported_type and model_not_found send a file

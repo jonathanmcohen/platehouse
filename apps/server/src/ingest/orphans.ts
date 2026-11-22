@@ -3,8 +3,8 @@
 // their rows, so a process that dies in between leaves them behind, and so
 // does a failed ingest whose cleanup delete fails too (a store outage) or is
 // skipped because the database could not say whether the rows committed. For
-// a new model no purge ever reaches models/<modelId>/, and the AC-010
-// reconciliation only counts. This sweep removes them.
+// a new model no purge ever reaches models/<modelId>/, and reconciling the
+// bucket's objects against the file rows only counts them. This sweep removes them.
 //
 // It lists models/ a page at a time and deletes an object only when all of
 // these hold:
@@ -41,7 +41,7 @@
 // object of a library of ORPHAN_DELETE_FLOOR objects or fewer. Nothing in the
 // key tells such an object from a real orphan, since a new model's objects
 // have no models row either until its ingest commits. Bucket versioning is
-// the protection here, and the settings page warns while it is off (AC-013).
+// the protection here, and the settings page warns while it is off.
 import type { Kysely } from "kysely";
 import type { DB } from "../db/types.js";
 import { isBlobKey } from "../storage/keys.js";

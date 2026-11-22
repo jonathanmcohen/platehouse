@@ -7,9 +7,10 @@
 // The .opc buffers are crafted; no Orca file is committed.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { checkProfileVersions, readOpcStamp, sameVersion } from "../src/profiles.js";
 import { profileTree, put } from "./support/profiles.js";
+import { removeTempDirs } from "./support/tmp.js";
 
 function str(s: string): Buffer {
   const len = Buffer.alloc(8);
@@ -83,3 +84,6 @@ describe("profile version check", () => {
     expect(() => checkProfileVersions(source, shipped)).toThrow(/names vendor Other/);
   });
 });
+
+// Every folder profileTree() made for a test.
+afterEach(removeTempDirs);

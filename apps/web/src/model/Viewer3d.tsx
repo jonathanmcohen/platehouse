@@ -1,5 +1,5 @@
-// The 3D viewer (build plan Task 20, AC-050): an STL or a GLB (a STEP file's
-// mesh, converted on the server by Task 13) shown with three.js, which the
+// The 3D viewer: an STL or a GLB (a STEP file's
+// mesh, converted on the server) shown with three.js, which the
 // pointer rotates, pans and zooms (OrbitControls) and buttons rotate, zoom
 // and reset, so it works by keyboard too.
 //

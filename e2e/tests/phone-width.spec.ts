@@ -1,4 +1,4 @@
-// Phone width (build plan Task 22; AC-074): at 375 px the sidebar collapses
+// Phone width: at 375 px the sidebar collapses
 // behind the menu button and every page is usable. "Usable" is measured, not
 // eyeballed: the page does not scroll sideways, its heading, search box and
 // menu button are on screen, and the menu opens and reaches every section.

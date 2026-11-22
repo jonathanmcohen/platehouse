@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // platehouse-import --manyfold <url> --platehouse <url> [--apply] [--model <id>]
-// (build plan Task 23; AC-001 to AC-004): the one-time import of a
-// Manyfold library into Platehouse.
+// The one-time import of a Manyfold library into Platehouse: one model per
+// Manyfold model with its files, name, MakerWorld details, tags and
+// collections, read with a read-only token so Manyfold is never changed.
 //
 // With MANYFOLD_CLIENT_ID, MANYFOLD_CLIENT_SECRET and PLATEHOUSE_TOKEN set in
 // the environment (from a secret manager, never typed on the command line):
@@ -39,13 +40,14 @@
 //   Platehouse, as below, so only what it lacks is added;
 // - in Platehouse: only the missing files, tags and collections are added,
 //   so a re-run after a full or an interrupted run finishes what is missing
-//   and makes no duplicate (AC-002);
-// - in Platehouse's trash: skipped, with that reason (Review Focus 4).
+//   and makes no duplicate, matching on Manyfold's model id;
+// - in Platehouse's trash: skipped, with that reason, so a re-run never
+//   brings back a model someone trashed.
 // A value over the API's limits is left out and named on the model's line;
 // a name too long to send fails the model, in a dry run too (plan.ts).
 // Each file's download is checked against Manyfold's contentSize, and what
 // Platehouse stored is checked against it and against the downloaded bytes'
-// SHA-256 (AC-004). The report names every model and has one size row per
+// SHA-256, so every imported file's size is shown to match Manyfold's. The report names every model and has one size row per
 // file (report.ts).
 //
 // Exit codes: 0 every model handled, 1 at least one model failed, 2 the run
@@ -54,7 +56,8 @@
 // Manyfold's lists unreadable), or an error was raised outside run()
 // (onFatal). The credentials come only from
 // the environment and are never printed: every line goes through one
-// redactor that knows them, the Manyfold token and each signed query (AC-003).
+// redactor that knows them, the Manyfold token and each signed query, so no
+// credential reaches the output.
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Picks the Task 1 slicing-gate sample from a folder of .3mf files.
+// Picks the slicing-gate sample from a folder of .3mf files.
 //
 // Read-only: each file is opened for reading, only its Metadata entries are
 // parsed (slice_info.config printer keys, the plate list, project_settings
@@ -50,7 +50,7 @@ export function scanFolder(folder) {
   return out.sort(byName);
 }
 
-/** The Task 1 selection rule over [{name, meta}]. Pure; reads nothing. */
+/** The gate's selection rule over [{name, meta}]. Pure; reads nothing. */
 export function selectSample(files) {
   const sorted = [...files].sort(byName);
   const readable = sorted.filter((f) => f.meta);
@@ -77,7 +77,7 @@ export function selectSample(files) {
   for (const f of p1s) pick(f, "p1s-sliced", `already sliced for ${f.printer.orcaName} (${f.printer.source})`);
   if (p1s.length < 5) missing.push(`p1s-sliced (found ${p1s.length} of 5)`);
 
-  // Air Dry is a separate item (plan Task 1, requirements section 6), so it
+  // Air Dry is a separate item of the sample (the large real file), so it
   // never takes one of the 5 unsliced slots.
   const un = unsliced.filter((f) => !isAirDry(f)).slice(0, 5);
   for (const f of un) pick(f, "unsliced", "no plate carries Bambu slice numbers in slice_info.config");
@@ -101,7 +101,7 @@ export function selectSample(files) {
   }
 
   const air = readable.find(isAirDry);
-  if (air) pick(air, "air-dry", `named ${AIR_DRY}, the large file AC-020 names`);
+  if (air) pick(air, "air-dry", `named ${AIR_DRY}, the large file an upload must complete`);
   else missing.push("air-dry");
 
   const comparison = sliced.map((f) => ({

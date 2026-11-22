@@ -15,7 +15,8 @@ Then use the [checklist](./checklist.md) to confirm your setup works.
 :::warning Examples to adapt
 
 Every snippet in this section is an example to adapt to your own setup, not a file to copy
-unchanged. Only the Traefik setup has been run against a real deployment. The nginx, Caddy and
+unchanged. Only the Traefik setup has been run against a real deployment (the end-to-end tests run
+a minimal Traefik with no middleware, not this guide's full setup). The nginx, Caddy and
 Apache guides are written from each server's documentation and from what Platehouse needs, and
 have not been run against a real Platehouse deployment. Run the [checklist](./checklist.md)
 whichever you use.

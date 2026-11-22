@@ -1,4 +1,4 @@
-// Build plan Task 17 with Task 15's route-class gate: the delivery routes,
+// The delivery routes behind the route-class gate,
 // mounted the way the server mounts them (buildApp with deps.delivery), each
 // in its class (the Route classes table): GET /files/:id/download and GET
 // /blobs/:id are session-class, POST /app/api/files/:id/slicer-link is
@@ -12,7 +12,7 @@
 // reaches the client before the store has sent the rest), a HEAD opens no
 // stream, a store outage is 503 "This file is unavailable right now", an
 // error from the database leaks nothing, and the link URL comes from
-// PUBLIC_ORIGIN whatever Host the request carries (AC-091). A refused link
+// PUBLIC_ORIGIN whatever Host the request carries. A refused link
 // makes no library lookup at all (the MAC is checked first), an object
 // whose size differs from the record is 503 before any header, and a
 // stream that runs past, falls short of or fails before the recorded size
@@ -135,7 +135,7 @@ function stored(bytes: Buffer): Readable {
   return stream;
 }
 
-// The stub names a file as Task 16's library does since issue #164: with
+// The stub names a file as the API's library does since issue #164: with
 // linkFileName, the stored name with its real extension, so every route
 // that delivers it gets the same name from the content it reads.
 const deliveryFiles: DeliveryDeps["files"] = {
@@ -421,7 +421,7 @@ describe("POST /app/api/files/:id/slicer-link", () => {
     expect(ms).toBeLessThanOrEqual(LINK_LIFETIME_SECONDS * 1000 + 1000);
   });
 
-  test("the link is on PUBLIC_ORIGIN under a spoofed Host and X-Forwarded-Host (AC-091)", async () => {
+  test("the link is on PUBLIC_ORIGIN under a spoofed Host and X-Forwarded-Host", async () => {
     const res = await mint(FILE_A, {
       host: "evil.example",
       "x-forwarded-host": "evil.example",

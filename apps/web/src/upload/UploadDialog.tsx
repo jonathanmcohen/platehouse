@@ -1,9 +1,9 @@
-// The upload dialog (build plan Task 19, AC-020). It opens when files are
-// dropped on the library (or, from Task 20, a model page) and from the top
+// The upload dialog. It opens when files are
+// dropped on the library or a model page and from the top
 // bar's Add. It lists every file with its own progress bar and state, and
 // has the "Combine into one model" switch, off by default: off, each file
 // becomes its own model; on, every file is sent with one batch id and
-// combine, so they land in one model (Task 8's batch target). The batch id
+// combine, so they land in one model (the server's batch target). The batch id
 // is made at the first Upload with the switch on and kept until the dialog
 // is closed or the switch is changed, so files added and sent while an
 // earlier round is still uploading join the same model (ingest joins every
@@ -53,6 +53,7 @@ import {
 } from "react";
 import { Link, useInRouterContext } from "react-router";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import "../settings/organise.css";
 import "./upload.css";
 import {
   ACCEPT,
@@ -351,7 +352,7 @@ export function UploadDialog({
     >
       <div
         ref={dialog}
-        className="ph-dialog"
+        className="ph-dialog ph-upload-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

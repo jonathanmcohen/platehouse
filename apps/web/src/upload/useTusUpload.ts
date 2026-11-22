@@ -1,17 +1,18 @@
-// Uploads through Task 9's tus endpoint (build plan Task 19, AC-020), with
+// Uploads through the server's tus endpoint (uploads/tus.ts), with
 // tus-js-client:
 //
 // - Every file goes to /app/uploads (session-class; the browser sends the
 //   session cookie and Origin, which the gate checks) in 5 MiB chunks, so a
 //   phone that loses its connection resends at most one chunk.
-// - The metadata names the target (the Public API v1 contract): nothing for
-//   a new model of its own, modelId for an existing model, or batch with
-//   combine for the "Combine into one model" batch.
+// - The metadata names the target (as uploads/tus.ts reads it and
+//   api/openapi.ts documents it): nothing for a new model of its own,
+//   modelId for an existing model, or batch with combine for the "Combine
+//   into one model" batch.
 // - tus-js-client keeps a resume fingerprint in localStorage, so a dropped
 //   upload resumes when the same file is sent again. The fingerprint
 //   includes the target, so the same file sent to a different target starts
 //   a new upload instead of resuming the old one (the maintainer, 2026-11-09, issue
-//   #77). A finished upload's fingerprint is removed too: Task 9 answers a
+//   #77). A finished upload's fingerprint is removed too: the server answers a
 //   HEAD on an ingested upload as finished, so resuming it would store
 //   nothing (uploads/tus.ts).
 // - When the last byte is accepted, GET <upload>/result is polled until the
@@ -45,7 +46,7 @@ import { serverTextWith } from "../i18n/serverText";
 /** Builds the sentences in a language; English when left out. */
 type Words = Pick<I18n, "t" | "locale">;
 
-/** Task 9's tus handler for the UI: the path on this page's own origin. */
+/** The server's tus handler for the UI: the path on this page's own origin. */
 export const UPLOAD_ENDPOINT = "/app/uploads";
 
 /**
@@ -60,7 +61,7 @@ export function uploadEndpoint(): string {
 /** The chunk tus-js-client sends per PATCH: 5 MiB. */
 export const CHUNK_SIZE = 5 * 1024 * 1024;
 
-/** The file types Platehouse takes (AC-020); anything else is refused (AC-024). */
+/** The file types Platehouse takes; anything else is refused and nothing is stored. */
 export const SUPPORTED_EXTENSIONS: readonly string[] = [".3mf", ".stl", ".step", ".stp", ".scad"];
 
 /** What the file input offers. */
@@ -317,7 +318,7 @@ export interface UploadResult {
 export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
 
 /**
- * GET <upload>/result: Task 9's answer for a finished upload. A 503 is the
+ * GET <upload>/result: the server's answer for a finished upload. A 503 is the
  * server saying it cannot read the result now, so it stays pending and is
  * asked again (as a lost connection is, by waitForResult). A 401 is a session
  * that ended while the ingest ran: the file was sent, so the row says to sign

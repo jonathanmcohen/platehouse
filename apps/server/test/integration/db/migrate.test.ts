@@ -1,4 +1,4 @@
-// Build plan Task 4: migration 0001 and the forward-only migrator, against a
+// Migration 0001 and the forward-only migrator, against a
 // real postgres:17-alpine.
 import { appendFile, cp, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +17,7 @@ import {
 import type { DB } from "../../../src/db/types.js";
 import { startTestPostgres, type TestPostgres } from "../support/db.js";
 
-// Every table in the Database schema contract, plus the migrator's own record.
+// Every table the migrations in src/db/migrations create, plus the migrator's own record.
 const TABLES = [
   "api_tokens",
   "blobs",

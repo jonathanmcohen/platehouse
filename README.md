@@ -97,8 +97,8 @@ pnpm --filter @platehouse/docs serve
 ```
 
 The built site loads nothing from another site: no analytics, no external fonts or scripts, and
-search is a local index made at build time. CI builds it when `docs/`, `apps/docs` or the
-workspace files change.
+search is a local index made at build time. CI builds it when `docs/`, `apps/docs`,
+`apps/web/public` (the icons the site serves) or the workspace files change.
 
 The docs are published to GitHub Pages by `.github/workflows/docs-pages.yml` each time a docs
 change lands on `main`; the site's address is shown under Settings, Pages. Pages must first be
@@ -267,7 +267,7 @@ is published for it, and where it pointed `rc`.
   script CI uses to test it.
 - `e2e` - the end-to-end tests: Playwright through a real Traefik; see its README.
 - `examples` - the example `docker-compose.yml` and `.env.example` the Install page starts from.
-- `tools/slicing-gate` - the Task 1 slicing gate harness; see its README.
+- `tools/slicing-gate` - the slicing gate harness, which proved OrcaSlicer slices real files headless before the slicer was built; see its README.
 - `tools/brand` - writes the logo's static files (the favicons, app icons and web manifest in
   `apps/web/public`, and `docs/assets/logo.svg` and `favicon.svg`) from the art in
   `apps/web/src/shell/logoArt.ts` and the two colours in `tools/brand/icons.ts`: `ACCENT`, and

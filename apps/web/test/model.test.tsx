@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-// Build plan Task 20 (AC-030, AC-032, AC-033 and AC-034 display, AC-040,
-// AC-050, AC-051, AC-072): the model page. Rendered in jsdom with React; the
+// The model page: plates, their numbers and where they came from, the Open
+// in slicer buttons, the 3D viewer and the layout. Rendered in jsdom with React; the
 // server is a stubbed fetch that records every request, the slicer
 // protocol navigation is a recording function, and three.js is replaced by
 // a recording loader, since jsdom has no WebGL.
 //
-// The plan's tests:
+// The tests:
 // - plates tab lists every plate in order with name or Plate N, swatches,
 //   grams, time and weight
 // - estimating state renders and is replaced when numbers arrive (polling
@@ -24,12 +24,12 @@
 //   2026-11-19): each button applies its transform, Reset clears it, and
 //   another plate, another file or opening the model again clears it, with
 //   nothing sent to the server and nothing stored in the browser
-// Also: dropping files on the page hands them to Task 19's upload dialog with
+// Also: dropping files on the page hands them to the upload dialog with
 // this model as the target, and the dialog then hides the Combine switch;
 // the page's Add files button opens that dialog again with no files, so a
 // row that failed or was left unsent while it was hidden is seen; the layout (viewer left, tabs Plates, Files and About, Plates first
 // and only with a .3mf), each set of numbers labelled with where it came
-// from, the About tab rendering Task 7's renderMarkdown with the licence
+// from, the About tab rendering renderMarkdown (packages/makerworld) with the licence
 // note beside the licence, and the page CSS using only studio.css tokens.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -532,7 +532,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-describe("the model page layout (AC-072)", () => {
+describe("the model page layout", () => {
   test("the viewer is on the left and the tabs Plates, Files and About on the right, Plates first", async () => {
     await render(pageAt(MODEL_ID));
     expect(text(container.querySelector("h1"))).toBe("Cube set");
@@ -758,7 +758,7 @@ describe("the heading outline never skips a level (issue #206)", () => {
   });
 });
 
-describe("each set of numbers says where it came from (AC-032 display)", () => {
+describe("each set of numbers says where it came from", () => {
   test("Bambu's own numbers are labelled as from the file, with the printer and process", async () => {
     await render(pageAt(MODEL_ID));
     const first = text(plateItems()[0]);
@@ -1727,10 +1727,10 @@ describe("failed plate shows the plain reason and a retry button", () => {
   });
 });
 
-describe("open in a slicer (AC-040)", () => {
+describe("open in a slicer", () => {
   const TOKEN = "AZjwxAAAcACAAAAAAACwAWX3Q9AAAAAAAAAAAAAAAAAAAAAA";
 
-  /** The link and protocol URLs as Task 17's mint route answers them (Slicer link contract). */
+  /** The link and protocol URLs as the server's slicer link route answers them. */
   function minted(name: string): SlicerLink {
     const segment = encodeURIComponent(name.replace(/[/\\%?#;\p{Cc}\p{Cf}]/gu, "_"));
     const url = `https://platehouse.test/s/${TOKEN}/${segment}`;
@@ -1779,12 +1779,10 @@ describe("open in a slicer (AC-040)", () => {
     const target = navigations[0] as string;
     const prefix = "orcaslicer://open?file=";
     expect(target).toBe(`${prefix}${encodeURIComponent(link.url)}`);
-    // Encoded exactly once: one decode gives the link back, whole.
+    // Encoded exactly once: one decode gives the link back, whole. (The
+    // link's own last segment comes from this test's minted() stub, so it is
+    // checked where the server mints it, in the slicer link route's tests.)
     expect(decodeURIComponent(target.slice(prefix.length))).toBe(link.url);
-    // The link's last segment is the file's name, its slash replaced.
-    const segment = link.url.slice(link.url.lastIndexOf("/") + 1);
-    expect(decodeURIComponent(segment)).toBe(HOSTILE_NAME.replace("/", "_"));
-    expect(link.url).not.toContain("?");
   });
 
   test("open in Bambu Studio on macOS builds bambustudioopen://<encoded link>", async () => {
@@ -1821,7 +1819,7 @@ describe("open in a slicer (AC-040)", () => {
 });
 
 describe("a .3mf shows its plate pictures until a plate's 3D view is opened", () => {
-  test("a .3mf shows its plate thumbnail large with a strip of 72 px plates, and three.js is not loaded until asked for", async () => {
+  test("a .3mf shows its plate thumbnail large with a strip of plates, and three.js is not loaded until asked for", async () => {
     await render(pageAt(MODEL_ID));
     expect(loadThree).not.toHaveBeenCalled();
     expect(container.querySelector("canvas")).toBeNull();

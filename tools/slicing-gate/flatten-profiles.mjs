@@ -16,7 +16,7 @@
 //     missing (the CLI rejects a type-less or oddly cased file with -5);
 //   - optional: "<preset> template <key>.json" companion files fill keys the
 //     preset leaves unset (start G-code and friends). Off by default, because
-//     the plan (T11) does not use them; --companions turns them on.
+//     the slicer (apps/slicer) does not use them; --companions turns them on.
 // Sentinel stripping in that resolver applies to user exports only; bundled
 // system presets carry none, so it is not done here.
 //
@@ -199,7 +199,7 @@ function baseName(name) {
 
 /**
  * Orca's Bambu generic filament profile for one filament type on one printer
- * (Q4 / AC-032). Candidates: instantiable "Generic ..." presets whose
+ * (used when Bambu has no preset of its own for the type). Candidates: instantiable "Generic ..." presets whose
  * flattened filament_type is the type and whose compatible_printers names the
  * printer. Ranked: base name exactly "Generic <type>", then shorter name, then
  * name order. Returns { name, rule } or null when none fits.

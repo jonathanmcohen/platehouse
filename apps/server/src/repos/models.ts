@@ -57,7 +57,7 @@ export interface FoundMetadata {
    * (license_note is always stored); it is added at the foot of the
    * description only when the description and both licence columns are
    * empty, since a description already set is never edited (the maintainer,
-   * 2026-11-08). The model page shows license_note (Task 20).
+   * 2026-11-08). The model page shows license_note.
    */
   licenseNote?: string | null;
   /** The MakerWorld design ID, digits only (packages/threemf makerWorldDesignId). */
@@ -623,7 +623,7 @@ export function modelsRepo(db: Kysely<DB>) {
     get,
 
     /**
-     * Fill-only metadata (AC-022): writes each found value only into a field
+     * Fill-only metadata: writes each found value only into a field
      * that is null or empty, so nothing the user set is overwritten. The name is
      * never touched. A found value that is null, empty or blank writes
      * nothing. A found licence note is stored whenever licenseNote is empty,
@@ -720,7 +720,7 @@ export function modelsRepo(db: Kysely<DB>) {
      * name; see fileStems). A name a person set, by a rename (name_source
      * 'user', which migration 0006 also gave every model a person named
      * before name_source existed) or a name none of its files has, is never
-     * overwritten (AC-022), and a model already named from a title
+     * overwritten, and a model already named from a title
      * keeps that one. Only while the caption is empty, too, so this title is
      * the one fillMetadata then stores as the caption: a model whose caption
      * an earlier .3mf already filled keeps its name, so its name and caption

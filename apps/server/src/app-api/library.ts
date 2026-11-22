@@ -1,4 +1,5 @@
-// The library's app API (build plan Task 19; AC-061, AC-064, AC-073), for the
+// The library's app API (search, the tag filter, and cards that never download
+// a model file), for the
 // web app's library page:
 //
 //   GET /app/api/library?q&tag&collection&creator&cursor&limit&printer
@@ -12,19 +13,19 @@
 //   GET /app/api/library/tags
 //       { tags: string[] }      the tag names live models carry
 //
-// - Both routes are session-class (the Route classes contract: /app/api is
-//   unlisted, so session). The gate (auth/gate.ts) refuses a request without
-//   a session before these handlers run. Neither route changes anything, so
+// - Every route is session-class (the route classes table in auth/gate.ts:
+//   /app/api is unlisted, so session). The gate refuses a request without
+//   a session before these handlers run. No route changes anything, so
 //   the gate's Origin check has nothing to check here.
-// - The page is Task 14's search (library/search.ts): name, caption, creator
+// - The page is the library's search (library/search.ts): name, caption, creator
 //   and tag, best match first, the tag, collection and creator filters, and
 //   its cursor; trashed models never appear.
 // - A card is read from the database alone. Its image is plate 1's thumbnail
-//   blob of the model's first .3mf, named as /blobs/<id> (Task 17's route),
+//   blob of the model's first .3mf, named as /blobs/<id> (the delivery route, delivery/download.ts),
 //   or, for a model whose first file is an STL or STEP file, that file's
 //   rendered preview picture (issue #316). Only a stored blob of kind
 //   thumbnail or render_png of the same model is ever named, so rendering
-//   the library never fetches a model file (AC-073). This module is given no
+//   the library never fetches a model file. This module is given no
 //   store at all.
 // - printer= is the header's printer switch: one of My printers, whose
 //   numbers the cards show instead of the default printer's. Anything else
@@ -35,7 +36,7 @@
 //   queues a slice.
 // - Time and weight are for that printer (settings.printer_id when no
 //   switch is given; "the selected printer" below), from
-//   Task 12's plateNumbers per plate: a plate has numbers for that printer
+//   the estimates module's plateNumbers per plate: a plate has numbers for that printer
 //   when the file's own numbers are for it or a current Platehouse estimate
 //   is. A card has totals only when every plate does, else partial. While
 //   the printer menu cannot be read (the slicer is down or slow), the file's
@@ -118,7 +119,7 @@ import {
   type SortPrinter,
 } from "../repos/models.js";
 
-/** The library's routes, every one session-class (the Route classes contract). */
+/** The library's routes, every one session-class (the route classes table in auth/gate.ts). */
 export const LIBRARY_API_PATHS: readonly string[] = Object.freeze([
   "/app/api/library",
   "/app/api/library/ids",
@@ -328,7 +329,7 @@ function printerFields(ctx: DisplayContext) {
   };
 }
 
-/** Where Task 17 serves a blob's bytes; the card names its thumbnail by it. */
+/** Where file delivery serves a blob's bytes; the card names its thumbnail by it. */
 export const BLOB_PREFIX = "/blobs/";
 
 /** One card in the library grid. */
@@ -435,7 +436,7 @@ export interface AppLibraryDeps {
    * (readDisplayContext), read once per page.
    */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's plateNumbers for one plate with that context (estimates/display.ts). */
+  /** The estimates module's plateNumbers for one plate with that context (estimates/display.ts). */
   plateNumbers(ctx: DisplayContext, plateId: string): Promise<PlateNumbers>;
   /** Most matches a numbered page reads; PAGED_MATCH_CAP. Smaller in tests. */
   pagedMatchCap?: number;
@@ -639,7 +640,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       // The card stands for its first .3mf, else its first file. A .3mf
       // shows plate 1's thumbnail; an STL or STEP file its preview picture
       // (issue #316) while the picture's own status says to show it (issue
-      // #380); a SCAD keeps the icon (Task 19's choice).
+      // #380); a SCAD keeps the icon (a choice made with the library page).
       const shown = first3mf ?? own[0];
       const thumbnail =
         first3mf !== undefined

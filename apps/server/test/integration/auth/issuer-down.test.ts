@@ -1,13 +1,13 @@
-// Build plan Task 15, AC-081: when the OIDC provider cannot be reached, /auth/login
+// When the OIDC provider cannot be reached, /auth/login
 // shows "Login is unavailable right now" with status 503, and nothing else
 // depends on it. A bearer-class route is not touched by the issuer: it still
 // gives its own 401, never the login page and never a 503. An existing
 // session keeps working. Login works again once the issuer is back, since a
 // failed discovery is not remembered.
 //
-// The "API tokens still work" half of AC-081 is proved by Task 16's tests
-// (api/api.test.ts). Here the bearer route is /api/v1/uploads, behind Task
-// 16's bearer check: with no token it gives its own 401, whatever the issuer
+// That API tokens still work while the provider is down is proved by the
+// API's own tests (api/api.test.ts). Here the bearer route is /api/v1/uploads,
+// behind the bearer check (api/tokens.ts): with no token it gives its own 401, whatever the issuer
 // is doing (issue #158).
 //
 // No container: the issuer is the local mock, or a port nothing listens on,

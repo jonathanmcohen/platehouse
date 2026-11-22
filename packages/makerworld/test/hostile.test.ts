@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { extractMakerWorld, htmlToMarkdown } from "../src/index.js";
 
-// A crafted file must not tie up the app (requirements AC-023).
+// A crafted file must not tie up the app.
 // The MakerWorld fields come from 3D/3dmodel.model read up to <resources and
-// capped at 256 KiB (build plan Task 6), so 256 KiB is the largest input
+// capped at 256 KiB (packages/threemf), so 256 KiB is the largest input
 // either function meets from a file. Each shape below aims at one way a
 // regex tokenizer or a converter that re-reads its own output can do work
 // that grows with the square of the input (a scan to the end for every < or

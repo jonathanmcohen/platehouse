@@ -71,7 +71,7 @@ describe("the components", () => {
     expect(html).toEqual(["model/AboutTab.tsx"]);
   });
 
-  // The API reference's body stays English in 0.1.0 (the maintainer's decision 6).
+  // The API reference's body stays English in 0.1.0 (the maintainer's decision).
   const SKIP = ["api-docs/"];
 
   it("show no bare English text in JSX or in a user-facing attribute", () => {

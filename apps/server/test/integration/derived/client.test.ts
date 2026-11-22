@@ -1,4 +1,4 @@
-// The render client's timers (build plan Task 13, PR #60 review). A render
+// The render client's timers (PR #60 review). A render
 // request has two budgets: the time to send its body, which for a STEP file
 // streamed from the bucket can be long, and the slicer's own time cap for the
 // program plus 30 s, which starts once the body is sent. A slow body must not

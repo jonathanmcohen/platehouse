@@ -15,7 +15,7 @@ const READ_CHUNK = 64 * 1024;
 /**
  * Runs one of the parser's own reads of the archive (yauzl or inflate) and
  * classifies what it throws: a filesystem error is ReadUnavailable, anything
- * else is Damaged. The parser.rb@136fd61 damaged_on_read_error. It never
+ * else is Damaged, as the earlier parser did. It never
  * wraps the parser's mapping code or the caller's callback.
  */
 export async function ownRead<T>(read: () => Promise<T>): Promise<T> {

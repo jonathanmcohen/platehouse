@@ -184,6 +184,14 @@ describe("index.html links the icons and the manifest", () => {
 });
 
 describe("the static files are generated from one accent", () => {
+  // The docs site's browser theme colour is written in its config by hand
+  // (a Docusaurus config cannot import tools/brand's TypeScript), so this
+  // pins it to ACCENT too: a new accent fails here until the docs follow.
+  test("the docs site's theme-color is ACCENT", () => {
+    const config = readFileSync(new URL("apps/docs/docusaurus.config.mjs", ROOT), "utf8");
+    expect(config).toContain(`{ name: "theme-color", content: "${ACCENT}" }`);
+  });
+
   test("the accent is Blueprint indigo; the app icons are white on a deeper indigo tile", () => {
     expect(ACCENT).toBe("#5560e0");
     expect(ICON_TILE).toBe("#3d47c4");

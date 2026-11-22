@@ -1,8 +1,8 @@
-// The derived-file tests' environment (build plan Task 13): the ingest env (a
+// The derived-file tests' environment: the ingest env (a
 // migrated Postgres 17, a bucket on the S3 test server, a temp folder) plus a
-// started pg-boss on the same database working Task 8's queues, the
+// started pg-boss on the same database working the job queues, the
 // contract-faithful slicer stub, and createDerived wired to all three. Ingest
-// gets Task 13's afterUpload as its afterCommit, as the app wires it.
+// gets derived.afterUpload as its afterCommit, as the app wires it.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import type { ModelFile } from "../../../src/db/types.js";

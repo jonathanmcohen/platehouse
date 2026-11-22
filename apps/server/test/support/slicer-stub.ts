@@ -1,4 +1,4 @@
-// A slicer stub for the estimate tests (build plan Task 12), built on the
+// A slicer stub for the estimate tests, built on the
 // slicer contract package so it cannot drift from contract v1: every answer
 // it sends is parsed with the contract's own zod schema first, and a test
 // that scripts an answer the contract does not allow fails right there. The
@@ -11,7 +11,7 @@
 // /v1/profiles lists for the printer and the slot's type, or null where none
 // is listed and the file's own filament is kept.
 //
-// It also answers the render routes Task 13 and issue #316 call, POST
+// It also answers the render routes the render jobs and issue #316 call, POST
 // /v1/scad/stl, /v1/scad/png, /v1/step/glb and /v1/stl/png (the renders group
 // below): by default with bytes made from the body it was sent, so a test can
 // tell which source a stored render came from, or as a test scripts it. Its
@@ -83,7 +83,7 @@ export type StubOutcome =
   /** Nothing is answered until the stub stops. */
   | { kind: "hang" };
 
-/** A render route of contract v1 (Task 13, and the STL preview of issue #316). */
+/** A render route of contract v1 (OpenSCAD, STEP, and the STL preview of issue #316). */
 export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb" | "/v1/stl/png";
 
 const RENDER_ROUTES: readonly RenderRoute[] = [
@@ -220,7 +220,7 @@ export function renderedBytes(route: RenderRoute, body: Buffer | string): Buffer
 
 export interface SlicerStub {
   url: string;
-  /** The render routes (Task 13). */
+  /** The render routes. */
   renders: RenderStub;
   /** Every slice request in arrival order, busy ones included. */
   calls: StubCall[];

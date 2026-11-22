@@ -1,6 +1,7 @@
-// The settings page's app API (build plan Task 21; AC-013 warning, AC-031
-// menu). The web app's own JSON routes live under /app/api, which the Route
-// classes table leaves unlisted, so they are session-class: Task 15's gate
+// The settings page's app API: the printer menu, which lists every printer
+// and nozzle the slicer has a profile for, and the warning shown while bucket
+// versioning is off. The web app's own JSON routes live under /app/api, which the Route
+// classes table leaves unlisted, so they are session-class: the route-class gate (auth/gate.ts)
 // answers a request without a live session 401 and a state-changing one
 // whose Origin is not PUBLIC_ORIGIN 403, before any of these handlers runs.
 //
@@ -14,7 +15,7 @@
 //                                   version and nothing changed | 503 the
 //                                   slicer cannot be asked
 //
-// - The printer menu is Task 12's listPrinters (the slicer's /v1/profiles),
+// - The printer menu is the estimates module's listPrinters (the slicer's /v1/profiles),
 //   grouped by printer model with each model's nozzle choices, in the order
 //   the slicer lists them, each printer named in full ("Bambu Lab P1S,
 //   0.4 mm nozzle"). While the slicer cannot be asked, printers is null and
@@ -41,7 +42,7 @@
 //   from those pages' own answers (app-api/library.ts printerChoices), and
 //   switching reads numbers only; nothing there starts a slice.
 // - bucketVersioning is settings.bucket_versioning, which recordVersioning
-//   writes at startup from Task 5's readVersioning (main.ts calls it). A
+//   writes at startup from the storage layer's readVersioning (main.ts calls it). A
 //   store that cannot be reached leaves the last state recorded, and the
 //   page's red banner (anything but enabled or unknown) follows it.
 //
@@ -185,7 +186,7 @@ export async function appApiScope(
         const err = error as Error & { statusCode?: number; validation?: unknown };
         if (err.validation !== undefined) return refuse(reply, 400, "bad_request", err.message);
         if (error instanceof AppApiUnavailable) return refuse(reply, 503, "unavailable");
-        // Task 14's calls refuse an empty name with RangeError.
+        // The library's calls refuse an empty name with RangeError.
         if (error instanceof RangeError) return refuse(reply, 400, "bad_request", err.message);
         const status = err.statusCode;
         if (status !== undefined && status >= 400 && status < 500) {
@@ -244,7 +245,7 @@ function isSlicerProblem(error: unknown): boolean {
 }
 
 /**
- * Reads the bucket's versioning state and records it in settings (AC-013),
+ * Reads the bucket's versioning state and records it in settings, so the page can warn while it is off,
  * returning what it recorded. main.ts calls it at startup. It never throws:
  * a store that cannot be reached, or a write that fails, is logged and the
  * last state recorded stays (undefined is returned).

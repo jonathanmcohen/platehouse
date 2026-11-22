@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Platehouse slicing gate (build plan Task 1), run on the test server after
+# Platehouse slicing gate, run on the test server after
 # the maintainer approves. Builds the throwaway image, runs every plate slice in a
 # fresh network-less, read-only container, then the OpenSCAD, landrun and STEP
 # checks, then writes the report.
@@ -101,10 +101,10 @@ if [[ "${1:-}" = "--build" ]] || ! docker image inspect "${IMAGE}" > /dev/null 2
   docker build --platform linux/amd64 -t "${IMAGE}" "${HERE}" || die "image build failed"
 fi
 
-# Task 1's container: no network, 4 CPUs, 8 GB (swap included, so the limit
+# The gate's container: no network, 4 CPUs, 8 GB (swap included, so the limit
 # is real), read-only root, 4 GB tmpfs scratch, the sample read-only. Added
-# beyond Task 1: the caller's uid so /out stays writable and owned by the
-# caller, and T26's runtime hardening (no capabilities, no new privileges)
+# beyond those limits: the caller's uid so /out stays writable and owned by the
+# caller, and the deployed slicer's runtime hardening (no capabilities, no new privileges)
 # so the landrun check runs as it will in production.
 uid="$(id -u)"
 gid="$(id -g)"

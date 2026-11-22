@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { decodeEntities, extractMakerWorld } from "../src/extract.js";
 import { htmlToMarkdown } from "../src/markdown.js";
 
-// Ported by behaviour from automation Manyfold/makerworld-metadata
-// test/metadata.test.mjs at 1ce8c57 (the extraction cases). Every value here
+// Ported by behaviour from the tests of an earlier Manyfold metadata script
+// (the extraction cases). Every value here
 // is synthetic: no designer's file, title or name is copied into the repo.
 //
 // The shape Bambu Studio writes at the top of 3D/3dmodel.model, cut where the

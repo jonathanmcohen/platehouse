@@ -1,8 +1,8 @@
-// Build plan Task 8: what each queue is created and worked with. The slicer
+// What each queue is created and worked with. The slicer
 // queue is a singleton queue, so one slice runs at a time (the maintainer, 2026-11-08,
-// PR #49: there is no SLICER_CONCURRENCY); Task 12 adds its jobs and its
+// PR #49: there is no SLICER_CONCURRENCY); the estimates module adds its jobs and its
 // worker with these settings. A slicer job is retried by pg-boss's own retry
-// settings, three times with backoff (Task 12), not by a loop in the handler.
+// settings, three times with backoff, not by a loop in the handler.
 import type { PgBoss } from "pg-boss";
 import { describe, expect, test, vi } from "vitest";
 import {

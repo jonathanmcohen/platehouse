@@ -1,4 +1,4 @@
-// Playwright for the end-to-end suite (build plan Task 22). Run it against
+// Playwright for the end-to-end suite. Run it against
 // the stack e2e/up.sh starts:
 //
 //   pnpm exec playwright test -c e2e

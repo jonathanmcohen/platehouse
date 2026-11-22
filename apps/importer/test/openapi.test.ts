@@ -48,4 +48,25 @@ describe("the checker", () => {
     };
     expect(check(responseSchema("/models"), body)).toEqual(["$.member[0]: missing required name"]);
   });
+
+  // @context's items are oneOf a string or an object, so the stub's
+  // @context is checked too, not skipped.
+  it("checks oneOf: exactly one branch must pass", () => {
+    const at = (context: unknown[]) =>
+      check(responseSchema("/models/{model_id}/model_files/{id}"), {
+        ...file,
+        "@context": context,
+      });
+    expect(at(["https://schema.org/", { "@vocab": "https://schema.org/" }])).toEqual([]);
+    expect(at([12])).toEqual([
+      "$.@context[0]: matches 0 of 2 oneOf branches, documented as exactly one",
+    ]);
+    expect(check({ oneOf: [{ type: "string" }, { type: "string" }] }, "x")).toEqual([
+      "$: matches 2 of 2 oneOf branches, documented as exactly one",
+    ]);
+  });
+
+  it("throws on a keyword it cannot check, rather than passing the value", () => {
+    expect(() => check({ anyOf: [{ type: "string" }] } as never, "x")).toThrow(/anyOf/);
+  });
 });

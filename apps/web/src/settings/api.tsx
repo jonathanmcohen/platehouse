@@ -1,5 +1,4 @@
-// The web app's calls to its own JSON API under /app/api (build plan Task
-// 21), shared by the settings, trash and organising pages. Plain fetch: the
+// The web app's calls to its own JSON API under /app/api, shared by the settings, trash and organising pages. Plain fetch: the
 // browser sends the session cookie and, on every POST, PUT, PATCH and
 // DELETE, the Origin header the server's gate checks, so nothing here adds
 // a credential. An answer that is not a success becomes an AppApiError

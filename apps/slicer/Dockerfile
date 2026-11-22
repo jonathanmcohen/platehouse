@@ -1,7 +1,7 @@
-# Platehouse slicer image (build plan Task 11): OrcaSlicer 2.5.0, OpenSCAD
+# Platehouse slicer image: OrcaSlicer 2.5.0, OpenSCAD
 # 2026.11-RC0, landrun and occt-import-js behind Slicer HTTP contract v1.
-# amd64 only. release-engineer builds and publishes it in Task 25; this file
-# only defines it.
+# amd64 only. The release workflow (.github/workflows/slicer-image.yml) builds
+# and publishes it; this file only defines it.
 #
 # Every step that fetches or prepares OrcaSlicer, its profiles, OpenSCAD,
 # landrun and Node follows tools/slicing-gate/Dockerfile, which the gate's run 4
@@ -21,7 +21,8 @@
 # Build context: the repository root.
 #   docker build --platform linux/amd64 -f apps/slicer/Dockerfile -t platehouse-slicer .
 #
-# Run it as the deploy does (AC-035): read-only root, a tmpfs at /work mounted
+# Run it as the deploy does, since it opens untrusted files: no credentials,
+# no outbound network, CPU and memory limits. Read-only root, a tmpfs at /work mounted
 # noexec, nosuid and nodev (nothing in a job folder is ever run), internal
 # network only, 4 CPUs and 4 GB (the gate's measured worst plate: 2568 MiB
 # RSS, 55.31 s, 171 MiB scratch):
@@ -45,7 +46,7 @@ ARG BASE=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef
 # a command later as "Unable to locate package".
 ARG APT_SNAPSHOT=20261107T000000Z
 
-# The versions the server reports in /v1/health (AC-036). The Orca and
+# The versions the server reports in /v1/health, so the app can re-estimate when Orca changes. The Orca and
 # OpenSCAD download URLs are built from them, so they cannot drift apart.
 ARG ORCA_VERSION=2.5.0
 ARG OPENSCAD_VERSION=2026.11-RC0
@@ -100,7 +101,7 @@ RUN source /usr/local/lib/fetch.sh \
 # lightweight tag on 40ecc66, resolved with git ls-remote). Fetched by that
 # commit, shallow, blobless and sparse; git checks every object against its
 # hash and HEAD is checked against the pin. A new Orca release means a new
-# commit pin, resolved the same way (the daily update workflow, Task 25).
+# commit pin, resolved the same way (the daily update workflow, slicer-image.yml).
 ARG ORCA_SRC_SHA=40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19
 ARG ORCA_SRC_REPO=https://github.com/OrcaSlicer/OrcaSlicer.git
 RUN source /usr/local/lib/need.sh \
@@ -138,7 +139,7 @@ RUN source /usr/local/lib/fetch.sh \
  && need -x /opt/openscad/AppRun \
  && need -x /opt/openscad/usr/bin/openscad
 
-# landrun v0.1.17 (Linux Landlock), OpenSCAD's sandbox (AC-052).
+# landrun v0.1.17 (Linux Landlock), OpenSCAD's sandbox, so a .scad can read no user, app or job data.
 ARG LANDRUN_URL=https://github.com/Zouuup/landrun/releases/download/v0.1.17/landrun-linux-amd64
 ARG LANDRUN_SHA256=6ada66a06669e8994e174a7271af2db636308e55a0d6ec896cc7d326b46727f6
 RUN source /usr/local/lib/fetch.sh \
@@ -274,7 +275,7 @@ RUN source /usr/local/lib/need.sh \
  && need ! -e /opt/orca/resources/profiles/BBL.json -- "a BBL.json would make Orca install BBL from JSON instead of BBL.opc"
 
 # A small STL outside every job folder: the container test imports it from a
-# .scad to prove landrun blocks a read outside the job folder (AC-052).
+# .scad to prove landrun blocks a read outside the job folder.
 RUN printf '%s\n' 'solid probe' \
       '  facet normal 0 0 1' '    outer loop' \
       '      vertex 0 0 0' '      vertex 10 0 0' '      vertex 0 10 0' \
@@ -319,7 +320,7 @@ RUN source /usr/local/lib/need.sh \
  && need -r /opt/platehouse/app/apps/slicer/node_modules/occt-import-js/dist/occt-import-js.wasm \
  && need -r /opt/platehouse/sandbox-probe.stl
 
-# SLICE_PLATE_SECONDS from the gate (AC-035): twice the worst plate, 55.31 s,
+# SLICE_PLATE_SECONDS from the gate, the per-plate time cap: twice the worst plate, 55.31 s,
 # rounded up to 120. The server kills a plate at SLICE_TIMEOUT_SECONDS,
 # default SLICE_PLATE_SECONDS + 60.
 ENV NODE_ENV=production \
@@ -334,8 +335,8 @@ ENV NODE_ENV=production \
 WORKDIR /work
 EXPOSE 8080
 
-# AC-093: Docker marks the container unhealthy when /v1/health stops
-# answering, so the fleet restart-loop alert sees it.
+# Docker marks the container unhealthy when /v1/health stops
+# answering, so an orchestrator or monitor watching container health sees it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 

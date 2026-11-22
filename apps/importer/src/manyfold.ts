@@ -1,5 +1,6 @@
-// A read-only Manyfold API client, ported from manyfold.mjs at automation
-// 1ce8c57 (build plan Task 23; AC-001, AC-003). It has no method that
+// A read-only Manyfold API client, first written as a standalone script. It
+// never changes Manyfold and keeps every credential out of what the importer
+// prints. It has no method that
 // writes: the only request that is not a GET is the one token request.
 //
 // - One token per run: POST /oauth/token with grant_type=client_credentials
@@ -9,7 +10,8 @@
 //   run before anything is read, in case the OAuth app's settings changed. The token never leaves this module; it
 //   is handed to the sensitive callback so the CLI's redactor knows it.
 // - Every URL Manyfold hands back is rewritten from http: to https: (behind
-//   Traefik it sends http:// links) and must stay on the base origin, so the
+//   a reverse proxy that terminates TLS it may send http:// links) and must
+//   stay on the base origin, so the
 //   token is never sent anywhere else. A link to another origin is refused
 //   before anything is sent there.
 // - A file download is the one exception. Manyfold answers it with a
@@ -576,8 +578,8 @@ export function createManyfold(options: ManyfoldOptions): Manyfold {
           sensitive(value);
         }
         if (next.protocol !== "https:") {
-          // Refused on Manyfold's own host too, not upgraded: the plan
-          // says a non-https redirect is refused.
+          // Refused on Manyfold's own host too, not upgraded: a non-https
+          // redirect is always refused.
           throw new ManyfoldError(
             `GET ${downloadPath(url)}: refusing a redirect that is not https, to ${next.host}`,
           );

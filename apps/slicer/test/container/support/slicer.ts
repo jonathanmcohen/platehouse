@@ -1,5 +1,5 @@
 // Builds the slicer image and runs it the way examples/docker-compose.yml does
-// (AC-035): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
+// (its isolation and limits): read-only root, a 1 GB tmpfs at /work mounted noexec, nosuid and
 // nodev (nothing in a job folder is ever run; examples/docker-compose.yml
 // carries the same options), 4 CPUs
 // (fewer if the host has fewer), 4 GB of memory with no swap, a 1024 process
@@ -63,6 +63,18 @@ export function ensureImage(): void {
   built = true;
 }
 
+/**
+ * Runs one program in a fresh throwaway container from the slicer image, as
+ * root with Docker's default capabilities, and removes the container after.
+ * For checks of what is in the image itself, which do not need the hardened
+ * runtime startSlicer gives: root there has no capabilities, so it cannot
+ * read every folder in the image.
+ */
+export function runInImage(program: string, args: string[]): Run {
+  ensureImage();
+  return docker(["run", "--rm", "-u", "0", "--entrypoint", program, IMAGE, ...args]);
+}
+
 export interface RunningSlicer {
   id: string;
   base: string;
@@ -74,7 +86,7 @@ export interface RunningSlicer {
 }
 
 /**
- * examples/docker-compose.yml gives the slicer 4 CPUs (AC-035). Docker refuses --cpus above the
+ * examples/docker-compose.yml gives the slicer 4 CPUs. Docker refuses --cpus above the
  * host's count, so the tests ask for 4 or as many as the host has, whichever is fewer.
  */
 export function cpuLimit(hostCpus: number): string {

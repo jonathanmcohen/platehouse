@@ -1,11 +1,11 @@
-// A drop target for files (build plan Task 19, AC-020): the library page, and
-// the model page (Task 20), wrap their content in it. Dropping files on it
+// A drop target for files: the library page, and
+// the model page, wrap their content in it. Dropping files on it
 // hands them to onFiles, which opens the upload dialog. While files are
 // dragged over it, it is outlined in the accent colour. Text or links
 // dragged over it are left alone, so the browser's own handling stays.
 // Dropping is a pointer gesture. The keyboard routes to the same dialogs
 // are the top bar's Add, for new models, and the model page's Add files,
-// for that model (Task 20), each with the dialog's Choose files button
+// for that model, each with the dialog's Choose files button
 // (issue #202).
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
 

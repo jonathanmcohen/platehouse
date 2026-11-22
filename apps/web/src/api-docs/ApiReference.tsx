@@ -1,4 +1,4 @@
-// The API reference (AC-084, AC-085): the Public API v1 for a person who
+// The API reference: the Public API v1 for a person who
 // wants to script Platehouse, on the settings page at /settings?view=api,
 // linked from the API tokens section. It renders the OpenAPI document this
 // build serves (./openapi.json, see model.ts), grouped by tag: each
@@ -15,11 +15,17 @@
 //   a heading, so the page's headings list every operation. Sections use
 //   h2, operations h3, their parts h4 and each answer h5.
 // - The base URL is this page's own origin with /api/v1: the API is served
-//   from the same configured public origin as the web app (AC-091).
+//   from the same configured public origin as the web app.
 // - Nothing scrolls sideways at 375 px: paths, field names and examples
 //   wrap, and example blocks scroll inside themselves.
 // - Opened by a link (focusHeading), the page puts focus on its heading, as
 //   SettingsPage explains.
+// - Only the page's heading, back link and intro go through t(). The
+//   reference itself, its section labels and field notes included
+//   ("Parameters", "Request body", "Responses", "required" and the rest),
+//   stays English in 0.1.0 by the maintainer's decision, because the OpenAPI
+//   text it labels is English too (test/i18n-source.test.ts skips this
+//   folder for that reason).
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import "./api-docs.css";

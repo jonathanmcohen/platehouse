@@ -636,7 +636,8 @@ test("apt-snapshot pick: runs the script at the repo root and passes its outputs
 });
 
 // The PR step. git, gh and node are stubs: git diff lists CHANGED,
-// ls-remote gives REMOTE (empty: no branch yet), the fetched tree equals
+// ls-remote gives REMOTE (empty: no branch yet), git show of the fetched
+// branch's Dockerfile gives FETCHED_SNAPSHOT (unset: it fails), the fetched tree equals
 // HEAD's when SAME_TREE is 1, push exits PUSH_STATUS; the leftover check
 // (node) fails listing LEFT when it is set; gh pr list gives EXISTING or,
 // when PRS is set, runs its own --jq filter with jq over PRS, a JSON list of
@@ -654,6 +655,7 @@ const PR_STUBS = [
   '    diff) printf "%s" "$CHANGED" ;;',
   "    commit) cat >commit-message.txt ;;",
   '    ls-remote) if [ -n "$REMOTE" ]; then printf "%s\\trefs/heads/bot/apt-snapshot\\n" "$REMOTE"; fi ;;',
+  '    show) if [ -n "$FETCHED_SNAPSHOT" ]; then echo "ARG APT_SNAPSHOT=$FETCHED_SNAPSHOT"; else return 128; fi ;;',
   '    rev-parse) case "$2" in "FETCH_HEAD^{tree}") if [ "$SAME_TREE" = 1 ]; then echo tree1; else echo tree0; fi ;; "HEAD^{tree}") echo tree1 ;; *) echo headsha ;; esac ;;',
   '    push) return "${PUSH_STATUS:-0}" ;;',
   "    *) return 0 ;;",
@@ -693,6 +695,7 @@ const prRun = (env = {}) =>
       EXISTING: "",
       PRS: "",
       CREATE_ERROR: "",
+      FETCHED_SNAPSHOT: "",
       ...env,
     },
   });
@@ -774,6 +777,24 @@ test("apt-snapshot pr: a newer change replaces the branch: close the open PR, de
   assert.match(r.files["posted.md"], /This replaces #300, which proposed an older snapshot and was not merged\./);
   assert.match(r.summary, /replaced and closed: #300/);
   assert.deepEqual(callLines(r, "gh pr edit"), [], "no PR is moved onto a rewritten branch");
+});
+
+// Issue #390: run by hand twice on one UTC day with main moved in between,
+// the open pull request proposes the same snapshot. It is replaced because
+// main moved, and neither message calls it older.
+test("apt-snapshot pr: a same-day rerun after main moved says main moved, not that a newer snapshot exists", () => {
+  const same = prRun({ REMOTE: "c".repeat(40), SAME_TREE: "0", EXISTING: "300", FETCHED_SNAPSHOT: "20201201T000000Z" });
+  assert.equal(same.status, 0, same.log);
+  const comment = callLines(same, "gh pr close")[0];
+  assert.match(comment, /--comment Replaced because main moved since it was opened: it proposed this same snapshot, 1 December 2020 \(`20201201T000000Z`\), on an older main/);
+  assert.doesNotMatch(comment, /newer snapshot/);
+  assert.match(same.files["posted.md"], /This replaces #300, which proposed the same snapshot on an older main and was not merged\./);
+  assert.doesNotMatch(same.files["posted.md"], /older snapshot/);
+  // An older snapshot on the branch keeps the newer-snapshot words.
+  const older = prRun({ REMOTE: "c".repeat(40), SAME_TREE: "0", EXISTING: "300", FETCHED_SNAPSHOT: "20201107T000000Z" });
+  assert.equal(older.status, 0, older.log);
+  assert.match(callLines(older, "gh pr close")[0], /--comment Replaced by a newer snapshot, 1 December 2020/);
+  assert.match(older.files["posted.md"], /which proposed an older snapshot and was not merged\./);
 });
 
 // gh pr list --head matches the branch name only, and anyone can open a

@@ -1,4 +1,4 @@
-// OpenSCAD in the built image (AC-052): renders STL and PNG headless, shows
+// OpenSCAD in the built image: renders STL and PNG headless, shows
 // OpenSCAD's own message on an error, and cannot read a file outside its own
 // job folder. /opt/platehouse/sandbox-probe.stl is a small STL the image
 // ships for this test; each control opens the same file without landrun, so
@@ -12,7 +12,7 @@
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { landrunArgs } from "../../src/sandbox.js";
-import { type RunningSlicer, startSlicer } from "./support/slicer.js";
+import { type RunningSlicer, runInImage, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
 beforeAll(async () => {
@@ -113,7 +113,7 @@ describe("OpenSCAD in the image", () => {
   ];
 
   test.each(OUTSIDE)(
-    "scad import of %s, outside its own job folder, fails (AC-052)",
+    "scad import of %s, outside its own job folder, fails",
     async (_label, file) => {
       const res = await post("/v1/scad/stl", `import("${file}");\n`);
       expect(res.status).toBe(422);
@@ -239,10 +239,20 @@ describe("OpenSCAD in the image", () => {
   });
 
   // Issue #153 item 5: the image's build strips every setuid and setgid bit
-  // and fails if any is left; this checks the image as it runs.
+  // and fails if any is left; this checks the built image. The check is about
+  // what is in the image, not how it runs, so it does not need the hardened
+  // runtime: it runs in a fresh throwaway container from the same image, as
+  // root with Docker's default capabilities, which can read every folder
+  // (root in the hardened container has no capabilities, and cannot). No
+  // folder is left out, and any error find reports (a folder it could not
+  // search) fails the test, as a found file does.
   test("no file in the image is setuid or setgid", () => {
-    const r = slicer.exec(["sh", "-c", "find / -xdev -perm /6000 -type f 2>/dev/null; echo done"]);
-    expect(r.stdout.trim()).toBe("done");
+    const r = runInImage("find", ["/", "-xdev", "-perm", "/6000", "-type", "f"]);
+    expect({ code: r.code, stdout: r.stdout, stderr: r.stderr }).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
   });
 
   // The job folders' tmpfs carries noexec, nosuid and nodev, as the reference

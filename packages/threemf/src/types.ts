@@ -36,7 +36,7 @@ export interface Project {
 
 export interface ReadOptions {
   /**
-   * Lowers the per-file thumbnail budget (parser.rb max_thumbnail_bytes); it
+   * Lowers the per-file thumbnail budget; it
    * cannot raise it past LIMITS.thumbnailBytesPerFile. Every byte read from a
    * thumbnail entry counts, one passed over for being over LIMITS.pngBytes
    * included, and a file over the budget is damaged (null). A value that is

@@ -1,9 +1,10 @@
-// The route-class gate (build plan Task 15; the Route classes contract).
+// The route-class gate: one table decides how every route is authenticated,
+// and anything it does not list needs a session.
 //
-// patternClass(pattern) and routeClass(path) are the contract's table:
+// patternClass(pattern) and routeClass(path) are that table:
 //
-//   /api/v1/                          bearer: a token, cookies ignored (Task 16)
-//   /s/                               link: the link token (Task 17)
+//   /api/v1/                          bearer: a token, cookies ignored (api/tokens.ts)
+//   /s/                               link: the link token (delivery/links.ts)
 //   /auth/, /healthz, /assets/        public: nothing
 //   the icon files (ROOT_FILES)       public: nothing
 //   everything else                   session
@@ -53,10 +54,10 @@
 //    Bearer and link requests pass to their routes' own checks; no such
 //    route is open: every /api/v1 route, the tus uploads at /api/v1/uploads
 //    included (app.ts apiUploadHook), and the 404 for an unknown /api/v1
-//    path need a valid bearer token (Task 16).
+//    path need a valid bearer token (api/tokens.ts).
 // 2. No body parser at the root: every content type is accepted unread, so
 //    nothing reads a body before the gate or a 404 answers. A scope that
-//    needs JSON (Tasks 16 and 19) adds its own parser; tus streams its own.
+//    needs JSON (the Public API and the app API) adds its own parser; tus streams its own.
 // 3. An onSend hook that releases any body still unread when the answer goes
 //    out (releaseUnreadBody: Connection: close, the rest read off and
 //    dropped for at most DRAIN_MS, then the connection closes). That is the

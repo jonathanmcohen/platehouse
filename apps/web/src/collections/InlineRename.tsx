@@ -1,4 +1,4 @@
-// Inline rename with a themed input (build plan Task 21; AC-060). A name
+// Inline rename with a themed input; a rename changes the display name only. A name
 // with a Rename button beside it; Rename swaps in a text input with Save and
 // Cancel. Enter or Save saves, Escape or Cancel leaves without saving, and
 // either way focus goes back to the Rename button. A rename changes only the

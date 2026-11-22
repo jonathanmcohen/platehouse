@@ -1,4 +1,4 @@
-// Where the end-to-end specs find the stack (build plan Task 22). Every
+// Where the end-to-end specs find the stack. Every
 // request goes to Traefik on 127.0.0.1:443 under these names, which the
 // runner's /etc/hosts maps (see e2e/README.md and the e2e job in ci.yml).
 import { dirname, join } from "node:path";

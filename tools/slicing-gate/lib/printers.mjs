@@ -22,7 +22,7 @@ export const MODEL_IDS = Object.freeze({
   O1S: "Bambu Lab H2S",
 });
 
-// The printers Task 1 names, by the short label used in roles and reports.
+// The printers the gate's sample names, by the short label used in roles and reports.
 export const SHORT = Object.freeze({
   P1S: "Bambu Lab P1S",
   X1C: "Bambu Lab X1 Carbon",
@@ -33,7 +33,7 @@ export const SHORT = Object.freeze({
   X2D: "Bambu Lab X2D",
 });
 
-// The three selected printers of Task 1, as Orca machine preset names.
+// The gate's three selected printers, as Orca machine preset names.
 export const SELECTED_PRINTERS = Object.freeze([
   "Bambu Lab P1S 0.4 nozzle",
   "Bambu Lab X1 Carbon 0.4 nozzle",

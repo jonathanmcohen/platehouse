@@ -1,4 +1,4 @@
-// Build plan Task 14, AC-064: search over name, caption, creator and tag,
+// Search over name, caption, creator and tag,
 // ranked by pg_trgm similarity, with tag, collection and creator filters and
 // a cursor for the next page.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
