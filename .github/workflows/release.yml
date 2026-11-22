@@ -21,6 +21,13 @@
 # one arch fails after the other pushed, that pushed digest stays untagged in
 # the package; nothing points at it, and it can be deleted by hand.
 #
+# Labels (issue #317): both per-arch builds carry the standard OCI labels
+# docker/metadata-action computes (version, revision, source, created, title,
+# description, url, licenses), so a running container says which version
+# and commit it is; the loaded image is checked for them before the push, and
+# the merge job puts the same keys on the index as annotations and reads all
+# three back from the registry (docker/check-image-labels.sh).
+#
 # Tags come from docker/metadata-action with type=semver,pattern={{version}}
 # alone: v0.1.0 gives 0.1.0 and latest, and a prerelease such as v0.0.0-test
 # gives 0.0.0-test and no latest, so latest moves only on a stable tag. There
@@ -107,6 +114,20 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4.4.1
 
+      # The standard OCI labels (issue #317): version, revision, source,
+      # created, title, description, url and licenses, as metadata-action
+      # computes them. Only its labels are used here; the tags come from the
+      # merge job. The semver entry is what gives the version label the tag's
+      # version (0.1.1, not v0.1.1). Both builds below take these same labels,
+      # one step output, so the pushed image still matches the tested one.
+      - name: Labels for this ref
+        id: labels
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+
       # 1) This arch, loaded into the runner's Docker so it can be run.
       #    OS_UPDATES_STAMP is unique to this run (id and attempt), so the
       #    runtime stage's apt-get upgrade (docker/app.Dockerfile) is never a
@@ -122,6 +143,7 @@ jobs:
           load: true
           provenance: false
           tags: ${{ env.LOCAL }}
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=release-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
@@ -129,6 +151,14 @@ jobs:
       # 2) The smoke test. A failure ends the job: no push, no tag.
       - name: Smoke test
         run: docker/test-app-image.sh "$LOCAL" healthy
+
+      # The tested image carries the labels, before anything is pushed.
+      - name: Check the labels
+        env:
+          VERSION: ${{ steps.labels.outputs.version }}
+        run: |
+          docker/check-image-labels.sh local "$LOCAL" "$VERSION" "$GITHUB_SHA" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
 
       # 3) The Trivy gate, as on pgvector: fixable HIGH or CRITICAL findings in
       #    the OS (Debian) packages fail the job before the push. Its cache is
@@ -178,6 +208,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: OS_UPDATES_STAMP=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=release-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
@@ -242,6 +273,13 @@ jobs:
       contents: read
       packages: write
     steps:
+      # For docker/check-image-labels.sh, the read-back below.
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: docker
+
       - name: Download the digests
         uses: actions/download-artifact@v8.0.2
         with:
@@ -252,6 +290,19 @@ jobs:
       - name: Tags for this ref
         id: meta
         uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+
+      # The same OCI keys as the images' labels, as annotations on the index
+      # (issue #317), so the multi-arch tag itself says its version, commit
+      # and source, as the registry shows it. Only its annotations are used.
+      - name: Annotations for the index
+        id: annotations
+        uses: docker/metadata-action@v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -268,13 +319,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The manifest list from exactly the two arch digests, with the tags
-      # metadata-action gave; then read back from the registry: the version
-      # tag must list both platforms at those digests, and latest, when this
-      # is a stable tag, must be the same manifest list.
+      # metadata-action gave and the index annotations; then read back from
+      # the registry: the version tag must list both platforms at those
+      # digests, and latest, when this is a stable tag, must be the same
+      # manifest list. Each digest's config must still carry the labels the
+      # build set, and the index the annotations (docker/check-image-labels.sh).
       - name: Create the manifest list and check it
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           VERSION: ${{ steps.meta.outputs.version }}
+          ANNOTATIONS: ${{ steps.annotations.outputs.annotations }}
+          LABELS_VERSION: ${{ steps.annotations.outputs.version }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -288,8 +343,18 @@ jobs:
           [ -n "$VERSION" ] || { echo "::error::metadata-action gave no version for ${GITHUB_REF}"; exit 1; }
           targs=()
           for t in "${tags[@]}"; do targs+=(-t "$t"); done
+          [ "$LABELS_VERSION" = "$VERSION" ] ||
+            { echo "::error::the labels say version '${LABELS_VERSION}', the tags '${VERSION}'"; exit 1; }
+          mapfile -t annotations < <(printf '%s\n' "$ANNOTATIONS" | sed '/^$/d')
+          [ "${#annotations[@]}" -ge 1 ] || { echo "::error::metadata-action gave no index annotations"; exit 1; }
+          for a in "${annotations[@]}"; do targs+=(--annotation "$a"); done
           echo "Tagging ${tags[*]}"
           docker buildx imagetools create "${targs[@]}" "${IMAGE}@${amd64}" "${IMAGE}@${arm64}"
+
+          source_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          docker/check-image-labels.sh pushed "${IMAGE}@${amd64}" "$VERSION" "$GITHUB_SHA" "$source_url"
+          docker/check-image-labels.sh pushed "${IMAGE}@${arm64}" "$VERSION" "$GITHUB_SHA" "$source_url"
+          docker/check-image-labels.sh index "${IMAGE}:${VERSION}" "$VERSION" "$GITHUB_SHA" "$source_url"
 
           raw="$(docker buildx imagetools inspect --raw "${IMAGE}:${VERSION}")"
           lists() {
