@@ -197,7 +197,7 @@ describe("file downloads", () => {
     expect(rawAuth).toEqual([`Bearer ${s.manyfold.accessToken}`]);
   });
 
-  // The plan: a non-https redirect is refused. That holds on Manyfold's own
+  // A non-https redirect is always refused. That holds on Manyfold's own
   // host too: the redirect is not upgraded to https and followed.
   it("refuse an http:// redirect to Manyfold's own host and import nothing for that file", async () => {
     const s = setup(library());
