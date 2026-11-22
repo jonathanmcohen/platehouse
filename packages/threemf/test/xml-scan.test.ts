@@ -109,3 +109,60 @@ describe("TagScanner", () => {
     expect(() => scanner.write(Buffer.alloc(MAX_TAG_CHARS, 0x31))).toThrow(Damaged);
   });
 });
+
+/**
+ * The attribute regex attrs() used before it walked the tag itself. It reads
+ * the same attributes, but backtracks over a long run with no = after it
+ * (review of PR #368), so it is kept here only as the reference for what
+ * attrs() must read, on short tags.
+ */
+function attrsByRegex(raw: string): Map<string, string> {
+  const re = /([^\s=/]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  const out = new Map<string, string>();
+  for (let m = re.exec(raw); m !== null; m = re.exec(raw)) {
+    const qualified = m[1] ?? "";
+    const colon = qualified.indexOf(":");
+    const name = colon < 0 ? qualified : qualified.slice(colon + 1);
+    if (!out.has(name)) out.set(name, m[2] ?? m[3] ?? "");
+  }
+  return out;
+}
+
+describe("attrs", () => {
+  it("reads what the old attribute regex read, on every shape of short tag", () => {
+    // Seeded, so a failing tag can be found again; no entities, which the
+    // regex left to decodeEntities just as attrs() does.
+    const alphabet = ["a", "b", ":", "=", '"', "'", " ", "\t", "\n", "/", " ", "x="];
+    let seed = 12345;
+    const next = (n: number) => {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    for (let k = 0; k < 20_000; k++) {
+      let raw = "";
+      const length = next(24);
+      for (let i = 0; i < length; i++) raw += alphabet[next(alphabet.length)];
+      expect(Object.fromEntries(attrs(raw)), JSON.stringify(raw)).toEqual(
+        Object.fromEntries(attrsByRegex(raw)),
+      );
+    }
+  });
+
+  // Each shape below is a tag the size MAX_TAG_CHARS lets through. Read in
+  // time that grows with the square of its length, as the old regex did,
+  // one such tag took minutes; in one pass it takes milliseconds.
+  it.each([
+    ["a run with no = after it", `object ${"a".repeat(MAX_TAG_CHARS)}`],
+    ["a quote never closed", `object x="${"a".repeat(MAX_TAG_CHARS)}`],
+    ["spaces with no = after them", `object a${" ".repeat(MAX_TAG_CHARS)}`],
+    ["= with no quote after it", `object a=${" ".repeat(MAX_TAG_CHARS)}b`],
+    ["many short names with no =", `object ${"a ".repeat(MAX_TAG_CHARS / 2)}`],
+    ["many names and = with no quote", `object ${"a=".repeat(MAX_TAG_CHARS / 2)}`],
+  ])("reads a megabyte tag of %s in one pass", (_, raw) => {
+    const started = performance.now();
+    const read = attrs(raw);
+    const took = performance.now() - started;
+    expect(read.size).toBe(0);
+    expect(took).toBeLessThan(1000);
+  });
+});

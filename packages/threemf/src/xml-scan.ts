@@ -138,19 +138,75 @@ function localName(qualified: string): string {
   return colon < 0 ? qualified : qualified.slice(colon + 1);
 }
 
-const ATTR = /([^\s=/]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+/** Whether c is a character JavaScript's \s matches. */
+function isSpace(c: number): boolean {
+  return (
+    c === 0x20 ||
+    (c >= 0x09 && c <= 0x0d) ||
+    c === 0xa0 ||
+    c === 0x1680 ||
+    (c >= 0x2000 && c <= 0x200a) ||
+    c === 0x2028 ||
+    c === 0x2029 ||
+    c === 0x202f ||
+    c === 0x205f ||
+    c === 0x3000 ||
+    c === 0xfeff
+  );
+}
+
+/** Whether c may be in an attribute name: anything but a space, = or /. */
+function isNameChar(c: number): boolean {
+  return c !== 0x3d /* = */ && c !== 0x2f /* / */ && !isSpace(c);
+}
 
 /**
  * A tag's attributes by local name (p:path is "path"). The first of a
  * repeated name wins. Values are decoded for the XML entities.
+ *
+ * Each attribute is a name (a run of anything but spaces, = and /), spaces,
+ * =, spaces and a value in double or single quotes; anything else between
+ * them is passed over. The tag is walked once, in time that grows with its
+ * length (review of PR #368): a regex for the same thing backtracks over a
+ * long run with no = after it, so one crafted tag the size MAX_TAG_CHARS
+ * allows cost minutes, outside the work budget.
+ * - A name that is not followed by =, spaces and a quote is passed over
+ *   whole: no shorter name inside it can be, as it ends at the same place.
+ * - Once a quote has no closing quote after it, no later value in that quote
+ *   can close either, so the tag is not searched for one again.
  */
 export function attrs(raw: string): Map<string, string> {
   const out = new Map<string, string>();
-  ATTR.lastIndex = 0;
-  for (let m = ATTR.exec(raw); m !== null; m = ATTR.exec(raw)) {
-    const name = localName(m[1] ?? "");
-    if (out.has(name)) continue;
-    out.set(name, decodeEntities(m[2] ?? m[3] ?? ""));
+  const n = raw.length;
+  let unclosedDouble = false;
+  let unclosedSingle = false;
+  let i = 0;
+  while (i < n) {
+    if (!isNameChar(raw.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < n && isNameChar(raw.charCodeAt(i))) i++;
+    const nameEnd = i;
+    let j = nameEnd;
+    while (j < n && isSpace(raw.charCodeAt(j))) j++;
+    if (raw.charCodeAt(j) !== 0x3d /* = */) continue;
+    j++;
+    while (j < n && isSpace(raw.charCodeAt(j))) j++;
+    const quote = raw.charCodeAt(j);
+    const double = quote === 0x22; /* " */
+    if (!double && quote !== 0x27 /* ' */) continue;
+    if (double ? unclosedDouble : unclosedSingle) continue;
+    const close = raw.indexOf(double ? '"' : "'", j + 1);
+    if (close < 0) {
+      if (double) unclosedDouble = true;
+      else unclosedSingle = true;
+      continue;
+    }
+    const name = localName(raw.slice(start, nameEnd));
+    if (!out.has(name)) out.set(name, decodeEntities(raw.slice(j + 1, close)));
+    i = close + 1;
   }
   return out;
 }

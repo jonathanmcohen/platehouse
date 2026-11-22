@@ -18,6 +18,10 @@
 //   name inflates the same large part again (#384);
 // - hugeMesh: one mesh of very many vertices written as repetitive text, so it
 //   compresses to almost nothing;
+// - longTags: tags up to the scanner's longest, each a long run with no = in
+//   it (bare, or in quotes), on an object, a vertex of a mesh the plate
+//   needs and a build item, so reading their attributes must take one pass
+//   (review of PR #368: a backtracking regex took minutes per tag);
 // - mixed: a random mixture of the above.
 // Nothing here is a designer file; every byte is made from the seed.
 import { crc32, deflateRawSync } from "node:zlib";
@@ -26,7 +30,14 @@ import { meshXml, moved, settingsXml } from "./plate-models.js";
 const CORE = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
 const PRODUCTION = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
 
-export type Family = "chain" | "fan" | "sameNamePath" | "overlapping" | "hugeMesh" | "mixed";
+export type Family =
+  | "chain"
+  | "fan"
+  | "sameNamePath"
+  | "overlapping"
+  | "hugeMesh"
+  | "longTags"
+  | "mixed";
 
 export const FAMILIES: readonly Family[] = [
   "chain",
@@ -34,6 +45,7 @@ export const FAMILIES: readonly Family[] = [
   "sameNamePath",
   "overlapping",
   "hugeMesh",
+  "longTags",
   "mixed",
 ];
 
@@ -318,6 +330,32 @@ export function hostile(family: Family, seed: number): HostileFile {
         seed,
         label: `one mesh of ${vertices} vertices`,
         bytes: overlappingZip(project([meshObject(100, stripMesh(vertices))], [100])),
+      };
+    }
+    case "longTags": {
+      // Object 100 is on the plate, so its mesh is read and its long vertex
+      // tag reaches attrs(); it cannot be read, and the tetrahedron is shown.
+      const count = r(2, 5);
+      const run = (i: number) => {
+        const length = r(64, 1000) * 1024;
+        return i % 2 === 0 ? "a".repeat(length) : `"${"a".repeat(length)}"`;
+      };
+      const objects: string[] = [];
+      for (let i = 0; i < count; i++) objects.push(`<object ${run(i)}/>`);
+      objects.push(
+        meshObject(
+          100,
+          stripMesh(r(10, 200)).replace("<vertices>", `<vertices><vertex ${run(0)}/>`),
+        ),
+      );
+      const files = project(objects, [100]);
+      const root = files[0] as ZipEntrySpec;
+      root.data = (root.data as string).replace("<build>", `<build><item ${run(1)}/>`);
+      return {
+        family,
+        seed,
+        label: `${count} long tags with no attribute, a long vertex and a long build item`,
+        bytes: overlappingZip(files),
       };
     }
     case "mixed": {

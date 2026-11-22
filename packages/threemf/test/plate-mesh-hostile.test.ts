@@ -205,6 +205,23 @@ describe("the review findings, by name", () => {
     expect(reads, file.label).toBeLessThanOrEqual(2);
   });
 
+  it("tags as long as the scanner allows, with no = in them, are read in one pass each", async () => {
+    // A backtracking attribute regex took minutes on each of these tags, on
+    // the server's main thread and outside the work budget (review of PR
+    // #368). Read under the default limits, so every tag reaches attrs().
+    for (const seed of [1, 2, 3]) {
+      const file = hostile("longTags", seed);
+      const started = performance.now();
+      const run = await metered(file.bytes, {});
+      const took = performance.now() - started;
+      expect(run.outcome, file.label).not.toBeInstanceOf(PlateMeshError);
+      // Only the tetrahedron: object 100's long vertex leaves its mesh unreadable.
+      expect((run.outcome as PlateMesh).pieces, file.label).toHaveLength(1);
+      expect((run.outcome as PlateMesh).triangles, file.label).toBe(4);
+      expect(took, file.label).toBeLessThan(5000);
+    }
+  });
+
   it("a placed mesh's triangles count when it is placed, so a chain over a big mesh stops before its mesh is read", async () => {
     // 11 instances of a 5,497-vertex mesh draw about 60,000 triangles, over
     // the 20,000 asked for: refused while walking, before M is held.
