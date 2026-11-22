@@ -282,6 +282,14 @@ export interface DerivedDeps {
   uploadTimeoutMs?: number;
   /** The clock the slicer-down deadline is set and read by; the system clock when left out. */
   now?: () => Date;
+  /** How many previews one backfill run queues at most (issue #316). */
+  backfillBatch?: number;
+}
+
+/** What one run of the preview backfill did (issue #316). */
+export interface BackfillResult {
+  /** The STL and STEP files it queued a preview for. */
+  queued: string[];
 }
 
 /**
@@ -1505,7 +1513,20 @@ export function createDerived(deps: DerivedDeps) {
     return result;
   }
 
-  return { renderScad, convertStep, replaceFile, afterUpload, runJob, checkRenders };
+  /** Skeleton for issue #316; the tests are written first. */
+  async function backfillPreviews(_now: Date): Promise<BackfillResult> {
+    throw new Error("backfillPreviews is not implemented yet (issue #316)");
+  }
+
+  return {
+    renderScad,
+    convertStep,
+    replaceFile,
+    afterUpload,
+    runJob,
+    checkRenders,
+    backfillPreviews,
+  };
 }
 
 export type Derived = ReturnType<typeof createDerived>;

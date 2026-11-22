@@ -11,10 +11,12 @@
 // /v1/profiles lists for the printer and the slot's type, or null where none
 // is listed and the file's own filament is kept.
 //
-// It also answers the three render routes Task 13 calls, POST /v1/scad/stl,
-// /v1/scad/png and /v1/step/glb (the renders group below): by default with
-// bytes made from the body it was sent, so a test can tell which source a
-// stored render came from, or as a test scripts it.
+// It also answers the render routes Task 13 and issue #316 call, POST
+// /v1/scad/stl, /v1/scad/png, /v1/step/glb and /v1/stl/png (the renders group
+// below): by default with bytes made from the body it was sent, so a test can
+// tell which source a stored render came from, or as a test scripts it. Its
+// GLB is a real one (one triangle, with the body's digest in its generator
+// field), since the STEP preview reads the stored mesh back.
 //
 // It listens on 127.0.0.1 only and holds nothing but synthetic data.
 import { createHash, randomBytes } from "node:crypto";
@@ -81,16 +83,21 @@ export type StubOutcome =
   /** Nothing is answered until the stub stops. */
   | { kind: "hang" };
 
-/** A render route of contract v1 (Task 13). */
-export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb";
+/** A render route of contract v1 (Task 13, and the STL preview of issue #316). */
+export type RenderRoute = "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb" | "/v1/stl/png";
 
-const RENDER_ROUTES: readonly RenderRoute[] = ["/v1/scad/stl", "/v1/scad/png", "/v1/step/glb"];
+const RENDER_ROUTES: readonly RenderRoute[] = [
+  "/v1/scad/stl",
+  "/v1/scad/png",
+  "/v1/step/glb",
+  "/v1/stl/png",
+];
 
 /** What a render route answers to one request. */
 export type RenderAnswer =
   /** 200 with renderedBytes for the body, in the route's content type. */
   | { kind: "render" }
-  /** 422 render_failed (scad routes) or convert_failed (step) with this message. */
+  /** 422 render_failed (scad and stl routes) or convert_failed (step) with this message. */
   | { kind: "failed"; message: string }
   /** 409 busy, before the body is read, connection closed. */
   | { kind: "busy" }
@@ -122,23 +129,85 @@ const RENDER_CONTENT_TYPE: Readonly<Record<RenderRoute, string>> = {
   "/v1/scad/stl": "model/stl",
   "/v1/scad/png": "image/png",
   "/v1/step/glb": "model/gltf-binary",
+  "/v1/stl/png": "image/png",
 };
 
 const RENDER_LIMIT: Readonly<Record<RenderRoute, number>> = {
   "/v1/scad/stl": LIMITS.scadBodyBytes,
   "/v1/scad/png": LIMITS.scadBodyBytes,
   "/v1/step/glb": LIMITS.stepBodyBytes,
+  "/v1/stl/png": LIMITS.stlBodyBytes,
 };
 
 const RENDER_MAGIC: Readonly<Record<RenderRoute, Buffer>> = {
   "/v1/scad/stl": Buffer.from("solid stub\n", "latin1"),
   "/v1/scad/png": Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
   "/v1/step/glb": Buffer.from("glTF", "latin1"),
+  "/v1/stl/png": Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
 };
 
-/** The bytes the stub renders for a body on a route: the route's magic and the body's SHA-256. */
+/**
+ * A GLB laid out as the slicer's meshesToGlb writes one (apps/slicer/src/
+ * step.ts): one buffer, float32 positions and uint32 indices, the JSON chunk
+ * padded with spaces. It holds one triangle, and generator carries label, so
+ * two GLBs made from different bodies differ.
+ */
+export function stubGlb(label: string): Buffer {
+  const positions = Buffer.alloc(36);
+  [0, 0, 0, 10, 0, 0, 0, 10, 0].forEach((v, i) => {
+    positions.writeFloatLE(v, i * 4);
+  });
+  const indices = Buffer.alloc(12);
+  [0, 1, 2].forEach((v, i) => {
+    indices.writeUInt32LE(v, i * 4);
+  });
+  const bin = Buffer.concat([positions, indices]);
+  const json = {
+    asset: { version: "2.0", generator: label },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, mode: 4 }] }],
+    accessors: [
+      {
+        bufferView: 0,
+        componentType: 5126,
+        count: 3,
+        type: "VEC3",
+        min: [0, 0, 0],
+        max: [10, 10, 0],
+      },
+      { bufferView: 1, componentType: 5125, count: 3, type: "SCALAR" },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36, target: 34962 },
+      { buffer: 0, byteOffset: 36, byteLength: 12, target: 34963 },
+    ],
+    buffers: [{ byteLength: bin.length }],
+  };
+  let text = Buffer.from(JSON.stringify(json), "utf8");
+  const pad = (4 - (text.length % 4)) % 4;
+  text = Buffer.concat([text, Buffer.alloc(pad, 0x20)]);
+  const header = Buffer.alloc(12);
+  header.write("glTF", 0, "ascii");
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(12 + 8 + text.length + 8 + bin.length, 8);
+  const jsonHead = Buffer.alloc(8);
+  jsonHead.writeUInt32LE(text.length, 0);
+  jsonHead.writeUInt32LE(0x4e4f534a, 4);
+  const binHead = Buffer.alloc(8);
+  binHead.writeUInt32LE(bin.length, 0);
+  binHead.writeUInt32LE(0x004e4942, 4);
+  return Buffer.concat([header, jsonHead, text, binHead, bin]);
+}
+
+/**
+ * The bytes the stub renders for a body on a route: the route's magic and the
+ * body's SHA-256, or, for /v1/step/glb, a real GLB carrying them.
+ */
 export function renderedBytes(route: RenderRoute, body: Buffer | string): Buffer {
   const digest = createHash("sha256").update(body).digest("hex");
+  if (route === "/v1/step/glb") return stubGlb(`${route} ${digest}`);
   return Buffer.concat([RENDER_MAGIC[route], Buffer.from(`${route} ${digest}\n`, "latin1")]);
 }
 

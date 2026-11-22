@@ -4,12 +4,17 @@
 // the source to the slicer's /v1/step/glb (here a stub built on
 // packages/slicer-contract) and stores the GLB as a new mesh_glb blob, which
 // is all the browser ever loads for a STEP file.
+//
+// Issue #316: once the mesh is stored, the same transaction queues a
+// preview-step job, which reads that stored GLB back, sends it to the
+// slicer's /v1/stl/png as an STL and stores the PNG as a render_png blob. The
+// STEP file is never converted a second time for its preview. A preview that
+// fails keeps the mesh, shows the icon and says why.
 import { randomBytes } from "node:crypto";
 import { truncate } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { setTimeout as sleep } from "node:timers/promises";
 import { LIMITS } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -30,6 +35,8 @@ import {
   blobsOf,
   type DerivedEnv,
   keysOf,
+  meshPreviewBytes,
+  meshStl,
   readObject,
   settledFile,
   startDerivedEnv,
@@ -65,11 +72,14 @@ async function uploadStep(text: string, name = "Housing.step") {
 }
 
 /** Put before the converter's message when the mesh is from an earlier source than the file's. */
+/** Before OpenSCAD's message when it rejects the mesh's preview (issue #316). */
+const PREVIEW_REJECTED = "The preview picture could not be rendered. OpenSCAD said:";
+
 const PREVIOUS_MESH =
   "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version. The converter said:";
 
 describe("STEP meshes (AC-050)", () => {
-  test("a .step upload produces a GLB mesh blob", async () => {
+  test("a .step upload produces a GLB mesh blob, then a preview made from that mesh", async () => {
     const text = uniqueStep("mesh");
     const { modelId, fileId } = await uploadStep(text);
     const file = await settledFile(env, fileId);
@@ -78,7 +88,7 @@ describe("STEP meshes (AC-050)", () => {
     expect(file.derivedMessage).toBeNull();
     expect(file.meshBlobId).not.toBeNull();
     expect(file.renderStlBlobId).toBeNull();
-    expect(file.renderPngBlobId).toBeNull();
+    expect(file.renderPngBlobId).not.toBeNull();
 
     const blobs = await blobsOf(env, modelId);
     const mesh = blobs.find((b) => b.id === file.meshBlobId);
@@ -87,17 +97,43 @@ describe("STEP meshes (AC-050)", () => {
       state: "stored",
       contentType: "model/gltf-binary",
     });
-    expect(await readObject(env, mesh?.key ?? "")).toEqual(renderedBytes("/v1/step/glb", text));
-    expect(blobs.map((b) => b.kind).sort()).toEqual(["mesh_glb", "source"]);
+    const meshBytes = await readObject(env, mesh?.key ?? "");
+    expect(meshBytes).toEqual(renderedBytes("/v1/step/glb", text));
+    const png = blobs.find((b) => b.id === file.renderPngBlobId);
+    expect(png).toMatchObject({ kind: "render_png", state: "stored", contentType: "image/png" });
+    expect(await readObject(env, png?.key ?? "")).toEqual(await meshPreviewBytes(meshBytes));
+    expect(blobs.map((b) => b.kind).sort()).toEqual(["mesh_glb", "render_png", "source"]);
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
 
+    // One conversion: the preview is made from the stored mesh, sent as STL.
     const calls = env.stub.renders.callsTo("/v1/step/glb");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.body.toString("utf8")).toBe(text);
     expect(calls[0]?.contentType).toBe("application/octet-stream");
+    const previews = env.stub.renders.callsTo("/v1/stl/png");
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.body.equals(await meshStl(meshBytes))).toBe(true);
+    expect(previews[0]?.contentType).toBe("application/octet-stream");
 
     const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
-    expect(jobs.map((j) => j.data.kind)).toEqual([DERIVED_KINDS.convertStep]);
+    expect(jobs.map((j) => j.data.kind)).toEqual([DERIVED_KINDS.convertStep, "preview-step"]);
+    // The preview job renders the source the mesh was made from.
+    expect(jobs[1]?.data.sourceBlobId).toBe(file.blobId);
+  });
+
+  test("a preview OpenSCAD rejects keeps the mesh, leaves no preview, and says why", async () => {
+    const message = "ERROR: STL import: too many facets";
+    env.stub.renders.queue("/v1/stl/png", { kind: "failed", message });
+    const { modelId, fileId } = await uploadStep(uniqueStep("preview rejected"));
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      derivedStatus: "failed",
+      derivedMessage: `${PREVIEW_REJECTED} ${message}`,
+      renderPngBlobId: null,
+    });
+    expect(file.meshBlobId).not.toBeNull();
+    expect((await blobsOf(env, modelId)).map((b) => b.kind).sort()).toEqual(["mesh_glb", "source"]);
+    expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(1);
   });
 
   test("a .stp upload is meshed the same way", async () => {
@@ -117,12 +153,15 @@ describe("STEP meshes (AC-050)", () => {
     expect(file.derivedStatus).toBe("failed");
     expect(file.derivedMessage).toBe(message);
     expect(file.meshBlobId).toBeNull();
+    expect(file.renderPngBlobId).toBeNull();
     const blobs = await blobsOf(env, modelId);
     expect(blobs.map((b) => b.kind)).toEqual(["source"]);
     expect(await readObject(env, blobs[0]?.key ?? "")).toEqual(Buffer.from(text));
+    // With no mesh there is nothing to preview.
+    expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
   });
 
-  test("replacing a .step converts the new file and removes the old mesh and source", async () => {
+  test("replacing a .step converts the new file and removes the old mesh, preview and source", async () => {
     const { modelId, fileId } = await uploadStep(uniqueStep("old"));
     const before = await settledFile(env, fileId);
     const oldBlobs = await blobsOf(env, modelId);
@@ -135,8 +174,12 @@ describe("STEP meshes (AC-050)", () => {
     );
     const blobs = await blobsOf(env, modelId);
     const mesh = blobs.find((b) => b.id === after?.meshBlobId);
-    expect(await readObject(env, mesh?.key ?? "")).toEqual(renderedBytes("/v1/step/glb", next));
-    expect(blobs).toHaveLength(2);
+    const meshBytes = await readObject(env, mesh?.key ?? "");
+    expect(meshBytes).toEqual(renderedBytes("/v1/step/glb", next));
+    const png = blobs.find((b) => b.id === after?.renderPngBlobId);
+    expect(await readObject(env, png?.key ?? "")).toEqual(await meshPreviewBytes(meshBytes));
+    expect(blobs).toHaveLength(3);
+    expect(oldBlobs).toHaveLength(3);
     for (const old of oldBlobs) {
       await expect(env.store.getBlobStream(old.key)).rejects.toBeInstanceOf(BlobNotFound);
     }
@@ -145,12 +188,16 @@ describe("STEP meshes (AC-050)", () => {
   test("a replacement the converter rejects becomes the file's source with the converter's message, and the previous mesh stays, marked as the previous version's", async () => {
     // The maintainer's decision on issue #103, as for a .scad: the replacement becomes
     // the source as uploaded, the previous GLB stays attached and is said to
-    // be the previous version's, and only the old source is deleted.
+    // be the previous version's, and only the old source is deleted. The
+    // previous version's preview picture goes too (issue #316): a card
+    // cannot say a picture is of an earlier version, so it shows the icon.
     const first = uniqueStep("convert error, before");
     const { modelId, fileId } = await uploadStep(first);
     const before = await settledFile(env, fileId);
     const oldSource = await env.repos.blobs.get(before.blobId);
     if (!oldSource) throw new Error("no source row");
+    const oldPng = await env.repos.blobs.get(before.renderPngBlobId ?? "");
+    if (!oldPng) throw new Error("no preview row");
     env.stub.renders.reset();
 
     const message = "STEP import failed: no shapes found";
@@ -163,6 +210,7 @@ describe("STEP meshes (AC-050)", () => {
       blobId: sourceBlobId,
       size: Buffer.byteLength(next),
       meshBlobId: before.meshBlobId,
+      renderPngBlobId: null,
       derivedStatus: "failed",
       derivedMessage: `${PREVIOUS_MESH} ${message}`,
     });
@@ -174,11 +222,15 @@ describe("STEP meshes (AC-050)", () => {
     const mesh = byId.get(before.meshBlobId ?? "");
     expect(await readObject(env, mesh?.key ?? "")).toEqual(renderedBytes("/v1/step/glb", first));
     expect(mesh?.createdAt.getTime()).toBeLessThan(source?.createdAt.getTime() ?? 0);
-    // Only the old source is gone, row and object.
+    // The old source and the old preview are gone, rows and objects.
     expect(blobs.map((b) => b.id).sort()).toEqual([sourceBlobId, before.meshBlobId].sort());
     expect(await env.repos.blobs.get(before.blobId)).toBeUndefined();
     await expect(env.store.getBlobStream(oldSource.key)).rejects.toBeInstanceOf(BlobNotFound);
+    expect(await env.repos.blobs.get(oldPng.id)).toBeUndefined();
+    await expect(env.store.getBlobStream(oldPng.key)).rejects.toBeInstanceOf(BlobNotFound);
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
+    // Nothing tries to preview the earlier version's mesh.
+    expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
   });
 
   test("a replacement the converter rejects, staged before the original's first mesh finished, still says the mesh is the previous version's", async () => {
@@ -222,7 +274,12 @@ describe("STEP meshes (AC-050)", () => {
       ),
     ).toEqual({ status: "ok" });
     const between = await env.repos.files.get(fileId);
-    expect(between).toMatchObject({ blobId: original.blobId, derivedStatus: "pending" });
+    // A newer replacement is queued, so no preview is queued for this mesh.
+    expect(between).toMatchObject({
+      blobId: original.blobId,
+      derivedStatus: "pending",
+      renderPngBlobId: null,
+    });
     const meshId = between?.meshBlobId;
     if (!meshId) throw new Error("no mesh");
 
@@ -291,7 +348,8 @@ describe("STEP meshes (AC-050)", () => {
     }
     expect(byId.has(rejected.sourceBlobId)).toBe(false);
     await expect(env.store.getBlobStream(rejectedKey)).rejects.toBeInstanceOf(BlobNotFound);
-    expect(blobs).toHaveLength(2);
+    // The new source, its mesh and the preview made from that mesh.
+    expect(blobs.map((b) => b.kind).sort()).toEqual(["mesh_glb", "render_png", "source"]);
     expect(await keysOf(env, modelId)).toEqual(blobs.map((b) => b.key).sort());
   });
 
@@ -324,17 +382,20 @@ describe("STEP meshes (AC-050)", () => {
     });
   });
 
-  test("an .stl upload queues nothing and never reaches the slicer", async () => {
+  // Until issue #316 an .stl queued nothing. It now queues its preview and
+  // nothing else: it is never sent to the STEP converter (stl.test.ts covers
+  // the preview itself).
+  test("an .stl upload queues only its preview and is never converted", async () => {
     const path = await writeUpload(env, ASCII_STL);
     const { fileId } = await env.ingestDerived.ingestFile({
       tmpPath: path,
       originalName: "Plain.stl",
       target: "new",
     });
-    await sleep(2000);
-    expect(await env.boss.findJobs(QUEUE.slicer, { data: { fileId } })).toEqual([]);
-    expect(env.stub.renders.calls).toHaveLength(0);
-    expect((await env.repos.files.get(fileId))?.derivedStatus).toBeNull();
+    await settledFile(env, fileId);
+    const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
+    expect(jobs.map((j) => j.data.kind)).toEqual(["render-stl"]);
+    expect(env.stub.renders.calls.map((c) => c.route)).toEqual(["/v1/stl/png"]);
   });
 });
 
@@ -356,11 +417,12 @@ describe("the render check (issue #91)", () => {
     );
     expect(result.queued).toContain(fileId);
     const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
-    expect(jobs.map((j) => j.data.kind)).toEqual([DERIVED_KINDS.convertStep]);
+    expect(jobs[0]?.data.kind).toBe(DERIVED_KINDS.convertStep);
 
     const file = await settledFile(env, fileId);
     expect(file.derivedStatus).toBe("ok");
     expect(file.meshBlobId).not.toBeNull();
+    expect(file.renderPngBlobId).not.toBeNull();
   });
 });
 
@@ -433,7 +495,8 @@ describe("a store that goes away while a STEP source is sent", () => {
     expect(done.derivedStatus).toBe("ok");
     expect(done.meshBlobId).not.toBeNull();
     const jobs = await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } });
-    expect(jobs).toHaveLength(1);
+    // The conversion it sent again, then the preview of the mesh it stored.
+    expect(jobs.map((j) => j.data.kind)).toEqual([DERIVED_KINDS.convertStep, "preview-step"]);
     expect(jobs[0]?.data).toMatchObject({ ...job, waits: 1 });
   });
 

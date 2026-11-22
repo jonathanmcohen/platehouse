@@ -80,6 +80,16 @@ export const DERIVED_MESSAGES = {
   scadTooLarge: "This .scad file is larger than the 1 MiB the renderer takes.",
   /** A STEP file over the contract's 256 MiB limit is never sent. */
   stepTooLarge: "This STEP file is larger than the 256 MiB the converter takes.",
+  /**
+   * An STL's or a STEP mesh's preview picture could not be made (issue
+   * #316), followed by why: the mesh could not be read, or was too large.
+   */
+  previewFailed: "The preview picture could not be rendered.",
+  /** The same, before OpenSCAD's own message when it rejects the STL. */
+  previewRejected: "The preview picture could not be rendered. OpenSCAD said:",
+  /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
+  stlTooLarge:
+    "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
 } as const;
 
 /**
@@ -251,7 +261,7 @@ export interface SlicerTarget {
 }
 
 export interface RenderRequest {
-  route: "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb";
+  route: "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb" | "/v1/stl/png";
   body: Buffer | Readable;
   contentType: string;
   /** The content type a 200 must carry. */

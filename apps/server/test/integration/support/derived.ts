@@ -7,10 +7,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";
 import type { ModelFile } from "../../../src/db/types.js";
 import { createDerived, type Derived, derivedJobHandlers } from "../../../src/derived/derived.js";
+import { stlFromGlb } from "../../../src/derived/mesh.js";
 import { createIngest, type Ingest } from "../../../src/ingest/ingest.js";
 import { createBoss } from "../../../src/jobs/boss.js";
 import { startQueues } from "../../../src/jobs/queues.js";
-import { type SlicerStub, startSlicerStub } from "../../support/slicer-stub.js";
+import { renderedBytes, type SlicerStub, startSlicerStub } from "../../support/slicer-stub.js";
 import { type IngestEnv, startIngestEnv } from "./ingest.js";
 
 export interface DerivedEnv extends IngestEnv {
@@ -106,6 +107,21 @@ export async function settledFile(
   );
   if (!file) throw new Error("file vanished");
   return file;
+}
+
+/**
+ * The preview the stub renders for a stored STEP mesh (issue #316): the STL
+ * the app makes from the GLB, as it arrives at /v1/stl/png.
+ */
+export async function meshPreviewBytes(glb: Buffer): Promise<Buffer> {
+  return renderedBytes("/v1/stl/png", await meshStl(glb));
+}
+
+/** The STL the app sends for a stored STEP mesh. */
+export async function meshStl(glb: Buffer): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stlFromGlb(glb).open()) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
 }
 
 /** An object's bytes, read back from the bucket. */

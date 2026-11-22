@@ -16,6 +16,7 @@ describe("slicer contract v1", () => {
       sliceBodyBytes: 536_870_912,
       scadBodyBytes: 1_048_576,
       stepBodyBytes: 268_435_456,
+      stlBodyBytes: 268_435_456,
       maxPlate: 128,
       detailChars: 2000,
     });

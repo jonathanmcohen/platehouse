@@ -59,6 +59,9 @@ const DERIVED_KEYS: Readonly<Record<string, MessageKey>> = {
   previousStep: "derived.previousStep",
   scadTooLarge: "derived.scadTooLarge",
   stepTooLarge: "derived.stepTooLarge",
+  previewFailed: "derived.previewFailed",
+  previewRejected: "derived.previewRejected",
+  stlTooLarge: "derived.stlTooLarge",
 };
 
 /**

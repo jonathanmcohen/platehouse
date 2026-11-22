@@ -47,6 +47,8 @@ export const LIMITS = Object.freeze({
   scadBodyBytes: 1_048_576,
   /** Largest STEP file POST /v1/step/glb takes (256 MiB). */
   stepBodyBytes: 268_435_456,
+  /** Largest STL POST /v1/stl/png takes (256 MiB). */
+  stlBodyBytes: 268_435_456,
   /** Plates are numbered 1 to 128 (AC-023). */
   maxPlate: 128,
   /** A failed slice's detail is Orca's error_string, cut to this length. */

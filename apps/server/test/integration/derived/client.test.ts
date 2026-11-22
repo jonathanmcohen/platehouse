@@ -264,6 +264,27 @@ describe("a slicer that cannot render right now", () => {
     expect((error as Error).message).toBe(message);
   });
 
+  // Issue #316: /v1/stl/png is new in this release. A slicer image older
+  // than the app answers it 404 not_found. That says nothing about the file,
+  // so the job waits for the slicer, as for one that is down, instead of
+  // marking every STL failed until it is uploaded again.
+  test("a 404 from a render route is a slicer older than the app: down, not the file's fault", async () => {
+    const baseUrl = await answering(404, { error: "not_found" });
+    const error = await failure(
+      postRender(target(baseUrl), {
+        route: "/v1/stl/png",
+        body: Buffer.from("solid x\nendsolid x\n"),
+        contentType: "application/octet-stream",
+        accept: "image/png",
+        refusal: "render",
+        tooLarge: "too large",
+      }),
+    );
+    expect(error).toBeInstanceOf(SlicerDown);
+    expect((error as Error).message).toContain("/v1/stl/png");
+    expect(isRetryable(error)).toBe(false);
+  });
+
   test("the sandbox-off prefix is the one the slicer writes in apps/slicer/src/server.ts", async () => {
     const slicerServer = await readFile(
       fileURLToPath(new URL("../../../../slicer/src/server.ts", import.meta.url)),
