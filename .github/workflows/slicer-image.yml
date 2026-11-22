@@ -13,7 +13,9 @@
 # the slicer a test server follows: set the image to :rc and pull to get the
 # newest release candidate (the maintainer, 2026-11-21). rc moves only on a
 # pushed release tag: a release candidate vX.Y.Z-rc.N, or a plain vX.Y.Z, so
-# a server on rc never runs anything older than the newest release. Daily
+# a server on rc also gets each release. It follows the last such tag pushed
+# with no version comparison, so a patch release cut during a candidate
+# moves it back. Daily
 # runs, runs by hand (from main or from a tag) and any other prerelease tag,
 # such as v0.0.0-test, never move rc. The app image's rc in release.yml
 # follows the same rule.

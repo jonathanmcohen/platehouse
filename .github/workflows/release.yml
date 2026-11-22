@@ -30,7 +30,9 @@
 # rc is a moving tag for a test server: set the image to :rc and pull to get
 # the newest release candidate (the maintainer, 2026-11-21). It moves on a
 # release candidate tag vX.Y.Z-rc.N and on a plain release tag vX.Y.Z, so a
-# server on rc never runs anything older than the newest release; any other
+# server on rc also gets each release. It follows the last such tag pushed
+# with no version comparison, so a patch release cut during a candidate
+# (v0.1.1 after v0.2.0-rc.1) moves it back; any other
 # prerelease, such as the throwaway v0.0.0-test, leaves it alone. The merge
 # job's "Does this tag move rc" step decides it from github.ref with a strict
 # regex, and metadata-action adds rc through type=raw only when that step says

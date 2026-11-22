@@ -123,7 +123,7 @@ release tag or a run by hand: the daily run sees its `orca-X.Y.Z` tag and builds
 `rc` is for a test server: set its slicer image to `platehouse-slicer:rc` and pull to get the
 newest release candidate, with no tag to edit. It moves, so it is not a pin. A pushed release
 candidate tag (`vX.Y.Z-rc.N`) and a pushed plain release tag (`vX.Y.Z`) both point `rc` at the
-image that run published, so a server on `rc` never runs anything older than the newest release.
+image that run published, so a server on `rc` also gets each release.
 Daily runs, runs by hand and any other prerelease tag (such as `v0.0.0-test`) leave `rc` where it
 is. A release tag cut for an older version after a newer one moves `rc` back to it, the same way it
 moves `stable`. The app image, `ghcr.io/jonathanmcohen/platehouse`, has an `rc` tag that moves on

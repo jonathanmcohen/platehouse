@@ -143,9 +143,9 @@ again.
 ### Testing a release candidate
 
 Both images also carry an `rc` tag, meant for a test server. Unlike a version tag it moves: every
-release candidate (`vX.Y.Z-rc.N`) and every release (`vX.Y.Z`) points `rc` at that build. A
-server on `rc` therefore runs the newest release candidate, or the newest release once that is
-newer, and never anything older than the newest release.
+release candidate (`vX.Y.Z-rc.N`) and every release (`vX.Y.Z`) points `rc` at that build, the
+last one pushed, whatever its version. `rc` is not compared with the version it pointed at before,
+so it can move back.
 
 To follow it, set both images in `docker-compose.yml` to `rc`:
 
@@ -161,8 +161,22 @@ docker compose up -d --no-deps platehouse platehouse-slicer
 
 Do not run `rc` on a server you rely on. A release candidate can have bugs the release fixes, and
 the app's database changes only move forward, so going back from a candidate means restoring the
-dump you took before you pulled it. The slicer image's daily OrcaSlicer updates do not move `rc`;
-only a new release candidate or release does.
+dump you took before you pulled it (read the warning under [Upgrading](#upgrading) first). The
+slicer image's daily OrcaSlicer updates do not move `rc`; only a new release candidate or release
+does.
+
+:::warning A patch release during a candidate moves rc back
+
+A release of the current version line cut while the next one is in candidates, for example
+`v0.1.1` after `v0.2.0-rc.1`, points `rc` at `0.1.1`, an older version than the candidate the test
+server has been running. If that candidate added a database change, the older app will not start
+on the database: it stops with "Applied migration ... is missing from the migrations folder;
+refusing to migrate". Before you pull, check which tag was pushed last on the project's GitHub
+releases page. If it is a release older than the candidate you run, either keep the app on the candidate by setting its version tag (for example
+`ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1`) until the next candidate, or restore the dump you
+took before you pulled that candidate.
+
+:::
 
 ### Postgres
 
