@@ -14,6 +14,10 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - The docs site now shows only Platehouse's own icons: besides the logo and SVG favicon it already had, it carries the app's ICO favicon and Apple touch icon, uses the app icon as the social card when a page is shared, and sets the browser theme colour to the Platehouse accent. They are served from the files tools/brand already writes for the web app, not copied ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 
+### Fixed
+
+- The docs now warn that restoring an older database dump, including the upgrade rollback, leaves everything stored since the dump in the bucket with no record in the database, and that the daily 04:00 cleanup deletes it once it is more than 24 hours old, within its limit of 10 objects or a tenth of what it finds, at most 100. Backups and upgrades says what to do: turn on bucket versioning before you need it, copy the bucket before a restore if versioning is off, and upload those files again after the restore. Platehouse has no setting to pause the cleanup. The Storage page's cleanup section carries the same caveat ([#342](https://github.com/jonathanmcohen/platehouse/issues/342), [#359](https://github.com/jonathanmcohen/platehouse/pull/359)).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
