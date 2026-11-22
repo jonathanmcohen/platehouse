@@ -127,8 +127,7 @@ location if it is off. After you go back, upload those files again. The warning 
 ### The slicer
 
 The slicer image is tagged `orca-X.Y.Z` for the OrcaSlicer version it contains, and `stable`
-points to the newest one that has passed a test slice. Its `rc` tag is for test servers (see
-[Testing a release candidate](#testing-a-release-candidate)). To move to a new OrcaSlicer version, change
+points to the newest one that has passed a test slice. To move to a new OrcaSlicer version, change
 the tag and recreate the slicer:
 
 ```bash
@@ -142,10 +141,11 @@ again.
 
 ### Testing a release candidate
 
-Both images also carry an `rc` tag, meant for a test server. Unlike a version tag it moves: every
-release candidate (`vX.Y.Z-rc.N`) and every release (`vX.Y.Z`) points `rc` at that build, the
-last one pushed, whatever its version. `rc` is not compared with the version it pointed at before,
-so it can move back.
+Both images also carry an `rc` tag, meant for a test server. Unlike a version tag it moves. It
+points at the newest version, by version number, that has both images published: the highest
+release candidate (`vX.Y.Z-rc.N`) or release (`vX.Y.Z`) whose app image and slicer image were
+both built. Both `rc` tags always point at builds of the same version, so a test server never
+runs a new app with an old slicer.
 
 To follow it, set both images in `docker-compose.yml` to `rc`:
 
@@ -159,24 +159,22 @@ docker compose pull platehouse platehouse-slicer
 docker compose up -d --no-deps platehouse platehouse-slicer
 ```
 
+A release for an older version that is cut after a newer candidate, such as a `0.1.1` fix while
+`0.2.0-rc.1` is being tested, does not move `rc`: it stays on the newer candidate, by design.
+Throwaway tags such as `v0.0.0-test` and other prerelease kinds never move it.
+
+To check which version `rc` points at, compare its digest with a version's (the project's
+releases page does not list candidates, so it cannot tell you):
+
+```bash
+docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:rc --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --format '{{.Manifest.Digest}}'
+```
+
 Do not run `rc` on a server you rely on. A release candidate can have bugs the release fixes, and
 the app's database changes only move forward, so going back from a candidate means restoring the
-dump you took before you pulled it (read the warning under [Upgrading](#upgrading) first). The
-slicer image's daily OrcaSlicer updates do not move `rc`; only a new release candidate or release
-does.
-
-:::warning A patch release during a candidate moves rc back
-
-A release of the current version line cut while the next one is in candidates, for example
-`v0.1.1` after `v0.2.0-rc.1`, points `rc` at `0.1.1`, an older version than the candidate the test
-server has been running. If that candidate added a database change, the older app will not start
-on the database: it stops with "Applied migration ... is missing from the migrations folder;
-refusing to migrate". Before you pull, check which tag was pushed last on the project's GitHub
-releases page. If it is a release older than the candidate you run, either keep the app on the candidate by setting its version tag (for example
-`ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1`) until the next candidate, or restore the dump you
-took before you pulled that candidate.
-
-:::
+dump you took before you pulled it (see the restore steps above, and their warning about files
+uploaded since the dump).
 
 ### Postgres
 
