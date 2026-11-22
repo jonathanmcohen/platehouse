@@ -87,14 +87,28 @@ function workload(seed: number): SimRow[] {
   }));
   // One slicer, one job at a time, first queued first. A retried attempt
   // waits 10 seconds to 2 minutes and goes back in line by when it is ready.
-  const ready = rows.map((row, i) => ({ i, at: row.createdAt.getTime(), attempts: 0 }));
+  // The line is kept in order (rows are made in arrival order, and a retry
+  // is put in its place), so each job is the next one along.
+  type Waiting = { i: number; at: number; attempts: number };
+  const ready: Waiting[] = rows.map((row, i) => ({ i, at: row.createdAt.getTime(), attempts: 0 }));
+  let next = 0;
+  const putBack = (job: Waiting) => {
+    let lo = next;
+    let hi = ready.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const other = ready[mid] as Waiting;
+      if (other.at < job.at || (other.at === job.at && other.i < job.i)) lo = mid + 1;
+      else hi = mid;
+    }
+    ready.splice(lo, 0, job);
+  };
   let free = start;
   // The page asks at some point: work not finished by then is still waiting or running.
   const asked = start + (at - start) * (0.5 + r() * 0.8) + logUniform(r, SECOND, 2 * HOUR);
-  while (ready.length > 0) {
-    ready.sort((a, b) => a.at - b.at || a.i - b.i);
-    const job = ready.shift();
-    if (job === undefined) break;
+  while (next < ready.length) {
+    const job = ready[next] as Waiting;
+    next += 1;
     const row = rows[job.i] as SimRow;
     // A little idle time between jobs: the queue's pickup.
     const begin = Math.max(job.at, free) + r() * 2 * SECOND;
@@ -110,7 +124,7 @@ function workload(seed: number): SimRow[] {
     if (outcome < 0.05 && job.attempts < 3) {
       // Retried: back to waiting, keeping created_at; finished_at stays empty.
       row.status = "pending";
-      ready.push({
+      putBack({
         i: job.i,
         at: end + logUniform(r, 10 * SECOND, 2 * MINUTE),
         attempts: job.attempts,
