@@ -271,6 +271,19 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   const [checkAttempt, setCheckAttempt] = useState(0);
   /** How many selected models the last check took out of the selection. */
   const [left, setLeft] = useState(0);
+  /**
+   * The view the Select mode toolbar's notes describe: the search, filters,
+   * sort, printer and page or View all. When it changes, every note about
+   * the view before it goes (issue #317): the models-left count here, and
+   * SelectBar's action result and Select all matching note. A check for the
+   * new view then says how many left it, if any.
+   */
+  const notesView = `${matchKey}|${viewAll ? "all" : page}`;
+  const [leftFor, setLeftFor] = useState(notesView);
+  if (leftFor !== notesView) {
+    setLeftFor(notesView);
+    setLeft(0);
+  }
   const selectedNow = useRef(selected);
   selectedNow.current = selected;
   /** The changedKey the last check ran for, so a check after an action is told apart. */
@@ -455,6 +468,17 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     return libraryHref(params, (next) => {
       next.delete(key);
       next.delete("page");
+    });
+  }
+
+  /**
+   * The way back to all models from any filter (issue #317): the library's
+   * address without the search, the tag, creator and collection filters and
+   * the page, keeping the sort and View all.
+   */
+  function allModels(): string {
+    return libraryHref(params, (next) => {
+      for (const key of ["q", "tag", "creator", "collection", "page"]) next.delete(key);
     });
   }
 
@@ -710,6 +734,7 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
           total={ready?.total ?? 0}
           totalCapped={ready?.totalCapped ?? false}
           matching={matching()}
+          view={notesView}
           tags={tags}
           tagsState={tagsState}
           check={check.state === "checking" || check.state === "failed" ? check.state : null}
@@ -743,6 +768,12 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         {ready !== null && ready.models.length === 0 ? (
           <p className="studio-empty">
             {!filtered ? t("library.empty.none") : t("library.empty.noMatch")}
+            {filtered ? (
+              <>
+                {" "}
+                <Link to={allModels()}>{t("library.empty.showAll")}</Link>
+              </>
+            ) : null}
           </p>
         ) : null}
         {pastEnd ? (
