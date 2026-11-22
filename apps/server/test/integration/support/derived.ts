@@ -94,15 +94,25 @@ export async function until<T>(
   }
 }
 
-/** The file row once its render or mesh has finished, ok or failed. */
+/**
+ * The file row once its work has finished, ok or failed: its render or mesh
+ * (derived_status) and its preview picture (preview_status, issue #380),
+ * neither still pending and at least one of them done. A .scad has only the
+ * first, an STL only the second, and a STEP file both.
+ */
 export async function settledFile(
   env: DerivedEnv,
   fileId: string,
   ms?: number,
 ): Promise<ModelFile> {
+  const done = (s: string | null | undefined) => s === "ok" || s === "failed";
   const file = await until(
     () => env.repos.files.get(fileId),
-    (f) => f?.derivedStatus === "ok" || f?.derivedStatus === "failed",
+    (f) =>
+      f !== undefined &&
+      f.derivedStatus !== "pending" &&
+      f.previewStatus !== "pending" &&
+      (done(f.derivedStatus) || done(f.previewStatus)),
     ms,
   );
   if (!file) throw new Error("file vanished");

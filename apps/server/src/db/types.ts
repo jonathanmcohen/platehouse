@@ -103,6 +103,10 @@ export interface FilesTable {
   parseStatus: Generated<ParseStatus>;
   derivedStatus: string | null;
   derivedMessage: string | null;
+  /** An STL's or STEP file's preview picture: null, 'pending', 'ok' or 'failed' (migration 0011). */
+  previewStatus: string | null;
+  /** Why the preview picture failed, in derived_message's form; null with none. */
+  previewMessage: string | null;
   meshBlobId: string | null;
   renderStlBlobId: string | null;
   renderPngBlobId: string | null;

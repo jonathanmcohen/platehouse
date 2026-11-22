@@ -33,6 +33,14 @@ export const PREVIOUS_RENDERS_SENTENCE = {
   step: "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version.",
 } as const;
 
+/**
+ * What the slicer answers, as a 422 render_failed, for a body that is not an
+ * STL with at least one triangle (NOT_AN_STL in apps/slicer/src/scad.ts; a
+ * test pins the two together). The slicer sends it before OpenSCAD runs.
+ */
+export const SLICER_NOT_AN_STL =
+  "The file is not an STL with at least one triangle, so there is nothing to render.";
+
 /** The sentence that starts every failed preview picture's message (issue #316). */
 const PREVIEW_FAILED = "The preview picture could not be rendered.";
 

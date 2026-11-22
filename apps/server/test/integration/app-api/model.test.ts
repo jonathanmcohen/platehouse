@@ -755,7 +755,7 @@ describe("the 3D view's sources (AC-050, AC-051)", () => {
       const png = await storeBlob(env, f.modelId, "render_png", Buffer.from("png"));
       await env.db
         .updateTable("files")
-        .set({ renderPngBlobId: png.id })
+        .set({ renderPngBlobId: png.id, previewStatus: "ok" })
         .where("id", "=", f.fileId)
         .execute();
       expect((await modelView(f.modelId)).files[0]?.preview).toBe(`/blobs/${png.id}`);
@@ -767,13 +767,71 @@ describe("the 3D view's sources (AC-050, AC-051)", () => {
     });
   });
 
+  // Issue #380: the picture's own status and reason, beside derivedStatus,
+  // which keeps its 0.1.0 meaning (the STEP mesh; null for an STL).
+  test("a file carries its picture's status and reason, apart from its render or mesh", async () => {
+    const stl = await ingest(`Preview failed ${marker()}.stl`, ASCII_STL);
+    const step = await ingest(`Preview failed ${marker()}.step`, STEP_TEXT);
+    const said = "ERROR: STL import failed";
+    await env.db
+      .updateTable("files")
+      .set({
+        previewStatus: "failed",
+        previewMessage: `The preview picture could not be rendered. OpenSCAD said: ${said}`,
+      })
+      .where("id", "in", [stl.fileId, step.fileId])
+      .execute();
+    await env.db
+      .updateTable("files")
+      .set({ derivedStatus: "ok" })
+      .where("id", "=", step.fileId)
+      .execute();
+    const expected = {
+      previewStatus: "failed",
+      previewMessage: `The preview picture could not be rendered. OpenSCAD said: ${said}`,
+      previewCodes: ["previewRejected"],
+      previewDetail: said,
+      preview: null,
+    };
+    expect((await modelView(stl.modelId)).files[0]).toMatchObject({
+      ...expected,
+      derivedStatus: null,
+      derivedMessage: null,
+    });
+    expect((await modelView(step.modelId)).files[0]).toMatchObject({
+      ...expected,
+      derivedStatus: "ok",
+      derivedMessage: null,
+    });
+  });
+
+  test("a picture is named only while its status is ok or pending", async () => {
+    const { modelId, fileId } = await ingest(`Preview shown ${marker()}.stl`, ASCII_STL);
+    const png = await storeBlob(env, modelId, "render_png", Buffer.from("png"));
+    for (const [previewStatus, shown] of [
+      ["ok", true],
+      ["pending", true],
+      ["failed", false],
+      [null, false],
+    ] as const) {
+      await env.db
+        .updateTable("files")
+        .set({ renderPngBlobId: png.id, previewStatus })
+        .where("id", "=", fileId)
+        .execute();
+      expect((await modelView(modelId)).files[0]?.preview, String(previewStatus)).toBe(
+        shown ? `/blobs/${png.id}` : null,
+      );
+    }
+  });
+
   test("a preview of the wrong kind or of another model is never named", async () => {
     const other = await ingest(`Other ${marker()}.stl`, ASCII_STL);
     const { modelId, fileId } = await ingest(`Wrong preview ${marker()}.stl`, ASCII_STL);
     const foreign = await storeBlob(env, other.modelId, "render_png", Buffer.from("png"));
     await env.db
       .updateTable("files")
-      .set({ renderPngBlobId: foreign.id })
+      .set({ renderPngBlobId: foreign.id, previewStatus: "ok" })
       .where("id", "=", fileId)
       .execute();
     expect((await modelView(modelId)).files[0]?.preview).toBeNull();

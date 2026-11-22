@@ -71,10 +71,10 @@ async function uploadStep(text: string, name = "Housing.step") {
   return env.ingestDerived.ingestFile({ tmpPath: path, originalName: name, target: "new" });
 }
 
-/** Put before the converter's message when the mesh is from an earlier source than the file's. */
 /** Before OpenSCAD's message when it rejects the mesh's preview (issue #316). */
 const PREVIEW_REJECTED = "The preview picture could not be rendered. OpenSCAD said:";
 
+/** Put before the converter's message when the mesh is from an earlier source than the file's. */
 const PREVIOUS_MESH =
   "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version. The converter said:";
 
@@ -86,6 +86,9 @@ describe("STEP meshes (AC-050)", () => {
 
     expect(file.derivedStatus).toBe("ok");
     expect(file.derivedMessage).toBeNull();
+    // The picture's own status (issue #380).
+    expect(file.previewStatus).toBe("ok");
+    expect(file.previewMessage).toBeNull();
     expect(file.meshBlobId).not.toBeNull();
     expect(file.renderStlBlobId).toBeNull();
     expect(file.renderPngBlobId).not.toBeNull();
@@ -126,9 +129,13 @@ describe("STEP meshes (AC-050)", () => {
     env.stub.renders.queue("/v1/stl/png", { kind: "failed", message });
     const { modelId, fileId } = await uploadStep(uniqueStep("preview rejected"));
     const file = await settledFile(env, fileId);
+    // The mesh is fine, so derivedStatus says ok; the failure is the
+    // picture's alone (issue #380).
     expect(file).toMatchObject({
-      derivedStatus: "failed",
-      derivedMessage: `${PREVIEW_REJECTED} ${message}`,
+      derivedStatus: "ok",
+      derivedMessage: null,
+      previewStatus: "failed",
+      previewMessage: `${PREVIEW_REJECTED} ${message}`,
       renderPngBlobId: null,
     });
     expect(file.meshBlobId).not.toBeNull();
@@ -154,6 +161,8 @@ describe("STEP meshes (AC-050)", () => {
     expect(file.derivedMessage).toBe(message);
     expect(file.meshBlobId).toBeNull();
     expect(file.renderPngBlobId).toBeNull();
+    // No mesh, so no picture was ever queued.
+    expect(file.previewStatus).toBeNull();
     const blobs = await blobsOf(env, modelId);
     expect(blobs.map((b) => b.kind)).toEqual(["source"]);
     expect(await readObject(env, blobs[0]?.key ?? "")).toEqual(Buffer.from(text));
@@ -168,9 +177,10 @@ describe("STEP meshes (AC-050)", () => {
 
     const next = uniqueStep("new");
     await env.derived.replaceFile(fileId, await writeUpload(env, next));
+    // derivedStatus is ok once the mesh is stored; the picture comes after.
     const after = await until(
       () => env.repos.files.get(fileId),
-      (f) => f?.blobId !== before.blobId && f?.derivedStatus === "ok",
+      (f) => f?.blobId !== before.blobId && f?.derivedStatus === "ok" && f?.previewStatus === "ok",
     );
     const blobs = await blobsOf(env, modelId);
     const mesh = blobs.find((b) => b.id === after?.meshBlobId);
@@ -211,6 +221,8 @@ describe("STEP meshes (AC-050)", () => {
       size: Buffer.byteLength(next),
       meshBlobId: before.meshBlobId,
       renderPngBlobId: null,
+      previewStatus: null,
+      previewMessage: null,
       derivedStatus: "failed",
       derivedMessage: `${PREVIOUS_MESH} ${message}`,
     });
@@ -279,6 +291,7 @@ describe("STEP meshes (AC-050)", () => {
       blobId: original.blobId,
       derivedStatus: "pending",
       renderPngBlobId: null,
+      previewStatus: null,
     });
     const meshId = between?.meshBlobId;
     if (!meshId) throw new Error("no mesh");
@@ -334,9 +347,10 @@ describe("STEP meshes (AC-050)", () => {
     const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, good));
     const after = await until(
       () => env.repos.files.get(fileId),
-      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok",
+      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok" && f?.previewStatus === "ok",
     );
     expect(after?.derivedMessage).toBeNull();
+    expect(after?.previewMessage).toBeNull();
     const blobs = await blobsOf(env, modelId);
     const byId = new Map(blobs.map((b) => [b.id, b]));
     expect(await readObject(env, byId.get(after?.meshBlobId ?? "")?.key ?? "")).toEqual(

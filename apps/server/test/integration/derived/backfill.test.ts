@@ -69,7 +69,10 @@ async function legacyStl(label: string) {
     originalName: `${label}.stl`,
     target: "new",
   });
-  expect(await env.repos.files.get(stored.fileId)).toMatchObject({ derivedStatus: null });
+  expect(await env.repos.files.get(stored.fileId)).toMatchObject({
+    derivedStatus: null,
+    previewStatus: null,
+  });
   return { ...stored, text };
 }
 
@@ -82,20 +85,20 @@ async function legacyStep(label: string) {
   });
   const file = await settledFile(env, stored.fileId);
   expect(file.meshBlobId).not.toBeNull();
-  if (file.renderPngBlobId !== null) {
-    const png = await env.repos.blobs.get(file.renderPngBlobId);
-    await env.db
-      .updateTable("files")
-      .set({ renderPngBlobId: null, derivedStatus: "ok", derivedMessage: null })
-      .where("id", "=", stored.fileId)
-      .execute();
-    if (png) {
-      await env.db.deleteFrom("blobs").where("id", "=", png.id).execute();
-      await env.store.deleteBlobs([png.key]);
-    }
+  const png =
+    file.renderPngBlobId === null ? undefined : await env.repos.blobs.get(file.renderPngBlobId);
+  await env.db
+    .updateTable("files")
+    .set({ renderPngBlobId: null, previewStatus: null, previewMessage: null })
+    .where("id", "=", stored.fileId)
+    .execute();
+  if (png) {
+    await env.db.deleteFrom("blobs").where("id", "=", png.id).execute();
+    await env.store.deleteBlobs([png.key]);
   }
   expect(await env.repos.files.get(stored.fileId)).toMatchObject({
     derivedStatus: "ok",
+    previewStatus: null,
     renderPngBlobId: null,
   });
   return { ...stored, meshBlobId: file.meshBlobId };
@@ -123,14 +126,18 @@ describe("the preview backfill (issue #316)", () => {
     expect(result.queued).toEqual(expect.arrayContaining([stl.fileId, step.fileId]));
 
     const stlFile = await settledFile(env, stl.fileId);
-    expect(stlFile.derivedStatus).toBe("ok");
+    expect(stlFile).toMatchObject({ previewStatus: "ok", derivedStatus: null });
     const stlPng = (await blobsOf(env, stl.modelId)).find((b) => b.id === stlFile.renderPngBlobId);
     expect(await readObject(env, stlPng?.key ?? "")).toEqual(
       renderedBytes("/v1/stl/png", stl.text),
     );
 
     const stepFile = await settledFile(env, step.fileId);
-    expect(stepFile).toMatchObject({ derivedStatus: "ok", meshBlobId: step.meshBlobId });
+    expect(stepFile).toMatchObject({
+      derivedStatus: "ok",
+      previewStatus: "ok",
+      meshBlobId: step.meshBlobId,
+    });
     const stepBlobs = await blobsOf(env, step.modelId);
     const mesh = stepBlobs.find((b) => b.id === step.meshBlobId);
     const stepPng = stepBlobs.find((b) => b.id === stepFile.renderPngBlobId);
@@ -196,7 +203,7 @@ describe("the preview backfill (issue #316)", () => {
     expect(one.queued).toEqual([first.fileId, second.fileId]);
     // The batch is still waiting, so nothing more is queued.
     expect((await batched.backfillPreviews(later())).queued).toEqual([]);
-    expect(await env.repos.files.get(third.fileId)).toMatchObject({ derivedStatus: null });
+    expect(await env.repos.files.get(third.fileId)).toMatchObject({ previewStatus: null });
 
     for (const f of [first, second]) {
       for (const j of await previewJobs(f.fileId)) await env.boss.cancel(QUEUE.slicer, j.id);
@@ -216,7 +223,7 @@ describe("the preview backfill (issue #316)", () => {
     const failed = await legacyStl("Failed bracket");
     await env.db
       .updateTable("files")
-      .set({ derivedStatus: "failed", derivedMessage: "The slicer could not render this file." })
+      .set({ previewStatus: "failed", previewMessage: "The slicer could not render this file." })
       .where("id", "=", failed.fileId)
       .execute();
     env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "no shapes" });
@@ -263,7 +270,7 @@ describe("the preview backfill (issue #316)", () => {
     for (const [id, message] of outages) {
       await env.db
         .updateTable("files")
-        .set({ derivedStatus: "failed", derivedMessage: message })
+        .set({ previewStatus: "failed", previewMessage: message })
         .where("id", "=", id)
         .execute();
     }
@@ -274,12 +281,14 @@ describe("the preview backfill (issue #316)", () => {
 
     for (const [id] of outages) {
       const file = await settledFile(env, id);
-      expect(file).toMatchObject({ derivedStatus: "ok", derivedMessage: null });
+      expect(file).toMatchObject({ previewStatus: "ok", previewMessage: null });
       expect(file.renderPngBlobId).not.toBeNull();
     }
     // The STEP file's preview came from its stored mesh, with no second conversion.
+    // Its derivedStatus, the mesh's, stayed ok the whole time (issue #380).
     expect(await env.repos.files.get(storeDown.fileId)).toMatchObject({
       meshBlobId: storeDown.meshBlobId,
+      derivedStatus: "ok",
     });
     expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(0);
     expect((await previewJobs(storeDown.fileId)).map((j) => j.data.kind)).toEqual(["preview-step"]);
@@ -292,8 +301,8 @@ describe("the preview backfill (issue #316)", () => {
     await env.db
       .updateTable("files")
       .set({
-        derivedStatus: "failed",
-        derivedMessage: DERIVED_MESSAGES.slicerDown,
+        previewStatus: "failed",
+        previewMessage: DERIVED_MESSAGES.slicerDown,
         createdAt: old,
         updatedAt: new Date(),
       })
@@ -311,7 +320,7 @@ describe("the preview backfill (issue #316)", () => {
       .execute();
     const run = await env.derived.backfillPreviews(new Date());
     expect(run.queued).toContain(stl.fileId);
-    expect(await settledFile(env, stl.fileId)).toMatchObject({ derivedStatus: "ok" });
+    expect(await settledFile(env, stl.fileId)).toMatchObject({ previewStatus: "ok" });
   });
 
   test("a preview the program rejected, or that failed in a way a file can cause, is not tried again", async () => {
@@ -330,7 +339,7 @@ describe("the preview backfill (issue #316)", () => {
     for (const [id, message] of kept) {
       await env.db
         .updateTable("files")
-        .set({ derivedStatus: "failed", derivedMessage: message })
+        .set({ previewStatus: "failed", previewMessage: message })
         .where("id", "=", id)
         .execute();
     }
@@ -340,8 +349,8 @@ describe("the preview backfill (issue #316)", () => {
       expect(run.queued).not.toContain(id);
       expect(await previewJobs(id)).toHaveLength(0);
       expect(await env.repos.files.get(id)).toMatchObject({
-        derivedStatus: "failed",
-        derivedMessage: message,
+        previewStatus: "failed",
+        previewMessage: message,
       });
     }
   });

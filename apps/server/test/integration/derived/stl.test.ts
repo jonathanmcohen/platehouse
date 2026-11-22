@@ -61,9 +61,13 @@ describe("STL previews (issue #316)", () => {
     const { modelId, fileId } = await uploadStl(text);
     const file = await settledFile(env, fileId);
 
+    // The picture has its own status; an STL's derivedStatus stays null, as
+    // in 0.1.0 (issue #380).
     expect(file).toMatchObject({
       kind: "stl",
-      derivedStatus: "ok",
+      previewStatus: "ok",
+      previewMessage: null,
+      derivedStatus: null,
       derivedMessage: null,
       renderStlBlobId: null,
       meshBlobId: null,
@@ -99,7 +103,7 @@ describe("STL previews (issue #316)", () => {
       target: "new",
     });
     const file = await settledFile(env, fileId);
-    expect(file.derivedStatus).toBe("ok");
+    expect(file.previewStatus).toBe("ok");
     expect(env.stub.renders.callsTo("/v1/stl/png")[0]?.body.equals(bytes)).toBe(true);
   });
 
@@ -111,8 +115,8 @@ describe("STL previews (issue #316)", () => {
     const file = await settledFile(env, fileId);
 
     expect(file).toMatchObject({
-      derivedStatus: "failed",
-      derivedMessage: `${PREVIEW_REJECTED} ${message}`,
+      previewStatus: "failed",
+      previewMessage: `${PREVIEW_REJECTED} ${message}`,
       renderPngBlobId: null,
     });
     const blobs = await blobsOf(env, modelId);
@@ -120,13 +124,28 @@ describe("STL previews (issue #316)", () => {
     expect(await readObject(env, blobs[0]?.key ?? "")).toEqual(Buffer.from(text));
   });
 
+  // Issue #379: the slicer refuses an STL with no triangles itself, before
+  // OpenSCAD runs, so its sentence is not put after "OpenSCAD said:".
+  test("an STL the slicer refuses as having no triangles says so without blaming OpenSCAD", async () => {
+    const notAnStl =
+      "The file is not an STL with at least one triangle, so there is nothing to render.";
+    env.stub.renders.queue("/v1/stl/png", { kind: "failed", message: notAnStl });
+    const { fileId } = await uploadStl(`solid empty_${randomBytes(4).toString("hex")}\nendsolid\n`);
+    const file = await settledFile(env, fileId);
+    expect(file).toMatchObject({
+      previewStatus: "failed",
+      previewMessage: `The preview picture could not be rendered. ${notAnStl}`,
+      derivedStatus: null,
+    });
+  });
+
   test("a slicer that stays busy through every retry ends with the slicer's message and no preview", async () => {
     env.stub.renders.always("/v1/stl/png", { kind: "busy" });
     const { modelId, fileId } = await uploadStl(uniqueStl("busy"));
     const file = await settledFile(env, fileId);
     expect(file).toMatchObject({
-      derivedStatus: "failed",
-      derivedMessage: DERIVED_MESSAGES.slicerError,
+      previewStatus: "failed",
+      previewMessage: DERIVED_MESSAGES.slicerError,
       renderPngBlobId: null,
     });
     expect((await blobsOf(env, modelId)).map((b) => b.kind)).toEqual(["source"]);
@@ -142,7 +161,7 @@ describe("STL previews (issue #316)", () => {
     const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, next));
     const after = await until(
       () => env.repos.files.get(fileId),
-      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok",
+      (f) => f?.blobId === sourceBlobId && f?.previewStatus === "ok",
     );
     expect(after?.renderPngBlobId).not.toBe(before.renderPngBlobId);
     const blobs = await blobsOf(env, modelId);
@@ -172,8 +191,8 @@ describe("STL previews (issue #316)", () => {
       blobId: sourceBlobId,
       size: Buffer.byteLength(next),
       renderPngBlobId: null,
-      derivedStatus: "failed",
-      derivedMessage: `${PREVIEW_REJECTED} ${message}`,
+      previewStatus: "failed",
+      previewMessage: `${PREVIEW_REJECTED} ${message}`,
     });
     const blobs = await blobsOf(env, modelId);
     expect(blobs.map((b) => b.id)).toEqual([sourceBlobId]);
@@ -187,7 +206,7 @@ describe("STL previews (issue #316)", () => {
     await settledFile(env, fileId);
     env.stub.renders.queue("/v1/stl/png", { kind: "failed", message: "ERROR: bad STL" });
     await env.derived.replaceFile(fileId, await writeUpload(env, uniqueStl("again, rejected")));
-    expect(await settledFile(env, fileId)).toMatchObject({ derivedStatus: "failed" });
+    expect(await settledFile(env, fileId)).toMatchObject({ previewStatus: "failed" });
     await until(
       () => env.boss.findJobs(QUEUE.slicer, { data: { fileId } }),
       (js) => js.every((j) => j.state === "completed"),
@@ -197,9 +216,9 @@ describe("STL previews (issue #316)", () => {
     const { sourceBlobId } = await env.derived.replaceFile(fileId, await writeUpload(env, good));
     const after = await until(
       () => env.repos.files.get(fileId),
-      (f) => f?.blobId === sourceBlobId && f?.derivedStatus === "ok",
+      (f) => f?.blobId === sourceBlobId && f?.previewStatus === "ok",
     );
-    expect(after?.derivedMessage).toBeNull();
+    expect(after?.previewMessage).toBeNull();
     expect(after?.renderPngBlobId).not.toBeNull();
   });
 

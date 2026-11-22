@@ -320,11 +320,30 @@ describe("STL and STEP previews on the card (issue #316)", () => {
     const png = await storeBlob(env, modelId, "render_png", bytes);
     await env.db
       .updateTable("files")
-      .set({ renderPngBlobId: png.id })
+      .set({ renderPngBlobId: png.id, previewStatus: "ok" })
       .where("id", "=", fileId)
       .execute();
     return png;
   }
+
+  // Issue #380: the card reads the picture's own status. A picture that
+  // failed, or was never queued, shows the icon; one being made again keeps
+  // showing the current version's picture until the new one lands.
+  test("an STL card follows previewStatus: the picture when ok or pending, the icon when failed or unset", async () => {
+    const word = marker();
+    const stl = await ingest(`Preview status ${word}.stl`, ASCII_STL);
+    const png = await attachPreview(stl.modelId, stl.fileId);
+    const setStatus = (previewStatus: string | null) =>
+      env.db.updateTable("files").set({ previewStatus }).where("id", "=", stl.fileId).execute();
+    const thumbnail = async () => card(await library(`?q=${word}`), stl.modelId).thumbnail;
+    expect(await thumbnail()).toBe(`/blobs/${png.id}`);
+    await setStatus("pending");
+    expect(await thumbnail()).toBe(`/blobs/${png.id}`);
+    await setStatus("failed");
+    expect(await thumbnail()).toBeNull();
+    await setStatus(null);
+    expect(await thumbnail()).toBeNull();
+  });
 
   test("an STL or STEP card shows its rendered preview as its thumbnail", async () => {
     const word = marker();
@@ -375,7 +394,7 @@ describe("STL and STEP previews on the card (issue #316)", () => {
     const setPreview = (id: string) =>
       env.db
         .updateTable("files")
-        .set({ renderPngBlobId: id })
+        .set({ renderPngBlobId: id, previewStatus: "ok" })
         .where("id", "=", stl.fileId)
         .execute();
     await setPreview(foreign.id);

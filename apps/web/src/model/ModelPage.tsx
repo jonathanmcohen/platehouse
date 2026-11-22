@@ -156,6 +156,17 @@ export interface ModelFile {
   derivedCodes?: string[];
   /** What derivedMessage holds after those sentences: the program's own words. */
   derivedDetail?: string | null;
+  /**
+   * An STL's or STEP file's preview picture (issue #380): null, pending, ok
+   * or failed, apart from derivedStatus; absent from an older answer.
+   */
+  previewStatus?: string | null;
+  /** Why the picture failed, as the server wrote it; null with none. */
+  previewMessage?: string | null;
+  /** Platehouse's own sentences at the start of previewMessage, by code. */
+  previewCodes?: string[];
+  /** What previewMessage holds after those sentences. */
+  previewDetail?: string | null;
   download: string;
   view: { kind: "stl" | "glb"; url: string } | null;
   preview: string | null;
