@@ -13,7 +13,7 @@ import {
   RECONVERT_STEP,
   storeTextReader,
 } from "../../../src/library/reconvert.js";
-import { descriptionsRepo } from "../../../src/repos/descriptions.js";
+import { descriptionsRepo, progressName } from "../../../src/repos/descriptions.js";
 import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
 import { marker } from "../support/library.js";
 
@@ -86,6 +86,15 @@ async function asBefore011(modelId: string, description: string) {
     })
     .where("id", "=", modelId)
     .execute();
+}
+
+/** The progress row of the current step, while a run has counted and not finished. */
+async function progressRow() {
+  return env.db
+    .selectFrom("upgradeSteps")
+    .select(["name", "result"])
+    .where("name", "=", progressName(RECONVERT_STEP))
+    .executeTakeFirst();
 }
 
 function reconvert() {
@@ -219,8 +228,86 @@ describe("a run", () => {
       .where("id", "=", old.modelId)
       .execute();
     if (candidate === undefined) return;
-    expect(await repo.write(candidate, { description: NOW, fileId: old.fileId })).toBe(false);
+    expect(
+      await repo.write(
+        candidate,
+        { description: NOW, fileId: old.fileId },
+        { name: RECONVERT_STEP, outcome: "changed" },
+      ),
+    ).toBe(false);
     expect((await row(old.modelId)).descriptionMd).toBe("Changed in the meantime");
+    // Nothing written, so nothing counted.
+    expect(await progressRow()).toBeUndefined();
+  });
+
+  // A run cut off part way (a restart, or a store outage) leaves its counts;
+  // the next run goes on after the last model counted, and the step records
+  // the totals of the whole conversion, so the Activity page does not show
+  // only the last run's part of it.
+  test("records the totals of the whole conversion when a run cut off part way is started again", async () => {
+    const a = await ingestMakerWorld(HTML);
+    await asBefore011(a.modelId, BY_RC);
+    const b = await ingestMakerWorld(HTML);
+    await asBefore011(b.modelId, BY_RC);
+    const [, last] = [a, b].sort((x, y) => (x.modelId < y.modelId ? -1 : 1));
+    if (last === undefined) throw new Error("two models were ingested");
+
+    const outage = new Error("the store is down");
+    const read = storeTextReader(env.store);
+    const first = createDescriptionReconvert({
+      store: descriptionsRepo(env.db),
+      readText: async (file) => {
+        if (file.fileId === last.fileId) throw outage;
+        return read(file);
+      },
+      log: () => {},
+    });
+    await expect(first.run()).rejects.toBe(outage);
+    const cut = await progressRow();
+    expect(cut).toBeDefined();
+    const counted = (cut?.result ?? {}) as Record<string, number | undefined>;
+    const before = {
+      checked: counted.checked ?? 0,
+      changed: counted.changed ?? 0,
+      unchanged: counted.unchanged ?? 0,
+      kept: counted.kept ?? 0,
+      unreadable: counted.unreadable ?? 0,
+    };
+    expect(before.changed).toBeGreaterThanOrEqual(1);
+    expect(await reconvert().run.pending()).toBe(true);
+
+    const result = await reconvert().run.run();
+    // Only the model the first run stopped at is left, and it is changed.
+    expect(result).toEqual({
+      checked: before.checked + 1,
+      changed: before.changed + 1,
+      unchanged: before.unchanged,
+      kept: before.kept,
+      unreadable: before.unreadable,
+    });
+    expect((await row(a.modelId)).descriptionMd).toBe(NOW);
+    expect((await row(b.modelId)).descriptionMd).toBe(NOW);
+    const step = await env.db
+      .selectFrom("upgradeSteps")
+      .select("result")
+      .where("name", "=", RECONVERT_STEP)
+      .executeTakeFirstOrThrow();
+    expect(step.result).toEqual(result);
+    expect(await progressRow()).toBeUndefined();
+  });
+
+  test("does nothing and records nothing while another run holds the step", async () => {
+    const old = await ingestMakerWorld(HTML);
+    await asBefore011(old.modelId, BY_RC);
+    const held = await descriptionsRepo(env.db).exclusive(RECONVERT_STEP, async () =>
+      reconvert().run.run(),
+    );
+    expect(held).toBeNull();
+    expect((await row(old.modelId)).descriptionMd).toBe(BY_RC);
+    expect(await env.db.selectFrom("upgradeSteps").selectAll().execute()).toEqual([]);
+    // Once the step is free, a run goes.
+    expect(await reconvert().run.run()).not.toBeNull();
+    expect((await row(old.modelId)).descriptionMd).toBe(NOW);
   });
 
   test("leaves a model already written by this converter out of the candidates", async () => {

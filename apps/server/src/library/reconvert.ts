@@ -28,9 +28,14 @@
 // matches is decided without reading anything. A model already written by
 // the current converter is not a candidate at all. Safe to run twice: the
 // run records itself in upgrade_steps under RECONVERT_STEP when it finishes,
-// and a run that finds that record does nothing; a run cut off part way
-// starts again on the next start-up, and what it already wrote is marked
-// with the current converter, so it is not read again.
+// and a run that finds that record does nothing. Only one run goes at a time
+// (two servers started together, or a job queued again while one still runs):
+// a run that finds another holding the step does nothing either. Each model's
+// outcome is counted in the database as the run goes, with the model as the
+// last one counted, and a write and its count land together. So a run cut off
+// part way leaves its counts behind; the next start-up runs again, goes on
+// after the last model counted, and the step records the totals of the whole
+// conversion, which the Activity page shows, not only of the last run.
 import {
   CONVERTER_VERSION,
   earlierConversions,
@@ -87,6 +92,9 @@ export type Decision =
   /** The current converter writes this instead. */
   | { kind: "changed"; fileId: string; description: string };
 
+/** What a run did with one model's description, as counted in ReconvertResult. */
+export type Outcome = "changed" | "unchanged" | "kept" | "unreadable";
+
 export interface ReconvertResult {
   /** Descriptions looked at. */
   checked: number;
@@ -103,7 +111,20 @@ export interface ReconvertResult {
 /** The database side of a run (repos/descriptions.ts). */
 export interface ReconvertStore {
   stepFinished(name: string): Promise<boolean>;
-  finishStep(name: string, result: ReconvertResult): Promise<void>;
+  /**
+   * Runs fn while holding the step, so two runs never go at once. Null,
+   * without running fn, while another run holds it.
+   */
+  exclusive<T>(name: string, fn: () => Promise<T>): Promise<T | null>;
+  /** The last model counted by runs of the step cut off before it finished; null when none. */
+  resumeAfter(name: string): Promise<string | null>;
+  /** Adds one model's outcome to the step's counts, the model as the last counted. */
+  count(name: string, modelId: string, outcome: Outcome): Promise<void>;
+  /**
+   * Records the step finished with every count its runs made, and gives
+   * those totals. A step already recorded keeps its record.
+   */
+  finishStep(name: string): Promise<ReconvertResult>;
   /**
    * Models with a non-empty description not written by the current
    * converter, in id order, after the id given (null for the first page).
@@ -112,10 +133,15 @@ export interface ReconvertStore {
   sourceFiles(modelId: string): Promise<SourceFile[]>;
   /**
    * Writes the description, its hash, the current converter and the file,
-   * only while the stored description and hash are still the ones read.
-   * False when they are not.
+   * only while the stored description and hash are still the ones read, and
+   * counts the outcome given for the model with it, all or nothing. False,
+   * with nothing written or counted, when they are not.
    */
-  write(row: StoredDescription, next: { description: string; fileId: string }): Promise<boolean>;
+  write(
+    row: StoredDescription,
+    next: { description: string; fileId: string },
+    count: { name: string; outcome: "changed" | "unchanged" },
+  ): Promise<boolean>;
 }
 
 /**
@@ -222,7 +248,10 @@ export function storeTextReader(store: Pick<BlobStore, "getBlobRange">): ReadTex
 export interface DescriptionReconvert {
   /** True until a run for the current converter has finished. */
   pending(): Promise<boolean>;
-  /** One run; null when one already finished, so nothing was done. */
+  /**
+   * One run, giving the totals of the whole conversion; null when one
+   * already finished or another is running, so nothing was done.
+   */
   run(): Promise<ReconvertResult | null>;
 }
 
@@ -243,42 +272,41 @@ export function createDescriptionReconvert(deps: {
     },
     async run() {
       if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
-      const result: ReconvertResult = {
-        checked: 0,
-        changed: 0,
-        unchanged: 0,
-        kept: 0,
-        unreadable: 0,
-      };
-      let after: string | null = null;
-      for (;;) {
-        const page = await deps.store.candidates(after, batch);
-        for (const row of page) {
-          result.checked += 1;
-          const files = await deps.store.sourceFiles(row.modelId);
-          const decision = await decide(row, files, deps.readText);
-          if (decision.kind === "same" || decision.kind === "changed") {
-            const written = await deps.store.write(row, {
-              description: decision.description,
-              fileId: decision.fileId,
-            });
-            if (!written) result.kept += 1;
-            else if (decision.kind === "changed") result.changed += 1;
-            else result.unchanged += 1;
-          } else if (decision.kind === "unreadable") result.unreadable += 1;
-          else result.kept += 1;
+      return deps.store.exclusive(RECONVERT_STEP, async () => {
+        // Another run may have finished between the check above and taking the step.
+        if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
+        let after = await deps.store.resumeAfter(RECONVERT_STEP);
+        for (;;) {
+          const page = await deps.store.candidates(after, batch);
+          for (const row of page) {
+            const files = await deps.store.sourceFiles(row.modelId);
+            const decision = await decide(row, files, deps.readText);
+            if (decision.kind === "same" || decision.kind === "changed") {
+              const outcome = decision.kind === "changed" ? "changed" : "unchanged";
+              const written = await deps.store.write(
+                row,
+                { description: decision.description, fileId: decision.fileId },
+                { name: RECONVERT_STEP, outcome },
+              );
+              // Changed since it was read, so it is left as it is now.
+              if (!written) await deps.store.count(RECONVERT_STEP, row.modelId, "kept");
+            } else {
+              const outcome = decision.kind === "unreadable" ? "unreadable" : "kept";
+              await deps.store.count(RECONVERT_STEP, row.modelId, outcome);
+            }
+          }
+          if (page.length < batch) break;
+          after = (page.at(-1) as StoredDescription).modelId;
         }
-        if (page.length < batch) break;
-        after = (page.at(-1) as StoredDescription).modelId;
-      }
-      await deps.store.finishStep(RECONVERT_STEP, result);
-      log(
-        `platehouse: MakerWorld descriptions converted again with converter ${CONVERTER_VERSION}: ` +
-          `${result.checked} checked, ${result.changed} changed, ${result.unchanged} already right, ` +
-          `${result.kept} left as they are (edited, or not written by the converter), ` +
-          `${result.unreadable} could not be read`,
-      );
-      return result;
+        const result = await deps.store.finishStep(RECONVERT_STEP);
+        log(
+          `platehouse: MakerWorld descriptions converted again with converter ${CONVERTER_VERSION}: ` +
+            `${result.checked} checked, ${result.changed} changed, ${result.unchanged} already right, ` +
+            `${result.kept} left as they are (edited, or not written by the converter), ` +
+            `${result.unreadable} could not be read`,
+        );
+        return result;
+      });
     },
   };
 }

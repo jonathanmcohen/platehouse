@@ -11,7 +11,9 @@ import {
   type Decision,
   decide,
   descriptionSha256,
+  type Outcome,
   RECONVERT_STEP,
+  type ReconvertResult,
   type ReconvertStore,
   type SourceFile,
   type SourceText,
@@ -227,38 +229,88 @@ describe("decide, for a description ingest recorded writing", () => {
   });
 });
 
-/** An in-memory ReconvertStore over a list of stored descriptions. */
+/**
+ * An in-memory ReconvertStore over a list of stored descriptions. A model
+ * written by the current converter drops out of the candidates, as it does in
+ * the database, and the counts and the last model counted are kept as progress
+ * until the step finishes.
+ */
 function memoryStore(rows: StoredDescription[], files: Record<string, SourceFile[]>) {
-  const finished = new Map<string, unknown>();
+  const finished = new Map<string, ReconvertResult>();
+  const progress = new Map<string, ReconvertResult & { after: string }>();
+  const written = new Set<string>();
   const writes: Array<{ modelId: string; description: string; fileId: string }> = [];
   const pages: Array<string | null> = [];
   let refuse = new Set<string>();
+  let locked = false;
+  const add = (name: string, modelId: string, outcome: Outcome) => {
+    const p = progress.get(name) ?? {
+      checked: 0,
+      changed: 0,
+      unchanged: 0,
+      kept: 0,
+      unreadable: 0,
+      after: modelId,
+    };
+    p.checked += 1;
+    p[outcome] += 1;
+    p.after = modelId;
+    progress.set(name, p);
+  };
   const store: ReconvertStore = {
     stepFinished: async (name) => finished.has(name),
-    finishStep: async (name, result) => {
-      finished.set(name, result);
+    exclusive: async (_name, fn) => {
+      if (locked) return null;
+      locked = true;
+      try {
+        return await fn();
+      } finally {
+        locked = false;
+      }
+    },
+    resumeAfter: async (name) => progress.get(name)?.after ?? null,
+    count: async (name, modelId, outcome) => add(name, modelId, outcome),
+    finishStep: async (name) => {
+      const { after: _after, ...counts } = progress.get(name) ?? {
+        checked: 0,
+        changed: 0,
+        unchanged: 0,
+        kept: 0,
+        unreadable: 0,
+        after: "",
+      };
+      if (!finished.has(name)) finished.set(name, counts);
+      progress.delete(name);
+      return counts;
     },
     candidates: async (after, limit) => {
       pages.push(after);
       return rows
+        .filter((r) => !written.has(r.modelId))
         .filter((r) => after === null || r.modelId > after)
         .sort((a, b) => (a.modelId < b.modelId ? -1 : 1))
         .slice(0, limit);
     },
     sourceFiles: async (modelId) => files[modelId] ?? [],
-    write: async (row, next) => {
+    write: async (row, next, count) => {
       if (refuse.has(row.modelId)) return false;
       writes.push({ modelId: row.modelId, ...next });
+      written.add(row.modelId);
+      add(count.name, row.modelId, count.outcome);
       return true;
     },
   };
   return {
     store,
     finished,
+    progress,
     writes,
     pages,
     refuseWrites: (ids: string[]) => {
       refuse = new Set(ids);
+    },
+    lock: () => {
+      locked = true;
     },
   };
 }
@@ -357,6 +409,73 @@ describe("a run", () => {
     await expect(reconvert.run()).rejects.toBe(outage);
     expect(mem.finished.size).toBe(0);
     expect(await reconvert.pending()).toBe(true);
+  });
+
+  // A run cut off part way (a restart, or a store outage) leaves its counts
+  // and the last model it counted; the next run goes on after that model and
+  // records the totals of the whole conversion, not only of its own part.
+  test("records the totals of the whole conversion when a run cut off part way is started again", async () => {
+    const { rows, files, texts } = library();
+    const mem = memoryStore(rows, files);
+    const outage = new Error("the store is down");
+    const good = reader(texts).readText;
+    const first = createDescriptionReconvert({
+      store: mem.store,
+      readText: async (f) => {
+        if (f.fileId === fileOf(3)) throw outage;
+        return good(f);
+      },
+      log: () => {},
+      batchSize: 2,
+    });
+    await expect(first.run()).rejects.toBe(outage);
+    expect(mem.finished.size).toBe(0);
+    expect(mem.progress.get(RECONVERT_STEP)).toMatchObject({
+      checked: 2,
+      changed: 1,
+      unchanged: 1,
+      after: model(2),
+    });
+
+    const { readText, read } = reader(texts);
+    const second = createDescriptionReconvert({
+      store: mem.store,
+      readText,
+      log: () => {},
+      batchSize: 2,
+    });
+    const counts = { checked: 5, changed: 1, unchanged: 1, kept: 2, unreadable: 1 };
+    expect(await second.run()).toEqual(counts);
+    expect(mem.finished.get(RECONVERT_STEP)).toEqual(counts);
+    // It goes on after the last model counted, reading neither of the first two
+    // again; model 4's edit is decided without a read.
+    expect(read).toEqual([fileOf(3), fileOf(5)]);
+    expect(mem.progress.size).toBe(0);
+  });
+
+  test("does nothing and records nothing while another run holds the step", async () => {
+    const { rows, files, texts } = library();
+    const mem = memoryStore(rows, files);
+    mem.lock();
+    const { readText } = reader(texts);
+    const reconvert = createDescriptionReconvert({ store: mem.store, readText, log: () => {} });
+    expect(await reconvert.run()).toBeNull();
+    expect(readText).not.toHaveBeenCalled();
+    expect(mem.finished.size).toBe(0);
+    expect(mem.progress.size).toBe(0);
+    expect(await reconvert.pending()).toBe(true);
+  });
+
+  test("records the step with every count at 0 when there is nothing to check", async () => {
+    const mem = memoryStore([], {});
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: reader({}).readText,
+      log: () => {},
+    });
+    const counts = { checked: 0, changed: 0, unchanged: 0, kept: 0, unreadable: 0 };
+    expect(await reconvert.run()).toEqual(counts);
+    expect(mem.finished.get(RECONVERT_STEP)).toEqual(counts);
   });
 
   test("is named for the converter version, so the next converter fix runs again", () => {
