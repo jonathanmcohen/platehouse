@@ -91,6 +91,11 @@ import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/
 import { registerLocalesApi } from "./app-api/locales.js";
 import { type AppModel, emptyAppModel, registerModelApi } from "./app-api/model.js";
 import { type OrganiseDeps, registerOrganiseApi } from "./app-api/organise.js";
+import {
+  type AppPlateMeshes,
+  emptyPlateMeshes,
+  registerPlateMeshApi,
+} from "./app-api/plate-mesh.js";
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
 import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.js";
@@ -181,6 +186,12 @@ export interface AppDeps {
    * route-class test walks them.
    */
   model?: AppModel;
+  /**
+   * A .3mf plate's 3D view (issue #358): GET /app/api/plates/:id/mesh makes
+   * the plate's GLB the first time it is opened. Left out, the route is
+   * still there (every plate is 404), so the route-class test walks it.
+   */
+  plateMeshes?: AppPlateMeshes;
   /**
    * Fastify's request log: off when left out or false, to stdout when true,
    * or to this stream (the tests read it). Either way each request is logged
@@ -498,6 +509,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerModelApi(app, deps.model ?? emptyAppModel);
+  await registerPlateMeshApi(app, deps.plateMeshes ?? emptyPlateMeshes);
   await registerV1(app, api);
   await registerSettingsApi(app, deps.appApi?.settings);
   await registerTokensApi(app, deps.appApi?.tokens);

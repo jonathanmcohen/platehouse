@@ -15,7 +15,8 @@
 //   for, a Platehouse estimate for the selected printer (estimating while it
 //   runs), or the failure and its plain words.
 // - An STL is viewed from its own source blob, a STEP from its GLB mesh, a
-//   SCAD from its rendered STL (with its PNG preview); a .3mf has no 3D view.
+//   SCAD from its rendered STL (with its PNG preview); a .3mf's own view is
+//   null (a plate's 3D view is its own route, test/integration/plate-mesh).
 //   Only a stored blob of the model and of the right kind is ever named.
 // - A trashed, unknown or malformed model id is 404.
 // - The page's Open buttons mint a link at Task 17's POST

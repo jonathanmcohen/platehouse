@@ -4,6 +4,12 @@ All notable changes to Platehouse are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A .3mf plate in 3D on the model page: Show in 3D under the plate picture, or a click on the picture, shows only that plate's objects, placed as they sit on the plate and coloured by their filament, in the same 3D viewer as an STL, which you can rotate in any direction and zoom; Show picture goes back. The server makes the plate's mesh from the file the first time the plate is opened (both Bambu layouts: meshes in 3D/3dmodel.model, or in parts of their own under 3D/Objects/) and keeps it, so the browser loads that plate alone and never the whole file. A plate that cannot be shown keeps its picture and says why. Strings in English, with Spanish and French machine drafts; schema migration 0010 adds plates.mesh_blob_id (#358).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added

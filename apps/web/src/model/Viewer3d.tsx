@@ -4,13 +4,17 @@
 // and reset, so it works by keyboard too.
 //
 // three.js is loaded only when this viewer is shown (a dynamic import, so
-// Vite puts it in its own chunk) and only for an STL or a GLB; a .3mf never
-// gets here (AC-051). The loader is a prop so the tests, which run in jsdom
-// with no WebGL, can stand in for it. The mesh is fetched from /blobs/<id>
-// with the page's session, and the fetch is aborted when the viewer goes.
-// If anything fails (no WebGL, the store unavailable), the viewer says so
-// and offers the file's download instead.
-import { useEffect, useRef, useState } from "react";
+// Vite puts it in its own chunk) and only for an STL or a GLB. A .3mf plate
+// gets here only once its 3D view is opened (Plate3d, issue #358), with the
+// GLB the server made of that plate's objects. The loader is a prop so the
+// tests, which run in jsdom with no WebGL, can stand in for it. The mesh is
+// fetched from /blobs/<id> with the page's session, and the fetch is aborted
+// when the viewer goes. If anything fails (no WebGL, the store unavailable),
+// the viewer says so and offers the file's download instead, unless the
+// caller handles the failure itself (onFailed: a plate goes back to its
+// picture and says why). actions are buttons of the caller's, put between
+// the view and its own controls.
+import { type ReactNode, useEffect, useRef, useState } from "react";
 // A type-only import, erased from the build, so three.js still loads only
 // through the dynamic imports in defaultLoadThree.
 import type { Object3D } from "three";
@@ -171,20 +175,33 @@ export const defaultLoadThree: ThreeLoader = async () => {
 };
 
 export interface Viewer3dProps {
-  source: ThreeSource;
+  /**
+   * What to show; null while the caller is still finding out (a plate's
+   * mesh being made), which shows the view loading, three.js not yet loaded.
+   */
+  source: ThreeSource | null;
   /** The file's name, for the view's label. */
   label: string;
   /** The file's download, offered when the view cannot be shown. */
   download: string;
   loadThree?: ThreeLoader | undefined;
+  /** Called, in place of the viewer's own message, when the view cannot be shown. */
+  onFailed?: (() => void) | undefined;
+  /** The caller's buttons, between the view and its controls. */
+  actions?: ReactNode;
 }
 
-export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) {
+export function Viewer3d({ source, label, download, loadThree, onFailed, actions }: Viewer3dProps) {
   const { t, rich } = useI18n();
   const host = useRef<HTMLDivElement>(null);
   const [handle, setHandle] = useState<ViewerHandle | null>(null);
   const [failed, setFailed] = useState(false);
-  const { kind, url } = source;
+  // The latest onFailed, read when a load fails, so a new callback from the
+  // caller never starts the load again.
+  const failedRef = useRef(onFailed);
+  failedRef.current = onFailed;
+  const kind = source?.kind;
+  const url = source?.url;
 
   useEffect(() => {
     let cancelled = false;
@@ -192,6 +209,7 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
     const controller = new AbortController();
     setHandle(null);
     setFailed(false);
+    if (kind === undefined || url === undefined) return;
     (async () => {
       try {
         const viewer = await (loadThree ?? defaultLoadThree)();
@@ -205,7 +223,10 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
         shown = made;
         setHandle(made);
       } catch {
-        if (!cancelled) setFailed(true);
+        if (cancelled) return;
+        const handOver = failedRef.current;
+        if (handOver === undefined) setFailed(true);
+        else handOver();
       }
     })();
     return () => {
@@ -243,6 +264,7 @@ export function Viewer3d({ source, label, download, loadThree }: Viewer3dProps) 
           <p className="studio-placeholder">{t("viewer.loading")}</p>
         ) : null}
       </div>
+      {actions}
       {failed ? null : (
         <fieldset className="studio-actions ph-viewer-controls">
           <legend className="studio-visually-hidden">{t("viewer.controls")}</legend>

@@ -92,6 +92,7 @@ import { createBoss } from "./jobs/boss.js";
 import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
 import { createTrash } from "./library/trash.js";
 import { createLocales } from "./locales/locales.js";
+import { createPlateMeshes } from "./plate-mesh/plate-mesh.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
 import { bossUploadQueue, createUploads } from "./uploads/tus.js";
@@ -496,6 +497,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         displayContext,
         retryEstimate: (estimateId) => estimates.retryEstimate(estimateId),
       }),
+      // A .3mf plate's 3D view (issue #358), made on first open.
+      plateMeshes: createPlateMeshes({ db, store, tmpDir: config.tmpDir }),
       // The settings, trash and organising pages (Task 21).
       appApi: {
         settings: { settings: repos.settings, estimates },

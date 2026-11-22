@@ -124,6 +124,8 @@ export interface PlatesTable {
   name: string | null;
   objectCount: number;
   thumbnailBlobId: string | null;
+  /** The GLB of the plate's 3D view, made the first time it is opened (0010); null until then. */
+  meshBlobId: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface EstimatesTable {

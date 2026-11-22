@@ -33,7 +33,8 @@ Shown when the model has a `.3mf`. It lists every plate of every `.3mf`, in plat
   [Printers and estimates](./printers-and-estimates.md)).
 
 A `.3mf` shows its plate thumbnails large in the viewer, with a strip of plates to switch between.
-There is no 3D view of a `.3mf`.
+Press **Show in 3D** under the picture, or click the picture, to see that plate's objects in the
+3D viewer (see [A plate in 3D](#a-plate-in-3d)).
 
 ### Files
 
@@ -60,6 +61,22 @@ pointer, or with the **Rotate**, **Zoom** and **Reset** buttons.
 
 While a plate is being estimated or a file is being rendered, the page checks again every few
 seconds, so the result appears without a reload.
+
+## A plate in 3D
+
+**Show in 3D**, under a `.3mf`'s plate picture, or a click on the picture, shows only the objects
+on that plate, placed as they sit on the plate, in the same 3D viewer as an STL. Each object is
+coloured with its filament's colour when the file gives one, and grey when it does not. Choose
+another plate in the strip to see that plate in 3D, and press **Show picture** to go back.
+
+- The first time a plate is opened, Platehouse makes its 3D view from the file, which can take a
+  few seconds for a large file; after that it opens at once. Your browser loads only that plate's
+  objects, never the whole `.3mf`.
+- Objects show in their filament's colour; colours painted onto parts of an object are not shown.
+  Modifiers, negative parts and support blockers are left out, since they are not printed.
+- When a plate cannot be shown in 3D (the file has no mesh Platehouse can read, the plate is empty,
+  its objects are too large for the browser, or your browser cannot draw 3D), the picture stays
+  and the page says why.
 
 ## Turning a plate image
 
