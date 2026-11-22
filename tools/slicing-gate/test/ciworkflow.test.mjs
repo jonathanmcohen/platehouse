@@ -2307,6 +2307,36 @@ test("slicer-image issue: a release candidate tag's failure before rc says Re-ru
   assert.match(body, /builds 2\.5\.1 again and leaves stable alone and moves rc; a run by hand would move stable and would not move rc\./);
 });
 
+// A tag run that should move rc and fails before the tag step (load, smoke,
+// push, digest check, or detect after its rc decision): TAGGED is empty, but a
+// run by hand would still never move rc, so the issue says Re-run failed jobs
+// here too, which is still a push of the tag (PR #360 review).
+const SMOKE_FAIL = { "build.txt": "step: Smoke slice\n::error::the smoke slice failed\n" };
+for (const [name, stable, effect, hand] of [
+  ["a plain release tag", "true", "moves stable and moves rc", "a run by hand would not move rc"],
+  ["a release candidate tag", "false", "leaves stable alone and moves rc", "a run by hand would move stable and would not move rc"],
+]) {
+  test(`slicer-image issue: ${name}'s failure before tagging says Re-run failed jobs, not a run by hand`, () => {
+    const r = reportRun({ EVENT: "push", TAGGED: "", STABLE: stable, RC: "true" }, SMOKE_FAIL);
+    assert.equal(r.status, 0, r.log);
+    const body = r.files["posted.md"];
+    assert.match(body, /No tag was created or moved/);
+    assert.doesNotMatch(body, /rc may now point/, "nothing was tagged");
+    assert.match(body, /\(Re-run failed jobs\)/);
+    assert.match(body, new RegExp(`it ${effect}; ${hand}\\.`));
+    assert.match(body, /not Re-run all jobs/);
+    assert.match(body, /reads OrcaSlicer's latest release again/);
+    assert.doesNotMatch(body, /Run workflow\)/, "a run by hand would leave rc behind");
+    assert.doesNotMatch(body, /let the next daily run retry/);
+    // Nothing was tagged, so there is no tag of this run to leave alone and no
+    // orca-X.Y.Z this run may have left.
+    assert.doesNotMatch(body, /leaves this run's tag alone/);
+    assert.doesNotMatch(body, /as this run may have left it/);
+    assert.match(body, /The daily run never moves rc/);
+    assert.doesNotMatch(proseOnly(body), BARE_TAG);
+  });
+}
+
 test("slicer-image issue: a daily run's failure after tagging still says to run by hand, and rc is not mentioned", () => {
   const r = reportRun({ TAGGED: "orca-2.5.1, orca-2.5.1-r42, stable", DIGEST: `sha256:${sha("d")}`, STABLE: "true", RC: "false" }, TAG_FAIL);
   assert.equal(r.status, 0, r.log);

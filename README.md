@@ -136,7 +136,9 @@ and `stable` and `rc` if it had got that far, at the new digest; the issue then
 lists the tags it had already pointed at the new digest. Once `orca-X.Y.Z` exists the daily run
 will not retry that version, so the issue says to run the workflow by hand. For a prerelease
 tag's run, and for any release tag's run that should move `rc`, the issue suggests Re-run failed jobs
-instead, as a run by hand would move `stable` on a prerelease and never moves `rc`. It
+instead, as a run by hand would move `stable` on a prerelease and never moves `rc`. A run that
+should move `rc` gets that advice even when it failed before tagging, since the daily run never
+moves `rc` either. It
 re-runs the build job with the first attempt's version, pins and `stable` and `rc` decisions, so
 it builds the failed version again and moves the same tags. The issue warns against Re-run all jobs, which runs the
 detect job again and so reads OrcaSlicer's latest release again: if Orca has shipped a newer

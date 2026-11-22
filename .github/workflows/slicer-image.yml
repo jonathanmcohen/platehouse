@@ -80,6 +80,9 @@
 # orca-X.Y.Z, and stable and rc if it had got that far, at the new digest; the step
 # records the tags it reached and the failure issue lists them. The daily run
 # then sees orca-X.Y.Z and never retries, so the issue says to run by hand.
+# A tag run that should move rc gets Re-run failed jobs instead, whether it
+# failed before or during tagging: neither a run by hand nor the daily run
+# moves rc.
 #
 # Rollback: README.md, "Slicer image". Point stable back at the previous
 # orca-X.Y.Z with the same imagetools command.
@@ -763,14 +766,17 @@ jobs:
             printf '%s\n' "$tail"
             echo '```'
             echo ""
-            if [ -n "$TAGGED" ] && { [ "$STABLE" = "false" ] || [ "$RC" = "true" ]; }; then
+            if [ "$RC" = "true" ] || { [ -n "$TAGGED" ] && [ "$STABLE" = "false" ]; }; then
               # The placeholder sits in a code span, single-quoted so bash keeps
               # the backticks: bare, GitHub would strip <run> as an HTML tag.
               # Only the tag step sets TAGGED, so detect succeeded. Re-run failed jobs
               # re-runs build and the jobs after it and keeps detect's outputs
               # (version, pins, stable and rc); Re-run all jobs would run detect
               # again. A run by hand would get stable wrong on a prerelease tag
-              # and never moves rc, so a tag run that should move rc re-runs too.
+              # and never moves rc, so a tag run that should move rc re-runs too,
+              # whether or not it had begun tagging: a failure before the tag
+              # step (TAGGED empty) still needs a push run to move rc
+              # (PR #360 review). Any re-run keeps the push event and the tag.
               if [ "$STABLE" = "false" ]; then
                 effect="leaves stable alone"
                 hand="a run by hand would move stable"
@@ -782,7 +788,13 @@ jobs:
                 effect="${effect} and moves rc"
                 if [ "$STABLE" = "false" ]; then hand="${hand} and would not move rc"; else hand="${hand} would not move rc"; fi
               fi
-              echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and ${effect}; ${hand}. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+              if [ -n "$TAGGED" ]; then
+                echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). That re-runs the build job and the jobs after it and keeps detect's outputs, so it builds ${version} again and ${effect}; ${hand}. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The re-run gets its own "'`orca-'"${version}"'-r<run>.<attempt>`'" tag and leaves this run's tag alone. The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date."
+              else
+                # Nothing was tagged. detect may itself be the job that failed
+                # (after writing rc); Re-run failed jobs then runs it again.
+                echo "To fix: read the run's log, fix the cause, then re-run this run from its page (Re-run failed jobs). A re-run is still a push of this run's tag, so it ${effect}; ${hand}. Re-run failed jobs re-runs the job that failed and the jobs after it; when detect passed, it keeps detect's outputs and builds ${version} again. Use Re-run failed jobs, not Re-run all jobs: Re-run all jobs runs detect again, which reads OrcaSlicer's latest release again and builds a newer version instead if Orca has shipped one since this run. The daily run never moves rc, so it does not replace the re-run."
+              fi
             elif [ -n "$TAGGED" ]; then
               echo "To fix: read the run's log, fix the cause, then run the workflow by hand (Actions, slicer-image, Run workflow, orca_version ${version}). The daily run will not retry it once orca-${version} is in the registry, as this run may have left it: it reports Up to date and never moves stable to this version."
             elif [ "$EVENT" = "schedule" ]; then
