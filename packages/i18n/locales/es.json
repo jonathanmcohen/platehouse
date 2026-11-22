@@ -252,6 +252,7 @@
   "library.count.showing": "Se muestran {shown} de {matches} {total, plural, one {modelo} many {modelos} other {modelos}}",
   "library.empty.noMatch": "Ning\u00fan modelo coincide. Prueba con otra b\u00fasqueda o etiqueta.",
   "library.empty.none": "Todav\u00eda no hay modelos. Suelta archivos aqu\u00ed o usa A\u00f1adir.",
+  "library.empty.showAll": "Mostrar todos los modelos",
   "library.failed": "No se pudo cargar la biblioteca.",
   "library.filter.clearCollection": "Quitar el filtro de colecci\u00f3n",
   "library.filter.clearCreator": "Quitar el filtro de creador",

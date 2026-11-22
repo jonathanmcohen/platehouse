@@ -6,6 +6,11 @@
 // also keeps View all (?view=all) and the sort (?sort=) and drops the page
 // number (?page=), so a new tag starts again at page 1. The current choice is marked
 // aria-current="true", which studio.css draws as the active chip.
+//
+// A tag filter always has its chip and All (issue #317): when ?tag= names a
+// tag no live model carries any more (its last model lost the tag or went to
+// the trash), or the library has no tags at all, the filtered tag still gets
+// a marked chip right after All, so the filter shows and All clears it.
 import { Link, useSearchParams } from "react-router";
 import { useI18n } from "../i18n/I18n";
 
@@ -20,8 +25,14 @@ export interface FiltersProps {
 export function Filters({ tags }: FiltersProps) {
   const { t } = useI18n();
   const [params] = useSearchParams();
-  const active = params.get("tag");
-  if (tags.length === 0) return null;
+  const active = params.get("tag")?.trim() ?? "";
+  // The filtered tag, when the list no longer offers it.
+  const orphan =
+    active !== "" && !tags.some((tag) => tag.toLowerCase() === active.toLowerCase())
+      ? active
+      : null;
+  const shown = orphan === null ? tags : [orphan, ...tags];
+  if (shown.length === 0) return null;
 
   function hrefFor(tag: string | null): string {
     const next = new URLSearchParams();
@@ -35,12 +46,12 @@ export function Filters({ tags }: FiltersProps) {
   }
 
   const isActive = (tag: string | null) =>
-    tag === null ? active === null || active === "" : active?.toLowerCase() === tag.toLowerCase();
+    tag === null ? active === "" : active.toLowerCase() === tag.toLowerCase();
 
   return (
     <nav aria-label={t("library.tags.label")}>
       <ul className="studio-chips">
-        {[null, ...tags].map((tag) => (
+        {[null, ...shown].map((tag) => (
           <li key={tag ?? ""}>
             <Link
               to={hrefFor(tag)}

@@ -103,7 +103,7 @@ export interface FilesTable {
   parseStatus: Generated<ParseStatus>;
   derivedStatus: string | null;
   derivedMessage: string | null;
-  /** An STL's or STEP file's preview picture: null, 'pending', 'ok' or 'failed' (migration 0011). */
+  /** An STL's or STEP file's preview picture: null, 'pending', 'ok' or 'failed' (migration 0012). */
   previewStatus: string | null;
   /** Why the preview picture failed, in derived_message's form; null with none. */
   previewMessage: string | null;
@@ -150,6 +150,11 @@ export interface EstimatesTable {
   failureDetail: string | null;
   attempts: Generated<number>;
   createdAt: CreatedAt;
+  /**
+   * When the attempt that is running, or that finished, began work (0011);
+   * null before it starts, and on estimates finished before 0011.
+   */
+  startedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   finishedAt: Date | null;
 }
 

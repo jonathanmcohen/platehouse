@@ -1,4 +1,4 @@
--- Platehouse schema 0011: the preview picture's own status (issue #316).
+-- Platehouse schema 0012: the preview picture's own status (issue #316).
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
 -- once applied anywhere: a change is a new file.
 --

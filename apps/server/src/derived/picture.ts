@@ -1,7 +1,7 @@
 // When an STL's or STEP file's preview picture is shown (issues #316 and
 // #380), in one place, so the library card (app-api/library.ts) and the
 // model page (app-api/model.ts) agree. The picture has its own status,
-// files.preview_status (migration 0011), apart from derived_status.
+// files.preview_status (migration 0012), apart from derived_status.
 import type { FileKind } from "../db/types.js";
 
 /** The file kinds that get a preview picture of their own: STL and STEP. */

@@ -51,7 +51,8 @@ const SHIPPED = [
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
   "0010_drop_unused_tags.sql",
-  "0011_file_preview_status.sql",
+  "0011_estimate_started_at.sql",
+  "0012_file_preview_status.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -394,8 +395,12 @@ describe("0007 My printers", () => {
     expect((await db.selectFrom("settings").select("printersVersion").execute())[0]).toEqual({
       printersVersion: 1,
     });
-    // Every existing estimate is untouched: the same rows, printer ids and numbers.
-    expect(await estimateRows(db)).toEqual(before);
+    // Every existing estimate is untouched: the same rows, printer ids and
+    // numbers. Migrating to the latest also runs 0011, which adds started_at
+    // and leaves it empty on rows that already existed.
+    const after = (await estimateRows(db)) as Array<Record<string, unknown>>;
+    expect(after.map((row) => row.startedAt)).toEqual([null, null]);
+    expect(after.map(({ startedAt: _started, ...rest }) => rest)).toEqual(before);
   });
 
   test("a fresh database gets the P1S 0.4 default as its one printer", async () => {
@@ -583,11 +588,11 @@ describe("0010 drop unused tags", () => {
   });
 });
 
-// Migration 0011 (issue #380) gives an STL's or STEP file's preview picture
-// its own status, preview_status and preview_message, so derived_status
-// keeps its 0.1.0 meaning. Every existing file starts with neither: none has
-// a picture yet. Nothing else on a file changes.
-describe("0011 file preview status", () => {
+// Migration 0011 adds estimates.started_at, when a slice began work, for the
+// settings page's measured rate (issues #317 and #375). It runs on a database
+// at 0010; the column is nullable with no default, so no existing row changes
+// and estimates finished before it have no start time.
+describe("0011 estimate started_at", () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -596,7 +601,48 @@ describe("0011 file preview status", () => {
     const later = (await readdir(dir)).filter(
       (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 10,
     );
-    expect(later).toContain("0011_file_preview_status.sql");
+    expect(later).toContain("0011_estimate_started_at.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0010 and adds a nullable timestamptz with no default", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name) values ('0190a0b0-0000-7000-8000-000000000051', 'Synthetic')
+    `.execute(db);
+    const before = (await sql`select * from models order by id`.execute(db)).rows;
+
+    await migrate(db);
+
+    expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(before);
+    const { rows } = await sql<{ dataType: string; nullable: string; def: string | null }>`
+      select data_type as "dataType", is_nullable as nullable, column_default as def
+        from information_schema.columns
+       where table_name = 'estimates' and column_name = 'started_at'
+    `.execute(db);
+    expect(rows).toEqual([{ dataType: "timestamp with time zone", nullable: "YES", def: null }]);
+  });
+});
+
+// Migration 0012 (issue #380) gives an STL's or STEP file's preview picture
+// its own status, preview_status and preview_message, so derived_status
+// keeps its 0.1.0 meaning. Every existing file starts with neither: none has
+// a picture yet. Nothing else on a file changes.
+describe("0012 file preview status", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 11,
+    );
+    expect(later).toContain("0012_file_preview_status.sql");
     for (const name of later) await rm(join(dir, name));
   });
 
@@ -626,7 +672,7 @@ describe("0011 file preview status", () => {
     },
   ];
 
-  async function seedAt0010(db: Kysely<DB>) {
+  async function seedAt0011(db: Kysely<DB>) {
     await migrateFrom(db, dir);
     await sql`insert into models (id, name) values (${MODEL}, 'Synthetic preview model')`.execute(
       db,
@@ -647,9 +693,9 @@ describe("0011 file preview status", () => {
     }
   }
 
-  test("on a database at 0010, adds the two columns, null on every file, and changes nothing else", async () => {
+  test("on a database at 0011, adds the two columns, null on every file, and changes nothing else", async () => {
     const { db } = await pgc.freshDatabase();
-    await seedAt0010(db);
+    await seedAt0011(db);
     const before = (await sql`select * from files order by id`.execute(db)).rows;
 
     await migrate(db);
@@ -668,7 +714,7 @@ describe("0011 file preview status", () => {
 
   test("preview_status takes only pending, ok and failed", async () => {
     const { db } = await pgc.freshDatabase();
-    await seedAt0010(db);
+    await seedAt0011(db);
     await migrate(db);
     const id = FILES[0]?.id ?? "";
     for (const status of ["pending", "ok", "failed"]) {

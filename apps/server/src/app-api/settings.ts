@@ -23,7 +23,7 @@
 //   default. The page saves the whole list at once (add, remove, reorder or
 //   a new default) through the estimates service's savePrinters: an added
 //   printer has every live plate queued for it, which takes hours on a big
-//   library (SLICES_PER_MINUTE), and a removed one has its waiting work
+//   library (slicesPerMinute, measured), and a removed one has its waiting work
 //   dropped. GET answers printersVersion, which every save of the list or
 //   the default bumps, and the page sends back the one it last read; a save
 //   whose version is no longer the stored one is refused with 409 and
@@ -58,6 +58,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { BucketVersioning } from "../db/types.js";
 import { SlicerBusy, SlicerRefused, SlicerUnreachable } from "../estimates/client.js";
 import { printerName } from "../estimates/display.js";
+import { FALLBACK_SLICES_PER_MINUTE } from "../estimates/rate.js";
 import {
   type Estimates,
   MAX_MY_PRINTERS,
@@ -74,14 +75,6 @@ export const APP_API_PREFIX = "/app/api";
 
 /** The largest JSON body an /app/api route reads. */
 export const APP_API_BODY_LIMIT = 64 * 1024;
-
-/**
- * Plates the slicer estimates a minute, about 3, as measured on a 4-CPU test
- * host running examples/docker-compose.yml: the page uses it to say how long
- * a printer it just added will take. In 0.1.0 this makes that estimate about
- * 3 times too long; a live run did about 9 plates a minute (issue #317). The slicer runs one plate at a time, so this is the whole rate.
- */
-export const SLICES_PER_MINUTE = 3;
 
 /** One printer model in the menu, with its nozzle choices. */
 export interface PrinterGroup {
@@ -102,7 +95,7 @@ export interface MyPrinterView {
   /**
    * Slices that run up to and including its last waiting one, every
    * printer's work counted: the slicer is one queue, one plate at a time.
-   * The page's "about how long" is this over SLICES_PER_MINUTE; 0 with
+   * The page's "about how long" is this over slicesPerMinute; 0 with
    * nothing waiting.
    */
   through: number;
@@ -121,14 +114,19 @@ export interface SettingsView {
   printersVersion: number;
   /** The menu grouped by model; null while the slicer cannot be asked. */
   printers: PrinterGroup[] | null;
-  /** SLICES_PER_MINUTE, for the page's "this will take about" sentence. */
+  /**
+   * Plates the slicer finishes a minute, for the page's "this will take
+   * about" and "left" times: measured from the newest finished slices
+   * (estimates/rate.ts), or FALLBACK_SLICES_PER_MINUTE while too few have
+   * finished (issue #317). One decimal place at most.
+   */
   slicesPerMinute: number;
   bucketVersioning: BucketVersioning;
 }
 
 export interface SettingsApiDeps {
   settings: Pick<SettingsRepo, "get">;
-  estimates: Pick<Estimates, "listPrinters" | "savePrinters" | "queueByPrinter">;
+  estimates: Pick<Estimates, "listPrinters" | "savePrinters" | "queueByPrinter" | "sliceRate">;
 }
 
 /** An /app/api module was given no dependencies: its routes answer 503. */
@@ -305,12 +303,13 @@ export async function registerSettingsApi(
   await appApiScope(app, (scope) => {
     scope.get("/settings", async (request): Promise<SettingsView> => {
       const { settings, estimates } = need(deps);
-      const [current, queue, menu] = await Promise.all([
+      const [current, queue, menu, rate] = await Promise.all([
         settings.get(),
         estimates.queueByPrinter(),
         menuOrNull(estimates, (error) =>
           request.log.warn({ err: error }, "app api: the slicer's printer list is unavailable"),
         ),
+        estimates.sliceRate(),
       ]);
       return {
         printerId: current.printerId,
@@ -323,7 +322,7 @@ export async function registerSettingsApi(
           through: queue.get(id)?.through ?? 0,
         })),
         printers: menu === null ? null : groupPrinters(menu),
-        slicesPerMinute: SLICES_PER_MINUTE,
+        slicesPerMinute: rate ?? FALLBACK_SLICES_PER_MINUTE,
         bucketVersioning: current.bucketVersioning,
       };
     });

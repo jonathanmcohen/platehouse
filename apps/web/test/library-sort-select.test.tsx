@@ -1932,3 +1932,191 @@ describe("describeBulk", () => {
     );
   });
 });
+
+const ONE_LEFT_317 =
+  "1 selected model is not shown by the search and filters, so it left the selection.";
+
+describe("library polish from the rc.3 live check (issue #317)", () => {
+  /** A link in the tag filter named name. */
+  function tagChip(name: string): HTMLAnchorElement {
+    const found = [
+      ...container.querySelectorAll<HTMLAnchorElement>('nav[aria-label="Filter by tag"] a'),
+    ].find((a) => a.textContent === name);
+    if (found === undefined) throw new Error(`no tag chip ${name}`);
+    return found;
+  }
+
+  function tagChipNames(): string[] {
+    return [
+      ...container.querySelectorAll<HTMLAnchorElement>('nav[aria-label="Filter by tag"] a'),
+    ].map((a) => a.textContent ?? "");
+  }
+
+  function link(name: string): HTMLAnchorElement {
+    const found = [...container.querySelectorAll<HTMLAnchorElement>("a")].find(
+      (a) => a.textContent?.trim() === name,
+    );
+    if (found === undefined) throw new Error(`no link ${name}`);
+    return found;
+  }
+
+  /** Models 1 and 2 tagged PLA, model 3 tagged Desk, models 4 and 5 untagged. */
+  function library(): LibraryCard[] {
+    const all = cards(5, 2);
+    const third = all[2];
+    if (third !== undefined) third.tags = ["Desk"];
+    return all;
+  }
+
+  async function addTag(tag: string) {
+    await click(button("Add tags"));
+    const input = dialog()?.querySelector("input") as HTMLInputElement;
+    await type(input, tag);
+    await click(dialogButton("Add tags"));
+  }
+
+  describe("Select mode's toolbar messages go once the view they described is gone", () => {
+    test("the models-left note goes after the next tag change, even with nothing left to check", async () => {
+      stubServer(library());
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await click(checkbox("Model 002"));
+      await click(tagChip("Desk"));
+      expect(container.textContent).toContain(
+        "2 selected models are not shown by the search and filters, so they left the selection.",
+      );
+      await click(tagChip("PLA"));
+      expect(location).toBe("/?tag=PLA");
+      expect(container.textContent).not.toContain("left the selection");
+    });
+
+    test("an action's result goes after a filter change", async () => {
+      stubServer(library());
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 004"));
+      await click(checkbox("Model 005"));
+      await addTag("qa-rc3");
+      expect(container.textContent).toContain("Added qa-rc3 to 2 models.");
+      await click(tagChip("Desk"));
+      expect(container.textContent).not.toContain("Added qa-rc3");
+    });
+
+    test("the models-left note goes after a page change", async () => {
+      // Models 1 to 55 are tagged PLA: two pages of 48 under the PLA filter.
+      stubServer(cards(60, 55));
+      await render("/?page=2");
+      await selectMode();
+      await click(checkbox("Model 049"));
+      await click(checkbox("Model 060"));
+      await click(tagChip("PLA"));
+      expect(location).toBe("/?tag=PLA");
+      expect(container.textContent).toContain(ONE_LEFT_317);
+      await click(link("Next"));
+      expect(location).toBe("/?tag=PLA&page=2");
+      expect(statusText()).toBe("1 model selected");
+      expect(container.textContent).not.toContain("left the selection");
+    });
+
+    test("an action's result goes after a page change", async () => {
+      stubServer(cards(60));
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 001"));
+      await addTag("Shelf");
+      expect(container.textContent).toContain("Added Shelf to 1 model.");
+      await click(link("Next"));
+      expect(location).toBe("/?page=2");
+      expect(container.textContent).not.toContain("Added Shelf");
+    });
+
+    test("the Select all matching cap note goes after a search or filter change", async () => {
+      stubServer(library());
+      matchCap = 3;
+      await render("/");
+      await selectMode();
+      await click(button("Select the first 3 matching"));
+      expect(container.textContent).toContain("Only the first 3 matching models");
+      await click(tagChip("PLA"));
+      expect(container.textContent).not.toContain("Only the first 3 matching models");
+    });
+
+    test("an action's result stays while the grid reloads after it, on the same view", async () => {
+      stubServer(library());
+      await render("/");
+      await selectMode();
+      await click(checkbox("Model 004"));
+      await addTag("Kitchen");
+      expect(container.textContent).toContain("Added Kitchen to 1 model.");
+      await settle();
+      expect(container.textContent).toContain("Added Kitchen to 1 model.");
+    });
+  });
+
+  describe("a filter always has a way back to all models", () => {
+    test("a tag filter whose tag no model carries any more still shows the tag, marked, and All", async () => {
+      stubServer(library());
+      await render("/?tag=qa-rc3&sort=name-asc");
+      expect(container.textContent).toContain("No models match.");
+      expect(tagChipNames()).toEqual(["All", "qa-rc3", "Desk", "PLA"]);
+      expect(tagChip("qa-rc3").getAttribute("aria-current")).toBe("true");
+      expect(tagChip("All").getAttribute("aria-current")).toBeNull();
+      expect(tagChip("All").getAttribute("href")).toBe("/?sort=name-asc");
+    });
+
+    test("with no tags in the library at all, a tag filter still shows All and the tag", async () => {
+      serverTags = [];
+      stubServer(cards(3));
+      await render("/?tag=qa-rc3");
+      expect(container.textContent).toContain("No models match.");
+      expect(tagChipNames()).toEqual(["All", "qa-rc3"]);
+      await click(tagChip("All"));
+      expect(location).toBe("/");
+      expect(container.querySelectorAll(".studio-grid li")).toHaveLength(3);
+    });
+
+    test("with no tags and no tag filter there is still no tag row", async () => {
+      serverTags = [];
+      stubServer(cards(3));
+      await render("/");
+      expect(container.querySelector('nav[aria-label="Filter by tag"]')).toBeNull();
+    });
+
+    test("no matches under any filter offers Show all models, which drops the search and every filter", async () => {
+      stubServer(library());
+      await render("/?q=nothing&tag=qa-rc3&creator=Someone&collection=Shelf&page=3&sort=name-asc");
+      const back = link("Show all models");
+      expect(back.getAttribute("href")).toBe("/?sort=name-asc");
+      await click(back);
+      expect(location).toBe("/?sort=name-asc");
+    });
+
+    test("an empty library with no filter says so, with no Show all models", async () => {
+      stubServer([]);
+      await render("/");
+      expect(container.textContent).toContain("No models yet.");
+      expect(container.textContent).not.toContain("Show all models");
+    });
+  });
+
+  describe("Select all matching with nothing matching", () => {
+    test("is marked disabled and asks for nothing", async () => {
+      stubServer(library());
+      await render("/?tag=qa-rc3");
+      await selectMode();
+      const all = button("Select all 0 matching");
+      expect(all.getAttribute("aria-disabled")).toBe("true");
+      await click(all);
+      expect(requests.filter((r) => r.startsWith("GET /app/api/library/ids"))).toEqual([]);
+      expect(statusText()).toBe("No models selected");
+    });
+
+    test("is not disabled once something matches", async () => {
+      stubServer(library());
+      await render("/?tag=PLA");
+      await selectMode();
+      expect(button("Select all 2 matching").getAttribute("aria-disabled")).not.toBe("true");
+    });
+  });
+});

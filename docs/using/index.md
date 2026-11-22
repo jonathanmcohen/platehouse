@@ -34,9 +34,12 @@ then or if it could not be rendered. OpenSCAD models show a file-type icon. Pict
 on a neutral grey backdrop, so a black or white print stays visible in both themes.
 
 Search in the top bar matches names, captions, creators and tags, best match first. Pick a tag
-chip to filter by tag. Typing a search in the top bar turns off a tag filter and searches the
-whole library; the one exception is a creator or collection filter opened from **Show in the
-library**, which stays on. Loading the library never downloads a model file: the only images it
+chip to filter by tag, and **All** to turn the tag filter off. The tag you are filtering by keeps
+its chip even when no model has that tag any more. Typing a search in the top bar turns off a tag
+filter and searches the whole library; this is deliberate, so a search always looks through every
+tag. The one exception is a creator or collection filter opened from **Show in the library**,
+which stays on. When nothing matches a search or filter, **Show all models** takes you back to the
+whole library. Loading the library never downloads a model file: the only images it
 loads are the stored plate thumbnails.
 
 ### Pages and View all
@@ -90,7 +93,8 @@ Space on it) and a toolbar appears above the grid with the number selected.
 
 - **Select all on this page** adds the cards shown (every card, in View all). **Select all
   matching** adds every model that matches the search and filters, up to 1000; if more match, the
-  toolbar says only the first 1000 were selected. **Clear selection** empties it.
+  toolbar says only the first 1000 were selected. When nothing matches it is greyed out.
+  **Clear selection** empties it.
 - The selection only ever holds models the current search and filters show, and an action never
   changes a model they hide (see below). It is kept while you change page, switch to View all or
   choose another sort, so you can gather models from several pages, even past the first 1000
@@ -116,7 +120,9 @@ When an action finishes, the toolbar says what happened: how many models changed
 already as asked (they already had the tag, did not have it, or were already in the collection).
 The grid then reloads in place to show the change. Models moved to the trash leave the selection,
 and so does any model the action takes out of the view: remove the tag you are filtering by, for
-example, and those models leave the selection, with a note saying how many.
+example, and those models leave the selection, with a note saying how many. These notes describe
+the view they were made in, so they go once you change the search, a filter, the sort, the printer
+or the page.
 
 **When a model has left the view.** Each action is checked by the server against the search and
 filters you made it in, at the moment it runs. A selected model they no longer show, for example

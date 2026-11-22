@@ -165,7 +165,7 @@
 //
 // derived_status is 'pending' while a .scad's render or a STEP file's mesh
 // conversion is queued or running, then 'ok' or 'failed'; it stays null for
-// a .3mf and an STL, which have neither. preview_status (migration 0011,
+// a .3mf and an STL, which have neither. preview_status (migration 0012,
 // issue #380) is the same for an STL's or STEP file's preview picture, and
 // null until one is queued; the two preview kinds write it and nothing else
 // (STATUS_OF), so derived_status, which the public API answers as
