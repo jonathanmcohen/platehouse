@@ -38,7 +38,7 @@ import type { Filament, Plate, Project, ReadOptions } from "./types.js";
 const MODEL_SETTINGS = "Metadata/model_settings.config";
 const SLICE_INFO = "Metadata/slice_info.config";
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
-const MODEL = "3D/3dmodel.model";
+export const MODEL = "3D/3dmodel.model";
 const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(_small)?\.png$/;
 const COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 const INTEGER = /^\s*-?[0-9]+\s*$/;
@@ -111,7 +111,7 @@ export async function readProjectFromReader(
  * else is Damaged. The parser.rb@136fd61 damaged_on_read_error. It never
  * wraps the parser's mapping code or the caller's callback.
  */
-async function ownRead<T>(read: () => Promise<T>): Promise<T> {
+export async function ownRead<T>(read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch (err) {
@@ -292,7 +292,7 @@ async function readArchive(
  * character per byte, so a key equals a Bambu name only when the bytes are
  * exactly that ASCII name. The first entry of a duplicated name wins.
  */
-function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
+export function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
   return new Promise((resolve, reject) => {
     const entries = new Map<string, yauzl.Entry>();
     let count = 0;
@@ -381,7 +381,7 @@ async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number):
 }
 
 /** 3D/3dmodel.model up to <resources, at most MODEL_PREFIX_BYTES. Never damage by size. */
-async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
+export async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
   let buf = Buffer.alloc(0);
   let end = -1;
   await pump(zip, entry, Number.POSITIVE_INFINITY, (chunk) => {

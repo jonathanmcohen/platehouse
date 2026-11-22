@@ -1,7 +1,7 @@
 // The Activity page's Recent events list (the maintainer, 2026-11-19): newest first,
 // at most the server's limit, built only from what the app records (models
 // added, inbox files that failed, estimates, renders and conversions that
-// failed). A live model is a link to its page; a trashed one is named
+// failed, and each run of the description re-conversion on upgrade, #357). A live model is a link to its page; a trashed one is named
 // without a link. A failed estimate (the server lists live models' only) has
 // the model page's own retry, through the existing POST
 // /app/api/estimates/:id/retry. A 409 not_retryable asks for the list again
@@ -219,6 +219,25 @@ function EventBody({
       );
     case "estimate_failed":
       return <EstimateFailure event={event} onRetried={onChanged} onNotice={onNotice} />;
+    case "descriptions_reconverted":
+      return (
+        <>
+          <div className="studio-row">
+            <strong>{t("activity.event.descriptionsReconverted")}</strong>
+            <When at={event.at} />
+          </div>
+          <p className="ph-activity-line">
+            {t("activity.reconvert.changed", { changed: event.changed, checked: event.checked })}
+          </p>
+          <p className="ph-activity-line studio-muted">
+            {t("activity.reconvert.left", {
+              unchanged: event.unchanged,
+              kept: event.kept,
+              unreadable: event.unreadable,
+            })}
+          </p>
+        </>
+      );
     case "render_failed":
       return (
         <>
@@ -326,5 +345,7 @@ function keyOf(event: ActivityEvent): string {
       return event.estimateId;
     case "render_failed":
       return event.file.id;
+    case "descriptions_reconverted":
+      return `${event.converter}:${event.at}`;
   }
 }

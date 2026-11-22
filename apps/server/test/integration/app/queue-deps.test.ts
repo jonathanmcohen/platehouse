@@ -15,6 +15,8 @@ const full: ServerQueueDeps = {
   onIngested: async () => undefined,
   checkRenders: async () => undefined,
   backfillPreviews: async () => undefined,
+  reconvertDescriptions: async () => undefined,
+  reconvertPending: async () => false,
 };
 
 describe("ServerQueueDeps", () => {
@@ -34,5 +36,14 @@ describe("ServerQueueDeps", () => {
     expect(
       [noSlicer, noPoll, noOnIngested, noCheck, noBackfill].every((d) => d !== undefined),
     ).toBe(true);
+  });
+
+  test("requires the description re-conversion and its check (#357)", () => {
+    const { reconvertDescriptions, reconvertPending, ...rest } = full;
+    // @ts-expect-error -- the descriptions would never be converted again on upgrade
+    const noRun: ServerQueueDeps = { ...rest, reconvertPending };
+    // @ts-expect-error -- the re-conversion would never be queued
+    const noCheck: ServerQueueDeps = { ...rest, reconvertDescriptions };
+    expect([noRun, noCheck].every((d) => d !== undefined)).toBe(true);
   });
 });

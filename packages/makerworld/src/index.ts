@@ -2,4 +2,9 @@
 // map, and the sanitising Markdown renderer (build plan Task 7).
 export { extractMakerWorld, type MakerWorldDetails } from "./extract.js";
 export { type LicenseMapping, mapLicense } from "./license.js";
-export { htmlToMarkdown, renderMarkdown } from "./markdown.js";
+export {
+  CONVERTER_VERSION,
+  earlierConversions,
+  htmlToMarkdown,
+  renderMarkdown,
+} from "./markdown.js";

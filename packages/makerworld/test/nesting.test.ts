@@ -97,6 +97,12 @@ const CONTEXTS: Record<string, Context> = {
   link: { open: `<a href="${LINK}">`, mid: `</a> <a href="${LINK}">`, close: "</a>" },
   emphasis: { open: "<b>", mid: "</b> <b>", close: "</b>" },
   blockquote: { open: "<blockquote>", mid: "</blockquote><blockquote>", close: "</blockquote>" },
+  // MakerWorld's Boost Me box, a block since #357.
+  "Boost Me box": {
+    open: "<boostme><boosttitle>",
+    mid: "</boosttitle><boostcontent>",
+    close: "</boostcontent></boostme>",
+  },
 };
 
 // The link or emphasis left open across a boundary.

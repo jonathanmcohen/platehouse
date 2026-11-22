@@ -16,7 +16,9 @@
 //      its worker and every maintenance task its schedule: the slicer
 //      worker dispatches by job kind to estimates' "slice" and the render
 //      and mesh kinds, an ingested file's plates are queued at once
-//      (onIngested), and the Orca poll also runs once at startup;
+//      (onIngested), and the Orca poll also runs once at startup; the
+//      description re-conversion (#357) is sent to the maintenance queue
+//      once, on the first start of a version whose converter changed;
 //   5. the inbox watcher (Task 10), wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
 //   6. the Fastify app (app.ts), listening on PORT on every interface, with
@@ -92,8 +94,10 @@ import { createIngest, type IngestResult } from "./ingest/ingest.js";
 import { createOrphanSweep } from "./ingest/orphans.js";
 import { createBoss } from "./jobs/boss.js";
 import { type ServerQueueDeps, startQueues } from "./jobs/queues.js";
+import { createDescriptionReconvert, storeTextReader } from "./library/reconvert.js";
 import { createTrash } from "./library/trash.js";
 import { createLocales } from "./locales/locales.js";
+import { descriptionsRepo } from "./repos/descriptions.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
 import { bossUploadQueue, createUploads } from "./uploads/tus.js";
@@ -322,8 +326,14 @@ export async function start(config: Config, options: StartOptions = {}): Promise
   let queuesRunning = false;
   let stopping: Promise<void> | undefined;
   const jobs = jobCounter();
+  // Aborted as the first thing a stop does, before any step and so before
+  // pg-boss's graceful stop, so a job that can end early does (the
+  // description re-conversion, #381) instead of being cut off at pg-boss's
+  // 10 s limit.
+  const shutdownSignal = new AbortController();
 
   async function shutdown(): Promise<void> {
+    shutdownSignal.abort();
     queuesRunning = false;
     const steps: ShutdownStep[] = [];
     const http = app;
@@ -395,6 +405,13 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const trash = createTrash({ db, store });
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
+    // The description re-conversion on upgrade (#357): sent to the
+    // maintenance queue by startQueues while it has not finished, and run a
+    // slice per job (queues.ts RECONVERT_SLICE_SECONDS).
+    const reconvert = createDescriptionReconvert({
+      store: descriptionsRepo(db),
+      readText: storeTextReader(store),
+    });
 
     // Every handler a pg-boss worker runs is counted (jobs), so stopping
     // pg-boss can tell a job cut off at its timeout from a clean stop. The
@@ -410,6 +427,10 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       checkRenders: (now: Date) => derived.checkRenders(now),
       backfillPreviews: (now: Date) => derived.backfillPreviews(now),
       purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
+      reconvertDescriptions: (stop: () => boolean, signal: AbortSignal) =>
+        reconvert.run(stop, signal),
+      reconvertPending: () => reconvert.pending(),
+      shutdown: shutdownSignal.signal,
     } satisfies ServerQueueDeps);
     await startQueues(startedBoss, queueDeps);
     queuesRunning = true;

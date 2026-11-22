@@ -4,6 +4,7 @@ import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, NameSource } from "../db/types.js";
 import { cutName, fileStems } from "../ingest/names.js";
+import { descriptionSha256 } from "../library/description-hash.js";
 
 export interface Model {
   id: string;
@@ -61,6 +62,15 @@ export interface FoundMetadata {
   licenseNote?: string | null;
   /** The MakerWorld design ID, digits only (packages/threemf makerWorldDesignId). */
   makerworldDesignId?: string | null;
+  /**
+   * Where descriptionMd was converted from (ingest only): the .3mf and the
+   * converter version. When the description is filled, its SHA-256, this
+   * version and this file are stored with it (migration 0014), so the
+   * re-conversion (library/reconvert.ts) can tell later that it is still
+   * exactly what the converter wrote. Left out, as for the API's
+   * create-model, a description filled is recorded as from no converter.
+   */
+  descriptionSource?: { fileId: string; converter: number };
 }
 
 /** A model the "Use file titles" backfill would rename. */
@@ -668,10 +678,24 @@ export function modelsRepo(db: Kysely<DB>) {
         if (fillLicence && spdx !== undefined) set.licenseSpdx = spdx;
         if (note !== undefined && empty(row.licenseNote)) set.licenseNote = note;
 
+        let source: Partial<
+          Record<"descriptionSha256" | "descriptionFileId", string> & {
+            descriptionConverter: number;
+          }
+        > = {};
         if (empty(row.descriptionMd)) {
           const parts = [value(found.descriptionMd), fillLicence ? note : undefined];
           const description = parts.filter((p) => p !== undefined).join("\n\n");
-          if (description !== "") set.descriptionMd = description;
+          if (description !== "") {
+            set.descriptionMd = description;
+            if (found.descriptionSource !== undefined) {
+              source = {
+                descriptionSha256: descriptionSha256(description),
+                descriptionConverter: found.descriptionSource.converter,
+                descriptionFileId: found.descriptionSource.fileId,
+              };
+            }
+          }
         }
         // The creator row is made only when it will be used, so no creator
         // is left in the sidebar without a model.
@@ -682,7 +706,7 @@ export function modelsRepo(db: Kysely<DB>) {
         if (Object.keys(set).length === 0) return true;
         const result = await trx
           .updateTable("models")
-          .set({ ...set, updatedAt: sql`now()` })
+          .set({ ...set, ...source, updatedAt: sql`now()` })
           .where("id", "=", id)
           .executeTakeFirst();
         return result.numUpdatedRows > 0n;

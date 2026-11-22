@@ -70,7 +70,12 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { extractMakerWorld, htmlToMarkdown, mapLicense } from "@platehouse/makerworld";
+import {
+  CONVERTER_VERSION,
+  extractMakerWorld,
+  htmlToMarkdown,
+  mapLicense,
+} from "@platehouse/makerworld";
 import { makerWorldDesignId, type Project, readProject } from "@platehouse/threemf";
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
@@ -271,7 +276,7 @@ function baseName(name: string): string {
  * names no Designer is not a MakerWorld file, so it gives no details, no title
  * and no design ID.
  */
-function metadataOf(project: Project | null): FoundMetadata {
+function metadataOf(project: Project | null, fileId: string): FoundMetadata {
   const xml = project?.makerWorldXml;
   const details = xml ? extractMakerWorld(xml) : null;
   if (!xml || details === null) return {};
@@ -288,6 +293,8 @@ function metadataOf(project: Project | null): FoundMetadata {
     licenseSpdx: license.spdx ?? null,
     licenseNote: license.footer ?? null,
     makerworldDesignId: makerWorldDesignId(xml),
+    // Recorded with the description if this file fills it (#357).
+    descriptionSource: { fileId, converter: CONVERTER_VERSION },
   };
 }
 
@@ -479,7 +486,7 @@ export function createIngest(deps: IngestDeps) {
         if (id === undefined) throw new Error("pg_current_xact_id returned no row");
         xid = id;
         const repos = createRepos(trx);
-        const found = metadataOf(project);
+        const found = metadataOf(project, fileId);
         // A new model is named from this file: its title, else its cleaned
         // file name (names.ts).
         let created = false;
