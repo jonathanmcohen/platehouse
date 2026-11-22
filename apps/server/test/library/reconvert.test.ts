@@ -12,6 +12,7 @@ import {
   decide,
   descriptionSha256,
   type Outcome,
+  RECONVERT_PAUSED,
   RECONVERT_STEP,
   type ReconvertResult,
   type ReconvertStore,
@@ -451,6 +452,49 @@ describe("a run", () => {
     // again; model 4's edit is decided without a read.
     expect(read).toEqual([fileOf(3), fileOf(5)]);
     expect(mem.progress.size).toBe(0);
+  });
+
+  // A run is one maintenance job, and pg-boss fails a job that outlasts its
+  // expiry while the handler carries on, holding the maintenance worker. So a
+  // run stops when the job tells it to, after the model it is on, leaves its
+  // counts, and says it paused; the next job goes on after the last model
+  // counted.
+  test("stops after the model it is on when told to, records nothing, and the next run goes on", async () => {
+    const { rows, files, texts } = library();
+    const mem = memoryStore(rows, files);
+    const { readText, read } = reader(texts);
+    const lines: string[] = [];
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText,
+      log: (line) => lines.push(line),
+      batchSize: 2,
+    });
+    let asked = 0;
+    expect(await reconvert.run(() => ++asked >= 3)).toBe(RECONVERT_PAUSED);
+    expect(mem.finished.size).toBe(0);
+    expect(mem.progress.get(RECONVERT_STEP)).toMatchObject({ checked: 3, after: model(3) });
+    expect(await reconvert.pending()).toBe(true);
+    expect(read).toEqual([fileOf(1), fileOf(2), fileOf(3)]);
+    expect(lines).toEqual([expect.stringContaining("goes on in a new job")]);
+
+    read.length = 0;
+    const counts = { checked: 5, changed: 1, unchanged: 1, kept: 2, unreadable: 1 };
+    expect(await reconvert.run(() => false)).toEqual(counts);
+    expect(mem.finished.get(RECONVERT_STEP)).toEqual(counts);
+    expect(read).toEqual([fileOf(5)]);
+  });
+
+  test("checks at least one model before it stops, so every run makes progress", async () => {
+    const { rows, files, texts } = library();
+    const mem = memoryStore(rows, files);
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: reader(texts).readText,
+      log: () => {},
+    });
+    expect(await reconvert.run(() => true)).toBe(RECONVERT_PAUSED);
+    expect(mem.progress.get(RECONVERT_STEP)).toMatchObject({ checked: 1, after: model(1) });
   });
 
   test("does nothing and records nothing while another run holds the step", async () => {

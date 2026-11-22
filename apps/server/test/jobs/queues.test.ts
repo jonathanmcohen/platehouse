@@ -12,10 +12,12 @@ import {
   QUEUE,
   type QueueDeps,
   queueSettings,
+  RECONVERT_SLICE_SECONDS,
   SLICER_RETRY,
   startQueues,
   UPGRADE_TASKS,
 } from "../../src/jobs/queues.js";
+import { RECONVERT_PAUSED } from "../../src/library/reconvert.js";
 
 describe("queueSettings", () => {
   test("slicer is a singleton queue worked one job at a time, retried 3 times with backoff", () => {
@@ -202,13 +204,96 @@ describe("the description re-conversion on upgrade", () => {
     }
   });
 
-  test("the maintenance worker runs it for its task", async () => {
-    const { boss, handlers } = fakeBoss();
-    const reconvertDescriptions = vi.fn(async () => undefined);
+  /** A maintenance job for the re-conversion, as pg-boss hands it to the worker. */
+  function reconvertJob(signal = new AbortController().signal, expireInSeconds = 900) {
+    return { data: { task: UPGRADE_TASKS.reconvertDescriptions }, signal, expireInSeconds };
+  }
+
+  test("the maintenance worker runs it for its task, and sends no more when it finishes", async () => {
+    const { boss, handlers, sent } = fakeBoss();
+    const reconvertDescriptions = vi.fn(async (_stop: () => boolean) => ({ checked: 1 }));
     await startQueues(boss, deps({ reconvertPending: async () => false, reconvertDescriptions }));
     const work = handlers.get(QUEUE.maintenance);
-    await work?.([{ data: { task: UPGRADE_TASKS.reconvertDescriptions } }]);
+    await work?.([reconvertJob()]);
     expect(reconvertDescriptions).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([]);
+  });
+
+  // pg-boss fails a job that outlasts its expiry (15 minutes on the
+  // maintenance queue) while the handler carries on, and the maintenance
+  // worker fetches nothing until it returns. So a run gets a slice of the
+  // job's time, stops when the slice is used or the job's signal aborts, and
+  // a run that stopped with models left goes on in a new job. The scheduled
+  // tasks queued meanwhile were created first, so they run before it.
+  test("a run that paused goes on in a new maintenance job", async () => {
+    const { boss, handlers, sent } = fakeBoss();
+    const reconvertDescriptions = vi.fn(async (_stop: () => boolean) => RECONVERT_PAUSED);
+    await startQueues(boss, deps({ reconvertPending: async () => false, reconvertDescriptions }));
+    await handlers.get(QUEUE.maintenance)?.([reconvertJob()]);
+    expect(sent).toEqual([
+      {
+        name: QUEUE.maintenance,
+        data: { task: UPGRADE_TASKS.reconvertDescriptions },
+        options: undefined,
+      },
+    ]);
+  });
+
+  test("tells the run to stop once its slice of the job's expiry is used", async () => {
+    vi.useFakeTimers();
+    try {
+      const { boss, handlers } = fakeBoss();
+      const answers: boolean[] = [];
+      const reconvertDescriptions = vi.fn(async (stop: () => boolean) => {
+        answers.push(stop());
+        vi.advanceTimersByTime(RECONVERT_SLICE_SECONDS * 1000 - 1);
+        answers.push(stop());
+        vi.advanceTimersByTime(1);
+        answers.push(stop());
+        return RECONVERT_PAUSED;
+      });
+      await startQueues(boss, deps({ reconvertPending: async () => false, reconvertDescriptions }));
+      await handlers.get(QUEUE.maintenance)?.([reconvertJob()]);
+      expect(answers).toEqual([false, false, true]);
+      expect(RECONVERT_SLICE_SECONDS).toBeLessThanOrEqual(900 / 3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a job with a short expiry gets a third of it", async () => {
+    vi.useFakeTimers();
+    try {
+      const { boss, handlers } = fakeBoss();
+      const answers: boolean[] = [];
+      const reconvertDescriptions = vi.fn(async (stop: () => boolean) => {
+        vi.advanceTimersByTime(20_000 - 1);
+        answers.push(stop());
+        vi.advanceTimersByTime(1);
+        answers.push(stop());
+        return RECONVERT_PAUSED;
+      });
+      await startQueues(boss, deps({ reconvertPending: async () => false, reconvertDescriptions }));
+      await handlers.get(QUEUE.maintenance)?.([reconvertJob(undefined, 60)]);
+      expect(answers).toEqual([false, true]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("tells the run to stop once the job's signal aborts", async () => {
+    const { boss, handlers } = fakeBoss();
+    const controller = new AbortController();
+    const answers: boolean[] = [];
+    const reconvertDescriptions = vi.fn(async (stop: () => boolean) => {
+      answers.push(stop());
+      controller.abort();
+      answers.push(stop());
+      return RECONVERT_PAUSED;
+    });
+    await startQueues(boss, deps({ reconvertPending: async () => false, reconvertDescriptions }));
+    await handlers.get(QUEUE.maintenance)?.([reconvertJob(controller.signal)]);
+    expect(answers).toEqual([false, true]);
   });
 
   test("is not a scheduled task, so the Activity page's schedule labels stay as they are", () => {

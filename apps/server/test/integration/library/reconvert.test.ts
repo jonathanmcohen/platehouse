@@ -10,12 +10,22 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { descriptionSha256 } from "../../../src/library/description-hash.js";
 import {
   createDescriptionReconvert,
+  type DescriptionReconvert,
+  RECONVERT_PAUSED,
   RECONVERT_STEP,
+  type ReconvertResult,
   storeTextReader,
 } from "../../../src/library/reconvert.js";
 import { descriptionsRepo, progressName } from "../../../src/repos/descriptions.js";
 import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
 import { marker } from "../support/library.js";
+
+/** A run given no stop, which goes to the end and never pauses. */
+async function runToEnd(run: DescriptionReconvert): Promise<ReconvertResult | null> {
+  const result = await run.run();
+  if (result === RECONVERT_PAUSED) throw new Error("a run given no stop paused");
+  return result;
+}
 
 // One description the converters write three ways (see the unit test).
 const HTML =
@@ -174,7 +184,7 @@ describe("a run", () => {
 
     const { run, lines } = reconvert();
     expect(await run.pending()).toBe(true);
-    const result = await run.run();
+    const result = await runToEnd(run);
     expect(result).not.toBeNull();
     expect(result?.changed).toBeGreaterThanOrEqual(2);
 
@@ -326,7 +336,7 @@ describe("a run", () => {
       .where("files.id", "=", old.fileId)
       .executeTakeFirstOrThrow();
     await env.store.deleteBlobs([blob.key]);
-    const result = await reconvert().run.run();
+    const result = await runToEnd(reconvert().run);
     expect(result?.unreadable).toBeGreaterThanOrEqual(1);
     expect((await row(old.modelId)).descriptionMd).toBe(BY_RC);
   });

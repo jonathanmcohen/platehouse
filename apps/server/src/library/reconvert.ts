@@ -36,6 +36,15 @@
 // part way leaves its counts behind; the next start-up runs again, goes on
 // after the last model counted, and the step records the totals of the whole
 // conversion, which the Activity page shows, not only of the last run.
+//
+// A run is told when to stop (run's stop), and checks it after each model it
+// counts, so each run checks at least one model. A run that stops leaves its
+// counts and says it paused (RECONVERT_PAUSED); the maintenance queue then
+// sends the next job, which goes on after the last model counted. That keeps
+// each job inside pg-boss's expiry, so a large library on a slow object store
+// never has its job failed while the run carries on, and the scheduled
+// maintenance tasks wait at most one slice (jobs/queues.ts
+// RECONVERT_SLICE_SECONDS).
 import {
   CONVERTER_VERSION,
   earlierConversions,
@@ -48,6 +57,9 @@ import { BlobNotFound, type BlobStore } from "../storage/s3.js";
 import { descriptionSha256 } from "./description-hash.js";
 
 export { descriptionSha256 };
+
+/** What run gives when it stopped, as told, with models left to check. */
+export const RECONVERT_PAUSED = "paused" as const;
 
 /** The upgrade_steps name of the run for the current converter. */
 export const RECONVERT_STEP = `reconvert-descriptions-${CONVERTER_VERSION}`;
@@ -251,8 +263,13 @@ export interface DescriptionReconvert {
   /**
    * One run, giving the totals of the whole conversion; null when one
    * already finished or another is running, so nothing was done.
+   * RECONVERT_PAUSED when stop said true after a model, with models left
+   * (or none, when that was the last): its counts stay, nothing is recorded
+   * finished, and the next run goes on after the last model counted. stop is
+   * asked after each model counted, never before the first; with none given
+   * the run goes to the end.
    */
-  run(): Promise<ReconvertResult | null>;
+  run(stop?: () => boolean): Promise<ReconvertResult | typeof RECONVERT_PAUSED | null>;
 }
 
 /** Models read from the database at a time. */
@@ -270,7 +287,7 @@ export function createDescriptionReconvert(deps: {
     async pending() {
       return !(await deps.store.stepFinished(RECONVERT_STEP));
     },
-    async run() {
+    async run(stop = () => false) {
       if (await deps.store.stepFinished(RECONVERT_STEP)) return null;
       return deps.store.exclusive(RECONVERT_STEP, async () => {
         // Another run may have finished between the check above and taking the step.
@@ -293,6 +310,13 @@ export function createDescriptionReconvert(deps: {
             } else {
               const outcome = decision.kind === "unreadable" ? "unreadable" : "kept";
               await deps.store.count(RECONVERT_STEP, row.modelId, outcome);
+            }
+            if (stop()) {
+              log(
+                `platehouse: MakerWorld description re-conversion stopped after model ${row.modelId}; ` +
+                  "it goes on in a new job",
+              );
+              return RECONVERT_PAUSED;
             }
           }
           if (page.length < batch) break;

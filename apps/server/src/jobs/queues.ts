@@ -32,6 +32,7 @@
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import { CHECK_RENDERS_CRON } from "../derived/derived.js";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
+import { RECONVERT_PAUSED } from "../library/reconvert.js";
 
 export const QUEUE = {
   ingest: "ingest",
@@ -116,10 +117,33 @@ export const MAINTENANCE_TASKS = {
  * after another finished does nothing, and two at once each write a
  * description only through a compare-and-set, so neither writes over the
  * other.
+ *
+ * A job runs the re-conversion for one slice of its time
+ * (RECONVERT_SLICE_SECONDS) and, when models are left, sends the next job,
+ * which goes on after the last model counted.
  */
 export const UPGRADE_TASKS = {
   reconvertDescriptions: "reconvert-descriptions",
 } as const;
+
+/**
+ * How long one maintenance job runs the description re-conversion before it
+ * stops and sends the next job (#357), at most a third of the job's expiry
+ * (15 minutes on the maintenance queue, pg-boss's default). pg-boss fails a
+ * job that outlasts its expiry while the handler carries on, and the
+ * maintenance worker, one job at a time, fetches nothing until the handler
+ * returns. So a run in slices never has its job failed, and the scheduled
+ * maintenance tasks wait at most one slice and the model it is on: those
+ * queued meanwhile were created before the next re-conversion job, so they
+ * run first. The run also stops when pg-boss aborts the job's signal.
+ */
+export const RECONVERT_SLICE_SECONDS = 300;
+
+/** The re-conversion's slice of a job with this expiry, in milliseconds. */
+function reconvertSliceMs(expireInSeconds: number): number {
+  const expiry = Number.isFinite(expireInSeconds) && expireInSeconds > 0 ? expireInSeconds : 900;
+  return Math.min(RECONVERT_SLICE_SECONDS, expiry / 3) * 1000;
+}
 
 /**
  * Every 10 minutes (Task 12 decision): the Orca-version poll, which also runs
@@ -211,9 +235,11 @@ export interface QueueDeps {
    * The description re-conversion (#357, library/reconvert.ts's run), when
    * given with reconvertPending: sent to the maintenance queue at startup
    * while reconvertPending says it has not finished, and run by the
-   * maintenance worker.
+   * maintenance worker. It stops after a model once stop says true (its
+   * slice used, or the job's signal aborted), and resolves to
+   * RECONVERT_PAUSED when it did, so the worker sends the next job.
    */
-  reconvertDescriptions?(): Promise<unknown>;
+  reconvertDescriptions?(stop: () => boolean): Promise<unknown>;
   /** True while the description re-conversion for the current converter has not finished. */
   reconvertPending?(): Promise<boolean>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
@@ -382,12 +408,18 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           if (!deps.purgeSessions) throw new Error("No session delete is registered");
           await deps.purgeSessions(new Date());
           return;
-        case UPGRADE_TASKS.reconvertDescriptions:
+        case UPGRADE_TASKS.reconvertDescriptions: {
           if (!deps.reconvertDescriptions) {
             throw new Error("No description re-conversion is registered");
           }
-          await deps.reconvertDescriptions();
+          const stopAt = Date.now() + reconvertSliceMs(job.expireInSeconds);
+          const stop = () => job.signal.aborted || Date.now() >= stopAt;
+          if ((await deps.reconvertDescriptions(stop)) === RECONVERT_PAUSED) {
+            // A send that fails fails this job, and pg-boss's retry goes on.
+            await boss.send(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions });
+          }
           return;
+        }
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
       }

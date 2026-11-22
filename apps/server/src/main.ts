@@ -398,7 +398,8 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
     // The description re-conversion on upgrade (#357): sent to the
-    // maintenance queue by startQueues while it has not finished.
+    // maintenance queue by startQueues while it has not finished, and run a
+    // slice per job (queues.ts RECONVERT_SLICE_SECONDS).
     const reconvert = createDescriptionReconvert({
       store: descriptionsRepo(db),
       readText: storeTextReader(store),
@@ -417,7 +418,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       onIngested,
       checkRenders: (now: Date) => derived.checkRenders(now),
       purgeSessions: (now: Date) => repos.sessions.deleteExpired(now),
-      reconvertDescriptions: () => reconvert.run(),
+      reconvertDescriptions: (stop: () => boolean) => reconvert.run(stop),
       reconvertPending: () => reconvert.pending(),
     } satisfies ServerQueueDeps);
     await startQueues(startedBoss, queueDeps);
