@@ -60,7 +60,7 @@ export function candidates(tags) {
 export function pickTarget(entries) {
   let best = null;
   for (const e of entries) {
-    if (!e || e.app !== true || e.slicer !== true || parseTag(e.tag) === null) continue;
+    if (e?.app !== true || e.slicer !== true || parseTag(e.tag) === null) continue;
     if (best === null || compareTags(e.tag, best) > 0) best = e.tag;
   }
   return best;
@@ -73,7 +73,10 @@ async function readStdin() {
 }
 
 async function main(mode) {
-  const lines = (await readStdin()).split("\n").map((l) => l.trim()).filter((l) => l !== "");
+  const lines = (await readStdin())
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
   if (mode === "candidates") {
     for (const t of candidates(lines)) process.stdout.write(`${t}\n`);
   } else if (mode === "pick") {
