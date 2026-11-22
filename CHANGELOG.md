@@ -10,6 +10,10 @@ All notable changes to Platehouse are recorded here. The format follows
 
 - Tags and collections can be deleted. The Tags page has a Delete beside each tag, and the Collections page beside each collection, as does a collection's own page. When models still use it, Delete first asks, saying how many; deleting takes it off every model that has it, models in the trash included, and changes nothing else about those models. A tag is also removed on its own when its last model loses it in the app: by Remove tag, by Select mode's Remove tag, or when that model is deleted for good from the trash. A model in the trash still has its tags, so a tag it has is kept until the model is restored or deleted for good. Collections are never removed on their own. The Tags and Collections pages now list a tag or collection no model uses, with 0 models, so it can be deleted; one only models in the trash use stays unlisted. Migration 0010 removes the tags no model has, left behind by 0.1.0, and keeps every collection. Deleting is only in the app: the public API still never deletes anything, and taking a tag off a model through the API leaves the tag in place ([#312](https://github.com/jonathanmcohen/platehouse/issues/312)).
 
+### Fixed
+
+- The docs now warn that restoring an older database dump, including the upgrade rollback, leaves everything stored since the dump in the bucket with no record in the database, and that the daily 04:00 cleanup deletes it once it is more than 24 hours old, within its limit of 10 objects or a tenth of what it finds, at most 100. Backups and upgrades says what to do: turn on bucket versioning before you need it, copy the bucket before a restore if versioning is off, and upload those files again after the restore. Platehouse has no setting to pause the cleanup. The Storage page's cleanup section carries the same caveat ([#342](https://github.com/jonathanmcohen/platehouse/issues/342), [#359](https://github.com/jonathanmcohen/platehouse/pull/359)).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
