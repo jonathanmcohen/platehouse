@@ -182,7 +182,8 @@
 // conversion is queued or running, then 'ok' or 'failed'; it stays null for
 // a .3mf and an STL, which have neither. preview_status (migration 0012,
 // issue #380) is the same for an STL's or STEP file's preview picture, and
-// null until one is queued; the two preview kinds write it and nothing else
+// null until one is queued. No job writes it: the preview kinds write only
+// the fact columns, and recomputePreview works preview_status out from them
 // (STATUS_OF), so derived_status, which the public API answers as
 // derivedStatus, keeps its 0.1.0 meaning: a STEP file whose mesh is stored
 // is 'ok' whatever becomes of its picture. A job that finishes while a newer

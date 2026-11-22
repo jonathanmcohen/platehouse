@@ -391,9 +391,9 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                   : null;
           const viewBlob = viewFrom === undefined ? null : stored(viewSource, viewFrom.kind);
           // A SCAD's rendered PNG, or an STL's or STEP's preview picture
-          // (issue #316), which is shown only while its own status is ok or
-          // pending (a picture being made again keeps the current one), never
-          // once it failed or before it was queued (issue #380).
+          // (issue #316), which is shown only while its own status is ok
+          // (isPictureShown): never while pending, once it failed, or before
+          // it was queued (issues #380 and #389).
           const pictureShown = hasPreviewPicture(f.kind)
             ? isPictureShown(f.previewStatus)
             : f.kind === "scad";
