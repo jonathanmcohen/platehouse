@@ -97,8 +97,8 @@ pnpm --filter @platehouse/docs serve
 ```
 
 The built site loads nothing from another site: no analytics, no external fonts or scripts, and
-search is a local index made at build time. CI builds it when `docs/`, `apps/docs` or the
-workspace files change.
+search is a local index made at build time. CI builds it when `docs/`, `apps/docs`,
+`apps/web/public` (the icons the site serves) or the workspace files change.
 
 The docs are published to GitHub Pages by `.github/workflows/docs-pages.yml` each time a docs
 change lands on `main`; the site's address is shown under Settings, Pages. Pages must first be

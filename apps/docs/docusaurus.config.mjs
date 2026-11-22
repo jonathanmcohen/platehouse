@@ -18,8 +18,10 @@
 //
 // A local or pull-request build sets neither and gets the placeholder
 // address at the root. A variable that is set must be usable: an empty or
-// malformed value fails the build rather than publish a site whose links
-// point at the placeholder.
+// malformed DOCS_SITE_URL, or a malformed DOCS_BASE_PATH, fails the build
+// rather than publish a site whose links point at the placeholder. An empty
+// DOCS_BASE_PATH means the site root, and must: configure-pages gives an
+// empty base path for a user site or a custom domain.
 import { themes } from "prism-react-renderer";
 
 const PLACEHOLDER_URL = "https://platehouse.example.com";

@@ -49,8 +49,9 @@ DOCS_SITE_URL=https://owner.github.io DOCS_BASE_PATH=/repo pnpm --filter @plateh
 DOCS_SITE_URL=https://owner.github.io DOCS_BASE_PATH=/repo pnpm --filter @platehouse/docs serve
 ```
 
-A variable that is set but empty or malformed fails the build, so a broken Pages setup cannot
-publish a site whose links point at the placeholder. A renamed repository or a custom domain set
+A `DOCS_SITE_URL` that is set but empty or malformed, or a malformed `DOCS_BASE_PATH`, fails the
+build, so a broken Pages setup cannot publish a site whose links point at the placeholder. An empty
+`DOCS_BASE_PATH` means the site root, as a user site or a custom domain needs. A renamed repository or a custom domain set
 in the Pages settings needs no change here.
 
 ## Icons and images
