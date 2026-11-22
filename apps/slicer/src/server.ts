@@ -2,11 +2,11 @@
 // 8080, inside the slicer container. It sits on the internal network only,
 // has no auth and holds no secrets (AC-035): the app sends it a file and gets
 // numbers, a render or a mesh back. Plain node:http, no web framework: the
-// surface is five routes, and the container opens untrusted files, so it
+// surface is seven routes, and the container opens untrusted files, so it
 // carries as little as it can.
 //
-// - One heavy job at a time: a slice, an OpenSCAD render or a STEP
-//   conversion. The container's 4g is sized from a single slice, so a
+// - One heavy job at a time: a slice, an OpenSCAD render (a .scad's, or an
+//   STL's preview picture) or a STEP conversion. The container's 4g is sized from a single slice, so a
 //   request for any of them while one runs is 409 busy, answered before its
 //   body is read and with the connection closed, so no socket waits. The
 //   close lingers (closeLingering, guard.ts): the server drains a body still
@@ -55,7 +55,14 @@ import { closeLingering, guardRequests, installCrashGuard, whenRequestFails } fr
 import { orcaArgs, SCRATCH_DIRS, scratchEnv, sliceOutcome } from "./orca.js";
 import { loadProfiles } from "./profiles.js";
 import { reapOrphans, runGroup, runsUnderTini } from "./sandbox.js";
-import { renderScad, type SandboxCheck, SCAD_INPUT, sandboxSelfTest } from "./scad.js";
+import {
+  renderScad,
+  type SandboxCheck,
+  SCAD_INPUT,
+  STL_INPUT,
+  sandboxSelfTest,
+  writeStlImport,
+} from "./scad.js";
 import { runStepWorker, STEP_INPUT } from "./step.js";
 
 export interface SlicerConfig {
@@ -679,6 +686,24 @@ export function createSlicer(config: SlicerConfig): Slicer {
           return send(res, 422, { error: "render_failed", message: r.message });
         });
       }
+      // An STL's preview picture (issue #316): the body is saved as
+      // input.stl, the server writes a .scad that imports it, and OpenSCAD
+      // renders the PNG exactly as for /v1/scad/png: the same sandbox
+      // self-test, landrun rules, prlimit limits and time cap.
+      case "POST /v1/stl/png":
+        return withBody(req, res, config.limits.stlBodyBytes, STL_INPUT, async (job) => {
+          const check = await sandboxReady(job);
+          if (!check.ok) {
+            return send(res, 422, {
+              error: "render_failed",
+              message: `OpenSCAD renders are off: the sandbox self-test failed (${check.detail}).`,
+            });
+          }
+          writeStlImport(job.dir);
+          const r = await renderScad(config, job.dir, "png", job.track);
+          if (r.ok) return sendBytes(res, "image/png", r.bytes);
+          return send(res, 422, { error: "render_failed", message: r.message });
+        });
       case "POST /v1/step/glb":
         return withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (job) => {
           const r = await runStepWorker(

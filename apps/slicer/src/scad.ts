@@ -57,6 +57,19 @@ export type RenderResult =
 /** The name the .scad takes inside its job folder. */
 export const SCAD_INPUT = "input.scad";
 
+/** The name an STL to preview takes inside its job folder (POST /v1/stl/png). */
+export const STL_INPUT = "input.stl";
+
+/**
+ * Writes the .scad an STL preview renders: one import of STL_INPUT, beside
+ * it in the same job folder (issue #316). The text is fixed, so nothing in
+ * the request body is ever read as OpenSCAD code; the STL is only ever data
+ * that import() reads, under the same sandbox as any render.
+ */
+export function writeStlImport(dir: string): void {
+  writeFileSync(join(dir, SCAD_INPUT), `import(${JSON.stringify(STL_INPUT)});\n`);
+}
+
 const MIB = 1024 * 1024;
 
 // The render output cap lives in sandbox.ts beside the prlimit limits it

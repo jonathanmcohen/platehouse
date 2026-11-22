@@ -757,8 +757,9 @@ const FILE = {
     derivedStatus: {
       ...nullableString,
       description:
-        "For .scad and STEP files, the preview render: pending, ok or failed. Null for " +
-        "other kinds.",
+        "For .scad, STEP and STL files, the render, mesh or preview picture: pending, ok or " +
+        "failed. Null for a .3mf, and for an STL stored before preview pictures existed " +
+        "until its preview is made.",
     },
     derivedMessage: {
       ...nullableString,

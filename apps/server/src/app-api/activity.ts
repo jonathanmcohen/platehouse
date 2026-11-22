@@ -159,8 +159,11 @@ export type ActivityEvent =
   | {
       type: "render_failed";
       at: string;
-      /** scad: an OpenSCAD render; step: a STEP conversion. */
-      kind: "scad" | "step";
+      /**
+       * scad: an OpenSCAD render; step: a STEP conversion; preview: an STL's
+       * preview picture, or a STEP file's made from its mesh (issue #316).
+       */
+      kind: "scad" | "step" | "preview";
       model: { id: string; name: string };
       file: { id: string; name: string };
       /** The renderer's message as the app stored it, scrubbed; null with none. */
@@ -225,6 +228,18 @@ export function scheduleText(cron: string): string {
   return cron;
 }
 
+/**
+ * What a failed render event is about: an STL's failure is always its
+ * preview picture, and a STEP file's is its preview when the message starts
+ * with the preview sentence (its mesh was made), else its conversion.
+ */
+function renderKind(kind: string, codes: readonly string[]): "scad" | "step" | "preview" {
+  if (kind === "scad") return "scad";
+  if (kind === "stl") return "preview";
+  const first = codes[0];
+  return first === "previewFailed" || first === "previewRejected" ? "preview" : "step";
+}
+
 export const ROW_LABELS: Readonly<Record<QueueRowId, string>> = {
   ingest: "Ingest (new files)",
   estimates: "Estimates (slicing)",
@@ -239,6 +254,9 @@ const SLICER_KIND_ROWS: Readonly<Record<string, QueueRowId>> = {
   slice: "estimates",
   "render-scad": "renders",
   "convert-step": "step",
+  // Preview pictures (issue #316) are OpenSCAD renders as well.
+  "render-stl": "renders",
+  "preview-step": "renders",
 };
 
 /** pg-boss's live counts as the page's rows; "other" only when a slicer job of an unknown kind is live. */
@@ -380,6 +398,7 @@ export const SCHEDULE_LABELS: Readonly<Record<string, string>> = {
   [MAINTENANCE_TASKS.sweepUploads]: "Sweep of unfinished uploads",
   [MAINTENANCE_TASKS.pollOrca]: "Slicer version check",
   [MAINTENANCE_TASKS.checkRenders]: "Render check",
+  [MAINTENANCE_TASKS.backfillPreviews]: "Preview pictures for older STL and STEP files",
 };
 
 const SCHEDULE_ORDER: readonly string[] = [
@@ -388,6 +407,7 @@ const SCHEDULE_ORDER: readonly string[] = [
   MAINTENANCE_TASKS.purgeSessions,
   MAINTENANCE_TASKS.sweepUploads,
   MAINTENANCE_TASKS.checkRenders,
+  MAINTENANCE_TASKS.backfillPreviews,
   MAINTENANCE_TASKS.pollOrca,
 ];
 
@@ -509,16 +529,20 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         detail: scrubDetail(e.failureDetail),
       }));
       const renderEvents: ActivityEvent[] = derived
-        .filter((d) => d.kind === "scad" || d.kind === "step")
-        .map((d) => ({
-          type: "render_failed",
-          at: d.at.toISOString(),
-          kind: d.kind === "scad" ? "scad" : "step",
-          model: { id: d.modelId, name: d.modelName },
-          file: { id: d.fileId, name: d.fileName },
-          message: scrubDerivedMessage(d.message),
-          ...renderParts(scrubDerivedMessage(d.message)),
-        }));
+        .filter((d) => d.kind === "scad" || d.kind === "step" || d.kind === "stl")
+        .map((d) => {
+          const message = scrubDerivedMessage(d.message);
+          const parts = renderParts(message);
+          return {
+            type: "render_failed",
+            at: d.at.toISOString(),
+            kind: renderKind(d.kind, parts.messageCodes),
+            model: { id: d.modelId, name: d.modelName },
+            file: { id: d.fileId, name: d.fileName },
+            message,
+            ...parts,
+          };
+        });
 
       const working =
         progress.pending + progress.running > 0 || rows.some((r) => r.waiting + r.active > 0);

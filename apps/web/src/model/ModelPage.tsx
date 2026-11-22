@@ -12,8 +12,8 @@
 //   loads three.js only then. View in the Files tab moves the viewer to
 //   another file.
 // - Everything comes from one request, GET /app/api/models/:id. While any
-//   plate is estimating (isEstimating) or any STEP or SCAD file is still
-//   having its mesh or render made (isDeriving, derivedStatus 'pending'),
+//   plate is estimating (isEstimating) or any STEP, SCAD or STL file is still
+//   having its mesh, render or preview made (isDeriving, derivedStatus 'pending'),
 //   the page asks again every POLL_MS (5 s), on one timer for both
 //   (needsPolling). So a render that lands after an upload shows in the
 //   viewer, with View in the Files tab, without a reload, and a render that
@@ -220,9 +220,10 @@ export function isEstimating(plate: Pick<ModelPlate, "numbers" | "estimatePendin
 }
 
 /**
- * Whether a STEP's mesh or a SCAD's render is still being made: its
- * derivedStatus is 'pending' while the job is queued or running, then 'ok'
- * or 'failed' (null for a .3mf or an STL, which have nothing derived).
+ * Whether a STEP's mesh, a SCAD's render or an STL's or STEP's preview
+ * picture is still being made: its derivedStatus is 'pending' while the job
+ * is queued or running, then 'ok' or 'failed' (null for a .3mf, which has
+ * nothing derived, and for an STL whose preview is not queued yet).
  */
 export function isDeriving(file: ModelFile): boolean {
   return file.derivedStatus === "pending";

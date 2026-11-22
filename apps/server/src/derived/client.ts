@@ -1,11 +1,13 @@
 // The app's side of the slicer's render routes (Slicer HTTP contract v1):
-// POST /v1/scad/stl, /v1/scad/png and /v1/step/glb. One request per call and
+// POST /v1/scad/stl, /v1/scad/png, /v1/step/glb and, for STL and STEP
+// preview pictures (issue #316), /v1/stl/png. One request per call and
 // no retry here: what went wrong is reported as one of the errors below, and
 // the job decides (derived.ts). A 409 busy or a lost connection is
 // retryable, and pg-boss retries the job under its own settings
 // (SLICER_RETRY); a 422 is the program's own answer and final. A slicer
-// that takes no connection, or answers that OpenSCAD renders are off
-// because its sandbox self-test failed, is SlicerDown: not the file's
+// that takes no connection, answers that OpenSCAD renders are off because
+// its sandbox self-test failed, or answers 404 because its image is older
+// than this app and lacks the route, is SlicerDown: not the file's
 // doing, so the job waits for the slicer without using a retry, for up to
 // 2 hours (SLICER_DOWN_LIMIT_MS in derived.ts). A streamed body that fails
 // partway (the store went away while a STEP file was read from it) rejects
@@ -30,6 +32,9 @@ export const PREVIOUS_RENDERS_SENTENCE = {
   scad: "OpenSCAD rejected the current version of this file, so the STL and preview shown are from an earlier version.",
   step: "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version.",
 } as const;
+
+/** The sentence that starts every failed preview picture's message (issue #316). */
+const PREVIEW_FAILED = "The preview picture could not be rendered.";
 
 /**
  * What files.derived_message holds when the slicer or the store, not
@@ -83,10 +88,11 @@ export const DERIVED_MESSAGES = {
   /**
    * An STL's or a STEP mesh's preview picture could not be made (issue
    * #316), followed by why: the mesh could not be read, or was too large.
+   * A STEP file keeps its mesh and 3D view.
    */
-  previewFailed: "The preview picture could not be rendered.",
+  previewFailed: PREVIEW_FAILED,
   /** The same, before OpenSCAD's own message when it rejects the STL. */
-  previewRejected: "The preview picture could not be rendered. OpenSCAD said:",
+  previewRejected: `${PREVIEW_FAILED} OpenSCAD said:`,
   /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
@@ -378,6 +384,15 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
       return bytes;
     case 409:
       throw new SlicerBusy(req.route);
+    // A slicer image older than this app has no such route (/v1/stl/png is
+    // new in contract 1 with issue #316) and answers 404 not_found. That says
+    // nothing about the file, so the job waits for the slicer as for one
+    // that is down, until the image is updated or the wait runs out.
+    case 404:
+      throw new SlicerDown(
+        req.route,
+        "the slicer has no such route; its image is older than this app",
+      );
     case 413:
       throw new RenderFailed(req.tooLarge);
     case 422: {

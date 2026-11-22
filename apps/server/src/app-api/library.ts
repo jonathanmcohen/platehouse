@@ -21,8 +21,10 @@
 //   its cursor; trashed models never appear.
 // - A card is read from the database alone. Its image is plate 1's thumbnail
 //   blob of the model's first .3mf, named as /blobs/<id> (Task 17's route),
-//   and only a stored blob of kind thumbnail is ever named, so rendering the
-//   library never fetches a model file (AC-073). This module is given no
+//   or, for a model whose first file is an STL or STEP file, that file's
+//   rendered preview picture (issue #316). Only a stored blob of kind
+//   thumbnail or render_png of the same model is ever named, so rendering
+//   the library never fetches a model file (AC-073). This module is given no
 //   store at all.
 // - printer= is the header's printer switch: one of My printers, whose
 //   numbers the cards show instead of the default printer's. Anything else
@@ -41,8 +43,9 @@
 //   names by its id and the file by its BBL model id; a card without totals
 //   then says numbersUnavailable, not partial, since nothing is known to be
 //   missing. Current Platehouse estimates still count then. A model
-//   with no plates (STL, STEP, SCAD) has neither; its card shows the
-//   file-type icon for fileKind.
+//   with no plates (STL, STEP, SCAD) has neither; its card shows its
+//   preview picture when it has one (STL and STEP), else the file-type
+//   icon for fileKind.
 // - The display context (the settings row and the printer menu) is read once
 //   per page by readDisplayContext and shared by every plate's lookup. The
 //   menu is the estimates service's listPrinters, which asks the slicer's
@@ -335,7 +338,11 @@ export interface LibraryCard {
   tags: string[];
   /** Plates across the model's .3mf files. */
   plateCount: number;
-  /** /blobs/<id> of plate 1's thumbnail in the model's first .3mf; null when there is none. */
+  /**
+   * /blobs/<id> of plate 1's thumbnail in the model's first .3mf, or of the
+   * preview picture of a model whose first file is an STL or STEP file;
+   * null when there is none.
+   */
   thumbnail: string | null;
   /** The kind of the file the card stands for, for the file-type icon; null for a model with no files. */
   fileKind: FileKind | null;
@@ -559,12 +566,21 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
     const ids = models.map((m) => m.id);
     if (ids.length === 0) return [];
     const [files, plates, tagRows] = await Promise.all([
+      // Each file with its preview picture (issue #316) only when that is a
+      // stored render_png blob of the same model: never a source blob.
       db
         .selectFrom("files")
-        .select(["id", "modelId", "kind"])
-        .where("modelId", "in", ids)
-        .orderBy("createdAt")
-        .orderBy("id")
+        .leftJoin("blobs as preview", (join) =>
+          join
+            .onRef("preview.id", "=", "files.renderPngBlobId")
+            .onRef("preview.modelId", "=", "files.modelId")
+            .on("preview.kind", "=", "render_png")
+            .on("preview.state", "=", "stored"),
+        )
+        .select(["files.id", "files.modelId", "files.kind", "preview.id as previewId"])
+        .where("files.modelId", "in", ids)
+        .orderBy("files.createdAt")
+        .orderBy("files.id")
         .execute(),
       // Every plate of the page's models, with its thumbnail only when that is
       // a stored thumbnail blob of the same model: never a source blob.
@@ -613,7 +629,16 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       const first3mf = own.find((f) => f.kind === "3mf");
       const ownPlates = plates.filter((p) => p.modelId === model.id);
       const plate1 = ownPlates.find((p) => p.fileId === first3mf?.id && p.index === 1);
-      const thumbnail = plate1?.thumbnailId ?? null;
+      // The card stands for its first .3mf, else its first file. A .3mf
+      // shows plate 1's thumbnail; an STL or STEP file its preview picture
+      // (issue #316); a SCAD keeps the icon (Task 19's choice).
+      const shown = first3mf ?? own[0];
+      const thumbnail =
+        first3mf !== undefined
+          ? (plate1?.thumbnailId ?? null)
+          : shown !== undefined && (shown.kind === "stl" || shown.kind === "step")
+            ? shown.previewId
+            : null;
       let timeSeconds: number | null = 0;
       let weightGrams: number | null = 0;
       for (const plate of ownPlates) {
@@ -636,7 +661,7 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
         tags: tagRows.filter((t) => t.modelId === model.id).map((t) => t.name),
         plateCount: ownPlates.length,
         thumbnail: thumbnail === null ? null : `${BLOB_PREFIX}${thumbnail}`,
-        fileKind: (first3mf ?? own[0])?.kind ?? null,
+        fileKind: shown?.kind ?? null,
         timeSeconds: known ? timeSeconds : null,
         weightGrams: known ? weightGrams : null,
         partial: unmatched && !noMenu,

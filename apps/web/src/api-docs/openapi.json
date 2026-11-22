@@ -1115,7 +1115,7 @@
                           "derivedStatus": {
                             "type": "string",
                             "nullable": true,
-                            "description": "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds."
+                            "description": "For .scad, STEP and STL files, the render, mesh or preview picture: pending, ok or failed. Null for a .3mf, and for an STL stored before preview pictures existed until its preview is made."
                           },
                           "derivedMessage": {
                             "type": "string",
@@ -1774,7 +1774,7 @@
                     "derivedStatus": {
                       "type": "string",
                       "nullable": true,
-                      "description": "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds."
+                      "description": "For .scad, STEP and STL files, the render, mesh or preview picture: pending, ok or failed. Null for a .3mf, and for an STL stored before preview pictures existed until its preview is made."
                     },
                     "derivedMessage": {
                       "type": "string",

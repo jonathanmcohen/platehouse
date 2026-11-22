@@ -9,7 +9,8 @@
 //   data, and the only images it shows are /blobs/<id> thumbnails the API
 //   named. Nothing points at /files/.
 // - card shows time and weight only when every plate is known, and says
-//   partial otherwise; an STL or STEP card shows a file-type icon.
+//   partial otherwise; an STL or STEP card shows its preview picture when
+//   the API names one (issue #316), else a file-type icon.
 // - upload dialog shows progress per file and honours combine: the switch
 //   is off by default; off, each file is its own new model; on, every file
 //   carries one batch id with combine. The tus options use 5 MiB chunks,

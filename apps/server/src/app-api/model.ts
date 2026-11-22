@@ -37,7 +37,8 @@
 //   (Task 17's route), and only a stored blob of this model and of the
 //   kind its place calls for is ever named: a plate's thumbnail (thumbnail),
 //   an STL's own bytes (source), a STEP's mesh (mesh_glb), a SCAD's
-//   rendered STL (render_stl) and preview (render_png). Anything else is
+//   rendered STL (render_stl), and the preview picture (render_png) of a
+//   SCAD, an STL or a STEP file (issue #316). Anything else is
 //   null, so the page shows no image rather than another file's bytes. A
 //   .3mf has no 3D view (AC-051).
 // - Each plate's numbers are Task 12's plateNumbers, with the display
@@ -140,7 +141,7 @@ export interface ModelFileView {
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
   view: { kind: "stl" | "glb"; url: string } | null;
-  /** A SCAD file's rendered preview image; null otherwise. */
+  /** A SCAD, STL or STEP file's rendered preview image (issue #316 for STL and STEP); null otherwise. */
   preview: string | null;
   /** The project filament list of a .3mf (file_filaments). */
   filaments: Array<{ slot: number; type: string; color: string | null }>;
@@ -373,7 +374,8 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                   ? f.renderStlBlobId
                   : null;
           const viewBlob = viewFrom === undefined ? null : stored(viewSource, viewFrom.kind);
-          const previewBlob = f.kind === "scad" ? stored(f.renderPngBlobId, "render_png") : null;
+          // A SCAD's rendered PNG, or an STL's or STEP's preview picture (issue #316).
+          const previewBlob = f.kind === "3mf" ? null : stored(f.renderPngBlobId, "render_png");
           return {
             id: f.id,
             name: f.name,

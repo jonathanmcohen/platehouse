@@ -1,11 +1,12 @@
 // The Files tab (build plan Task 20): every file of the model with its type
 // and size, View (shows it in the viewer on the left), Download (Task 17's
 // /files/:id/download), and, for a .3mf, Open in Bambu Studio and Open in
-// OrcaSlicer (AC-040). A SCAD file shows its rendered preview image. A STEP
-// or SCAD file whose mesh or render is still being made says so, and one
-// that failed says it could not be rendered, with the server's reason
-// (OpenSCAD's own message for a SCAD it rejects, AC-052). The page polls
-// while a render is pending, so View appears here when it lands.
+// OrcaSlicer (AC-040). A SCAD, STL or STEP file shows its rendered preview
+// image (issue #316 for STL and STEP). A STEP, SCAD or STL file whose mesh,
+// render or preview is still being made says so, and one that failed says
+// it could not be rendered, with the server's reason (OpenSCAD's own
+// message for a file it rejects, AC-052). The page polls while a render is
+// pending, so View and the preview appear here when they land.
 import type { ReactNode } from "react";
 import { ENGLISH_I18N, type Formatters, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { serverTextWith } from "../i18n/serverText";
@@ -25,7 +26,7 @@ export function formatSize(bytes: number, fmt: Formatters = ENGLISH_I18N.fmt): s
   return fmt.size(bytes);
 }
 
-/** What a STEP or SCAD file says about its mesh or render, by derived status. */
+/** What a STEP, SCAD or STL file says about its mesh, render or preview, by derived status. */
 export function derivedStatusWords(
   file: Pick<ModelFile, "derivedStatus">,
   i18n: Pick<I18n, "t"> = ENGLISH_I18N,
