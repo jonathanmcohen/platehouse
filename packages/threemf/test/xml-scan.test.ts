@@ -132,7 +132,7 @@ describe("attrs", () => {
   it("reads what the old attribute regex read, on every shape of short tag", () => {
     // Seeded, so a failing tag can be found again; no entities, which the
     // regex left to decodeEntities just as attrs() does.
-    const alphabet = ["a", "b", ":", "=", '"', "'", " ", "\t", "\n", "/", " ", "x="];
+    const alphabet = ["a", "b", ":", "=", '"', "'", " ", "\t", "\n", "/", "\u00a0", "x="];
     let seed = 12345;
     const next = (n: number) => {
       seed = (seed * 1103515245 + 12345) >>> 0;
