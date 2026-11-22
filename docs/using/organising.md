@@ -3,6 +3,8 @@
 ## Search
 
 The search box in the top bar searches model names, captions, creators and tags, best match first.
+A search always looks through the whole library: typing one while a tag filter is on turns the tag
+filter off. A creator or collection filter opened from **Show in the library** stays on.
 
 ## Tags
 

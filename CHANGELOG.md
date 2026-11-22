@@ -4,6 +4,14 @@ All notable changes to Platehouse are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Library and Select mode polish from the 0.1.0-rc.3 live check ([#361](https://github.com/jonathanmcohen/platehouse/pull/361), issue [#317](https://github.com/jonathanmcohen/platehouse/issues/317)). Select mode's toolbar notes (how many selected models left the selection, the last action's result, and the Select all matching note) now go once you change the search, a filter, the sort, the printer or the page, instead of lingering over a view they no longer describe. A tag filter whose tag no model has any more, or one set when the library has no tags at all, keeps its chip and **All**, and when nothing matches a search or filter the library offers **Show all models** (new text in English, Spanish and French). "Select all 0 matching" is greyed out and does nothing. The docs now say that typing a search while a tag filter is on turns the tag filter off on purpose.
+- Settings' "about how long" for adding a printer, and each printer's time left during a re-estimate, now use the slicer's real speed, measured from its 50 most recent successful slices (the middle gap between finishes, so idle time between runs does not count), instead of a fixed 3 plates a minute that made every time about 2.6 to 3 times too long. Until 10 plates have been sliced the page assumes 6 plates a minute. No schema change.
+- The app image now carries the standard OCI labels (version, revision, source, created, title, description, url and licenses) on each platform's image, and the same keys as annotations on the multi-arch index, so a running container says which version and commit it was built from. The release workflow checks the labels on the tested image before pushing, and reads the labels of both pushed images and the index annotations back from the registry before it finishes (docker/check-image-labels.sh).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
