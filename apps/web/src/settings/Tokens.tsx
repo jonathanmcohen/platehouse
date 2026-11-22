@@ -11,8 +11,9 @@
 // focus goes to the next row's Revoke, else the previous row's, else the
 // Create token button (useRowFocus in ./focus).
 //
-// Issue #322: each row says who made the token (the name, else the OIDC
-// subject, of the session that made it), or that its maker is unknown for a
+// Issue #322: each row says who made the token (the name with the OIDC
+// subject beside it, else the subject alone, of the session that made it;
+// userLabel in ./SignOutEverywhere), or that its maker is unknown for a
 // token made before Platehouse recorded that. A new token needs a recent
 // sign-in; when the server refuses one with sign_in_required, the page says
 // so with a Sign in again link to the login, which comes back here. Sign out
@@ -24,7 +25,7 @@ import { useI18n } from "../i18n/I18n";
 import { AppApiError, appApi, segment, useAppApi, useErrorText } from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
 import { useRowFocus } from "./focus";
-import { SignOutEverywhere } from "./SignOutEverywhere";
+import { SignOutEverywhere, userLabel } from "./SignOutEverywhere";
 
 /** Who made a token: the OIDC subject and the display name the session had then. */
 export interface TokenCreator {
@@ -265,7 +266,7 @@ export function Tokens() {
                 <span className="studio-muted" data-token-maker>
                   {item.createdBy === null
                     ? t("tokens.madeByUnknown")
-                    : t("tokens.madeBy", { name: item.createdBy.name ?? item.createdBy.subject })}
+                    : t("tokens.madeBy", { name: userLabel(t, item.createdBy) })}
                 </span>
               </li>
             ))}

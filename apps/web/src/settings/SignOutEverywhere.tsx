@@ -15,8 +15,13 @@
 // everywhere ends this session too, so the page says so and offers a Sign in
 // link instead of reading the list again. Focus goes to the section heading
 // after the dialog closes, since the row's own button may be gone.
+//
+// A person is always named with their OIDC subject beside their name, in the
+// row, the button label, the confirmation and the status line (PR #364
+// review): display names come from the issuer and need not be unique, and
+// signing out the wrong person, or revoking their tokens, cannot be undone.
 import { useId, useRef, useState } from "react";
-import { useI18n } from "../i18n/I18n";
+import { type I18n, useI18n } from "../i18n/I18n";
 import { appApi, useAppApi } from "./api";
 import { ConfirmDialog } from "./Dialog";
 
@@ -35,9 +40,15 @@ interface SignOutAnswer {
   tokensRevoked: number;
 }
 
-/** How a user is named on the page: their name, else their OIDC subject. */
-function labelOf(user: KnownUser): string {
-  return user.name ?? user.subject;
+/**
+ * How a person is named in Settings: their name with their OIDC subject
+ * beside it, so two people with the same name can be told apart, else the
+ * subject alone. The token list's "Made by" line uses it too.
+ */
+export function userLabel(t: I18n["t"], user: { subject: string; name: string | null }): string {
+  return user.name === null
+    ? user.subject
+    : t("settings.userWithId", { name: user.name, subject: user.subject });
 }
 
 export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void }) {
@@ -51,7 +62,8 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
   const users = list.data?.users ?? [];
 
   function shown(user: KnownUser): string {
-    return user.you ? t("signOut.you", { name: labelOf(user) }) : labelOf(user);
+    const label = userLabel(t, user);
+    return user.you ? t("signOut.you", { name: label }) : label;
   }
 
   async function signOut(user: KnownUser) {
@@ -65,7 +77,7 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
       return;
     }
     const values = {
-      name: labelOf(user),
+      name: userLabel(t, user),
       sessions: answer.sessionsEnded,
       tokens: answer.tokensRevoked,
     };

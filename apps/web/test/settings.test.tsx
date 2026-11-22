@@ -1299,7 +1299,11 @@ describe("the settings page", () => {
     const row = (name: string) =>
       [...document.querySelectorAll("li")].find((li) => li.textContent?.includes(name));
     expect(row("Office desktop")?.textContent).toContain("Made by an unknown user");
-    expect(row("Named maker")?.textContent).toContain("Made by Synthetic Maker");
+    // A named maker is shown with their user id too, so two people with the
+    // same name can be told apart (PR #364 review).
+    expect(row("Named maker")?.textContent).toContain(
+      "Made by Synthetic Maker (user id subject-5)",
+    );
     expect(row("Nameless maker")?.textContent).toContain("Made by subject-6");
   });
 
@@ -1334,16 +1338,16 @@ describe("the settings page", () => {
     });
     await show("/settings", <SettingsPage />);
     expect(text()).toContain("Sign out everywhere");
-    expect(text()).toContain("Synthetic Gone");
-    expect(text()).toContain("Synthetic Me (you)");
+    expect(text()).toContain("Synthetic Gone (user id subject-gone)");
+    expect(text()).toContain("Synthetic Me (user id subject-me) (you)");
 
-    await click(button("Sign out Synthetic Gone everywhere"));
+    await click(button("Sign out Synthetic Gone (user id subject-gone) everywhere"));
     const ask = dialog();
-    expect(ask?.textContent).toContain("Synthetic Gone");
+    expect(ask?.textContent).toContain("Synthetic Gone (user id subject-gone)");
     await click(button("Cancel", ask as HTMLElement));
     expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(0);
 
-    await click(button("Sign out Synthetic Gone everywhere"));
+    await click(button("Sign out Synthetic Gone (user id subject-gone) everywhere"));
     const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(box?.checked).toBe(false);
     await click(button("Sign out everywhere", dialog() as HTMLElement));
@@ -1352,7 +1356,7 @@ describe("the settings page", () => {
       revokeTokens: false,
     });
     expect(dialog()).toBeNull();
-    expect(signOutStatus()).toContain("Ended 2 sessions for Synthetic Gone");
+    expect(signOutStatus()).toContain("Ended 2 sessions for Synthetic Gone (user id subject-gone)");
     // Its token was left alone.
     expect(text()).toContain("Gone's script");
   });
@@ -1374,7 +1378,7 @@ describe("the settings page", () => {
       createdBy: { subject: "subject-gone", name: "Synthetic Gone" },
     });
     await show("/settings", <SettingsPage />);
-    await click(button("Sign out Synthetic Gone everywhere"));
+    await click(button("Sign out Synthetic Gone (user id subject-gone) everywhere"));
     const box = (dialog() as HTMLElement).querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(box).not.toBeNull();
     await click(box as HTMLInputElement);
@@ -1388,9 +1392,40 @@ describe("the settings page", () => {
     expect(text()).not.toContain("Gone's script");
   });
 
+  test("Sign out everywhere tells apart two people with the same name by their user id", async () => {
+    state.users.push(
+      { subject: "subject-twin-a", name: "Synthetic Twin", sessions: 1, tokens: 1, you: false },
+      { subject: "subject-twin-b", name: "Synthetic Twin", sessions: 1, tokens: 0, you: false },
+    );
+    await show("/settings", <SettingsPage />);
+    expect(text()).toContain("Synthetic Twin (user id subject-twin-a)");
+    expect(text()).toContain("Synthetic Twin (user id subject-twin-b)");
+
+    await click(button("Sign out Synthetic Twin (user id subject-twin-b) everywhere"));
+    expect(dialog()?.textContent).toContain("Synthetic Twin (user id subject-twin-b)");
+    expect(dialog()?.textContent).not.toContain("subject-twin-a");
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
+      subject: "subject-twin-b",
+      revokeTokens: false,
+    });
+  });
+
+  test("Sign out everywhere names a person with no name by their user id alone", async () => {
+    state.users.push({
+      subject: "subject-nameless",
+      name: null,
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    expect(() => button("Sign out subject-nameless everywhere")).not.toThrow();
+  });
+
   test("signing yourself out everywhere says so and offers to sign in again", async () => {
     await show("/settings", <SettingsPage />);
-    await click(button("Sign out Synthetic Me (you) everywhere"));
+    await click(button("Sign out Synthetic Me (user id subject-me) (you) everywhere"));
     await click(button("Sign out everywhere", dialog() as HTMLElement));
     expect(callsTo("POST", "/app/api/users/sign-out")[0]?.body).toEqual({
       subject: "subject-me",
