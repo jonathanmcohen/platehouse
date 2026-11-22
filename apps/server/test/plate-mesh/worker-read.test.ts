@@ -3,6 +3,9 @@
 // The worker has a heap limit and a wall-clock timeout; past either, or if it
 // dies, the plate is too_large and the server goes on. Whatever the worker
 // sends back passes the validator on the main thread before it is used.
+// A timeout or a worker that dies without answering is PlateMeshBusy, a
+// too_large that may be the machine's fault, which the server does not keep
+// against the file for good; a heap limit or the reader's own verdict is not.
 import { writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +18,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { hostile, wideIndex } from "../../../../packages/threemf/test/support/hostile.js";
 import {
   PLATE_MESH_TIMEOUT_MS,
+  PlateMeshBusy,
   readPlateMeshInWorker,
   type WorkerReadOptions,
 } from "../../src/plate-mesh/worker-read.js";
@@ -39,10 +43,12 @@ beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "platehouse-worker-read-"));
 });
 
+/** The read's problem, with " (busy)" after it when it is PlateMeshBusy; "mesh" when it read. */
 async function verdict(run: Promise<unknown>): Promise<string> {
   try {
     await run;
   } catch (err) {
+    if (err instanceof PlateMeshBusy) return `${err.problem} (busy)`;
     if (err instanceof PlateMeshError) return err.problem;
     throw err;
   }
@@ -87,7 +93,7 @@ describe("readPlateMeshInWorker", () => {
     expect(gaps.length).toBeGreaterThan(took / 50);
   });
 
-  test("terminates a worker past its timeout, and the plate is too_large", async () => {
+  test("terminates a worker past its timeout, and the plate is too_large, as PlateMeshBusy", async () => {
     const path = file("slow.3mf", hostile("hugeMesh", 7).bytes);
     let gone: Promise<number> | undefined;
     let reading = 0;
@@ -102,7 +108,7 @@ describe("readPlateMeshInWorker", () => {
         },
       }),
     );
-    expect(answer).toBe("too_large");
+    expect(answer).toBe("too_large (busy)");
     expect(performance.now() - started).toBeLessThan(3_000);
     // The worker itself was stopped, not left to finish in the background:
     // a terminated worker exits with 1, one that ran to its end with 0.
@@ -111,7 +117,7 @@ describe("readPlateMeshInWorker", () => {
     expect(reading).toBeGreaterThan(0);
   });
 
-  test("a worker past its heap limit is too_large, and the next read still works", async () => {
+  test("a worker past its heap limit is too_large, not PlateMeshBusy, and the next read still works", async () => {
     const path = file("heap.3mf", hostile("hugeMesh", 7).bytes);
     const answer = await verdict(
       readPlateMeshInWorker(path, 1, {
@@ -124,7 +130,7 @@ describe("readPlateMeshInWorker", () => {
     expect((await readPlateMeshInWorker(ok, 1, SOURCE)).instances).toHaveLength(1);
   });
 
-  test("a worker that dies without answering is too_large", async () => {
+  test("a worker that dies without answering is too_large, as PlateMeshBusy", async () => {
     const path = file("any.3mf", buildSliceable({ plates: 1, filaments: 1 }));
     const answer = await verdict(
       readPlateMeshInWorker(path, 1, {
@@ -132,7 +138,7 @@ describe("readPlateMeshInWorker", () => {
         url: new URL("./support/crash-worker.ts", import.meta.url),
       }),
     );
-    expect(answer).toBe("too_large");
+    expect(answer).toBe("too_large (busy)");
   });
 
   test("an answer from the worker that fails the validator is no_mesh", async () => {

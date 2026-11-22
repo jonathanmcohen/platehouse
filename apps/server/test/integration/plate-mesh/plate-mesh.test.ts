@@ -17,9 +17,11 @@ import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
 import {
   createPlateMeshes,
   PLATE_MESH_BUILDS,
+  PLATE_MESH_BUSY_RETRY_MS,
   PLATE_MESH_WAITING,
   type PlateMeshStore,
 } from "../../../src/plate-mesh/plate-mesh.js";
+import { PLATE_MESH_TIMEOUT_MS } from "../../../src/plate-mesh/worker-read.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import { build3mf, type IngestEnv, startIngestEnv, writeUpload } from "../support/ingest.js";
 import { trashDaysAgo } from "../support/library.js";
@@ -286,28 +288,71 @@ describe("GET /app/api/plates/:id/mesh", () => {
     }
   });
 
-  test("a read past the worker's timeout answers too_large, stores nothing and is remembered", async () => {
+  test("a read past the worker's timeout answers too_large, stores nothing, and is read again after PLATE_MESH_BUSY_RETRY_MS", async () => {
+    // The timeout measures how busy the machine was as much as the file: the
+    // plate is answered from memory for a while, then read again, and reads
+    // once the load is gone (here, once the read has its normal time). A
+    // file's own verdict stays remembered however long passes.
     const stored = await ingest("Too slow.3mf", buildSliceable({ plates: 1, filaments: 2 }));
     const [plate] = await platesOf(stored.fileId);
     if (plate === undefined) throw new Error("no plate");
+    const flat = await ingest("Pictures only too.3mf", build3mf({ plates: 1, nonce: "busy" }));
+    const [noMesh] = await platesOf(flat.fileId);
+    if (noMesh === undefined) throw new Error("no plate");
+    let clock = 1_000_000;
+    let reads = 0;
+    const worker = { ...WORKER, timeoutMs: 1 };
     const slow = Fastify();
     await registerPlateMeshApi(
       slow,
       createPlateMeshes({
         db: env.db,
-        store: env.store,
+        store: {
+          putBlob: (stream, opts) => env.store.putBlob(stream, opts),
+          deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+          getBlobStream: (key) => {
+            reads += 1;
+            return env.store.getBlobStream(key);
+          },
+        },
         tmpDir,
-        worker: { ...WORKER, timeoutMs: 1 },
+        worker,
+        now: () => clock,
       }),
     );
     await slow.ready();
+    const open = (id: string) => slow.inject({ method: "GET", url: `/app/api/plates/${id}/mesh` });
     try {
-      const first = await slow.inject({ method: "GET", url: `/app/api/plates/${plate.id}/mesh` });
+      const first = await open(plate.id);
       expect(first.statusCode).toBe(422);
       expect(first.json()).toMatchObject({ error: "no_mesh", code: "too_large" });
       expect((await platesOf(stored.fileId))[0]?.meshBlobId).toBeNull();
-      const again = await slow.inject({ method: "GET", url: `/app/api/plates/${plate.id}/mesh` });
+      expect(reads).toBe(1);
+
+      // Within PLATE_MESH_BUSY_RETRY_MS the answer comes from memory.
+      clock += PLATE_MESH_BUSY_RETRY_MS - 1;
+      const again = await open(plate.id);
       expect(again.json()).toMatchObject({ code: "too_large" });
+      expect(reads).toBe(1);
+
+      const verdict = await open(noMesh.id);
+      expect(verdict.json()).toMatchObject({ error: "no_mesh", code: "no_mesh" });
+      expect(reads).toBe(2);
+
+      // The load is gone and the time has passed: the plate is read again and made.
+      worker.timeoutMs = PLATE_MESH_TIMEOUT_MS;
+      clock += 1;
+      const made = await open(plate.id);
+      expect(made.statusCode).toBe(200);
+      expect(reads).toBe(3);
+      const meshBlobId = (await platesOf(stored.fileId))[0]?.meshBlobId;
+      expect(meshBlobId).not.toBeNull();
+      expect(made.json()).toEqual({ url: `/blobs/${meshBlobId}` });
+
+      // The file's own verdict is never read again.
+      clock += 100 * PLATE_MESH_BUSY_RETRY_MS;
+      expect((await open(noMesh.id)).json()).toMatchObject({ code: "no_mesh" });
+      expect(reads).toBe(3);
     } finally {
       await slow.close();
     }

@@ -7,10 +7,15 @@
 //   heap limit (PLATE_MESH_WORKER_LIMITS) and a wall-clock timeout
 //   (PLATE_MESH_TIMEOUT_MS). Past the timeout the main thread terminates it
 //   and the plate is too_large: a file that cannot be read in that time is
-//   treated like one too big to show, and the server remembers the verdict
-//   like any other. A worker that runs out of heap, or dies without
-//   answering, is too_large the same way. None of it can stop the server: a
-//   worker's failure only ever ends that worker.
+//   treated like one too big to show. A worker that dies without answering
+//   is too_large the same way. Both come back as PlateMeshBusy, a too_large
+//   that measures how busy the machine was as much as the file (a large
+//   plate read while the slicer runs can pass the timeout and read in time
+//   later), so the server remembers it only for a short while
+//   (plate-mesh.ts, PLATE_MESH_BUSY_RETRY_MS). A worker that runs out of
+//   heap is a plain too_large: its heap limit is its own, whatever else the
+//   machine is doing. None of it can stop the server: a worker's failure
+//   only ever ends that worker.
 // - Whatever the worker sends back passes validatePlateMesh (packages/threemf)
 //   here, on the main thread, before it is used: a mesh that fails is the
 //   file's fault (no_mesh or too_large) and nothing is made from it.
@@ -32,6 +37,18 @@ import {
   ReadUnavailable,
   validatePlateMesh,
 } from "@platehouse/threemf";
+
+/**
+ * A too_large that may not be the file's fault: the read passed its timeout,
+ * or the worker stopped without answering. Either can come from a machine
+ * busy with other work, so it is not a lasting verdict on the file.
+ */
+export class PlateMeshBusy extends PlateMeshError {
+  constructor(detail: string) {
+    super("too_large", detail);
+    this.name = "PlateMeshBusy";
+  }
+}
 
 /** How long a plate's read may take before its worker is terminated: 60 seconds. */
 export const PLATE_MESH_TIMEOUT_MS = 60_000;
@@ -104,8 +121,9 @@ function answerOf(message: unknown): PlateMesh {
 
 /**
  * The plate's mesh, read in a worker thread and validated here; throws
- * PlateMeshError for a verdict on the file (too_large past the timeout or
- * the heap limit, or when the worker dies), ReadUnavailable when the file
+ * PlateMeshError for a verdict on the file (too_large past the heap limit),
+ * PlateMeshBusy, a too_large that may be the machine's, past the timeout or
+ * when the worker dies without answering, ReadUnavailable when the file
  * cannot be read right now, and Error for anything that is the server's
  * fault.
  */
@@ -134,9 +152,7 @@ export function readPlateMeshInWorker(
     const timer = setTimeout(
       () =>
         finish(() =>
-          reject(
-            new PlateMeshError("too_large", `reading the plate took longer than ${timeoutMs} ms`),
-          ),
+          reject(new PlateMeshBusy(`reading the plate took longer than ${timeoutMs} ms`)),
         ),
       timeoutMs,
     );
@@ -160,12 +176,7 @@ export function readPlateMeshInWorker(
     );
     worker.once("exit", (code: number) =>
       finish(() =>
-        reject(
-          new PlateMeshError(
-            "too_large",
-            `the plate mesh reader stopped (exit ${code}) without an answer`,
-          ),
-        ),
+        reject(new PlateMeshBusy(`the plate mesh reader stopped (exit ${code}) without an answer`)),
       ),
     );
   });

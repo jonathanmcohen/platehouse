@@ -24,7 +24,13 @@
 //    problem from memory, without reading the file again: the .3mf of a file
 //    never changes. The memory is this process's, holds at most
 //    REMEMBERED_PROBLEMS plates and is gone after a restart, so a later
-//    version that reads more files tries them again.
+//    version that reads more files tries them again. A too_large that came
+//    from the read's timeout, or from a worker that stopped without
+//    answering (PlateMeshBusy), may be the machine's fault rather than the
+//    file's, so it is remembered for PLATE_MESH_BUSY_RETRY_MS only: long
+//    enough that a file that never reads in time does not take a build for
+//    a minute on every open, short enough that a plate whose read was slow
+//    only because the server was busy is read again once the load is gone.
 // 3. Builds go through one queue (limit.ts, review finding #385). Opens of
 //    the same plate share one build. A process makes at most
 //    PLATE_MESH_BUILDS plates' meshes at once (each run holds a temp copy of
@@ -40,7 +46,7 @@
 //    recorded size, so a short read is never taken for a damaged file.
 //    The plate is read in a worker thread (worker-read.ts: a heap limit,
 //    a timeout past which the worker is terminated and the plate is
-//    too_large, the verdict remembered like any other), never on the main
+//    too_large, remembered for a short while as step 2 says), never on the main
 //    thread, and what the worker sends back passes validatePlateMesh before
 //    anything is made from it; encodePlateGlb makes the GLB as chunks
 //    that are views of the plate's mesh arrays, which are streamed to the
@@ -56,7 +62,8 @@
 //
 // A store that is down or refuses, or a temp folder that cannot be written,
 // throws (the route answers 503) and records nothing, so the next open tries
-// again. Only the reader's own verdict on the file is remembered.
+// again. Only the reader's own verdict on the file is remembered for good;
+// a too_large that may be the machine's (PlateMeshBusy) for a short while.
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -72,12 +79,19 @@ import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE, type PlateGlb } from "./glb.js";
 import { createBuildQueue } from "./limit.js";
-import { readPlateMeshInWorker, type WorkerReadOptions } from "./worker-read.js";
+import { PlateMeshBusy, readPlateMeshInWorker, type WorkerReadOptions } from "./worker-read.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
 
 /** How many plates' problems one process remembers; the oldest is forgotten first. */
 export const REMEMBERED_PROBLEMS = 1000;
+
+/**
+ * How long a too_large that may be the machine's (PlateMeshBusy: the read
+ * timed out, or its worker stopped without answering) is answered from
+ * memory before the plate is read again: 10 minutes.
+ */
+export const PLATE_MESH_BUSY_RETRY_MS = 10 * 60_000;
 
 /** How many plates' meshes one process makes at once; the rest wait their turn. */
 export const PLATE_MESH_BUILDS = 2;
@@ -92,6 +106,8 @@ export interface PlateMeshDeps {
   tmpDir: string;
   /** How the plate is read in its worker thread (worker-read.ts); the defaults when left out. */
   worker?: Partial<WorkerReadOptions>;
+  /** The time in milliseconds, for PLATE_MESH_BUSY_RETRY_MS; Date.now when left out (tests move it). */
+  now?: () => number;
 }
 
 interface PlateRow {
@@ -128,10 +144,12 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   const builds = createBuildQueue({ running: PLATE_MESH_BUILDS, waiting: PLATE_MESH_WAITING });
   /** For a caller with no signal of its own: one that never aborts. */
   const staying = new AbortController().signal;
-  const problems = new Map<string, PlateMeshProblem>();
+  const now = deps.now ?? Date.now;
+  /** Each plate's problem, and when it stops being answered from memory. */
+  const problems = new Map<string, { problem: PlateMeshProblem; until: number }>();
 
-  function remember(plateId: string, problem: PlateMeshProblem): void {
-    problems.set(plateId, problem);
+  function remember(plateId: string, problem: PlateMeshProblem, until: number): void {
+    problems.set(plateId, { problem, until });
     if (problems.size > REMEMBERED_PROBLEMS) {
       const oldest = problems.keys().next().value;
       if (oldest !== undefined) problems.delete(oldest);
@@ -286,7 +304,11 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
         glb = encodePlateGlb(await readPlateMeshInWorker(path, row.index, deps.worker));
       } catch (error) {
         if (error instanceof PlateMeshError) {
-          remember(row.id, error.problem);
+          remember(
+            row.id,
+            error.problem,
+            error instanceof PlateMeshBusy ? now() + PLATE_MESH_BUSY_RETRY_MS : Infinity,
+          );
           return { status: "no_mesh", problem: error.problem };
         }
         throw error;
@@ -304,7 +326,10 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
       if (row === undefined) return NOT_FOUND;
       if (row.meshId !== null) return { status: "ok", blobId: row.meshId };
       const known = problems.get(row.id);
-      if (known !== undefined) return { status: "no_mesh", problem: known };
+      if (known !== undefined) {
+        if (now() < known.until) return { status: "no_mesh", problem: known.problem };
+        problems.delete(row.id);
+      }
       return builds.run(
         row.id,
         async (): Promise<PlateMeshAnswer> => {
