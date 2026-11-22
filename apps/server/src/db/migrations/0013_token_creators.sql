@@ -1,9 +1,8 @@
 -- Platehouse schema 0013: who made each API token, the name each session
 -- signed in with, and one length limit for every stored OIDC subject
 -- (issues #322 and #378).
--- Hand-written; every statement is read in review, since generated DDL can
--- hide a destructive change. Never edit it once applied anywhere: a change is
--- a new file.
+-- Hand-written; every statement is read in review (lesson 14). Never edit it
+-- once applied anywhere: a change is a new file.
 --
 -- A user removed from the sign-in group (OIDC_GROUP) kept API access through
 -- tokens they had made, and nothing said which tokens those were. Each new

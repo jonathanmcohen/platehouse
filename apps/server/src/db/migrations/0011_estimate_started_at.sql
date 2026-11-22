@@ -1,8 +1,7 @@
 -- Platehouse schema 0011: when a slice began work, so the settings page can
 -- measure the slicer's real speed (issues #317 and #375).
--- Hand-written; every statement is read in review, since generated DDL can
--- hide a destructive change. Never edit it once applied anywhere: a change is
--- a new file.
+-- Hand-written; every statement is read in review (lesson 14). Never edit it
+-- once applied anywhere: a change is a new file.
 --
 -- started_at is set when a slice job marks its estimate running, and again
 -- after the job has waited out a slicer or storage outage, so for a finished

@@ -61,11 +61,10 @@ const ALLOWED: Record<string, { lastLine: (text: string) => number; why: string 
  * accepted, and that list is closed). So these keep their comments; any new
  * migration is checked like every other file.
  *
- * These are the nine that shipped in v0.1.0 (0001 to 0009), so every 0.1.0
- * server has applied them. Each still cites a numbered lesson, and 0001 the
- * plan too. 0010 onward shipped in no published image (the release workflow
- * publishes only from a version tag, and no tag holds them), so they were
- * reworded instead and are checked like every other file.
+ * 0001 to 0009 shipped in v0.1.0, so every 0.1.0 server has applied them.
+ * 0010 to 0015 shipped in no published image, but they are on the 0.1.1
+ * branch, and a server that ran a build of it has applied them, so they keep
+ * their bytes too. Each still cites a numbered lesson, and 0001 the plan too.
  */
 const APPLIED_MIGRATIONS = [
   "apps/server/src/db/migrations/0001_init.sql",
@@ -77,6 +76,12 @@ const APPLIED_MIGRATIONS = [
   "apps/server/src/db/migrations/0007_my_printers.sql",
   "apps/server/src/db/migrations/0008_library_sort.sql",
   "apps/server/src/db/migrations/0009_name_sort_prefix.sql",
+  "apps/server/src/db/migrations/0010_drop_unused_tags.sql",
+  "apps/server/src/db/migrations/0011_estimate_started_at.sql",
+  "apps/server/src/db/migrations/0012_file_preview_status.sql",
+  "apps/server/src/db/migrations/0013_token_creators.sql",
+  "apps/server/src/db/migrations/0014_description_source.sql",
+  "apps/server/src/db/migrations/0015_plate_mesh.sql",
 ];
 for (const file of APPLIED_MIGRATIONS) {
   ALLOWED[file] = {

@@ -1,7 +1,6 @@
 -- Platehouse schema 0012: the preview picture's own status (issues #316,
--- #380 and #389). Hand-written; every statement is read in review, since
--- generated DDL can hide a destructive change. Never edit it once applied
--- anywhere: a change is a new file.
+-- #380 and #389). Hand-written; every statement is read in review (lesson
+-- 14). Never edit it once applied anywhere: a change is a new file.
 --
 -- STL and STEP files get a rendered preview picture from 0.1.1. Its state is
 -- kept here, apart from derived_status and derived_message, so those keep
