@@ -352,6 +352,8 @@
   "model.details": "D\u00e9tails du mod\u00e8le",
   "model.files.download": "T\u00e9l\u00e9charger<hidden> {name}</hidden>",
   "model.files.kindSize": "{kind}, {size}",
+  "model.files.previewFailed": "Impossible de cr\u00e9er l'image d'aper\u00e7u.",
+  "model.files.previewPending": "L'image d'aper\u00e7u est encore en cours de cr\u00e9ation.",
   "model.files.renderFailed": "Impossible de faire le rendu de ce fichier.",
   "model.files.rendering": "Rendu en cours.",
   "model.files.view": "Voir<hidden> {name}</hidden>",

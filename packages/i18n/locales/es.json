@@ -352,6 +352,8 @@
   "model.details": "Detalles del modelo",
   "model.files.download": "Descargar<hidden> {name}</hidden>",
   "model.files.kindSize": "{kind}, {size}",
+  "model.files.previewFailed": "No se pudo generar la imagen de vista previa.",
+  "model.files.previewPending": "La imagen de vista previa a\u00fan se est\u00e1 generando.",
   "model.files.renderFailed": "No se pudo renderizar este archivo.",
   "model.files.rendering": "Se est\u00e1 renderizando.",
   "model.files.view": "Ver<hidden> {name}</hidden>",

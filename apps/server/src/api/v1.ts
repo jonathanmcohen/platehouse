@@ -40,6 +40,10 @@
 //   issue #260) as it is read, so no slicer temp path or address is
 //   answered; the whole stored message is kept, and a longer one keeps its
 //   end, where the program's error line is. The stored row is left as it is.
+//   previewMessage, why an STL's or STEP file's preview picture failed, is
+//   cleaned the same way. derivedStatus keeps its 0.1.0 meaning (a .scad's
+//   render, a STEP file's mesh; null for an STL): the picture is answered as
+//   previewStatus beside it (issue #380, the maintainer, 2026-11-22).
 // - A model's or a file's plate numbers are read as the library page reads
 //   them (app-api/library.ts): one display context per request
 //   (readDisplayContext, so the printer menu waits at most
@@ -139,6 +143,10 @@ export interface ApiFile {
   derivedStatus: string | null;
   /** The render or conversion message, cleaned by scrubDerivedMessage, its end kept (issue #260); null with none. */
   derivedMessage: string | null;
+  /** An STL's or STEP file's preview picture: null, pending, ok or failed (issue #380). */
+  previewStatus: string | null;
+  /** Why the picture failed, cleaned as derivedMessage is; null with none. */
+  previewMessage: string | null;
   createdAt: string;
   updatedAt: string;
   plates: ApiPlate[];
@@ -456,6 +464,8 @@ export function createApiLibrary(deps: {
       parseStatus: file.parseStatus,
       derivedStatus: file.derivedStatus,
       derivedMessage: scrubDerivedMessage(file.derivedMessage),
+      previewStatus: file.previewStatus,
+      previewMessage: scrubDerivedMessage(file.previewMessage),
       createdAt: iso(file.createdAt),
       updatedAt: iso(file.updatedAt),
       plates: plates.map((p) => ({
@@ -668,6 +678,8 @@ const EXAMPLE_FILE = {
   parseStatus: "ok",
   derivedStatus: null,
   derivedMessage: null,
+  previewStatus: null,
+  previewMessage: null,
   createdAt: "2026-11-01T10:00:00.000Z",
   updatedAt: "2026-11-01T10:00:00.000Z",
   plates: [
@@ -757,9 +769,8 @@ const FILE = {
     derivedStatus: {
       ...nullableString,
       description:
-        "For .scad, STEP and STL files, the render, mesh or preview picture: pending, ok or " +
-        "failed. Null for a .3mf, and for an STL stored before preview pictures existed " +
-        "until its preview is made.",
+        "For .scad and STEP files, the preview render: pending, ok or failed. Null for " +
+        "other kinds.",
     },
     derivedMessage: {
       ...nullableString,
@@ -767,6 +778,18 @@ const FILE = {
         "The render or conversion message, such as why it failed, cleaned of work paths, " +
         `addresses and tokens; at most ${DERIVED_MESSAGE_MAX_CHARS} characters, keeping the ` +
         "end of a longer one, where the error line is",
+    },
+    previewStatus: {
+      ...nullableString,
+      description:
+        "For STL and STEP files, the preview picture: pending, ok or failed. Null until one " +
+        "is queued, and for other kinds. It never changes derivedStatus.",
+    },
+    previewMessage: {
+      ...nullableString,
+      description:
+        "Why the preview picture failed, cleaned as derivedMessage is; at most " +
+        `${DERIVED_MESSAGE_MAX_CHARS} characters. Null with none`,
     },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
@@ -797,6 +820,8 @@ const FILE = {
     "parseStatus",
     "derivedStatus",
     "derivedMessage",
+    "previewStatus",
+    "previewMessage",
     "createdAt",
     "updatedAt",
     "plates",

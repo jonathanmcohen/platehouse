@@ -12,11 +12,12 @@
 //   derived blob like the others: replaceFile, the waits, the retries and
 //   the render check all apply to it as they do to a .scad.
 // - a STEP file's convert-step job, once its mesh is stored, queues a
-//   preview-step job in the same transaction (the file stays 'pending'
-//   until it is done). That job reads the stored GLB back and sends it as an
-//   STL, so the STEP file is never converted twice. A preview that fails
-//   leaves the mesh and the 3D view as they are and marks the file failed
-//   with the reason.
+//   preview-step job in the same transaction (preview_status stays
+//   'pending' until it is done, while derived_status says the mesh is ok).
+//   That job reads the stored GLB back and sends it as an STL, so the STEP
+//   file is never converted twice. A preview that fails leaves the mesh, its
+//   derived_status and the 3D view as they are, and marks the picture failed
+//   with the reason (issue #380).
 // - A preview picture is only ever of the file's current source. Unlike a
 //   .scad's STL and PNG, or a STEP file's mesh, it is not kept as "the
 //   previous version's" when a later render fails (issue #103's rule): the
@@ -45,8 +46,9 @@
 // error is the program's own answer: it is never retried, the source is
 // kept, and the program's message goes into files.derived_message exactly as
 // written (after a sentence saying the renders shown are the previous
-// version's, when they are; see replaceFile below). It is text, for the page
-// to show as text, never HTML.
+// version's, when they are; see replaceFile below), or into
+// files.preview_message for a preview picture (STATUS_OF). It is text, for
+// the page to show as text, never HTML.
 //
 // A slicer that cannot render right now uses no retry (SlicerDown): one
 // that takes no connection at all (stopped, restarting or being re-pulled,
@@ -161,12 +163,17 @@
 //   them, object first, then row, so a run that fails part way is finished
 //   by the next one.
 //
-// derived_status is 'pending' while a job is queued or running, then 'ok' or
-// 'failed'; it stays null for a .3mf, which has nothing derived (an .stl
-// stored before issue #316 also has null until the backfill queues it). A job
-// that finishes while a newer replacement of the file is still queued leaves
-// the file 'pending' (newerQueued), so the file never reads as done, or as
-// failed, before its last upload has rendered.
+// derived_status is 'pending' while a .scad's render or a STEP file's mesh
+// conversion is queued or running, then 'ok' or 'failed'; it stays null for
+// a .3mf and an STL, which have neither. preview_status (migration 0011,
+// issue #380) is the same for an STL's or STEP file's preview picture, and
+// null until one is queued; the two preview kinds write it and nothing else
+// (STATUS_OF), so derived_status, which the public API answers as
+// derivedStatus, keeps its 0.1.0 meaning: a STEP file whose mesh is stored
+// is 'ok' whatever becomes of its picture. A job that finishes while a newer
+// replacement of the file is still queued leaves its status 'pending'
+// (newerQueued), so the file never reads as done, or as failed, before its
+// last upload has rendered.
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -328,9 +335,11 @@ export const BACKFILL_BATCH = 10;
  * and a render that did not finish are left out on purpose: they are how a
  * file that crashes or hangs the slicer ends, and such a file is never
  * queued again (issue #90). A store refusal is left out as well, since a
- * missing or refused object does not pass on a retry. A preview's failure
- * message is always the sentence alone: the preview kinds keep no earlier
- * renders, so no sentence about earlier renders goes before it.
+ * missing or refused object does not pass on a retry. They are matched on
+ * files.preview_message, where a picture's failure is kept (issue #380),
+ * and a picture's failure message is always the sentence alone: the preview
+ * kinds keep no earlier renders, so no sentence about earlier renders goes
+ * before it.
  */
 const PREVIEW_RETRIED: readonly string[] = [
   DERIVED_MESSAGES.slicerDown,
@@ -458,6 +467,37 @@ const COLUMNS_OF_KIND: Readonly<Record<DerivedKind, readonly DerivedColumn[]>> =
  * card cannot say a picture is of an earlier version. Only these columns
  * can hold renders older than the file's source (rendersPredate).
  */
+/** A pair of file columns that hold a job's state: its status and its message. */
+interface StatusColumns {
+  status: "derivedStatus" | "previewStatus";
+  message: "derivedMessage" | "previewMessage";
+}
+
+const DERIVED_STATE: StatusColumns = { status: "derivedStatus", message: "derivedMessage" };
+const PREVIEW_STATE: StatusColumns = { status: "previewStatus", message: "previewMessage" };
+
+/**
+ * Where each job kind keeps its state (issue #380): a .scad's render and a
+ * STEP file's mesh in derived_status and derived_message, as in 0.1.0, and
+ * an STL's or STEP file's preview picture in preview_status and
+ * preview_message.
+ */
+const STATUS_OF: Readonly<Record<DerivedKind, StatusColumns>> = {
+  [DERIVED_KINDS.renderScad]: DERIVED_STATE,
+  [DERIVED_KINDS.convertStep]: DERIVED_STATE,
+  [DERIVED_KINDS.renderStl]: PREVIEW_STATE,
+  [DERIVED_KINDS.previewStep]: PREVIEW_STATE,
+};
+
+/** A set() for one pair of status columns. */
+function stateSet(
+  cols: StatusColumns,
+  status: DerivedStatus | null,
+  message: string | null,
+): Partial<Record<StatusColumns["status"] | StatusColumns["message"], string | null>> {
+  return { [cols.status]: status, [cols.message]: message };
+}
+
 const KEPT_ON_FAILURE: Readonly<Record<DerivedKind, readonly DerivedColumn[]>> = {
   [DERIVED_KINDS.renderScad]: ["renderStlBlobId", "renderPngBlobId"],
   [DERIVED_KINDS.convertStep]: ["meshBlobId"],
@@ -623,8 +663,11 @@ export function createDerived(deps: DerivedDeps) {
       await trx
         .updateTable("files")
         .set({
-          derivedStatus: "failed",
-          derivedMessage: await keepingPrevious(trx, row, jobKind, DERIVED_MESSAGES.queueFailed),
+          ...stateSet(
+            STATUS_OF[jobKind],
+            "failed",
+            await keepingPrevious(trx, row, jobKind, DERIVED_MESSAGES.queueFailed),
+          ),
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)
@@ -682,7 +725,10 @@ export function createDerived(deps: DerivedDeps) {
         const message = row === undefined ? null : await previousSentence(trx, row, job.kind);
         await trx
           .updateTable("files")
-          .set({ derivedStatus: "pending", derivedMessage: message, updatedAt: sql<Date>`now()` })
+          .set({
+            ...stateSet(STATUS_OF[job.kind], "pending", message),
+            updatedAt: sql<Date>`now()`,
+          })
           .where("id", "=", file.id)
           .execute();
         const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
@@ -804,7 +850,7 @@ export function createDerived(deps: DerivedDeps) {
       const message = row === undefined ? null : await previousSentence(trx, row, job.kind);
       await trx
         .updateTable("files")
-        .set({ derivedStatus: "pending", derivedMessage: message, updatedAt: sql<Date>`now()` })
+        .set({ ...stateSet(STATUS_OF[job.kind], "pending", message), updatedAt: sql<Date>`now()` })
         .where("id", "=", file.id)
         .execute();
       const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
@@ -833,7 +879,16 @@ export function createDerived(deps: DerivedDeps) {
     return { fileId: file.id, sourceBlobId: blobId };
   }
 
-  /** The source's whole bytes; a .scad is at most 1 MiB by the time this runs. */
+  /**
+   * An object's whole bytes, in the app's memory: a .scad source (at most
+   * 1 MiB by the time this runs), or a STEP file's stored GLB mesh for its
+   * preview picture (preview-step). A mesh has no limit of its own beyond
+   * the slicer's 256 MiB for any render output (MAX_RENDER_OUTPUT_BYTES in
+   * apps/slicer/src/sandbox.ts), and the chunks and the joined copy are both
+   * held while Buffer.concat runs, so a mesh near that size briefly takes
+   * about twice it, against the app's memory limit (2g in the example
+   * Compose file). The STL made from it is streamed (mesh.ts), never held.
+   */
   async function readAll(key: string): Promise<Buffer> {
     const chunks: Buffer[] = [];
     for await (const chunk of await store.getBlobStream(key)) chunks.push(chunk as Buffer);
@@ -955,6 +1010,7 @@ export function createDerived(deps: DerivedDeps) {
     replacing: boolean,
     outputs: readonly PutOutput[],
     outcome: { status: DerivedStatus; message: string | null },
+    previewState?: { status: DerivedStatus | null; message: string | null },
   ): Promise<string[]> {
     const r = createRepos(trx);
     for (const out of outputs) {
@@ -988,8 +1044,10 @@ export function createDerived(deps: DerivedDeps) {
         ...(replacing
           ? { blobId: source.id, size: source.size ?? 0, sha256: source.sha256 ?? Buffer.alloc(0) }
           : {}),
-        derivedStatus: outcome.status,
-        derivedMessage: outcome.message,
+        ...stateSet(STATUS_OF[jobKind], outcome.status, outcome.message),
+        ...(previewState === undefined
+          ? {}
+          : stateSet(PREVIEW_STATE, previewState.status, previewState.message)),
         updatedAt: sql<Date>`now()`,
       })
       .where("id", "=", row.id)
@@ -1002,9 +1060,10 @@ export function createDerived(deps: DerivedDeps) {
   /**
    * Stores new derived blobs and swaps them in; the old ones go after the
    * commit. A STEP file's new mesh is followed by its preview (issue #316):
-   * the preview-step job is sent in the same transaction and the file stays
-   * 'pending' until it is done, unless a newer replacement is queued, whose
-   * own conversion will queue the preview of its mesh.
+   * the preview-step job is sent in the same transaction and preview_status
+   * is 'pending' until it is done, while derived_status says the mesh is ok
+   * (issue #380), unless a newer replacement is queued, whose own conversion
+   * will queue the preview of its mesh.
    */
   async function commitOutputs(
     jobKind: DerivedKind,
@@ -1038,16 +1097,23 @@ export function createDerived(deps: DerivedDeps) {
         const row = await lockFor(trx, file, source, replacing, meshId);
         // The new renders are of the source the file has after the swap, so
         // a pending file has nothing earlier to explain.
-        let outcome = await settledOutcome(
+        const outcome = await settledOutcome(
           trx,
           file.id,
           source.id,
           { status: "ok", message: null },
           null,
         );
-        const previewNext = jobKind === DERIVED_KINDS.convertStep && outcome.status === "ok";
-        if (previewNext) outcome = { status: "pending", message: null };
-        oldKeys = await swapIn(trx, row, jobKind, source, replacing, put, outcome);
+        // A STEP file's new mesh replaces its old picture (swapIn clears
+        // render_png_blob_id). The mesh's own status is ok, as in 0.1.0
+        // (issue #380); the picture is pending while its job is queued, or
+        // unset when a newer replacement's conversion will queue it.
+        const isMesh = jobKind === DERIVED_KINDS.convertStep;
+        const previewNext = isMesh && outcome.status === "ok";
+        const previewState = !isMesh
+          ? undefined
+          : { status: previewNext ? ("pending" as const) : null, message: null };
+        oldKeys = await swapIn(trx, row, jobKind, source, replacing, put, outcome, previewState);
         if (previewNext) {
           const preview: DerivedJob = {
             kind: DERIVED_KINDS.previewStep,
@@ -1222,6 +1288,11 @@ export function createDerived(deps: DerivedDeps) {
       );
       const cleared: Partial<Record<DerivedColumn, null>> = {};
       for (const c of dropped.columns) cleared[c] = null;
+      // A STEP conversion that drops an earlier picture leaves the file with
+      // none, and nothing queued for it (issue #380); a preview job's own
+      // failure is written to those same columns below.
+      const pictureGone =
+        STATUS_OF[jobKind] === DERIVED_STATE && dropped.columns.includes("renderPngBlobId");
       await trx
         .updateTable("files")
         .set({
@@ -1233,8 +1304,8 @@ export function createDerived(deps: DerivedDeps) {
               }
             : {}),
           ...cleared,
-          derivedStatus: outcome.status,
-          derivedMessage: outcome.message,
+          ...(pictureGone ? stateSet(PREVIEW_STATE, null, null) : {}),
+          ...stateSet(STATUS_OF[jobKind], outcome.status, outcome.message),
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)
@@ -1278,6 +1349,7 @@ export function createDerived(deps: DerivedDeps) {
           "id",
           "blobId",
           "derivedStatus",
+          "previewStatus",
           "renderStlBlobId",
           "renderPngBlobId",
           "meshBlobId",
@@ -1287,7 +1359,8 @@ export function createDerived(deps: DerivedDeps) {
         .forUpdate()
         .executeTakeFirst();
       if (row === undefined) return;
-      if (row.blobId === source.id && row.derivedStatus === "ok") return;
+      const cols = STATUS_OF[jobKind];
+      if (row.blobId === source.id && row[cols.status] === "ok") return;
       // The file keeps its source and renders, so the sentence, when it
       // applies, goes before the failure or stands alone while pending.
       const sentence = await previousSentence(trx, row, jobKind);
@@ -1301,8 +1374,7 @@ export function createDerived(deps: DerivedDeps) {
       await trx
         .updateTable("files")
         .set({
-          derivedStatus: outcome.status,
-          derivedMessage: outcome.message,
+          ...stateSet(cols, outcome.status, outcome.message),
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)
@@ -1567,25 +1639,35 @@ export function createDerived(deps: DerivedDeps) {
   }
 
   /**
-   * Issue #90: a file still 'pending' with no queued or active job, whose
-   * newest job ended failed: its last attempt died before it recorded an
-   * outcome. The file is marked failed and not queued again, so a file that
-   * kills the slicer cannot loop. When the renders it keeps are from an
+   * Issue #90: a file whose render, mesh or picture (cols) is still
+   * 'pending' with no queued or active job of the kinds that write those
+   * columns, and whose newest such job ended failed: its last attempt died
+   * before it recorded an outcome. It is marked failed and not queued
+   * again, so a file that kills the slicer cannot loop. When the renders it keeps are from an
    * earlier source than its own, the message starts with the sentence
    * saying so (keepingPrevious; issue #104). Returns whether it marked one.
    */
-  async function settleLost(fileId: string, modelId: string): Promise<boolean> {
+  async function settleLost(
+    fileId: string,
+    modelId: string,
+    cols: StatusColumns,
+  ): Promise<boolean> {
     return db.transaction().execute(async (trx) => {
       if (!(await lockModel(trx, modelId, false))) return false;
       const row = await trx
         .selectFrom("files")
         .select(["id", "blobId", "kind", "renderStlBlobId", "renderPngBlobId", "meshBlobId"])
         .where("id", "=", fileId)
-        .where("derivedStatus", "=", "pending")
+        .where(cols.status, "=", "pending")
         .forUpdate()
         .executeTakeFirst();
       if (row === undefined) return false;
-      const jobs = await jobsOfFile(trx, row.id);
+      // Only the jobs that write these columns (issue #380): a STEP file's
+      // picture job says nothing about its mesh, and the other way round.
+      const jobs = (await jobsOfFile(trx, row.id)).filter((j) => {
+        const kind = j.data?.kind;
+        return Object.hasOwn(STATUS_OF, kind) && STATUS_OF[kind] === cols;
+      });
       if (jobs.some((j) => LIVE_STATES.has(j.state))) return false;
       const last = jobs.at(-1);
       if (last === undefined || last.state !== "failed") return false;
@@ -1594,10 +1676,7 @@ export function createDerived(deps: DerivedDeps) {
       await trx
         .updateTable("files")
         .set({
-          derivedStatus: "failed",
-          derivedMessage: hasDerived(row.kind)
-            ? await keepingPrevious(trx, row, JOB_KIND_OF[row.kind], lost)
-            : lost,
+          ...stateSet(cols, "failed", await keepingPrevious(trx, row, last.data.kind, lost)),
           updatedAt: sql<Date>`now()`,
         })
         .where("id", "=", row.id)
@@ -1694,17 +1773,21 @@ export function createDerived(deps: DerivedDeps) {
       await attempt("file", () => queueUnqueued(f.id, f.modelId), result.queued, f.id);
     }
 
-    const pending = await db
-      .selectFrom("files as f")
-      .innerJoin("models as m", "m.id", "f.modelId")
-      .select(["f.id", "f.modelId"])
-      .where("f.derivedStatus", "=", "pending")
-      .where("f.updatedAt", "<", cutoff)
-      .where("m.purgeStartedAt", "is", null)
-      .orderBy("f.updatedAt")
-      .execute();
-    for (const f of pending) {
-      await attempt("file", () => settleLost(f.id, f.modelId), result.failed, f.id);
+    // A render, a mesh or a preview picture left pending by a job that died
+    // (each pair of status columns on its own, issue #380).
+    for (const cols of [DERIVED_STATE, PREVIEW_STATE]) {
+      const pending = await db
+        .selectFrom("files as f")
+        .innerJoin("models as m", "m.id", "f.modelId")
+        .select(["f.id", "f.modelId"])
+        .where(`f.${cols.status}`, "=", "pending")
+        .where("f.updatedAt", "<", cutoff)
+        .where("m.purgeStartedAt", "is", null)
+        .orderBy("f.updatedAt")
+        .execute();
+      for (const f of pending) {
+        await attempt("file", () => settleLost(f.id, f.modelId, cols), result.failed, f.id);
+      }
     }
 
     const { rows: staged } = await sql<{ id: string; modelId: string }>`
@@ -1751,9 +1834,12 @@ export function createDerived(deps: DerivedDeps) {
    * hold a batch's place.
    */
   function backfillCandidates(cutoff: Date) {
-    const retried = sql`(f.derived_status = 'failed'
-           and f.derived_message in (${sql.join(PREVIEW_RETRIED)})
+    // The picture's own state (issue #380): none yet, or a failure that is
+    // tried again. A STEP file's mesh must be done, whatever its picture.
+    const retried = sql`(f.preview_status = 'failed'
+           and f.preview_message in (${sql.join(PREVIEW_RETRIED)})
            and f.updated_at < ${cutoff})`;
+    const noPicture = sql`(f.preview_status is null or ${retried})`;
     return sql`
       select f.id, f.model_id as "modelId", f.kind, f.blob_id as "blobId",
              f.created_at as "createdAt"
@@ -1762,8 +1848,8 @@ export function createDerived(deps: DerivedDeps) {
        where m.trashed_at is null and m.purge_started_at is null
          and f.created_at < ${cutoff}
          and (
-           (f.kind = 'stl' and (f.derived_status is null or ${retried}))
-           or (f.kind = 'step' and (f.derived_status = 'ok' or ${retried})
+           (f.kind = 'stl' and ${noPicture})
+           or (f.kind = 'step' and f.derived_status = 'ok' and ${noPicture}
                and f.render_png_blob_id is null
                and exists (
                  select 1 from blobs mb, blobs sb
@@ -1798,7 +1884,7 @@ export function createDerived(deps: DerivedDeps) {
       if ((await jobsOfFile(trx, row.id)).some((j) => LIVE_STATES.has(j.state))) return false;
       await trx
         .updateTable("files")
-        .set({ derivedStatus: "pending", derivedMessage: null, updatedAt: sql<Date>`now()` })
+        .set({ ...stateSet(PREVIEW_STATE, "pending", null), updatedAt: sql<Date>`now()` })
         .where("id", "=", row.id)
         .execute();
       const job: DerivedJob = {

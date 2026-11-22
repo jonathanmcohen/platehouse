@@ -23,6 +23,7 @@ import {
   postRender,
   RenderFailed,
   type RenderOutput,
+  SLICER_NOT_AN_STL,
   type SlicerTarget,
 } from "./client.js";
 import { MeshUnreadable, stlFromGlb } from "./mesh.js";
@@ -47,10 +48,16 @@ async function postPreview(
     });
     return [{ kind: "render_png", contentType: PNG, bytes }];
   } catch (error) {
-    // A 413 is already the sentence the file shows; a 422 is OpenSCAD's own
-    // words, which get the sentence before them.
+    // A 413 is already the sentence the file shows. A 422 is OpenSCAD's own
+    // words, which get the sentence before them, except the slicer's own
+    // refusal of an STL with no triangles, sent before OpenSCAD runs, which
+    // gets the preview sentence alone (issue #379).
     if (error instanceof RenderFailed && error.message !== tooLarge) {
-      throw new RenderFailed(`${DERIVED_MESSAGES.previewRejected} ${error.message}`);
+      const lead =
+        error.message === SLICER_NOT_AN_STL
+          ? DERIVED_MESSAGES.previewFailed
+          : DERIVED_MESSAGES.previewRejected;
+      throw new RenderFailed(`${lead} ${error.message}`);
     }
     throw error;
   }

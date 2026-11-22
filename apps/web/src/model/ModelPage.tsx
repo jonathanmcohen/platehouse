@@ -13,8 +13,9 @@
 //   another file.
 // - Everything comes from one request, GET /app/api/models/:id. While any
 //   plate is estimating (isEstimating) or any STEP, SCAD or STL file is still
-//   having its mesh, render or preview made (isDeriving, derivedStatus 'pending'),
-//   the page asks again every POLL_MS (5 s), on one timer for both
+//   having its mesh, render or preview made (isDeriving: derivedStatus or
+//   previewStatus 'pending'), the page asks again every POLL_MS (5 s), on one
+//   timer for both
 //   (needsPolling). So a render that lands after an upload shows in the
 //   viewer, with View in the Files tab, without a reload, and a render that
 //   fails shows its reason. Polling stops when nothing is estimating or
@@ -232,12 +233,14 @@ export function isEstimating(plate: Pick<ModelPlate, "numbers" | "estimatePendin
 
 /**
  * Whether a STEP's mesh, a SCAD's render or an STL's or STEP's preview
- * picture is still being made: its derivedStatus is 'pending' while the job
- * is queued or running, then 'ok' or 'failed' (null for a .3mf, which has
- * nothing derived, and for an STL whose preview is not queued yet).
+ * picture is still being made: derivedStatus (the mesh or render) or
+ * previewStatus (the picture, issue #380) is 'pending' while its job is
+ * queued or running, then 'ok' or 'failed'. derivedStatus is null for a
+ * .3mf and an STL; previewStatus is null for every kind but STL and STEP,
+ * and before a picture is queued.
  */
 export function isDeriving(file: ModelFile): boolean {
-  return file.derivedStatus === "pending";
+  return file.derivedStatus === "pending" || file.previewStatus === "pending";
 }
 
 /** Whether the page should ask again: a plate is estimating or a file is being rendered. */

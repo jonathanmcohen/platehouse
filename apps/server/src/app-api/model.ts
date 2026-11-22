@@ -67,6 +67,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
+import { hasPreviewPicture, isPictureShown } from "../derived/picture.js";
 import {
   type DisplayContext,
   type PlateNumbers,
@@ -137,6 +138,17 @@ export interface ModelFileView {
   derivedCodes: string[];
   /** What derivedMessage holds after those sentences (the program's own words), or null. */
   derivedDetail: string | null;
+  /**
+   * An STL's or STEP file's preview picture (issue #380): null, pending, ok
+   * or failed. derivedStatus never says anything about it.
+   */
+  previewStatus: string | null;
+  /** Why the picture failed, cleaned as derivedMessage is; null with none. */
+  previewMessage: string | null;
+  /** Platehouse's own sentences at the start of previewMessage, by code. */
+  previewCodes: string[];
+  /** What previewMessage holds after those sentences, or null. */
+  previewDetail: string | null;
   /** Task 17's download route for the file. */
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
@@ -252,6 +264,8 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             "parseStatus",
             "derivedStatus",
             "derivedMessage",
+            "previewStatus",
+            "previewMessage",
             "blobId",
             "meshBlobId",
             "renderStlBlobId",
@@ -374,8 +388,16 @@ export function createAppModel(deps: AppModelDeps): AppModel {
                   ? f.renderStlBlobId
                   : null;
           const viewBlob = viewFrom === undefined ? null : stored(viewSource, viewFrom.kind);
-          // A SCAD's rendered PNG, or an STL's or STEP's preview picture (issue #316).
-          const previewBlob = f.kind === "3mf" ? null : stored(f.renderPngBlobId, "render_png");
+          // A SCAD's rendered PNG, or an STL's or STEP's preview picture
+          // (issue #316), which is shown only while its own status is ok or
+          // pending (a picture being made again keeps the current one), never
+          // once it failed or before it was queued (issue #380).
+          const pictureShown = hasPreviewPicture(f.kind)
+            ? isPictureShown(f.previewStatus)
+            : f.kind === "scad";
+          const previewBlob = pictureShown ? stored(f.renderPngBlobId, "render_png") : null;
+          const previewMessage = scrubDerivedMessage(f.previewMessage);
+          const previewParts = derivedParts(previewMessage);
           return {
             id: f.id,
             name: f.name,
@@ -385,6 +407,10 @@ export function createAppModel(deps: AppModelDeps): AppModel {
             derivedStatus: f.derivedStatus,
             derivedMessage: scrubDerivedMessage(f.derivedMessage),
             ...derivedParts(scrubDerivedMessage(f.derivedMessage)),
+            previewStatus: f.previewStatus,
+            previewMessage,
+            previewCodes: previewParts.derivedCodes,
+            previewDetail: previewParts.derivedDetail,
             download: `/files/${f.id}/download`,
             view:
               viewFrom === undefined || viewBlob === null

@@ -100,6 +100,7 @@ import type { Printer } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { DB, FileKind } from "../db/types.js";
+import { hasPreviewPicture, isPictureShown } from "../derived/picture.js";
 import {
   type DisplayContext,
   type Numbers,
@@ -577,7 +578,13 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
             .on("preview.kind", "=", "render_png")
             .on("preview.state", "=", "stored"),
         )
-        .select(["files.id", "files.modelId", "files.kind", "preview.id as previewId"])
+        .select([
+          "files.id",
+          "files.modelId",
+          "files.kind",
+          "files.previewStatus",
+          "preview.id as previewId",
+        ])
         .where("files.modelId", "in", ids)
         .orderBy("files.createdAt")
         .orderBy("files.id")
@@ -631,12 +638,15 @@ export function createAppLibrary(deps: AppLibraryDeps): AppLibrary {
       const plate1 = ownPlates.find((p) => p.fileId === first3mf?.id && p.index === 1);
       // The card stands for its first .3mf, else its first file. A .3mf
       // shows plate 1's thumbnail; an STL or STEP file its preview picture
-      // (issue #316); a SCAD keeps the icon (Task 19's choice).
+      // (issue #316) while the picture's own status says to show it (issue
+      // #380); a SCAD keeps the icon (Task 19's choice).
       const shown = first3mf ?? own[0];
       const thumbnail =
         first3mf !== undefined
           ? (plate1?.thumbnailId ?? null)
-          : shown !== undefined && (shown.kind === "stl" || shown.kind === "step")
+          : shown !== undefined &&
+              hasPreviewPicture(shown.kind) &&
+              isPictureShown(shown.previewStatus)
             ? shown.previewId
             : null;
       let timeSeconds: number | null = 0;

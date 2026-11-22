@@ -39,7 +39,7 @@ import { isReason, reasonWords } from "../estimates/reasons.js";
 import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
 import { MAINTENANCE_TASKS, QUEUE } from "../jobs/queues.js";
-import { activityRepo, type QueueCount } from "../repos/activity.js";
+import { activityRepo, type FailedDerived, type QueueCount } from "../repos/activity.js";
 import { settingsRepo } from "../repos/settings.js";
 import { scrubDerivedMessage, scrubDetail, scrubText } from "../scrub.js";
 import { appApiScope, need } from "./settings.js";
@@ -226,18 +226,6 @@ export function scheduleText(cron: string): string {
     return `Daily at ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
   }
   return cron;
-}
-
-/**
- * What a failed render event is about: an STL's failure is always its
- * preview picture, and a STEP file's is its preview when the message starts
- * with the preview sentence (its mesh was made), else its conversion.
- */
-function renderKind(kind: string, codes: readonly string[]): "scad" | "step" | "preview" {
-  if (kind === "scad") return "scad";
-  if (kind === "stl") return "preview";
-  const first = codes[0];
-  return first === "previewFailed" || first === "previewRejected" ? "preview" : "step";
 }
 
 export const ROW_LABELS: Readonly<Record<QueueRowId, string>> = {
@@ -476,7 +464,18 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         const models = await repo.recentModels(QUEUE.ingest, EVENT_LIMIT);
         const estimates = await repo.failedEstimates(settings.printerId, version, EVENT_LIMIT);
         const derived = await repo.failedDerived(EVENT_LIMIT);
-        return { settings, library, counts, queues, lastRuns, models, estimates, derived };
+        const previews = await repo.failedPreviews(EVENT_LIMIT);
+        return {
+          settings,
+          library,
+          counts,
+          queues,
+          lastRuns,
+          models,
+          estimates,
+          derived,
+          previews,
+        };
       });
   }
 
@@ -489,7 +488,8 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         inboxFailures(),
         deps.boss.getSchedules(QUEUE.maintenance),
       ]);
-      const { settings, library, counts, queues, lastRuns, models, estimates, derived } = data;
+      const { settings, library, counts, queues, lastRuns, models, estimates, derived, previews } =
+        data;
 
       const progress = progressOf(counts, now);
       const rows = queueRows(queues);
@@ -528,21 +528,29 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
         reasonCode: isReason(e.failureReason) ? e.failureReason : "slicer_error",
         detail: scrubDetail(e.failureDetail),
       }));
-      const renderEvents: ActivityEvent[] = derived
-        .filter((d) => d.kind === "scad" || d.kind === "step" || d.kind === "stl")
-        .map((d) => {
-          const message = scrubDerivedMessage(d.message);
-          const parts = renderParts(message);
-          return {
-            type: "render_failed",
-            at: d.at.toISOString(),
-            kind: renderKind(d.kind, parts.messageCodes),
-            model: { id: d.modelId, name: d.modelName },
-            file: { id: d.fileId, name: d.fileName },
-            message,
-            ...parts,
-          };
-        });
+      const renderEvent = (d: FailedDerived, kind: "scad" | "step" | "preview"): ActivityEvent => {
+        const message = scrubDerivedMessage(d.message);
+        return {
+          type: "render_failed",
+          at: d.at.toISOString(),
+          kind,
+          model: { id: d.modelId, name: d.modelName },
+          file: { id: d.fileId, name: d.fileName },
+          message,
+          ...renderParts(message),
+        };
+      };
+      // A .scad's render or a STEP file's conversion from derived_status,
+      // and an STL's or STEP file's picture from its own preview_status
+      // (issue #380), whatever its message says.
+      const renderEvents: ActivityEvent[] = [
+        ...derived
+          .filter((d) => d.kind === "scad" || d.kind === "step")
+          .map((d) => renderEvent(d, d.kind === "scad" ? "scad" : "step")),
+        ...previews
+          .filter((d) => d.kind === "stl" || d.kind === "step")
+          .map((d) => renderEvent(d, "preview")),
+      ];
 
       const working =
         progress.pending + progress.running > 0 || rows.some((r) => r.waiting + r.active > 0);

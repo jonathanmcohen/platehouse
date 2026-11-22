@@ -1115,12 +1115,22 @@
                           "derivedStatus": {
                             "type": "string",
                             "nullable": true,
-                            "description": "For .scad, STEP and STL files, the render, mesh or preview picture: pending, ok or failed. Null for a .3mf, and for an STL stored before preview pictures existed until its preview is made."
+                            "description": "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds."
                           },
                           "derivedMessage": {
                             "type": "string",
                             "nullable": true,
                             "description": "The render or conversion message, such as why it failed, cleaned of work paths, addresses and tokens; at most 2500 characters, keeping the end of a longer one, where the error line is"
+                          },
+                          "previewStatus": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "For STL and STEP files, the preview picture: pending, ok or failed. Null until one is queued, and for other kinds. It never changes derivedStatus."
+                          },
+                          "previewMessage": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Why the preview picture failed, cleaned as derivedMessage is; at most 2500 characters. Null with none"
                           },
                           "createdAt": {
                             "type": "string",
@@ -1434,6 +1444,8 @@
                           "parseStatus",
                           "derivedStatus",
                           "derivedMessage",
+                          "previewStatus",
+                          "previewMessage",
                           "createdAt",
                           "updatedAt",
                           "plates"
@@ -1484,6 +1496,8 @@
                       "parseStatus": "ok",
                       "derivedStatus": null,
                       "derivedMessage": null,
+                      "previewStatus": null,
+                      "previewMessage": null,
                       "createdAt": "2026-11-01T10:00:00.000Z",
                       "updatedAt": "2026-11-01T10:00:00.000Z",
                       "plates": [
@@ -1774,12 +1788,22 @@
                     "derivedStatus": {
                       "type": "string",
                       "nullable": true,
-                      "description": "For .scad, STEP and STL files, the render, mesh or preview picture: pending, ok or failed. Null for a .3mf, and for an STL stored before preview pictures existed until its preview is made."
+                      "description": "For .scad and STEP files, the preview render: pending, ok or failed. Null for other kinds."
                     },
                     "derivedMessage": {
                       "type": "string",
                       "nullable": true,
                       "description": "The render or conversion message, such as why it failed, cleaned of work paths, addresses and tokens; at most 2500 characters, keeping the end of a longer one, where the error line is"
+                    },
+                    "previewStatus": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "For STL and STEP files, the preview picture: pending, ok or failed. Null until one is queued, and for other kinds. It never changes derivedStatus."
+                    },
+                    "previewMessage": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Why the preview picture failed, cleaned as derivedMessage is; at most 2500 characters. Null with none"
                     },
                     "createdAt": {
                       "type": "string",
@@ -2093,6 +2117,8 @@
                     "parseStatus",
                     "derivedStatus",
                     "derivedMessage",
+                    "previewStatus",
+                    "previewMessage",
                     "createdAt",
                     "updatedAt",
                     "plates"
@@ -2110,6 +2136,8 @@
                   "parseStatus": "ok",
                   "derivedStatus": null,
                   "derivedMessage": null,
+                  "previewStatus": null,
+                  "previewMessage": null,
                   "createdAt": "2026-11-01T10:00:00.000Z",
                   "updatedAt": "2026-11-01T10:00:00.000Z",
                   "plates": [

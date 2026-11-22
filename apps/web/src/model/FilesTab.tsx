@@ -26,7 +26,25 @@ export function formatSize(bytes: number, fmt: Formatters = ENGLISH_I18N.fmt): s
   return fmt.size(bytes);
 }
 
-/** What a STEP, SCAD or STL file says about its mesh, render or preview, by derived status. */
+/**
+ * What an STL's or STEP file's preview picture says about itself, by its own
+ * status (issue #380): nothing once it is done or before it is queued.
+ */
+export function previewStatusWords(
+  file: Pick<ModelFile, "previewStatus">,
+  i18n: Pick<I18n, "t"> = ENGLISH_I18N,
+): string | null {
+  switch (file.previewStatus) {
+    case "pending":
+      return i18n.t("model.files.previewPending");
+    case "failed":
+      return i18n.t("model.files.previewFailed");
+    default:
+      return null;
+  }
+}
+
+/** What a STEP or SCAD file says about its mesh or render, by derived status. */
 export function derivedStatusWords(
   file: Pick<ModelFile, "derivedStatus">,
   i18n: Pick<I18n, "t"> = ENGLISH_I18N,
@@ -125,6 +143,13 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
         const words =
           file.kind === "3mf" ? parseStatusWords(file, i18n) : derivedStatusWords(file, i18n);
         const derived = derivedMessageIn(i18n, file);
+        // The preview picture's own status and reason (issue #380).
+        const pictureWords = previewStatusWords(file, i18n);
+        const pictureReason = derivedMessageIn(i18n, {
+          derivedMessage: file.previewMessage ?? null,
+          ...(file.previewCodes === undefined ? {} : { derivedCodes: file.previewCodes }),
+          ...(file.previewDetail === undefined ? {} : { derivedDetail: file.previewDetail }),
+        });
         return (
           <li key={file.id} className="studio-list-item">
             <div className="studio-row">
@@ -145,6 +170,8 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
             )}
             {words === null ? null : <p className="studio-muted">{words}</p>}
             {derived === null ? null : <pre className="ph-detail">{derived}</pre>}
+            {pictureWords === null ? null : <p className="studio-muted">{pictureWords}</p>}
+            {pictureReason === null ? null : <pre className="ph-detail">{pictureReason}</pre>}
             <div className="studio-actions">
               {viewable(file) ? (
                 <button

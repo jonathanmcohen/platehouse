@@ -345,6 +345,8 @@
   "model.details": "Model details",
   "model.files.download": "Download<hidden> {name}</hidden>",
   "model.files.kindSize": "{kind}, {size}",
+  "model.files.previewFailed": "The preview picture could not be made.",
+  "model.files.previewPending": "The preview picture is still being made.",
   "model.files.renderFailed": "This file could not be rendered.",
   "model.files.rendering": "Still being rendered.",
   "model.files.view": "View<hidden> {name}</hidden>",
