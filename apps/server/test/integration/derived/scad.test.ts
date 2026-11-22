@@ -1005,11 +1005,22 @@ describe("the slicer queue's worker", () => {
     expect(env.stub.renders.calls).toHaveLength(0);
   });
 
-  test("the render and mesh kinds register into the slicer queue's one handler map", () => {
+  // Issue #316 added the two preview kinds beside the render and the mesh.
+  test("the render, mesh and preview kinds register into the slicer queue's one handler map", () => {
     expect(Object.keys(derivedJobHandlers(env.derived)).sort()).toEqual(
-      [DERIVED_KINDS.convertStep, DERIVED_KINDS.renderScad].sort(),
+      [
+        DERIVED_KINDS.convertStep,
+        DERIVED_KINDS.renderScad,
+        DERIVED_KINDS.renderStl,
+        DERIVED_KINDS.previewStep,
+      ].sort(),
     );
-    expect(DERIVED_KINDS).toEqual({ renderScad: "render-scad", convertStep: "convert-step" });
+    expect(DERIVED_KINDS).toEqual({
+      renderScad: "render-scad",
+      convertStep: "convert-step",
+      renderStl: "render-stl",
+      previewStep: "preview-step",
+    });
   });
 });
 

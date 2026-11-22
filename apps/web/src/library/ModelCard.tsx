@@ -3,15 +3,17 @@
 // and weight for the selected printer when every plate has numbers for it,
 // "partial" when some plate does not, and "numbers unavailable" when the
 // slicer's printer menu could not be read, so the file's own numbers could
-// not be matched to the printer. An STL, STEP or SCAD model (no plate
-// thumbnail) shows a generic file-type icon instead. The card links to the
-// model page (Task 20), except in the library's Select mode (the maintainer,
-// 2026-11-19), where the card is the label of a checkbox named for the
-// model, shown in its corner, and a selected card is ringed in the accent.
+// not be matched to the printer. An STL or STEP model shows its rendered
+// preview picture instead (issue #316), and a generic file-type icon until
+// it has one or when its render failed; a SCAD model keeps the icon. The
+// card links to the model page (Task 20), except in the library's Select
+// mode (the maintainer, 2026-11-19), where the card is the label of a
+// checkbox named for the model, shown in its corner, and a selected card is
+// ringed in the accent.
 //
 // The image is the only thing a card loads, and only from the /blobs/<id>
-// thumbnail the library's API named (AC-073). It is decorative (the link's
-// text is the name), so its alt is empty.
+// thumbnail or preview the library's API named (AC-073). It is decorative
+// (the link's text is the name), so its alt is empty.
 import { Link } from "react-router";
 import { ENGLISH_I18N, type Formatters, useI18n } from "../i18n/I18n";
 

@@ -209,6 +209,8 @@ describe("schedules", () => {
       [MAINTENANCE_TASKS.pollOrca]: "*/10 * * * *",
       [MAINTENANCE_TASKS.checkRenders]: "*/15 * * * *",
       [MAINTENANCE_TASKS.purgeSessions]: "35 4 * * *",
+      // Issue #316: the preview backfill, one batch at a time.
+      "backfill-previews": "*/5 * * * *",
     };
     expect(Object.keys(expected).sort()).toEqual(Object.values(MAINTENANCE_TASKS).sort());
     for (const [key, cron] of Object.entries(expected)) {

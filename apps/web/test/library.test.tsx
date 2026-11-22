@@ -9,7 +9,8 @@
 //   data, and the only images it shows are /blobs/<id> thumbnails the API
 //   named. Nothing points at /files/.
 // - card shows time and weight only when every plate is known, and says
-//   partial otherwise; an STL or STEP card shows a file-type icon.
+//   partial otherwise; an STL or STEP card shows its preview picture when
+//   the API names one (issue #316), else a file-type icon.
 // - upload dialog shows progress per file and honours combine: the switch
 //   is off by default; off, each file is its own new model; on, every file
 //   carries one batch id with combine. The tus options use 5 MiB chunks,
@@ -366,6 +367,19 @@ describe("card shows time and weight only when every plate is known", () => {
     expect(icon, "no file-type icon").not.toBeNull();
     expect(icon?.getAttribute("aria-hidden")).toBe("true");
     expect(li.querySelector(".studio-card-media")?.textContent).toContain(label);
+    expect(li.textContent).not.toMatch(/partial|plates?\b/);
+  });
+
+  // Issue #316: once the server names an STL's or STEP's rendered preview as
+  // the card's thumbnail, the card shows that picture in place of the icon.
+  test.each([
+    ["STL", STL],
+    ["STEP", STEP],
+  ])("an %s card with a rendered preview shows it instead of the icon", async (_label, card) => {
+    const thumbnail = "/blobs/0198f0c4-0000-7000-8000-0000000000f1";
+    const li = await renderCard({ ...card, thumbnail });
+    expect(li.querySelector(".studio-card-media img")?.getAttribute("src")).toBe(thumbnail);
+    expect(li.querySelector(".studio-card-media svg")).toBeNull();
     expect(li.textContent).not.toMatch(/partial|plates?\b/);
   });
 

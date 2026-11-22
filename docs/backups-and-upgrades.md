@@ -139,6 +139,13 @@ When the slicer's OrcaSlicer version changes, Platehouse re-estimates the librar
 background, since a new version can give different numbers. To go back, set the previous tag
 again.
 
+Pull the slicer image again when you upgrade the app, even if you keep the same tag: a Platehouse
+release ships its slicer changes in the slicer image. The STL and STEP preview pictures added in
+0.1.1 need a slicer image from 0.1.1 or later. With an older one, a preview waits for the slicer,
+for up to 2 hours, and then shows "The slicer is not answering, so the preview picture could not
+be made. It will be tried again automatically." It is tried again in the background, so the
+picture appears once the slicer image is updated.
+
 ### Testing a release candidate
 
 Both images also carry an `rc` tag, meant for a test server. Unlike a version tag it moves. It

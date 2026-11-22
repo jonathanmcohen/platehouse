@@ -27,7 +27,7 @@ STEP and OpenSCAD files.
 - **Speaks your language**: English, Spanish and French built in, and any other language you add
   to your server. See [Translations](./translations/index.md).
 - **Shows STL, STEP and OpenSCAD files** in a 3D viewer. An OpenSCAD file is rendered to an STL
-  and a preview image for you.
+  and a preview image for you, and an STL or STEP file gets a preview picture on its library card.
 - **Works on a phone.** Every page works from 375 pixels wide, in dark, light or system theme.
 
 ## What it is not

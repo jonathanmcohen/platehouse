@@ -341,6 +341,32 @@ export function activityRepo(db: Kysely<DB>) {
         .execute();
       return rows;
     },
+
+    /**
+     * The newest STL and STEP preview pictures that failed, on live models,
+     * from their own column (issue #380), newest first.
+     */
+    async failedPreviews(limit: number): Promise<FailedDerived[]> {
+      const rows = await db
+        .selectFrom("files as f")
+        .innerJoin("models as m", "m.id", "f.modelId")
+        .select([
+          "f.id as fileId",
+          "f.name as fileName",
+          "f.kind as kind",
+          "m.id as modelId",
+          "m.name as modelName",
+          "f.previewMessage as message",
+          "f.updatedAt as at",
+        ])
+        .where("f.previewStatus", "=", "failed")
+        .where("m.trashedAt", "is", null)
+        .orderBy("f.updatedAt", "desc")
+        .orderBy("f.id", "desc")
+        .limit(limit)
+        .execute();
+      return rows;
+    },
   };
 }
 

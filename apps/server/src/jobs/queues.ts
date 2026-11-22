@@ -17,15 +17,17 @@
 //   partial uploads untouched for 24 hours (uploads/tus.ts) every hour,
 //   Task 12's Orca-version poll every 10 minutes, Task 13's render check
 //   (derived/derived.ts's checkRenders) every 15 minutes (CHECK_RENDERS_CRON),
-//   and Task 15's delete of sessions past either expiry daily at 04:35 local
-//   time (PURGE_SESSIONS_CRON).
+//   Task 15's delete of sessions past either expiry daily at 04:35 local
+//   time (PURGE_SESSIONS_CRON), and issue #316's preview backfill every 5
+//   minutes (BACKFILL_PREVIEWS_CRON), which also runs once at startup.
 //   The three daily tasks run at 03:30, 04:00 and 04:35, so none shares a
 //   minute with another, and minute 35 is on no hourly, 10-minute or
-//   15-minute schedule either. The worker runs one maintenance job at a
-//   time in any case.
+//   15-minute schedule either. The 5-minute backfill does share minutes
+//   with all of them; the worker runs one maintenance job at a time in any
+//   case, and a backfill run is a quick query when there is nothing to do.
 // The server (main.ts, Task 30) passes a ServerQueueDeps, which requires
-// slicerJobs, pollOrca, onIngested and checkRenders, so it cannot leave a
-// queue without its worker or those schedules without their handlers. The
+// slicerJobs, pollOrca, onIngested, checkRenders and backfillPreviews, so it
+// cannot leave a queue without its worker or those schedules without their handlers. The
 // session delete (purgeSessions) is optional in both; the Task 30 server
 // test checks that the running server schedules and runs every maintenance
 // task, that one included.
@@ -104,7 +106,16 @@ export const MAINTENANCE_TASKS = {
   sweepUploads: "sweep-uploads",
   checkRenders: "check-renders",
   purgeSessions: "purge-sessions",
+  backfillPreviews: "backfill-previews",
 } as const;
+
+/**
+ * Every 5 minutes (issue #316): the preview backfill (derived/derived.ts's
+ * backfillPreviews), which queues one batch of STL and STEP previews when
+ * none of the last is still waiting, and does nothing once every file has
+ * one. It also runs once at startup.
+ */
+export const BACKFILL_PREVIEWS_CRON = "*/5 * * * *";
 
 /**
  * Every 10 minutes (Task 12 decision): the Orca-version poll, which also runs
@@ -192,6 +203,12 @@ export interface QueueDeps {
    * server test fails if any maintenance task is left unscheduled.
    */
   purgeSessions?(now: Date): Promise<unknown>;
+  /**
+   * The preview backfill (derived/derived.ts's backfillPreviews, issue
+   * #316), when given: scheduled every 5 minutes (BACKFILL_PREVIEWS_CRON)
+   * and run once at startup by startQueues itself.
+   */
+  backfillPreviews?(now: Date): Promise<unknown>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -206,7 +223,9 @@ export interface QueueDeps {
  * compile.
  */
 export type ServerQueueDeps = QueueDeps &
-  Required<Pick<QueueDeps, "slicerJobs" | "pollOrca" | "onIngested" | "checkRenders">>;
+  Required<
+    Pick<QueueDeps, "slicerJobs" | "pollOrca" | "onIngested" | "checkRenders" | "backfillPreviews">
+  >;
 
 interface MaintenanceJob {
   task: string;
@@ -274,6 +293,14 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       PURGE_SESSIONS_CRON,
       { task: MAINTENANCE_TASKS.purgeSessions },
       { tz, key: MAINTENANCE_TASKS.purgeSessions, missed: "once" },
+    );
+  }
+  if (deps.backfillPreviews) {
+    await boss.schedule(
+      QUEUE.maintenance,
+      BACKFILL_PREVIEWS_CRON,
+      { task: MAINTENANCE_TASKS.backfillPreviews },
+      { tz, key: MAINTENANCE_TASKS.backfillPreviews },
     );
   }
 
@@ -348,6 +375,10 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           if (!deps.purgeSessions) throw new Error("No session delete is registered");
           await deps.purgeSessions(new Date());
           return;
+        case MAINTENANCE_TASKS.backfillPreviews:
+          if (!deps.backfillPreviews) throw new Error("No preview backfill is registered");
+          await deps.backfillPreviews(new Date());
+          return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
       }
@@ -365,6 +396,18 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`queues: startup Orca poll: ${message.slice(0, 200)}`);
+    }
+  }
+
+  // The preview backfill's startup run (issue #316), so the first batch
+  // after an upgrade starts at once rather than at the next 5 minutes. A
+  // failure is logged and never stops the app; the scheduled run tries again.
+  if (deps.backfillPreviews) {
+    try {
+      await deps.backfillPreviews(new Date());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: startup preview backfill: ${message.slice(0, 200)}`);
     }
   }
 }

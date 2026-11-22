@@ -266,6 +266,7 @@ describe("trackJobs", () => {
       pollOrca: pending,
       onIngested: pending,
       checkRenders: pending,
+      backfillPreviews: pending,
       purgeSessions: pending,
       timeZone: "UTC",
       pollingIntervalSeconds: 1,
@@ -287,6 +288,7 @@ describe("trackJobs", () => {
     }
     expect(handlers.map(([key]) => key).sort()).toEqual(
       [
+        "backfillPreviews",
         "checkRenders",
         "ingestFile",
         "onIngested",

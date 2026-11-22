@@ -1,11 +1,12 @@
 // The Files tab (build plan Task 20): every file of the model with its type
 // and size, View (shows it in the viewer on the left), Download (Task 17's
 // /files/:id/download), and, for a .3mf, Open in Bambu Studio and Open in
-// OrcaSlicer (AC-040). A SCAD file shows its rendered preview image. A STEP
-// or SCAD file whose mesh or render is still being made says so, and one
-// that failed says it could not be rendered, with the server's reason
-// (OpenSCAD's own message for a SCAD it rejects, AC-052). The page polls
-// while a render is pending, so View appears here when it lands.
+// OrcaSlicer (AC-040). A SCAD, STL or STEP file shows its rendered preview
+// image (issue #316 for STL and STEP). A STEP, SCAD or STL file whose mesh,
+// render or preview is still being made says so, and one that failed says
+// it could not be rendered, with the server's reason (OpenSCAD's own
+// message for a file it rejects, AC-052). The page polls while a render is
+// pending, so View and the preview appear here when they land.
 import type { ReactNode } from "react";
 import { ENGLISH_I18N, type Formatters, type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { serverTextWith } from "../i18n/serverText";
@@ -23,6 +24,24 @@ const KIND_LABEL: Record<ModelFile["kind"], string> = {
 /** A size as the Files tab shows it: 684 B, 120.6 KB, 89.4 MB. English when no language is given. */
 export function formatSize(bytes: number, fmt: Formatters = ENGLISH_I18N.fmt): string {
   return fmt.size(bytes);
+}
+
+/**
+ * What an STL's or STEP file's preview picture says about itself, by its own
+ * status (issue #380): nothing once it is done or before it is queued.
+ */
+export function previewStatusWords(
+  file: Pick<ModelFile, "previewStatus">,
+  i18n: Pick<I18n, "t"> = ENGLISH_I18N,
+): string | null {
+  switch (file.previewStatus) {
+    case "pending":
+      return i18n.t("model.files.previewPending");
+    case "failed":
+      return i18n.t("model.files.previewFailed");
+    default:
+      return null;
+  }
 }
 
 /** What a STEP or SCAD file says about its mesh or render, by derived status. */
@@ -59,6 +78,12 @@ const DERIVED_KEYS: Readonly<Record<string, MessageKey>> = {
   previousStep: "derived.previousStep",
   scadTooLarge: "derived.scadTooLarge",
   stepTooLarge: "derived.stepTooLarge",
+  previewSlicerDown: "derived.previewSlicerDown",
+  previewStoreDown: "derived.previewStoreDown",
+  previewQueueFailed: "derived.previewQueueFailed",
+  previewFailed: "derived.previewFailed",
+  previewRejected: "derived.previewRejected",
+  stlTooLarge: "derived.stlTooLarge",
 };
 
 /**
@@ -121,6 +146,13 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
         const words =
           file.kind === "3mf" ? parseStatusWords(file, i18n) : derivedStatusWords(file, i18n);
         const derived = derivedMessageIn(i18n, file);
+        // The preview picture's own status and reason (issue #380).
+        const pictureWords = previewStatusWords(file, i18n);
+        const pictureReason = derivedMessageIn(i18n, {
+          derivedMessage: file.previewMessage ?? null,
+          ...(file.previewCodes === undefined ? {} : { derivedCodes: file.previewCodes }),
+          ...(file.previewDetail === undefined ? {} : { derivedDetail: file.previewDetail }),
+        });
         return (
           <li key={file.id} className="studio-list-item">
             <div className="studio-row">
@@ -141,6 +173,8 @@ export function FilesTab({ files, shown, onView, navigateTo, platform }: FilesTa
             )}
             {words === null ? null : <p className="studio-muted">{words}</p>}
             {derived === null ? null : <pre className="ph-detail">{derived}</pre>}
+            {pictureWords === null ? null : <p className="studio-muted">{pictureWords}</p>}
+            {pictureReason === null ? null : <pre className="ph-detail">{pictureReason}</pre>}
             <div className="studio-actions">
               {viewable(file) ? (
                 <button
