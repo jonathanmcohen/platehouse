@@ -225,6 +225,72 @@ describe("a run", () => {
     expect((await row(old.modelId)).descriptionMd).toBe(BY_RC);
   });
 
+  // The 0.1.1-rc.1 live check: converter 3 ran MakerWorld's Membership box
+  // together, and its re-conversion was recorded as finished as
+  // reconvert-descriptions-3. A database in that state, after the move to
+  // converter 4: the step runs again, writes again what converter 3 wrote
+  // and nobody touched, leaves an edited description alone, and runs once.
+  test("runs again, once, after the converter version moves on, for what the older converter wrote", async () => {
+    expect(CONVERTER_VERSION).toBe(4);
+    const memberHtml =
+      "<commercialme><commercialtitle>Membership</commercialtitle><commercialcontent>Sell my models</commercialcontent></commercialme>";
+    const byV3 = "MembershipSell my models";
+    const now = "Membership\n\nSell my models";
+    /** Makes a model's description look as converter 3 stored it. */
+    const asV3 = async (modelId: string, fileId: string, description: string) => {
+      await env.db
+        .updateTable("models")
+        .set({
+          descriptionMd: description,
+          descriptionSha256: descriptionSha256(byV3),
+          descriptionConverter: 3,
+          descriptionFileId: fileId,
+        })
+        .where("id", "=", modelId)
+        .execute();
+    };
+    const untouched = await ingestMakerWorld(memberHtml);
+    await asV3(untouched.modelId, untouched.fileId, byV3);
+    const edited = await ingestMakerWorld(memberHtml);
+    await asV3(edited.modelId, edited.fileId, `${byV3}\n\nMy own notes`);
+    await env.db
+      .insertInto("upgradeSteps")
+      .values({
+        name: "reconvert-descriptions-3",
+        result: JSON.stringify({ checked: 2, changed: 0, unchanged: 2, kept: 0, unreadable: 0 }),
+      })
+      .execute();
+
+    const first = reconvert();
+    expect(await first.run.pending()).toBe(true);
+    const result = await runToEnd(first.run);
+    expect(result?.changed).toBeGreaterThanOrEqual(1);
+    expect(await row(untouched.modelId)).toMatchObject({
+      descriptionMd: now,
+      descriptionSha256: descriptionSha256(now),
+      descriptionConverter: 4,
+      descriptionFileId: untouched.fileId,
+    });
+    expect(await row(edited.modelId)).toMatchObject({
+      descriptionMd: `${byV3}\n\nMy own notes`,
+      descriptionConverter: 3,
+    });
+    const steps = await env.db
+      .selectFrom("upgradeSteps")
+      .select("name")
+      .where("name", "like", "reconvert-descriptions-%")
+      .orderBy("name")
+      .execute();
+    expect(steps.map((s) => s.name)).toEqual(["reconvert-descriptions-3", RECONVERT_STEP]);
+
+    // Once only: a second run does nothing, even with the description put back.
+    await asV3(untouched.modelId, untouched.fileId, byV3);
+    const second = reconvert();
+    expect(await second.run.pending()).toBe(false);
+    expect(await second.run.run()).toBeNull();
+    expect((await row(untouched.modelId)).descriptionMd).toBe(byV3);
+  });
+
   test("never writes over a description changed after it was read", async () => {
     const old = await ingestMakerWorld(HTML);
     await asBefore011(old.modelId, BY_RC);

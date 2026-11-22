@@ -524,7 +524,65 @@ describe("a run", () => {
   });
 
   test("is named for the converter version, so the next converter fix runs again", () => {
-    expect(RECONVERT_STEP).toBe("reconvert-descriptions-3");
+    expect(RECONVERT_STEP).toBe("reconvert-descriptions-4");
+  });
+
+  // The 0.1.1-rc.1 live check: converter 3 still ran a Membership box
+  // together, and its re-conversion was recorded as finished, under its own
+  // version's name. With converter 4 the step is a new one, so it runs again,
+  // once: what converter 3 wrote and nobody touched is written again, an
+  // edited description stays as it is.
+  test("runs again, once, for descriptions an older converter wrote, after the version moves on", async () => {
+    const memberHtml =
+      "<commercialme><commercialtitle>Membership</commercialtitle><commercialcontent>Sell my models</commercialcontent></commercialme>";
+    const byV3 = "MembershipSell my models";
+    const now = "Membership\n\nSell my models";
+    const rows = [
+      stored({
+        modelId: model(1),
+        description: byV3,
+        sha256: descriptionSha256(byV3),
+        converter: 3,
+        fileId: fileOf(1),
+      }), // untouched since converter 3 wrote it
+      stored({
+        modelId: model(2),
+        description: `${byV3}\n\nMy own notes`,
+        sha256: descriptionSha256(byV3),
+        converter: 3,
+        fileId: fileOf(2),
+      }), // edited since
+    ];
+    const files = { [model(1)]: [file(fileOf(1))], [model(2)]: [file(fileOf(2))] };
+    const mem = memoryStore(rows, files);
+    const v3Counts = { checked: 7, changed: 2, unchanged: 3, kept: 2, unreadable: 0 };
+    mem.finished.set("reconvert-descriptions-3", v3Counts);
+    const { readText, read } = reader({
+      [fileOf(1)]: { html: memberHtml, note: null },
+      [fileOf(2)]: { html: memberHtml, note: null },
+    });
+    const reconvert = createDescriptionReconvert({ store: mem.store, readText, log: () => {} });
+
+    expect(await reconvert.pending()).toBe(true);
+    expect(await reconvert.run()).toEqual({
+      checked: 2,
+      changed: 1,
+      unchanged: 0,
+      kept: 1,
+      unreadable: 0,
+    });
+    expect(mem.writes).toEqual([{ modelId: model(1), description: now, fileId: fileOf(1) }]);
+    // The edit is decided from its hash alone, without reading its file.
+    expect(read).toEqual([fileOf(1)]);
+    // Converter 3's record stays as it was, beside the new one.
+    expect(mem.finished.get("reconvert-descriptions-3")).toEqual(v3Counts);
+    expect([...mem.finished.keys()]).toEqual(["reconvert-descriptions-3", RECONVERT_STEP]);
+
+    read.length = 0;
+    expect(await reconvert.pending()).toBe(false);
+    expect(await reconvert.run()).toBeNull();
+    expect(read).toEqual([]);
+    expect(mem.writes).toHaveLength(1);
   });
 });
 

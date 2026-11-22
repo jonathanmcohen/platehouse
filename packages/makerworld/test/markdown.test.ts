@@ -587,22 +587,31 @@ describe("htmlToMarkdown: ported cases", () => {
   // <a"q"> are other elements, not anchors, and <ul-x> or <h2:x> is no list
   // or heading. The converter once ended the name at the first character that
   // was not a letter or digit, so each of these acted as the element its name
-  // began with (issue #131). Each is now an unknown element: its tags are
-  // dropped and its text stays, exactly as for a <span>.
+  // began with (issue #131). Each is now an element HTML does not define:
+  // its tags are dropped and its text stays, and, as for every such element
+  // since the 0.1.1-rc.1 live check, it ends its block exactly as a <div>
+  // does (test/blocks.test.ts).
   it.each([
-    ["a hyphen after a", '<p><a-x href="https://e.test/">t</a-x></p>', "<p><span>t</span></p>"],
-    ["a colon after a", '<p><a:x href="https://e.test/">t</a:x></p>', "<p><span>t</span></p>"],
-    ["a quote after a", '<p><a"q" href="https://e.test/">t</a></p>', "<p><span>t</span></p>"],
-    ["upper case", '<p><A-X HREF="https://e.test/">t</A-X></p>', "<p><span>t</span></p>"],
-  ])("a tag whose name only begins with a makes no link: %s", (_name, html, asSpan) => {
+    ["a hyphen after a", '<p>s<a-x href="https://e.test/">t</a-x></p>', "<p>s<div>t</div></p>"],
+    ["a colon after a", '<p>s<a:x href="https://e.test/">t</a:x></p>', "<p>s<div>t</div></p>"],
+    ["upper case", '<p>s<A-X HREF="https://e.test/">t</A-X></p>', "<p>s<div>t</div></p>"],
+  ])("a tag whose name only begins with a makes no link: %s", (_name, html, asDiv) => {
     const out = htmlToMarkdown(html);
-    expect(out).toBe(htmlToMarkdown(asSpan));
-    expect(out).toBe("t");
+    expect(out).toBe(htmlToMarkdown(asDiv));
+    expect(out).toBe("s\n\nt");
     expect(render(out)).not.toMatch(/<a /);
   });
 
-  const asSpan = (html: string, name: string): string =>
-    html.replaceAll(`<${name}>`, "<span>").replaceAll(`</${name}>`, "</span>");
+  // a"q" opens an element HTML does not define, and the </a> after it closes
+  // no link, so the text stays and no link is made.
+  it("a tag whose name only begins with a makes no link: a quote after a", () => {
+    const out = htmlToMarkdown('<p>s<a"q" href="https://e.test/">t</a></p>');
+    expect(out).toBe("s\n\nt");
+    expect(render(out)).not.toMatch(/<a /);
+  });
+
+  const asDiv = (html: string, name: string): string =>
+    html.replaceAll(`<${name}>`, "<div>").replaceAll(`</${name}>`, "</div>");
 
   // Each would open a list nested in the item; as an unknown element it opens
   // none, so its item is the outer list's next item.
@@ -613,7 +622,7 @@ describe("htmlToMarkdown: ported cases", () => {
     ['ol"q"', "ol", '<ol><li>a<ol"q"><li>b</li></ol"q">c</li><li>d</li></ol>'],
   ])("a tag whose name only begins with a list name opens no list: %s", (name, list, html) => {
     const out = htmlToMarkdown(html);
-    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(out).toBe(htmlToMarkdown(asDiv(html, name)));
     expect(render(out).match(new RegExp(`<${list}>`, "g"))).toHaveLength(1);
   });
 
@@ -623,7 +632,7 @@ describe("htmlToMarkdown: ported cases", () => {
     ['h3"q"', '<p>x</p><h3"q">Title</h3"q"><p>y</p>'],
   ])("a tag whose name only begins with a heading name is no heading: %s", (name, html) => {
     const out = htmlToMarkdown(html);
-    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
+    expect(out).toBe(htmlToMarkdown(asDiv(html, name)));
     expect(render(out)).not.toMatch(/<h[1-6]>/);
   });
 
@@ -632,14 +641,15 @@ describe("htmlToMarkdown: ported cases", () => {
   // attribute name y" and the tag ends at its first >. The converter once
   // paired every quote it met after the name, so an odd number of quotes in a
   // name made the tag fail and its markup show as text, or run past its real
-  // > to a later one and hide the text between (PR #121 review).
+  // > to a later one and hide the text between (PR #121 review). The name
+  // span"x is no element HTML defines, so it ends its block like a <div>.
   it.each([
-    ["an odd number of quotes in the name", '<p>a<span"x y">b</span>c</p>', "abc"],
-    ["an odd number of quotes in an end tag", '<p>a<span>b</span"x y">c</p>', "abc"],
+    ["an odd number of quotes in the name", '<p>a<span"x y">b</span>c</p>', "a\n\nbc"],
+    ["an odd number of quotes in an end tag", '<p>a<span>b</span"x y">c</p>', "ab\n\nc"],
     ["inch marks after the tag", '<p>a<span"x y">5" tall > 3" wide</span>c</p>', null],
   ])("a quote in a tag name ends the tag where a browser does: %s", (_name, html, text) => {
     const out = htmlToMarkdown(html);
-    const plain = html.replaceAll('<span"x y">', "<span>").replaceAll('</span"x y">', "</span>");
+    const plain = html.replaceAll('<span"x y">', "<div>").replaceAll('</span"x y">', "</div>");
     expect(out).toBe(htmlToMarkdown(plain));
     if (text !== null) expect(out).toBe(text);
     expect(out).not.toContain("span");
@@ -647,17 +657,23 @@ describe("htmlToMarkdown: ported cases", () => {
 
   // A browser lowercases only A-Z in a tag name. JavaScript's toLowerCase
   // also folds Unicode, and U+212A KELVIN SIGN folds to k, so a name holding
-  // it once read as blockquote and wrote a paragraph break.
-  it("a tag name is lowercased in ASCII only, so a Kelvin sign makes no blockquote", () => {
-    const name = "bloc\u212aquote";
+  // it once read as blockquote and wrote a paragraph break. Since every
+  // element HTML does not define ends its block too, a blockquote and such a
+  // name now write the same, so the check uses a name that would fold to an
+  // inline element: mar plus a Kelvin sign would read as mark, which keeps
+  // "abc" joined. Read in ASCII only, it is no element HTML defines and ends
+  // its block, as a <div> does.
+  it("a tag name is lowercased in ASCII only, so a Kelvin sign makes no other element", () => {
+    const name = "mar\u212a";
     const html = `<p>a<${name}>b</${name}>c</p>`;
     const out = htmlToMarkdown(html);
-    expect(out).toBe(htmlToMarkdown(asSpan(html, name)));
-    expect(out).toBe("abc");
+    expect(out).toBe(htmlToMarkdown(asDiv(html, name)));
+    expect(out).toBe("a\n\nb\n\nc");
+    expect(htmlToMarkdown("<p>a<mark>b</mark>c</p>")).toBe("abc");
   });
 
   it("a tag whose name only begins with script keeps its text, as a browser shows it", () => {
-    expect(htmlToMarkdown("<p>a<script-x>b</script-x>c</p>")).toBe("abc");
+    expect(htmlToMarkdown("<p>a<script-x>b</script-x>c</p>")).toBe("a\n\nb\n\nc");
   });
 
   it.each([

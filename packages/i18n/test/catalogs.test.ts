@@ -56,6 +56,67 @@ describe("the built-in catalogs", () => {
   });
 });
 
+// How long the estimates for a printer take (the 0.1.1-rc.1 live check:
+// Spanish showed "quedan unas 1 hora y 9 minutos"). The article sat outside
+// the plural, so it was plural for one hour; it now agrees for 1 and for
+// more, and the sentences around it no longer need a verb that agrees with
+// the time.
+describe("Spanish and French wording of a time left", () => {
+  const es = messagesOf(catalogs.get("es") as Record<string, unknown>) as Messages;
+  const fr = messagesOf(catalogs.get("fr") as Record<string, unknown>) as Messages;
+  const say = (
+    locale: string,
+    messages: Messages,
+    key: string,
+    values: Record<string, string | number>,
+  ) => formatMessage(locale, messages[key] as string, values);
+
+  it.each([
+    ["printers.about.hours", { hours: 1 }, "alrededor de una hora"],
+    ["printers.about.hours", { hours: 3 }, "alrededor de 3 horas"],
+    ["printers.about.minutes", { minutes: 1 }, "alrededor de un minuto"],
+    ["printers.about.minutes", { minutes: 5 }, "alrededor de 5 minutos"],
+    ["printers.about.hoursMinutes", { hours: 1, minutes: 9 }, "alrededor de una hora y 9 minutos"],
+    ["printers.about.hoursMinutes", { hours: 2, minutes: 1 }, "alrededor de 2 horas y un minuto"],
+  ])("Spanish %s with %o is %s", (key, values, want) => {
+    expect(say("es", es, key, values)).toBe(want);
+  });
+
+  it("Spanish says one plate waiting and the time left with nothing to agree", () => {
+    expect(say("es", es, "printers.waiting", { waiting: 1, time: "alrededor de una hora" })).toBe(
+      "1 placa pendiente de estimar; tiempo restante: alrededor de una hora.",
+    );
+    expect(say("es", es, "printers.waiting", { waiting: 2, time: "alrededor de 3 horas" })).toBe(
+      "2 placas pendientes de estimar; tiempo restante: alrededor de 3 horas.",
+    );
+    expect(
+      say("es", es, "printers.waitingAhead", {
+        waiting: 1,
+        time: "alrededor de un minuto",
+        ahead: 1,
+      }),
+    ).toBe(
+      `1 placa pendiente de estimar; tiempo restante: alrededor de un minuto, contando 1 placa o renderizado m${String.fromCodePoint(0xe1)}s en cola por delante.`,
+    );
+  });
+
+  it.each([
+    ["printers.about.hours", { hours: 1 }, "environ 1 heure"],
+    ["printers.about.hours", { hours: 3 }, "environ 3 heures"],
+    ["printers.about.minutes", { minutes: 1 }, "environ 1 minute"],
+    ["printers.about.hoursMinutes", { hours: 1, minutes: 9 }, "environ 1 heure et 9 minutes"],
+    ["printers.about.hoursMinutes", { hours: 2, minutes: 1 }, "environ 2 heures et 1 minute"],
+  ])("French %s with %o is %s", (key, values, want) => {
+    expect(say("fr", fr, key, values)).toBe(want);
+  });
+
+  it("French says one plate waiting and the time left in agreement", () => {
+    expect(say("fr", fr, "printers.waiting", { waiting: 1, time: "environ 1 heure" })).toBe(
+      "1 plateau en attente d'estimation, encore environ 1 heure.",
+    );
+  });
+});
+
 describe("English wording", () => {
   it("one plate waiting for a removed printer takes a singular verb (issue #288)", () => {
     const message = english["printers.removeMessage"] as string;

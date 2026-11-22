@@ -2119,4 +2119,26 @@ describe("library polish from the rc.3 live check (issue #317)", () => {
       expect(button("Select all 2 matching").getAttribute("aria-disabled")).not.toBe("true");
     });
   });
+
+  // The 0.1.1-rc.1 live check: with no results, Select all on this page
+  // stayed enabled beside Select all 0 matching, which is disabled.
+  describe("Select all on this page with nothing shown", () => {
+    test("is marked disabled, as Select all 0 matching is, and selects nothing", async () => {
+      stubServer(library());
+      await render("/?tag=qa-rc3");
+      await selectMode();
+      const page = button("Select all on this page");
+      expect(page.getAttribute("aria-disabled")).toBe("true");
+      expect(button("Select all 0 matching").getAttribute("aria-disabled")).toBe("true");
+      await click(page);
+      expect(statusText()).toBe("No models selected");
+    });
+
+    test("is not disabled once the page shows a model", async () => {
+      stubServer(library());
+      await render("/?tag=PLA");
+      await selectMode();
+      expect(button("Select all on this page").getAttribute("aria-disabled")).not.toBe("true");
+    });
+  });
 });

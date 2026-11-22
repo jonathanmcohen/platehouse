@@ -936,6 +936,7 @@ for (const [file, want] of [
   [".github/workflows/apt-snapshot.yml", TESTS],
   [".github/scripts/apt-snapshot.mjs", TESTS],
   ["docker/app.Dockerfile", TESTS],
+  ["docker/check-image-labels.sh", TESTS],
   ["apps/slicer/Dockerfile", TESTS],
   ["apps/slicer/test/container/smoke.test.ts", TESTS],
   ["apps/slicer/test/container/support/slicer.ts", TESTS],
@@ -1172,6 +1173,7 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     ".github/workflows/apt-snapshot.yml",
     ".github/scripts/apt-snapshot.mjs",
     "docker/app.Dockerfile",
+    "docker/check-image-labels.sh",
     "apps/slicer/Dockerfile",
     "apps/slicer/test/container/smoke.test.ts",
     "apps/slicer/test/container/support/slicer.ts",
@@ -1961,6 +1963,119 @@ test("slicer-image: both builds pass ORCA_VERSION, ORCA_SHA256 and ORCA_SRC_SHA 
     assert.ok(jobBlock(slicerText(), k).includes(`\n      ${v}\n`), `${k} outputs ${v}`);
   }
 });
+
+// The slicer image's OCI labels (the 0.1.1-rc.1 live check): its
+// org.opencontainers.image.version read 24.04, inherited from the Ubuntu
+// base, and its revision was empty. Both builds now take the labels
+// docker/metadata-action computes, as release.yml's app image does (issue
+// #317): the version is the release's on a run from a release tag (the
+// semver entry, as in release.yml) and the Orca version on any other run
+// (the raw entry, enabled only when detect found no release tag). The title
+// and description are the slicer's own, not the repository's.
+const SLICER_LABELS = "Labels for this image";
+const SLICER_LABEL_CHECK = "Check the labels";
+
+test("slicer-image labels: both builds carry metadata-action's labels, the version from the release tag or the Orca version", () => {
+  const job = jobBlock(slicerText(), "build");
+  const step = stepBlock(job, SLICER_LABELS);
+  assert.match(step, /\n {8}id: labels\n/);
+  assert.match(step, /\n {8}uses: docker\/metadata-action@v6\.2\.0\n/, "the action and tag release.yml uses");
+  assert.match(step, /\n {10}images: \$\{\{ env\.IMAGE \}\}\n/);
+  const block = (key) => {
+    const m = step.match(new RegExp(`\\n {10}${key}: \\|\\n((?: {12}.+\\n)+)`));
+    assert.ok(m, `${key}: | in\n${step}`);
+    return m[1].trimEnd().split("\n").map((l) => l.trim());
+  };
+  assert.deepEqual(block("tags"), [
+    "type=semver,pattern={{version}}",
+    "type=raw,value=${{ needs.detect.outputs.version }},enable=${{ needs.detect.outputs.release == '' }}",
+  ]);
+  const labels = block("labels");
+  assert.deepEqual(
+    labels.map((l) => l.split("=")[0]),
+    ["org.opencontainers.image.title", "org.opencontainers.image.description"],
+  );
+  assert.equal(labels[0], "org.opencontainers.image.title=platehouse-slicer");
+  assert.doesNotMatch(step, /\n {8}(if|continue-on-error):/);
+  const builds = jobSteps(job).filter((s) => /\n {8}uses: docker\/build-push-action@/.test(s));
+  assert.equal(builds.length, 2);
+  for (const b of builds) {
+    assert.equal(stepInputs(b).inputs.labels, "${{ steps.labels.outputs.labels }}", "the same labels on the tested build and the push");
+  }
+  const steps = jobSteps(job);
+  const at = (name) => steps.findIndex((s) => s.startsWith(`      - name: ${name}\n`));
+  assert.ok(at(SLICER_LABELS) < at("Build (load)"), "the labels are computed before the first build");
+});
+
+test("slicer-image labels: the loaded image's labels are checked after the smoke slice and before anything is pushed", () => {
+  const job = jobBlock(slicerText(), "build");
+  const step = stepBlock(job, SLICER_LABEL_CHECK);
+  assert.match(step, /\n {8}id: labelcheck\n/);
+  assert.doesNotMatch(step, /\n {8}(if|continue-on-error):/, "nothing softens the check");
+  assert.match(step, /\n {10}LABELS_VERSION: \$\{\{ steps\.labels\.outputs\.version \}\}\n/);
+  assert.match(step, /\n {10}RELEASE: \$\{\{ needs\.detect\.outputs\.release \}\}\n/);
+  assert.match(stepScript(job, SLICER_LABEL_CHECK), /docker\/check-image-labels\.sh local "\$LOCAL" "\$want" "\$GITHUB_SHA"/);
+  const ids = stepIds(job);
+  assert.ok(ids.indexOf("smoke") < ids.indexOf("labelcheck"), "after the smoke slice");
+  assert.ok(ids.indexOf("labelcheck") < ids.indexOf("login"), "before the login");
+  assert.ok(ids.indexOf("labelcheck") < ids.indexOf("push"), "before the push");
+});
+
+// The check step, run in bash at the repo root with a stub docker (exported,
+// so docker/check-image-labels.sh, a script of its own, runs it too) that
+// answers the loaded image's labels.
+const SLICER_SOURCE = "https://github.com/jonathanmcohen/platehouse";
+const SLICER_REVISION = "0123456789abcdef0123456789abcdef01234567";
+const slicerLabels = (version, over = {}) => ({
+  "org.opencontainers.image.created": "2026-11-22T05:00:00.000Z",
+  "org.opencontainers.image.description": "OrcaSlicer and OpenSCAD behind the Platehouse slicer API",
+  "org.opencontainers.image.licenses": "AGPL-3.0",
+  "org.opencontainers.image.revision": SLICER_REVISION,
+  "org.opencontainers.image.source": SLICER_SOURCE,
+  "org.opencontainers.image.title": "platehouse-slicer",
+  "org.opencontainers.image.url": SLICER_SOURCE,
+  "org.opencontainers.image.version": version,
+  ...over,
+});
+// The step's name is written out, not SLICER_LABEL_CHECK, so the gate's path
+// scan (STEP_RUNNERS) can read which step runs at the repo root.
+const labelCheck = (env, labels) =>
+  runSlicerStep("build", "Check the labels", {
+    cwd: ROOT,
+    stubs: [
+      `docker() { echo "docker $*" >> "$CALLS"; printf '%s' '${JSON.stringify(labels)}'; }`,
+      "export -f docker",
+    ],
+    env: {
+      LOCAL: "platehouse-slicer:smoke",
+      GITHUB_SHA: SLICER_REVISION,
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_REPOSITORY: "jonathanmcohen/platehouse",
+      ...env,
+    },
+  });
+
+for (const [name, env, labels, want] of [
+  ["a release tag's run passes with the release's version", { RELEASE: "0.1.1-rc.2", VERSION: "2.5.0", LABELS_VERSION: "0.1.1-rc.2" }, slicerLabels("0.1.1-rc.2"), { ok: true }],
+  ["a daily run passes with the Orca version", { RELEASE: "", VERSION: "2.5.0", LABELS_VERSION: "2.5.0" }, slicerLabels("2.5.0"), { ok: true }],
+  ["the Ubuntu base's 24.04 fails, naming the version label", { RELEASE: "0.1.1-rc.2", VERSION: "2.5.0", LABELS_VERSION: "0.1.1-rc.2" }, slicerLabels("24.04"), { fail: /org\.opencontainers\.image\.version is '24\.04', not '0\.1\.1-rc\.2'/ }],
+  ["an empty revision fails, naming it", { RELEASE: "", VERSION: "2.5.0", LABELS_VERSION: "2.5.0" }, slicerLabels("2.5.0", { "org.opencontainers.image.revision": "" }), { fail: /org\.opencontainers\.image\.revision is '', not '0123456789abcdef/ }],
+  ["a release tag's run whose labels say the Orca version fails before docker", { RELEASE: "0.1.1-rc.2", VERSION: "2.5.0", LABELS_VERSION: "2.5.0" }, slicerLabels("2.5.0"), { fail: /gave the version '2\.5\.0', not '0\.1\.1-rc\.2'/, noDocker: true }],
+  ["no version from metadata-action fails before docker", { RELEASE: "", VERSION: "2.5.0", LABELS_VERSION: "" }, slicerLabels("2.5.0"), { fail: /gave the version '', not '2\.5\.0'/, noDocker: true }],
+]) {
+  test(`slicer-image label check: ${name}`, () => {
+    const r = labelCheck(env, labels);
+    if (want.ok) {
+      assert.equal(r.status, 0, r.log);
+      assert.match(r.calls, /^docker image inspect --format \{\{json \.Config\.Labels\}\} platehouse-slicer:smoke\n$/);
+    } else {
+      assert.notEqual(r.status, 0, r.log);
+      assert.match(r.log, want.fail);
+      if (want.noDocker) assert.equal(r.calls, "", "docker is not asked");
+      assert.match(r.logs["labelcheck.log"] ?? "", want.fail, "the step keeps its log for the failure issue");
+    }
+  });
+}
 
 // Nothing reaches the registry before the smoke slice passed, test code never
 // runs with registry credentials on disk, and no tag exists before the

@@ -12,7 +12,7 @@
 //   from that one file;
 // - one written before 0.1.1 has no such record. It is untouched only when
 //   its text is, byte for byte, what an earlier converter (packages/makerworld
-//   earlierConversions: rc.1 to rc.3, then 0.1.0) writes for one of the
+//   earlierConversions: rc.1 to rc.3, then 0.1.0, then 0.1.1-rc.1) writes for one of the
 //   model's .3mf files, with or without that file's licence note at its foot,
 //   composed as fillMetadata composes it. The first file that matches, in
 //   upload order, is taken as its source.
@@ -28,7 +28,11 @@
 // matches is decided without reading anything. A model already written by
 // the current converter is not a candidate at all. Safe to run twice: the
 // run records itself in upgrade_steps under RECONVERT_STEP when it finishes,
-// and a run that finds that record does nothing. Only one run goes at a time
+// and a run that finds that record does nothing. RECONVERT_STEP is named for
+// the converter version, so a converter fix that raises CONVERTER_VERSION
+// makes it a new step, which runs once more for what the older converters
+// wrote (0.1.1-rc.1's step, reconvert-descriptions-3, then
+// reconvert-descriptions-4). Only one run goes at a time
 // (two servers started together, or a job queued again while one still runs):
 // a run that finds another holding the step does nothing either. Each model's
 // outcome is counted in the database as the run goes, with the model as the

@@ -38,7 +38,9 @@ const BLOCK: ReadonlySet<string> = new Set([
   ...BLOCK_0_1_0,
   // MakerWorld's own "Boost Me" box: a title above a line of text on its
   // site, written as these three elements. Their text once ran together,
-  // "Boost MeWant more?" (#357).
+  // "Boost MeWant more?" (#357). Version 4 needs no names here, as no
+  // element HTML does not define runs in (HTML_ELEMENTS); they stay for
+  // version 3, htmlToMarkdown011Rc1.
   "boostme",
   "boosttitle",
   "boostcontent",
@@ -63,6 +65,168 @@ const BLOCK: ReadonlySet<string> = new Set([
   "nav",
   "search",
   "summary",
+]);
+/**
+ * Every element the HTML standard defines, obsolete ones included, plus math
+ * and svg, which it embeds. The current converter treats every element NOT
+ * here as a block boundary, as BLOCK's elements are (the 0.1.1-rc.1 live
+ * check): MakerWorld writes its own boxes as elements of its own (Boost Me
+ * as boostme, boosttitle and boostcontent, Membership as commercialme,
+ * commercialtitle and commercialcontent, a video as oembed), which its site
+ * shows as blocks. Naming each box's elements fixed Boost Me and let the
+ * Membership box run its title into its text ("MembershipWant to sell..."),
+ * so no name is listed for them: a box added later, under any name, ends
+ * its block too. An element here that the converter writes no markup for
+ * and that is not in BLOCK is dropped with its text kept, as before.
+ * MathML's own elements (mi, mo, ...) are not here, so a formula's parts
+ * would be written apart; MakerWorld's editor writes none.
+ */
+export const HTML_ELEMENTS: ReadonlySet<string> = new Set([
+  "a",
+  "abbr",
+  "acronym",
+  "address",
+  "applet",
+  "area",
+  "article",
+  "aside",
+  "audio",
+  "b",
+  "base",
+  "basefont",
+  "bdi",
+  "bdo",
+  "bgsound",
+  "big",
+  "blink",
+  "blockquote",
+  "body",
+  "br",
+  "button",
+  "canvas",
+  "caption",
+  "center",
+  "cite",
+  "code",
+  "col",
+  "colgroup",
+  "data",
+  "datalist",
+  "dd",
+  "del",
+  "details",
+  "dfn",
+  "dialog",
+  "dir",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "embed",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "font",
+  "footer",
+  "form",
+  "frame",
+  "frameset",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "header",
+  "hgroup",
+  "hr",
+  "html",
+  "i",
+  "iframe",
+  "image",
+  "img",
+  "input",
+  "ins",
+  "isindex",
+  "kbd",
+  "keygen",
+  "label",
+  "legend",
+  "li",
+  "link",
+  "listing",
+  "main",
+  "map",
+  "mark",
+  "marquee",
+  "math",
+  "menu",
+  "menuitem",
+  "meta",
+  "meter",
+  "multicol",
+  "nav",
+  "nextid",
+  "nobr",
+  "noembed",
+  "noframes",
+  "noscript",
+  "object",
+  "ol",
+  "optgroup",
+  "option",
+  "output",
+  "p",
+  "param",
+  "picture",
+  "plaintext",
+  "pre",
+  "progress",
+  "q",
+  "rb",
+  "rp",
+  "rt",
+  "rtc",
+  "ruby",
+  "s",
+  "samp",
+  "script",
+  "search",
+  "section",
+  "select",
+  "selectedcontent",
+  "slot",
+  "small",
+  "source",
+  "spacer",
+  "span",
+  "strike",
+  "strong",
+  "style",
+  "sub",
+  "summary",
+  "sup",
+  "svg",
+  "table",
+  "tbody",
+  "td",
+  "template",
+  "textarea",
+  "tfoot",
+  "th",
+  "thead",
+  "time",
+  "title",
+  "tr",
+  "track",
+  "tt",
+  "u",
+  "ul",
+  "var",
+  "video",
+  "wbr",
+  "xmp",
 ]);
 const DROP_CONTENT: ReadonlySet<string> = new Set([
   "script",
@@ -431,42 +595,59 @@ function textToMarkdown(raw: string): string {
 // tables to pipe tables with the first row as the header (padded to the
 // widest row; a heading or list in a cell stays on its row, items joined by
 // "; "; a table in a cell is flattened into it, cells joined by spaces and
-// rows by "; "), every other tag dropped (its text kept, except script,
-// style and the like), comments dropped (an unterminated one drops the rest),
+// rows by "; "), a block element, and any element HTML does not define, to a
+// paragraph break (a space in a list item or a table cell), every other tag
+// dropped (its text kept, except script, style and the like), comments
+// dropped (an unterminated one drops the rest),
 // runs of blank lines collapsed, trimmed. Text is escaped as textToMarkdown
 // says; the converter's own markup is not escaped. A line break is a single
 // newline, which renderMarkdown shows as a line break.
 /**
  * The converter's version, raised whenever htmlToMarkdown writes something
  * different for some input. 1 is 0.1.0-rc.1 to rc.3, 2 is 0.1.0-rc.4 and
- * 0.1.0, 3 is 0.1.1 (#357: a block boundary always breaks the paragraph).
- * Ingest stores it beside each description it writes, so the re-conversion
- * on upgrade (apps/server/src/library/reconvert.ts) knows which stored
- * descriptions an older converter wrote.
+ * 0.1.0, 3 is 0.1.1-rc.1 (#357: a block boundary always breaks the
+ * paragraph), 4 is 0.1.1 from rc.2 (every element HTML does not define is a
+ * block boundary, so MakerWorld's Membership box and any box it adds later
+ * no longer run their text together). Ingest stores it beside each
+ * description it writes, so the re-conversion on upgrade
+ * (apps/server/src/library/reconvert.ts) knows which stored descriptions an
+ * older converter wrote, and its step is named for it, so it runs once for
+ * each version.
  */
-export const CONVERTER_VERSION = 3;
+export const CONVERTER_VERSION = 4;
 
 /** A MakerWorld description (HTML) as Markdown, with the current converter. */
 export function htmlToMarkdown(html: string | null | undefined): string {
-  return convert(html, BLOCK);
+  return convert(html, BLOCK, true);
+}
+
+/**
+ * htmlToMarkdown as 0.1.1-rc.1 shipped it (version 3), which knew BLOCK's
+ * elements as blocks and dropped every other element it did not handle, its
+ * text kept; test/fixtures/converter-0.1.1-rc.1.json holds what that release
+ * wrote. Used only to recognise what it stored, never to write.
+ */
+export function htmlToMarkdown011Rc1(html: string | null | undefined): string {
+  return convert(html, BLOCK, false);
 }
 
 /**
  * htmlToMarkdown as 0.1.0-rc.4 and 0.1.0 shipped it (version 2), which knew
  * only BLOCK_0_1_0 as blocks; test/fixtures/converter-0.1.0.json holds what
  * that release wrote. Used only to recognise what it stored, never to write.
- * A change to the converter that changes its output for any input without
- * the elements BLOCK added must first freeze a copy of this one, as
+ * A change to the converter that changes its output for any input other
+ * than through which elements are blocks (BLOCK, and whether an element HTML
+ * does not define is one) must first freeze a copy of convert, as
  * legacy/markdown-rc.ts freezes version 1.
  */
 export function htmlToMarkdown010(html: string | null | undefined): string {
-  return convert(html, BLOCK_0_1_0);
+  return convert(html, BLOCK_0_1_0, false);
 }
 
 /**
  * What every earlier converter writes for html, oldest first, trimmed as
- * ingest stores it: version 1 (legacy/markdown-rc.ts) and version 2
- * (htmlToMarkdown010).
+ * ingest stores it: version 1 (legacy/markdown-rc.ts), version 2
+ * (htmlToMarkdown010) and version 3 (htmlToMarkdown011Rc1).
  */
 export function earlierConversions(
   html: string | null | undefined,
@@ -474,10 +655,17 @@ export function earlierConversions(
   return [
     { version: 1, markdown: htmlToMarkdownRc(html).trim() },
     { version: 2, markdown: htmlToMarkdown010(html).trim() },
+    { version: 3, markdown: htmlToMarkdown011Rc1(html).trim() },
   ];
 }
 
-function convert(html: string | null | undefined, blocks: ReadonlySet<string>): string {
+// blocks: the elements that end a paragraph. unknownIsBlock: whether every
+// element HTML_ELEMENTS does not name ends one too (version 4 on).
+function convert(
+  html: string | null | undefined,
+  blocks: ReadonlySet<string>,
+  unknownIsBlock: boolean,
+): string {
   if (!html) return "";
   const out = new Output();
   const lists: List[] = []; // open lists outside cells
@@ -1025,15 +1213,18 @@ function convert(html: string | null | undefined, blocks: ReadonlySet<string>): 
         inCell = true;
         t.cellStart = out.length;
       }
-    } else if (blocks.has(tag)) {
+    } else if (blocks.has(tag) || (unknownIsBlock && !HTML_ELEMENTS.has(tag))) {
       // Inside a list item or a table cell a paragraph is just the text, with
       // a space where it opens or closes so two paragraphs' words stay apart.
       // Between a table's rows it is the same: a paragraph break there split
-      // the table (PR #24 review).
+      // the table (PR #24 review). An element HTML does not define (a
+      // MakerWorld box, a custom element, a malformed name) is the same
+      // (HTML_ELEMENTS says why).
       if (lists.length === 0 && !inCell && tables.length === 0) breakBlock();
       else space();
     }
-    // Every other tag (img, span, font, ...) is dropped; its text stays.
+    // Every other tag HTML defines (img, span, font, ...) is dropped; its
+    // text stays.
   };
 
   // Opens a row of a table that is not nested in a cell, on a line of its

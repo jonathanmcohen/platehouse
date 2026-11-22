@@ -119,7 +119,7 @@ export interface SettingsView {
    * Plates the slicer finishes a minute, for the page's "this will take
    * about" and "left" times: measured from the newest finished slices
    * (estimates/rate.ts), or FALLBACK_SLICES_PER_MINUTE while too few have
-   * finished (issue #317). One decimal place at most.
+   * finished (issue #317). Rounded to two significant figures.
    */
   slicesPerMinute: number;
   bucketVersioning: BucketVersioning;
