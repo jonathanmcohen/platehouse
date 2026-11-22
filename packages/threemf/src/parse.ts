@@ -43,10 +43,13 @@ import { Damaged } from "./errors.js";
 import { LIMITS, MODEL_PREFIX_BYTES } from "./limits.js";
 import type { Filament, Plate, Project, ReadOptions } from "./types.js";
 
+// The zip helpers live in archive.ts; model-xml.ts takes these two from here.
+export { listEntries, ownRead } from "./archive.js";
+
 const MODEL_SETTINGS = "Metadata/model_settings.config";
 const SLICE_INFO = "Metadata/slice_info.config";
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
-const MODEL = "3D/3dmodel.model";
+export const MODEL = "3D/3dmodel.model";
 const PLATE_PNG = /^Metadata\/plate_([1-9][0-9]*)(_small)?\.png$/;
 const COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 const INTEGER = /^\s*-?[0-9]+\s*$/;
@@ -229,7 +232,7 @@ async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number):
 }
 
 /** 3D/3dmodel.model up to <resources, at most MODEL_PREFIX_BYTES. Never damage by size. */
-async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
+export async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
   let buf = Buffer.alloc(0);
   let end = -1;
   await pump(zip, entry, Number.POSITIVE_INFINITY, (chunk) => {

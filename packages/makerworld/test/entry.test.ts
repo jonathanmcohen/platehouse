@@ -19,7 +19,15 @@ const manifest = JSON.parse(readFileSync(join(PKG, "package.json"), "utf8")) as 
   exports?: Record<string, unknown>;
 };
 
-const EXPORTS = ["extractMakerWorld", "htmlToMarkdown", "mapLicense", "renderMarkdown"];
+// Each export and its type, in the order Object.keys(...).sort() gives them.
+const EXPORTS: Array<[string, string]> = [
+  ["CONVERTER_VERSION", "number"],
+  ["earlierConversions", "function"],
+  ["extractMakerWorld", "function"],
+  ["htmlToMarkdown", "function"],
+  ["mapLicense", "function"],
+  ["renderMarkdown", "function"],
+];
 
 // Runs in the child: import the package by its own name (Node's package
 // self-reference, which goes through "exports" like any other consumer) and
@@ -76,7 +84,7 @@ describe("the built package under plain node", () => {
       throw new Error(`plain node could not import the package:\n${e.stderr ?? e.message}`);
     }
     expect(JSON.parse(out)).toEqual({
-      exports: EXPORTS.map((name) => [name, "function"]),
+      exports: EXPORTS,
       license: { spdx: "CC-BY-4.0" },
       markdown: "Hello **there**",
     });

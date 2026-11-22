@@ -268,6 +268,8 @@ describe("trackJobs", () => {
       checkRenders: pending,
       backfillPreviews: pending,
       purgeSessions: pending,
+      reconvertDescriptions: pending,
+      reconvertPending: pending,
       timeZone: "UTC",
       pollingIntervalSeconds: 1,
     };
@@ -295,6 +297,8 @@ describe("trackJobs", () => {
         "pollOrca",
         "purgeExpired",
         "purgeSessions",
+        "reconvertDescriptions",
+        "reconvertPending",
         "slicerJobs.render-scad",
         "slicerJobs.slice",
         "sweepOrphans",

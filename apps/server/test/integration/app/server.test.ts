@@ -34,7 +34,9 @@ import {
   QUEUE,
   SWEEP_ORPHANS_CRON,
   SWEEP_UPLOADS_CRON,
+  UPGRADE_TASKS,
 } from "../../../src/jobs/queues.js";
+import { RECONVERT_STEP } from "../../../src/library/reconvert.js";
 import { type Server, start } from "../../../src/main.js";
 import { bossUploadQueue, uploadsDir } from "../../../src/uploads/tus.js";
 import { build3mf, SCAD_TEXT } from "../support/ingest.js";
@@ -195,11 +197,42 @@ describe("queues and workers", () => {
       expect(job.state, `${task}: ${JSON.stringify(job.output ?? null)}`).toBe("completed");
     }
   });
+
+  // #357: the first start of a version with a new converter queues the
+  // description re-conversion once; it runs and records itself, so the next
+  // start queues nothing.
+  test("the description re-conversion runs once at the first start and records itself", async () => {
+    const step = await until(
+      () =>
+        env.db
+          .selectFrom("upgradeSteps")
+          .select(["name", "result"])
+          .where("name", "=", RECONVERT_STEP)
+          .executeTakeFirst(),
+      (row) => row !== undefined,
+      30_000,
+    );
+    expect(step?.result).toMatchObject({ changed: expect.any(Number), kept: expect.any(Number) });
+    const job = await settled(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions });
+    expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
+    // Its schedule, made at the start while it was pending (#382), is gone
+    // once it has finished.
+    const schedules = await until(
+      () => boss().getSchedules(QUEUE.maintenance),
+      (list) => !list.some((s) => s.key === UPGRADE_TASKS.reconvertDescriptions),
+      30_000,
+    );
+    expect(schedules.map((s) => s.key)).not.toContain(UPGRADE_TASKS.reconvertDescriptions);
+  });
 });
 
 describe("schedules", () => {
   test("every maintenance task is scheduled, at its time", async () => {
-    const schedules = await boss().getSchedules(QUEUE.maintenance);
+    // The description re-conversion's schedule is there only while it is
+    // pending (#382); the test above checks it goes.
+    const schedules = (await boss().getSchedules(QUEUE.maintenance)).filter(
+      (s) => s.key !== UPGRADE_TASKS.reconvertDescriptions,
+    );
     const byKey = new Map(schedules.map((s) => [s.key, s]));
     expect([...byKey.keys()].sort()).toEqual(Object.values(MAINTENANCE_TASKS).sort());
     const expected: Record<string, string> = {

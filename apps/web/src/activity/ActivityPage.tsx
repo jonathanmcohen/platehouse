@@ -79,6 +79,17 @@ export type ActivityEvent =
       detail: string | null;
     }
   | {
+      /** The description re-conversion on upgrade (#357): what one run did. */
+      type: "descriptions_reconverted";
+      at: string;
+      converter: number;
+      checked: number;
+      changed: number;
+      unchanged: number;
+      kept: number;
+      unreadable: number;
+    }
+  | {
       type: "render_failed";
       at: string;
       /** preview: an STL's or a STEP file's preview picture (issue #316). */
@@ -361,6 +372,7 @@ const SCHEDULE_KEYS: Readonly<Record<string, MessageKey>> = {
   "poll-orca": "activity.schedule.pollOrca",
   "check-renders": "activity.schedule.checkRenders",
   "backfill-previews": "activity.schedule.backfillPreviews",
+  "reconvert-descriptions": "activity.schedule.reconvertDescriptions",
 };
 
 /**

@@ -34,6 +34,7 @@
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import { CHECK_RENDERS_CRON } from "../derived/derived.js";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
+import { RECONVERT_PAUSED } from "../library/reconvert.js";
 
 export const QUEUE = {
   ingest: "ingest",
@@ -108,6 +109,70 @@ export const MAINTENANCE_TASKS = {
   purgeSessions: "purge-sessions",
   backfillPreviews: "backfill-previews",
 } as const;
+
+/**
+ * The maintenance queue's one-time upgrade steps: the description
+ * re-conversion (#357, library/reconvert.ts). Its lifecycle is built so that
+ * whatever happens to the process or what it depends on, a stop is clean, no
+ * description is written wrongly or twice, and the step finishes once things
+ * are healthy, without anyone restarting the server (#381, #382):
+ *
+ * - Driven three ways, each only while the step is pending: a job sent at
+ *   start-up, a schedule every RECONVERT_CRON (made at start-up, removed when
+ *   the step finishes, and listed on the Activity page meanwhile), and the
+ *   next job sent after a slice that paused. So a failed or lost job, or an
+ *   outage, only delays it.
+ * - Never two runs at once: the worker takes one maintenance job at a time,
+ *   and the run itself holds a database lock (reconvert.ts exclusive), so a
+ *   second server, or a job sent while one runs, does nothing.
+ * - Each job is sent with no pg-boss retry, and its handler never throws for
+ *   an outage. A run that fails (the object store or the database down)
+ *   backs off instead: the jobs that come within RECONVERT_BACKOFF_MS of the
+ *   failure, doubling with each failure in a row up to an hour, do nothing,
+ *   so a store that is down is asked once in that time, not hammered.
+ * - The server's shutdown signal (QueueDeps.shutdown, aborted as soon as
+ *   stop() begins, before pg-boss is stopped) ends the run before its next
+ *   model and abandons any read in flight, so the job returns well inside
+ *   pg-boss's 10 s graceful stop and nothing is cut off. pg-boss's own
+ *   job.signal, which it aborts only after that wait, is honoured too.
+ *
+ * The maintenance queue's standard policy does not dedupe jobs, so more than
+ * one job may wait at once; the lock makes that harmless.
+ */
+export const UPGRADE_TASKS = {
+  reconvertDescriptions: "reconvert-descriptions",
+} as const;
+
+/** Every 5 minutes, while the description re-conversion is pending (#382). */
+export const RECONVERT_CRON = "*/5 * * * *";
+
+/**
+ * How long the description re-conversion waits after a run that failed on an
+ * outage: 5 minutes, doubling with each failure in a row, at most an hour.
+ */
+export function reconvertBackoffMs(failures: number): number {
+  const minutes = 5 * 2 ** Math.max(0, Math.min(failures - 1, 4));
+  return Math.min(minutes, 60) * 60_000;
+}
+
+/**
+ * How long one maintenance job runs the description re-conversion before it
+ * stops and sends the next job (#357), at most a third of the job's expiry
+ * (15 minutes on the maintenance queue, pg-boss's default). pg-boss fails a
+ * job that outlasts its expiry while the handler carries on, and the
+ * maintenance worker, one job at a time, fetches nothing until the handler
+ * returns. So a run in slices never has its job failed, and the scheduled
+ * maintenance tasks wait at most one slice and the model it is on: those
+ * queued meanwhile were created before the next re-conversion job, so they
+ * run first. The run also stops when pg-boss aborts the job's signal.
+ */
+export const RECONVERT_SLICE_SECONDS = 300;
+
+/** The re-conversion's slice of a job with this expiry, in milliseconds. */
+function reconvertSliceMs(expireInSeconds: number): number {
+  const expiry = Number.isFinite(expireInSeconds) && expireInSeconds > 0 ? expireInSeconds : 900;
+  return Math.min(RECONVERT_SLICE_SECONDS, expiry / 3) * 1000;
+}
 
 /**
  * Every 5 minutes (issue #316): the preview backfill (derived/derived.ts's
@@ -204,6 +269,22 @@ export interface QueueDeps {
    */
   purgeSessions?(now: Date): Promise<unknown>;
   /**
+   * The description re-conversion (#357, library/reconvert.ts's run), when
+   * given with reconvertPending: driven while reconvertPending says it has
+   * not finished (UPGRADE_TASKS says how). It stops after a model once stop
+   * says true (its slice used) and at once when signal aborts (the server
+   * stopping, or pg-boss failing the job), and resolves to RECONVERT_PAUSED
+   * when it did. It rejects on an outage.
+   */
+  reconvertDescriptions?(stop: () => boolean, signal: AbortSignal): Promise<unknown>;
+  /** True while the description re-conversion for the current converter has not finished. */
+  reconvertPending?(): Promise<boolean>;
+  /**
+   * Aborted by the server as soon as its stop() begins, before pg-boss is
+   * stopped, so work in hand ends at once (the description re-conversion).
+   */
+  shutdown?: AbortSignal;
+  /**
    * The preview backfill (derived/derived.ts's backfillPreviews, issue
    * #316), when given: scheduled every 5 minutes (BACKFILL_PREVIEWS_CRON)
    * and run once at startup by startQueues itself.
@@ -224,7 +305,16 @@ export interface QueueDeps {
  */
 export type ServerQueueDeps = QueueDeps &
   Required<
-    Pick<QueueDeps, "slicerJobs" | "pollOrca" | "onIngested" | "checkRenders" | "backfillPreviews">
+    Pick<
+      QueueDeps,
+      | "slicerJobs"
+      | "pollOrca"
+      | "onIngested"
+      | "checkRenders"
+      | "reconvertDescriptions"
+      | "reconvertPending"
+      | "backfillPreviews"
+    >
   >;
 
 interface MaintenanceJob {
@@ -304,6 +394,72 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     );
   }
 
+  // The description re-conversion's job (UPGRADE_TASKS). Its back-off lives
+  // in this process: a restart tries again at once.
+  let reconvertFailures = 0;
+  let reconvertRetryAt = 0;
+  const sendReconvert = () =>
+    boss.send(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions }, { retryLimit: 0 });
+  const unscheduleReconvert = () =>
+    boss.unschedule(QUEUE.maintenance, UPGRADE_TASKS.reconvertDescriptions);
+  const reconvertJob = async (job: { signal: AbortSignal; expireInSeconds: number }) => {
+    const run = deps.reconvertDescriptions;
+    const pending = deps.reconvertPending;
+    if (!run || !pending) throw new Error("No description re-conversion is registered");
+    if (deps.shutdown?.aborted || job.signal.aborted) return;
+    if (Date.now() < reconvertRetryAt) return;
+    const failed = (error: unknown) => {
+      reconvertFailures += 1;
+      const wait = reconvertBackoffMs(reconvertFailures);
+      reconvertRetryAt = Date.now() + wait;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `queues: the description re-conversion stopped (${message.slice(0, 200)}); ` +
+          `it goes on in ${wait / 60_000} minutes or at the next start`,
+      );
+    };
+    let isPending: boolean;
+    try {
+      isPending = await pending();
+    } catch (error) {
+      failed(error);
+      return;
+    }
+    if (!isPending) {
+      await unscheduleReconvert().catch(() => undefined);
+      return;
+    }
+    const stopping = new AbortController();
+    const abort = () => stopping.abort();
+    deps.shutdown?.addEventListener("abort", abort, { once: true });
+    job.signal.addEventListener("abort", abort, { once: true });
+    if (deps.shutdown?.aborted || job.signal.aborted) abort();
+    const stopAt = Date.now() + reconvertSliceMs(job.expireInSeconds);
+    let result: unknown;
+    try {
+      result = await run(() => Date.now() >= stopAt, stopping.signal);
+    } catch (error) {
+      // An error after the stop began is the stop's doing, not an outage.
+      if (!stopping.signal.aborted) failed(error);
+      return;
+    } finally {
+      deps.shutdown?.removeEventListener("abort", abort);
+      job.signal.removeEventListener("abort", abort);
+    }
+    reconvertFailures = 0;
+    reconvertRetryAt = 0;
+    if (result === RECONVERT_PAUSED) {
+      // Not while stopping: the next start, or the schedule, goes on.
+      if (stopping.signal.aborted) return;
+      await sendReconvert().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`queues: sending the next re-conversion job: ${message.slice(0, 200)}`);
+      });
+    } else if (result !== null) {
+      await unscheduleReconvert().catch(() => undefined);
+    }
+  };
+
   const polling =
     deps.pollingIntervalSeconds === undefined
       ? {}
@@ -375,6 +531,9 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           if (!deps.purgeSessions) throw new Error("No session delete is registered");
           await deps.purgeSessions(new Date());
           return;
+        case UPGRADE_TASKS.reconvertDescriptions:
+          await reconvertJob(job);
+          return;
         case MAINTENANCE_TASKS.backfillPreviews:
           if (!deps.backfillPreviews) throw new Error("No preview backfill is registered");
           await deps.backfillPreviews(new Date());
@@ -384,6 +543,28 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       }
     },
   );
+
+  // The description re-conversion on upgrade (#357): while it is pending, its
+  // schedule and a job now; once it has finished, no schedule. A failure here
+  // is logged and never stops the app; the schedule, or the next start, goes on.
+  if (deps.reconvertDescriptions && deps.reconvertPending) {
+    try {
+      if (await deps.reconvertPending()) {
+        await boss.schedule(
+          QUEUE.maintenance,
+          RECONVERT_CRON,
+          { task: UPGRADE_TASKS.reconvertDescriptions },
+          { tz, key: UPGRADE_TASKS.reconvertDescriptions, retryLimit: 0 },
+        );
+        await sendReconvert();
+      } else {
+        await unscheduleReconvert();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: queueing the description re-conversion: ${message.slice(0, 200)}`);
+    }
+  }
 
   // The Orca poll's startup run (Task 12 decision: at startup and every 10
   // minutes), here beside its schedule. It runs after the workers start, so

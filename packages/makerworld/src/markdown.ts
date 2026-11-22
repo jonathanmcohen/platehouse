@@ -14,8 +14,14 @@ import DOMPurify, {
 } from "dompurify";
 import MarkdownItCallable, { type MarkdownIt } from "markdown-it";
 import { decodeEntities, mapEntities } from "./extract.js";
+import { htmlToMarkdownRc } from "./legacy/markdown-rc.js";
 
-const BLOCK: ReadonlySet<string> = new Set([
+// Elements that end a paragraph where they open and close: a paragraph break,
+// or a space inside a list item, a table cell or between a table's rows.
+// Every other element the converter does not handle itself is dropped and
+// its text kept, so an element that is a block on the page but missing here
+// ran its text straight into the next block's (#357).
+const BLOCK_0_1_0: ReadonlySet<string> = new Set([
   "p",
   "div",
   "section",
@@ -27,6 +33,36 @@ const BLOCK: ReadonlySet<string> = new Set([
   "footer",
   "hr",
   "tr",
+]);
+const BLOCK: ReadonlySet<string> = new Set([
+  ...BLOCK_0_1_0,
+  // MakerWorld's own "Boost Me" box: a title above a line of text on its
+  // site, written as these three elements. Their text once ran together,
+  // "Boost MeWant more?" (#357).
+  "boostme",
+  "boosttitle",
+  "boostcontent",
+  // The rest of the elements HTML itself displays as a block and that hold
+  // plain text. Lists, headings and tables are handled on their own; a
+  // caption, a menu and a dir are left out, as they sit inside a table or
+  // hold list items, which those paths handle.
+  "address",
+  "aside",
+  "center",
+  "details",
+  "dialog",
+  "dd",
+  "dl",
+  "dt",
+  "fieldset",
+  "figcaption",
+  "form",
+  "hgroup",
+  "legend",
+  "main",
+  "nav",
+  "search",
+  "summary",
 ]);
 const DROP_CONTENT: ReadonlySet<string> = new Set([
   "script",
@@ -400,7 +436,48 @@ function textToMarkdown(raw: string): string {
 // runs of blank lines collapsed, trimmed. Text is escaped as textToMarkdown
 // says; the converter's own markup is not escaped. A line break is a single
 // newline, which renderMarkdown shows as a line break.
+/**
+ * The converter's version, raised whenever htmlToMarkdown writes something
+ * different for some input. 1 is 0.1.0-rc.1 to rc.3, 2 is 0.1.0-rc.4 and
+ * 0.1.0, 3 is 0.1.1 (#357: a block boundary always breaks the paragraph).
+ * Ingest stores it beside each description it writes, so the re-conversion
+ * on upgrade (apps/server/src/library/reconvert.ts) knows which stored
+ * descriptions an older converter wrote.
+ */
+export const CONVERTER_VERSION = 3;
+
+/** A MakerWorld description (HTML) as Markdown, with the current converter. */
 export function htmlToMarkdown(html: string | null | undefined): string {
+  return convert(html, BLOCK);
+}
+
+/**
+ * htmlToMarkdown as 0.1.0-rc.4 and 0.1.0 shipped it (version 2), which knew
+ * only BLOCK_0_1_0 as blocks; test/fixtures/converter-0.1.0.json holds what
+ * that release wrote. Used only to recognise what it stored, never to write.
+ * A change to the converter that changes its output for any input without
+ * the elements BLOCK added must first freeze a copy of this one, as
+ * legacy/markdown-rc.ts freezes version 1.
+ */
+export function htmlToMarkdown010(html: string | null | undefined): string {
+  return convert(html, BLOCK_0_1_0);
+}
+
+/**
+ * What every earlier converter writes for html, oldest first, trimmed as
+ * ingest stores it: version 1 (legacy/markdown-rc.ts) and version 2
+ * (htmlToMarkdown010).
+ */
+export function earlierConversions(
+  html: string | null | undefined,
+): Array<{ version: number; markdown: string }> {
+  return [
+    { version: 1, markdown: htmlToMarkdownRc(html).trim() },
+    { version: 2, markdown: htmlToMarkdown010(html).trim() },
+  ];
+}
+
+function convert(html: string | null | undefined, blocks: ReadonlySet<string>): string {
   if (!html) return "";
   const out = new Output();
   const lists: List[] = []; // open lists outside cells
@@ -948,7 +1025,7 @@ export function htmlToMarkdown(html: string | null | undefined): string {
         inCell = true;
         t.cellStart = out.length;
       }
-    } else if (BLOCK.has(tag)) {
+    } else if (blocks.has(tag)) {
       // Inside a list item or a table cell a paragraph is just the text, with
       // a space where it opens or closes so two paragraphs' words stay apart.
       // Between a table's rows it is the same: a paragraph break there split
