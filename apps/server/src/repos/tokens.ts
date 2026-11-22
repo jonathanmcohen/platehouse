@@ -4,7 +4,7 @@ import type { ApiToken, DB } from "../db/types.js";
 
 // API tokens (AC-083). Only the SHA-256 of a token and its first 8
 // characters are ever stored; the token itself is shown once by the caller.
-// Since migration 0010 each new token also records who made it (issue #322).
+// Since migration 0011 each new token also records who made it (issue #322).
 
 export interface NewToken {
   name: string;
@@ -12,7 +12,7 @@ export interface NewToken {
   prefix: string;
   /** SHA-256 of the 32-byte random token. */
   tokenHash: Buffer;
-  /** Who made it (migration 0010); left out, the maker is recorded as unknown. */
+  /** Who made it (migration 0011); left out, the maker is recorded as unknown. */
   createdBy?: TokenCreator | null;
 }
 

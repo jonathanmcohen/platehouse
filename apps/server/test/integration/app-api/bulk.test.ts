@@ -22,6 +22,7 @@ import type { LibraryView } from "../../../src/repos/models.js";
 import { tagsRepo } from "../../../src/repos/tags.js";
 import {
   type LibraryEnv,
+  labelStored,
   marker,
   rowCounts,
   seedStoredModel,
@@ -132,6 +133,33 @@ describe("add tags", () => {
     expect(res.body).toMatchObject({ changed: [a, b], unchanged: [], failed: [], tags: [tag] });
     expect(await tagsOf(a)).toEqual([tag]);
     expect(await tagsOf(b)).toEqual([tag]);
+  });
+
+  // Issue #312: no tag is left that no model has, so Add tags that reaches
+  // no live model in the view makes no tag; the answer names the tags all the
+  // same, a stored one as stored.
+  test("Add tags that reaches no live model makes no tag, and names the tags", async () => {
+    const { live, trashed } = await selection();
+    const fresh = `Fresh ${marker()}`;
+    const stored = `Stored ${marker()}`;
+    await createTags(env.db).addTag(live[0], stored);
+    const res = await post("/app/api/bulk/add-tags", {
+      ids: [trashed, MISSING],
+      tags: [fresh, stored.toUpperCase()],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      changed: [],
+      unchanged: [],
+      failed: [
+        { id: trashed, reason: "in_trash" },
+        { id: MISSING, reason: "not_found" },
+      ],
+      notInView: [],
+      tags: [fresh, stored],
+    });
+    expect(await labelStored(env.db, "tags", fresh)).toBe(false);
+    expect(await tagsOf(trashed)).toEqual([]);
   });
 
   test("the same id twice, in any case, counts once", async () => {
@@ -259,6 +287,36 @@ describe("remove a tag", () => {
     expect(await tagsOf(a)).toEqual([]);
   });
 
+  // Issue #312: a tag no model has any more is removed, and the answer still
+  // names it as it was stored.
+  test("taking a tag off its last models removes the tag, and the answer names it", async () => {
+    const { live } = await selection();
+    const [a, b, c] = live;
+    const tag = `Last ${marker()}`;
+    const kept = `Kept ${marker()}`;
+    await createTags(env.db).addTag(a, tag);
+    await createTags(env.db).addTag(b, tag);
+    await createTags(env.db).addTag(c, kept);
+    const res = await post("/app/api/bulk/remove-tag", { ids: [a, b, c], tag: tag.toUpperCase() });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ changed: [a, b], unchanged: [c], failed: [], notInView: [], tag });
+    expect(await labelStored(env.db, "tags", tag)).toBe(false);
+    expect(await labelStored(env.db, "tags", kept)).toBe(true);
+    expect(await tagsOf(c)).toEqual([kept]);
+  });
+
+  test("a tag that a model outside the selection still has is kept", async () => {
+    const { live } = await selection();
+    const [a, b] = live;
+    const tag = `Elsewhere ${marker()}`;
+    await createTags(env.db).addTag(a, tag);
+    await createTags(env.db).addTag(b, tag);
+    const res = await post("/app/api/bulk/remove-tag", { ids: [a], tag });
+    expect(res.body).toMatchObject({ changed: [a] });
+    expect(await labelStored(env.db, "tags", tag)).toBe(true);
+    expect(await tagsOf(b)).toEqual([tag]);
+  });
+
   test("a tag no model has: every live model unchanged, and no stored name", async () => {
     const { live } = await selection();
     const res = await post("/app/api/bulk/remove-tag", { ids: live, tag: `Never ${marker()}` });
@@ -294,6 +352,20 @@ describe("add to a collection", () => {
     });
     for (const id of live) expect(await env.repos.collections.forModel(id)).toEqual([name]);
     expect(await env.repos.collections.forModel(trashed)).toEqual([]);
+  });
+
+  // Issue #312: the Collections page lists empty collections so they can be
+  // deleted, so an Add to collection that changes nothing makes none.
+  test("Add to collection that reaches no live model makes no collection", async () => {
+    const { trashed } = await selection();
+    const name = `Never made ${marker()}`;
+    const res = await post("/app/api/bulk/add-to-collection", {
+      ids: [trashed, MISSING],
+      collection: name,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ changed: [], unchanged: [], collection: name });
+    expect(await labelStored(env.db, "collections", name)).toBe(false);
   });
 
   test("an existing collection, named in other capitals: models already in it are unchanged", async () => {

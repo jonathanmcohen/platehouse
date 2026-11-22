@@ -1,12 +1,20 @@
 // Build plan Task 14, AC-062: a model can sit in more than one collection, and
 // collections are flat (Q17).
+import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createCollections } from "../../../src/library/collections.js";
 import { createSearch } from "../../../src/library/search.js";
 import { createTrash } from "../../../src/library/trash.js";
-import { type LibraryEnv, marker, seedStoredModel, startLibraryEnv } from "../support/library.js";
+import { collectionsRepo } from "../../../src/repos/collections.js";
+import {
+  type LibraryEnv,
+  labelStored,
+  marker,
+  seedStoredModel,
+  startLibraryEnv,
+} from "../support/library.js";
 
 let env: LibraryEnv;
 
@@ -104,5 +112,48 @@ describe("addToCollection and removeFromCollection", () => {
     expect(await collections.addToCollection(model.id, `Late ${marker()}`)).toBe(false);
     expect(await collections.removeFromCollection(model.id, name)).toBe(false);
     expect(await env.repos.collections.forModel(model.id)).toEqual([name]);
+  });
+});
+
+// Issue #312: a collection can be deleted, but is never removed on its own.
+describe("deleting a collection", () => {
+  test("taking the last model out leaves the collection; a Delete removes it", async () => {
+    const name = `Emptied ${marker()}`;
+    const { model } = await seedStoredModel(env);
+    const collections = createCollections(env.db);
+    await collections.addToCollection(model.id, name);
+    expect(await collections.removeFromCollection(model.id, name)).toBe(true);
+    expect(await labelStored(env.db, "collections", name)).toBe(true);
+    expect(await env.repos.collections.delete(name.toUpperCase())).toBe(name);
+    expect(await labelStored(env.db, "collections", name)).toBe(false);
+    expect(await env.repos.collections.delete(name)).toBeNull();
+  });
+
+  test("a model added while a Delete of its collection is uncommitted lands in a new one", async () => {
+    const name = `Race shelf ${marker()}`;
+    const a = (await seedStoredModel(env)).model.id;
+    const b = (await seedStoredModel(env)).model.id;
+    await createCollections(env.db).addToCollection(a, name);
+    let deleted: () => void = () => {};
+    const isDeleted = new Promise<void>((resolve) => {
+      deleted = resolve;
+    });
+    let commit: () => void = () => {};
+    const committed = new Promise<void>((resolve) => {
+      commit = resolve;
+    });
+    const deleting = env.db.transaction().execute(async (trx) => {
+      expect(await collectionsRepo(trx).delete(name)).toBe(name);
+      deleted();
+      await committed;
+    });
+    await isDeleted;
+    const adding = createCollections(env.db).addToCollection(b, name);
+    await sleep(300);
+    commit();
+    await deleting;
+    expect(await adding).toBe(true);
+    expect(await env.repos.collections.forModel(b)).toEqual([name]);
+    expect(await env.repos.collections.forModel(a)).toEqual([]);
   });
 });
