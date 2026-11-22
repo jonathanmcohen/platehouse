@@ -8,11 +8,11 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Added
 
-- The user docs are published to GitHub Pages: a new workflow, .github/workflows/docs-pages.yml, builds the docs site and deploys it whenever a change to docs/, apps/docs/ or the lockfile lands on main, and can be run by hand from main. The site's address comes from the repository's Pages settings at build time, so nothing in the repository hard-codes it, and the ci workflow's Docs build job stays the pull-request check. GitHub Pages has to be switched on once first (Settings, Pages, Source: GitHub Actions); apps/docs/README.md explains it.
+- The user docs are published to GitHub Pages: a new workflow, .github/workflows/docs-pages.yml, builds the docs site and deploys it whenever a change to docs/, apps/docs/ or the lockfile lands on main, and can be run by hand from main. The site's address comes from the repository's Pages settings at build time, so nothing in the repository hard-codes it, and the ci workflow's Docs build job stays the pull-request check. GitHub Pages has to be switched on once first (Settings, Pages, Source: GitHub Actions); apps/docs/README.md explains it ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 
 ### Changed
 
-- The docs site now shows only Platehouse's own icons: besides the logo and SVG favicon it already had, it carries the app's ICO favicon and Apple touch icon, uses the app icon as the social card when a page is shared, and sets the browser theme colour to the Platehouse accent. They are served from the files tools/brand already writes for the web app, not copied.
+- The docs site now shows only Platehouse's own icons: besides the logo and SVG favicon it already had, it carries the app's ICO favicon and Apple touch icon, uses the app icon as the social card when a page is shared, and sets the browser theme colour to the Platehouse accent. They are served from the files tools/brand already writes for the web app, not copied ([#362](https://github.com/jonathanmcohen/platehouse/pull/362)).
 
 ## [0.1.0] - 2026-11-21
 
