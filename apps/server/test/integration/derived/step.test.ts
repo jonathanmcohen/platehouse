@@ -798,13 +798,18 @@ describe("after a rejected STEP replacement, a later failure keeps the previous-
 // mesh, nothing queued a picture and nothing settled the old one. The same
 // is left by a preview job that finds the file changed under it.
 describe("a STEP preview picture left pending with no job behind it is settled", () => {
-  /** A derived whose queue holds each job an hour, so only the test runs it. */
-  function holding(overrides: Partial<DerivedDeps> = {}) {
+  /**
+   * A derived whose queue holds each job an hour, so only the test runs it;
+   * with retryLimit 0 when noRetries, so a job the test fails ends failed
+   * rather than waiting for a retry.
+   */
+  function holding(opts: { noRetries?: boolean } = {}) {
     const send: PgBoss["send"] = async (...args: unknown[]) => {
       const [name, data, options] = args as [string, object, Record<string, unknown>];
       return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
         ...options,
         startAfter: 3600,
+        ...(opts.noRetries ? { retryLimit: 0 } : {}),
       });
     };
     return createDerived({
@@ -813,7 +818,6 @@ describe("a STEP preview picture left pending with no job behind it is settled",
       slicerUrl: env.stub.url,
       queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
       retryDelaySeconds: 1,
-      ...overrides,
     });
   }
 
@@ -833,7 +837,7 @@ describe("a STEP preview picture left pending with no job behind it is settled",
    * A STEP file with its first mesh stored and its picture's job held, then
    * a replacement staged with its conversion held.
    */
-  async function meshThenReplacement(label: string) {
+  async function meshThenReplacement(label: string, opts: { noRetries?: boolean } = {}) {
     const { fileId } = await env.ingest.ingestFile({
       tmpPath: await writeUpload(env, uniqueStep(`${label}, original`)),
       originalName: "Housing.step",
@@ -841,7 +845,7 @@ describe("a STEP preview picture left pending with no job behind it is settled",
     });
     const original = await env.repos.files.get(fileId);
     if (!original) throw new Error("file not stored");
-    const derived = holding();
+    const derived = holding(opts);
     expect(
       await derived.runJob(
         { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: original.blobId },
@@ -922,7 +926,9 @@ describe("a STEP preview picture left pending with no job behind it is settled",
   });
 
   test("the render check marks ok a picture of the current source left pending when the replacement's conversion died", async () => {
-    const { fileId, derived, original } = await meshThenReplacement("conversion died");
+    const { fileId, derived, original } = await meshThenReplacement("conversion died", {
+      noRetries: true,
+    });
     const png = await previewWhileQueued(fileId, derived);
     const convert = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).find(
       (j) => j.state === "created" && j.data.kind === DERIVED_KINDS.convertStep,
