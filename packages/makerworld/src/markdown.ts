@@ -15,7 +15,12 @@ import DOMPurify, {
 import MarkdownItCallable, { type MarkdownIt } from "markdown-it";
 import { decodeEntities, mapEntities } from "./extract.js";
 
-const BLOCK: ReadonlySet<string> = new Set([
+// Elements that end a paragraph where they open and close: a paragraph break,
+// or a space inside a list item, a table cell or between a table's rows.
+// Every other element the converter does not handle itself is dropped and
+// its text kept, so an element that is a block on the page but missing here
+// ran its text straight into the next block's (#357).
+const BLOCK_0_1_0: ReadonlySet<string> = new Set([
   "p",
   "div",
   "section",
@@ -27,6 +32,36 @@ const BLOCK: ReadonlySet<string> = new Set([
   "footer",
   "hr",
   "tr",
+]);
+const BLOCK: ReadonlySet<string> = new Set([
+  ...BLOCK_0_1_0,
+  // MakerWorld's own "Boost Me" box: a title above a line of text on its
+  // site, written as these three elements. Their text once ran together,
+  // "Boost MeWant more?" (#357).
+  "boostme",
+  "boosttitle",
+  "boostcontent",
+  // The rest of the elements HTML itself displays as a block and that hold
+  // plain text. Lists, headings and tables are handled on their own; a
+  // caption, a menu and a dir are left out, as they sit inside a table or
+  // hold list items, which those paths handle.
+  "address",
+  "aside",
+  "center",
+  "details",
+  "dialog",
+  "dd",
+  "dl",
+  "dt",
+  "fieldset",
+  "figcaption",
+  "form",
+  "hgroup",
+  "legend",
+  "main",
+  "nav",
+  "search",
+  "summary",
 ]);
 const DROP_CONTENT: ReadonlySet<string> = new Set([
   "script",

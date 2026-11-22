@@ -283,6 +283,15 @@ const NAMED: Array<[string, string]> = [
   ["em in i at both edges (#352)", "<p><em><i>x</i></em></p>"],
   ["bold in italic in italic (#352)", "<p><i><i><b>x</b></i></i></p>"],
   ["two italics back to back in italic (#352)", "<p><i><i>a</i><i>b</i></i></p>"],
+  // MakerWorld's Boost Me box (#357): its title and text are now two blocks.
+  [
+    "bold title and italic text in a Boost Me box (#357)",
+    "<boostme><boosttitle><b>Boost Me</b></boosttitle><boostcontent><i>Want</i> more</boostcontent></boostme>",
+  ],
+  [
+    "CJK bold after a Boost Me box (#357)",
+    "<boostme><boosttitle>Boost Me</boosttitle><boostcontent><b>\u63a8\u8350</b>\u6253\u5370</boostcontent></boostme>",
+  ],
 ];
 
 describe("every example from the review rounds", () => {
