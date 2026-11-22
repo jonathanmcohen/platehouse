@@ -98,15 +98,26 @@ function rng(seed: number): () => number {
   };
 }
 
+// Stored, not deflated: an inflate runs on libuv's thread pool in real time,
+// which the fake clock cannot see, so on a slow machine a read would take
+// more simulated time than on a fast one, and a stop could pass its 10 s in
+// simulated time while the real inflate was still running. With no inflate
+// every step is on the fake clock, and a seed runs the same on any machine.
 const designer = { designer: "Synthetic Designer", title: "Synthetic Title" };
-const GOOD = build3mf({ plates: 1, makerWorld: { ...designer, descriptionHtml: HTML } });
+const GOOD = build3mf({
+  plates: 1,
+  stored: true,
+  makerWorld: { ...designer, descriptionHtml: HTML },
+});
 const PLAIN = build3mf({
   plates: 1,
+  stored: true,
   nonce: "plain",
   makerWorld: { ...designer, descriptionHtml: "<p>Plain</p>" },
 });
 const OTHER = build3mf({
   plates: 1,
+  stored: true,
   nonce: "other",
   makerWorld: { ...designer, descriptionHtml: "<p>Another design</p>" },
 });
