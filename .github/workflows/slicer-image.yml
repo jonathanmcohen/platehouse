@@ -5,7 +5,8 @@
 # Keeps ghcr.io/jonathanmcohen/platehouse-slicer current with OrcaSlicer:
 #
 #   detect: pick the Orca version -> resolve its pins -> check the registry
-#   build:  build (load) -> smoke slice -> Trivy report (never fails)
+#   build:  OCI labels -> build (load) -> smoke slice -> check the labels
+#           -> Trivy report (never fails)
 #           -> push by digest -> check the pushed image is the one tested
 #           -> tag orca-X.Y.Z, the run tag and, on a run from a release
 #           tag, the release's version tag -> move stable
@@ -415,6 +416,30 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4.4.1
 
+      # The standard OCI labels, as release.yml sets them on the app image
+      # (issue #317): version, revision, source, created, title, description,
+      # url and licenses, so a running slicer says which build it is. Without
+      # them the image showed the Ubuntu base's version, 24.04, and no
+      # revision (the 0.1.1-rc.1 live check). Only the labels are used; the
+      # tags come from the tag step. The version is the release's on a run
+      # from a release tag (the semver entry, as in release.yml: v0.1.1-rc.2
+      # gives 0.1.1-rc.2) and the Orca version on every other run (the raw
+      # entry, enabled only when detect found no release tag). The title and
+      # description are the slicer's own, not the repository's. Both builds
+      # take these labels from this one step, so the pushed image still
+      # matches the tested one.
+      - name: Labels for this image
+        id: labels
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=${{ needs.detect.outputs.version }},enable=${{ needs.detect.outputs.release == '' }}
+          labels: |
+            org.opencontainers.image.title=platehouse-slicer
+            org.opencontainers.image.description=OrcaSlicer and OpenSCAD behind the Platehouse slicer API
+
       # 1) The image for this Orca version, loaded into the runner's Docker so
       #    the smoke slice can run it.
       - name: Build (load)
@@ -427,6 +452,7 @@ jobs:
           load: true
           provenance: false
           tags: ${{ env.LOCAL }}
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: |
             ORCA_VERSION=${{ needs.detect.outputs.version }}
             ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}
@@ -474,6 +500,28 @@ jobs:
             echo "The smoke slice passed for OrcaSlicer ${VERSION}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/smoke.log"
 
+      # The tested image carries the labels, before anything is pushed: the
+      # version the run should have (the release's on a run from a release
+      # tag, else the Orca version), this commit and this repository, and the
+      # rest present (docker/check-image-labels.sh, as release.yml runs it).
+      # The push below has the same digest as this build, so it has the same
+      # labels.
+      - name: Check the labels
+        id: labelcheck
+        env:
+          LABELS_VERSION: ${{ steps.labels.outputs.version }}
+          RELEASE: ${{ needs.detect.outputs.release }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          {
+            want="${RELEASE:-$VERSION}"
+            if [ "$LABELS_VERSION" != "$want" ]; then
+              echo "::error::metadata-action gave the version '${LABELS_VERSION}', not '${want}' (the release's version on a run from a release tag, else the Orca version)"
+              exit 1
+            fi
+            docker/check-image-labels.sh local "$LOCAL" "$want" "$GITHUB_SHA" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          } 2>&1 | tee -a "$RUNNER_TEMP/logs/labelcheck.log"
+
       # A report only (the maintainer, 2026-11-15): fixable HIGH and CRITICAL findings in
       # the built image, as a table in this log, before anything is pushed.
       # It never fails the job: exit-code 0, and continue-on-error covers the
@@ -512,6 +560,7 @@ jobs:
           platforms: linux/amd64
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: |
             ORCA_VERSION=${{ needs.detect.outputs.version }}
             ORCA_SHA256=${{ needs.detect.outputs.orca_sha256 }}
@@ -640,8 +689,10 @@ jobs:
         env:
           JOB: build
           OUTCOMES: >-
+            labels=${{ steps.labels.outcome }}
             load=${{ steps.load.outcome }}
             smoke=${{ steps.smoke.outcome }}
+            labelcheck=${{ steps.labelcheck.outcome }}
             login=${{ steps.login.outcome }}
             push=${{ steps.push.outcome }}
             check=${{ steps.check.outcome }}
@@ -655,8 +706,10 @@ jobs:
             fi
           done
           case "$failed" in
+            labels) name="Labels for this image" ;;
             load) name="Build (load)" ;;
             smoke) name="Smoke slice" ;;
+            labelcheck) name="Check the labels" ;;
             login) name="Log in to GHCR" ;;
             push) name="Push by digest" ;;
             check) name="Check the pushed image is the one tested" ;;

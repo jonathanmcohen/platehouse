@@ -99,7 +99,8 @@ jobs:
       # aptsnapshot.test.mjs: this workflow, .node-version, release.yml,
       # slicer-image.yml, rc-tag.yml, apt-snapshot.yml,
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
-      # docker/app.Dockerfile,
+      # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
+      # image's label check step runs it),
       # apps/slicer/Dockerfile, two slicer container test files, README.md and
       # CHANGELOG.md. A gate test that starts reading another file outside
       # tools/slicing-gate adds it here, or a PR changing only that file skips
@@ -129,7 +130,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot)\.yml$|\.github/scripts/(rc-target|apt-snapshot)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false
