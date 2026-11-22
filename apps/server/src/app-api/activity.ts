@@ -394,10 +394,13 @@ async function readStart(path: string, limit: number): Promise<Buffer> {
 /**
  * The inbox's failed files (inbox/watch.ts moves each to failed/<name> with
  * <name>.reason.txt beside it), newest reason file first, at most limit.
- * A reason file counts only while <name> is a regular file beside it in
- * failed/: someone retrying by moving the files back into the inbox, reason
- * files included, would otherwise leave a failure shown for a file that may
- * since have been imported, with an old reason.
+ * A reason file counts only while something is under <name> beside it in
+ * failed/, of any type: a regular file, a folder, a FIFO, a socket or a
+ * symlink (the watcher moves an entry it cannot put back, such as a FIFO
+ * swapped in during an import, into failed/ as it is, issue #402). With
+ * nothing under <name>, someone retried by moving the entry back into the
+ * inbox, reason file included, and the page would otherwise show a failure
+ * for a file that may since have been imported, with an old reason.
  * Each is the file's name and its scrubbed reason; no path is returned.
  * readable is false when no inbox is set up or failed/ cannot be listed,
  * so the page can say its failures may be missing; a failed/ that does not
@@ -412,14 +415,15 @@ export async function readInboxFailures(
   let names: string[];
   try {
     const entries = await readdir(dir, { withFileTypes: true });
-    const files = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
+    // Every name in failed/, whatever its type: presence is the test.
+    const present = new Set(entries.map((e) => e.name));
     names = entries
       .filter(
         (e) =>
           e.isFile() &&
           e.name.endsWith(REASON_SUFFIX) &&
           e.name.length > REASON_SUFFIX.length &&
-          files.has(e.name.slice(0, -REASON_SUFFIX.length)),
+          present.has(e.name.slice(0, -REASON_SUFFIX.length)),
       )
       .map((e) => e.name);
   } catch (error) {

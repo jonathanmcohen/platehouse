@@ -19,6 +19,7 @@
 //   against a scripted database built as the server builds its own
 //   (CamelCasePlugin), which answers the settings row and the failed file
 //   and no rows for every other read. Every id here is made up for the test.
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -281,20 +282,32 @@ describe("readInboxFailures", () => {
 
   // Issue #329: a retry that moves everything in failed/ back to the inbox,
   // reason files included, must not leave a made-up failure on the page.
-  test("counts a reason file only while its file is a regular file beside it", async () => {
+  // Issue #402: the watcher moves an entry it cannot put back (a FIFO, a
+  // socket, a folder swapped in during an import) into failed/ as it is, so
+  // any entry under the name keeps its reason listed. Only a name with
+  // nothing under it, the file moved back out to retry, is hidden.
+  test("counts a reason file while any entry is under its name, and hides one whose entry was moved out", async () => {
     const failed = join(dir, "failed");
     await mkdir(failed);
     await writeFile(join(failed, "kept.3mf"), "x");
     await writeFile(join(failed, "kept.3mf.reason.txt"), "Kept.");
     // The file was moved back to the inbox: only its reason file is left.
     await writeFile(join(failed, "retried.3mf.reason.txt"), "Old reason.");
-    // A folder or a symlink under the file's name is not the file.
+    // A folder, a symlink and a FIFO under the name are entries the watcher moved there.
     await mkdir(join(failed, "folder.3mf"));
     await writeFile(join(failed, "folder.3mf.reason.txt"), "Folder.");
     await symlink(join(failed, "kept.3mf"), join(failed, "link.3mf"));
     await writeFile(join(failed, "link.3mf.reason.txt"), "Link.");
+    const fifo = spawnSync("mkfifo", [join(failed, "pipe.3mf")]);
+    expect(fifo.status, String(fifo.stderr)).toBe(0);
+    await writeFile(join(failed, "pipe.3mf.reason.txt"), "Pipe.");
     const { items } = await readInboxFailures(dir, 10);
-    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : ""))).toEqual(["kept.3mf"]);
+    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : "")).sort()).toEqual([
+      "folder.3mf",
+      "kept.3mf",
+      "link.3mf",
+      "pipe.3mf",
+    ]);
   });
 
   test("reads at most REASON_BYTES of a reason file", async () => {
