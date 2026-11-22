@@ -54,6 +54,12 @@ export interface ModelsTable {
   nameSource: Generated<NameSource>;
   /** The MakerWorld design ID its .3mf carries, digits only (0005). */
   makerworldDesignId: string | null;
+  /** SHA-256, lowercase hex, of the description as ingest's converter wrote it (0010). */
+  descriptionSha256: string | null;
+  /** The converter version that wrote the description; set with descriptionSha256 (0010). */
+  descriptionConverter: number | null;
+  /** The .3mf the description was converted from; no foreign key (0010). */
+  descriptionFileId: string | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;
 }
@@ -204,6 +210,14 @@ export interface SessionsTable {
   idleExpiresAt: Date;
 }
 
+/** One finished one-time upgrade step (0010), such as reconvert-descriptions-3. */
+export interface UpgradeStepsTable {
+  name: string;
+  finishedAt: CreatedAt;
+  /** What the step did, as JSON (jsonb). */
+  result: ColumnType<unknown, string | undefined, string>;
+}
+
 export interface DB {
   schemaMigrations: SchemaMigrationsTable;
   creators: CreatorsTable;
@@ -222,6 +236,7 @@ export interface DB {
   userPrinters: UserPrintersTable;
   apiTokens: ApiTokensTable;
   sessions: SessionsTable;
+  upgradeSteps: UpgradeStepsTable;
 }
 
 export type Blob = Selectable<BlobsTable>;

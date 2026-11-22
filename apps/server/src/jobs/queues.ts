@@ -107,6 +107,17 @@ export const MAINTENANCE_TASKS = {
 } as const;
 
 /**
+ * The maintenance queue's one-time upgrade steps, each a job { task } sent at
+ * startup while the step has not finished, never scheduled: the description
+ * re-conversion (#357, library/reconvert.ts). The job is sent with its task
+ * as singletonKey, so two servers started together queue it once while it
+ * waits; a second run would do nothing anyway once the first has finished.
+ */
+export const UPGRADE_TASKS = {
+  reconvertDescriptions: "reconvert-descriptions",
+} as const;
+
+/**
  * Every 10 minutes (Task 12 decision): the Orca-version poll, which also runs
  * once at startup.
  */
@@ -192,6 +203,15 @@ export interface QueueDeps {
    * server test fails if any maintenance task is left unscheduled.
    */
   purgeSessions?(now: Date): Promise<unknown>;
+  /**
+   * The description re-conversion (#357, library/reconvert.ts's run), when
+   * given with reconvertPending: sent to the maintenance queue at startup
+   * while reconvertPending says it has not finished, and run by the
+   * maintenance worker.
+   */
+  reconvertDescriptions?(): Promise<unknown>;
+  /** True while the description re-conversion for the current converter has not finished. */
+  reconvertPending?(): Promise<boolean>;
   /** The zone the cron schedules run in; localTimeZone() when left out. */
   timeZone?: string;
   /** How often idle workers poll; pg-boss's default when left out. */
@@ -206,7 +226,17 @@ export interface QueueDeps {
  * compile.
  */
 export type ServerQueueDeps = QueueDeps &
-  Required<Pick<QueueDeps, "slicerJobs" | "pollOrca" | "onIngested" | "checkRenders">>;
+  Required<
+    Pick<
+      QueueDeps,
+      | "slicerJobs"
+      | "pollOrca"
+      | "onIngested"
+      | "checkRenders"
+      | "reconvertDescriptions"
+      | "reconvertPending"
+    >
+  >;
 
 interface MaintenanceJob {
   task: string;
@@ -348,11 +378,35 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           if (!deps.purgeSessions) throw new Error("No session delete is registered");
           await deps.purgeSessions(new Date());
           return;
+        case UPGRADE_TASKS.reconvertDescriptions:
+          if (!deps.reconvertDescriptions) {
+            throw new Error("No description re-conversion is registered");
+          }
+          await deps.reconvertDescriptions();
+          return;
         default:
           throw new Error(`Unknown maintenance task: ${String(job.data.task).slice(0, 64)}`);
       }
     },
   );
+
+  // The description re-conversion's one run on upgrade (#357), sent once the
+  // maintenance worker is up. A failure to check or send is logged and never
+  // stops the app: the next start sends it again, since it has not finished.
+  if (deps.reconvertDescriptions && deps.reconvertPending) {
+    try {
+      if (await deps.reconvertPending()) {
+        await boss.send(
+          QUEUE.maintenance,
+          { task: UPGRADE_TASKS.reconvertDescriptions },
+          { singletonKey: UPGRADE_TASKS.reconvertDescriptions },
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: queueing the description re-conversion: ${message.slice(0, 200)}`);
+    }
+  }
 
   // The Orca poll's startup run (Task 12 decision: at startup and every 10
   // minutes), here beside its schedule. It runs after the workers start, so

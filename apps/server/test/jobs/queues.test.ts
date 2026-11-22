@@ -14,6 +14,7 @@ import {
   queueSettings,
   SLICER_RETRY,
   startQueues,
+  UPGRADE_TASKS,
 } from "../../src/jobs/queues.js";
 
 describe("queueSettings", () => {
@@ -66,18 +67,26 @@ describe("queueSettings", () => {
 /** A boss that records what startQueues asks of it and runs no job. */
 function fakeBoss() {
   const calls: string[] = [];
+  const sent: Array<{ name: string; data: { task: string }; options: unknown }> = [];
+  const handlers = new Map<string, (jobs: unknown[]) => unknown>();
   const boss = {
     createQueue: vi.fn(async () => {}),
     updateQueue: vi.fn(async () => {}),
     schedule: vi.fn(async (_name: string, _cron: string, data: { task: string }) => {
       calls.push(`schedule ${data.task}`);
     }),
-    work: vi.fn(async (name: string) => {
+    work: vi.fn(async (name: string, _opts: unknown, handler: (jobs: unknown[]) => unknown) => {
       calls.push(`work ${name}`);
+      handlers.set(name, handler);
       return name;
     }),
+    send: vi.fn(async (name: string, data: { task: string }, options: unknown) => {
+      calls.push(`send ${name} ${data.task}`);
+      sent.push({ name, data, options });
+      return "job-id";
+    }),
   };
-  return { boss: boss as unknown as PgBoss, calls };
+  return { boss: boss as unknown as PgBoss, calls, sent, handlers };
 }
 
 function deps(extra: Partial<QueueDeps>): QueueDeps {
@@ -130,5 +139,79 @@ describe("startQueues", () => {
     const { boss, calls } = fakeBoss();
     await startQueues(boss, deps({}));
     expect(calls.some((c) => c.includes(MAINTENANCE_TASKS.pollOrca))).toBe(false);
+  });
+});
+
+// The description re-conversion (#357) is a one-time step on upgrade, not a
+// schedule: startQueues sends it to the maintenance queue once the workers
+// are up, only while it has not finished, and the maintenance worker runs it.
+describe("the description re-conversion on upgrade", () => {
+  test("is sent once to the maintenance queue while it is pending, after the workers start", async () => {
+    const { boss, calls, sent } = fakeBoss();
+    await startQueues(
+      boss,
+      deps({ reconvertPending: async () => true, reconvertDescriptions: async () => undefined }),
+    );
+    expect(sent).toEqual([
+      {
+        name: QUEUE.maintenance,
+        data: { task: UPGRADE_TASKS.reconvertDescriptions },
+        options: { singletonKey: UPGRADE_TASKS.reconvertDescriptions },
+      },
+    ]);
+    expect(calls.indexOf(`send ${QUEUE.maintenance} ${UPGRADE_TASKS.reconvertDescriptions}`)).toBe(
+      calls.length - 1,
+    );
+    expect(calls).toContain(`work ${QUEUE.maintenance}`);
+  });
+
+  test("is not sent once it has finished", async () => {
+    const { boss, sent } = fakeBoss();
+    await startQueues(
+      boss,
+      deps({ reconvertPending: async () => false, reconvertDescriptions: async () => undefined }),
+    );
+    expect(sent).toEqual([]);
+  });
+
+  test("is not sent when the server gives no re-conversion", async () => {
+    const { boss, sent } = fakeBoss();
+    await startQueues(boss, deps({}));
+    expect(sent).toEqual([]);
+  });
+
+  test("a check that fails is logged and does not stop the queues", async () => {
+    const { boss, sent } = fakeBoss();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        startQueues(
+          boss,
+          deps({
+            reconvertPending: async () => {
+              throw new Error("connection terminated");
+            },
+            reconvertDescriptions: async () => undefined,
+          }),
+        ),
+      ).resolves.toBeUndefined();
+      expect(sent).toEqual([]);
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining("description re-conversion"));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  test("the maintenance worker runs it for its task", async () => {
+    const { boss, handlers } = fakeBoss();
+    const reconvertDescriptions = vi.fn(async () => undefined);
+    await startQueues(boss, deps({ reconvertPending: async () => false, reconvertDescriptions }));
+    const work = handlers.get(QUEUE.maintenance);
+    await work?.([{ data: { task: UPGRADE_TASKS.reconvertDescriptions } }]);
+    expect(reconvertDescriptions).toHaveBeenCalledTimes(1);
+  });
+
+  test("is not a scheduled task, so the Activity page's schedule labels stay as they are", () => {
+    expect(Object.values(MAINTENANCE_TASKS)).not.toContain(UPGRADE_TASKS.reconvertDescriptions);
   });
 });

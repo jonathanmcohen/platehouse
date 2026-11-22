@@ -67,6 +67,17 @@ export interface BlobStore {
    */
   getBlobStream(key: string): Promise<Readable>;
   /**
+   * The object's bytes from start up to, not including, end (an HTTP Range
+   * request), for a reader that needs only part of a large object: the
+   * description re-conversion reads a .3mf's MakerWorld text this way
+   * (#357). Errors as getBlobStream's, so a missing key is BlobNotFound and
+   * an outage StoreUnavailable, while the bytes are read too; a range the
+   * store refuses is a StoreError. A start or end that is not a whole number,
+   * or a range that is empty or runs backwards, is a RangeError, thrown
+   * before anything is sent.
+   */
+  getBlobRange(key: string, start: number, end: number): Promise<Readable>;
+  /**
    * Resolves when the object is in the bucket, asking with a HeadObject, which
    * sends no body, to the object's size as the store's Content-Length gave it
    * (undefined when it gave none), so a reader can refuse an object that is
@@ -290,6 +301,23 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       }
       if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
       return reportObjectSize(withStoreErrors(body, "GetObject"), length);
+    },
+
+    async getBlobRange(key, start, end) {
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start) {
+        throw new RangeError("getBlobRange: the range must be whole byte offsets with start < end");
+      }
+      let body: unknown;
+      try {
+        const out = await client.send(
+          new GetObjectCommand({ Bucket: bucket, Key: key, Range: `bytes=${start}-${end - 1}` }),
+        );
+        body = out.Body;
+      } catch (err) {
+        throw toStoreError(err, "GetObject", { notFound: true });
+      }
+      if (!(body instanceof Readable)) throw new StoreError("GetObject", "NoBody");
+      return withStoreErrors(body, "GetObject");
     },
 
     async headBlob(key) {
