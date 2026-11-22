@@ -20,6 +20,7 @@ import {
 import { StoreUnavailable } from "../../../src/storage/s3.js";
 import {
   type LibraryEnv,
+  labelStored,
   marker,
   rowCounts,
   seedStoredModel,
@@ -333,6 +334,57 @@ describe("purgeExpired", () => {
     expect(
       (await env.repos.models.get(recent.model.id, { includeTrashed: true }))?.trashedAt,
     ).not.toBeNull();
+  });
+
+  // Issue #312: deleting a model for good takes its tags with it when no
+  // other model, live or in the trash, has them. Collections stay, empty.
+  test("a purge removes the tags only the purged model had, and keeps its collections", async () => {
+    const own = `Own tag ${marker()}`;
+    const sharedLive = `Shared live ${marker()}`;
+    const sharedTrashed = `Shared trashed ${marker()}`;
+    const shelf = `Own shelf ${marker()}`;
+    const old = await seedStoredModel(env);
+    const live = await seedStoredModel(env);
+    const recent = await seedStoredModel(env);
+    const tags = createTags(env.db);
+    for (const tag of [own, sharedLive, sharedTrashed]) await tags.addTag(old.model.id, tag);
+    await tags.addTag(live.model.id, sharedLive);
+    await tags.addTag(recent.model.id, sharedTrashed);
+    await createCollections(env.db).addToCollection(old.model.id, shelf);
+    const trash = trashFor();
+    await trash.trashModel(old.model.id);
+    await trash.trashModel(recent.model.id);
+    await trashDaysAgo(env.db, old.model.id, 31);
+
+    expect((await trash.purgeExpired(new Date())).purged).toContain(old.model.id);
+
+    expect(await labelStored(env.db, "tags", own)).toBe(false);
+    expect(await labelStored(env.db, "tags", sharedLive)).toBe(true);
+    expect(await labelStored(env.db, "tags", sharedTrashed)).toBe(true);
+    expect(await env.repos.tags.forModel(live.model.id)).toEqual([sharedLive]);
+    expect(await env.repos.tags.forModel(recent.model.id)).toEqual([sharedTrashed]);
+    expect(await labelStored(env.db, "collections", shelf)).toBe(true);
+  });
+
+  test("Empty trash removes the tags only the purged models had", async () => {
+    const own = `Emptied tag ${marker()}`;
+    const a = await seedStoredModel(env);
+    const b = await seedStoredModel(env);
+    for (const m of [a, b]) await createTags(env.db).addTag(m.model.id, own);
+    const trash = trashFor();
+    await trash.trashModel(a.model.id);
+    await trash.trashModel(b.model.id);
+
+    // Another test's model may be left unpurgeable on purpose; these two are not.
+    const purged = await trash.emptyTrash().then(
+      (r) => r.purged,
+      (error: unknown) => {
+        if (error instanceof PurgeIncomplete) return error.purged;
+        throw error;
+      },
+    );
+    expect(purged).toEqual(expect.arrayContaining([a.model.id, b.model.id]));
+    expect(await labelStored(env.db, "tags", own)).toBe(false);
   });
 
   test("the cutoff is 30 days before the given time", async () => {

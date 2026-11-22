@@ -50,7 +50,8 @@ const SHIPPED = [
   "0007_my_printers.sql",
   "0008_library_sort.sql",
   "0009_name_sort_prefix.sql",
-  "0010_estimate_started_at.sql",
+  "0010_drop_unused_tags.sql",
+  "0011_estimate_started_at.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -394,7 +395,7 @@ describe("0007 My printers", () => {
       printersVersion: 1,
     });
     // Every existing estimate is untouched: the same rows, printer ids and
-    // numbers. Migrating to the latest also runs 0010, which adds started_at
+    // numbers. Migrating to the latest also runs 0011, which adds started_at
     // and leaves it empty on rows that already existed.
     const after = (await estimateRows(db)) as Array<Record<string, unknown>>;
     expect(after.map((row) => row.startedAt)).toEqual([null, null]);
@@ -514,11 +515,11 @@ describe("0009 name sort prefix", () => {
   });
 });
 
-// Migration 0010 adds estimates.started_at, when a slice began work, for the
-// settings page's measured rate (issues #317 and #375). It runs on a database
-// at 0009, as 0.1.0 leaves it; the column is nullable with no default, so no
-// existing row changes and estimates finished before it have no start time.
-describe("0010 estimate started_at", () => {
+// Migration 0010 (issue #312) removes the tags no model has, which 0.1.0 left
+// behind whenever a tag came off its last model. A tag a trashed model has is
+// kept, since a restore brings the model back with it, and so is every
+// collection, empty or not, and every model and link.
+describe("0010 drop unused tags", () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -527,7 +528,7 @@ describe("0010 estimate started_at", () => {
     const later = (await readdir(dir)).filter(
       (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 9,
     );
-    expect(later).toContain("0010_estimate_started_at.sql");
+    expect(later).toContain("0010_drop_unused_tags.sql");
     for (const name of later) await rm(join(dir, name));
   });
 
@@ -535,11 +536,83 @@ describe("0010 estimate started_at", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("applies on a database at 0009 and adds a nullable timestamptz with no default", async () => {
+  test("on a database at 0009, removes only the tags no model has", async () => {
     const { db } = await pgc.freshDatabase();
     await migrateFrom(db, dir);
     await sql`
-      insert into models (id, name) values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic')
+      insert into models (id, name, trashed_at)
+      values ('0190a0b0-0000-7000-8000-000000000021', 'Synthetic live', null),
+             ('0190a0b0-0000-7000-8000-000000000022', 'Synthetic trashed', now())
+    `.execute(db);
+    await sql`
+      insert into tags (id, name)
+      values ('0190a0b0-0000-7000-8000-000000000031', 'qa-unused'),
+             ('0190a0b0-0000-7000-8000-000000000032', 'Live tag'),
+             ('0190a0b0-0000-7000-8000-000000000033', 'Trashed tag'),
+             ('0190a0b0-0000-7000-8000-000000000034', 'Another unused')
+    `.execute(db);
+    await sql`
+      insert into model_tags (model_id, tag_id)
+      values ('0190a0b0-0000-7000-8000-000000000021', '0190a0b0-0000-7000-8000-000000000032'),
+             ('0190a0b0-0000-7000-8000-000000000022', '0190a0b0-0000-7000-8000-000000000033')
+    `.execute(db);
+    await sql`
+      insert into collections (id, name)
+      values ('0190a0b0-0000-7000-8000-000000000041', 'QA empty collection'),
+             ('0190a0b0-0000-7000-8000-000000000042', 'Used collection')
+    `.execute(db);
+    await sql`
+      insert into collection_models (collection_id, model_id)
+      values ('0190a0b0-0000-7000-8000-000000000042', '0190a0b0-0000-7000-8000-000000000021')
+    `.execute(db);
+    const models = (await sql`select * from models order by id`.execute(db)).rows;
+    const links = (await sql`select * from model_tags order by model_id, tag_id`.execute(db)).rows;
+    const collections = (await sql`select * from collections order by id`.execute(db)).rows;
+    const members = (await sql`select * from collection_models order by model_id`.execute(db)).rows;
+
+    await migrate(db);
+
+    const tags = await sql<{ name: string }>`select name from tags order by name`.execute(db);
+    expect(tags.rows.map((r) => r.name)).toEqual(["Live tag", "Trashed tag"]);
+    expect((await sql`select * from models order by id`.execute(db)).rows).toEqual(models);
+    expect(
+      (await sql`select * from model_tags order by model_id, tag_id`.execute(db)).rows,
+    ).toEqual(links);
+    expect((await sql`select * from collections order by id`.execute(db)).rows).toEqual(
+      collections,
+    );
+    expect((await sql`select * from collection_models order by model_id`.execute(db)).rows).toEqual(
+      members,
+    );
+  });
+});
+
+// Migration 0011 adds estimates.started_at, when a slice began work, for the
+// settings page's measured rate (issues #317 and #375). It runs on a database
+// at 0010; the column is nullable with no default, so no existing row changes
+// and estimates finished before it have no start time.
+describe("0011 estimate started_at", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 10,
+    );
+    expect(later).toContain("0011_estimate_started_at.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("applies on a database at 0010 and adds a nullable timestamptz with no default", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    await sql`
+      insert into models (id, name) values ('0190a0b0-0000-7000-8000-000000000051', 'Synthetic')
     `.execute(db);
     const before = (await sql`select * from models order by id`.execute(db)).rows;
 

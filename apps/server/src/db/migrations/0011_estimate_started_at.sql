@@ -1,4 +1,4 @@
--- Platehouse schema 0010: when a slice began work, so the settings page can
+-- Platehouse schema 0011: when a slice began work, so the settings page can
 -- measure the slicer's real speed (issues #317 and #375).
 -- Hand-written; every statement is read in review (lesson 14). Never edit it
 -- once applied anywhere: a change is a new file.

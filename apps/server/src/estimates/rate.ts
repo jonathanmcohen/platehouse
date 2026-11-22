@@ -13,7 +13,7 @@
 // a gap mixes slicing with idle time and no cutoff tells them apart (two
 // review rounds on PR #361, issue #375). So each slice's own working time is
 // recorded instead: a slice job sets started_at when it begins work
-// (migration 0010), and finished_at minus started_at is the time the slicer
+// (migration 0011), and finished_at minus started_at is the time the slicer
 // spent on that plate. The rate is the number of slices over the sum of
 // their times.
 

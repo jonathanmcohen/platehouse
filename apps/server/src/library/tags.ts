@@ -2,12 +2,22 @@
 // tags repository; this module refuses a model that is unknown or trashed,
 // which the API answers with 404 (AC-084: a trashed model is invisible).
 // Filtering the library by tag is search({ tag }) in search.ts.
+//
+// The web app's calls remove a tag no model has any more when its last
+// model loses it (issue #312, dropUnusedTags); the public API's do not, as
+// the API never deletes anything, so the tag itself stays there.
 import type { Kysely } from "kysely";
 import type { DB } from "../db/types.js";
 import { tagsRepo } from "../repos/tags.js";
 import { withLiveModel } from "./live.js";
 
-export function createTags(db: Kysely<DB>) {
+export interface TagsOptions {
+  /** Remove a tag when removeTag takes it off its last model, live or trashed. */
+  dropUnusedTags?: boolean;
+}
+
+export function createTags(db: Kysely<DB>, options: TagsOptions = {}) {
+  const dropUnused = options.dropUnusedTags === true;
   return {
     /**
      * Tags a live model, making the tag on first use; tagging twice is a
@@ -22,11 +32,14 @@ export function createTags(db: Kysely<DB>) {
     },
 
     /**
-     * Untags a live model; the tag itself stays. False when the model is
-     * unknown, malformed or trashed, or did not have the tag.
+     * Untags a live model. False when the model is unknown, malformed or
+     * trashed, or did not have the tag. The tag itself stays, unless
+     * dropUnusedTags is set and no model has it any more.
      */
     async removeTag(modelId: string, tag: string): Promise<boolean> {
-      return withLiveModel(db, modelId, (trx) => tagsRepo(trx).remove(modelId, tag));
+      return withLiveModel(db, modelId, (trx) =>
+        tagsRepo(trx).remove(modelId, tag, { dropUnused }),
+      );
     },
   };
 }

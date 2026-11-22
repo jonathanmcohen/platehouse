@@ -923,7 +923,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         .execute();
       return;
     }
-    // started_at is when this attempt began work (0010): finished_at minus it
+    // started_at is when this attempt began work (0011): finished_at minus it
     // is the slicer's time on the plate, which the settings page's rate is
     // measured from (rate.ts). A retry or a requeue sets it again here.
     await db
@@ -1306,7 +1306,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   async function recentSliceRate(): Promise<number | null> {
     // Successful slices only (a burst of quick failures, the store down say,
     // would read as a fast slicer), and only those with a start time: ones
-    // finished before migration 0010 have none.
+    // finished before migration 0011 have none.
     const rows = await db
       .selectFrom("estimates")
       .select(["startedAt", "finishedAt"])

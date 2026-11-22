@@ -18,9 +18,13 @@
 //   statement fails, not at all.
 // - Lock order (issue #286). Every row a bulk action locks, it locks in one
 //   fixed order, whatever order the request listed the models in: the
-//   models by id; Add tags' new tags by lower(name); the tag links an add
-//   inserts and a removal deletes by model id, then tag id; the collection
-//   links by model id; the trashed models by id. Two bulk requests therefore
+//   models by id; Add tags' new tags by lower(name), then its tags key
+//   share by id (labels.ts); Remove tag's tag FOR UPDATE, before its links
+//   (issue #312: it removes a tag no model has any more, repos/tags.ts);
+//   the tag links an add inserts and a removal deletes by model id, then
+//   tag id; the collection links by model id; the trashed models by id.
+//   Model, then tag or collection, then link is also the order of every
+//   single-model change and of a purge. Two bulk requests therefore
 //   wait on each other's rows in the same order and cannot deadlock each
 //   other on them. That does not cover a deadlock with some other writer (a
 //   single-model tag or collection change, an ingest, a purge) or an order
@@ -58,10 +62,14 @@
 //   time the row is written once its lock is held (issue #193). Nothing here
 //   deletes a model.
 import { type Kysely, sql } from "kysely";
-import { isUuid, uuidv7 } from "../db/ids.js";
+import { isUuid } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
+import { ensureLabels } from "./labels.js";
 import { type LibraryView, modelsRepo } from "./models.js";
+import { tagsRepo } from "./tags.js";
+
+export { byLowerName } from "./labels.js";
 
 /** Most models one bulk request changes: View all's and Select all matching's most. */
 export const MAX_BULK_IDS = 1000;
@@ -121,17 +129,6 @@ function names(values: readonly string[], what: string): string[] {
   }
   if (out.length === 0) throw new RangeError(`Name at least one ${what}`);
   return out;
-}
-
-/**
- * The names sorted by their lowercase form, compared by code unit so every
- * request puts the same names in the same order.
- */
-export function byLowerName(values: readonly string[]): string[] {
-  return values
-    .map((name) => ({ name, key: name.toLowerCase() }))
-    .sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
-    .map((entry) => entry.name);
 }
 
 /**
@@ -285,6 +282,25 @@ async function storedNames(
   return rows.map((r) => r.name);
 }
 
+/**
+ * As storedNames, but a name with no row is answered as it was asked, so an
+ * action that made nothing still names every tag it was given.
+ */
+async function storedOrAskedNames(
+  trx: Kysely<DB>,
+  table: "tags" | "collections",
+  wanted: readonly string[],
+): Promise<string[]> {
+  const { rows } = await sql<{ name: string }>`
+    select coalesce(t.name, w.name) as name
+    from unnest(cast(${wanted} as text[])) with ordinality as w(name, ord)
+    left join ${sql.table(table)} t on lower(t.name) = lower(w.name)
+    group by coalesce(t.name, w.name)
+    order by min(w.ord)
+  `.execute(trx);
+  return rows.map((r) => r.name);
+}
+
 export function bulkRepo(db: Kysely<DB>) {
   return {
     /**
@@ -309,50 +325,52 @@ export function bulkRepo(db: Kysely<DB>) {
       const wanted = names(tags, "tag");
       return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "noKeyUpdate", view);
-        // Made in lower(name) order, not the request's: a new tag's insert
-        // waits on another transaction's uncommitted row of the same
-        // lower(name), so two requests making the same tags in opposite
-        // orders would deadlock (PR #246 review).
-        for (const name of byLowerName(wanted)) {
-          await trx
-            .insertInto("tags")
-            .values({ id: uuidv7(), name })
-            .onConflict((oc) => oc.expression(sql`lower(name)`).doNothing())
-            .execute();
+        // With no live model in the view to tag, no tag is made: one no
+        // model has would be left behind (issue #312). The answer still
+        // names every tag, as stored where one is.
+        if (selection.locked.length === 0) {
+          return { ...result(selection, []), tags: await storedOrAskedNames(trx, "tags", wanted) };
         }
-        let changed: string[] = [];
-        if (selection.locked.length > 0) {
-          // Links in (model id, tag id) order: an insert waits on another
-          // transaction's uncommitted link with the same key (issue #286).
-          // The tags are matched with lower() on both sides, as their insert's
-          // conflict is, never with JavaScript's toLowerCase (see storedNames).
-          const { rows } = await sql<{ id: string }>`
-            insert into model_tags (model_id, tag_id)
-            select m.id, t.id
-            from unnest(cast(${selection.locked} as uuid[])) as m(id)
-            cross join tags t
-            where lower(t.name) in (select lower(w.name) from unnest(cast(${wanted} as text[])) as w(name))
-            order by m.id, t.id
-            on conflict (model_id, tag_id) do nothing
-            returning model_id as id
-          `.execute(trx);
-          changed = rows.map((r) => r.id);
-        }
+        // Found or made (new ones in lower(name) order, PR #246 review) and
+        // key share locked, so a tag being deleted meanwhile is made again
+        // rather than linked to nothing (labels.ts).
+        const tagIds = await ensureLabels(trx, "tags", wanted);
+        // Links in (model id, tag id) order: an insert waits on another
+        // transaction's uncommitted link with the same key (issue #286).
+        const { rows } = await sql<{ id: string }>`
+          insert into model_tags (model_id, tag_id)
+          select m.id, t.id
+          from unnest(cast(${selection.locked} as uuid[])) as m(id)
+          cross join unnest(cast(${tagIds} as uuid[])) as t(id)
+          order by m.id, t.id
+          on conflict (model_id, tag_id) do nothing
+          returning model_id as id
+        `.execute(trx);
+        const changed = rows.map((r) => r.id);
         return { ...result(selection, changed), tags: await storedNames(trx, "tags", wanted) };
       });
     },
 
     /**
-     * Takes the tag off every selected live model; the tag itself stays. A
-     * model without it is unchanged. tag is the stored name, or null when no
-     * tag has that name.
+     * Takes the tag off every selected live model. A model without it is
+     * unchanged. When no model, live or trashed, has the tag afterwards, the
+     * tag is removed too (issue #312). tag is the stored name, or null when
+     * no tag has that name.
      */
     async removeTag(ids: readonly string[], tag: string, view: LibraryView) {
       const [name] = names([tag], "tag") as [string];
       return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "noKeyUpdate", view);
+        // The tag is locked before its links, as every removal locks it
+        // (repos/tags.ts), and its stored name read before it may go.
+        const found = await trx
+          .selectFrom("tags")
+          .select(["id", "name"])
+          .where(sql<boolean>`lower(name) = lower(${name})`)
+          .forUpdate()
+          .executeTakeFirst();
         let changed: string[] = [];
-        if (selection.locked.length > 0) {
+        if (found !== undefined && selection.locked.length > 0) {
           // A DELETE takes no order, so the links are locked first, in
           // (model id, tag id) order, and then deleted (issue #286).
           const { rows } = await sql<{ id: string }>`
@@ -361,7 +379,7 @@ export function bulkRepo(db: Kysely<DB>) {
               select l.model_id, l.tag_id
               from model_tags l
               where l.model_id = any(cast(${selection.locked} as uuid[]))
-                and l.tag_id in (select id from tags where lower(name) = lower(${name}))
+                and l.tag_id = ${found.id}
               order by l.model_id, l.tag_id
               for update
             ) gone
@@ -369,9 +387,9 @@ export function bulkRepo(db: Kysely<DB>) {
             returning mt.model_id as id
           `.execute(trx);
           changed = rows.map((r) => r.id);
+          if (changed.length > 0) await tagsRepo(trx).dropUnused([found.id]);
         }
-        const [stored] = await storedNames(trx, "tags", [name]);
-        return { ...result(selection, changed), tag: stored ?? null };
+        return { ...result(selection, changed), tag: found?.name ?? null };
       });
     },
 
@@ -383,20 +401,17 @@ export function bulkRepo(db: Kysely<DB>) {
       const [name] = names([collection], "collection") as [string];
       return bulkTransaction(db, async (trx) => {
         const selection = await select(trx, ids, "noKeyUpdate", view);
-        await trx
-          .insertInto("collections")
-          .values({ id: uuidv7(), name })
-          .onConflict((oc) => oc.expression(sql`lower(name)`).doNothing())
-          .execute();
         let changed: string[] = [];
+        // With no live model in the view to add, no collection is made: the
+        // Collections page lists empty ones, and nobody asked for it (#312).
         if (selection.locked.length > 0) {
+          // Found or made, and locked against a Delete meanwhile (labels.ts).
+          const [collectionId] = await ensureLabels(trx, "collections", [name]);
           // Links in model id order, for the same reason as Add tags' links.
           const { rows } = await sql<{ id: string }>`
             insert into collection_models (collection_id, model_id)
-            select c.id, m.id
+            select cast(${collectionId} as uuid), m.id
             from unnest(cast(${selection.locked} as uuid[])) as m(id)
-            cross join collections c
-            where lower(c.name) = lower(${name})
             order by m.id
             on conflict (collection_id, model_id) do nothing
             returning model_id as id
