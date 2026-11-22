@@ -1,0 +1,314 @@
+# rc tag workflow (PR #360): the only place the rc image tags move.
+#
+# rc is a moving tag for a test server: set the app image to
+# ghcr.io/jonathanmcohen/platehouse:rc and the slicer image to
+# ghcr.io/jonathanmcohen/platehouse-slicer:rc, and pull to get the newest
+# release candidate (the maintainer, 2026-11-21).
+#
+# The invariant: once every run has finished, both rc tags point at the
+# builds of the same tag T, where T is the highest version, by semver
+# precedence, among the pushed vX.Y.Z-rc.N and plain vX.Y.Z tags whose app
+# image AND slicer image were both published. Nothing else moves rc: neither
+# release.yml nor slicer-image.yml touches it. Any other tag (v0.0.0-test,
+# v0.2.0-beta.1, v0.2.0-rc, v0.2.0-rc.01) never qualifies. A backport release
+# older than the newest candidate (v0.1.1 cut after v0.2.0-rc.1) does not
+# move rc, by design: rc stays on the newer candidate.
+#
+# How. Every run recomputes T from scratch from durable state, never from
+# the run that triggered it:
+#   - the pushed tags: the repository's git tags under refs/tags/v;
+#   - "published": the image's version tag exists in the registry, X.Y.Z or
+#     X.Y.Z-rc.N for the tag vX.Y.Z or vX.Y.Z-rc.N. release.yml writes
+#     platehouse:X.Y.Z only after both arches passed their checks, and
+#     slicer-image.yml writes platehouse-slicer:X.Y.Z, with the orca tags,
+#     only after its smoke slice and digest check passed, on any run started
+#     from that release tag.
+# .github/scripts/rc-target.mjs filters and orders the tags and picks T (a
+# pure function, unit- and property-tested in
+# tools/slicing-gate/test/rctarget.test.mjs). Then all four tags, both
+# version tags and both rc tags, are read before anything is written, and
+# each rc tag that is not already at T's build is pointed at it, by digest,
+# and read back. When T and both digests are unchanged, nothing is written.
+#
+# When it runs: after every run of release or slicer-image finishes, whatever
+# its result (a failed run changes nothing in the registry that counts, and
+# the recompute then changes nothing), and by hand from main
+# (workflow_dispatch). One global concurrency group, never cancelled part way:
+# runs go one at a time. GitHub keeps at most one run waiting and replaces a
+# waiting run with a newer one; that is safe because every run reads the
+# state as it is when it starts, so the run queued by the last finish always
+# sees the final state. GitHub runs workflow_run only for a workflow file on
+# the default branch, so this does nothing until it reaches main.
+#
+# Safety. It checks out main, never the triggering run's commit, and refuses a
+# run by hand from any other branch, so only reviewed code moves rc. A
+# registry answer other than found or "not found" stops the run before
+# anything moves. Cost: two registry reads per qualifying tag.
+#
+# A failed run here leaves rc where it was: a failure after one rc tag has
+# moved points that tag back at the build it had, so a failed run does not
+# leave the two rc tags on different tags. Only when that put-back fails too
+# (or an rc tag that did not exist before cannot be removed again) can they
+# differ, and the run's error says so. Either way rc fixes itself on the next
+# successful run of release or slicer-image, or when this workflow is run by
+# hand. Actions are pinned to the exact tags release.yml uses.
+name: rc-tag
+
+on:
+  workflow_run:
+    workflows: [release, slicer-image]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time, across every trigger; a run in progress is never
+# cancelled.
+concurrency:
+  group: rc-tag
+  cancel-in-progress: false
+
+env:
+  APP_IMAGE: ghcr.io/jonathanmcohen/platehouse
+  SLICER_IMAGE: ghcr.io/jonathanmcohen/platehouse-slicer
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rc:
+    name: Point rc at the newest fully published release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # A workflow_run run's ref is the default branch. A run by hand from
+      # any other branch would run unreviewed code with packages: write.
+      - name: Run only from main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::${REF} is not main; rc-tag runs only from main, so nothing moves"
+            exit 1
+          fi
+
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Every qualifying tag, highest first, with whether each image's
+      # version tag exists; then T. "not found" from the registry is the only
+      # answer that means a tag does not exist, as in slicer-image.yml's
+      # registry check; any other error stops the run.
+      - name: Find the target
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          entries="${RUNNER_TEMP}/rc-entries.jsonl"
+          : >"$entries"
+          refs="$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" --jq '.[].ref')"
+          tags="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p')"
+          candidates="$(printf '%s\n' "$tags" | node .github/scripts/rc-target.mjs candidates)"
+          # found: whether $1 exists in the registry. Sets a variable rather
+          # than printing, so an error here exits the step itself.
+          check() {
+            local out status=0
+            out="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
+            if [ "$status" -eq 0 ]; then
+              found=true
+            elif grep -q ': not found' <<<"$out"; then
+              found=false
+            else
+              printf '%s\n' "$out"
+              echo "::error::could not tell whether $1 exists (exit ${status}); rc is not moved"
+              exit 1
+            fi
+          }
+          {
+            echo "### rc"
+            echo ""
+            echo "| tag | platehouse | platehouse-slicer |"
+            echo "| --- | --- | --- |"
+          } >>"$GITHUB_STEP_SUMMARY"
+          for tag in $candidates; do
+            version="${tag#v}"
+            check "${APP_IMAGE}:${version}"
+            app="$found"
+            check "${SLICER_IMAGE}:${version}"
+            slicer="$found"
+            echo "${tag}: platehouse ${app}, platehouse-slicer ${slicer}"
+            echo "| ${tag} | ${app} | ${slicer} |" >>"$GITHUB_STEP_SUMMARY"
+            printf '{"tag":"%s","app":%s,"slicer":%s}\n' "$tag" "$app" "$slicer" >>"$entries"
+          done
+          target="$(node .github/scripts/rc-target.mjs pick <"$entries")"
+          echo "target=${target}" >>"$GITHUB_OUTPUT"
+          if [ -n "$target" ]; then
+            echo "rc target: ${target}"
+          else
+            echo "No vX.Y.Z or vX.Y.Z-rc.N tag has both images published"
+          fi
+
+      # All four tags are read first. Then each rc tag not already at T's
+      # build is pointed at it by digest (a carbon copy, --prefer-index=false)
+      # and read back; one already there is left alone. A failure after a
+      # move puts every rc tag the run tried to move back where it was.
+      - name: Point rc at the target
+        id: point
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          if [ -z "$TARGET" ]; then
+            echo "No tag qualifies yet; rc is left where it is"
+            {
+              echo ""
+              echo "No vX.Y.Z or vX.Y.Z-rc.N tag has both images published, so rc was left where it is."
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ ! "$TARGET" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$ ]]; then
+            echo "::error::the target '${TARGET}' is not vX.Y.Z or vX.Y.Z-rc.N; rc is not moved"
+            exit 1
+          fi
+          version="${TARGET#v}"
+          # lookup: sets digest to $1's manifest digest, or to empty when it
+          # does not exist; on any other answer prints it and returns 1.
+          lookup() {
+            local out status=0
+            out="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
+            if [ "$status" -eq 0 ] && [[ "$out" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              digest="$out"
+            elif [ "$status" -ne 0 ] && grep -q ': not found' <<<"$out"; then
+              digest=""
+            else
+              printf '%s\n' "$out"
+              echo "::error::could not read $1 (exit ${status})"
+              return 1
+            fi
+          }
+          # First read all four tags, both version tags and both rc tags, so
+          # a registry error or a missing version tag stops the run before
+          # either rc tag moves. Index 0 is the app, 1 the slicer.
+          images=("$APP_IMAGE" "$SLICER_IMAGE")
+          want=()
+          before=()
+          for i in 0 1; do
+            image="${images[$i]}"
+            if ! lookup "${image}:${version}"; then
+              echo "::error::rc is not moved"
+              exit 1
+            fi
+            if [ -z "$digest" ]; then
+              echo "::error::${image}:${version} is gone since it was found; rc is not moved"
+              exit 1
+            fi
+            want[i]="$digest"
+            if ! lookup "${image}:rc"; then
+              echo "::error::rc is not moved"
+              exit 1
+            fi
+            before[i]="$digest"
+          done
+          # put_back: after a failure part way, points every rc tag this run
+          # tried to move back at the build it named before, and reads it
+          # back. Returns 1 when any of them could not be put back.
+          put_back() {
+            local i image prev ok=0
+            for i in "${moved[@]}"; do
+              image="${images[$i]}"
+              prev="${before[$i]}"
+              if [ -z "$prev" ]; then
+                if lookup "${image}:rc" && [ -z "$digest" ]; then
+                  echo "${image}:rc still does not exist"
+                  continue
+                fi
+                echo "::error::${image}:rc did not exist before this run, so it cannot be put back; it may now name ${TARGET}'s build"
+                ok=1
+                continue
+              fi
+              if lookup "${image}:rc" && [ "$digest" = "$prev" ]; then
+                echo "${image}:rc is still on ${prev}"
+                continue
+              fi
+              echo "Putting ${image}:rc back on ${prev}"
+              if docker buildx imagetools create --prefer-index=false -t "${image}:rc" "${image}@${prev}" &&
+                lookup "${image}:rc" && [ "$digest" = "$prev" ]; then
+                echo "${image}:rc is back on ${prev}"
+              else
+                echo "::error::could not put ${image}:rc back on ${prev}"
+                ok=1
+              fi
+            done
+            return "$ok"
+          }
+          # Then move each rc tag that is not at the target's build, and read
+          # it back. A failure stops the moves and puts back what moved.
+          summary=()
+          moved=()
+          failed=""
+          for i in 0 1; do
+            image="${images[$i]}"
+            if [ "${before[$i]}" = "${want[$i]}" ]; then
+              echo "${image}:rc is already ${TARGET}'s build (${want[$i]})"
+              summary+=("- ${image}:rc already at ${TARGET}: \`${want[$i]}\`")
+              continue
+            fi
+            echo "Moving ${image}:rc from ${before[$i]:-nothing} to ${TARGET}'s build ${want[$i]}"
+            moved+=("$i")
+            if ! docker buildx imagetools create --prefer-index=false -t "${image}:rc" "${image}@${want[$i]}"; then
+              echo "::error::could not point ${image}:rc at ${want[$i]}"
+              failed=1
+              break
+            fi
+            if ! lookup "${image}:rc"; then
+              failed=1
+              break
+            fi
+            if [ "$digest" != "${want[$i]}" ]; then
+              echo "::error::${image}:rc is ${digest:-missing} after the move, not ${want[$i]}"
+              failed=1
+              break
+            fi
+            summary+=("- ${image}:rc moved to ${TARGET}: \`${want[$i]}\`")
+          done
+          if [ -n "$failed" ]; then
+            if put_back; then
+              result="rc-tag failed part way; every rc tag it had moved is back where it was"
+            else
+              result="the rc tags may now name builds of different tags; run rc-tag by hand (Actions, rc-tag, Run workflow) once the registry answers, and it points both at ${TARGET}'s builds"
+            fi
+            echo "::error::${result}"
+            {
+              echo ""
+              echo "rc-tag failed part way while pointing rc at **${TARGET}**: ${result}."
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo ""
+            echo "rc target: **${TARGET}**"
+            echo ""
+            printf '%s\n' "${summary[@]}"
+          } >>"$GITHUB_STEP_SUMMARY"
