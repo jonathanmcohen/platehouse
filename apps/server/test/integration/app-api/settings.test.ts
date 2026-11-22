@@ -247,7 +247,8 @@ beforeAll(async () => {
     },
     appApi: {
       settings: { settings: env.repos.settings, estimates },
-      tokens: { tokens, list: () => tokenList() },
+      // The sign-in window is measured on the sessions' clock (issue #377).
+      tokens: { tokens, list: () => tokenList(), now: () => auth.clock.now },
       organise: {
         db: env.db,
         trash: createTrash({
