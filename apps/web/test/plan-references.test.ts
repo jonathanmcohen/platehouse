@@ -1,52 +1,40 @@
-// Keeps citations of private documents and projects out of the tracked tree
-// (issue #325). Platehouse was built from a private plan and a private
-// list of requirements, and ported parts of earlier private projects. A
-// public reader can open none of them, so a plan task number, a requirement
-// id or a private repository's name leads nowhere. Code, tests and docs say
-// the rule itself, in plain words, instead.
+// Keeps citations of the private plan out of the tracked tree (issue #325).
+// Platehouse was built from a private plan and a private list of
+// requirements. A public reader can open neither, so a plan task number, a
+// requirement id or a plan section's name leads nowhere. Code, tests and docs
+// say the rule itself, in plain words, instead.
 //
-// The guard catches the known forms of such a citation. The list was made by
+// Names are not plan references: the maintainer decided on 2026-11-22 that
+// his other projects and repositories (the earlier parser project, the
+// studio stylesheet repository and the like) may be named in the public
+// repository, so the guard has no pattern for them.
+//
+// The guard catches the known forms of plan citation. The list was made by
 // sweeping every line the rewrite for #325 removed (PR #399): each form found
 // in those lines has a pattern in plan-references.support.ts (REFERENCES) and
 // a synthetic sample in FORMS below, and the patterns match every removed
-// line that held a citation. A denylist cannot know a form nobody has seen,
-// so when a new form turns up later, it is added the same way: a pattern in
-// the support file and a sample in FORMS, which the self-test then requires.
+// line that held a plan citation. A denylist cannot know a form nobody has
+// seen, so when a new form turns up later, it is added the same way: a
+// pattern in the support file and a sample in FORMS, which the self-test then
+// requires.
 //
 // The known forms, one REFERENCES entry each: a plan task number; a short
 // plan task id (T and one or two digits beside a plan word); the words build
 // and plan; the private plan called the plan where it is cited; a
 // requirement id; a plan question id; a numbered plan decision; a numbered
-// lesson; a requirements section; the plan's section names and parts; the
-// plan's contracts by name; another of the owner's projects by name; the
-// earlier private parser project, its source, test and issue names; a
-// private repository; a private project's commit by hash; and the
-// maintainer's own tooling and setup. A comment wrapped across two lines
-// still counts: the comment marker between the words is skipped.
+// lesson; a requirements section; the plan's section names, contracts and
+// parts. A comment wrapped across two lines still counts: the comment marker
+// between the words is skipped.
 //
 // The patterns are written so they do not match their own text, and the
 // samples in the self-test are put together at run time, so neither file
-// holds a reference or needs an allow-list entry. The names (projects,
-// repositories, commits, tooling) are listed by hash only, so neither file
-// holds one: the self-test proves each name shape on neutral stand-ins, and
-// against the real names when PLATEHOUSE_PLAN_NAMES gives them.
+// holds a reference or needs an allow-list entry.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import {
-  isNameEntry,
-  type NameReference,
-  type Names,
-  nameEntry,
-  nameText,
-  REFERENCES,
-  referencesIn,
-  SHAPES,
-  type Shape,
-  sha256,
-} from "./plan-references.support.js";
+import { REFERENCES, referencesIn } from "./plan-references.support.js";
 
 /**
  * Files that may still hold references, each with the last line the check
@@ -113,60 +101,7 @@ function trackedFiles(): string[] {
     .filter((f) => f !== "" && existsSync(join(ROOT, f)) && f !== "pnpm-lock.yaml");
 }
 
-// Neutral stand-ins, hashed at test time, prove each shape a name entry
-// finds without the real names: one name per shape, lines that hold it, and
-// look-alikes that must be left alone.
-const NEUTRAL: Record<Shape, { name: string; found: string[]; lookAlikes: string[] }> = {
-  word: {
-    name: "quokka",
-    found: ["// quokka's theme bug showed only on a fresh load", "// (quokka login loop)"],
-    lookAlikes: ["// quokkas, a quokka_x, xquokka, quokka1"],
-  },
-  pair: {
-    name: "blue heron",
-    found: [
-      "// a port of the blue heron parser",
-      "// a port of the blue\n// heron parser",
-      "-- the blue\n-- heron",
-      " * the blue\n * heron",
-    ],
-    lookAlikes: ["// blue herons, a blue-heron, blueheron, the blue sky heron, a blue_heron"],
-  },
-  hyphen: {
-    name: "blue-heron",
-    found: ["// live checks are blue-heron's", "// the x-blue-heron-y job"],
-    lookAlikes: ["// blue-herons, blue heron, a blue-heronx, blue_heron, blue--heron"],
-  },
-  commit: {
-    name: "c0ffee1",
-    found: [
-      "// where they are compared with c0ffee1",
-      `// the full commit ${"c0ffee1".padEnd(40, "0")} here`,
-    ],
-    lookAlikes: [`// c0ffee, c0ffee1g, xc0ffee1, 0c0ffee1, ${"c0ffee1".padEnd(41, "0")}`],
-  },
-  wordBeforeCommit: {
-    name: "quokka",
-    found: [
-      "// the prior art a.mjs at quokka 0123abc",
-      "// ported from a.mjs at quokka\n// 0123abc",
-    ],
-    lookAlikes: ["// quokka abc, quokka 0123ab, quokka-0123abc, quokka"],
-  },
-  pairBeforeSlash: {
-    name: "blue heron",
-    found: ["// in blue heron/x-meta", "// in blue\n// heron/x"],
-    lookAlikes: ["// blue heron x/, blue heron /x, blue-heron/x, blue heron"],
-  },
-};
-
-/** A name entry's copy that holds only its shape's stand-in name. */
-function neutralEntry(what: string, names: Names): NameReference {
-  const { shape, caseless } = names;
-  return nameEntry(what, shape, caseless, [sha256(nameText(NEUTRAL[shape].name, shape, caseless))]);
-}
-
-describe("no citation of a private plan, requirement or project", () => {
+describe("no citation of the private plan or requirements", () => {
   // One or more synthetic samples per known form, each with the REFERENCES
   // entry that must find it. Built at run time, so this file holds none.
   const t = "Task";
@@ -224,15 +159,6 @@ describe("no citation of a private plan, requirement or project", () => {
     ["a plan contract", `// sets nothing beyond what the ${"contract"} defaults say`],
     ["a plan part", `// the auth hooks belong to ${"Part"} C, so`],
     ["a plan part", `// ${"Parts"} C and D hold the sign-in work`],
-    ["the earlier private parser project", `// parser${".rb"} reads it`],
-    [
-      "the earlier private parser project",
-      `// never the file (${"test"}_garbage_model_settings_returns_nil)`,
-    ],
-    ["the earlier private parser project", `    ${"issue"}: "#5",`],
-    ["the earlier private parser project", `//   #${"6"}  no plate limit`],
-    ["a private repository", `// see ${"jonathanmcohen"}/example at the tip`],
-    ["the maintainer's own tooling or setup", `// the live ${"dry"} run skipped such a file`],
   ];
 
   test("every known form is found by its own pattern, wrapped samples too", () => {
@@ -242,42 +168,9 @@ describe("no citation of a private plan, requirement or project", () => {
     expect(missed).toEqual([]);
   });
 
-  test("every readable pattern has a sample, so none is untested", () => {
-    // A name entry is proven by the neutral stand-ins below instead.
+  test("every pattern has a sample, so none is untested", () => {
     const sampled = new Set(FORMS.map(([what]) => what));
-    expect(
-      REFERENCES.filter((r) => !r.names)
-        .map((r) => r.what)
-        .filter((what) => !sampled.has(what)),
-    ).toEqual([]);
-  });
-
-  test("each name entry finds a stand-in name in its shape, wrapped too, and leaves look-alikes alone", () => {
-    const entries = REFERENCES.filter(isNameEntry);
-    // Every shape is in use, so each is proven here.
-    expect(new Set(entries.map((r) => r.names.shape))).toEqual(new Set(Object.keys(SHAPES)));
-    for (const { what, names } of entries) {
-      const { found, lookAlikes } = NEUTRAL[names.shape];
-      const neutral = [neutralEntry(what, names)];
-      for (const line of found) {
-        expect(referencesIn("sample", line, undefined, neutral), `${what}: ${line}`).toHaveLength(
-          1,
-        );
-        // In another case: found only by a caseless entry.
-        expect(
-          referencesIn("sample", line.toUpperCase(), undefined, neutral),
-          `${what}: ${line.toUpperCase()}`,
-        ).toHaveLength(names.caseless ? 1 : 0);
-      }
-      expect(referencesIn("sample", lookAlikes.join("\n"), undefined, neutral), what).toEqual([]);
-    }
-  });
-
-  test("the name list is well formed", () => {
-    for (const { what, names } of REFERENCES.filter(isNameEntry)) {
-      expect(names.sha256.size, what).toBeGreaterThan(0);
-      for (const h of names.sha256) expect(h, what).toMatch(/^[0-9a-f]{64}$/);
-    }
+    expect(REFERENCES.map((r) => r.what).filter((what) => !sampled.has(what))).toEqual([]);
   });
 
   test("look-alikes are left alone", () => {
@@ -337,42 +230,5 @@ describe("no citation of a private plan, requirement or project", () => {
         referencesIn(file, readFileSync(join(ROOT, file), "utf8")).length === 0,
     );
     expect(stale).toEqual([]);
-  });
-  // The proof that the name entries find the real names. The names live
-  // outside the repository: give them in PLATEHOUSE_PLAN_NAMES, one per line,
-  // written as nameText() reads them, and this checks that each name hashes
-  // to an entry, that every entry's hash has a name, and that a line holding
-  // each name is found by its entry. Nothing it prints holds a name, only
-  // hashes.
-  //
-  // Without the variable, as in CI, the same steps run over the neutral
-  // stand-ins, one copy of each entry. The real hashes are then covered by
-  // the tests above: each shape is read and matched the way the stand-ins
-  // prove, and the list is well formed.
-  test("each listed name is found, from PLATEHOUSE_PLAN_NAMES or the neutral stand-ins", () => {
-    const given = process.env.PLATEHOUSE_PLAN_NAMES;
-    const real = REFERENCES.filter(isNameEntry);
-    const list = given ? real : real.map(({ what, names }) => neutralEntry(what, names));
-    const names = given
-      ? given.split(/\r?\n|,/)
-      : [...new Set(Object.values(NEUTRAL).map((n) => n.name))];
-    const hashOf = (name: string, e: NameReference) =>
-      sha256(nameText(name, e.names.shape, e.names.caseless));
-    const named = new Set<string>();
-    const unknown: string[] = [];
-    const missed: string[] = [];
-    for (const name of names.map((n) => n.trim()).filter((n) => n !== "")) {
-      const holders = list.filter((e) => e.names.sha256.has(hashOf(name, e)));
-      if (holders.length === 0) unknown.push(sha256(name));
-      for (const e of holders) {
-        named.add(hashOf(name, e));
-        const line = SHAPES[e.names.shape].example(name);
-        if (referencesIn("sample", line, undefined, [e]).length === 0) missed.push(sha256(name));
-      }
-    }
-    expect(unknown).toEqual([]);
-    expect(missed).toEqual([]);
-    // Every listed hash has a name.
-    expect(list.flatMap((e) => [...e.names.sha256]).filter((h) => !named.has(h))).toEqual([]);
   });
 });
