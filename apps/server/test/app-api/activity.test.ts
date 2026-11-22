@@ -20,6 +20,28 @@
 //   (CamelCasePlugin), which answers the settings row and the failed file
 //   and no rows for every other read. Every id here is made up for the test.
 import { spawnSync } from "node:child_process";
+
+// Every read made through a file handle opened on a reason file, as
+// [path, bytes asked for], so a test can show how much of the file was read.
+// Every other open, and every other fs call, is the real one.
+const reasonReads = vi.hoisted(() => [] as Array<[string, number]>);
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const open: typeof real.open = async (...args) => {
+    const handle = await real.open(...args);
+    const path = String(args[0]);
+    if (!path.endsWith(".reason.txt")) return handle;
+    const read = handle.read.bind(handle);
+    handle.read = ((...readArgs: unknown[]) => {
+      const length = typeof readArgs[2] === "number" ? readArgs[2] : Number.POSITIVE_INFINITY;
+      reasonReads.push([path, length]);
+      return (read as (...a: unknown[]) => ReturnType<typeof handle.read>)(...readArgs);
+    }) as typeof handle.read;
+    return handle;
+  };
+  return { ...real, default: { ...real, open }, open };
+});
+
 import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +56,7 @@ import {
   PostgresQueryCompiler,
   type QueryResult,
 } from "kysely";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type ActivityEvent,
   createAppActivity,
@@ -315,10 +337,17 @@ describe("readInboxFailures", () => {
     await mkdir(failed);
     await writeFile(join(failed, "big.3mf"), "x");
     await writeFile(join(failed, "big.3mf.reason.txt"), "a".repeat(REASON_BYTES * 4));
+    reasonReads.length = 0;
     const { items } = await readInboxFailures(dir, 10);
     const reason = items[0]?.type === "inbox_failed" ? items[0].reason : "";
     expect(reason.length).toBeGreaterThan(0);
     expect(reason.length).toBeLessThanOrEqual(REASON_BYTES);
+    // The file was read through a handle, and the bytes asked for add up to
+    // REASON_BYTES at most: nothing past it was read. (Reading the whole file
+    // and cutting the text, as before, asks for none through a handle here.)
+    const asked = reasonReads.filter(([path]) => path.endsWith("big.3mf.reason.txt"));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.reduce((sum, [, length]) => sum + length, 0)).toBeLessThanOrEqual(REASON_BYTES);
   });
 
   test("keeps only the newest limit", async () => {
