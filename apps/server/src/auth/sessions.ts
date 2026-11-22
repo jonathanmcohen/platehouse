@@ -1,4 +1,4 @@
-// Login sessions (build plan Task 15; AC-080). The __Host-ph_session cookie
+// Login sessions, which every page and file route needs. The __Host-ph_session cookie
 // carries 32 random bytes in base64url (43 characters). The session is a row
 // in the sessions table whose id is the base64url SHA-256 of that cookie
 // value (sessionRowId), also 43 characters, so the table never holds a

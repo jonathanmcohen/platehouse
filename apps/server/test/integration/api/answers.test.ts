@@ -1,4 +1,4 @@
-// Build plan Task 16: two properties of the v1 answers that the DB-backed
+// Two properties of the v1 answers that the DB-backed
 // suite (api.test.ts) does not isolate.
 //
 // - A HEAD on a file's content answers the GET's headers and opens no store

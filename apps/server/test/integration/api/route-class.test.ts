@@ -1,4 +1,4 @@
-// Build plan Task 16 with Task 15's route-class gate: every Public API v1
+// The Public API v1 behind the route-class gate: every Public API v1
 // route, the tus upload routes at /api/v1/uploads included, is bearer-class.
 // A bearer-class request is never sent to login and never needs Origin; a
 // session cookie, or a token sent as a cookie, never authenticates it. The

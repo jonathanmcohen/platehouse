@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { mapLicense } from "../src/license.js";
 
-// Ported by behaviour from automation Manyfold/makerworld-metadata
-// test/metadata.test.mjs at 1ce8c57 (the licence cases), in the shape the
-// build plan's Task 7 interface gives: {spdx?, footer?, unknown?: true}.
+// Ported by behaviour from the tests of an earlier Manyfold metadata script
+// (the licence cases), in the shape mapLicense returns: {spdx?, footer?, unknown?: true}.
 
-// licence table maps exactly (plan Task 7 and requirements AC-022).
+// licence table maps exactly: each CC licence to its CC 4.0 SPDX id, CC0 to CC0-1.0.
 const SPDX_ROWS: Array<[string, string]> = [
   ["BY-NC-SA", "CC-BY-NC-SA-4.0"],
   ["BY-NC", "CC-BY-NC-4.0"],

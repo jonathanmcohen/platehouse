@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// The API reference in Settings (the 0.1.0 API documentation; AC-084,
-// AC-085 for what it describes, AC-070 to AC-075 for how it looks). It
+// The API reference in Settings (the 0.1.0 API documentation): it describes
+// what the API can and cannot do, and follows the app's look, themes, phone
+// width, contrast and keyboard rules. It
 // renders apps/web/src/api-docs/openapi.json, the document the server's
 // test writes from the routes themselves (apps/server/test/api/
 // openapi.test.ts checks that copy is current), so these tests read the
@@ -9,8 +10,8 @@
 // The page is rendered into jsdom inside a memory router. The settings page
 // around it talks to a small fake /app/api through the global fetch, which
 // records every call, so a test can show the reference itself fetches
-// nothing. Live checks in both themes and at 375 px are qa-engineer's
-// (AC-076); here the stylesheet is checked to use only studio.css's tokens.
+// nothing. Live checks in both themes and at 375 px are done by hand in a
+// browser; here the stylesheet is checked to use only studio.css's tokens.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

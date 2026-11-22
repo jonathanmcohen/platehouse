@@ -1,5 +1,5 @@
-// The model page at /models/:id (build plan Task 20; AC-030, AC-032 to
-// AC-034 display, AC-040, AC-050, AC-051, AC-072).
+// The model page at /models/:id: a large viewer on the left and the tabs
+// Plates, Files and About on the right, Plates first.
 //
 // - The large viewer is on the left and the tabs Plates, Files and About on
 //   the right (studio.css's .studio-model grid, which stacks below 900 px).
@@ -47,7 +47,7 @@
 //   was removed) or the printer (taken out of My printers). Its lifetime is
 //   set out at Refused below.
 // - Files dropped on the page go to onFiles with this model's id; main.tsx
-//   opens Task 19's upload dialog aimed at this model, where the Combine
+//   opens the upload dialog aimed at this model, where the Combine
 //   switch is not shown. refreshKey changes when an upload round finishes,
 //   and the page loads the model again.
 // - The page head's name is renamed in place with the collections pages'

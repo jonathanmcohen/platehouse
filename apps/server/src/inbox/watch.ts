@@ -1,9 +1,9 @@
-// The inbox watcher (build plan Task 10; AC-021). A supported file placed in
+// The inbox watcher. A supported file placed in
 // the inbox folder (INBOX_DIR, /data/inbox in the container) becomes a
 // model with no manual step, through ingestFile (ingest/ingest.ts), each file
 // a model of its own.
 //
-// The plan's decisions, in the order a file meets them:
+// The rules, in the order a file meets them:
 // - The folder is polled every 5 seconds (POLL_MS), not watched with inotify:
 //   bind mounts and network copies drop events.
 // - Dotfiles and names ending in .part, .crdownload or .tmp (any case) are
@@ -44,15 +44,15 @@
 // - A settled file goes to ingestFile. Once it returns, the watcher runs
 //   onIngested with the stored file, as the ingest queue's worker does
 //   (jobs/queues.ts), so an inbox file's plates are queued for estimates
-//   (Task 12) as soon as it is stored, not at the next Orca poll. It runs too
+//   as soon as it is stored, not at the next Orca poll. It runs too
 //   for an earlier attempt's import found by its id (below), since that
 //   attempt's answer was lost before it could. A failure there is logged,
 //   never thrown: the file is stored, and the Orca poll queues what was
 //   missed. Then the watcher reads
 //   the size and SHA-256 that ingest recorded for the stored file and hashes
 //   the open inbox file again; the inbox copy is deleted only when both match
-//   and its name still holds that same file (AC-021: deleted once the upload
-//   is verified). A new file put under the name during the import (while
+//   and its name still holds that same file (an inbox copy is deleted only
+//   once its upload is verified). A new file put under the name during the import (while
 //   ingest or onIngested ran: a different device or inode under the name)
 //   was never imported, so it is left in the inbox untouched and looked at
 //   from the start as a file of its own; the import that finished stands. If
@@ -139,7 +139,7 @@
 // - A file goes to failed at once only for a reason that belongs to the
 //   file: ingest's IngestError with code unsupported_type (its type or
 //   content), model_not_found or duplicate (FILE_FAULTS), or the watcher's
-//   own refusals, the size limit and a name that is not UTF-8. Since Task 9,
+//   own refusals, the size limit and a name that is not UTF-8. Since resumable uploads were added,
 //   ingest wraps every failure that is not its own in IngestError
 //   ingest_failed, with the error it met as the cause: a database or
 //   filesystem fault, or anything else that failed before COMMIT. That says
@@ -148,7 +148,7 @@
 //   known) and any other error, from any source (the store, the database,
 //   findImported, anything unexpected), are not the file's fault until shown
 //   to be. A damaged .3mf is not a failure at all: ingest stores it as a
-//   model with parse status no_plate_data (AC-023). For such an error the
+//   model with parse status no_plate_data, like any file over a ceiling. For such an error the
 //   file stays where it is, the pass stops, and the watcher checks the
 //   environment once (probes, inboxProbes): the database check reads, then
 //   in a transaction it rolls back writes a model, a pending blob and a file
@@ -277,7 +277,7 @@
 // the first pass after failed can be used, in this process or the next.
 //
 // Nothing here starts on import: the server calls start() once at boot and
-// stop() on shutdown (plan Task 30 builds that code). It must pass every one
+// stop() on shutdown (main.ts). It must pass every one
 // of these, and the type requires each:
 //   dir:           INBOX_DIR, the inbox folder
 //   settleSeconds: INBOX_SETTLE_SECONDS
@@ -480,7 +480,7 @@ export const NON_UTF8_REASON =
 
 /**
  * The largest file the inbox takes, in bytes: the upload limit
- * (MAX_UPLOAD_BYTES in uploads/tus.ts, Task 9), 512 MiB.
+ * (MAX_UPLOAD_BYTES in uploads/tus.ts), 512 MiB.
  */
 export const MAX_INBOX_BYTES = MAX_UPLOAD_BYTES;
 
@@ -827,7 +827,7 @@ export interface InboxWatcherDeps {
   findImported: (file: ImportedQuery) => Promise<ImportedFile[]>;
   /**
    * Runs after a file is stored, before its inbox copy is checked, as
-   * QueueDeps.onIngested does for the ingest queue: Task 12 queues the file's
+   * QueueDeps.onIngested does for the ingest queue: the estimates module queues the file's
    * estimates here, (r) => estimates.enqueueFile(r.fileId). Required, so a
    * server that leaves it out fails to compile instead of leaving inbox
    * plates to wait for the Orca poll. A failure is logged, never thrown,

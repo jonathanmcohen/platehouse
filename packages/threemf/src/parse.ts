@@ -1,5 +1,5 @@
-// Reads the plate data of a Bambu Studio .3mf. A port of the Bambu Plates
-// parser (parser.rb@136fd61) with its AC-023 ceilings, plus the printer,
+// Reads the plate data of a Bambu Studio .3mf. A port of an earlier plate
+// parser written for Manyfold, with its hostile-file ceilings, plus the printer,
 // process and MakerWorld fields Platehouse needs.
 //
 // Rules carried from that parser:
@@ -108,7 +108,7 @@ export async function readProjectFromReader(
 /**
  * Runs one of the parser's own reads of the archive (yauzl or inflate) and
  * classifies what it throws: a filesystem error is ReadUnavailable, anything
- * else is Damaged. The parser.rb@136fd61 damaged_on_read_error. It never
+ * else is Damaged, as the earlier parser did. It never
  * wraps the parser's mapping code or the caller's callback.
  */
 export async function ownRead<T>(read: () => Promise<T>): Promise<T> {
@@ -241,7 +241,7 @@ async function readArchive(
     // Pass 1: every thumbnail must fit the file's budget before any is
     // handed over, so a caller never stores thumbnails of a file that turns
     // out damaged. Bytes are counted and dropped, never held. As in
-    // parser.rb thumbnail_from: plate_N.png comes first, and an empty one or
+    // the earlier parser: plate_N.png comes first, and an empty one or
     // one over LIMITS.pngBytes gives way to plate_N_small.png; a plate with
     // no usable entry has no thumbnail. Every byte read from a thumbnail
     // entry counts against the budget, a passed-over one included.
@@ -260,7 +260,8 @@ async function readArchive(
         }
       }
     }
-    // Pass 2: hand them over one at a time, in plate order (Bambu Plates #11).
+    // Pass 2: hand them over one at a time, in plate order, so no file's
+    // thumbnails are ever all held in memory at once.
     // The same bytes again, so the checks below hold unless the file changed
     // under the read.
     if (opts.onThumbnail) {
@@ -369,7 +370,7 @@ async function readCapped(zip: yauzl.ZipFile, entry: yauzl.Entry, cap: number): 
  * Inflates an entry until it ends or limit bytes have come out, and returns
  * how many bytes were taken, at most limit. Bytes past limit in the last
  * chunk are dropped, not counted, so the count is the same however the
- * inflated stream is chunked (parser.rb reads cap + 1 bytes the same way).
+ * inflated stream is chunked (the earlier parser read cap + 1 bytes the same way).
  */
 async function countUpTo(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number): Promise<number> {
   let taken = 0;
@@ -395,7 +396,7 @@ export async function readModelPrefix(zip: yauzl.ZipFile, entry: yauzl.Entry): P
 }
 
 /**
- * The per-file thumbnail budget (parser.rb max_thumbnail_bytes):
+ * The per-file thumbnail budget:
  * maxThumbnailBytes when it is a positive finite number, never above
  * LIMITS.thumbnailBytesPerFile. Anything else (NaN from an unset setting,
  * zero, a negative number, Infinity) keeps the default, so the option can
@@ -433,7 +434,7 @@ type Node = Record<string, unknown>;
 /**
  * The <config> element of a config entry, or null when there is none. XML
  * that fast-xml-parser cannot parse counts as the entry being absent, as
- * Nokogiri's recovery does under parser.rb: a broken model_settings.config
+ * the earlier parser's XML recovery did: a broken model_settings.config
  * costs the plate names (the png list takes over) and a broken
  * slice_info.config costs the slice data, never the whole file. A DTD is
  * still damage.

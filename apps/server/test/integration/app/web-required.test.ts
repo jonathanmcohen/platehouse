@@ -1,4 +1,4 @@
-// Build plan Task 24 (issue #162): the server process requires the web
+// Issue #162: the server process requires the web
 // build. main() starts the server with processWeb(), the web app's build
 // folder beside the server package (defaultWebDir) marked required, so a
 // server started without apps/web/dist answers /healthz with 503 and its

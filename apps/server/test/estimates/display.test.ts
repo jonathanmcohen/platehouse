@@ -1,4 +1,4 @@
-// Build plan Task 12, AC-032: next to each set of numbers the page names the
+// Next to each set of numbers the page names the
 // filament preset that produced them and where it came from. Slicer contract
 // v1 reports each slot's preset name (null where the file's own filament was
 // kept) but not its source, so the app reads the source from the name by the

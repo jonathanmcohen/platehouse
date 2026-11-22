@@ -171,7 +171,7 @@ export function derivedParts(message: string | null): {
  * How long a render request may wait for its answer once its body is sent:
  * the slicer's own time cap for a render or a STEP conversion
  * (SCAD_TIMEOUT_SECONDS and STEP_TIMEOUT_SECONDS, both 120 s by default in
- * apps/slicer), plus 30 s, as the plan sets the app's slice timeout. Past it
+ * apps/slicer), plus 30 s, the same margin the app's slice timeout uses. Past it
  * the request counts as a lost connection.
  */
 export const RENDER_TIMEOUT_MS = (120 + 30) * 1000;
@@ -216,7 +216,7 @@ export const SANDBOX_OFF_PREFIX = "OpenSCAD renders are off:";
 /**
  * The network codes that mean no connection was made at all: the slicer is
  * stopped, restarting or not on the network, and never saw the request.
- * The same set as Task 12's (estimates/client.ts).
+ * The same set the estimate client uses (estimates/client.ts).
  */
 const NO_CONNECTION_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",

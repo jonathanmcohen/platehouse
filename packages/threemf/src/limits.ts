@@ -1,4 +1,5 @@
-// The AC-023 ceilings, carried from Bambu Plates 0.1.1. Every ceiling is
+// The hostile-file ceilings, so a crafted or damaged file cannot tie up the
+// app, carried from the earlier parser this one was ported from. Every ceiling is
 // inclusive: a file at the ceiling reads, one past it is damage (except the
 // print-time claim, which only makes that plate count as unsliced).
 // Byte ceilings count bytes actually inflated, never a size the archive

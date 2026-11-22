@@ -1,7 +1,8 @@
-// API tokens for the settings page (build plan Task 21; AC-083 UI). These
+// API tokens for the settings page, where each API client gets its own token,
+// shown once, and where any one of them can be revoked. These
 // are session-class /app/api routes for the web UI, separate from the bearer
 // API: they need a signed-in session, and the two that change state need Origin to
-// be PUBLIC_ORIGIN (Task 15's gate).
+// be PUBLIC_ORIGIN (the route-class gate, auth/gate.ts).
 //
 //   GET    /app/api/tokens       {tokens: [{id, name, prefix, createdAt,
 //                                lastUsedAt, createdBy}]}
@@ -23,13 +24,13 @@
 //   the group again, so someone who left it gets no fresh session and no
 //   token. While the issuer cannot be reached the sign-in fails, so the
 //   create stays refused: it is never let through unchecked.
-// - A token is made and revoked by Task 16's createToken and revokeToken. The
+// - A token is made and revoked by createToken and revokeToken (api/tokens.ts). The
 //   token itself is in the create answer only: it is never stored (only its
 //   SHA-256 and first 8 characters are), never listed and never logged. The
 //   request log records no body and no answer (app.ts, requestLogValue), and
 //   every answer here is Cache-Control: no-store, so no cache keeps it.
 // - The list is every live token, newest first, with the 8-character prefix
-//   that tells tokens apart and when each was last used (Task 16 records it
+//   that tells tokens apart and when each was last used (the bearer check records it
 //   at most once a minute). A revoked token is not listed.
 // - The create answer is built from the list, read after the token is made.
 //   If that read fails, the token is revoked before the 500, so a token whose

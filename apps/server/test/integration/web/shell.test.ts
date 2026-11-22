@@ -1,4 +1,4 @@
-// Build plan Task 18, AC-070, with the Route classes contract: the server
+// The theme on the first paint, and the shell pages' route class: the server
 // serves the built web app. The shell pages are session-class: without a
 // session a page is sent to /auth/login, and with one it is index.html with
 // data-theme and the color-scheme meta written in from the ph_theme cookie,

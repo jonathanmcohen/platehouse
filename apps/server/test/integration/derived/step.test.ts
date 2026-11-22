@@ -1,6 +1,6 @@
-// Build plan Task 13: STEP meshes in the app (AC-050, decision 2). A .step or
+// STEP meshes in the app, converted on the server so a browser only ever loads a GLB. A .step or
 // .stp upload is stored as uploaded; after its row commits, ingest's
-// afterCommit queues a mesh job on Task 8's slicer queue, and the job posts
+// afterCommit queues a mesh job on the slicer queue, and the job posts
 // the source to the slicer's /v1/step/glb (here a stub built on
 // packages/slicer-contract) and stores the GLB as a new mesh_glb blob, which
 // is all the browser ever loads for a STEP file.
@@ -78,7 +78,7 @@ const PREVIEW_REJECTED = "The preview picture could not be rendered. OpenSCAD sa
 const PREVIOUS_MESH =
   "The STEP converter rejected the current version of this file, so the mesh shown is from an earlier version. The converter said:";
 
-describe("STEP meshes (AC-050)", () => {
+describe("STEP meshes", () => {
   test("a .step upload produces a GLB mesh blob, then a preview made from that mesh", async () => {
     const text = uniqueStep("mesh");
     const { modelId, fileId } = await uploadStep(text);

@@ -1,4 +1,4 @@
-// Build plan Task 18, AC-070: the server writes the theme into the HTML
+// The server writes the theme into the HTML
 // shell, so the right palette applies on the first paint with no script and
 // no flash. data-theme on the html element and the color-scheme meta come
 // from the ph_theme cookie; Dark is the default and anything that is not
@@ -364,7 +364,7 @@ describe("constants", () => {
   });
 
   test("the shell pages are the sidebar's sections and the model page, each a session-class page", () => {
-    // Task 21 adds the trash and settings pages, Task 20 the model page, and
+    // The trash and settings pages and the model page follow the sections, and
     // the Activity page (the maintainer, 2026-11-19) comes before Settings.
     expect([...SHELL_PAGES]).toEqual([
       "/",

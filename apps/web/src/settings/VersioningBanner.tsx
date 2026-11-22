@@ -1,14 +1,13 @@
-// The bucket versioning warning on the settings page (build plan Task 21;
-// AC-013, decided Q20). The server reads the bucket's versioning state at
+// The bucket versioning warning on the settings page. The server reads the bucket's versioning state at
 // startup (apps/server/src/app-api/settings.ts, recordVersioning). While
 // versioning is not on, off or suspended, the page shows a red banner with
-// the plan's exact sentence. When the state could not be read (unknown) it
+// one fixed sentence. When the state could not be read (unknown) it
 // says so in a quiet line instead, since it cannot claim versioning is off.
 
 import { ENGLISH_I18N, useI18n } from "../i18n/I18n";
 import type { BucketVersioning } from "./SettingsPage";
 
-/** The red banner's words when bucket versioning is not on (the plan's exact sentence). */
+/** The red banner's words when bucket versioning is not on (one fixed sentence). */
 export const VERSIONING_OFF_WARNING = ENGLISH_I18N.t("settings.versioning.off");
 
 export function VersioningBanner({ state }: { state: BucketVersioning }) {

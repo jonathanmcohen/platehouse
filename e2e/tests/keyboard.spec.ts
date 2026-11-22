@@ -1,4 +1,4 @@
-// The keyboard path (build plan Task 22; AC-075 keyboard and focus). On every
+// The keyboard path: every page works by keyboard with visible focus. On every
 // page, Tab from the top of the document reaches every control shown, and
 // every control it lands on has a visible focus outline: outline-style not
 // none, at least 1 px wide and not transparent. Both themes.

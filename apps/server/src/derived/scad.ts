@@ -1,4 +1,5 @@
-// OpenSCAD renders (AC-052): the .scad source goes to the slicer's
+// OpenSCAD renders, made in the slicer's sandbox with no network, where a .scad
+// can read no user, app or job data: the .scad source goes to the slicer's
 // /v1/scad/stl and then /v1/scad/png, where OpenSCAD renders it in the
 // sandbox. Both come back before anything is stored, so a render error or a
 // lost connection on the preview stores nothing. A source over the

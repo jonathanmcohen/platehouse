@@ -1,4 +1,4 @@
-// Build plan Task 4: migration 0001 and the forward-only migrator, against a
+// Migration 0001 and the forward-only migrator, against a
 // real postgres:17-alpine.
 import { appendFile, cp, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

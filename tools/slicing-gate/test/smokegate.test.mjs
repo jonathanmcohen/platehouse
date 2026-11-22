@@ -182,11 +182,11 @@ const landrunResult = (overrides = {}) => ({
   ...overrides,
 });
 
-test("the landrun smoke passes on item (g) as the report reads it, with the T11 form run and recorded", async () => {
+test("the landrun smoke passes on item (g) as the report reads it, with the first design's form run and recorded", async () => {
   const { judgeChecks } = await load();
   const judged = judgeChecks({ landrun: landrunResult() });
   assert.equal(judged.pass, true, judged.problems.join("\n"));
-  assert.match(judged.notes.join("\n"), /T11 form .*--ro.*: does not run \(exit 1\)/);
+  assert.match(judged.notes.join("\n"), /first slicer design's form .*--ro.*: does not run \(exit 1\)/);
 });
 
 test("the landrun smoke fails on run 3's flag error, an import that is not blocked, or a control that proves nothing", async () => {

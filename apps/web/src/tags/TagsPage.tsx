@@ -1,4 +1,4 @@
-// The Tags page, /tags (build plan Task 21; AC-061): every tag with how many
+// The Tags page, /tags: every tag with how many
 // models carry it, and each tag's models with their chips.
 
 import { GroupPage } from "../collections/GroupPage";

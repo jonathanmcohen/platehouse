@@ -1,4 +1,5 @@
-// The built image's health and hardening (AC-035, AC-036, AC-093).
+// The built image's health and hardening: its limits and isolation, the
+// versions it reports, and its healthcheck.
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { streamChunked } from "../support/http.js";

@@ -1,5 +1,7 @@
-// The model page's app API (build plan Task 20; AC-030, AC-032 to AC-034
-// display, AC-040, AC-050, AC-051, AC-072), for the web app's model page:
+// The model page's app API, for the web app's model page: every plate in
+// order with its numbers, where they came from and why a plate could not be
+// sliced, the files with their Open in slicer buttons and 3D views, and the
+// plate thumbnails of a .3mf:
 //
 //   GET  /app/api/models/:id?printer    ModelView: the model, its files in
 //                                       upload order, each .3mf's plates in
@@ -10,7 +12,7 @@
 //                                       switch's choices; reading never
 //                                       queues a slice
 //   POST /app/api/estimates/:id/retry   202 {queued: true}: a failed estimate
-//                                       is queued again (Task 12's
+//                                       is queued again (the estimates module's
 //                                       retryEstimate, from the stored file)
 //                                       409 {error: "not_retryable"}
 //   GET  /app/api/models/title-names    TitleNamePlan: the "Use file titles"
@@ -29,19 +31,19 @@
 //   unlisted, so session); the gate (auth/gate.ts) refuses a request without
 //   a session before these handlers run, and each POST, which changes state,
 //   also needs Origin to be PUBLIC_ORIGIN. The Open buttons mint their link
-//   at Task 17's POST /app/api/files/:id/slicer-link, not here.
+//   at POST /app/api/files/:id/slicer-link (delivery/links.ts), not here.
 // - A trashed, unknown or malformed model is 404, as is a malformed
 //   estimate id; nothing about the model is in the answer.
 // - The model is read from the database alone; this module is given no
 //   store. Every image or mesh the page loads is named as /blobs/<id>
-//   (Task 17's route), and only a stored blob of this model and of the
+//   (the delivery route), and only a stored blob of this model and of the
 //   kind its place calls for is ever named: a plate's thumbnail (thumbnail),
 //   an STL's own bytes (source), a STEP's mesh (mesh_glb), a SCAD's
 //   rendered STL (render_stl), and the preview picture (render_png) of a
 //   SCAD, an STL or a STEP file (issue #316). Anything else is
 //   null, so the page shows no image rather than another file's bytes. A
-//   .3mf has no 3D view (AC-051).
-// - Each plate's numbers are Task 12's plateNumbers, with the display
+//   .3mf has no 3D view; it shows its plate thumbnails instead.
+// - Each plate's numbers are the estimates module's plateNumbers, with the display
 //   context (the settings row and the printer menu, readDisplayContext)
 //   read once per page, as the library page does (app-api/library.ts).
 //   Beside them, estimatePending says whether an estimate for the selected
@@ -149,7 +151,7 @@ export interface ModelFileView {
   previewCodes: string[];
   /** What previewMessage holds after those sentences, or null. */
   previewDetail: string | null;
-  /** Task 17's download route for the file. */
+  /** The file's download route (delivery/download.ts). */
   download: string;
   /** What the 3D viewer loads: an STL or a GLB blob; null for a .3mf or nothing stored yet. */
   view: { kind: "stl" | "glb"; url: string } | null;
@@ -165,7 +167,7 @@ export interface ModelView {
   id: string;
   name: string;
   caption: string | null;
-  /** The description as Markdown; the page renders it with renderMarkdown (Task 7). */
+  /** The description as Markdown; the page renders it with renderMarkdown (packages/makerworld). */
   description: string | null;
   creator: string | null;
   /** The SPDX licence id. */
@@ -213,7 +215,7 @@ export interface AppModelDeps {
   db: Kysely<DB>;
   /** The selected printer, the Orca version and the printer menu, read once per page. */
   displayContext(): Promise<DisplayContext>;
-  /** Task 12's retryEstimate (estimates/service.ts). */
+  /** The estimates module's retryEstimate (estimates/service.ts). */
   retryEstimate(estimateId: string): Promise<boolean>;
 }
 

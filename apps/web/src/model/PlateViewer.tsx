@@ -1,4 +1,4 @@
-// A .3mf in the viewer area (build plan Task 20, AC-051): the selected
+// A .3mf in the viewer area: the selected
 // plate's thumbnail large, with the plate strip under it. A .3mf never gets
 // a 3D view, so nothing here loads three.js. The large image has buttons to
 // turn and flip it on screen (PlateImage). It is keyed by file and plate, so

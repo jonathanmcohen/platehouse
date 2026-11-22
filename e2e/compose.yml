@@ -1,14 +1,15 @@
-# The end-to-end stack (build plan Task 22; AC-074, AC-075, AC-082). Traefik
+# The end-to-end stack, for the phone-width, accessibility and cookieless-route specs. Traefik
 # v3 terminates TLS for two hosts and routes them with its
 # file provider: platehouse.e2e.test to the app and id.e2e.test to the mock
 # OIDC issuer. The Platehouse router carries no middleware at all, so no
 # proxy login (oidc-auth) can cover /api/v1/ or /s/, as the reverse proxy
-# guide in docs/reverse-proxy requires (Task 26). The specs reach the app only through Traefik.
+# guide in docs/reverse-proxy requires. The specs reach the app only through Traefik.
 #
 # The app is the real server from this checkout, started the way the
 # integration tests start it (apps/server/test/integration/app/shutdown.test.ts):
 # node with --conditions=source and the test resolve hook, from the
-# TypeScript source. There is no app image yet (Task 24), so the checkout,
+# TypeScript source, so a change is tested without building the app image
+# (the image itself is tested by docker/test-app-image.sh). The checkout,
 # after pnpm install and the web build, is mounted read-only. The slicer is
 # the contract-faithful stub the integration tests use
 # (apps/server/test/support/slicer-stub.ts), and the issuer is e2e/stubs/oidc-issuer.ts.
@@ -142,7 +143,7 @@ services:
       retries: 30
 
   db:
-    # The database image the plan pins (Global Constraints, Q7), the same one
+    # The database image Platehouse pins, Postgres 17 on Alpine, the same one
     # the integration tests use (apps/server/test/integration/support/containers.ts).
     image: postgres:17-alpine
     environment:
@@ -160,7 +161,7 @@ services:
       retries: 30
 
   s3:
-    # The test-only S3 server the plan pins (Tech Stack).
+    # The test-only S3 server.
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     command: ["server", "/data"]
     environment:

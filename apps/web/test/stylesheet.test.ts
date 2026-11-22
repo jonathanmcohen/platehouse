@@ -1,10 +1,10 @@
-// Build plan Task 18, AC-070, AC-074 and AC-075: the studio stylesheet,
-// ported from manyfold-studio's test/stylesheet_test.rb at 4076a67. The
+// The studio stylesheet,
+// carried over from the AA contrast test of the maintainer's earlier studio theme. The
 // palettes are read out of studio.css itself, so a colour edited there is
 // checked here: every text and background pair meets WCAG AA (4.5:1) in both
 // palettes, the alert edges meet 3:1, System's light copy equals Light, the
 // default accent is Blueprint indigo, and the palettes, radii and breakpoints
-// are the ones manyfold-studio shipped at 4076a67. The palettes take their
+// are the ones that theme shipped. The palettes take their
 // accent tokens from the accent scheme (the maintainer, 2026-11-19); here they are read
 // with the default scheme filled in, or with Green, the studio's own colour,
 // where they are compared with 4076a67. accent-palette.test.ts checks all
@@ -14,7 +14,7 @@
 //
 // Not ported: the picture stacking tests, which pin the restyling of
 // Manyfold's PreviewFrame markup (.card-img-top and its blurred backdrop).
-// Platehouse draws its own card and viewer pictures (Tasks 19 and 20), so
+// Platehouse draws its own card and viewer pictures (the library and model pages), so
 // that markup and its rules do not exist here.
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
@@ -27,7 +27,7 @@ const DARK = ':root,\n[data-theme="dark"]';
 const LIGHT = '[data-theme="light"]';
 /** The default accent scheme's block, which :root also carries (accent-palette.test.ts checks all twelve). */
 const ROOT_SCHEME = ':where(:root),\n[data-accent="blueprint-indigo"]';
-/** Green's block: the accent manyfold-studio shipped at 4076a67. */
+/** Green's block: the accent the earlier studio theme shipped. */
 const GREEN_SCHEME = '[data-accent="bambu-green"]';
 
 type Palette = Record<string, string>;
@@ -131,11 +131,11 @@ const PAIRS: Array<[string, string]> = [
   ["--chip-text", "--surface"],
 ];
 
-// The palettes of manyfold-studio's studio.css at 4076a67, with its accent,
+// The palettes as the earlier studio theme shipped them, with its accent,
 // the Green scheme, filled in. --brand, the logo's colour, was
 // added with the accent schemes (the maintainer, 2026-11-19).
 // The thumbnail backdrop (--thumb-bg and --thumb-edge, issue #245) is
-// Platehouse's own; manyfold-studio did not have it.
+// Platehouse's own; the earlier theme did not have it.
 const STUDIO_DARK: Palette = {
   "--bg": "#121418",
   "--surface": "#1a1d23",
@@ -250,7 +250,7 @@ describe("palettes", () => {
     expect(palette(LIGHT, GREEN_SCHEME)).toEqual(STUDIO_LIGHT);
   });
 
-  test("the plan's colours are the ones in use, with Green", () => {
+  test("the carried-over colours are the ones in use, with Green", () => {
     const dark = palette(DARK, GREEN_SCHEME);
     const light = palette(LIGHT, GREEN_SCHEME);
     expect(dark).toMatchObject({
@@ -392,7 +392,7 @@ describe("thumbnail backdrop", () => {
   });
 
   // The app's plate strip is buttons (PlateStrip.tsx); studio.css's link
-  // rules for the strip are a port from manyfold-studio that styles nothing
+  // rules for the strip are carried over from the earlier theme and style nothing
   // here, so the backdrop is not drawn through them.
   test("studio.css draws no backdrop on plate strip links, which the app never renders", () => {
     expect(declarationsFor(".studio-plate-strip a:has(img)")).toBe("");

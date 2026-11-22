@@ -1,7 +1,7 @@
-// buildSliceable (build plan Task 11): a generated multi-plate,
+// buildSliceable: a generated multi-plate,
 // multi-filament Bambu project of 20 mm cubes that OrcaSlicer 2.5.0 can
-// slice. It is the fixture for the slicer's container tests and the AC-037
-// smoke slice; no designer file is involved.
+// slice. It is the fixture for the slicer's container tests and the release
+// workflow's smoke slice; no designer file is involved.
 //
 // What Orca needs from it, read from its source at commit 40ecc66:
 // - 3D/3dmodel.model's Application metadata starting "BambuStudio-" marks a

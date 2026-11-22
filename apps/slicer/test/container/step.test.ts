@@ -1,4 +1,4 @@
-// STEP to GLB in the built image (AC-050). The sample is NIST MBE PMI test
+// STEP to GLB in the built image. The sample is NIST MBE PMI test
 // case CTC-01, geometry only, the public file gate item (h) used; CI
 // downloads it, checks its sha256 and names it in STEP_SAMPLE. It is public
 // NIST test data, not a designer file.

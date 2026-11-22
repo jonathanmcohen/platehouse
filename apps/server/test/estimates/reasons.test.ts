@@ -1,6 +1,6 @@
-// Build plan Task 12, AC-034: a plate that cannot be sliced shows the
-// slicer's reason in plain words. The six sentences are the plan's, word for
-// word; filament_temperature and toolpath_conflict were added to the reason
+// A plate that cannot be sliced shows the
+// slicer's reason in plain words. The six sentences written with the slicer
+// contract are pinned word for word; filament_temperature and toolpath_conflict were added to the reason
 // map later (the maintainer, 2026-11-08, gate run 3) and their sentences are pinned here.
 import { REASONS } from "@platehouse/slicer-contract";
 import { describe, expect, test } from "vitest";

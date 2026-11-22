@@ -1,6 +1,6 @@
-// buildSliceable (build plan Task 11): a generated multi-plate,
+// buildSliceable: a generated multi-plate,
 // multi-filament Bambu project of simple cubes that OrcaSlicer can slice. It
-// is the fixture for the slicer's container tests and the AC-037 smoke slice;
+// is the fixture for the slicer's container tests and the release workflow's smoke slice;
 // no designer file is involved. Orca itself is only in the slicer image, so
 // these tests check the file's shape against what Orca 2.5.0's 3MF loader
 // reads (src/libslic3r/Format/bbs_3mf.cpp at 40ecc66); the container tests

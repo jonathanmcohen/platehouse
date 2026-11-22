@@ -1,4 +1,4 @@
-// OpenSCAD in the built image (AC-052): renders STL and PNG headless, shows
+// OpenSCAD in the built image: renders STL and PNG headless, shows
 // OpenSCAD's own message on an error, and cannot read a file outside its own
 // job folder. /opt/platehouse/sandbox-probe.stl is a small STL the image
 // ships for this test; each control opens the same file without landrun, so
@@ -113,7 +113,7 @@ describe("OpenSCAD in the image", () => {
   ];
 
   test.each(OUTSIDE)(
-    "scad import of %s, outside its own job folder, fails (AC-052)",
+    "scad import of %s, outside its own job folder, fails",
     async (_label, file) => {
       const res = await post("/v1/scad/stl", `import("${file}");\n`);
       expect(res.status).toBe(422);

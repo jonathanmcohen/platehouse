@@ -1,6 +1,6 @@
-// The pg-boss instance (build plan Task 8, decision 6): background jobs in
+// The pg-boss instance: background jobs in
 // the app's own Postgres, so there is no Redis. pg-boss owns the schema
-// pgboss (Database schema contract) and creates and migrates it itself on
+// pgboss and creates and migrates it itself on
 // start(); the app's migrations never touch it.
 import { PgBoss } from "pg-boss";
 

@@ -1,7 +1,7 @@
 // Test-only builders for synthetic Bambu-style .3mf archives. The suite makes
 // every fixture itself: no designer file is ever read or committed. The zip
 // writer can lie about sizes and offsets so the hostile-file tests can build
-// the damaged archives the Bambu Plates issues describe.
+// the damaged archives hostile.test.ts lists.
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

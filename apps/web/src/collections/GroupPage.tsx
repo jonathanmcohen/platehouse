@@ -1,5 +1,4 @@
-// The shape the Creators, Collections and Tags pages share (build plan Task
-// 21). Without ?name= the page lists every creator that has live models,
+// The shape the Creators, Collections and Tags pages share. Without ?name= the page lists every creator that has live models,
 // and every collection or tag but one only trashed models use, with how
 // many live models (issue #312: one no model uses shows 0). With ?name= it
 // shows that one's models, each ready to organise (ModelRows), and a link

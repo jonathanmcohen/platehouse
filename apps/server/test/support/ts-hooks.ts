@@ -1,10 +1,9 @@
 // Lets plain Node run the server from its TypeScript source, for the test
-// that starts src/main.ts as a real process and sends it SIGTERM (build plan
-// Task 30). Node 26 strips the types itself (the workspace is
+// that starts src/main.ts as a real process and sends it SIGTERM. Node 26 strips the types itself (the workspace is
 // erasableSyntaxOnly) and --conditions=source picks the workspace packages'
 // source; what it does not do is find a .ts file under the .js name the
 // imports use (nodenext style). This hook retries a relative .js import that
-// was not found as the .ts file beside it. Test-only: the app image (Task 24)
+// was not found as the .ts file beside it. Test-only: the app image (docker/app.Dockerfile)
 // runs the built JavaScript.
 //
 //   node --conditions=source --import <this file> apps/server/src/main.ts

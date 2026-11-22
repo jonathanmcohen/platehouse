@@ -1,10 +1,10 @@
-// Build plan Task 30: start(config) boots the whole server against Postgres
+// start(config) boots the whole server against Postgres
 // 17, the S3 test server and the contract-faithful slicer stub, and every
 // part is wired:
 // - every queue the app creates has a worker, and every slicer job kind and
 //   maintenance task reaches its handler;
 // - every cron is registered: purgeExpired 03:30, the orphan sweep 04:00, the
-//   expired-session delete 04:35 (Task 15), the stale-upload sweep hourly,
+//   expired-session delete 04:35, the stale-upload sweep hourly,
 //   the Orca poll every 10 minutes (and once at startup) and the render
 //   check every 15 minutes;
 // - a .3mf dropped in the inbox becomes a model and its plates are queued for
@@ -367,7 +367,7 @@ describe("the upload routes", () => {
     const before = await footprint();
     for (const prefix of [UPLOAD_PREFIXES.api, UPLOAD_PREFIXES.app]) {
       // Same-origin, as a browser sends it, so /app/uploads meets the session
-      // check rather than the gate's Origin check (Task 15).
+      // check rather than the gate's Origin check.
       const res = await fetch(`${env.baseUrl}${prefix}`, {
         method: "POST",
         headers: {

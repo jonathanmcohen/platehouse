@@ -3,8 +3,8 @@
 //
 // It opens the archive for random access, lists the central directory, and
 // reads an entry only by exact name. Every read is capped on the bytes
-// actually inflated, never on the size the archive declares (the Bambu Plates
-// lesson, AC-023). Anything wrong with the archive itself throws ZipDamaged;
+// actually inflated, never on the size the archive declares (a lesson from
+// the earlier parser, so a crafted file cannot tie up the reader). Anything wrong with the archive itself throws ZipDamaged;
 // filesystem errors (EIO, EACCES, ENOENT) reach the caller unchanged.
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { inflateRawSync } from "node:zlib";

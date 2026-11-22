@@ -1,4 +1,5 @@
-// The import report (AC-001, AC-004): one line per model with its outcome,
+// The import report, which shows models found, imported, skipped and failed
+// and proves each file's size: one line per model with its outcome,
 // one size row per file under it (Manyfold's contentSize, the size
 // Platehouse stored and the first 12 hex digits of the SHA-256 it recorded),
 // and the totals: models found, imported, skipped with a reason, and failed,

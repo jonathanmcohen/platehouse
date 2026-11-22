@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { isUuid, uuidv7 } from "../../src/db/ids.js";
 
-// The bucket key contract wants model and blob ids as UUIDv7, lowercase and
-// hyphenated (build plan, Bucket key layout). Every id the repositories mint
+// The bucket key layout (storage/keys.ts) wants model and blob ids as UUIDv7, lowercase and
+// hyphenated. Every id the repositories mint
 // comes from uuidv7().
 const V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 

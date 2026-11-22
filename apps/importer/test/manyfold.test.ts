@@ -1,4 +1,5 @@
-// The Manyfold side of an import (build plan Task 23; AC-001, AC-003): one
+// The Manyfold side of an import, which never changes Manyfold and keeps
+// credentials out of the output: one
 // read-scoped token per run, redirects, origin rules, retries and paging,
 // all against the stub built from Manyfold 0.154.1's recorded OpenAPI.
 import { HttpResponse, http } from "msw";

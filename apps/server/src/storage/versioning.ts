@@ -1,4 +1,4 @@
-// The bucket versioning check (AC-013, decided Q20). Platehouse reads the
+// The bucket versioning check. Platehouse reads the
 // state at startup and the settings page warns when it is off.
 import { GetBucketVersioningCommand, type S3Client } from "@aws-sdk/client-s3";
 import { StoreUnavailable, toStoreError } from "./errors.js";

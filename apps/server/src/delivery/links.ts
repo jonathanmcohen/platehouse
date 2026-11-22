@@ -1,4 +1,6 @@
-// Slicer links (build plan Task 17; AC-041, AC-040 link half, AC-091). A
+// Slicer links, which the Open in Bambu Studio and Open in OrcaSlicer buttons
+// hand to the slicer: HTTPS on the public origin, one file, no session and no
+// long-lived secret, ending in the file's name, and expiring after 10 minutes. A
 // slicer opens a file from a URL and sends no cookie, so the link carries
 // its own short-lived capability:
 //
@@ -11,7 +13,7 @@
 //   derived from the same secret under another label, so a value one of them
 //   signs never passes the other's check, and LINK_SECRET itself signs
 //   nothing.
-// - A link works for LINK_LIFETIME_SECONDS (10 minutes, Q14) and opens only
+// - A link works for LINK_LIFETIME_SECONDS (10 minutes) and opens only
 //   the file whose id it carries. Expired, altered, malformed or naming a
 //   file that is gone or in the trash: 403 with an empty body and no bytes.
 //   The token's MAC and expiry are checked before anything is looked up, so
@@ -21,7 +23,7 @@
 //   matches: a percent-escaped form of it is refused, and so is a path with
 //   an empty name segment or a further raw "/" after it.
 // - The URL is absoluteUrl(...) on PUBLIC_ORIGIN, never built from the
-//   request's Host (AC-091), and has no query string. Its last segment is
+//   request's Host, and has no query string. Its last segment is
 //   linkSegment: the file's name with its real extension (linkFileName),
 //   with / \ % ? # ; NUL, control characters, invisible format
 //   characters (\p{Cf}: bidi overrides and isolates, zero-width characters)
@@ -60,7 +62,7 @@ import {
 // routes send (issue #164); links still export it.
 export { linkFileName };
 
-/** How long a slicer link works (Q14). */
+/** How long a slicer link works: 10 minutes. */
 export const LINK_LIFETIME_SECONDS = 600;
 
 /** A link token's length: 36 bytes in base64url. */

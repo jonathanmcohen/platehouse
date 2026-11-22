@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Build plan Task 21: the settings, trash and organising pages (AC-013
-// warning, AC-031 menu UI, AC-060, AC-061, AC-062, AC-063 UI, AC-083 UI).
+// The settings, trash and organising pages: the versioning warning, My
+// printers, rename, tags, collections, the trash and API tokens.
 //
 // Each page is rendered into jsdom inside a memory router and talks to a
 // fake /app/api (fakeApi below) through the global fetch, which records
@@ -422,7 +422,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     );
     return json(200, { models, nextCursor: null });
   }
-  // The library (Task 19's routes), for the Show in the library link: the
+  // The library's routes, for the Show in the library link: the
   // creator filter is the exact name and the collection filter ignores case,
   // as the server's search does (apps/server/src/library/search.ts).
   if (method === "GET" && path === "/app/api/library/tags") return json(200, { tags: [] });
@@ -2542,11 +2542,11 @@ describe("deleting a tag or a collection", () => {
   });
 
   test("a collection is deleted from the Collections page, and its models stay", async () => {
-    state.unusedCollections = ["QA T28 test"];
+    state.unusedCollections = ["QA check"];
     await show("/collections", <CollectionsPage />);
-    expect(listed()).toEqual(["Desk", "Garage", "QA T28 test"]);
-    await click(button("Delete collection QA T28 test"));
-    expect(callsTo("DELETE", "/app/api/collections?name=QA%20T28%20test")).toHaveLength(1);
+    expect(listed()).toEqual(["Desk", "Garage", "QA check"]);
+    await click(button("Delete collection QA check"));
+    expect(callsTo("DELETE", "/app/api/collections?name=QA%20check")).toHaveLength(1);
 
     await click(button("Delete collection Garage"));
     const box = dialog();

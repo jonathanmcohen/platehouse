@@ -2,7 +2,7 @@ import { type Kysely, sql } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { ApiToken, DB } from "../db/types.js";
 
-// API tokens (AC-083). Only the SHA-256 of a token and its first 8
+// API tokens, one per client, each revocable on its own. Only the SHA-256 of a token and its first 8
 // characters are ever stored; the token itself is shown once by the caller.
 // Since migration 0013 each new token also records who made it (issue #322).
 
@@ -49,7 +49,7 @@ export function tokensRepo(db: Kysely<DB>) {
         .executeTakeFirst();
     },
 
-    /** Records that a live token was used at this time (Task 16; shown by Task 21). */
+    /** Records that a live token was used at this time (by the bearer check; shown on the settings page). */
     async touchLastUsed(id: string, at: Date): Promise<void> {
       if (!isUuid(id)) return;
       await db

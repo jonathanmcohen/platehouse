@@ -1,4 +1,4 @@
-// Build plan Task 30: the server passes startQueues a ServerQueueDeps, so
+// The server passes startQueues a ServerQueueDeps, so
 // leaving out a queue's worker or a schedule's handler fails to compile, not
 // just a test. Each @ts-expect-error below is the assertion: tsc -b (the CI
 // typecheck job) fails if leaving that dependency out ever compiles.

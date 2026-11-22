@@ -39,7 +39,7 @@ test("success without numbers fails", () => {
   assert.equal(c.reason, "no_numbers");
 });
 
-test("the four AC-034 refusals are reported, not failed", () => {
+test("the four legitimate refusals are reported, not failed", () => {
   for (const [code, reason] of [
     [-15, "machine_not_supported"],
     [-16, "machine_not_supported"],
@@ -77,7 +77,7 @@ test("plates refused only with -101 and -62 beside ok plates pass the gate", () 
   assert.equal(gateVerdict(plates), "PASS");
 });
 
-test("codes the plan maps to nozzle_mismatch but Orca names otherwise need the maintainer's decision", () => {
+test("codes the contract's first map sent to nozzle_mismatch but Orca names otherwise need the maintainer's decision", () => {
   for (const code of [-50, -61, -63, -64, -65, -67, -69]) {
     const c = classifyPlate({ returnCode: code, exitStatus: 256 + code });
     assert.equal(c.verdict, "needs-decision", String(code));

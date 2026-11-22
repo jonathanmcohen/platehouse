@@ -1,6 +1,6 @@
-// Platehouse's navigation (build plan Task 18, AC-071): Library, Creators,
-// Collections and Tags, then Task 21's Trash, the Activity page (the maintainer,
-// 2026-11-19) and Task 21's Settings. Rendered as the
+// Platehouse's navigation: Library, Creators,
+// Collections and Tags, then Trash, the Activity page (the maintainer,
+// 2026-11-19) and Settings. Rendered as the
 // sidebar on wide screens and, with menu, inside the narrow-screen menu
 // panel. NavLink marks the current section aria-current="page"; Library
 // matches only its own path. The server answers with the shell only at
@@ -28,7 +28,7 @@ export const SECTIONS: ReadonlyArray<{ key: MessageKey; label: string; to: strin
     to: "/collections",
   },
   { key: "shell.nav.tags", label: ENGLISH_I18N.t("shell.nav.tags"), to: "/tags" },
-  // Task 21: the trash and settings pages.
+  // The trash and settings pages.
   { key: "shell.nav.trash", label: ENGLISH_I18N.t("shell.nav.trash"), to: "/trash" },
   // What Platehouse is doing and holds: numbers, jobs, the slicer, events.
   { key: "shell.nav.activity", label: ENGLISH_I18N.t("shell.nav.activity"), to: "/activity" },

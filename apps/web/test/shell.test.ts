@@ -1,7 +1,7 @@
-// Build plan Task 18, AC-070, AC-071, AC-074 and AC-075: the shell around
+// The shell around
 // every page. Rendered to static markup (react-dom/server) inside a memory
 // router: a left sidebar with Library, Creators, Collections and Tags (and,
-// since Task 21, Trash and Settings; since 2026-11-19, Activity), a top
+// Trash and Settings, and since 2026-11-19 Activity), a top
 // bar with the narrow-screen menu button, search and Add, the Dark / Light /
 // System switch, a skip link and the main landmark. Also: index.html carries
 // the defaults the server rewrites (data-theme and the color-scheme meta),
@@ -53,7 +53,7 @@ describe("the sidebar", () => {
     ["Creators", "/creators"],
     ["Collections", "/collections"],
     ["Tags", "/tags"],
-    // Task 21's pages.
+    // The trash page.
     ["Trash", "/trash"],
     // The Activity page (the maintainer, 2026-11-19).
     ["Activity", "/activity"],

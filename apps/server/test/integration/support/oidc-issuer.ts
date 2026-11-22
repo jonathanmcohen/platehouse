@@ -1,4 +1,4 @@
-// A local OpenID Connect issuer for the login tests (build plan Task 15),
+// A local OpenID Connect issuer for the login tests,
 // built on jose: discovery, an authorize endpoint the test drives like a
 // browser that is already signed in to the OIDC provider, a token endpoint that
 // checks the client, the redirect_uri and the PKCE verifier, the JWKS and
@@ -387,7 +387,7 @@ export function memorySessionStore(): MemoryStore {
   return store;
 }
 
-/** API tokens kept in a Map, with the api_tokens table's rules (Task 16). */
+/** API tokens kept in a Map, with the api_tokens table's rules. */
 export interface MemoryTokenStore extends TokenStore {
   readonly rows: Map<string, ApiToken>;
   /** How many times findByHash was called. */
@@ -573,7 +573,7 @@ export interface AuthTestApp extends TestAuth {
 export async function authTestApp(
   opts: Parameters<typeof testAuth>[0] & {
     beforeReady?: (app: FastifyInstance) => void | Promise<void>;
-    /** The API's tokens and library (Task 16); buildApp's own default when left out. */
+    /** The API's tokens and library; buildApp's own default when left out. */
     api?: ApiDeps;
     /** The upload store; one in the temp folder whose queue records nothing when left out. */
     uploads?: Uploads;

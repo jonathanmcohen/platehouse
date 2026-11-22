@@ -16,7 +16,7 @@ import { htmlEscape } from "./support/payloads.js";
 // come out as text: no image, no attribute but a link's http(s) href, and the
 // payload intact.
 
-// Every character Task 7 escapes, a line-start "1.", and the three crafted
+// Every character htmlToMarkdown escapes, a line-start "1.", and the three crafted
 // inputs: an image to an address the designer chose, a raw <img onerror>
 // and a javascript: link, plus a script tag.
 const PAYLOAD =

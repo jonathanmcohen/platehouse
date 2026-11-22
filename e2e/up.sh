@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts the end-to-end stack (build plan Task 22) for this run.
+# Starts the end-to-end stack for this run.
 #
 # 1. Makes a throwaway TLS CA and one certificate for platehouse.e2e.test and
 #    id.e2e.test, which Traefik serves and the app trusts for the issuer.

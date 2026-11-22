@@ -1,5 +1,6 @@
-// GET /auth/login, GET /auth/callback and POST /auth/logout (build plan
-// Task 15; AC-080, AC-081, AC-091). They are public routes (the Route
+// GET /auth/login, GET /auth/callback and POST /auth/logout: the OIDC login,
+// which says when the provider is down and builds every URL from the
+// configured public origin. They are public routes (the Route
 // classes table): no session is needed to reach them.
 //
 // - GET /auth/login asks the issuer for a new login (oidc.ts) and sends the

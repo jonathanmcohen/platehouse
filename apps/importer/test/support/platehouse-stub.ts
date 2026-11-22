@@ -1,4 +1,4 @@
-// An in-memory MSW stub of the Platehouse Public API v1 (build plan Task 16),
+// An in-memory MSW stub of the Platehouse Public API v1,
 // holding only the routes the importer uses, with the answers
 // apps/server/src/api/v1.ts and apps/server/src/uploads/tus.ts give:
 //

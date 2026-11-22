@@ -166,7 +166,7 @@ function planCommand() {
     companions: process.env.GATE_COMPANIONS === "1",
   });
   const built = buildJobs(selection, metas, recipe);
-  // Where the sample falls short of the plan's rule, and why each file was
+  // Where the sample falls short of the sample rule, and why each file was
   // picked, so the report says it and not only selection.json.
   const picked = {
     sample: selection.sample.map((s) => ({ name: s.name, roles: s.roles ?? [], reasons: s.reasons ?? [] })),
@@ -406,7 +406,7 @@ export function landrunInvocations(dir) {
     dir,
     ...sandboxEnv,
   ];
-  // The form the plan wrote for T11 (--ro on the OpenSCAD tree), as evidence.
+  // The first slicer design's form (--ro on the OpenSCAD tree), as evidence.
   const planForm = [
     "--best-effort",
     "--ro",
@@ -621,7 +621,7 @@ export function buildReport({ plan, results, hostExits, checks }) {
   return {
     verdict,
     passRule:
-      "Every plate gets a time and a weight above zero, or is refused for a legitimate reason, which is reported: one AC-034 names (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), or, by the maintainer's decision on 2026-11-08, -101 (G-code path conflicts) or -62 (filament temperatures too far apart). A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the plan's reason map and Orca's own meaning disagree on (-50, -61, -63 to -65, -67 and -69) are reported as needs-decision.",
+      "Every plate gets a time and a weight above zero, or is refused for a legitimate reason, which is reported: one of the legitimate refusals (process not compatible, machine not supported, bed too small, nozzle or extruder mismatch), or, by the maintainer's decision on 2026-11-08, -101 (G-code path conflicts) or -62 (filament temperatures too far apart). A crash, a timeout or an unexplained slicer error on any plate fails the gate. Codes that the slicer contract's first reason map and Orca's own meaning disagree on (-50, -61, -63 to -65, -67 and -69) are reported as needs-decision.",
     counts,
     setupErrors: plan.errors ?? [],
     incomplete,
@@ -672,7 +672,7 @@ export function summaryText(report) {
   for (const e of report.incomplete ?? []) L.push(`    incomplete: ${e}`);
   const sel = report.selection;
   if (sel) {
-    if (sel.missing.length === 0) L.push("    The sample covers every role the plan's sample rule names.");
+    if (sel.missing.length === 0) L.push("    The sample covers every role the sample rule names.");
     for (const m of sel.missing) L.push(`    not covered: ${m}`);
     for (const u of sel.unknownPrinter) L.push(`    left out, printer not named: ${u}`);
     L.push(`    Sample, ${sel.sample.length} files, each with the role it was picked for:`);
@@ -700,7 +700,7 @@ export function summaryText(report) {
   L.push(`    File's own process after the printer switch: kept on ${s.kept} finished slices, changed on ${s.changed}, unknown on ${s.unknown}; refused as process not compatible on ${s.refusedProcessNotCompatible} plates.`);
   L.push("");
   const lim = report.limits;
-  L.push(`(d) Proposed AC-035 limits: cpus ${lim.cpus}, memory ${lim.memory}, SLICE_PLATE_SECONDS ${lim.slicePlateSeconds}, tmpfs ${lim.tmpfs}.`);
+  L.push(`(d) Proposed slicer container limits: cpus ${lim.cpus}, memory ${lim.memory}, SLICE_PLATE_SECONDS ${lim.slicePlateSeconds}, tmpfs ${lim.tmpfs}.`);
   L.push(`    Measured worst case: peak RSS ${fmtBytes(lim.measured.worstPeakRssBytes)}, wall ${lim.measured.worstWallSeconds} s, input plus scratch ${fmtBytes(lim.measured.worstInputPlusScratchBytes)}.`);
   L.push("");
   const k = report.printerKeys;
@@ -717,7 +717,7 @@ export function summaryText(report) {
   const lr = report.landrun;
   if (lr) {
     L.push(`(g) landrun on kernel ${lr.kernel}: same-dir import ${lr.sameDirImportWorks ? "works" : "FAILS"}; import of /opt/gate/samples/outside.stl ${lr.outsideImportBlocked ? "is blocked" : "is NOT blocked"}; the same import without landrun ${lr.controlProvesSandbox ? "works (so landrun is what blocks it)" : "also fails (the control does not prove the sandbox)"}. Overall: ${lr.pass ? "pass" : "FAIL"}.`);
-    L.push(`    The plan's T11 form with --ro on the OpenSCAD tree: ${lr.planFormRo.producedStl ? "works" : `does not run (exit ${lr.planFormRo.exit})`}.`);
+    L.push(`    The first slicer design's form with --ro on the OpenSCAD tree: ${lr.planFormRo.producedStl ? "works" : `does not run (exit ${lr.planFormRo.exit})`}.`);
   } else L.push("(g) landrun: not run.");
   const st = report.step;
   if (st) {

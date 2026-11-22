@@ -1,18 +1,19 @@
-# CI for Platehouse (build plan Task 3).
+# CI for Platehouse.
 #
 # The workspace jobs run on every pull request and on every push to main and
 # the release branches, whatever the change touches (issue #16: a paths filter
 # on the triggers meant no CI ran on product PRs). They run in a chain:
 # lint -> typecheck -> unit -> integration -> e2e (Lint (Biome), Typecheck,
-# Unit tests, Integration tests, End-to-end tests; e2e is build plan Task 22).
-# Each test job fails when no test actually ran (AC-094), and logs how many
+# Unit tests, Integration tests, End-to-end tests).
+# Each test job fails when no test actually ran, so a green run always means
+# tests ran, and logs how many
 # did.
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
 # run), snapshot-pins (Ubuntu snapshot pin check, on every run, below), the
 # chain above, gate-tests (Slicing gate tests), gate-image (Slicing
 # gate image build), slicer-image (Slicer image and container tests) and
-# app-image (App image (amd64) and App image (arm64), build plan Task 24: the
+# app-image (App image (amd64) and App image (arm64): the
 # image build, its healthy and unhealthy checks, then the release workflow's
 # Trivy gate) and docs (Docs build).
 #
@@ -30,10 +31,10 @@
 # large, so its build runs only when tools/slicing-gate, this file or
 # .node-version (the gate jobs' Node version) changes, and only after the gate
 # tests passed. Nothing else depends on either gate job, so their skips
-# reach no other job. The slicer job (build plan Task 11) is scoped the same
+# reach no other job. The slicer job is scoped the same
 # way, by the same changes job: it builds the slicer image and runs the
 # container tests against it, and nothing depends on it either. Nothing is
-# pushed anywhere, no image is published (Task 25 does that) and no secret is
+# pushed anywhere, no image is published (the slicer-image workflow does that) and no secret is
 # used. No designer file comes near any job: every test builds its own
 # fixtures, and the one outside file, the slicer's STEP sample, is public NIST
 # test data checked against its sha256.
@@ -144,7 +145,7 @@ jobs:
           echo "tests=${tests}" >>"$GITHUB_OUTPUT"
           echo "image=${image}" >>"$GITHUB_OUTPUT"
 
-      # The same rule for the slicer job (build plan Task 11), with the same
+      # The same rule for the slicer job, with the same
       # base commit and the same safe default. It runs when apps/slicer or
       # packages/slicer-contract changes, or anything else the slicer image or
       # its container tests are built from: packages/threemf (the slicer reads
@@ -298,7 +299,7 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      # The zero-test guard (AC-094). A test that a filter skipped still counts
+      # The zero-test guard: a job where no test ran fails. A test that a filter skipped still counts
       # in numTotalTests, so the guard counts the tests that ran: the total less
       # the skipped and todo ones. The count is logged whenever vitest wrote a
       # report, pass or fail. A failed vitest run then ends the step with
@@ -388,7 +389,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The end-to-end suite (build plan Task 22): e2e/compose.yml runs Traefik
+  # The end-to-end suite: e2e/compose.yml runs Traefik
   # v3, the app from this checkout, the slicer stub, Postgres, the S3 test
   # server and a mock OIDC issuer, and Playwright drives Chromium through
   # Traefik at https://platehouse.e2e.test (e2e/README.md). It runs on every
@@ -600,7 +601,7 @@ jobs:
           echo "== own-printer slices with and without process_full"
           node tools/slicing-gate/smoke-gate.mjs compare "$results/fixed.json" "$results/control.json"
 
-  # The slicer image (build plan Task 11): the container tests build
+  # The slicer image: the container tests build
   # apps/slicer/Dockerfile and run it the way examples/docker-compose.yml does (read-only root,
   # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract v1 over
   # HTTP: a real slice of buildSliceable's plates, OpenSCAD renders and the
@@ -700,7 +701,7 @@ jobs:
           cache-dir: ${{ runner.temp }}/trivy-cache
           version: v0.76.2
 
-  # The app image (build plan Task 24; this job approved by the maintainer, 2026-11-13):
+  # The app image (this job approved by the maintainer, 2026-11-13):
   # docker/app.Dockerfile, built natively for amd64 and arm64 on every run,
   # then run by docker/test-app-image.sh against Postgres 17 and the S3 test
   # server on a private Docker network. The container's own HEALTHCHECK must

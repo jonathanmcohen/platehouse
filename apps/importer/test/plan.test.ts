@@ -1,4 +1,5 @@
-// planModel: what one Manyfold model needs in Platehouse (AC-001, AC-002).
+// planModel: what one Manyfold model needs in Platehouse, so that a re-run
+// fills in only what is missing.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {

@@ -1,5 +1,5 @@
-// A whole import into the Platehouse stub (build plan Task 23; AC-001,
-// AC-002, AC-004): what lands in Platehouse, re-runs, the trash, sizes, the
+// A whole import into the Platehouse stub: what lands in Platehouse, re-runs
+// that make no duplicates, the trash, sizes that must match Manyfold's, the
 // report and the exit codes.
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";

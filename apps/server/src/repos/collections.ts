@@ -4,7 +4,7 @@ import { inTransaction } from "../db/kysely.js";
 import type { DB } from "../db/types.js";
 import { deleteLabel, ensureLabels } from "./labels.js";
 
-// Collections are flat (Q17) and, like tags, matched ignoring case with
+// Collections are flat (one cannot hold another) and, like tags, matched ignoring case with
 // Postgres's lower() on both sides. A model can sit in many collections.
 
 function collectionName(name: string): string {

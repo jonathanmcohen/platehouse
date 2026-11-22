@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// Build plan Task 18, AC-071: the top bar's search box shows the search in
+// The top bar's search box shows the search in
 // the URL. The shell, and the box with it, stays mounted while the routes
 // change, so after the user has typed in it the box must still follow ?q=
-// on Back, Forward and a sidebar link; the library page (Task 19) reads ?q=
+// on Back, Forward and a sidebar link; the library page reads ?q=
 // and the box and the results must not disagree. Submitting keeps focus in
 // the box.
 import { act, createElement } from "react";

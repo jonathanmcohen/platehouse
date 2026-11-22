@@ -1,4 +1,4 @@
-// How a failed ingest reports what it saved (build plan Tasks 8 and 9). The
+// How a failed ingest reports what it saved. The
 // upload's HEAD answers by it (uploads/tus.ts): an IngestError means nothing
 // was saved, so HEAD answers 410 and the same file can be sent again;
 // IngestOutcomeUnknown means the commit may have landed, so HEAD answers

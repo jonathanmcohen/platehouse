@@ -1,4 +1,4 @@
-// The ingest tests' environment (build plan Task 8): the library env (a
+// The ingest tests' environment: the library env (a
 // migrated Postgres 17 and a bucket on the S3 test server) plus a temp folder
 // for uploaded files and the builders for the files themselves. Every file is
 // made here from synthetic bytes; no designer file is read or committed.

@@ -1,4 +1,4 @@
-// OpenSCAD renders (AC-052, build plan Task 11): POST /v1/scad/stl and
+// OpenSCAD renders, with no network and no access to user, app or job data: POST /v1/scad/stl and
 // /v1/scad/png. The .scad text is written alone into a fresh job folder and
 // OpenSCAD 2026.11-RC0 renders it under prlimit and landrun (see
 // sandbox.ts), with a time cap and OPENSCADPATH unset. What Landlock cannot

@@ -1,11 +1,11 @@
-// Open in Bambu Studio and Open in OrcaSlicer (build plan Task 20, AC-040),
+// Open in Bambu Studio and Open in OrcaSlicer,
 // on every .3mf of a model page.
 //
 // - The plain line about Bambu Studio's own prompt is shown beside the
 //   buttons before anything is pressed: Bambu Studio trusts only
 //   MakerWorld's hosts and asks "This file is not from a trusted site" for
 //   any other, Platehouse included.
-// - A press mints a 10-minute slicer link with Task 17's POST
+// - A press mints a 10-minute slicer link with the server's POST
 //   /app/api/files/:id/slicer-link (a same-origin request, which the gate's
 //   Origin check passes) and goes to the protocol URL that route answers:
 //   open.orca for OrcaSlicer, open.bambuMac on a Mac and open.bambuOther
@@ -27,7 +27,7 @@ function hiddenText(children: ReactNode): ReactNode {
 /** The line about Bambu Studio's own prompt, in English (the catalog's model.slicer.bambuPrompt). */
 export const BAMBU_PROMPT_LINE = ENGLISH_I18N.t("model.slicer.bambuPrompt");
 
-/** What Task 17's mint route answers. */
+/** What the slicer link route answers. */
 export interface SlicerLink {
   url: string;
   expiresAt: string;

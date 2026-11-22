@@ -1,6 +1,6 @@
-// Tags on a model (build plan Task 14; AC-061). The rows are written by the
+// Tags on a model, which can be added and removed. The rows are written by the
 // tags repository; this module refuses a model that is unknown or trashed,
-// which the API answers with 404 (AC-084: a trashed model is invisible).
+// which the API answers with 404 (a trashed model is invisible to the API).
 // Filtering the library by tag is search({ tag }) in search.ts.
 //
 // The web app's calls remove a tag no model has any more when its last

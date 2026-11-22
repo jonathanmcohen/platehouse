@@ -1,4 +1,4 @@
-// The server process (build plan Task 30; AC-021, AC-033, AC-093 app side).
+// The server process: it wires every service, starts the queues and the inbox watcher, and serves the health check.
 // Run as the entry module it reads the configuration from the environment
 // (loadConfig, which names a missing key and never prints a value), starts
 // the server and stops it on SIGTERM or SIGINT. start(config) is the whole
@@ -8,10 +8,10 @@
 //      lock, so two starting servers apply each migration once);
 //   2. pg-boss, started on the same database;
 //   3. the services, each built once and shared: the slicer client and
-//      estimates (Task 12), the render jobs (Task 13), ingest with
+//      estimates, the render jobs, ingest with
 //      derived.afterUpload as its afterCommit, so a .scad or STEP file queues
 //      its render once its row commits however it arrived, the tus upload
-//      store (Task 9), the trash (Task 14) and the orphan sweep (Task 8);
+//      store, the trash and the orphan sweep;
 //   4. the queues (startQueues) with a ServerQueueDeps, so every queue has
 //      its worker and every maintenance task its schedule: the slicer
 //      worker dispatches by job kind to estimates' "slice" and the render
@@ -19,40 +19,40 @@
 //      (onIngested), and the Orca poll also runs once at startup; the
 //      description re-conversion (#357) is sent to the maintenance queue
 //      once, on the first start of a version whose converter changed;
-//   5. the inbox watcher (Task 10), wired exactly as its own comment and the
+//   5. the inbox watcher, wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
 //   6. the Fastify app (app.ts), listening on PORT on every interface, with
-//      login (Task 15): sessions in the sessions table, the OIDC client for
+//      login: sessions in the sessions table, the OIDC client for
 //      OIDC_ISSUER with redirect_uri absoluteUrl('/auth/callback'), and the
 //      login cookie's key derived from LINK_SECRET (loginCookieKey). Pocket
 //      ID is not contacted at startup, only at the first login, so the
-//      server starts while it is down. The Public API v1 (Task 16) gets
+//      server starts while it is down. The Public API v1 gets
 //      tokens from the api_tokens table and reads the library through the
-//      same database and store, with Task 12's plate numbers read as the
+//      same database and store, with the estimates module's plate numbers read as the
 //      library page reads them (one display context per request); it never touches
-//      the OIDC provider, so API tokens keep working while it is down (AC-081).
-//      File delivery and slicer links (Task 17) read files through that
+//      the OIDC provider, so API tokens keep working while it is down.
+//      File delivery and slicer links read files through that
 //      same library and blobs through the same database and store, and
 //      sign links with a key links.ts derives from LINK_SECRET.
-//      The library page's app API (Task 19) reads the same database and
-//      Task 12's plate numbers, with the display context (the settings row
+//      The library page's app API reads the same database and
+//      the estimates module's plate numbers, with the display context (the settings row
 //      and estimates.listPrinters, through readDisplayContext) read once per
-//      page rather than once per plate. The model page's app API (Task 20)
+//      page rather than once per plate. The model page's app API
 //      reads them the same way, once per model, and queues a failed
 //      estimate again through estimates.retryEstimate.
-//      The web app's own API under /app/api (Task 21: settings, tokens,
+//      The web app's own API under /app/api (settings, tokens,
 //      organising and the trash) shares the API's tokens, estimates and the
 //      trash; the bucket's versioning state is read just before, for the
-//      settings page's warning (AC-013). Sign out everywhere (issue #322)
+//      settings page's warning while versioning is off. Sign out everywhere (issue #322)
 //      shares the login's sessions and the API's tokens.
-//      The built web app (Task 18) is served from options.web, by default
+//      The built web app is served from options.web, by default
 //      apps/web/dist beside the server package and optional, so a test
 //      server without a web build reports healthy. The process (main())
 //      passes processWeb(): the same folder, required, so /healthz answers
 //      503 while index.html is missing and the app image's HEALTHCHECK fails
-//      instead of passing in front of 503 pages (Task 24, issue #162).
+//      instead of passing in front of 503 pages (issue #162).
 //
-// stop() undoes it in the order Task 30 sets: no new HTTP requests (requests
+// stop() undoes it in this order: no new HTTP requests (requests
 // in flight get HTTP_CLOSE_GRACE_MS, then their connections are closed), the
 // inbox watcher, pg-boss (gracefully: active jobs get BOSS_STOP_TIMEOUT_MS,
 // then pg-boss fails them by their queue's retry rules; a slicer job then
@@ -309,7 +309,7 @@ export interface StartOptions {
 }
 
 /**
- * The web build as the process serves it (Task 24, issue #162): apps/web/dist
+ * The web build as the process serves it (issue #162): apps/web/dist
  * beside the server package, required, so a server started without it fails
  * its health check. dir is for the tests.
  */
@@ -448,7 +448,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     watcher = startedWatcher;
     startedWatcher.start();
 
-    // The settings page warns while bucket versioning is off (AC-013); the
+    // The settings page warns while bucket versioning is off; the
     // state is read once here, in the background, so a store that is slow to
     // answer never holds up the start. recordVersioning never throws: a store
     // that cannot be reached is logged and leaves the last state recorded.
@@ -516,13 +516,13 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         displayContext,
         plateNumbers: (ctx, plateId) => plateNumbers(db, ctx, plateId),
       }),
-      // The model page (Task 20).
+      // The model page.
       model: createAppModel({
         db,
         displayContext,
         retryEstimate: (estimateId) => estimates.retryEstimate(estimateId),
       }),
-      // The settings, trash and organising pages (Task 21), and Sign out
+      // The settings, trash and organising pages, and Sign out
       // everywhere on the settings page (issue #322). Every module is passed:
       // satisfies AppApiDeps catches one left out.
       appApi: {

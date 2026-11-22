@@ -1,4 +1,4 @@
-/* The model page (build plan Task 20). Only studio.css's tokens: no colour,
+/* The model page. Only studio.css's tokens: no colour,
    custom property or palette of its own. studio.css styles the plate strip
    and tabs as links; on this page they are buttons (the strip shows a plate,
    the tabs are an ARIA tablist), so these rules give the buttons the same

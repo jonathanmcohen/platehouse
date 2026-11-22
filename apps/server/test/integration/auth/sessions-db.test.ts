@@ -1,4 +1,4 @@
-// Build plan Task 15: sessions in the sessions table (Postgres 17). The store
+// Sessions in the sessions table (Postgres 17). The store
 // honours both expiries, a request moves the idle expiry on at most once per
 // SESSION_TOUCH_MS, never past the absolute expiry, and a whole login through
 // the app and the mock issuer leaves one row that logout deletes. A row's id

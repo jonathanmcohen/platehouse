@@ -1,4 +1,4 @@
-// The library the end-to-end specs run against (build plan Task 22), made
+// The library the end-to-end specs run against, made
 // by the global setup through the real app: an API token minted on the
 // settings route, three generated .3mf files uploaded through the public API
 // over Traefik, one model tagged and put in a collection, one moved to the

@@ -1,6 +1,8 @@
-// The MakerWorld License value as an SPDX id or a description footer, as
-// requirements AC-022 and build plan Task 7 set out. Ported by behaviour from
-// mapLicense in automation Manyfold/makerworld-metadata at 1ce8c57.
+// The MakerWorld License value as an SPDX id or a description footer: BY,
+// BY-SA, BY-NC, BY-NC-SA and BY-NC-ND become the matching CC 4.0 SPDX id, CC0
+// becomes CC0-1.0, and the Standard Digital File License and the MakerWorld
+// Exclusive License set no SPDX id and are named in a footer instead. Ported
+// by behaviour from an earlier Manyfold metadata script.
 
 const SPDX: ReadonlyMap<string, string> = new Map([
   ["BY-NC-SA", "CC-BY-NC-SA-4.0"],

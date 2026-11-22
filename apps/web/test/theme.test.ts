@@ -1,4 +1,4 @@
-// Build plan Task 18, AC-070: the theme switch sets the ph_theme cookie and
+// The theme switch sets the ph_theme cookie and
 // the html element's data-theme (and the color-scheme meta) at once, with no
 // reload. Dark is the default; System resolves in CSS. The document here is
 // a stand-in that records what is written to it and fails on a reload.

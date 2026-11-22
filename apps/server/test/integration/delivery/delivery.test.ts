@@ -1,6 +1,8 @@
-// Build plan Task 17: file delivery and slicer links against Postgres 17 and
-// the S3 test server (AC-011, AC-012 file unavailable, AC-041, AC-040 link
-// half; Review Focus 1).
+// File delivery and slicer links against Postgres 17 and
+// the S3 test server: no bucket credential or signed URL reaches a client, a
+// store outage shows a file as unavailable without marking it lost, slicer
+// links work without a session for one file and 10 minutes, and hostile file
+// names stay safe in downloads and links.
 //
 // Everything is real but the login: files and blobs in the database, bytes
 // in the bucket, the download and blob routes and the slicer links served by
@@ -215,7 +217,7 @@ afterAll(async () => {
   await Promise.all([pgc?.stop(), s3?.stop()]);
 });
 
-describe("slicer links (AC-041)", () => {
+describe("slicer links", () => {
   test("link works with no session and returns the file bytes", async () => {
     const seeded = await seedStoredModel(env);
     const link = await mint(seeded.file.id);
@@ -347,7 +349,7 @@ describe("downloads and blobs", () => {
   });
 });
 
-describe("the store down (AC-012)", () => {
+describe("the store down", () => {
   test("store down: download is 503 and the file is not marked missing", async () => {
     const seeded = await seedStoredModel(env);
     const link = await mint(seeded.file.id);
@@ -444,7 +446,7 @@ describe("an object whose size differs from the record (PR #156 security review)
   });
 });
 
-describe("hostile file names (Review Focus 1)", () => {
+describe("hostile file names", () => {
   const hostile = [
     "a b  c.3mf",
     `${ACCENTED}.3mf`,
@@ -536,7 +538,7 @@ describe("hostile file names (Review Focus 1)", () => {
   });
 });
 
-describe("no S3 detail in any answer (AC-011)", () => {
+describe("no S3 detail in any answer", () => {
   test("responses carry no S3 host, key or signature", async () => {
     // Make sure every kind of answer is in the set, then read them all.
     const seeded = await seedStoredModel(env);

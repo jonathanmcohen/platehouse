@@ -1,4 +1,4 @@
-// The Fastify app (build plan Tasks 30 and 15). buildApp(deps) returns it
+// The Fastify app, with the route-class gate in front of every route. buildApp(deps) returns it
 // with every route registered and nothing listening; start() in main.ts
 // listens.
 //
@@ -14,31 +14,31 @@
 //   HEALTH_TIMEOUT_MS and pg-boss is started (and, when web.required is
 //   set, the web build is there), else 503. The body is a fixed
 //   word either way, never an error, a host or a port: the app image's
-//   HEALTHCHECK (Task 24) reads only the status.
-// - The tus upload handler (Task 9) is mounted at /app/uploads behind
+//   HEALTHCHECK (docker/app.Dockerfile) reads only the status.
+// - The tus upload handler (uploads/tus.ts) is mounted at /app/uploads behind
 //   requireSession and at /api/v1/uploads behind apiUploadHook: the bearer
 //   check (api/tokens.ts), then, for a creation into an existing model, that
 //   the model is live. Either hook runs before tus sees the request, so a
 //   refused request stores nothing.
-// - The Public API v1 (api/v1.ts, Task 16) is mounted at /api/v1, every route
+// - The Public API v1 (api/v1.ts) is mounted at /api/v1, every route
 //   behind the bearer check, and its OpenAPI document (api/openapi.ts) is
 //   generated from those routes with servers[0].url = absoluteUrl('/api/v1').
 //   A request to an unknown path under /api/v1 gets the bearer check before
 //   its 404, so without a token it is 401 like every other API request. No
 //   CORS plugin is registered.
-// - The web app's own JSON API under /app/api (app-api/: Task 19's library,
-//   Task 20's model page, Task 21's settings, tokens, organising and the
+// - The web app's own JSON API under /app/api (app-api/: the library,
+//   the model page, settings, tokens, organising and the
 //   trash, and the Activity page's GET /app/api/activity), session-class, so the gate's session and Origin checks cover
 //   every route. Without library the library routes answer an empty
 //   library, without model every model is 404 and nothing is retried, and
-//   without appApi Task 21's routes are still registered and answer 503, as
+//   without appApi the settings, tokens and organising routes are still registered and answer 503, as
 //   the Activity route does without activity.
-// - The web app (web/shell.ts, Task 18): the shell pages (session-class)
+// - The web app (web/shell.ts): the shell pages (session-class)
 //   answer with the built index.html, data-theme and the color-scheme meta
 //   written in from the ph_theme cookie, and the hashed build output is
 //   served under /assets/ (public-class). A missing build is logged at
 //   startup; it also makes /healthz 503 only when web.required is set.
-// - File delivery (delivery/download.ts, Task 17) streams a file's bytes at
+// - File delivery (delivery/download.ts) streams a file's bytes at
 //   GET /files/:id/download and a blob's at GET /blobs/:id, both session-
 //   class, and slicer links (delivery/links.ts) are minted at POST
 //   /app/api/files/:id/slicer-link (session-class, so the gate's Origin
@@ -110,7 +110,7 @@ import {
 } from "./uploads/tus.js";
 import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
-/** Where the tus upload handler is mounted (Public API v1 contract, Task 9). */
+/** Where the tus upload handler is mounted: one for the UI, one for the Public API v1. */
 export const UPLOAD_PREFIXES = Object.freeze({
   app: "/app/uploads",
   api: "/api/v1/uploads",
@@ -131,7 +131,7 @@ export interface AppHealth {
   queuesRunning(): boolean;
 }
 
-/** What login, sessions and the route-class gate need (Task 15). */
+/** What login, sessions and the route-class gate need (auth/). */
 export interface AppAuth {
   oidc: OidcClient;
   sessions: Sessions;
@@ -153,13 +153,13 @@ export interface AppDeps {
   uploads: Uploads;
   auth: AppAuth;
   /**
-   * The Public API v1's tokens and library (Task 16). The server always
+   * The Public API v1's tokens and library (api/). The server always
    * passes its own; left out, no token is live (refusingApi), so every API
    * request is 401.
    */
   api?: ApiDeps;
   /**
-   * File delivery and slicer links (Task 17): GET /files/:id/download, GET
+   * File delivery and slicer links (delivery/): GET /files/:id/download, GET
    * /blobs/:id, POST /app/api/files/:id/slicer-link and the link route
    * /s/:token/* (GET /s/<token>/<name>). The server always passes its own;
    * left out, those routes are not registered, so their paths are unknown:
@@ -169,14 +169,14 @@ export interface AppDeps {
    */
   delivery?: DeliveryDeps;
   /**
-   * The library's app API (Task 19): the cards and tag filter of the library
-   * page, read from the database and Task 12's plate numbers. Left out, the
+   * The library's app API (app-api/library.ts): the cards and tag filter of the library
+   * page, read from the database and the estimates module's plate numbers. Left out, the
    * routes are still there and answer an empty library, so the route-class
    * test walks them.
    */
   library?: AppLibrary;
   /**
-   * The model page's app API (Task 20): a model with its files, plates and
+   * The model page's app API (app-api/model.ts): a model with its files, plates and
    * numbers, and the retry of a failed estimate. Left out, the routes are
    * still there (every model is 404, nothing is retried), so the
    * route-class test walks them.
@@ -189,13 +189,13 @@ export interface AppDeps {
    */
   logger?: boolean | { write(line: string): unknown };
   /**
-   * The built web app (Task 18); apps/web/dist beside the server, not
+   * The built web app; apps/web/dist beside the server, not
    * required, when left out. With required, /healthz is also 503 while the
    * build is missing.
    */
   web?: WebDeps;
   /**
-   * The web app's own JSON API under /app/api (Task 21: settings, tokens and
+   * The web app's own JSON API under /app/api (settings, tokens and
    * organising; issue #322: Sign out everywhere). Session-class like every
    * route outside the listed prefixes. A module left out (or all of them)
    * still has its routes (so the route-class gate covers them), and they
@@ -219,7 +219,7 @@ export interface AppDeps {
   locales?: Locales;
 }
 
-/** What the /app/api routes of Task 21 and Sign out everywhere read and change. */
+/** What the settings, tokens and organising routes under /app/api and Sign out everywhere read and change. */
 export interface AppApiDeps {
   settings: SettingsApiDeps;
   tokens: TokensApiDeps;

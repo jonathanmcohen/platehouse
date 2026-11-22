@@ -1,5 +1,8 @@
-// Build plan Task 12: estimates, the printer setting and re-estimation
-// (AC-031 to AC-034, AC-036; Review Focus 2 and 3). Files come in through
+// Estimates, the printer setting and re-estimation
+// (the printer menu and its default, every plate's numbers and their source,
+// background slicing, plain failure reasons, the Orca version on each
+// estimate, a slice lost to a slicer restart ending in failed and never stuck,
+// and a second printer change superseding the first). Files come in through
 // the real ingest queue into a migrated Postgres 17 and the S3 test server;
 // slices go to a slicer stub built on the slicer contract package
 // (test/support/slicer-stub.ts), so every answer it gives is one contract v1
@@ -201,7 +204,7 @@ describe("the printer setting", () => {
     const printers = await estimates.listPrinters();
     expect(printers).toEqual((await slicer.profiles()).printers);
     expect(printers).toEqual(STUB_PRINTERS);
-    // The default is the P1S with a 0.4 mm nozzle (AC-031).
+    // The default is the P1S with a 0.4 mm nozzle.
     expect((await env.repos.settings.get()).printerId).toBe(P1S);
   });
 
@@ -300,7 +303,7 @@ describe("estimates", () => {
       timeSeconds: 600,
     });
     expect(numbers.platehouse?.staleFor).toBeUndefined();
-    // Which preset produced each filament's numbers (AC-032, PR #55).
+    // Which preset produced each filament's numbers (PR #55).
     expect(numbers.platehouse?.filaments).toEqual([
       expect.objectContaining({
         slot: 1,
@@ -830,7 +833,7 @@ describe("estimates", () => {
     }
   });
 
-  test("every plate has numbers or a recorded reason after the queue drains (the AC-032 query)", async () => {
+  test("every plate has numbers or a recorded reason after the queue drains", async () => {
     stub.onSlice((call) =>
       call.plate === 1
         ? { kind: "failed", code: -16, reason: "machine_not_supported", detail: "machine" }
@@ -867,7 +870,7 @@ describe("estimates", () => {
 
     for (const plate of live.plates) {
       const rows = await platehouseRows(plate.id);
-      // AC-036: each estimate records the Orca version that produced it.
+      // Each estimate records the Orca version that produced it.
       expect(rows.map((r) => [r.slicerVersion, r.status])).toEqual([
         ["2.5.0", "ok"],
         ["2.5.1", "ok"],

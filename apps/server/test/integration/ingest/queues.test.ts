@@ -1,7 +1,7 @@
-// Build plan Task 8: the pg-boss queues. ingest runs two at once, slicer is a
-// singleton queue whose jobs Task 12 adds, and maintenance carries the cron
-//   jobs: Task 14's purgeExpired daily at 03:30 local time (issue #38), the
-// orphan sweep daily at 04:00 local time (PR #49 review) and Task 9's sweep
+// The pg-boss queues. ingest runs two at once, slicer is a
+// singleton queue whose jobs the estimates module adds, and maintenance carries the cron
+//   jobs: the trash's purgeExpired daily at 03:30 local time (issue #38), the
+// orphan sweep daily at 04:00 local time (PR #49 review) and the upload handler's sweep
 // of stale partial uploads every hour.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { PgBoss } from "pg-boss";

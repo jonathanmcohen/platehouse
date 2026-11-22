@@ -1,5 +1,6 @@
-// Build plan Task 17: the slicer link token and URL (the Slicer link
-// contract; AC-041, AC-040 link half, AC-091).
+// The slicer link token and URL: one file, no session, no long-lived secret,
+// a 10-minute life, the file's own name last, and the configured public
+// origin whatever the request's Host.
 //
 //   token = base64url( fileId(16 bytes) || exp(uint32 BE, unix s)
 //                      || HMAC-SHA256(key, "ph-link-v1"||fileId||exp)[0..16] )
@@ -282,7 +283,7 @@ describe("the link URL", () => {
   });
 });
 
-describe("the link's name segment (Review Focus 1)", () => {
+describe("the link's name segment, for hostile file names", () => {
   // [stored name, original name, kind, the name the link must end in]
   const cases: Array<[string, string, LinkFile["kind"], string]> = [
     ["Cube.3mf", "Cube.3mf", "3mf", "Cube.3mf"],

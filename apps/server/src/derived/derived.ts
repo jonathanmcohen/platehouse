@@ -1,9 +1,9 @@
-// OpenSCAD renders and STEP meshes in the app (build plan Task 13; AC-050,
-// AC-052, AC-053). A .scad file gets an STL and a PNG preview, a STEP file a
+// OpenSCAD renders and STEP meshes in the app, so STL and STEP files can be
+// viewed in 3D, and replacing a .scad file renders it again. A .scad file gets an STL and a PNG preview, a STEP file a
 // GLB mesh, all made by the slicer container (scad.ts, step.ts, client.ts)
 // and stored as new blobs. Ingest never calls the slicer: once a .scad, STEP
 // or STL file's row commits, ingest's afterCommit (afterUpload here) sends a
-// job to Task 8's singleton slicer queue, and runJob does the work there.
+// job to the singleton slicer queue (jobs/queues.ts), and runJob does the work there.
 //
 // Preview pictures for STL and STEP files (issue #316), shown on the library
 // card and the model page in place of the file-type icon (preview.ts):
@@ -38,10 +38,10 @@
 //   slicer image does not leave a file with no picture for good.
 //
 // The jobs are kinds on the slicer queue (DERIVED_KINDS): the queue's one
-// worker hands each to its handler from derivedJobHandlers, beside Task 12's
+// worker hands each to its handler from derivedJobHandlers, beside the estimates module's
 // "slice" handler, so there is never a second worker on that queue.
 //
-// Retries (Tasks 12 and 13): every job is sent with SLICER_RETRY. When the
+// Retries (shared with the estimate jobs): every job is sent with SLICER_RETRY. When the
 // slicer answers 409 busy or the connection is lost, runJob throws and
 // pg-boss runs the job again with backoff; there is no retry loop here. On
 // the last attempt runJob records slicer_error instead (DERIVED_MESSAGES)
@@ -81,7 +81,7 @@
 // queued ahead of it, since the queue runs one job at a time.
 //
 // A store that cannot be reached (StoreUnavailable, reading the source or
-// storing the renders) is handled the same way, as Task 12 handles it: it
+// storing the renders) is handled the same way, as the estimate jobs handle it: it
 // says nothing about the file or the slicer, so the job uses no retry and
 // waits for the store, on the same waits and the same deadline. Past the
 // deadline the file is marked failed with DERIVED_MESSAGES.storeDown
@@ -152,7 +152,7 @@
 //
 // The render check (checkRenders, issues #90 and #91) repairs what a job or
 // an upload that died part way leaves behind. It is a maintenance-queue job
-// (CHECK_RENDERS_CRON, every 15 minutes; Task 30 registers the schedule),
+// (CHECK_RENDERS_CRON, every 15 minutes; main.ts registers the schedule),
 // and it acts only on rows written more than RENDER_CHECK_GRACE_MS ago,
 // twice a render job's 15-minute expiry. Each step re-checks, holding the
 // row's lock, that no queued or active job owns what it changes:
@@ -231,10 +231,10 @@ export { DERIVED_MESSAGES } from "./client.js";
 export type DerivedStatus = "pending" | "ok" | "failed";
 
 /**
- * Task 13's job kinds on the slicer queue, and issue #316's two preview
+ * The render and mesh job kinds on the slicer queue, and issue #316's two preview
  * kinds. The queue's one worker hands each job to its kind's handler
  * (slicerJobs in jobs/queues.ts); derivedJobHandlers gives these, beside
- * Task 12's "slice".
+ * the estimates module's "slice".
  */
 export const DERIVED_KINDS = {
   renderScad: "render-scad",
@@ -387,7 +387,7 @@ export const RENDER_CHECK_GRACE_MS = 2 * RENDER_JOB_EXPIRY_MS;
 
 /**
  * The render check's suggested cadence on the maintenance queue: every 15
- * minutes. Task 30 registers the schedule; checkRenders(now) is its handler.
+ * minutes. main.ts registers the schedule; checkRenders(now) is its handler.
  */
 export const CHECK_RENDERS_CRON = "*/15 * * * *";
 
@@ -2185,10 +2185,10 @@ export function createDerived(deps: DerivedDeps) {
 export type Derived = ReturnType<typeof createDerived>;
 
 /**
- * Task 13's entries for the slicer queue's handler map (QueueDeps.slicerJobs):
+ * The render and mesh entries for the slicer queue's handler map (QueueDeps.slicerJobs):
  * the render and mesh kinds, each running runJob with the job's retry count
- * and limit, so the last attempt records slicer_error. Spread beside Task
- * 12's "slice" entry: { ...derivedJobHandlers(derived), slice: ... }.
+ * and limit, so the last attempt records slicer_error. Spread beside the
+ * estimates module's "slice" entry: { ...derivedJobHandlers(derived), slice: ... }.
  */
 export function derivedJobHandlers(derived: Pick<Derived, "runJob">): SlicerJobHandlers {
   const handle: SlicerJobHandlers[string] = (job) =>

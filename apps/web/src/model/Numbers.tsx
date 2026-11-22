@@ -1,5 +1,5 @@
-// One plate's numbers on the model page (build plan Task 20; AC-030, and
-// the display halves of AC-032 to AC-034), from Task 12's plateNumbers:
+// One plate's numbers on the model page, with where they came from, the
+// estimating state and any failure reason, from the server's plateNumbers:
 //
 // - Bambu's own numbers from the file, labelled "Bambu, in the file", with
 //   the printer the file was sliced for and its process. This block never
@@ -11,7 +11,7 @@
 //   in full, the process and each filament's preset (Bambu's own, Orca's
 //   Generic, or the file's own).
 //   While it runs it says Estimating; an older one shown meanwhile is marked
-//   as made for the previous printer (or Orca version) (AC-031), and says a
+//   as made for the previous printer (or Orca version), and says a
 //   new one is on its way only when the server says one is queued or
 //   slicing (pending).
 // - A plate that could not be sliced: the reason in plain words, Orca's own

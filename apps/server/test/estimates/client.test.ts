@@ -1,4 +1,4 @@
-// Build plan Task 12: the app's slicer client against a slicer stub that
+// The app's slicer client against a slicer stub that
 // answers only what slicer contract v1 allows. A 409 busy and a lost
 // connection are told apart from a refusal, because the slice job retries the
 // first two and records the third.

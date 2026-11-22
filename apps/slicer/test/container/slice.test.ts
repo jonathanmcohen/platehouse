@@ -1,7 +1,7 @@
-// A real slice in the built image (AC-031, AC-035, and the AC-037 smoke
-// fixture): buildSliceable's two plates, two PLA filaments each, on the P1S
+// A real slice in the built image (the printer menu, the container's limits,
+// and the release workflow's smoke fixture): buildSliceable's two plates, two PLA filaments each, on the P1S
 // and on the A1, each with Bambu's own PLA preset for that printer loaded and
-// reported in filamentProfiles (build plan Task 11 Decisions, "Filaments").
+// reported in filamentProfiles (the maintainer, 2026-11-08: Bambu's own filaments first).
 import { slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";

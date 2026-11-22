@@ -1,9 +1,9 @@
-// The library page (build plan Task 19; AC-020, AC-061, AC-064, AC-073) at /.
+// The library page at /: search, the tag filter, drop-to-upload, and cards that never download a model file.
 //
-// - The search is the URL's ?q=, which the top bar's search box (Task 18)
+// - The search is the URL's ?q=, which the top bar's search box (TopBar.tsx)
 //   sets; ?tag= is the tag filter (Filters). ?creator= and ?collection= are
 //   the creator and collection filters, which the Creators and Collections
-//   pages' Show in the library link sets (Task 21). Each change reloads the
+//   pages' Show in the library link sets. Each change reloads the
 //   grid from GET /app/api/library with all four.
 // - Numbered pages (the maintainer, 2026-11-19, replacing Load more): 48 models a page
 //   (PAGE_SIZE), the page in ?page= (paging.ts), with Previous, Next and the

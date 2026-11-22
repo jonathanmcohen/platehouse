@@ -1,4 +1,4 @@
-// AC-003: the Manyfold client id and secret, the Manyfold token, the
+// The Manyfold client id and secret, the Manyfold token, the
 // Platehouse token and the signed query of any object-store redirect never
 // appear in what the importer prints, on its happy path or its error paths.
 // stdout and stderr are captured whole and searched for each value, raw,

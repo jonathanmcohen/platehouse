@@ -1,4 +1,5 @@
-// Login over OpenID Connect (build plan Task 15; AC-080, AC-081),
+// Login over OpenID Connect, limited to members of one group, that leaves the
+// API working while the provider is down,
 // with openid-client: the authorization code flow with PKCE S256, a state
 // and a nonce, scopes openid email profile groups, and the client
 // authenticating to the token endpoint with client_secret_basic.
@@ -6,10 +7,10 @@
 // - redirect_uri is given (absoluteUrl('/auth/callback'), built from
 //   PUBLIC_ORIGIN), and the callback URL handed to finish() is built on it
 //   too, so no part of either comes from the request's Host or forwarded
-//   headers (AC-091). openid-client sends the callback URL, less its query,
+//   headers: every absolute URL comes from the configured public origin. openid-client sends the callback URL, less its query,
 //   as the token request's redirect_uri.
 // - Discovery happens on the first login, not at startup, so the server
-//   starts and serves everything but login while the OIDC provider is down (AC-081).
+//   starts and serves everything but login while the OIDC provider is down.
 //   A discovery that fails is not remembered: the next login tries again.
 //   Every request to the issuer gives up after ISSUER_TIMEOUT_SECONDS.
 // - A user is let in when the claims carry a subject of at most

@@ -1,5 +1,5 @@
 // Throwaway containers for the integration suite, started with testcontainers.
-// Build plan Tasks 4 and 5 build their database and storage tests on these two
+// The database and storage tests build on these two
 // helpers, so the pinned images live in one place.
 //
 // Credentials are random per run and exist only inside the container; nothing
@@ -9,11 +9,11 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 
-// The database image the plan pins (Global Constraints, Q7).
+// The database image Platehouse pins: Postgres 17 on Alpine.
 export const POSTGRES_IMAGE = "postgres:17-alpine";
 
-// The test-only S3 server the plan pins (Tech Stack). SeaweedFS 4.52 is the
-// named fallback if this one cannot do what Task 5 needs.
+// The test-only S3 server. SeaweedFS 4.52 is the
+// named fallback if this one cannot do what the storage tests need.
 export const S3_IMAGE = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z";
 
 const S3_PORT = 9000;

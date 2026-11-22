@@ -1,4 +1,4 @@
-// Build plan Task 8, AC-020 and AC-024: which uploads are a supported file.
+// Which uploads are a supported file.
 // The name picks the kind; the first bytes, and for a binary STL the size,
 // must agree with it.
 import { describe, expect, test } from "vitest";
@@ -120,7 +120,7 @@ describe("detectKind", () => {
     ["a binary .stl shorter than its header and count", "part.stl", Buffer.alloc(83)],
     ["a .step without the ISO-10303-21 header", "part.step", Buffer.from("HEADER;\n")],
     ["a .stp that is a zip", "part.stp", ZIP],
-    // 84 bytes or more, named .stl, but not an STL (AC-024).
+    // 84 bytes or more, named .stl, but not an STL: refused, nothing stored.
     ["a PNG named .stl", "part.stl", png],
     ["a zip named .stl", "part.stl", Buffer.concat([ZIP, Buffer.alloc(200)])],
     ["G-code named .stl", "plate_1.stl", gcode],
@@ -140,7 +140,7 @@ describe("detectKind", () => {
       Buffer.concat([binaryStlOf(3, 0), Buffer.alloc(1)]),
     ],
     // The same files at a size that is whole facets, so the count alone
-    // stops them no longer (AC-024).
+    // stops them no longer: still refused, nothing stored.
     ["a PNG named .stl, sized as whole facets", "part.stl", wholeFacets(png)],
     ["a zip named .stl, sized as whole facets", "part.stl", wholeFacets(ZIP)],
     ["G-code named .stl, sized as whole facets", "plate_1.stl", wholeFacets(gcode)],

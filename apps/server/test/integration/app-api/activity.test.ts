@@ -2,8 +2,8 @@
 // against a migrated Postgres 17 and a started pg-boss on the same database,
 // so its queries read the real schema and pg-boss's real job table. The
 // slicer is a fake health() (it is asked for nothing else), and the inbox's
-// failed/ folder is a temporary folder. Sessions are in memory (Task 15's
-// test support). Every model, file and message here is synthetic.
+// failed/ folder is a temporary folder. Sessions are in memory (the login
+// tests' support). Every model, file and message here is synthetic.
 //
 // What it pins:
 // - an empty library answers zeros, no events and nothing working;

@@ -1,4 +1,4 @@
-// The narrow-screen menu (build plan Task 18, AC-074): below 899.98 px the
+// The narrow-screen menu, so every page works from 375 px: below 899.98 px the
 // sidebar is hidden (studio.css) and this button opens the same navigation
 // in a panel. The panel is always in the page, hidden while closed, so
 // aria-controls always names it. Escape closes it and puts focus back on the

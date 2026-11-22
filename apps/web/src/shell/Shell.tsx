@@ -1,4 +1,4 @@
-// The frame around every page (build plan Task 18, AC-071): the sidebar on
+// The frame around every page: the sidebar on
 // the left, the top bar (menu, search, Add, theme) above the content, and a
 // skip link to the main landmark. It holds the theme: initialTheme is what
 // the server wrote into the html element, and a change is applied to the
@@ -34,7 +34,7 @@ export interface ShellProps {
    * with the Settings picker (AccentContext).
    */
   initialAccent?: AccentId;
-  /** The upload dialog's opener (Task 19); Add is disabled without it. */
+  /** The upload dialog's opener (main.tsx); Add is disabled without it. */
   onAdd?: () => void;
   children?: ReactNode;
 }

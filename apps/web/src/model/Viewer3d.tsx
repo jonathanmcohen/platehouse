@@ -1,11 +1,11 @@
-// The 3D viewer (build plan Task 20, AC-050): an STL or a GLB (a STEP file's
-// mesh, converted on the server by Task 13) shown with three.js, which the
+// The 3D viewer: an STL or a GLB (a STEP file's
+// mesh, converted on the server) shown with three.js, which the
 // pointer rotates, pans and zooms (OrbitControls) and buttons rotate, zoom
 // and reset, so it works by keyboard too.
 //
 // three.js is loaded only when this viewer is shown (a dynamic import, so
 // Vite puts it in its own chunk) and only for an STL or a GLB; a .3mf never
-// gets here (AC-051). The loader is a prop so the tests, which run in jsdom
+// gets here. The loader is a prop so the tests, which run in jsdom
 // with no WebGL, can stand in for it. The mesh is fetched from /blobs/<id>
 // with the page's session, and the fetch is aborted when the viewer goes.
 // If anything fails (no WebGL, the store unavailable), the viewer says so

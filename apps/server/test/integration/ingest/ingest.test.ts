@@ -1,7 +1,7 @@
-// Build plan Task 8: the ingest pipeline. AC-020 (server side), AC-022
-// (fill-only metadata), AC-024 (unsupported types store nothing) and AC-012
-// (an upload during a store outage leaves nothing behind). AC-033 (ingest
-// never waits on a slice) is checked from the source, in
+// The ingest pipeline: one model per file unless combined, fill-only
+// metadata, unsupported types store nothing, and an upload during a store
+// outage leaves nothing behind. That ingest
+// never waits on a slice is checked from the source, in
 // test/ingest/no-slicer.test.ts.
 //
 // Order under test: detect -> hash and put the source blob -> parse (each
@@ -706,7 +706,7 @@ describe("metadata is filled, never overwritten", () => {
 
   test("a description already set is never edited; a footer licence is still stored as the licence note", async () => {
     // The maintainer, 2026-11-08: the footer goes into the description only when it is
-    // empty; the model page (Task 20) shows models.license_note.
+    // empty; the model page shows models.license_note.
     const model = await env.repos.models.create({
       name: `Described ${uuidv7()}`,
       descriptionMd: "Sam's own description.",
@@ -751,7 +751,7 @@ describe("metadata is filled, never overwritten", () => {
   });
 });
 
-describe("a store outage leaves nothing behind (AC-012)", () => {
+describe("a store outage leaves nothing behind", () => {
   test("upload with the store stopped leaves no model, file or blob row", async () => {
     const s3 = await startS3();
     const bucket = `platehouse-t8-${randomBytes(4).toString("hex")}`;
@@ -1250,7 +1250,7 @@ describe("a failed commit never deletes what may have been committed", () => {
 });
 
 // Issue #78: a .3mf whose values the database cannot store must still be
-// stored (AC-023), never fail the save. Postgres text cannot hold a NUL, so
+// stored as a file with no plate data, never fail the save. Postgres text cannot hold a NUL, so
 // the parser and the MakerWorld reader drop it from every text value; and
 // plates.index and the slot columns are 32-bit, so a plate index or filament
 // slot past 2147483647 makes the file one with no plate data.

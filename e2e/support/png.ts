@@ -1,4 +1,4 @@
-// Reads one pixel from a PNG screenshot (build plan Task 22, the first-paint
+// Reads one pixel from a PNG screenshot (for the first-paint
 // spec). Playwright's screenshots are 8-bit RGB or RGBA, non-interlaced; this
 // decodes exactly that with node:zlib and refuses anything else, so a format
 // it cannot read fails the spec instead of returning a wrong colour.

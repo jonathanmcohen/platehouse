@@ -1,4 +1,4 @@
-// The printer menu comes from the image's own profiles (AC-031): every BBL
+// The printer menu comes from the image's own profiles: every BBL
 // machine_list entry ending in "nozzle" that is instantiable, and nothing
 // else (56 at Orca v2.5.0: 14 models x 0.2/0.4/0.6/0.8). Every filament
 // entry names its printer, and the image's default filament per printer and

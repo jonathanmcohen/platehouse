@@ -1,4 +1,4 @@
-// Build plan Task 4: the models repository against a migrated Postgres 17.
+// The models repository against a migrated Postgres 17.
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { uuidv7 } from "../../../src/db/ids.js";

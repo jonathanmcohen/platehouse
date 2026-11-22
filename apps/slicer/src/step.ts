@@ -1,4 +1,4 @@
-// STEP to GLB (AC-050, build plan decision 2). occt-import-js 0.0.23 reads
+// STEP to GLB, so a browser only ever loads a mesh, never a STEP file. occt-import-js 0.0.23 reads
 // the STEP file and returns three.js-style arrays; meshesToGlb packs them
 // into one binary glTF 2.0 file, ported from the slicing gate's lib/glb.mjs
 // (gate item (h) converted NIST CTC-01 this way).

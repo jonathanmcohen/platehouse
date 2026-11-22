@@ -1,7 +1,7 @@
-// The S3 blob store (build plan Task 5; AC-010, AC-012). Every byte Platehouse
+// The S3 blob store. An outage leaves it as StoreUnavailable and is never taken for a missing file. Every byte Platehouse
 // keeps lives in the bucket under the key layout in keys.ts, and reaches a
 // browser or a slicer only through the app: there are no presigned URLs here
-// or anywhere (decision 7, AC-011).
+// or anywhere, so no bucket credential or signed query reaches a browser or a slicer.
 //
 // Failures leave this module as StoreUnavailable (the store cannot be reached
 // or timed out), BlobNotFound (only a 404 NoSuchKey on a read; any other 404,
@@ -109,7 +109,7 @@ export interface BlobStore {
     prefix: string,
     opts?: { token?: string | undefined; maxKeys?: number },
   ): Promise<{ objects: ListedObject[]; next: string | undefined }>;
-  /** The bucket's versioning state (AC-013). */
+  /** The bucket's versioning state, which the settings page warns about when off. */
   readVersioning(): Promise<VersioningState>;
   /**
    * Checks that the store takes a write: puts a few bytes at WRITE_CHECK_KEY,
@@ -134,7 +134,7 @@ export interface ListedObject {
 
 /**
  * The one key outside the blob layout the store writes: checkWrite's, put
- * and deleted again at once. On a bucket with versioning on (AC-013) the
+ * and deleted again at once. On a bucket with versioning on the
  * check deletes the exact version it wrote (the VersionId PutObject returns),
  * which removes it for good and leaves no delete marker, so the checks do not
  * pile up old versions for the retention period. On an unversioned bucket it
@@ -234,7 +234,7 @@ export function createBlobStore(s3: Config["s3"], options: BlobStoreOptions = {}
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     } catch {
       // The caller is already failing with the reason that matters; a key
-      // left behind here is found by reconciliation (AC-010).
+      // left behind here is found by reconciling the bucket against the file rows.
     }
   }
 

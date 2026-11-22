@@ -1,4 +1,4 @@
-// The slicer in the end-to-end stack (build plan Task 22): the
+// The slicer in the end-to-end stack: the
 // contract-faithful stub the integration tests use
 // (apps/server/test/support/slicer-stub.ts), answering every slice with ok
 // numbers. That stub listens on 127.0.0.1 only, so this process forwards

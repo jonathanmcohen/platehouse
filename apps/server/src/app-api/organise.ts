@@ -1,5 +1,5 @@
-// The organising pages' app API (build plan Task 21; AC-060, AC-061, AC-062,
-// AC-063 UI): the Creators, Collections, Tags and Trash pages. Every route
+// The organising pages' app API (rename, tags, flat collections, and the trash
+// with restore and Empty trash): the Creators, Collections, Tags and Trash pages. Every route
 // is session-class under /app/api (settings.ts, appApiScope), so it needs
 // a signed-in session, and every state-changing one Origin = PUBLIC_ORIGIN.
 //
@@ -43,13 +43,13 @@
 // routes are the web app's own session API: the public API (v1) has no bulk
 // routes, and its description and docs do not change.
 //
-// Every change calls what Task 14 built: renameModel and renameFile (the
+// Every change calls the library module (library/): renameModel and renameFile (the
 // display name only; the bucket key never changes), addTag and removeTag,
 // addToCollection and removeFromCollection (flat collections, made on first
 // use), trashModel, restoreModel and purgeExpired. Each refuses a model that
 // is unknown or in the trash, which is 404 here; taking off a tag or a
 // collection the model does not have is 404 too. The lists count live
-// models only, and the model rows are Task 14's search with one filter, a
+// models only, and the model rows are the library's search with one filter, a
 // page of up to ROWS_PER_PAGE at a time.
 //
 // Deleting tags and collections (issue #312, the maintainer, 2026-11-21).
@@ -80,7 +80,7 @@
 // readAt, the database's time when it read the list (the clock that stamps
 // trashed_at, so a browser's clock never matters), and the page sends it back
 // as the cutoff. The route purges the models trashed at or before that
-// millisecond, through Task 14's purgeExpired (see emptyTrashBefore), so a
+// millisecond, through the library's purgeExpired (see emptyTrashBefore), so a
 // model another tab or browser trashed after the page read the list stays,
 // and can be restored. The body is one timestamp however long the trash is.
 // A cutoff that is not in readAt's form, or is later than the database's
@@ -410,7 +410,7 @@ async function trashListing(db: Kysely<DB>): Promise<{ models: TrashedModel[]; r
 
 /**
  * Empty trash up to a cutoff: purges every model trashed at or before the
- * cutoff's millisecond, with Task 14's purgeExpired, which purges the models
+ * cutoff's millisecond, with the library's purgeExpired, which purges the models
  * trashed before now - TRASH_RETENTION_DAYS. Handing it the cutoff plus the
  * retention plus 1 ms makes that "trashed before cutoff + 1 ms": trashed_at
  * keeps microseconds, so a model trashed at 12:00:00.123456 is inside a
@@ -656,7 +656,7 @@ export async function registerOrganiseApi(
   });
 }
 
-/** Task 14's organising calls over one database. */
+/** The library module's organising calls over one database. */
 function libraryCalls(db: Kysely<DB>) {
   return {
     ...createRename(db),

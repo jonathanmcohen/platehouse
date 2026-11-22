@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Build plan Task 19 (AC-020, AC-061, AC-064 and AC-073, UI side): the
-// library page, its cards and tag filter, the search box driving it, and the
+// Uploads, the tag filter, search, and cards that never download a model
+// file: the library page, its cards and tag filter, the search box driving it, and the
 // upload dialog. Rendered in jsdom with React; the server is a stubbed fetch
 // that records every request, and the tus upload is a stub that records what
 // it was asked to send and lets the test report progress.
@@ -19,7 +19,7 @@
 //   library's search.
 // - creator and collection filters: the library reads ?creator= and
 //   ?collection= (the Creators and Collections pages' Show in the library
-//   link, Task 21), asks the API for them with the search, the tag and every
+//   link), asks the API for them with the search, the tag and every
 //   page, shows each one with a link that clears it (and goes back to page
 //   1), and keeps a name with spaces, an ampersand and non-ASCII characters
 //   intact.

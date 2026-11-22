@@ -1,5 +1,5 @@
-/* The upload dialog and the drop zone (build plan Task 19). Built only from
-   studio.css's tokens and components (Task 18), so it follows the theme and
+/* The upload dialog and the drop zone. Built only from
+   studio.css's tokens and components, so it follows the theme and
    keeps its contrast; no colour is written here. */
 
 .ph-dropzone {

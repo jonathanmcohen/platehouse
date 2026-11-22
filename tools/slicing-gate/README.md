@@ -1,4 +1,4 @@
-# Slicing gate (build plan Task 1)
+# Slicing gate
 
 This is a one-off test, not product code. Before any Platehouse feature is
 built, it proves that the OrcaSlicer 2.5.0 command-line slicer can slice
@@ -12,7 +12,7 @@ it. Designer files go from your workstation to the test server over ssh and
 never to GitHub. When the report is collected, the scratch dir and the image
 are deleted.
 
-If the gate fails, the build plan stops and goes back to the maintainer with Kiri:Moto as
+If the gate fails, work on the slicer stops and goes back to the maintainer with Kiri:Moto as
 the fallback.
 
 ## Files
@@ -65,7 +65,7 @@ JSON from Orca's own source at the commit tag v2.5.0 points to:
   Orca ships, which Orca writes from that same field. On 2026-11-08: BBL
   02.08.00.16 = 2.8.0.16, OrcaFilamentLibrary 02.04.00.26 = 2.4.0.26.
 
-The same choice binds the production slicer image (build plan Task 11) and
+The same choice binds the production slicer image (apps/slicer) and
 the daily Orca update workflow: each new Orca tag needs its profile commit
 pinned and checked the same way.
 
@@ -99,7 +99,7 @@ of them, Orca now checks the switch against that system preset's
 compatible printers instead of the file's own copy of the list. CI checks
 that own-printer slices come out the same with and without the folder.
 
-The same folder binds the production slicer image (build plan Task 11) and
+The same folder binds the production slicer image (apps/slicer) and
 the daily Orca update workflow. Both build from the same AppImage, so each
 must run `flatten-profiles.mjs --process-full` on its pinned profile source
 into the same `process_full` path, with the same build checks: every
@@ -232,20 +232,20 @@ compared with Bambu's own numbers. A job that falls in both sets runs once.
 
 ## The container
 
-Each step runs in a fresh container, exactly as Task 1 states:
+Each step runs in a fresh container, with the gate's limits:
 `--network none --cpus 4 --memory 8g --read-only --tmpfs /work:size=4g`, the
 sample mounted read-only at `/in`. Each plate is one Orca call,
 `--slice N --export-statistics --outputdir ...`, under `/usr/bin/time -v`, with
 `--mstpp 600` and an external kill at 900 s (`timeout -s KILL 900`). The host
 also kills a container that is still running after 960 s.
 
-Added beyond Task 1, each for a reason:
+Added beyond those limits, each for a reason:
 
 - `--memory-swap 8g`, so the 8 GB limit is not doubled by swap;
 - `--user` set to the caller, so `/out` (small result files only) stays
   writable and owned by the caller;
-- `--cap-drop ALL` and `--security-opt no-new-privileges:true`, T26's slicer
-  runtime, so the landrun check runs the way it will in production. Docker's
+- `--cap-drop ALL` and `--security-opt no-new-privileges:true`, the deployed
+  slicer's runtime hardening, so the landrun check runs the way it will in production. Docker's
   default seccomp profile is left on.
 
 Orca is called with `--allow-newer-file` so a file saved by a newer Bambu
@@ -254,7 +254,7 @@ Studio is not refused on version alone; the recipe in the report says so.
 ## The pass rule
 
 The maintainer, 2026-11-07: every plate gets a time and a weight above zero, or is refused
-for a reason AC-034 treats as legitimate (process not compatible, machine not
+for a legitimate reason (process not compatible, machine not
 supported, bed too small, nozzle or extruder mismatch), which is reported. A
 crash, a timeout or an unexplained slicer error on any plate fails the gate.
 
@@ -265,7 +265,7 @@ supported), -17 (process not compatible), -20, -52 and -102 (bed too small),
 (filament temperatures too far apart). Each refused plate is reported with
 its code and Orca's meaning for it.
 
-NEEDS-DECISION: the plan's slicer contract maps -61 to -69 to "nozzle
+NEEDS-DECISION: the slicer contract's first reason map sent -61 to -69 to "nozzle
 mismatch", but Orca's own messages say only -66 and -68 are about extruders.
 -61, -63 to -65, -67 and -69 (bed type, collisions, vase mode, TPU count,
 mixed filament), and -50 (empty plate), are reported as needs-decision rather
@@ -298,7 +298,7 @@ status 139.
   each printer, which generic filament profile maps to each filament type,
   and whether the file's own process survives the printer switch (Orca's
   layer height, wall loops and infill density against the file's).
-- (d) proposed AC-035 limits from the measured worst case, by a stated rule.
+- (d) proposed slicer container limits from the measured worst case, by a stated rule.
 - (e) which slice_info.config and project_settings.config keys name the
   printer and nozzle, and the BBL model_id map read from the image.
 - (f) OpenSCAD: does it render STL and PNG headless with no Xvfb, and does
@@ -306,7 +306,7 @@ status 139.
 - (g) landrun under Docker's default seccomp: a same-dir `import()` works and
   an `import("/opt/gate/samples/outside.stl")` is blocked, with a control run
   of the same import outside landrun to show landrun is what blocks it. It
-  also runs the plan's T11 form (`--ro` on the OpenSCAD tree) as evidence;
+  also runs the first slicer design's form (`--ro` on the OpenSCAD tree) as evidence;
   landrun's README says executed paths need `--rox`. Every landrun call ends
   landrun's flags with `--`: landrun reads flags after the command until it
   meets one, so without it OpenSCAD's `-o` was taken as a landrun flag (run 3).

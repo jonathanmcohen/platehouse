@@ -1,6 +1,6 @@
-// The slicer server (build plan Task 11): Slicer HTTP contract v1 on port
+// The slicer server: Slicer HTTP contract v1 on port
 // 8080, inside the slicer container. It sits on the internal network only,
-// has no auth and holds no secrets (AC-035): the app sends it a file and gets
+// has no auth and holds no secrets, because it opens untrusted files: the app sends it a file and gets
 // numbers, a render or a mesh back. Plain node:http, no web framework: the
 // surface is seven routes, and the container opens untrusted files, so it
 // carries as little as it can.

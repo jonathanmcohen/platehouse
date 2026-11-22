@@ -1,4 +1,5 @@
-// Build plan Task 15 (AC-080, AC-091): GET /auth/login, GET /auth/callback
+// Login limited to the configured group, with every URL from the configured
+// public origin: GET /auth/login, GET /auth/callback
 // and POST /auth/logout against a local mock issuer. The login is the OIDC
 // code flow with PKCE S256; state and nonce ride in a 10-minute signed,
 // HttpOnly cookie; redirect_uri is absoluteUrl('/auth/callback') whatever
@@ -245,7 +246,7 @@ describe("GET /auth/login", () => {
     }
   });
 
-  test("redirect_uri uses PUBLIC_ORIGIN under a spoofed Host and X-Forwarded-Host (AC-091)", async () => {
+  test("redirect_uri uses PUBLIC_ORIGIN under a spoofed Host and X-Forwarded-Host", async () => {
     const spoofed = {
       host: "evil.example",
       "x-forwarded-host": "evil.example",

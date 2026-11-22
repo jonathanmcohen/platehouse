@@ -1,4 +1,4 @@
-// Accessibility (build plan Task 22; AC-075): axe-core finds zero violations
+// Accessibility (WCAG AA contrast in both palettes, and every page usable): axe-core finds zero violations
 // on the library, model, settings and trash pages in the dark and the light
 // theme. Each page is loaded fresh with the theme's cookie, so the palette
 // is the one the server writes into the first paint, and checked once it has

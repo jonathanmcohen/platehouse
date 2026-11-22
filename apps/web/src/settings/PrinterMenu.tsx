@@ -1,5 +1,5 @@
-// My printers on the Settings page (build plan Task 21; AC-031 menu UI, and
-// the maintainer's 2026-11-19 asks: several printers, and a menu that names the
+// My printers on the Settings page (every printer and nozzle the slicer has a
+// profile for, and the maintainer's 2026-11-19 asks: several printers, and a menu that names the
 // printer). The user lists the printers they own, picked from the slicer's printer
 // menu, in the order they want them, and one of them is the default.
 // Platehouse estimates every plate for each of them; the library and model

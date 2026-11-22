@@ -1,8 +1,7 @@
 /*
- * Platehouse's stylesheet, ported from manyfold-studio's
- * app/assets/studio/studio.css at 4076a67 (build plan Task 18). The palettes,
- * radii and breakpoints are that file's, exactly. Left out: the rules that
- * restyled Manyfold's own markup (its PreviewFrame pictures and the link back
+ * Platehouse's stylesheet. Its palettes, radii and breakpoints were carried
+ * over from the maintainer's earlier studio theme for Manyfold. Left out of
+ * that port: the rules that restyled Manyfold's own markup (its PreviewFrame pictures and the link back
  * to Manyfold's pages); the narrow-screen menu is a button and a panel
  * instead of a details element.
  *
@@ -362,7 +361,7 @@ img {
 }
 
 .studio-visually-hidden {
-  /* biome-ignore lint/complexity/noImportantStyles: a hidden label must stay out of the layout whatever positions the element it sits in (a legend, a fieldset); as in manyfold-studio. */
+  /* biome-ignore lint/complexity/noImportantStyles: a hidden label must stay out of the layout whatever positions the element it sits in (a legend, a fieldset). */
   position: absolute !important;
   width: 1px;
   height: 1px;
@@ -544,8 +543,7 @@ img {
   filter: brightness(0.92);
 }
 
-/* A button that cannot be used yet (Add, until the upload dialog of Task
-   19 is wired in). */
+/* A disabled button (Add, when no onAdd is given, as in tests). */
 .studio-button:disabled {
   cursor: not-allowed;
   filter: none;

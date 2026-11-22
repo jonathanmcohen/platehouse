@@ -1,4 +1,6 @@
-# Slicer image workflow (build plan Task 25; AC-037, AC-036 image side).
+# Slicer image workflow: a daily check keeps the slicer image on the newest
+# stable OrcaSlicer, publishing only after a smoke slice passes, and every image
+# names the Orca version inside it so the app can re-estimate when it changes.
 #
 # Keeps ghcr.io/jonathanmcohen/platehouse-slicer current with OrcaSlicer:
 #
@@ -84,12 +86,12 @@
 # Rollback: README.md, "Slicer image". Point stable back at the previous
 # orca-X.Y.Z with the same imagetools command.
 #
-# The image is amd64 only (the plan: OpenSCAD has no current arm64 build).
+# The image is amd64 only (OpenSCAD has no current arm64 build).
 # Actions are pinned to the exact tags release.yml uses. Every job after detect
 # carries an explicit !cancelled() condition, because a skip propagates down a
-# needs chain unless a job says otherwise. Buildx provenance is off (AC-094: no build
-# attestation). Each job gets only the permissions it uses; together they are
-# the plan's contents: read, packages: write and issues: write.
+# needs chain unless a job says otherwise. Buildx provenance is off (no build
+# attestation, by the release rules). Each job gets only the permissions it uses;
+# together they are contents: read, packages: write and issues: write.
 name: slicer-image
 
 on:

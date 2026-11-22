@@ -1,6 +1,6 @@
-// OpenSCAD's sandbox (AC-052): landrun v0.1.17 around every render. The
+// OpenSCAD's sandbox: landrun v0.1.17 around every render. The
 // slicing gate proved two things on the test server (run 4, 2026-11-08):
-// - paths a binary runs from need --rox; the plan's form with --ro on the
+// - paths a binary runs from need --rox; the first design's form with --ro on the
 //   OpenSCAD tree does not run (exit 1);
 // - landrun's flags must end with "--", or it reads OpenSCAD's own -o as a
 //   landrun flag (run 3: "flag provided but not defined: -o").

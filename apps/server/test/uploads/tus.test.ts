@@ -1,4 +1,4 @@
-// Build plan Task 9: resumable uploads, without Docker. The tus routes run on
+// Resumable uploads, without Docker. The tus routes run on
 // a real Fastify app over loopback HTTP into a real temp folder; only the
 // ingest queue is a fake, so every rule of the upload layer itself is checked
 // here: metadata, the size cap, the auth hook, resume after a cut-off PATCH,

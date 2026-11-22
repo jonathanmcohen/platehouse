@@ -4,7 +4,8 @@ export const NO_PLATE_DATA_MESSAGE = "No Bambu plate data in this file";
 /**
  * The file could not be read right now (EIO, EACCES, ENOENT and the like).
  * This is never damage: the caller retries later and records nothing about
- * the file (Bambu Plates #4).
+ * the file; a filesystem error once gave a server error in the earlier
+ * parser this one was ported from.
  */
 export class ReadUnavailable extends Error {
   readonly code: string | undefined;

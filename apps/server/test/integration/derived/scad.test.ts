@@ -1,6 +1,6 @@
-// Build plan Task 13: OpenSCAD renders in the app (AC-052, AC-053). A .scad
+// OpenSCAD renders in the app, made in the slicer's sandbox, and made again when the .scad is replaced. A .scad
 // upload is stored as uploaded; after its row commits, ingest's afterCommit
-// queues a render job on Task 8's singleton slicer queue, and the job posts
+// queues a render job on the singleton slicer queue, and the job posts
 // the source to the slicer's /v1/scad/stl and /v1/scad/png (here a stub built
 // on packages/slicer-contract) and stores what comes back as new blobs. A
 // 409 busy or a dropped connection makes the job throw, and pg-boss retries
@@ -93,7 +93,7 @@ function derivedWith(overrides: Partial<DerivedDeps>) {
   });
 }
 
-describe("OpenSCAD renders (AC-052)", () => {
+describe("OpenSCAD renders", () => {
   test("a .scad upload produces an STL and a PNG blob", async () => {
     const text = unique("upload");
     const { modelId, fileId } = await uploadScad(text);
@@ -1032,7 +1032,7 @@ const PREVIOUS_RENDERS_SCAD =
 const REPLACE_FAILED_MESSAGE = "The slicer could not render the replacement, so it was not saved.";
 const REPLACE_LOST_MESSAGE = "The render of the replacement did not finish, so it was not saved.";
 
-describe("replacing a .scad (AC-053)", () => {
+describe("replacing a .scad", () => {
   test("replacing a .scad renders a new STL and preview and removes the old blobs", async () => {
     const first = unique("before");
     const { modelId, fileId } = await uploadScad(first);

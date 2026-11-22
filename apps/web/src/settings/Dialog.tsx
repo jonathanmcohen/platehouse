@@ -1,5 +1,5 @@
-// The app's own themed dialogs (build plan Task 21; Task 18's rule: no
-// native browser dialog anywhere). Dialog is a modal panel over the page:
+// The app's own themed dialogs (the rule: no native browser dialog
+// anywhere). Dialog is a modal panel over the page:
 // role="dialog" with aria-modal and its title as its name, focus moved into
 // it when it opens and kept there (Tab and Shift+Tab wrap), Escape closes it,
 // and on close focus goes back to the control that opened it

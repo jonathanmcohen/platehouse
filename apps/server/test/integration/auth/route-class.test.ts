@@ -1,4 +1,4 @@
-// Build plan Task 15: patternClass(pattern) for a matched route and
+// patternClass(pattern) for a matched route and
 // routeClass(path) for an unmatched request are the Route classes table of
 // the contract, and anything unlisted is session. Every route the app
 // registers has a class (walks app.printRoutes()), and answers a request with no
@@ -173,8 +173,8 @@ describe("patternClass", () => {
 });
 
 describe("a route registered with a regex-constrained param", () => {
-  // Registered here, in the test only (never shipped code), the way Task 16's
-  // bearer routes and Task 17's link routes may be: the gate classes them by
+  // Registered here, in the test only (never shipped code), the way the API's
+  // bearer routes and the slicer link routes may be: the gate classes them by
   // their prefix, so a bearer or link route is never made to need a session
   // cookie or a same-origin Origin header, and a session route still does.
   const BEARER = "/api/v1/regex-test/:id(^\\d+)";
@@ -241,7 +241,7 @@ describe("every registered route", () => {
     await t?.close();
   });
 
-  test("printRoutes lists the routes this task and Task 30 register", () => {
+  test("printRoutes lists the routes the gate and the server register", () => {
     const listed = new Map(registeredRoutes(t.app).map((r) => [r.path, r.methods]));
     const expected: Array<[string, string]> = [
       ["/healthz", "GET"],

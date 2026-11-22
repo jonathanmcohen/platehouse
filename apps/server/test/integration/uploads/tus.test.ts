@@ -1,7 +1,7 @@
-// Build plan Task 9: resumable uploads, shared by the UI (/app/uploads, behind
-// its session) and the API (/api/v1/uploads, behind a bearer token). AC-020
-// (a 90 MB file completes, each file its own model unless combined) and
-// AC-084 (the API uploads with the same resumable upload, as a new model or
+// Resumable uploads, shared by the UI (/app/uploads, behind
+// its session) and the API (/api/v1/uploads, behind a bearer token): a 90 MB
+// file completes, each file is its own model unless combined, and the API
+// uploads with the same resumable upload, as a new model or
 // into an existing one; a 90 MB file completes with curl).
 //
 // Everything here is real except the two auth hooks, which belong to Part C:
