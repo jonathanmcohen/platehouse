@@ -17,9 +17,12 @@ nozzle, as the default. Every printer is named in full, such as "Bambu Lab P1S, 
   printer, except plates whose file already carries Bambu's own numbers for it. The slicer does one
   plate at a time, so a large library can take an hour or more. The page says how many plates were
   queued and about how long they will take, counting any other work already queued ahead of them.
-  In 0.1.0 that time is an overestimate, often about 3 times the real run
-  ([#317](https://github.com/jonathanmcohen/platehouse/issues/317)). Each printer in the list shows
-  the plates it still has waiting.
+  Each printer in the list shows the plates it still has waiting and about how long is left.
+- **How the time is worked out**: from how fast your slicer has actually been going, measured over
+  its 50 most recent successful slices, so idle time between two runs does not count. Until at
+  least 10 plates have been sliced, the page assumes 6 plates a minute. In 0.1.0 the page always
+  assumed 3 plates a minute, which made every time about 3 times too long
+  ([#317](https://github.com/jonathanmcohen/platehouse/issues/317)).
 - **The order**: **Up** and **Down** move a printer in the list. The list order is the order the
   printer switch offers them in.
 - **One default**: one printer is marked **Default**. Its numbers are shown first on the library

@@ -100,6 +100,7 @@ import {
   printerForFile,
   profileSourceOf,
 } from "./display.js";
+import { RATE_SAMPLE, sliceRate } from "./rate.js";
 
 export const SLICE_JOB_KIND = "slice";
 
@@ -323,6 +324,12 @@ export interface Estimates {
    * time). A printer with nothing waiting is left out.
    */
   queueByPrinter(): Promise<Map<string, PrinterQueue>>;
+  /**
+   * Plates the slicer finishes a minute, measured from the newest finished
+   * Platehouse slices of any printer and Orca version (rate.ts sliceRate);
+   * null while too few have finished (issue #317).
+   */
+  sliceRate(): Promise<number | null>;
   /**
    * A plate's numbers for printerId, or for the default printer when it is
    * left out. Reading numbers never queues a slice.
@@ -1283,6 +1290,21 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     );
   }
 
+  async function recentSliceRate(): Promise<number | null> {
+    // Successful slices only: a burst of quick failures (the store down, say)
+    // would read as a fast slicer.
+    const rows = await db
+      .selectFrom("estimates")
+      .select("finishedAt")
+      .where("source", "=", "platehouse")
+      .where("status", "=", "ok")
+      .where("finishedAt", "is not", null)
+      .orderBy("finishedAt", "desc")
+      .limit(RATE_SAMPLE)
+      .execute();
+    return sliceRate(rows.flatMap((r) => (r.finishedAt === null ? [] : [r.finishedAt])));
+  }
+
   /** The display context for printerId, or for the default printer when it is left out. */
   async function displayContext(printerId?: string): Promise<DisplayContext> {
     const settings = await repos.settings.get();
@@ -1311,6 +1333,7 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     retryEstimate: (estimateId) => retryEstimate(estimateId),
     pollOrca,
     queueByPrinter,
+    sliceRate: recentSliceRate,
     plateNumbers: async (plateId, printerId) =>
       plateNumbers(db, await displayContext(printerId), plateId),
     platesWithoutNumbers: async (printerId) =>
