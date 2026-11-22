@@ -10,7 +10,9 @@
 // picture (PlateViewer says the reason):
 // - 422 with a known code: the plate has no 3D view, for that reason;
 // - 401: the session ended;
-// - 503: the file could not be read right now;
+// - 503 with error "busy": the server is already making as many 3D views
+//   as it holds, so try again in a moment;
+// - any other 503: the file could not be read right now;
 // - anything else, no reply, or a body it cannot read: a server error.
 // The GLB itself is then loaded by Viewer3d; when that fails, a MeshLoadError
 // is read the same way by its status (401 signed out, 503 unavailable,
@@ -31,6 +33,7 @@ export type Plate3dFailure =
   | "too_large"
   | "damaged"
   | "unavailable"
+  | "busy"
   | "signedOut"
   | "browser"
   | "error";
@@ -78,7 +81,9 @@ export async function fetchPlateMesh(
       : { failure: "error" };
   }
   if (res.status === 401) return { failure: "signedOut" };
-  if (res.status === 503) return { failure: "unavailable" };
+  if (res.status === 503) {
+    return { failure: field("error") === "busy" ? "busy" : "unavailable" };
+  }
   return { failure: "error" };
 }
 

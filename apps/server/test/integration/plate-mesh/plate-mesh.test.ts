@@ -16,6 +16,7 @@ import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
 import {
   createPlateMeshes,
   PLATE_MESH_BUILDS,
+  PLATE_MESH_WAITING,
   type PlateMeshStore,
 } from "../../../src/plate-mesh/plate-mesh.js";
 import { StoreUnavailable } from "../../../src/storage/s3.js";
@@ -234,6 +235,38 @@ describe("GET /app/api/plates/:id/mesh", () => {
       release();
       const answers = await Promise.all(opens);
       expect(answers.map((a) => a.statusCode)).toEqual(plates.map(() => 200));
+    } finally {
+      release();
+      readGate = null;
+    }
+  });
+
+  test("an open past PLATE_MESH_WAITING waiting builds is 503 busy, and starts nothing", async () => {
+    const plateCount = PLATE_MESH_BUILDS + PLATE_MESH_WAITING + 1;
+    const stored = await ingest("Queue.3mf", buildSliceable({ plates: plateCount, filaments: 1 }));
+    const plates = await platesOf(stored.fileId);
+    expect(plates).toHaveLength(plateCount);
+    let release: () => void = () => undefined;
+    readGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      const held = plates.slice(0, -1).map((p) => meshOf(p.id));
+      await vi.waitFor(() => expect(readsHeld).toBe(PLATE_MESH_BUILDS));
+      // Time for every other open to look its plate up and join the queue.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const reads = sourceReads;
+      const last = plates.at(-1);
+      if (last === undefined) throw new Error("no last plate");
+      const busy = await meshOf(last.id);
+      expect(busy.statusCode).toBe(503);
+      expect(busy.json()).toMatchObject({ error: "busy" });
+      expect(busy.headers["retry-after"]).toBe("5");
+      expect(sourceReads).toBe(reads);
+      release();
+      expect((await Promise.all(held)).map((a) => a.statusCode)).toEqual(held.map(() => 200));
+      // Once the queue has room again, the same plate is made.
+      expect((await meshOf(last.id)).statusCode).toBe(200);
     } finally {
       release();
       readGate = null;

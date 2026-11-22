@@ -388,6 +388,7 @@
   "model.plate.strip": "Plateaux",
   "model.plate3d.close": "Voir l'image",
   "model.plate3d.failed.browser": "La vue 3D de {label} ne peut pas \u00eatre affich\u00e9e dans ce navigateur.",
+  "model.plate3d.failed.busy": "Platehouse cr\u00e9e d'autres vues 3D en ce moment, la vue 3D de {label} n'a donc pas pu \u00eatre cr\u00e9\u00e9e. R\u00e9essayez dans un instant.",
   "model.plate3d.failed.damaged": "{label} n'a pas de vue 3D : le fichier n'a pas pu \u00eatre lu.",
   "model.plate3d.failed.error": "La vue 3D de {label} n'a pas pu \u00eatre cr\u00e9\u00e9e \u00e0 cause d'une erreur du serveur. R\u00e9essayez plus tard.",
   "model.plate3d.failed.noMesh": "{label} n'a pas de vue 3D : ce fichier ne contient aucun maillage que Platehouse sait lire pour ses objets.",

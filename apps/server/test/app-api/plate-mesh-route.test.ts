@@ -5,15 +5,17 @@
 // test/integration/plate-mesh/plate-mesh.test.ts.
 import { ReadUnavailable } from "@platehouse/threemf";
 import Fastify from "fastify";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   type AppPlateMeshes,
   emptyPlateMeshes,
   PLATE_MESH_API_PATHS,
+  PLATE_MESH_BUSY_MESSAGE,
   PLATE_MESH_MESSAGES,
   PLATE_MESH_UNAVAILABLE_MESSAGE,
   registerPlateMeshApi,
 } from "../../src/app-api/plate-mesh.js";
+import { BuildQueueBusy } from "../../src/plate-mesh/limit.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 
 const PLATE_ID = "01900000-0000-7000-8000-0000000000d1";
@@ -137,5 +139,73 @@ describe("GET /app/api/plates/:id/mesh", () => {
     const { server } = await app();
     const res = await server.inject({ url: `/app/api/plates/${PLATE_ID}/mesh` });
     expect(res.statusCode).toBe(404);
+  });
+
+  test("a full build queue is 503 busy, saying to try again in a moment, and is not logged as a failure", async () => {
+    const { server, lines } = await app(
+      answering(async () => {
+        throw new BuildQueueBusy();
+      }),
+    );
+    const res = await server.inject({ url: `/app/api/plates/${PLATE_ID}/mesh` });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ error: "busy", message: PLATE_MESH_BUSY_MESSAGE });
+    expect(res.headers["retry-after"]).toBe("5");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(errorLines(lines)).toEqual([]);
+  });
+
+  test("hands the service a signal that stays quiet while the browser waits", async () => {
+    const signals: AbortSignal[] = [];
+    const { server } = await app(
+      answering(async (_id, signal) => {
+        if (signal !== undefined) signals.push(signal);
+        return { status: "ok", blobId: BLOB_ID };
+      }),
+    );
+    const res = await server.inject({ url: `/app/api/plates/${PLATE_ID}/mesh` });
+    expect(res.statusCode).toBe(200);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+  });
+
+  test("aborts the service's signal when the browser stops waiting, and logs no failure", async () => {
+    let seen: AbortSignal | undefined;
+    let asked!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    const { server, lines } = await app(
+      answering(
+        (_id, signal) =>
+          new Promise((_resolve, reject) => {
+            seen = signal;
+            asked();
+            signal?.addEventListener("abort", () => {
+              const error = new Error("gone");
+              error.name = "AbortError";
+              reject(error);
+            });
+          }),
+      ),
+    );
+    await server.listen({ port: 0, host: "127.0.0.1" });
+    try {
+      const address = server.server.address();
+      if (address === null || typeof address === "string") throw new Error("no port");
+      const browser = new AbortController();
+      const request = fetch(`http://127.0.0.1:${address.port}/app/api/plates/${PLATE_ID}/mesh`, {
+        signal: browser.signal,
+      }).catch(() => undefined);
+      await reached;
+      expect(seen?.aborted).toBe(false);
+      browser.abort();
+      await request;
+      await vi.waitFor(() => expect(seen?.aborted).toBe(true));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(errorLines(lines)).toEqual([]);
+    } finally {
+      await server.close();
+    }
   });
 });

@@ -25,12 +25,16 @@
 //    never changes. The memory is this process's, holds at most
 //    REMEMBERED_PROBLEMS plates and is gone after a restart, so a later
 //    version that reads more files tries them again.
-// 3. Opens of the same plate while it is being made share the one run.
-//    A process makes at most PLATE_MESH_BUILDS plates' meshes at once (each
-//    run holds a temp copy of the .3mf and the plate's meshes in memory);
-//    the rest wait their turn, and a run that waited looks the plate up
-//    again first, so one made meanwhile is answered without reading the
-//    file. A run finishes even when the browser stops waiting for it.
+// 3. Builds go through one queue (limit.ts, review finding #385). Opens of
+//    the same plate share one build. A process makes at most
+//    PLATE_MESH_BUILDS plates' meshes at once (each run holds a temp copy of
+//    the .3mf and the plate's meshes in memory), at most PLATE_MESH_WAITING
+//    more wait, and an open past that is refused as busy (503, try again)
+//    with nothing started. A waiting build whose browsers have all gone (the
+//    route's signal) is dropped before it starts; a build that has started
+//    finishes, so its mesh is kept for the next open. A build that waited
+//    looks the plate up again first, so one made meanwhile is answered
+//    without reading the file.
 // 4. The source .3mf is copied from the store to a temp folder of its own
 //    under tmpDir (the reader needs random access) and checked against its
 //    recorded size, so a short read is never taken for a damaged file;
@@ -66,7 +70,7 @@ import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE } from "./glb.js";
-import { createLimit } from "./limit.js";
+import { createBuildQueue } from "./limit.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
 
@@ -75,6 +79,9 @@ export const REMEMBERED_PROBLEMS = 1000;
 
 /** How many plates' meshes one process makes at once; the rest wait their turn. */
 export const PLATE_MESH_BUILDS = 2;
+
+/** How many more may wait; an open past that is answered busy. */
+export const PLATE_MESH_WAITING = 8;
 
 export interface PlateMeshDeps {
   db: Kysely<DB>;
@@ -114,8 +121,9 @@ function fileSystem(error: unknown): unknown {
 export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   const { db, store } = deps;
   const repos = createRepos(db);
-  const running = new Map<string, Promise<PlateMeshAnswer>>();
-  const builds = createLimit(PLATE_MESH_BUILDS);
+  const builds = createBuildQueue({ running: PLATE_MESH_BUILDS, waiting: PLATE_MESH_WAITING });
+  /** For a caller with no signal of its own: one that never aborts. */
+  const staying = new AbortController().signal;
   const problems = new Map<string, PlateMeshProblem>();
 
   function remember(plateId: string, problem: PlateMeshProblem): void {
@@ -286,25 +294,24 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   }
 
   return {
-    async get(plateId) {
+    async get(plateId, signal = staying) {
       if (!isUuid(plateId)) return NOT_FOUND;
       const row = await lookup(plateId);
       if (row === undefined) return NOT_FOUND;
       if (row.meshId !== null) return { status: "ok", blobId: row.meshId };
       const known = problems.get(row.id);
       if (known !== undefined) return { status: "no_mesh", problem: known };
-      let run = running.get(row.id);
-      if (run === undefined) {
-        run = builds(async () => {
+      return builds.run(
+        row.id,
+        async (): Promise<PlateMeshAnswer> => {
           // The plate may have been made, or its model trashed, while this waited.
           const now = await lookup(row.id);
           if (now === undefined) return NOT_FOUND;
-          if (now.meshId !== null) return { status: "ok", blobId: now.meshId } as const;
+          if (now.meshId !== null) return { status: "ok", blobId: now.meshId };
           return make(now);
-        }).finally(() => running.delete(row.id));
-        running.set(row.id, run);
-      }
-      return run;
+        },
+        signal,
+      );
     },
   };
 }

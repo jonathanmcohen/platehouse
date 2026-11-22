@@ -30,6 +30,7 @@ const FAILURE_WORDS: Readonly<Record<Plate3dFailure, MessageKey>> = {
   too_large: "model.plate3d.failed.tooLarge",
   damaged: "model.plate3d.failed.damaged",
   unavailable: "model.plate3d.failed.unavailable",
+  busy: "model.plate3d.failed.busy",
   signedOut: "common.signedOut",
   browser: "model.plate3d.failed.browser",
   error: "model.plate3d.failed.error",

@@ -16,7 +16,14 @@
 //                                  store is down or refused, or the temp
 //                                  folder could not be written); nothing is
 //                                  recorded, so the next open tries again
+//                                  503 {error: "busy", message}, with
+//                                  Retry-After: 5: the server is already
+//                                  making as many 3D views as it will hold
+//                                  (plate-mesh/limit.ts); nothing was started
 //
+// - The browser going away (its fetch aborted, the connection closed) aborts
+//   the signal handed to the service, so a build of this plate that is still
+//   waiting, and that no other open is waiting for, is dropped (#385).
 // - Session-class, like every /app/api route (the Route classes contract:
 //   unlisted, so session); the gate refuses a request without a session
 //   before this handler runs. It is a GET: it changes nothing a user can
@@ -28,6 +35,7 @@
 import { type PlateMeshProblem, ReadUnavailable } from "@platehouse/threemf";
 import type { FastifyInstance } from "fastify";
 import { isUuid } from "../db/ids.js";
+import { BuildQueueBusy } from "../plate-mesh/limit.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { BLOB_PREFIX } from "./library.js";
 
@@ -47,6 +55,10 @@ export const PLATE_MESH_MESSAGES: Readonly<Record<PlateMeshProblem, string>> = O
 export const PLATE_MESH_UNAVAILABLE_MESSAGE =
   "The file could not be read right now, so the 3D view could not be made. Try again later.";
 
+/** What a plate view says when the server is already making as many 3D views as it will hold. */
+export const PLATE_MESH_BUSY_MESSAGE =
+  "Platehouse is making other 3D views right now. Try again in a moment.";
+
 export type PlateMeshAnswer =
   | { status: "ok"; blobId: string }
   | { status: "no_mesh"; problem: PlateMeshProblem }
@@ -56,9 +68,11 @@ export interface AppPlateMeshes {
   /**
    * The plate's GLB blob, made now if it has none; why it has no 3D view;
    * or not_found. Throws a store error (StoreUnavailable, StoreError,
-   * BlobNotFound) or ReadUnavailable when the file cannot be read right now.
+   * BlobNotFound) or ReadUnavailable when the file cannot be read right now,
+   * BuildQueueBusy when too many builds already wait, and an AbortError when
+   * signal aborts first (the browser went away).
    */
-  get(plateId: string): Promise<PlateMeshAnswer>;
+  get(plateId: string, signal?: AbortSignal): Promise<PlateMeshAnswer>;
 }
 
 /** The plate views when the server is given none: every plate unknown. */
@@ -86,6 +100,17 @@ export async function registerPlateMeshApi(
       return payload;
     });
     scope.setErrorHandler(async (error, request, reply) => {
+      if (error instanceof BuildQueueBusy) {
+        return reply
+          .code(503)
+          .header("retry-after", "5")
+          .send({ error: "busy", message: PLATE_MESH_BUSY_MESSAGE });
+      }
+      // The browser has gone: nobody reads this answer, and nothing failed.
+      if ((error as Error).name === "AbortError") {
+        request.log.info("plate mesh: the browser stopped waiting");
+        return reply.code(503).send({ error: "gone" });
+      }
       if (unavailable(error)) {
         request.log.warn({ err: error }, "plate mesh: the file could not be read");
         return reply
@@ -98,9 +123,20 @@ export async function registerPlateMeshApi(
     });
 
     scope.get<{ Params: { id: string } }>("/app/api/plates/:id/mesh", async (request, reply) => {
-      const answer: PlateMeshAnswer = isUuid(request.params.id)
-        ? await meshes.get(request.params.id)
-        : { status: "not_found" };
+      if (!isUuid(request.params.id)) return reply.code(404).send({ error: "not_found" });
+      // Aborted when the response closes before it was sent: the browser went away.
+      // Only while the service works: once it has answered, nothing is left to stop.
+      const gone = new AbortController();
+      const closed = (): void => {
+        if (!reply.raw.writableFinished) gone.abort();
+      };
+      reply.raw.once("close", closed);
+      let answer: PlateMeshAnswer;
+      try {
+        answer = await meshes.get(request.params.id, gone.signal);
+      } finally {
+        reply.raw.off("close", closed);
+      }
       switch (answer.status) {
         case "ok":
           return { url: `${BLOB_PREFIX}${answer.blobId}` };

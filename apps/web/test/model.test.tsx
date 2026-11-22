@@ -2282,6 +2282,19 @@ describe("a .3mf plate's 3D view (issue #358)", () => {
     expect(alertText()).toMatch(/could not be read right now\. Try again later/);
   });
 
+  test("a server already making as many 3D views as it holds keeps the picture and says to try again in a moment", async () => {
+    meshAnswer = () =>
+      new Response(JSON.stringify({ error: "busy", message: "x" }), {
+        status: 503,
+        headers: { "content-type": "application/json", "retry-after": "5" },
+      });
+    await render(pageAt(MODEL_ID));
+    await click(toggle());
+    expect(large()).not.toBeNull();
+    expect(alertText()).toMatch(/making other 3D views right now.*Try again in a moment/);
+    expect(alertText()).not.toMatch(/could not be read/);
+  });
+
   test("a server error or an answer it cannot read keeps the picture and says so", async () => {
     for (const answer of [
       () => json({ error: "internal" }, 500),

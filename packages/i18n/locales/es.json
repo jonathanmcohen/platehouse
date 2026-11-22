@@ -388,6 +388,7 @@
   "model.plate.strip": "Placas",
   "model.plate3d.close": "Ver imagen",
   "model.plate3d.failed.browser": "La vista 3D de {label} no se puede mostrar en este navegador.",
+  "model.plate3d.failed.busy": "Platehouse est\u00e1 creando otras vistas 3D ahora mismo, as\u00ed que no se pudo crear la vista 3D de {label}. Int\u00e9ntalo de nuevo en un momento.",
   "model.plate3d.failed.damaged": "{label} no tiene vista 3D: no se pudo leer el archivo.",
   "model.plate3d.failed.error": "No se pudo crear la vista 3D de {label} por un error del servidor. Int\u00e9ntalo de nuevo m\u00e1s tarde.",
   "model.plate3d.failed.noMesh": "{label} no tiene vista 3D: este archivo no tiene ninguna malla que Platehouse pueda leer para sus objetos.",
