@@ -52,7 +52,7 @@ const SHIPPED = [
   "0009_name_sort_prefix.sql",
   "0010_drop_unused_tags.sql",
   "0011_estimate_started_at.sql",
-  "0012_plate_mesh.sql",
+  "0013_plate_mesh.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -629,21 +629,21 @@ describe("0011 estimate started_at", () => {
   });
 });
 
-// Migration 0012 (issue #358) points each plate at the GLB of its 3D view,
-// made the first time the plate is opened. It runs on a database at 0011
+// Migration 0013 (issue #358) points each plate at the GLB of its 3D view,
+// made the first time the plate is opened. It runs on a database at 0012
 // with plates, changing no row: every plate starts with no mesh. The column
 // is cleared when its blob goes, as a plate's thumbnail is, so deleting a
 // model's blobs never trips over it.
-describe("0012 plate mesh", () => {
+describe("0013 plate mesh", () => {
   let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
     await cp(MIGRATIONS_DIR, dir, { recursive: true });
     const later = (await readdir(dir)).filter(
-      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 11,
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 12,
     );
-    expect(later).toContain("0012_plate_mesh.sql");
+    expect(later).toContain("0013_plate_mesh.sql");
     for (const name of later) await rm(join(dir, name));
   });
 
@@ -651,7 +651,7 @@ describe("0012 plate mesh", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("applies on a database at 0011 with plates, changing no row, and a mesh goes with its blob", async () => {
+  test("applies on a database at 0012 with plates, changing no row, and a mesh goes with its blob", async () => {
     const { db } = await pgc.freshDatabase();
     await migrateFrom(db, dir);
     const model = "0190a0b0-0000-7000-8000-000000000021";
