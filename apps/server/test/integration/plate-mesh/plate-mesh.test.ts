@@ -335,12 +335,15 @@ describe("GET /app/api/plates/:id/mesh", () => {
       expect(again.json()).toMatchObject({ code: "too_large" });
       expect(reads).toBe(1);
 
+      // The load is gone: reads have their normal time again. Under the 1 ms
+      // timeout no read can finish (the timer starts when the worker is
+      // spawned), so the file's own verdict needs this first.
+      worker.timeoutMs = PLATE_MESH_TIMEOUT_MS;
       const verdict = await open(noMesh.id);
       expect(verdict.json()).toMatchObject({ error: "no_mesh", code: "no_mesh" });
       expect(reads).toBe(2);
 
-      // The load is gone and the time has passed: the plate is read again and made.
-      worker.timeoutMs = PLATE_MESH_TIMEOUT_MS;
+      // The time has passed: the plate is read again and made.
       clock += 1;
       const made = await open(plate.id);
       expect(made.statusCode).toBe(200);
