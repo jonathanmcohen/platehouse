@@ -70,12 +70,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-import {
-  CONVERTER_VERSION,
-  extractMakerWorld,
-  htmlToMarkdown,
-  mapLicense,
-} from "@platehouse/makerworld";
+import { CONVERTER_VERSION, extractMakerWorld, mapLicense } from "@platehouse/makerworld";
 import { makerWorldDesignId, type Project, readProject } from "@platehouse/threemf";
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
@@ -93,6 +88,7 @@ import {
   findDuplicates,
 } from "./duplicates.js";
 import { newModelName } from "./names.js";
+import { projectReads } from "./read-limit.js";
 
 export {
   type DuplicateMatch,
@@ -463,12 +459,17 @@ export function createIngest(deps: IngestDeps) {
       let parseStatus: ParseStatus = "ok";
       const thumbnails = new Map<number, string>();
       if (kind === "3mf") {
-        project = await readProject(tmpPath, {
-          onThumbnail: async (index, png) => {
-            const blob = await putOne("thumbnail", Readable.from([png]), png.length, "image/png");
-            thumbnails.set(index, blob.id);
-          },
-        });
+        // One of at most INGEST_CONCURRENCY reads in the process, from the
+        // queue and the inbox watcher together (read-limit.ts): the memory
+        // budget counts that many.
+        project = await projectReads.run(() =>
+          readProject(tmpPath, {
+            onThumbnail: async (index, png) => {
+              const blob = await putOne("thumbnail", Readable.from([png]), png.length, "image/png");
+              thumbnails.set(index, blob.id);
+            },
+          }),
+        );
         if (project === null) parseStatus = "no_plate_data";
       }
 

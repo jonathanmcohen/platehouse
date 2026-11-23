@@ -149,7 +149,9 @@ const BUDGET = [
   // A STEP preview mesh buffer that is not yet collected when the next
   // gate place starts (it is freed late, not at the gate's release).
   { term: "STEP_PREVIEW_PEAK_MB", mb: STEP_PREVIEW_PEAK_MB },
-  // .3mf reads at ingest, outside the gate.
+  // .3mf reads at ingest, outside the gate: at most INGEST_CONCURRENCY at
+  // once for the queue's jobs and the inbox watcher together, which share
+  // one limit (ingest/read-limit.ts).
   {
     term: "INGEST_CONCURRENCY * PROJECT_READ_PEAK_BYTES",
     mb: (INGEST_CONCURRENCY * PROJECT_READ_PEAK_BYTES) / MiB,
