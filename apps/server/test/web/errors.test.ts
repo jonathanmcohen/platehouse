@@ -189,7 +189,9 @@ describe("the root error handler (issue #455)", () => {
       cookies: { [SESSION_COOKIE]: COOKIE },
     });
     expect(res.statusCode).toBe(409);
-    expect(res.json().statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "Conflict", statusCode: 409 });
+    expect(res.body).not.toContain("private");
+    expect(res.body).not.toContain("/srv");
   });
 
   test("a route that threw after setting a status and a header keeps neither of the failed answer", async () => {

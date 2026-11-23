@@ -476,19 +476,25 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     };
     const own = loose.statusCode ?? loose.status;
     const set = reply.statusCode;
-    const status =
-      own !== undefined && own >= 400 && own <= 599 ? own : set >= 400 && set <= 599 ? set : 500;
+    const fromError = own !== undefined && own >= 400 && own <= 599;
+    const status = fromError ? own : set >= 400 && set <= 599 ? set : 500;
     // What the failed route had set for its own answer (a static file's type,
     // length, caching and validators) does not describe this one.
     for (const name of FAILED_ANSWER_HEADERS) reply.removeHeader(name);
     if (status < 500) {
       if (loose.headers !== undefined) reply.headers(loose.headers);
-      return reply.code(status).send({
-        error: STATUS_CODES[status] ?? "Error",
-        code: error.code,
-        message: error.message,
-        statusCode: status,
-      });
+      // The error's own message and code are kept only when the error chose
+      // the status; an error the route did not mean as a 4xx says nothing.
+      return reply.code(status).send(
+        fromError
+          ? {
+              error: STATUS_CODES[status] ?? "Error",
+              code: error.code,
+              message: error.message,
+              statusCode: status,
+            }
+          : { error: STATUS_CODES[status] ?? "Error", statusCode: status },
+      );
     }
     request.log.error({ err: error }, "app: a request failed");
     reply.header("cache-control", "no-store");
