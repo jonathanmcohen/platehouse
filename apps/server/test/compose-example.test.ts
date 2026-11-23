@@ -13,7 +13,12 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PLATE_MESH_LIMITS } from "@platehouse/threemf";
 import { describe, expect, test } from "vitest";
-import { PLATE_MESH_BUILDS, PLATE_MESH_READ_PEAK_MB } from "../src/plate-mesh/plate-mesh.js";
+import { STEP_PREVIEW_PEAK_MB } from "../src/derived/preview.js";
+import {
+  MEMORY_GATE_PEAK_MB,
+  PLATE_MESH_BUILDS,
+  PLATE_MESH_READ_PEAK_MB,
+} from "../src/plate-mesh/plate-mesh.js";
 import { PLATE_MESH_WORKER_LIMITS } from "../src/plate-mesh/worker-read.js";
 import { MAX_UPLOAD_BYTES } from "../src/uploads/tus.js";
 
@@ -112,11 +117,22 @@ describe("the platehouse service's memory holds its plate mesh reads", () => {
     expect(PLATE_MESH_READ_PEAK_MB).toBe(heap + young + mesh + entries);
   });
 
-  test("the reads that can run at once, and the server's allowance, fit under mem_limit", () => {
+  // Review of PR #409: a STEP file's preview reads its whole mesh into the
+  // app too (derived/preview.ts). It goes through the same gate as the plate
+  // reads (plate-mesh/limit.ts, memoryGate), so each of the gate's
+  // PLATE_MESH_BUILDS places holds a plate read or a STEP preview, never
+  // both, and must fit the larger of the two.
+  test("a place in the memory gate fits a plate read or a STEP preview's mesh read", () => {
+    expect(STEP_PREVIEW_PEAK_MB).toBeGreaterThan(0);
+    expect(MEMORY_GATE_PEAK_MB).toBe(Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB));
+  });
+
+  test("the jobs the memory gate runs at once, and the server's allowance, fit under mem_limit", () => {
     const app = services().get("platehouse") ?? [];
     const limit = mebibytes(field(app, "mem_limit"));
     expect(mebibytes(field(app, "memswap_limit"))).toBe(limit);
-    const needed = PLATE_MESH_BUILDS * PLATE_MESH_READ_PEAK_MB + SERVER_ALLOWANCE_MB;
+    const place = Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB);
+    const needed = PLATE_MESH_BUILDS * place + SERVER_ALLOWANCE_MB;
     expect(needed).toBeLessThanOrEqual(limit);
   });
 });

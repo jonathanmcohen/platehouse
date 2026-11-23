@@ -29,6 +29,7 @@ import {
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
+import { memoryGate } from "../../../src/plate-mesh/limit.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
@@ -993,5 +994,83 @@ describe("a STEP preview picture left pending with no job behind it is settled",
       renderPngBlobId: null,
     });
     expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
+  });
+
+  // Review of PR #409: a STEP preview reads its whole mesh into the app, so
+  // it goes through the process's memory gate, shared with the plate mesh
+  // builds, and asks the slicer for nothing while it waits for it.
+  describe("and the process's memory gate", () => {
+    /** A STEP file with its mesh stored and its picture's job taken off the queue. */
+    async function meshWithHeldPreview(label: string) {
+      const { fileId } = await env.ingest.ingestFile({
+        tmpPath: await writeUpload(env, uniqueStep(label)),
+        originalName: "Bracket.step",
+        target: "new",
+      });
+      const file = await env.repos.files.get(fileId);
+      if (!file) throw new Error("file not stored");
+      const derived = holding();
+      expect(
+        await derived.runJob(
+          { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: file.blobId },
+          { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+        ),
+      ).toEqual({ status: "ok" });
+      const job = await takeHeld(fileId, DERIVED_KINDS.previewStep);
+      return { fileId, derived, job };
+    }
+
+    /** Holds the process's memory gate, as a plate build does, until release(). */
+    function holdGate() {
+      let release: () => void = () => undefined;
+      const held = memoryGate.run(
+        "plate-held-by-the-test",
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+        new AbortController().signal,
+      );
+      return { release: () => release(), held };
+    }
+
+    test("a preview waits for a job holding the gate, sending nothing to the slicer meanwhile", async () => {
+      const { fileId, derived, job } = await meshWithHeldPreview("gate, waits");
+      const before = env.stub.renders.callsTo("/v1/stl/png").length;
+      const gate = holdGate();
+      try {
+        const run = derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(before);
+        gate.release();
+        await gate.held;
+        expect(await run).toEqual({ status: "ok" });
+        expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(before + 1);
+        expect(await env.repos.files.get(fileId)).toMatchObject({ previewStatus: "ok" });
+      } finally {
+        gate.release();
+      }
+    });
+
+    test("a preview whose file lost its mesh while it waited does nothing", async () => {
+      const { fileId, derived, job } = await meshWithHeldPreview("gate, superseded");
+      const before = env.stub.renders.callsTo("/v1/stl/png").length;
+      const gate = holdGate();
+      try {
+        const run = derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await env.db
+          .updateTable("files")
+          .set({ meshBlobId: null })
+          .where("id", "=", fileId)
+          .execute();
+        gate.release();
+        await gate.held;
+        expect(await run).toEqual({ status: "skipped", reason: "stale" });
+        expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(before);
+      } finally {
+        gate.release();
+      }
+    });
   });
 });

@@ -92,6 +92,11 @@ another plate in the strip to see that plate in 3D, and press **Show picture** t
   are asked for, the page says it is busy making other 3D views; try again in a moment. A plate
   you stop waiting for (by closing the view or choosing another plate) is not made unless it had
   already started.
+- STEP files' preview pictures share that one slot: making a STEP file's picture reads its whole
+  3D mesh into the server's memory, so it waits for a plate's 3D view being made, and a plate
+  waits for a picture's mesh read. A picture waiting goes ahead of the plates waiting but holds
+  the slot only while it reads the mesh, not while the slicer draws it, and it never takes a
+  waiting plate's place, so it never makes a plate busy.
 
 ## Turning a plate image
 

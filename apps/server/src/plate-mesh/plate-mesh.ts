@@ -31,13 +31,16 @@
 //    enough that a file that never reads in time does not take a build for
 //    a minute on every open, short enough that a plate whose read was slow
 //    only because the server was busy is read again once the load is gone.
-// 3. Builds go through one queue (limit.ts, review finding #385). Opens of
-//    the same plate share one build. A process makes at most
-//    PLATE_MESH_BUILDS plates' meshes at once (each run holds a temp copy of
-//    the .3mf, and up to PLATE_MESH_READ_PEAK_MB of memory while its worker
-//    reads it), at most PLATE_MESH_WAITING
+// 3. Builds go through one queue (limit.ts, review finding #385): the
+//    process's memory gate, which STEP previews' mesh reads share (review
+//    of PR #409; limit.ts says how). Opens of the same plate share one
+//    build. A process makes at most PLATE_MESH_BUILDS plates' meshes at
+//    once, STEP previews included (each run holds a temp copy of the .3mf,
+//    and up to PLATE_MESH_READ_PEAK_MB of memory while its worker reads it),
+//    at most PLATE_MESH_WAITING
 //    more wait, and an open past that is refused as busy (503, try again)
-//    with nothing started. A waiting build whose browsers have all gone (the
+//    with nothing started. A STEP preview that is waiting goes first and
+//    takes no waiting place. A waiting build whose browsers have all gone (the
 //    route's signal) is dropped before it starts; a build that has started
 //    finishes, so its mesh is kept for the next open. A build that waited
 //    looks the plate up again first, so one made meanwhile is answered
@@ -80,12 +83,13 @@ import type { Kysely, Transaction } from "kysely";
 import type { AppPlateMeshes, PlateMeshAnswer } from "../app-api/plate-mesh.js";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
+import { STEP_PREVIEW_PEAK_MB } from "../derived/preview.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE, type PlateGlb } from "./glb.js";
-import { createBuildQueue } from "./limit.js";
+import { type BuildQueue, memoryGate } from "./limit.js";
 import {
   PLATE_MESH_WORKER_LIMITS,
   PlateMeshBusy,
@@ -124,18 +128,24 @@ export const PLATE_MESH_READ_PEAK_MB =
   MAX_UPLOAD_BYTES / MiB;
 
 /**
- * How many plates' meshes one process makes at once; the rest wait their
- * turn. One: a worker past its heap limit ends only that worker, but the
- * container's memory limit counts the whole read, and past it the kernel
- * ends the whole server. One read's PLATE_MESH_READ_PEAK_MB (1344 MiB)
+ * How many plates' meshes one process makes at once, STEP previews' mesh
+ * reads included, and how many more builds may wait: the memory gate's
+ * sizes (limit.ts). One: a worker past its heap limit ends only that
+ * worker, but the container's memory limit counts the whole read, and past
+ * it the kernel ends the whole server. One place, MEMORY_GATE_PEAK_MB,
  * leaves room for the server itself under the 2 GiB mem_limit that
  * examples/docker-compose.yml gives it; two would not fit
  * (test/compose-example.test.ts checks it).
  */
-export const PLATE_MESH_BUILDS = 1;
+export { PLATE_MESH_BUILDS, PLATE_MESH_WAITING } from "./limit.js";
 
-/** How many more may wait; an open past that is answered busy. */
-export const PLATE_MESH_WAITING = 8;
+/**
+ * The most memory, in MiB, one place in the memory gate holds: a plate
+ * read (PLATE_MESH_READ_PEAK_MB) or a STEP preview's mesh read
+ * (STEP_PREVIEW_PEAK_MB, derived/preview.ts), whichever is larger. The gate
+ * runs one of them at a time in each place, never both.
+ */
+export const MEMORY_GATE_PEAK_MB = Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB);
 
 export interface PlateMeshDeps {
   db: Kysely<DB>;
@@ -146,6 +156,8 @@ export interface PlateMeshDeps {
   worker?: Partial<WorkerReadOptions>;
   /** The time in milliseconds, for PLATE_MESH_BUSY_RETRY_MS; Date.now when left out (tests move it). */
   now?: () => number;
+  /** The queue builds run through; the process's memoryGate (limit.ts) when left out. */
+  gate?: BuildQueue;
 }
 
 interface PlateRow {
@@ -179,7 +191,8 @@ function fileSystem(error: unknown): unknown {
 export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   const { db, store } = deps;
   const repos = createRepos(db);
-  const builds = createBuildQueue({ running: PLATE_MESH_BUILDS, waiting: PLATE_MESH_WAITING });
+  // The process's one memory gate, shared with STEP previews (limit.ts).
+  const builds = deps.gate ?? memoryGate;
   /** For a caller with no signal of its own: one that never aborts. */
   const staying = new AbortController().signal;
   const now = deps.now ?? Date.now;

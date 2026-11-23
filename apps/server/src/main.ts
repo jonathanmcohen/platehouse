@@ -389,7 +389,16 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       store,
       sliceTimeoutMs: sliceTimeoutMs(config.slicer.plateSeconds),
     });
-    const derived = createDerived({ db, store, slicerUrl: config.slicer.url, queue: startedBoss });
+    // A STEP preview's mesh read and the plate mesh builds (below) share the
+    // process's one memory gate (plate-mesh/limit.ts), which both use when
+    // given none.
+    const derived = createDerived({
+      db,
+      store,
+      slicerUrl: config.slicer.url,
+      queue: startedBoss,
+      tmpDir: config.tmpDir,
+    });
     // Two hooks on purpose, afterCommit here and onIngested below (the maintainer,
     // 2026-11-11): afterCommit runs inside ingestFile, only for the attempt
     // whose rows committed, while onIngested also runs on the inbox

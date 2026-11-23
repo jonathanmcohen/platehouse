@@ -14,6 +14,7 @@ import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
+import { memoryGate } from "../../../src/plate-mesh/limit.js";
 import {
   createPlateMeshes,
   PLATE_MESH_BUILDS,
@@ -253,6 +254,37 @@ describe("GET /app/api/plates/:id/mesh", () => {
     } finally {
       release();
       readGate = null;
+    }
+  });
+
+  // Review of PR #409: plate builds go through the process's memory gate,
+  // which a STEP preview's mesh read shares, so a plate is not read while a
+  // preview holds its mesh in memory.
+  test("a plate is not read while another job holds the process's memory gate", async () => {
+    const stored = await ingest("Gate.3mf", buildSliceable({ plates: 1, filaments: 1 }));
+    const [plate] = await platesOf(stored.fileId);
+    if (plate === undefined) throw new Error("no plate");
+    let release: () => void = () => undefined;
+    const holding = memoryGate.run(
+      "step-preview:held-by-the-test",
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      new AbortController().signal,
+      { first: true },
+    );
+    try {
+      const open = meshOf(plate.id);
+      // Time for the open to look its plate up and reach the store, if it could.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(sourceReads).toBe(0);
+      release();
+      await holding;
+      expect((await open).statusCode).toBe(200);
+      expect(sourceReads).toBe(1);
+    } finally {
+      release();
     }
   });
 
