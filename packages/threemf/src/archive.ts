@@ -3,12 +3,13 @@
 // rules written there hold for both: entries are found by their raw name
 // bytes, every cap counts bytes actually inflated, a filesystem error is
 // ReadUnavailable and anything else the zip reader or inflate throws is
-// Damaged.
+// Damaged. listEntries also caps the directory it lists (entries, record
+// bytes, extra fields per entry), so the memory it holds stays small.
 import type { FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 import yauzl from "yauzl";
 import { Damaged, isSystemError, ReadUnavailable } from "./errors.js";
-import { MAX_ZIP_ENTRIES } from "./limits.js";
+import { MAX_EXTRA_FIELDS, MAX_ZIP_DIRECTORY_BYTES, MAX_ZIP_ENTRIES } from "./limits.js";
 
 const READ_CHUNK = 64 * 1024;
 
@@ -108,11 +109,17 @@ export function openArchive(
  * Lists the entries once, keyed by the raw name bytes read as latin1: one
  * character per byte, so a key equals a Bambu name only when the bytes are
  * exactly that ASCII name. The first entry of a duplicated name wins.
+ *
+ * The zip reader keeps every listed entry, with its extra fields parsed into
+ * objects, so the listing is capped to bound that memory: the entry count is
+ * checked before the first entry is read, then the bytes of directory records
+ * and the extra fields of each entry as they arrive.
  */
 export function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
   return new Promise((resolve, reject) => {
     const entries = new Map<string, yauzl.Entry>();
     let count = 0;
+    let directoryBytes = 0;
     const done = (fn: () => void): void => {
       zip.removeAllListeners("entry");
       zip.removeAllListeners("end");
@@ -120,10 +127,24 @@ export function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry
       zip.on("error", () => undefined);
       fn();
     };
+    if (zip.entryCount > MAX_ZIP_ENTRIES) {
+      done(() => reject(new Damaged("too many entries")));
+      return;
+    }
     zip.on("entry", (entry: yauzl.Entry) => {
       count++;
       if (count > MAX_ZIP_ENTRIES) {
         done(() => reject(new Damaged("too many entries")));
+        return;
+      }
+      directoryBytes +=
+        46 + entry.fileNameLength + entry.extraFieldLength + entry.fileCommentLength;
+      if (directoryBytes > MAX_ZIP_DIRECTORY_BYTES) {
+        done(() => reject(new Damaged("zip directory over the limit")));
+        return;
+      }
+      if (entry.extraFields.length > MAX_EXTRA_FIELDS) {
+        done(() => reject(new Damaged("too many extra fields")));
         return;
       }
       const name = entry.fileNameRaw.toString("latin1");

@@ -510,6 +510,19 @@ describe("slicing", () => {
     expect(await res.json()).toEqual({ error: "not_3mf" });
   });
 
+  test("a .3mf with an entry carrying 33 extra fields is 422 not_3mf and Orca never runs", async () => {
+    const extra = Buffer.concat(Array.from({ length: 33 }, () => Buffer.from([0xfe, 0xca, 0, 0])));
+    const s = setup();
+    const base = await start(s.config);
+    const res = await postSlice(
+      base,
+      buildSliceable({ plates: 2, filaments: 2, firstEntryExtra: extra }),
+    );
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "not_3mf" });
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+  });
+
   test("a Content-Length over 512 MiB is 413 before any body is read", async () => {
     const base = await start(setup().config);
     const res = await headersOnly(sliceUrl(base, P1S, 1), {

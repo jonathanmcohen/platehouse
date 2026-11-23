@@ -25,5 +25,15 @@ export const LIMITS = Object.freeze({
 /** 3D/3dmodel.model is read only up to <resources, and never past this. */
 export const MODEL_PREFIX_BYTES = 256 * 1024;
 
-/** A Bambu project has a few dozen entries; a directory claiming more is hostile. */
-export const MAX_ZIP_ENTRIES = 100000;
+// The three caps below bound the memory used while listing the zip directory,
+// which is read whole before any entry is opened: how many entries, how many
+// bytes of directory records, and how many extra fields one entry may carry.
+
+/** A Bambu project has a few dozen entries; a directory claiming more is refused. */
+export const MAX_ZIP_ENTRIES = 10000;
+
+/** Bytes of directory records (46 + name + extra field + comment each) listed in all. */
+export const MAX_ZIP_DIRECTORY_BYTES = 4 * MiB;
+
+/** Extra fields on one entry; a real project's entries carry a few. */
+export const MAX_EXTRA_FIELDS = 32;

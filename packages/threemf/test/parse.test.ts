@@ -1127,11 +1127,11 @@ describe("a NUL in a text value is dropped", () => {
 
 describe("ceilings are inclusive", () => {
   // The hostile row one past it comes back null; this one, otherwise the
-  // same file, reads. Building and listing 100000 entries takes about 2 s
+  // same file, reads. Building and listing 10000 entries takes about 0.2 s
   // alone, so it gets a longer timeout than the default 5 s for a full,
   // parallel run.
-  it("reads a file of exactly 100000 entries (MAX_ZIP_ENTRIES)", { timeout: 60_000 }, async () => {
-    expect(MAX_ZIP_ENTRIES).toBe(100000);
+  it("reads a file of exactly 10000 entries (MAX_ZIP_ENTRIES)", { timeout: 60_000 }, async () => {
+    expect(MAX_ZIP_ENTRIES).toBe(10000);
     const file = build3mfWithEntries(
       { plates: [{ index: 1 }], pngs: { 1: png("one") } },
       MAX_ZIP_ENTRIES,
