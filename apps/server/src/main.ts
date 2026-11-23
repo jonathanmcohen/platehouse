@@ -17,7 +17,7 @@
 //      worker dispatches by job kind to estimates' "slice" and the render
 //      and mesh kinds, an ingested file's plates are queued at once
 //      (onIngested), and the Orca poll also runs once at startup; the
-//      description re-conversion (#357) is sent to the maintenance queue
+//      description re-conversion (#357) is sent to the upgrade queue
 //      once, on the first start of a version whose converter changed;
 //   5. the inbox watcher, wired exactly as its own comment and the
 //      #59 changelog line ask, then started;
@@ -416,7 +416,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);
     // The description re-conversion on upgrade (#357): sent to the
-    // maintenance queue by startQueues while it has not finished, and run a
+    // upgrade queue by startQueues while it has not finished, and run a
     // slice per job (queues.ts RECONVERT_SLICE_SECONDS).
     const reconvert = createDescriptionReconvert({
       store: descriptionsRepo(db),

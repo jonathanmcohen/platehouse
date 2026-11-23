@@ -6,9 +6,12 @@
 // storeTextReader, against fakes with the behaviour that matters:
 //
 // - a pg-boss whose jobs and schedules outlive a process, that retries a
-//   failed job as the upgrade queue's defaults do (2 retries, no delay),
-//   fires its crons, and stops gracefully as pg-boss 12 does: it waits 10 s
-//   for the job in hand, and only then aborts the job's signal;
+//   failed job up to the retryLimit its send gives (the upgrade queue and
+//   every send use retryLimit 0, so in practice it never retries; the fake
+//   models a standard, non-collapsing queue, where the real upgrade queue
+//   is stately and collapses a send while a job waits), fires its crons,
+//   and stops gracefully as pg-boss 12 does: it waits 10 s for the job in
+//   hand, and only then aborts the job's signal;
 // - a database holding the models, the progress and the lock, that can go
 //   down for any length of time and drops a dead process's lock;
 // - an object store serving real .3mf bytes with a latency, where a file can

@@ -205,8 +205,8 @@ describe("startQueues", () => {
 });
 
 // The description re-conversion (#357) is a one-time step on upgrade, not a
-// schedule: startQueues sends it to the maintenance queue once the workers
-// are up, only while it has not finished, and the maintenance worker runs it.
+// schedule: startQueues sends it to the upgrade queue once the workers
+// are up, only while it has not finished, and the upgrade worker runs it.
 // The description re-conversion on upgrade (#357). Its lifecycle as a whole is
 // checked by the seeded simulation in test/library/reconvert-lifecycle.test.ts;
 // these are the named cases from the review rounds and issues #381 and #382.
@@ -214,12 +214,12 @@ describe("the description re-conversion on upgrade", () => {
   const TASK = UPGRADE_TASKS.reconvertDescriptions;
   const JOB = { name: QUEUE.upgrade, data: { task: TASK }, options: { retryLimit: 0 } };
 
-  /** A maintenance job for the re-conversion, as pg-boss hands it to the worker. */
+  /** A job for the re-conversion, as pg-boss hands it to the upgrade worker. */
   function reconvertJob(signal = new AbortController().signal, expireInSeconds = 900) {
     return { data: { task: TASK }, signal, expireInSeconds };
   }
 
-  /** Starts the queues with a re-conversion, and gives the maintenance worker. */
+  /** Starts the queues with a re-conversion, and gives the upgrade and maintenance workers. */
   async function started(over: Partial<QueueDeps> = {}) {
     const fake = fakeBoss();
     const unschedule = (fake.boss as unknown as { unschedule: ReturnType<typeof vi.fn> })

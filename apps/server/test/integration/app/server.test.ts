@@ -71,9 +71,19 @@ function boss(): PgBoss {
   return probe;
 }
 
-/** Sends a job and waits until a worker has taken it and finished, either way. */
+/**
+ * Sends a job and waits until a worker has taken it and finished, either way.
+ * The upgrade queue is stately: send returns null when a job is already
+ * waiting there (the app's own re-conversion job, from start-up or its
+ * schedule). A probe on it carries its own singletonKey, so it never collapses
+ * into the app's job and is always created.
+ */
 async function settled(queue: string, data: object) {
-  const id = await boss().send(queue, data, { retryLimit: 0 });
+  const options =
+    queue === QUEUE.upgrade
+      ? { retryLimit: 0, singletonKey: `probe-${uuidv7()}` }
+      : { retryLimit: 0 };
+  const id = await boss().send(queue, data, options);
   if (id === null) throw new Error("job not created");
   const job = await until(
     () => boss().getJobById(queue, id),

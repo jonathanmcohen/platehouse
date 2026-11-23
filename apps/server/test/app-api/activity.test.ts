@@ -56,6 +56,7 @@ import {
   PostgresQueryCompiler,
   type QueryResult,
 } from "kysely";
+import type { Schedule } from "pg-boss";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type ActivityEvent,
@@ -73,6 +74,7 @@ import type { DB } from "../../src/db/types.js";
 import { DERIVED_MESSAGES, PREVIOUS_RENDERS_SENTENCE } from "../../src/derived/client.js";
 import { reasonFileText } from "../../src/inbox/watch.js";
 import { duplicateMessage } from "../../src/ingest/duplicates.js";
+import { QUEUE, UPGRADE_TASKS } from "../../src/jobs/queues.js";
 import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
 
 const DUP_MODEL = "0198f0c4-0000-7000-8000-00000000000a";
@@ -119,6 +121,21 @@ describe("queueRows", () => {
       step: [5, 0, 0],
       scheduled: [0, 1, 4],
     });
+  });
+
+  test("counts the upgrade queue in the scheduled row, with maintenance", () => {
+    const rows = queueRows([
+      { queue: QUEUE.maintenance, kind: null, state: "active", n: 1 },
+      { queue: QUEUE.upgrade, kind: null, state: "created", n: 1 },
+      { queue: QUEUE.upgrade, kind: null, state: "active", n: 1 },
+      { queue: QUEUE.upgrade, kind: null, state: "failed", n: 2 },
+    ]);
+    expect(rows.find((r) => r.id === "scheduled")).toMatchObject({
+      waiting: 1,
+      active: 2,
+      failed: 2,
+    });
+    expect(rows.map((r) => r.id)).toEqual(["ingest", "estimates", "renders", "step", "scheduled"]);
   });
 
   // Issue #316: an STL's preview and a STEP mesh's preview are OpenSCAD
@@ -650,6 +667,36 @@ describe("a description re-conversion on the Activity page", () => {
       plugins: [new CamelCasePlugin()],
     });
   }
+
+  test("lists the re-conversion's schedule, which pg-boss holds on the upgrade queue", async () => {
+    const asked: string[] = [];
+    const view = await createAppActivity({
+      db: scriptedDb(),
+      boss: {
+        getSchedules: async (queue?: string) => {
+          asked.push(String(queue));
+          const reconvert = {
+            name: QUEUE.upgrade,
+            key: UPGRADE_TASKS.reconvertDescriptions,
+            cron: "*/5 * * * *",
+            timezone: "UTC",
+          } as Schedule;
+          return queue === QUEUE.upgrade ? [reconvert] : [];
+        },
+      },
+      slicer: {
+        health: async () => {
+          throw new Error("no slicer in this test");
+        },
+      },
+      now: () => new Date("2026-11-21T12:00:00Z"),
+    }).read();
+    expect(asked.sort()).toEqual([QUEUE.maintenance, QUEUE.upgrade].sort());
+    expect(view.schedules.map((r) => r.key)).toEqual([UPGRADE_TASKS.reconvertDescriptions]);
+    expect(view.schedules[0]).toMatchObject({
+      label: "MakerWorld description re-conversion (until it finishes)",
+    });
+  });
 
   test("is an event with the number of descriptions it changed", async () => {
     const view = await createAppActivity({
