@@ -6,14 +6,15 @@
 // The integration suite (test/integration/uploads) runs the same routes with
 // pg-boss, ingestFile, Postgres and the S3 test server.
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { PgBoss } from "pg-boss";
 import { Upload } from "tus-js-client";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   INGEST_FAILED_MESSAGE,
   IngestError,
@@ -24,10 +25,17 @@ import { QUEUE } from "../../src/jobs/queues.js";
 import {
   bossUploadQueue,
   createUploads,
+  EMPTY_UPLOAD_MESSAGE,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOADS_ON_DISK,
+  MAX_UPLOADS_PER_PRINCIPAL,
+  MIN_FREE_FILES,
   parseUploadMetadata,
+  prepareUploads,
   registerTus,
   STALE_UPLOAD_MS,
+  TOO_MANY_HELD_MESSAGE,
+  TOO_MANY_UNFINISHED_MESSAGE,
   type UploadQueue,
   UploadRefused,
   type UploadResult,
@@ -49,13 +57,16 @@ import {
 
 class FakeQueue implements UploadQueue {
   readonly enqueued = new Map<string, IngestInput>();
+  /** Every enqueue that succeeded, in order, repeats included. */
+  readonly enqueueCalls: Array<[string, IngestInput]> = [];
   readonly results = new Map<string, UploadResult>();
   failEnqueue = false;
   failResult = false;
 
   async enqueue(id: string, input: IngestInput): Promise<void> {
-    if (this.failEnqueue) throw new Error("queue is down");
+    if (this.failEnqueue) throw new Error("connect ECONNREFUSED 10.9.8.7:5432");
     this.enqueued.set(id, input);
+    this.enqueueCalls.push([id, input]);
   }
 
   async result(id: string): Promise<UploadResult | undefined> {
@@ -65,6 +76,14 @@ class FakeQueue implements UploadQueue {
 }
 
 const PREFIX = "/api/v1/uploads";
+
+/**
+ * The free space and free inodes the tests' upload stores report: plenty, so
+ * no test depends on the room left in os.tmpdir() on the machine running it.
+ * Only the tests about free space or inodes give their own, and one keeps
+ * the real disk.
+ */
+const plentyOfRoom = async () => Number.MAX_SAFE_INTEGER;
 const KEY = { "x-test-key": "letmein" };
 
 /** tus-js-client's URL storage and its entries; the package does not export the names. */
@@ -96,7 +115,13 @@ beforeEach(async () => {
   tmpDir = await mkdtemp(join(root, "tmp-"));
   queue = new FakeQueue();
   lines = [];
-  uploads = createUploads({ tmpDir, queue, log: (line) => lines.push(line) });
+  uploads = createUploads({
+    tmpDir,
+    queue,
+    log: (line) => lines.push(line),
+    freeBytes: plentyOfRoom,
+    freeFiles: plentyOfRoom,
+  });
   server = await startApp(async (app) => {
     await registerTus(app, { prefix: PREFIX, authHook: keyHook, uploads });
   });
@@ -324,6 +349,17 @@ describe("tus routes", () => {
     expect(queue.enqueued.has(id)).toBe(true);
   });
 
+  // The store makes its folder in its constructor without waiting for it,
+  // and TMP_DIR can be emptied while the server runs, so a creation can
+  // arrive before the folder is there; it makes the folder, not a 500.
+  test("a creation that arrives before the uploads folder is there makes it and is created", async () => {
+    await rm(uploads.dir, { recursive: true, force: true });
+    const res = await create(10, { filename: "a.stl" });
+    expect(res.status, res.body).toBe(201);
+    const id = idOf(res.headers.location);
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
+  });
+
   test("HEAD reports the offset and the length", async () => {
     const body = randomBinaryStl(100);
     const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
@@ -374,6 +410,16 @@ describe("tus routes", () => {
     expect(deferred.body).toMatch(/Upload-Length/);
     expect(await tempFiles()).toEqual([]);
     expect((await create(MAX_UPLOAD_BYTES, { filename: "a.stl" })).status).toBe(201);
+  });
+
+  test("an empty upload is 400 with a plain sentence and stores nothing", async () => {
+    const res = await create(0, { filename: "a.stl" });
+    expect(res.status).toBe(400);
+    expect(res.body).toBe(`${EMPTY_UPLOAD_MESSAGE}\n`);
+    expect(EMPTY_UPLOAD_MESSAGE).toMatch(/^[A-Z][^\n]*\.$/);
+    expect(await tempFiles()).toEqual([]);
+    expect(queue.enqueued.size).toBe(0);
+    expect((await create(1, { filename: "a.stl" })).status).toBe(201);
   });
 
   test("a PATCH carrying more than the declared length is refused", async () => {
@@ -555,6 +601,106 @@ describe("tus routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("ECONNREFUSED");
     queue.failResult = false;
     expect(await resultOf(id)).toEqual({ status: 200, body: { status: "pending" } });
+  });
+
+  // Issue #462: every byte arrived but the ingest was never queued, as when
+  // the process stops between the last byte and onUploadFinish.
+  /**
+   * An upload whose data file holds the first `received` of its bytes,
+   * written straight into the folder rather than PATCHed, so nothing queued it.
+   */
+  async function neverQueued(body: Buffer, received = body.length) {
+    const created = await create(body.length, { filename: "Lost part.stl", duplicates: "skip" });
+    expect(created.status).toBe(201);
+    const id = idOf(created.headers.location);
+    await writeFile(join(uploads.dir, id), body.subarray(0, received));
+    return id;
+  }
+
+  const PENDING = { status: 200, body: { status: "pending" } };
+
+  test("an upload whose bytes all arrived but was never queued is queued by its result route, once", async () => {
+    const body = randomBinaryStl(10);
+    const id = await neverQueued(body);
+    const newLock = vi.spyOn(uploads.locker, "newLock");
+    expect(queue.enqueueCalls).toEqual([]);
+
+    expect(await resultOf(id)).toEqual(PENDING);
+    expect(queue.enqueueCalls).toEqual([
+      [
+        id,
+        {
+          tmpPath: join(uploads.dir, id),
+          originalName: "Lost part.stl",
+          target: "new",
+          duplicates: "skip",
+        },
+      ],
+    ]);
+    // Queued holding the upload's lock, as ingest's tidy-up is.
+    expect(newLock).toHaveBeenCalledWith(id);
+
+    // The job now answers; a send with the same id would add nothing anyway.
+    expect(await resultOf(id)).toEqual(PENDING);
+    expect(queue.enqueueCalls).toHaveLength(1);
+  });
+
+  test("an upload still one byte short is pending, is not queued and takes no lock", async () => {
+    // Taking the lock would cancel a PATCH still sending (@tus/server's
+    // MemoryLocker asks the holder to let go).
+    const body = randomBinaryStl(10);
+    const id = await neverQueued(body, body.length - 1);
+    const newLock = vi.spyOn(uploads.locker, "newLock");
+    expect(await resultOf(id)).toEqual(PENDING);
+    expect(queue.enqueueCalls).toEqual([]);
+    expect(newLock).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["no file name", {}],
+    ["a type Platehouse does not take", { filename: "notes.txt" }],
+    ["a duplicates value it does not know", { filename: "Lost part.stl", duplicates: "maybe" }],
+  ])(
+    "a complete upload never queued whose metadata no longer parses (%s) is 404 and not queued",
+    async (_, metadata) => {
+      const body = randomBinaryStl(10);
+      const id = await neverQueued(body);
+      const infoPath = join(uploads.dir, `${id}.json`);
+      const info = JSON.parse(await readFile(infoPath, "utf8"));
+      await writeFile(infoPath, JSON.stringify({ ...info, metadata }));
+      expect(await resultOf(id)).toEqual({ status: 404, body: { error: "not_found" } });
+      expect(queue.enqueueCalls).toEqual([]);
+    },
+  );
+
+  test("a complete upload whose ingest already ran is never queued again by its result route", async () => {
+    // Ingest wrote its outcome but could not delete the data file, so the
+    // bytes are all there; the job itself has since been removed.
+    const body = randomBinaryStl(10);
+    const id = await neverQueued(body);
+    const infoPath = join(uploads.dir, `${id}.json`);
+    const info = JSON.parse(await readFile(infoPath, "utf8"));
+    await writeFile(infoPath, JSON.stringify({ ...info, ingest: "stored" }));
+    expect(await resultOf(id)).toEqual(PENDING);
+    expect(queue.enqueueCalls).toEqual([]);
+  });
+
+  test("a complete upload never queued that cannot be queued now answers 503 and is queued by a later call", async () => {
+    const body = randomBinaryStl(10);
+    const id = await neverQueued(body);
+    queue.failEnqueue = true;
+    const res = await resultOf(id);
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({
+      error: "unavailable",
+      message: "The upload's result cannot be read right now. Try again shortly.",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("ECONNREFUSED");
+    // Nothing is removed, so the next call can queue it.
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
+    queue.failEnqueue = false;
+    expect(await resultOf(id)).toEqual(PENDING);
+    expect(queue.enqueueCalls.map(([queued]) => queued)).toEqual([id]);
   });
 
   /** A finished upload that ingest has taken: its data file is gone. */
@@ -864,6 +1010,521 @@ describe("tus routes", () => {
   });
 });
 
+describe("limits on unfinished uploads", () => {
+  const GIB = 1073741824;
+  let limited: TestApp | undefined;
+  let limitedUploads: Uploads;
+
+  /** A server with its own uploads folder and these limits; x-test-principal names the sender. */
+  async function startLimited(
+    opts: {
+      maxTempBytes?: number;
+      freeBytes?: (dir: string) => Promise<number>;
+      freeFiles?: (dir: string) => Promise<number>;
+      now?: () => number;
+    } = {},
+  ): Promise<TestApp> {
+    const dir = await mkdtemp(join(root, "limited-"));
+    await prepareUploads(dir);
+    limitedUploads = createUploads({
+      tmpDir: dir,
+      queue,
+      log: (line) => lines.push(line),
+      freeBytes: plentyOfRoom,
+      freeFiles: plentyOfRoom,
+      ...opts,
+    });
+    limited = await startApp(async (app) => {
+      await registerTus(app, {
+        prefix: PREFIX,
+        authHook: keyHook,
+        uploads: limitedUploads,
+        principalOf: (request) => {
+          const who = request.headers["x-test-principal"];
+          return typeof who === "string" ? who : undefined;
+        },
+        holderOf: (request) => {
+          const who = request.headers["x-test-holder"];
+          return typeof who === "string" ? who : undefined;
+        },
+      });
+    });
+    return limited;
+  }
+
+  afterEach(async () => {
+    await limited?.close();
+    limited = undefined;
+  });
+
+  function createOn(app: TestApp, length: number, principal?: string, holder?: string) {
+    return send(app.base, "POST", PREFIX, {
+      headers: {
+        ...TUS,
+        ...KEY,
+        "upload-length": String(length),
+        "upload-metadata": meta({ filename: "a.stl" }),
+        ...(principal === undefined ? {} : { "x-test-principal": principal }),
+        ...(holder === undefined ? {} : { "x-test-holder": holder }),
+      },
+    });
+  }
+
+  async function limitedFiles(): Promise<string[]> {
+    return (await readdir(limitedUploads.dir)).sort();
+  }
+
+  test("a new upload that would take unfinished uploads over the total is 507 and creates no file", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    const first = await createOn(app, 600);
+    expect(first.status).toBe(201);
+    const before = await limitedFiles();
+
+    const res = await createOn(app, 500);
+    expect(res.status).toBe(507);
+    expect(res.body).toMatch(/nothing was saved/);
+    expect(await limitedFiles()).toEqual(before);
+  });
+
+  test("an upload is refused 507 unless the disk keeps 1 GiB free beyond its length", async () => {
+    const declared = 5000;
+    let free = declared + GIB - 1;
+    const app = await startLimited({ freeBytes: async () => free });
+
+    const short = await createOn(app, declared);
+    expect(short.status).toBe(507);
+    expect(short.body).toMatch(/nothing was saved/);
+    expect(await limitedFiles()).toEqual([]);
+
+    free = declared + GIB;
+    expect((await createOn(app, declared)).status).toBe(201);
+  });
+
+  test("an upload is refused 507 when fewer than 10,000 free inodes would be left on the disk", async () => {
+    let files = MIN_FREE_FILES - 1;
+    const app = await startLimited({ freeFiles: async () => files });
+    const short = await createOn(app, 100, "token:a");
+    expect(short.status).toBe(507);
+    expect(short.body).toMatch(/nothing was saved/);
+    expect(await limitedFiles()).toEqual([]);
+    expect(lines.some((l) => /\(507\) for token:a: .*inodes/.test(l))).toBe(true);
+
+    files = MIN_FREE_FILES;
+    expect((await createOn(app, 100)).status).toBe(201);
+  });
+
+  test("no more than 10,000 uploads may be in the folder at once, finished or not", {
+    timeout: 60_000,
+  }, async () => {
+    expect(MAX_UPLOADS_ON_DISK).toBe(10_000);
+    const app = await startLimited();
+    // Info files kept after ingest: they hold no bytes, but each is an upload in the folder.
+    const ids = Array.from({ length: MAX_UPLOADS_ON_DISK }, () => randomUUID());
+    for (let i = 0; i < ids.length; i += 500) {
+      await Promise.all(
+        ids.slice(i, i + 500).map((id) => writeFile(join(limitedUploads.dir, `${id}.json`), "{}")),
+      );
+    }
+    const full = await createOn(app, 1, "token:a");
+    expect(full.status).toBe(507);
+    expect(full.body).toMatch(/nothing was saved/);
+    expect((await limitedFiles()).length).toBe(MAX_UPLOADS_ON_DISK);
+    expect(lines.some((l) => /\(507\) for token:a: .*10000 uploads/.test(l))).toBe(true);
+
+    await rm(join(limitedUploads.dir, `${ids[0]}.json`));
+    expect((await createOn(app, 1, "token:a")).status).toBe(201);
+    expect((await createOn(app, 1, "token:a")).status).toBe(507);
+  });
+
+  test("left to itself, the store reads the free space of the uploads folder's own disk", async () => {
+    const dir = await mkdtemp(join(root, "real-disk-"));
+    await prepareUploads(dir);
+    const real = createUploads({ tmpDir: dir, queue, log: () => {} });
+    const app = await startApp(async (app) => {
+      await registerTus(app, { prefix: PREFIX, authHook: keyHook, uploads: real });
+    });
+    try {
+      // statfs answers for the folder, so a small upload fits on any test disk.
+      expect((await createOn(app, 1)).status).toBe(201);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a sender's 21st unfinished upload is 429; another sender and an unnamed one are not held back", async () => {
+    const app = await startLimited();
+    for (let i = 0; i < 20; i += 1) {
+      expect((await createOn(app, 100, "session:a")).status, `upload ${i + 1}`).toBe(201);
+    }
+    const refused = await createOn(app, 100, "session:a");
+    expect(refused.status).toBe(429);
+    expect(refused.body).toMatch(/20 unfinished uploads/);
+    expect((await limitedFiles()).length).toBe(40);
+
+    expect((await createOn(app, 100, "token:b")).status).toBe(201);
+    for (let i = 0; i < 21; i += 1) {
+      expect((await createOn(app, 100)).status, `unnamed upload ${i + 1}`).toBe(201);
+    }
+  });
+
+  test("only unfinished uploads count toward an owner's 20", async () => {
+    const app = await startLimited();
+    const body = randomBinaryStl(1);
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      const res = await createOn(app, body.length, "session:a");
+      expect(res.status).toBe(201);
+      ids.push(idOf(res.headers.location));
+    }
+    expect((await createOn(app, body.length, "session:a")).status).toBe(429);
+    // A finished upload waiting for ingest still holds its bytes, but it is not unfinished.
+    const finished = await send(app.base, "PATCH", `${PREFIX}/${ids[0]}`, {
+      headers: { ...TUS, ...KEY, "content-type": OCTET, "upload-offset": "0" },
+      body,
+    });
+    expect(finished.status).toBe(204);
+    expect((await createOn(app, body.length, "session:a")).status).toBe(201);
+  });
+
+  test("the sender is kept in the info file, never in the metadata HEAD answers", async () => {
+    const app = await startLimited();
+    const id = idOf((await createOn(app, 100, "session:a")).headers.location);
+    const info = JSON.parse(await readFile(join(limitedUploads.dir, `${id}.json`), "utf8"));
+    expect(info.owner).toBe("session:a");
+    expect(info.metadata).toEqual({ filename: "a.stl" });
+    const res = await send(app.base, "HEAD", `${PREFIX}/${id}`, { headers: { ...TUS, ...KEY } });
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.headers)).not.toContain("session:a");
+  });
+
+  test("two creations at once cannot both pass the total", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    const answers = await Promise.all([createOn(app, 600), createOn(app, 600)]);
+    expect(answers.map((r) => r.status).sort()).toEqual([201, 507]);
+    expect((await limitedFiles()).length).toBe(2);
+  });
+
+  /** A finished 1-byte upload written straight into the folder, as one waiting for ingest. */
+  async function finishedUpload(): Promise<string> {
+    const id = randomUUID();
+    await writeFile(join(limitedUploads.dir, id), "x");
+    await writeFile(
+      join(limitedUploads.dir, `${id}.json`),
+      JSON.stringify({
+        id,
+        size: 1,
+        offset: 0,
+        metadata: { filename: "a.stl" },
+        creation_date: new Date().toISOString(),
+      }),
+    );
+    return id;
+  }
+
+  test("a creation whose files land while the next creation reads the folder is still counted", async () => {
+    // The order is forced: the second check has read the folder's names
+    // before the first creation writes its files, and goes on only once the
+    // first has been answered (and given back its reservation).
+    const app = await startLimited({ maxTempBytes: 1 + 1000 });
+    const waiting = await finishedUpload();
+    const store = limitedUploads.datastore;
+    const configstore = store.configstore;
+    const get = configstore.get.bind(configstore);
+    const create = store.create.bind(store);
+    let secondReading!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      secondReading = resolve;
+    });
+    let firstAnswered!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      firstAnswered = resolve;
+    });
+    let reads = 0;
+    configstore.get = async (id) => {
+      if (id === waiting) {
+        reads += 1;
+        if (reads === 2) {
+          secondReading();
+          await answered;
+        }
+      }
+      return get(id);
+    };
+    store.create = async (upload) => {
+      await reading;
+      return create(upload);
+    };
+
+    const both = [createOn(app, 600), createOn(app, 600)];
+    await Promise.race(both);
+    firstAnswered();
+    const answers = await Promise.all(both);
+    expect(answers.map((r) => r.status).sort()).toEqual([201, 507]);
+  });
+
+  test("two creations at once never both pass the total when the folder already holds uploads", async () => {
+    const app = await startLimited({ maxTempBytes: 100 + 1000 });
+    for (let i = 0; i < 100; i += 1) await finishedUpload();
+    for (let round = 0; round < 20; round += 1) {
+      const answers = await Promise.all([createOn(app, 600), createOn(app, 600)]);
+      expect(answers.map((r) => r.status).sort(), `round ${round + 1}`).toEqual([201, 507]);
+      const made = answers.find((r) => r.status === 201);
+      const id = idOf(made?.headers.location);
+      await rm(join(limitedUploads.dir, id), { force: true });
+      await rm(join(limitedUploads.dir, `${id}.json`), { force: true });
+    }
+  });
+
+  test("a burst of creations takes exactly the room the total leaves", async () => {
+    const app = await startLimited({ maxTempBytes: 100 + 1000 });
+    for (let i = 0; i < 100; i += 1) await finishedUpload();
+    const answers = await Promise.all(Array.from({ length: 40 }, () => createOn(app, 100)));
+    expect(answers.filter((r) => r.status === 201)).toHaveLength(10);
+    expect(answers.filter((r) => r.status === 507)).toHaveLength(30);
+  });
+
+  test("a burst of creations from one owner stops at its 20", async () => {
+    const app = await startLimited();
+    for (let i = 0; i < 100; i += 1) await finishedUpload();
+    const answers = await Promise.all(
+      Array.from({ length: 60 }, () => createOn(app, 1, "token:a")),
+    );
+    expect(answers.filter((r) => r.status === 201)).toHaveLength(20);
+    expect(answers.filter((r) => r.status === 429)).toHaveLength(40);
+  });
+
+  test("an upload sending its bytes in the creation request counts once while they arrive", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    // creation-with-upload: 100 of the 500 bytes sent, the rest held back.
+    const held = httpRequest(new URL(PREFIX, app.base), {
+      method: "POST",
+      headers: {
+        ...TUS,
+        ...KEY,
+        "upload-length": "500",
+        "upload-metadata": meta({ filename: "a.stl" }),
+        "content-type": OCTET,
+        "content-length": "500",
+        "x-test-principal": "token:a",
+      },
+    });
+    const heldAnswer = new Promise<number>((resolve, reject) => {
+      held.on("response", (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      held.on("error", reject);
+    });
+    try {
+      held.write(Buffer.alloc(100));
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const sizes = await Promise.all(
+          (await limitedFiles())
+            .filter((name) => !name.endsWith(".json"))
+            .map(async (name) => (await stat(join(limitedUploads.dir, name))).size),
+        );
+        if (sizes.some((size) => size >= 100)) break;
+        if (Date.now() > deadline) throw new Error("the first 100 bytes never landed");
+        await sleep(10);
+      }
+
+      expect((await createOn(app, 500, "token:a")).status).toBe(201);
+
+      held.end(Buffer.alloc(400));
+      expect(await heldAnswer).toBe(201);
+    } finally {
+      // A failed check must not leave the request open for the server's close.
+      if (!held.writableEnded) {
+        heldAnswer.catch(() => {});
+        held.destroy();
+      }
+    }
+  });
+
+  test("each refusal is logged with the sender it was for", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    for (let i = 0; i < 20; i += 1) await createOn(app, 1, "session:a");
+    expect((await createOn(app, 1, "session:a")).status).toBe(429);
+    expect((await createOn(app, 1000, "token:b")).status).toBe(507);
+    expect((await createOn(app, 1000)).status).toBe(507);
+    expect(lines).toEqual([
+      expect.stringMatching(/^uploads: refused a new upload \(429\) for session:a: /),
+      expect.stringMatching(/^uploads: refused a new upload \(507\) for token:b: /),
+      expect.stringMatching(/^uploads: refused a new upload \(507\) for no owner: /),
+    ]);
+  });
+
+  test("the user behind an upload is kept in its info file beside its sender", async () => {
+    const app = await startLimited();
+    const id = idOf((await createOn(app, 100, "session:a", 'user "alice"')).headers.location);
+    const info = JSON.parse(await readFile(join(limitedUploads.dir, `${id}.json`), "utf8"));
+    expect(info).toMatchObject({ owner: "session:a", holder: 'user "alice"' });
+    expect(info.metadata).toEqual({ filename: "a.stl" });
+  });
+
+  test("a 507 for the total names the three users holding the most room, and never a secret", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    const made: Array<[number, string, string]> = [
+      [200, "session:a1", 'user "alice"'],
+      [200, "session:a2", 'user "alice"'],
+      [300, "token:t1", 'token t1 made by user "bob"'],
+      [250, "session:c", 'user "carol"'],
+      [50, "session:d", 'user "dave"'],
+    ];
+    for (const [size, owner, holder] of made) {
+      expect((await createOn(app, size, owner, holder)).status).toBe(201);
+    }
+    lines.length = 0;
+    expect((await createOn(app, 100, "token:z", 'user "zed"')).status).toBe(507);
+    expect(lines).toHaveLength(1);
+    const line = lines[0] ?? "";
+    expect(line).toMatch(/^uploads: refused a new upload \(507\) for token:z: /);
+    expect(line).toContain(
+      'held most by user "alice" (2 uploads, 400 bytes), token t1 made by user "bob" ' +
+        '(1 upload, 300 bytes), user "carol" (1 upload, 250 bytes)',
+    );
+    expect(line).not.toContain("dave");
+    expect(line).not.toContain(KEY["x-test-key"]);
+  });
+
+  test("refusals for one sender are logged at most once a minute, with a count of the rest", async () => {
+    let clock = 1_000_000;
+    const app = await startLimited({ maxTempBytes: 1000, now: () => clock });
+    expect((await createOn(app, 1000, "session:a", 'user "alice"')).status).toBe(201);
+    lines.length = 0;
+    for (let i = 0; i < 3; i += 1) expect((await createOn(app, 1, "token:b")).status).toBe(507);
+    // Another sender is logged on its own.
+    expect((await createOn(app, 1, "token:c")).status).toBe(507);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/\(507\) for token:b: /);
+    expect(lines[1]).toMatch(/\(507\) for token:c: /);
+
+    clock += 59_000;
+    expect((await createOn(app, 1, "token:b")).status).toBe(507);
+    expect(lines).toHaveLength(2);
+    clock += 2_000;
+    expect((await createOn(app, 1, "token:b")).status).toBe(507);
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toMatch(/\(507\) for token:b: .*3 more refusals for it were not logged/);
+  });
+
+  /** Info files written straight into the folder, as uploads kept after their ingest. */
+  async function keptUploads(count: number, fields: Record<string, unknown>): Promise<string[]> {
+    const ids = Array.from({ length: count }, () => randomUUID());
+    for (let i = 0; i < ids.length; i += 500) {
+      await Promise.all(
+        ids
+          .slice(i, i + 500)
+          .map((id) =>
+            writeFile(
+              join(limitedUploads.dir, `${id}.json`),
+              JSON.stringify({ id, size: 1, offset: 1, ingest: "stored", ...fields }),
+            ),
+          ),
+      );
+    }
+    return ids;
+  }
+
+  test("a sender with 2,000 uploads on the server, finished ones included, gets 429; another sender does not", {
+    timeout: 60_000,
+  }, async () => {
+    expect(MAX_UPLOADS_PER_PRINCIPAL).toBe(2000);
+    const app = await startLimited();
+    // 100 finished and waiting for ingest (data and info), 1,900 ingested (info only).
+    for (let i = 0; i < 100; i += 1) {
+      const id = randomUUID();
+      await writeFile(join(limitedUploads.dir, id), "x");
+      await writeFile(
+        join(limitedUploads.dir, `${id}.json`),
+        JSON.stringify({ id, size: 1, offset: 0, owner: "token:a", metadata: {} }),
+      );
+    }
+    const kept = await keptUploads(1900, { owner: "token:a" });
+    const refused = await createOn(app, 1, "token:a");
+    expect(refused.status).toBe(429);
+    expect(refused.body).toBe(`${TOO_MANY_HELD_MESSAGE}\n`);
+    // The web app tells this 429 from the 20 unfinished one by these words.
+    expect(TOO_MANY_HELD_MESSAGE).toContain("uploads on the server");
+    expect(TOO_MANY_UNFINISHED_MESSAGE).not.toContain("uploads on the server");
+    expect(lines.some((l) => /\(429\) for token:a: .*2000 uploads/.test(l))).toBe(true);
+    expect((await createOn(app, 1, "token:b")).status).toBe(201);
+
+    await rm(join(limitedUploads.dir, `${kept[0]}.json`));
+    expect((await createOn(app, 1, "token:a")).status).toBe(201);
+    expect((await createOn(app, 1, "token:a")).status).toBe(429);
+  });
+
+  test("a 507 for the 10,000 uploads names the three users holding the most uploads, kept ones included", {
+    timeout: 60_000,
+  }, async () => {
+    const app = await startLimited();
+    await keptUploads(6000, { holder: 'user "ann"' });
+    await keptUploads(3000, { holder: 'user "ben"' });
+    await keptUploads(900, { holder: 'user "cy"' });
+    await keptUploads(99, { holder: 'user "dee"' });
+    // One upload with bytes: the most bytes, but the fewest uploads.
+    expect((await createOn(app, 5000, "session:e", 'user "eve"')).status).toBe(201);
+    lines.length = 0;
+    expect((await createOn(app, 1, "token:z")).status).toBe(507);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^uploads: refused a new upload \(507\) for token:z: .*10000 uploads/);
+    expect(lines[0]).toContain(
+      'held most by user "ann" (6000 uploads, 0 bytes), user "ben" (3000 uploads, 0 bytes), ' +
+        'user "cy" (900 uploads, 0 bytes)',
+    );
+    expect(lines[0]).not.toContain("eve");
+  });
+
+  test("a 507 for the total still ranks holders by bytes, though another holds more uploads", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    await keptUploads(50, { holder: 'user "many"' });
+    expect((await createOn(app, 900, "session:big", 'user "big"')).status).toBe(201);
+    lines.length = 0;
+    expect((await createOn(app, 200, "token:z")).status).toBe(507);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('held most by user "big" (1 upload, 900 bytes), user "many" (50');
+  });
+
+  test("a sender's 429 line does not hide its 507 line in the same minute", async () => {
+    const clock = 1_000_000;
+    const app = await startLimited({ maxTempBytes: 20, now: () => clock });
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      const res = await createOn(app, 1, "token:a", 'user "al"');
+      expect(res.status).toBe(201);
+      ids.push(idOf(res.headers.location));
+    }
+    lines.length = 0;
+    expect((await createOn(app, 1, "token:a", 'user "al"')).status).toBe(429);
+    // One finishes, so the next is under the 20 but over the total.
+    const done = await send(app.base, "PATCH", `${PREFIX}/${ids[0]}`, {
+      headers: { ...TUS, ...KEY, "content-type": OCTET, "upload-offset": "0" },
+      body: Buffer.from("x"),
+    });
+    expect(done.status).toBe(204);
+    expect((await createOn(app, 1, "token:a", 'user "al"')).status).toBe(507);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/\(429\) for token:a: /);
+    expect(lines[1]).toMatch(
+      /\(507\) for token:a: .*held most by user "al" \(20 uploads, 20 bytes\)/,
+    );
+  });
+
+  test("a creation that fails after passing the limits gives its share of the total back", async () => {
+    const app = await startLimited({ maxTempBytes: 1000 });
+    const store = limitedUploads.datastore;
+    const create = store.create.bind(store);
+    store.create = async () => {
+      throw new Error("EIO: the disk failed");
+    };
+    expect((await createOn(app, 1000)).status).toBe(500);
+    store.create = create;
+    expect((await createOn(app, 1000)).status).toBe(201);
+  });
+});
+
 describe("ingestUpload", () => {
   async function partial(name: string) {
     await writeFile(join(uploads.dir, name), "bytes");
@@ -946,7 +1607,7 @@ describe("sweepStaleUploads", () => {
     expect(r).toMatchObject({ listed: 1, deleted: 1, kept: 0 });
     expect(await tempFiles()).toEqual([]);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/deleted 1/);
+    expect(lines[0]).toMatch(/deleted 1 untouched for 24 hours, 0 that received nothing/);
   });
 
   test("keeps a finished upload whose ingest is still queued, however old", async () => {
@@ -1019,9 +1680,170 @@ describe("sweepStaleUploads", () => {
     expect(await fresh.sweepStaleUploads(later(PAST_A_DAY))).toEqual({
       listed: 0,
       deleted: 0,
+      deletedEmpty: 0,
+      deletedExpired: 0,
       kept: 0,
       skipped: 0,
     });
+  });
+
+  const MINUTE = 60_000;
+
+  test("deletes an upload that received no byte for an hour, and says which rule did", async () => {
+    const id = idOf((await create(1000, { filename: "a.stl" })).headers.location);
+    expect((await stat(join(uploads.dir, id))).size).toBe(0);
+    const r = await uploads.sweepStaleUploads(later(61 * MINUTE));
+    expect(r).toMatchObject({ listed: 1, deleted: 1, deletedEmpty: 1, kept: 0 });
+    expect(await tempFiles()).toEqual([]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      /deleted 0 untouched for 24 hours, 1 that received nothing for an hour/,
+    );
+  });
+
+  test("keeps an upload that received no byte when it was touched within the hour", async () => {
+    const id = idOf((await create(1000, { filename: "a.stl" })).headers.location);
+    const r = await uploads.sweepStaleUploads(later(59 * MINUTE));
+    expect(r).toMatchObject({ deleted: 0, kept: 1 });
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
+  });
+
+  /** Makes an upload look created `age` ago and last written `touched` ago. */
+  async function backdate(id: string, age: number, touched: number) {
+    const infoPath = join(uploads.dir, `${id}.json`);
+    const info = JSON.parse(await readFile(infoPath, "utf8"));
+    await writeFile(
+      infoPath,
+      JSON.stringify({ ...info, creation_date: new Date(Date.now() - age).toISOString() }),
+    );
+    const at = new Date(Date.now() - touched);
+    await utimes(infoPath, at, at);
+    await utimes(join(uploads.dir, id), at, at);
+  }
+
+  test("deletes an unfinished upload 24 hours after it was created, whatever it last received", async () => {
+    const id = await partialUpload();
+    await backdate(id, 25 * 60 * MINUTE, 60 * MINUTE);
+    const r = await uploads.sweepStaleUploads(new Date());
+    expect(r).toMatchObject({ listed: 1, deleted: 1, deletedExpired: 1, kept: 0 });
+    expect(await tempFiles()).toEqual([]);
+    expect(lines[0]).toMatch(/and 1 unfinished 24 hours after it was created/);
+  });
+
+  test("keeps an unfinished upload created 23 hours ago that received a byte an hour ago", async () => {
+    const id = await partialUpload();
+    await backdate(id, 23 * 60 * MINUTE, 60 * MINUTE);
+    const r = await uploads.sweepStaleUploads(new Date());
+    expect(r).toMatchObject({ deleted: 0, kept: 1 });
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
+  });
+
+  test("a finished upload waiting for ingest is not deleted for its age", async () => {
+    const body = randomBinaryStl(5);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    await patch(id, 0, body);
+    await backdate(id, 25 * 60 * MINUTE, 60 * MINUTE);
+    expect(await uploads.sweepStaleUploads(new Date())).toMatchObject({ deleted: 0, kept: 1 });
+  });
+
+  test("keeps an upload that has received some bytes when it was untouched for an hour", async () => {
+    const id = await partialUpload();
+    const r = await uploads.sweepStaleUploads(later(61 * MINUTE));
+    expect(r).toMatchObject({ deleted: 0, deletedEmpty: 0, kept: 1 });
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
+  });
+
+  test("deletes an upload by any rule only while it holds the upload's lock", async () => {
+    const empty = idOf((await create(1000, { filename: "a.stl" })).headers.location);
+    const idle = await partialUpload();
+    const held = [uploads.locker.newLock(empty), uploads.locker.newLock(idle)];
+    for (const lock of held) await lock.lock(new AbortController().signal, async () => {});
+    const sweep = uploads.sweepStaleUploads(later(PAST_A_DAY));
+    await Promise.race([sweep, sleep(200)]);
+    expect(await tempFiles()).toEqual([empty, `${empty}.json`, idle, `${idle}.json`].sort());
+    for (const lock of held) await lock.unlock();
+    expect(await sweep).toMatchObject({ deleted: 2, deletedEmpty: 1, kept: 0 });
+    expect(await tempFiles()).toEqual([]);
+  });
+
+  // A PATCH holds the upload's lock while it writes. The sweep asks for that
+  // lock before it deletes, which stops the PATCH, so no byte is written to
+  // a file the sweep has already deleted, where no limit would count it.
+  test("an upload still being written past its age limit is stopped, then deleted, and nothing more is written", {
+    timeout: 20_000,
+  }, async () => {
+    const body = randomBinaryStl(50_000);
+    const id = idOf((await create(body.length, { filename: "a.stl" })).headers.location);
+    const held = httpRequest(new URL(`${PREFIX}/${id}`, server.base), {
+      method: "PATCH",
+      headers: {
+        ...TUS,
+        ...KEY,
+        "content-type": OCTET,
+        "upload-offset": "0",
+        "content-length": String(body.length),
+      },
+    });
+    const ended = new Promise<void>((resolve) => {
+      held.on("response", (res) => {
+        res.resume();
+        res.on("end", () => resolve());
+        res.on("error", () => resolve());
+      });
+      held.on("error", () => resolve());
+      held.on("close", () => resolve());
+    });
+    // A second name for the data file: it shows what is written to the file
+    // after the sweep has removed it from the folder.
+    const second = join(root, `second-name-${id}`);
+    try {
+      held.write(body.subarray(0, 1000));
+      const deadline = Date.now() + 5000;
+      while ((await stat(join(uploads.dir, id))).size < 1000) {
+        if (Date.now() > deadline) throw new Error("the first bytes never landed");
+        await sleep(10);
+      }
+      await link(join(uploads.dir, id), second);
+      await backdate(id, 25 * 60 * MINUTE, 0);
+
+      const r = await uploads.sweepStaleUploads(new Date());
+      expect(r).toMatchObject({ listed: 1, deleted: 1, deletedExpired: 1, kept: 0 });
+      expect(await tempFiles()).toEqual([]);
+      const atDelete = (await stat(second)).size;
+
+      // The client goes on sending; none of it may reach the deleted file.
+      held.write(body.subarray(1000, 20_000));
+      await Promise.race([ended, sleep(8000)]);
+      expect((await stat(second)).size).toBe(atDelete);
+      expect(await tempFiles()).toEqual([]);
+      // The PATCH was answered or closed, so it holds nothing open.
+      const state = await Promise.race([ended.then(() => "ended"), sleep(100).then(() => "open")]);
+      expect(state).toBe("ended");
+    } finally {
+      held.destroy();
+      await rm(second, { force: true });
+    }
+  });
+});
+
+describe("prepareUploads", () => {
+  test("makes the uploads folder under a fresh temp folder", async () => {
+    const fresh = await mkdtemp(join(root, "prepare-"));
+    await prepareUploads(fresh);
+    expect((await stat(uploadsDir(fresh))).isDirectory()).toBe(true);
+  });
+
+  test("an existing uploads folder is fine", async () => {
+    const fresh = await mkdtemp(join(root, "prepare-"));
+    await prepareUploads(fresh);
+    await prepareUploads(fresh);
+    expect((await stat(uploadsDir(fresh))).isDirectory()).toBe(true);
+  });
+
+  test("a temp folder that cannot hold it rejects with ENOTDIR", async () => {
+    const file = join(await mkdtemp(join(root, "prepare-")), "a-file");
+    await writeFile(file, "not a folder");
+    await expect(prepareUploads(join(file, "tmp"))).rejects.toMatchObject({ code: "ENOTDIR" });
   });
 });
 

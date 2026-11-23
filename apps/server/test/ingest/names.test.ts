@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   cutName,
   fileStems,
+  hasControlCharacter,
   MAX_MODEL_NAME_LENGTH,
   nameFromFile,
   newModelName,
@@ -113,5 +114,27 @@ describe("fileStems", () => {
     expect(fileStems(["Desk_clip.3mf", "Desk_clip_base.stl"])).toEqual(
       new Set(["Desk_clip", "Desk clip", "Desk_clip_base", "Desk clip base"]),
     );
+  });
+});
+
+// A file name with a control character in it is refused, by the upload
+// route and by the inbox alike: C0 (below U+0020) and DEL (U+007F).
+describe("hasControlCharacter", () => {
+  test.each([
+    ["a newline", "part\nname.stl"],
+    ["an escape", "part\u001b[31mname.stl"],
+    ["a delete", "part\u007fname.stl"],
+    ["a NUL", "part\u0000name.stl"],
+    ["a tab", "part\tname.stl"],
+  ])("is true for a name with %s", (_label, name) => {
+    expect(hasControlCharacter(name)).toBe(true);
+  });
+
+  test.each([
+    ["plain text", "Desk cable clip.3mf"],
+    ["non-ASCII letters", `${U_UMLAUT}ber ${NIHON}.stl`],
+    ["an empty name", ""],
+  ])("is false for %s", (_label, name) => {
+    expect(hasControlCharacter(name)).toBe(false);
   });
 });

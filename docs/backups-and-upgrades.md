@@ -41,8 +41,10 @@ the bucket, but the restored database no longer knows about it. Those objects ar
 left of the models the restored database lost.
 
 The daily cleanup at 04:00 (see [Storage](./storage.md#cleanup)) treats them as leftovers. It
-deletes them once they are more than 24 hours old, as long as there are no more of them than its
-limit: 10 objects or a tenth of the objects it finds, whichever is larger, but never more than 100.
+deletes them once they are more than 24 hours old, as long as they belong to no more models than
+its limit: 10 models or a tenth of the models it finds, whichever is larger, but never more than
+100. One run may delete every object of up to that many models, at most 100 models with all their
+files.
 Platehouse has no setting to pause the cleanup, and stopping the app does not skip it: a run
 missed while the app was stopped happens as soon as it starts again.
 
@@ -64,9 +66,10 @@ can delete the newer objects.
   by then, so if you have no other copy of a file, take it from the bucket copy or the old
   versions: an uploaded file is stored unchanged, but under a random name with no extension.
 
-When the cleanup finds more of these objects than its limit, it deletes nothing and logs why. That
-is not protection: the limit rises as the library grows, up to 100, and a later run that finds
-them within it deletes them all.
+When the objects belong to more models than the limit, the cleanup deletes nothing and logs why.
+That protects you only when the restore leaves more models without rows than the limit, and it is
+not a lasting protection: the limit rises as the library grows, up to 100 models, and a restore
+that leaves fewer models than the limit has them deleted in full.
 
 :::
 

@@ -1,7 +1,8 @@
 // The pg-boss queues. Background work runs in
 // the same Postgres, so there is no Redis:
 // - ingest: an uploaded file through the ingest pipeline, two at once, never
-//   retried, so a failed upload fails visibly and leaves no half-made model;
+//   retried, so a failed upload fails visibly and leaves no half-made model,
+//   and expired only after an hour (INGEST_EXPIRE_SECONDS);
 // - slicer: the singleton queue for slicer work, one job at a time, matching
 //   the slicer's own one-job lock (the maintainer, 2026-11-08, PR #49: there is no
 //   SLICER_CONCURRENCY, since the singleton policy made it a no-op). The estimates
@@ -72,6 +73,16 @@ export const SLICER_RETRY = Object.freeze({
   retryDelayMax: 120,
 });
 
+/**
+ * How long an ingest job may run before pg-boss expires it: an hour. Under
+ * pg-boss's default, 15 minutes, a long import (a 512 MiB .3mf hashed and
+ * put to a cloud bucket over a home uplink, two at a time) was marked failed
+ * while it carried on and stored the model, so the upload's result said it
+ * could not be confirmed. Set on the queue, not on each send, and applied
+ * again on every start (startQueues).
+ */
+export const INGEST_EXPIRE_SECONDS = 3600;
+
 export interface QueueSetting {
   name: QueueName;
   /** createQueue options. */
@@ -81,6 +92,7 @@ export interface QueueSetting {
     retryBackoff?: boolean;
     retryDelay?: number;
     retryDelayMax?: number;
+    expireInSeconds?: number;
   };
   /** work options. */
   work: { localConcurrency: number };
@@ -91,7 +103,7 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
   return {
     ingest: {
       name: QUEUE.ingest,
-      queue: { policy: "standard", retryLimit: 0 },
+      queue: { policy: "standard", retryLimit: 0, expireInSeconds: INGEST_EXPIRE_SECONDS },
       work: { localConcurrency: INGEST_CONCURRENCY },
     },
     slicer: {
@@ -339,8 +351,8 @@ interface MaintenanceJob {
 /**
  * Creates the four queues, registers the maintenance schedules and starts
  * the ingest, maintenance and upgrade workers on a started boss. Safe on every start:
- * a queue that exists keeps its policy (the slicer queue's retry settings are
- * applied again), and a schedule is keyed, so it is replaced rather than
+ * a queue that exists keeps its policy (the slicer queue's retry settings and
+ * the ingest queue's expiry are applied again), and a schedule is keyed, so it is replaced rather than
  * added again. The re-conversion's schedule on the maintenance queue, left by
  * 0.1.1-rc.1 and rc.2, is removed (an error for one that is absent is
  * ignored). The slicer queue is worked, one job at a time, only when
@@ -359,8 +371,11 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     await boss.createQueue(setting.name, setting.queue);
   }
   // createQueue leaves a queue that exists as it is, so the slicer's retry
-  // settings are applied to one made before they existed too.
+  // settings and the ingest expiry are applied to one made before they
+  // existed too. The slicer queue keeps pg-boss's default expiry; its slice
+  // and STEP conversion jobs set their own when sent.
   await boss.updateQueue(QUEUE.slicer, { ...SLICER_RETRY });
+  await boss.updateQueue(QUEUE.ingest, { expireInSeconds: INGEST_EXPIRE_SECONDS });
 
   // missed: 'once' runs a job the app was down for when it comes back,
   // rather than waiting a day.

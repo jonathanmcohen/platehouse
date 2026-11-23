@@ -71,6 +71,15 @@
   border-left: 4px solid var(--danger);
 }
 
+/* A failed row's Retry, under its reason and lined up with it. */
+.ph-upload-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-left: 12px;
+}
+
 /* A skipped duplicate: a note, not an error (nothing went wrong). */
 .ph-upload-duplicate {
   grid-column: 1 / -1;

@@ -111,7 +111,7 @@
 //   folder; anything else (a FIFO, a socket) is not put back and moves to
 //   failed with PUT_BACK_FAILED_REASON. The holding folder is removed after. One a stopped process left
 //   behind (a crash in that moment) is emptied into failed with HELD_REASON
-//   at the first pass (one holding an imported file that could not be moved
+//   at the first pass, or the passes after past INBOX_PASS_LIMIT (one holding an imported file that could not be moved
 //   to failed, with the reason its name gives), a copy being put back
 //   (HOLD_COPY_PREFIX) deleted rather than kept, and anything set aside from
 //   under the name (HOLD_ASIDE_PREFIX) kept under its inbox name; while
@@ -328,6 +328,7 @@ import {
   MODEL_NOT_FOUND_MESSAGE,
   UNSUPPORTED_MESSAGE,
 } from "../ingest/ingest.js";
+import { hasControlCharacter } from "../ingest/names.js";
 import type { ImportedFile, ImportedQuery } from "../repos/files.js";
 import { createRepos } from "../repos/index.js";
 import type { BlobStore } from "../storage/s3.js";
@@ -479,6 +480,22 @@ export const NON_UTF8_REASON =
   "Platehouse could not import this file because its name is not valid UTF-8; rename it and add it again.";
 
 /**
+ * Reason when the file's name holds a control character (a newline, a
+ * terminal escape; ingest/names.ts hasControlCharacter), which the upload
+ * route refuses too.
+ */
+export const CONTROL_CHARS_REASON =
+  "Platehouse could not import this file because its name has a control character in it, such as a line break; rename it and add it again.";
+
+/**
+ * The most names one pass looks at. Every name in the inbox is still listed,
+ * so a file past the cut keeps what the watcher knows of it; the first
+ * INBOX_PASS_LIMIT by name are looked at, and the rest wait for a pass after
+ * those have gone.
+ */
+export const INBOX_PASS_LIMIT = 10_000;
+
+/**
  * The largest file the inbox takes, in bytes: the upload limit
  * (MAX_UPLOAD_BYTES in uploads/tus.ts), 512 MiB.
  */
@@ -526,6 +543,7 @@ const REASON_CODES: ReadonlyArray<readonly [reason: string, code: string]> = [
   [STILL_WRITING_REASON, "still_writing"],
   [HELD_REASON, "held"],
   [NON_UTF8_REASON, "non_utf8"],
+  [CONTROL_CHARS_REASON, "control_chars"],
   [sentence(UNSUPPORTED_MESSAGE), "unsupported_type"],
   [sentence(MODEL_NOT_FOUND_MESSAGE), "model_not_found"],
 ];
@@ -659,6 +677,24 @@ export interface InboxProbes {
 class RollBack extends Error {}
 
 /**
+ * Thrown by moveToFailed when the file that reached failed is not the one
+ * listed in its holding folder (another device or inode): the folder was
+ * swapped between the last check and the move. backTo says where it was
+ * moved back to, undefined when it could not be.
+ */
+class MovedAnotherFile extends Error {
+  readonly moved: string;
+  readonly back: string | undefined;
+
+  constructor(moved: string, back: string | undefined) {
+    super(`the file moved to ${moved} is not the one that was listed`);
+    this.name = "MovedAnotherFile";
+    this.moved = moved;
+    this.back = back;
+  }
+}
+
+/**
  * The checks the server wires in. Each reads and writes, as an import does.
  *
  * The database check reads from files (so a role with no grant fails it),
@@ -775,6 +811,15 @@ export function isIgnoredName(name: string): boolean {
   if (name.startsWith(".")) return true;
   const lower = name.toLowerCase();
   return IGNORED_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
+/**
+ * A name as a log line shows it: as it is, or quoted with its control
+ * characters escaped (JSON), so a newline in a name cannot start a made-up
+ * log line.
+ */
+function shownName(name: string): string {
+  return hasControlCharacter(name) ? JSON.stringify(name) : name;
 }
 
 /** A listed name: the key the watcher remembers it by and the name it shows. */
@@ -951,7 +996,12 @@ function sameFault(first: unknown, second: unknown): boolean {
   return name(a) === name(b);
 }
 
-/** One line of an error and its causes for the log, capped. */
+/**
+ * One line of an error and its causes for the log, capped. Whitespace folds
+ * to a space; any other control character (C0 or DEL), which an error's
+ * text can carry from a file's name, is written as its \u escape, as
+ * shownName writes a name, so it cannot reach the log as it is.
+ */
 function errorText(error: unknown): string {
   const parts: string[] = [];
   let current: unknown = error;
@@ -964,7 +1014,11 @@ function errorText(error: unknown): string {
     current = current instanceof Error ? current.cause : undefined;
   }
   const text = parts.join(", caused by ");
-  const line = text.replace(/\s+/g, " ").trim();
+  let line = "";
+  for (const c of text.replace(/\s+/g, " ").trim()) {
+    const code = c.charCodeAt(0);
+    line += code < 0x20 || code === 0x7f ? `\\u${code.toString(16).padStart(4, "0")}` : c;
+  }
   return line.length > ERROR_TEXT_MAX ? `${line.slice(0, ERROR_TEXT_MAX)}...` : line;
 }
 
@@ -1053,8 +1107,11 @@ async function exists(path: PathLike): Promise<boolean> {
  * its place (O_NONBLOCK; it has no effect on a regular file). The fstat after
  * the open is the check that counts: a platform without O_NOFOLLOW would
  * follow a link, and the inode it reached would not be the settled one.
+ * The Activity page opens failed/'s reason files the same way
+ * (app-api/activity.ts), since whoever writes the inbox can write there too.
  */
-const OPEN_SETTLED = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+export const OPEN_SETTLED =
+  constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /**
  * How copyBack creates its temporary copy inside the holding folder: only
@@ -1097,14 +1154,25 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Whether copies a process before this one left behind (a crash during an
   // import) have been swept; done once, before this watcher's first copy.
   let copiesSwept = false;
-  // Whether holding folders a process before this one left in the inbox (a
-  // crash while an imported file was being deleted) have been swept; done
-  // once, at this watcher's first pass. Folders marked as kept
-  // (KEPT_HOLD_SUFFIXES) are swept again at every later pass too.
-  let holdsSwept = false;
+  // The holding folders a process before this one left in the inbox (a
+  // crash while an imported file was being deleted) that are still to be
+  // swept: every one listed at this watcher's first pass, undefined before
+  // it. Each is swept once, at the first pass or, past INBOX_PASS_LIMIT, at
+  // a later one. Folders marked as kept (KEPT_HOLD_SUFFIXES) are swept again
+  // at every later pass too.
+  let startupHolds: Set<string> | undefined;
+  // Whether the last sweep stopped at INBOX_PASS_LIMIT, so that is logged
+  // when it starts and not at every pass while it lasts.
+  let holdsCut = false;
   // Marked holding folders whose file has already been logged as not moved
   // to failed, so a later pass that still cannot move it says nothing more.
   const keptLogged = new Set<string>();
+  // The marked holding folders (KEPT_HOLD_SUFFIXES) swept at every pass:
+  // those listed at this watcher's first pass and those this process marked
+  // (failImported). A folder named like one that appears later, which only
+  // an inbox writer can have made, is never swept; neither is one that
+  // changed while it was swept.
+  const keptHolds = new Set<string>();
 
   // Files being watched for the settle window, by name.
   const seen = new Map<string, Seen>();
@@ -1129,6 +1197,13 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
   // Whether the tries under such a fault have started to count against the
   // files (the hold reached BACKOFF_MAX_MS), so that is logged once.
   let unseenCounting = false;
+  // Whether the last pass cut its names at INBOX_PASS_LIMIT, so the cut is
+  // logged when it starts and not at every pass while it lasts.
+  let passCut = false;
+  // The last name (key) a cut pass looked at: the next pass starts after it,
+  // coming round to the start again, so every file gets its turn even while
+  // the first INBOX_PASS_LIMIT stay. undefined while no pass is cut.
+  let passCursor: string | undefined;
 
   /** Forgets a fault the checks could not see. */
   function endUnseen(): void {
@@ -1283,12 +1358,19 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     }
   }
 
-  /** Moves the file to failed with its reason file; returns the name it took. */
+  /**
+   * Moves the file to failed with its reason file; returns the name it took.
+   * With listed (a file in a holding folder, lstat'ed before the move), the
+   * file that reached failed is checked to be that one, the same device and
+   * inode: when it is not, it is moved back to path where it can be, its
+   * reason file is removed, and MovedAnotherFile is thrown.
+   */
   async function moveToFailed(
     name: string,
     path: PathLike,
     reason: string,
     code?: string,
+    listed?: { dev: bigint; ino: bigint },
   ): Promise<string> {
     await failedFolder();
     for (let n = 1; n <= 1000; n += 1) {
@@ -1309,6 +1391,19 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         await unlink(reasonPath).catch(() => undefined);
         throw error;
       }
+      if (listed !== undefined) {
+        const now = await lstat(target, { bigint: true }).catch(() => undefined);
+        if (now !== undefined && (now.dev !== listed.dev || now.ino !== listed.ino)) {
+          let back: string | undefined = String(path);
+          try {
+            await rename(target, path);
+          } catch {
+            back = undefined;
+          }
+          if (back !== undefined) await unlink(reasonPath).catch(() => undefined);
+          throw new MovedAnotherFile(target, back);
+        }
+      }
       return candidate;
     }
     throw new Error("no free name in the failed folder after 1000 tries");
@@ -1328,12 +1423,12 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     try {
       const moved = await moveToFailed(name, path, reason, code);
       pass.failed.push({ name, reason });
-      log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
+      log(`inbox: moved ${shownName(name)} to ${FAILED_DIR}/${shownName(moved)}: ${reason}`);
     } catch (error) {
       const sig = await currentSignature(path);
       if (sig !== undefined) handled.set(key, sig);
       log(
-        `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays in the ` +
+        `inbox: could not move ${shownName(name)} to ${FAILED_DIR} (${errorText(error)}); it stays in the ` +
           `inbox and is not tried again until it changes. Why it failed: ${reason}`,
       );
     }
@@ -1576,19 +1671,21 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     held: string,
     reason: string,
     pass: InboxPass,
-    opts: { kept?: boolean; quiet?: boolean } = {},
+    opts: { kept?: boolean; quiet?: boolean; listed?: { dev: bigint; ino: bigint } } = {},
   ): Promise<boolean> {
     try {
-      const moved = await moveToFailed(name, held, reason);
+      const moved = await moveToFailed(name, held, reason, undefined, opts.listed);
       pass.failed.push({ name, reason });
-      log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
+      log(`inbox: moved ${shownName(name)} to ${FAILED_DIR}/${shownName(moved)}: ${reason}`);
       return true;
     } catch (error) {
+      // The folder changed under the move: sweepHolds stops and says so.
+      if (error instanceof MovedAnotherFile) throw error;
       if (!opts.quiet) {
         const when = opts.kept ? "once that folder can be used" : "when the watcher next starts";
         log(
-          `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays at ` +
-            `${held} and moves to ${FAILED_DIR} ${when}. Why: ${reason}`,
+          `inbox: could not move ${shownName(name)} to ${FAILED_DIR} (${errorText(error)}); it stays at ` +
+            `${shownName(held)} and moves to ${FAILED_DIR} ${when}. Why: ${reason}`,
         );
       }
       return false;
@@ -1619,7 +1716,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     try {
       const moved = await moveToFailed(name, held, reason);
       pass.failed.push({ name, reason });
-      log(`inbox: moved ${name} to ${FAILED_DIR}/${moved}: ${reason}`);
+      log(`inbox: moved ${shownName(name)} to ${FAILED_DIR}/${shownName(moved)}: ${reason}`);
       return;
     } catch (error) {
       let at = held;
@@ -1632,6 +1729,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           when = "once that folder can be used";
           // Logged below: a later pass that still cannot move it is quiet.
           keptLogged.add(`${basename(holdDir)}${suffix}`);
+          keptHolds.add(`${basename(holdDir)}${suffix}`);
         } catch (renameError) {
           log(
             `inbox: could not mark ${holdDir} with why ${name} was kept ` +
@@ -1641,7 +1739,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         }
       }
       log(
-        `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it was ` +
+        `inbox: could not move ${shownName(name)} to ${FAILED_DIR} (${errorText(error)}); it was ` +
           `imported as model ${modelId}, so it is not put back under its name to be ` +
           `imported again: it stays at ${at} and moves to ${FAILED_DIR} ${when}. ` +
           `Why it failed: ${reason}`,
@@ -1704,7 +1802,7 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
         reason === undefined
           ? `inbox: imported ${name} as model ${modelId} but could not delete the inbox copy ` +
               `(${errorText(error)}); it is not imported again until it changes`
-          : `inbox: could not move ${name} to ${FAILED_DIR} (${errorText(error)}); it stays in ` +
+          : `inbox: could not move ${shownName(name)} to ${FAILED_DIR} (${errorText(error)}); it stays in ` +
               `the inbox and is not tried again until it changes. Why it failed: ${reason}`,
       );
     };
@@ -1821,21 +1919,75 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
    * (HOLD_COPY_PREFIX) is deleted instead. What takeBackCopy set aside
    * (HOLD_ASIDE_PREFIX) is kept, under the inbox name in its aside name. When
    * failed is still unusable, failHeld logs it and it stays. Every folder is
-   * swept once per process, at its first pass, before its first import; a
-   * marked folder is swept again at every later pass, so a kept file moves
+   * swept once per process, at its first pass, before its first import (past
+   * INBOX_PASS_LIMIT, the rest at the passes after, alongside imports); a
+   * marked folder listed at the first pass or marked by this process
+   * (keptHolds) is swept again at every later pass, so a kept file moves
    * to failed at the first pass after failed can be used, not at the next
-   * restart. A marked folder is only made once settleImported is done with
+   * restart. A folder named like a marked one that appears later is never
+   * swept. A marked folder is only made once settleImported is done with
    * it, so no pass is still using it. While failed stays unusable, a marked
    * folder already logged (keptLogged) is retried without a word.
+   *
+   * Whoever writes the inbox can make any number of folders with such a
+   * name and put any number of files in one, so one sweep looks at no more
+   * than INBOX_PASS_LIMIT folders and files together; the rest wait for the
+   * next pass, a folder left part way included. The inbox is listed by name
+   * only, so each folder is lstat'ed here: a symlink or anything but a
+   * folder with such a name is left alone. Its device and inode are checked
+   * again after the listing and before each file is moved or deleted, and
+   * a folder found swapped is left as it is from then on, logged once. Each
+   * check is a moment before the step it guards, and the step resolves the
+   * folder by its path again, so a swap between a check and a move can
+   * still move that one file from where the swap points. The file that
+   * reached failed is therefore checked against the one listed (its device
+   * and inode); another file is moved back where it came from when it can
+   * be, and the folder is left. This narrows the gap but cannot close it:
+   * Node has no rename relative to an open folder. The docs advise giving
+   * the inbox its own mount, so a swap can point nowhere else. A file that
+   * cannot move to failed gives up on its folder for this round, its other
+   * files untried.
    */
   async function sweepHolds(folders: string[], pass: InboxPass): Promise<void> {
+    let budget = INBOX_PASS_LIMIT;
+    let cut = false;
     for (const folder of folders) {
+      if (budget <= 0) {
+        cut = true;
+        break;
+      }
+      budget -= 1;
       const holdDir = join(dir, folder);
       const reason = holdReason(folder);
       const kept = isKeptHold(folder);
       const quiet = kept && keptLogged.has(folder);
       try {
+        const checked = await lstat(holdDir, { bigint: true });
+        if (!checked.isDirectory()) {
+          startupHolds?.delete(folder);
+          keptHolds.delete(folder);
+          continue;
+        }
+        // The name is resolved again by each call below, and whoever writes
+        // the inbox can swap the folder for a symlink or another folder in
+        // between: before each step it must still be the folder checked.
+        const same = async (): Promise<boolean> => {
+          const now = await lstat(holdDir, { bigint: true });
+          return now.isDirectory() && now.dev === checked.dev && now.ino === checked.ino;
+        };
+        let outcome: "whole" | "cut" | "stuck" | "changed" = "whole";
+        // Set when a file that was not the one listed reached failed.
+        let movedAnother: MovedAnotherFile | undefined;
         for (const entry of await readdir(holdDir)) {
+          if (budget <= 0) {
+            outcome = "cut";
+            break;
+          }
+          budget -= 1;
+          if (!(await same())) {
+            outcome = "changed";
+            break;
+          }
           if (entry.startsWith(HOLD_COPY_PREFIX)) {
             // copyBack's copy, never an inbox file: the held file it was made
             // from is still beside it, or the copy already holds its name.
@@ -1845,21 +1997,98 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
           // What takeBackCopy set aside may be a writer's file, never only
           // the copy, so it is kept, under the inbox name it had.
           const shown = entry.startsWith(HOLD_ASIDE_PREFIX) ? asideOrigin(entry) : entry;
-          await failHeld(shown, join(holdDir, entry), reason, pass, { kept, quiet });
+          // What is listed now, for moveToFailed to check what it moved.
+          let listed: BigIntStats;
+          try {
+            listed = await lstat(join(holdDir, entry), { bigint: true });
+          } catch (error) {
+            if (codeOf(error) === "ENOENT") continue;
+            throw error;
+          }
+          if (!(await same())) {
+            outcome = "changed";
+            break;
+          }
+          let moved: boolean;
+          try {
+            moved = await failHeld(shown, join(holdDir, entry), reason, pass, {
+              kept,
+              quiet,
+              listed,
+            });
+          } catch (error) {
+            if (!(error instanceof MovedAnotherFile)) throw error;
+            movedAnother = error;
+            outcome = "changed";
+            break;
+          }
+          if (!moved) {
+            // failed cannot be used: the folder is given up on for this
+            // round, as one whose files could not all move always was, so
+            // its other files are not tried, and logged, at every pass.
+            outcome = "stuck";
+            break;
+          }
+        }
+        if (outcome === "whole" && !(await same())) outcome = "changed";
+        if (outcome === "cut") {
+          // Still to be swept: it stays among the startup holds.
+          cut = true;
+          break;
+        }
+        startupHolds?.delete(folder);
+        if (outcome === "changed") {
+          keptHolds.delete(folder);
+          let what = "";
+          if (movedAnother !== undefined) {
+            what =
+              movedAnother.back === undefined
+                ? `; a file that was not the one listed reached ${shownName(movedAnother.moved)} ` +
+                  "and could not be moved back"
+                : "; a file that was not the one listed reached failed and was moved back to " +
+                  shownName(movedAnother.back);
+          }
+          log(
+            `inbox: the holding folder ${shownName(holdDir)} changed while it was swept (it is ` +
+              `no longer the folder that was checked), so nothing more is moved from it${what}`,
+          );
+          continue;
+        }
+        if (outcome === "stuck") {
+          if (!quiet) {
+            log(
+              `inbox: could not clear the holding folder ${shownName(holdDir)}: a file in it ` +
+                `could not be moved to ${FAILED_DIR}, so its files stay there`,
+            );
+          }
+          if (kept) keptLogged.add(folder);
+          continue;
         }
         await rmdir(holdDir);
         keptLogged.delete(folder);
+        keptHolds.delete(folder);
       } catch (error) {
+        startupHolds?.delete(folder);
         if (codeOf(error) === "ENOENT") {
           keptLogged.delete(folder);
+          keptHolds.delete(folder);
           continue;
         }
         if (!quiet) {
-          log(`inbox: could not clear the holding folder ${holdDir}: ${errorText(error)}`);
+          log(
+            `inbox: could not clear the holding folder ${shownName(holdDir)}: ${errorText(error)}`,
+          );
         }
         if (kept) keptLogged.add(folder);
       }
     }
+    if (cut && !holdsCut) {
+      log(
+        `inbox: there are more holding folders, and files in them, than one pass sweeps ` +
+          `(${INBOX_PASS_LIMIT}); the rest are swept at the passes after`,
+      );
+    }
+    holdsCut = cut;
   }
 
   /**
@@ -2288,15 +2517,17 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
     try {
       // Raw bytes: a name that is not UTF-8 would otherwise come back with
       // U+FFFD in it, lstat would not find it, and it would sit unseen.
-      const entries = await readdir(dir, { withFileTypes: true, encoding: "buffer" });
-      // Holding folders a stopped process left (settleImported); a symlink
-      // with such a name is not a folder here, and is left alone.
-      holds = entries
-        .filter((e) => e.isDirectory() && e.name.toString("utf8").startsWith(HOLD_PREFIX))
-        .map((e) => e.name.toString("utf8"));
+      // Names only: a listing that asks for each entry's type stats every
+      // entry on a filesystem that does not say (NFS, XFS without ftype,
+      // some FUSE), before any limit. The loop's lstat, and sweepHolds',
+      // tell a file or a folder from anything else.
+      const entries = (await readdir(dir, { encoding: "buffer" })).map((raw) => ({
+        ...inboxName(raw),
+        raw,
+      }));
+      // Holding folders a stopped process left (settleImported).
+      holds = entries.filter((n) => n.utf8 && n.name.startsWith(HOLD_PREFIX)).map((n) => n.name);
       names = entries
-        .filter((e) => e.isFile())
-        .map((e) => ({ ...inboxName(e.name), raw: e.name }))
         .filter((n) => n.name !== FAILED_DIR && !isIgnoredName(n.name))
         .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     } catch (error) {
@@ -2312,25 +2543,49 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       return pass;
     }
 
-    if (!holdsSwept) {
-      holdsSwept = true;
-      await sweepHolds(holds, pass);
-    } else {
-      // A kept file waits only for failed to be usable, so its marked folder
-      // is tried at every pass, not only after a restart.
-      await sweepHolds(holds.filter(isKeptHold), pass);
+    if (startupHolds === undefined) {
+      startupHolds = new Set(holds);
+      for (const folder of holds) if (isKeptHold(folder)) keptHolds.add(folder);
     }
+    const listedHolds = new Set(holds);
+    for (const folder of startupHolds) if (!listedHolds.has(folder)) startupHolds.delete(folder);
+    for (const folder of keptHolds) if (!listedHolds.has(folder)) keptHolds.delete(folder);
+    // A kept file waits only for failed to be usable, so its marked folder
+    // is tried at every pass, not only after a restart; only one listed at
+    // the first pass or marked by this process (keptHolds).
+    const startup = startupHolds;
+    await sweepHolds(holds.filter((f) => startup.has(f) || keptHolds.has(f)).sort(), pass);
 
-    // Forget files no longer in the inbox.
+    // Forget files no longer in the inbox. Built from every name listed,
+    // before the cut below, so a file past it is not taken for gone.
     const present = new Set(names.map((n) => n.key));
     for (const key of seen.keys()) if (!present.has(key)) seen.delete(key);
     for (const key of handled.keys()) if (!present.has(key)) handled.delete(key);
     for (const key of strikes.keys()) if (!present.has(key)) strikes.delete(key);
 
+    if (names.length > INBOX_PASS_LIMIT) {
+      if (!passCut) {
+        log(
+          `inbox: ${names.length} files are in the inbox, more than one pass looks at; each ` +
+            `pass looks at ${INBOX_PASS_LIMIT} by name, starting after the last one the pass ` +
+            "before looked at",
+        );
+      }
+      passCut = true;
+      const after = passCursor;
+      const from = after === undefined ? -1 : names.findIndex((n) => n.key > after);
+      const start = from === -1 ? 0 : from;
+      names = [...names.slice(start), ...names.slice(0, start)].slice(0, INBOX_PASS_LIMIT);
+    } else {
+      passCut = false;
+      passCursor = undefined;
+    }
+
     // During an outage no file is tried until a check passes.
     if (await outageHolds()) pass.waiting = true;
 
     for (const { key, name, utf8, raw } of names) {
+      if (passCut) passCursor = key;
       // Only a UTF-8 name has a string path; ingest takes nothing else.
       const path = utf8 ? join(dir, name) : Buffer.concat([Buffer.from(dir + sep), raw]);
       let st: BigIntStats;
@@ -2356,8 +2611,15 @@ export function createInboxWatcher(deps: InboxWatcherDeps) {
       if (at - before.since < settleMs) continue;
 
       if (typeof path !== "string") {
-        log(`inbox: ${name} has a name that is not valid UTF-8 (bytes ${raw.toString("hex")})`);
+        log(
+          `inbox: ${shownName(name)} has a name that is not valid UTF-8 (bytes ${raw.toString("hex")})`,
+        );
         await fail(key, name, path, NON_UTF8_REASON, pass);
+        continue;
+      }
+      if (hasControlCharacter(name)) {
+        log(`inbox: ${shownName(name)} has a control character in its name`);
+        await fail(key, name, path, CONTROL_CHARS_REASON, pass);
         continue;
       }
       if (st.size > BigInt(MAX_INBOX_BYTES)) {

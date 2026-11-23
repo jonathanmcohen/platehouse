@@ -503,6 +503,18 @@ describe("POST /auth/logout", () => {
     expect(await withSession(run.sessionCookie)).toBe(401);
   });
 
+  test("the sign-out answer tells the browser to drop its cached copies", async () => {
+    const run = await runLogin(t);
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { origin: TEST_ORIGIN },
+      cookies: { [SESSION_COOKIE]: run.sessionCookie ?? "" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(res.headers["clear-site-data"]).toBe('"cache"');
+  });
+
   test("with no session it is 204 too", async () => {
     const res = await t.app.inject({
       method: "POST",
@@ -524,6 +536,7 @@ describe("POST /auth/logout", () => {
     expect(failed.statusCode).toBe(503);
     expect(failed.json()).toEqual({ error: "unavailable" });
     expect(failed.headers["cache-control"]).toBe("no-store");
+    expect(failed.headers["clear-site-data"]).toBeUndefined();
     expect(setCookie(failed, SESSION_COOKIE)).toBeUndefined();
     expect(t.store.rows.size).toBe(1);
 
@@ -551,6 +564,7 @@ describe("POST /auth/logout", () => {
       });
       expect(res.statusCode).toBe(403);
       expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.headers["clear-site-data"]).toBeUndefined();
       expect(setCookie(res, SESSION_COOKIE)).toBeUndefined();
       expect(t.store.rows.size).toBe(1);
       expect(await withSession(run.sessionCookie)).toBe(404);

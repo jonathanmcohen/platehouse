@@ -8,6 +8,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   BACKFILL_PREVIEWS_CRON,
   INGEST_CONCURRENCY,
+  INGEST_EXPIRE_SECONDS,
   MAINTENANCE_TASKS,
   POLL_ORCA_CRON,
   QUEUE,
@@ -59,6 +60,13 @@ describe("queueSettings", () => {
       queue: { policy: "standard", retryLimit: 0 },
       work: { localConcurrency: INGEST_CONCURRENCY },
     });
+  });
+
+  // Issue #441: pg-boss's default expiry, 15 minutes, marked a long import
+  // failed while it carried on and stored the model.
+  test("an ingest job may run for an hour before pg-boss expires it", () => {
+    expect(INGEST_EXPIRE_SECONDS).toBe(3600);
+    expect(queueSettings().ingest.queue).toMatchObject({ expireInSeconds: 3600 });
   });
 
   test("the upgrade queue is stately, never retried and worked one job at a time", () => {
@@ -124,6 +132,14 @@ function deps(extra: Partial<QueueDeps>): QueueDeps {
 }
 
 describe("startQueues", () => {
+  test("applies the ingest expiry on every start, so a queue made before it gets it too", async () => {
+    const { boss } = fakeBoss();
+    await startQueues(boss, deps({}));
+    expect(boss.updateQueue).toHaveBeenCalledWith(QUEUE.ingest, { expireInSeconds: 3600 });
+    // The slicer queue keeps its retry settings alone; its jobs set their own expiry.
+    expect(boss.updateQueue).toHaveBeenCalledWith(QUEUE.slicer, { ...SLICER_RETRY });
+  });
+
   test("runs the Orca poll once at startup, after its schedule and the workers", async () => {
     const { boss, calls } = fakeBoss();
     const pollOrca = vi.fn(async () => {

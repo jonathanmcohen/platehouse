@@ -34,12 +34,15 @@ import type {
 } from "../../src/estimates/display.js";
 import { SCRUB_MAX_CHARS } from "../../src/scrub.js";
 import {
-  createUploads,
+  DISK_FULL_MESSAGE,
   MAX_UPLOAD_BYTES,
   REQUEST_TIMEOUT_MS,
   registerTus,
   SLOW_LINK_BYTES_PER_SECOND,
+  TEMP_TOTAL_MESSAGE,
+  TOO_MANY_UPLOADS_MESSAGE,
 } from "../../src/uploads/tus.js";
+import { readyUploads } from "../support/uploads.js";
 import { documentedPath, METHODS, type OpenApiDoc, problems } from "./support/openapi-rules.js";
 
 /** The repository's root, where biome.json is. */
@@ -111,11 +114,7 @@ beforeAll(async () => {
   await registerTus(app, {
     prefix: "/api/v1/uploads",
     authHook: apiUploadHook(refusingApi),
-    uploads: createUploads({
-      tmpDir: tmp,
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads: await readyUploads(tmp),
   });
   await app.ready();
   doc = app.swagger() as unknown as OpenApiDoc;
@@ -263,6 +262,39 @@ describe("the OpenAPI document", () => {
     expect(create?.responses?.["413"]?.description).toBe(
       `Upload-Length is over ${MAX_UPLOAD_BYTES} bytes`,
     );
+  });
+
+  test("lists the limits on unfinished uploads among the upload creation's answers", () => {
+    const answers = doc.paths["/uploads"]?.post?.responses ?? {};
+    expect(answers["429"]?.description).toMatch(/20 unfinished uploads/);
+    expect(answers["507"]?.description).toMatch(/UPLOAD_TEMP_MAX_BYTES/);
+    expect(answers["507"]?.description).toMatch(/1 GiB/);
+  });
+
+  test("the 507 shows each of its sentences: the total's, the disk's and the folder's", () => {
+    const media = doc.paths["/uploads"]?.post?.responses?.["507"]?.content?.["text/plain"];
+    const values = Object.values(media?.examples ?? {}).map((e) => (e as { value: unknown }).value);
+    expect(values).toEqual([
+      `${TEMP_TOTAL_MESSAGE}\n`,
+      `${DISK_FULL_MESSAGE}\n`,
+      `${TOO_MANY_UPLOADS_MESSAGE}\n`,
+    ]);
+  });
+
+  test("states an unfinished upload's lifetime wherever it states one", () => {
+    // 24 hours after it was created, whatever arrives, or an hour with no byte.
+    const create = doc.paths["/uploads"]?.post;
+    const texts = [
+      create?.description,
+      create?.responses?.["429"]?.description,
+      doc.paths["/uploads/{id}"]?.head?.description,
+      doc.paths["/uploads/{id}"]?.head?.responses?.["404"]?.description,
+      doc.paths["/uploads/{id}"]?.patch?.responses?.["404"]?.description,
+    ];
+    for (const text of texts) {
+      expect(text).toMatch(/24 hours after it was created/);
+      expect(text).toMatch(/an hour/);
+    }
   });
 
   test("shows a plate's numbers with the fields the API sends, printerName included", () => {

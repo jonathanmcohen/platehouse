@@ -9,16 +9,29 @@
 // the server stores it and the row reads Added (the server side of that is
 // tested in apps/server/test/integration/uploads/tus.test.ts).
 //
+// Many files, slow imports and failures: three files are sent at a time,
+// the rest wait their turn (and are only created on the server when it
+// comes); a finished file's result is asked for patiently, backing off, and
+// only repeated errors give up; tus-js-client does not resend a refusal that
+// will not change (507, 429) or while the browser is offline; a failed row
+// offers Retry, rows that lost the connection start again when it comes
+// back, and leaving the page while files are sending asks first.
+//
 // The tus upload and the result check are stubs, as in library.test.tsx.
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import type { HttpResponse } from "tus-js-client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { UploadDialog } from "../src/upload/UploadDialog";
 import {
   type DuplicatePolicy,
   type FetchResult,
+  makeFetchUploadResult,
+  RESULT_BACKOFF_MS,
+  resultWaitMs,
   type StartUpload,
+  UPLOAD_POOL,
   type UploadHandlers,
   type UploadResult,
   type UploadTarget,
@@ -51,6 +64,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 async function render(node: ReactNode) {
@@ -103,7 +117,51 @@ function stubUploads(answer: (s: Started) => UploadResult) {
     });
     await settle();
   }
-  return { started, start, fetchResult, finish };
+  /** Reports a started upload's failure, as tus-js-client's onError does. */
+  async function fail(index: number, error: Error) {
+    const s = started[index];
+    if (s === undefined) throw new Error(`upload ${index} was not started`);
+    await act(async () => s.handlers.onError(error));
+    await settle();
+  }
+  return { started, start, fetchResult, finish, fail };
+}
+
+/** An answer as tus-js-client hands it over (its HttpResponse). */
+function answered(status: number, body = ""): HttpResponse {
+  return {
+    getStatus: () => status,
+    getHeader: () => undefined,
+    getBody: () => body,
+    getUnderlyingObject: () => null,
+  };
+}
+
+/** tus-js-client's DetailedError for a request the server answered with status. */
+function refusedWith(status: number): Error {
+  return Object.assign(new Error(`tus: unexpected response, status ${status}`), {
+    originalRequest: {},
+    originalResponse: answered(status),
+  });
+}
+
+/** tus-js-client's DetailedError for a request that got no answer. */
+function connectionLost(): Error {
+  return Object.assign(new Error("tus: failed to upload chunk"), {
+    originalRequest: {},
+    originalResponse: null,
+  });
+}
+
+/** Settles until check() holds, or fails after many rounds. */
+async function until(check: () => boolean) {
+  for (let i = 0; i < 400; i += 1) {
+    if (check()) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  throw new Error("the condition never held");
 }
 
 /** The server's answers: the duplicate refused under skip, stored under allow. */
@@ -237,6 +295,10 @@ describe("the upload dialog and duplicates", () => {
     expect(link?.textContent).toBe("Benchy");
     expect(link?.getAttribute("href")).toBe(`/models/${HOLDER.modelId}`);
     expect(hasButton(/^import anyway$/i)).toBe(true);
+    // Its name says which file, as a list of skipped rows needs.
+    expect(button(/^import anyway$/i).getAttribute("aria-label")).toBe(
+      "Import anyway: Benchy (2).3mf",
+    );
     // Not drawn as an error: nothing went wrong.
     expect(row.querySelector(".ph-upload-status-bad")).toBeNull();
   });
@@ -359,7 +421,11 @@ describe("the upload dialog and duplicates", () => {
     // fresh is still sending; its own answer is not a duplicate.
     expect(started[1]?.file.name).toBe("Fresh.stl");
 
-    await act(async () => button(/^import anyway$/i).click());
+    const importAnyway = button(/^import anyway$/i);
+    importAnyway.focus();
+    await act(async () => importAnyway.click());
+    // The button is gone with the skipped state; focus stays on the row's status.
+    expect(document.activeElement).toBe(rowOf("Benchy (2).3mf").querySelector(".ph-upload-status"));
     expect(started).toHaveLength(3);
     expect(started[2]?.file).toBe(benchy);
     expect(started[2]?.duplicates).toBe("allow");
@@ -462,5 +528,469 @@ describe("the upload dialog and duplicates", () => {
     expect(rowOf("Benchy (2).3mf").querySelector("a")?.getAttribute("href")).toBe(
       `/models/${HOLDER.modelId}`,
     );
+  });
+});
+
+describe("many files, slow imports and failures", () => {
+  const files = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, i) => new File([new Uint8Array(10 + i)], `Part ${i + 1}.stl`),
+    );
+  const added = (): UploadResult => ({ status: "done", modelId: NEW_MODEL, fileId: "f-new" });
+
+  test("dropping 5 files starts 3; the 4th starts when one succeeds; the round ends when all 5 settle", async () => {
+    expect(UPLOAD_POOL).toBe(3);
+    const five = files(5);
+    const { started, start, fetchResult, finish } = stubUploads(added);
+    const onUploaded = vi.fn();
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={five}
+          onClose={() => {}}
+          onUploaded={onUploaded}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 5 files/i).click());
+    expect(started.map((s) => s.file.name)).toEqual(["Part 1.stl", "Part 2.stl", "Part 3.stl"]);
+    // The two still to go wait their turn, and say so.
+    expect(rowOf("Part 4.stl").textContent).toMatch(/Waiting/);
+    expect(rowOf("Part 5.stl").textContent).toMatch(/Waiting/);
+    expect(rowOf("Part 1.stl").textContent).not.toMatch(/Waiting/);
+
+    await finish(0);
+    expect(started.map((s) => s.file.name)).toEqual([
+      "Part 1.stl",
+      "Part 2.stl",
+      "Part 3.stl",
+      "Part 4.stl",
+    ]);
+    expect(rowOf("Part 4.stl").textContent).not.toMatch(/Waiting/);
+    expect(rowOf("Part 5.stl").textContent).toMatch(/Waiting/);
+
+    await finish(1);
+    expect(started).toHaveLength(5);
+    await finish(2);
+    await finish(3);
+    expect(onUploaded).not.toHaveBeenCalled();
+    await finish(4);
+    expect(onUploaded).toHaveBeenCalledTimes(1);
+    for (const file of five) expect(rowOf(file.name).textContent).toMatch(/Added/);
+  });
+
+  test("an import that stays pending is waited for: 30 pending answers, a minute apart, then done", async () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let checks = 0;
+    const { start, fetchResult, finish } = stubUploads(() => {
+      checks += 1;
+      now += 60_000;
+      return checks <= 30 ? { status: "pending" } : added();
+    });
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[fresh]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+          resultDelayMs={0}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 1 file/i).click());
+    await finish(0);
+    await until(() => /Added|could not be confirmed/.test(rowOf("Fresh.stl").textContent ?? ""));
+    expect(rowOf("Fresh.stl").textContent).toMatch(/Added/);
+    expect(checks).toBe(31);
+  });
+
+  test("the result is asked for after 1 s, 5 s, then every 15 s, unless a test sets the wait", () => {
+    expect(RESULT_BACKOFF_MS).toEqual([1000, 5000, 15000]);
+    expect([0, 1, 2, 3, 4, 20].map((attempt) => resultWaitMs(attempt))).toEqual([
+      1000, 5000, 15000, 15000, 15000, 15000,
+    ]);
+    expect([0, 1, 5].map((attempt) => resultWaitMs(attempt, 7))).toEqual([7, 7, 7]);
+  });
+
+  async function sendOne(fetchResult: FetchResult) {
+    const stub = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[fresh]}
+          onClose={() => {}}
+          start={stub.start}
+          fetchResult={fetchResult}
+          resultDelayMs={0}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 1 file/i).click());
+    await stub.finish(0);
+    await until(() => /Added|could not be confirmed/.test(rowOf("Fresh.stl").textContent ?? ""));
+    return rowOf("Fresh.stl").textContent ?? "";
+  }
+
+  test("5 thrown errors in a row give up as not confirmed", async () => {
+    let calls = 0;
+    const text = await sendOne(async () => {
+      calls += 1;
+      if (calls <= 5) throw new TypeError("Failed to fetch");
+      return added();
+    });
+    expect(text).toMatch(/could not be confirmed/);
+    expect(calls).toBe(5);
+  });
+
+  test("4 thrown errors, a pending answer and 4 more errors are not 5 in a row", async () => {
+    let calls = 0;
+    const text = await sendOne(async () => {
+      calls += 1;
+      if (calls === 5) return { status: "pending" };
+      if (calls <= 9) throw new TypeError("Failed to fetch");
+      return added();
+    });
+    expect(text).toMatch(/Added/);
+    expect(calls).toBe(10);
+  });
+
+  test("answers of 502, 504 and 429 are errors to ask again, and 5 in a row give up", async () => {
+    const statuses = [502, 504, 429, 502, 504];
+    const fetchMock = vi.fn(async () => {
+      const status = statuses[fetchMock.mock.calls.length - 1];
+      if (status === undefined) return Response.json(added());
+      return new Response("Bad gateway", { status });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const text = await sendOne(makeFetchUploadResult());
+    expect(text).toMatch(/could not be confirmed/);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  test("4 answers of 502 then done is done", async () => {
+    const fetchMock = vi.fn(async () =>
+      fetchMock.mock.calls.length <= 4
+        ? new Response("Bad gateway", { status: 502 })
+        : Response.json(added()),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const text = await sendOne(makeFetchUploadResult());
+    expect(text).toMatch(/Added/);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  test("a 404 is final at once", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const text = await sendOne(makeFetchUploadResult());
+    expect(text).toMatch(/could not be confirmed/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe("onShouldRetry", () => {
+    const handlers: UploadHandlers = { onProgress() {}, onSuccess() {}, onError() {} };
+    const options = uploadOptions(fresh, { kind: "new" }, handlers);
+    const retry = (error: Error) =>
+      options.onShouldRetry?.(
+        error as Parameters<NonNullable<typeof options.onShouldRetry>>[0],
+        0,
+        options,
+      );
+
+    test("a 507 (no room) and a 429 (too many unfinished) are not sent again", () => {
+      expect(retry(refusedWith(507))).toBe(false);
+      expect(retry(refusedWith(429))).toBe(false);
+    });
+
+    test("a 503 is sent again while the browser is online", () => {
+      expect(retry(refusedWith(503))).toBe(true);
+      expect(retry(connectionLost())).toBe(true);
+    });
+
+    test("nothing is sent again while the browser is offline", () => {
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+      expect(retry(refusedWith(503))).toBe(false);
+      expect(retry(connectionLost())).toBe(false);
+    });
+  });
+
+  test("a failed row offers Retry, named for the file, which sends it again to the same target", async () => {
+    const { started, start, fetchResult, fail } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[benchy]}
+          modelId={NEW_MODEL}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    expect(hasButton(/^retry$/i)).toBe(false);
+    await act(async () => button(/^upload 1 file/i).click());
+    expect(hasButton(/^retry$/i)).toBe(false);
+    await fail(0, refusedWith(500));
+
+    const retry = button(/^retry$/i);
+    expect(rowOf("Benchy (2).3mf").contains(retry)).toBe(true);
+    // Its name says which file, as a list of failed rows needs.
+    expect(retry.getAttribute("aria-label")).toBe("Retry: Benchy (2).3mf");
+    // A real button, reachable with the keyboard.
+    expect(retry.type).toBe("button");
+    expect(retry.disabled).toBe(false);
+    expect(retry.tabIndex).toBe(0);
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+
+    await act(async () => retry.click());
+    // The button is gone with the failed state; focus stays on the row's status.
+    const status = rowOf("Benchy (2).3mf").querySelector<HTMLElement>(".ph-upload-status");
+    expect(document.activeElement).toBe(status);
+    expect(status?.tabIndex).toBe(-1);
+    expect(started).toHaveLength(2);
+    expect(started[1]?.file).toBe(benchy);
+    expect(started[1]?.target).toEqual({ kind: "model", modelId: NEW_MODEL });
+    expect(started[1]?.duplicates).toBe("skip");
+    expect(hasButton(/^retry$/i)).toBe(false);
+  });
+
+  test("coming back online restarts each row that lost the connection exactly once", async () => {
+    const three = files(3);
+    const { started, start, fetchResult, fail } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={three}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 3 files/i).click());
+    expect(started).toHaveLength(3);
+    await fail(0, connectionLost());
+    await fail(1, refusedWith(507));
+    await fail(2, connectionLost());
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+    expect(started.slice(3).map((s) => s.file.name)).toEqual(["Part 1.stl", "Part 3.stl"]);
+    // A refusal for room is not a lost connection: it waits for Retry.
+    expect(rowOf("Part 2.stl").textContent).toMatch(/out of room/);
+    expect(rowOf("Part 2.stl").textContent).toMatch(/Ask whoever runs Platehouse/);
+  });
+
+  test("leaving the page asks first while files are sending, and not once none are", async () => {
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    const unloadAdds = () => add.mock.calls.filter(([type]) => type === "beforeunload");
+    const { start, fetchResult, finish } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[fresh]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    expect(unloadAdds()).toHaveLength(0);
+    await act(async () => button(/^upload 1 file/i).click());
+    expect(unloadAdds()).toHaveLength(1);
+    const listener = unloadAdds()[0]?.[1] as EventListener;
+    const leaving = new Event("beforeunload", { cancelable: true });
+    listener(leaving);
+    expect(leaving.defaultPrevented).toBe(true);
+
+    await finish(0);
+    expect(rowOf("Fresh.stl").textContent).toMatch(/Added/);
+    expect(remove.mock.calls.some(([type, fn]) => type === "beforeunload" && fn === listener)).toBe(
+      true,
+    );
+    expect(unloadAdds()).toHaveLength(1);
+  });
+
+  test("a 507 says the server is out of room and who can fix it; a 429 says to let some finish, then Retry", async () => {
+    const { start, fetchResult, fail } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[benchy, fresh]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 2 files/i).click());
+    await fail(0, refusedWith(507));
+    await fail(1, refusedWith(429));
+    expect(rowOf("Benchy (2).3mf").querySelector(".ph-upload-status-bad")?.textContent).toBe(
+      "The server is out of room for uploads; nothing was saved. Ask whoever runs Platehouse to free space, then try again.",
+    );
+    expect(rowOf("Fresh.stl").querySelector(".ph-upload-status-bad")?.textContent).toBe(
+      "Too many of your uploads are unfinished; nothing was saved. Let some finish, then use Retry.",
+    );
+  });
+
+  test("a failure and a success are each announced once in the dialog's live region", async () => {
+    const { start, fetchResult, finish, fail } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[benchy, fresh]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    const region = container.querySelector<HTMLElement>('[role="dialog"] [role="status"]');
+    expect(region).not.toBeNull();
+    expect(region?.getAttribute("aria-live")).toBe("polite");
+    const said = () => [...(region?.children ?? [])].map((el) => el.textContent);
+    await act(async () => button(/^upload 2 files/i).click());
+    // Starting to send and its percentages are not announced.
+    expect(said()).toEqual([]);
+
+    await fail(0, refusedWith(507));
+    expect(said()).toEqual([
+      "Benchy (2).3mf: The server is out of room for uploads; nothing was saved. Ask whoever runs Platehouse to free space, then try again.",
+    ]);
+    await finish(1);
+    expect(said()).toEqual([
+      "Benchy (2).3mf: The server is out of room for uploads; nothing was saved. Ask whoever runs Platehouse to free space, then try again.",
+      "Fresh.stl: Added",
+    ]);
+    // Later renders do not say either again.
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+    expect(said()).toHaveLength(2);
+  });
+
+  test("a start that throws fails that row and frees its place", async () => {
+    const four = files(4);
+    const { started, start: record, fetchResult, finish } = stubUploads(added);
+    const start: StartUpload = (file, target, handlers, duplicates) => {
+      if (file.name === "Part 1.stl") throw new Error("could not start");
+      return record(file, target, handlers, duplicates);
+    };
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={four}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 4 files/i).click());
+    expect(rowOf("Part 1.stl").querySelector(".ph-upload-status-bad")?.textContent).toBe(
+      "The upload failed: could not start.",
+    );
+    // Its place went to the next file: three are sending.
+    expect(started.map((s) => s.file.name)).toEqual(["Part 2.stl", "Part 3.stl", "Part 4.stl"]);
+    await finish(0);
+    expect(rowOf("Part 2.stl").textContent).toMatch(/Added/);
+  });
+
+  test("a start that throws for the next file still lets the finished file be confirmed", async () => {
+    const four = files(4);
+    const { started, start: record, fetchResult, finish } = stubUploads(added);
+    const start: StartUpload = (file, target, handlers, duplicates) => {
+      if (file.name === "Part 4.stl") throw new Error("could not start");
+      return record(file, target, handlers, duplicates);
+    };
+    const onUploaded = vi.fn();
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={four}
+          onClose={() => {}}
+          onUploaded={onUploaded}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 4 files/i).click());
+    expect(started).toHaveLength(3);
+    await finish(0);
+    expect(rowOf("Part 1.stl").textContent).toMatch(/Added/);
+    expect(rowOf("Part 4.stl").querySelector(".ph-upload-status-bad")?.textContent).toBe(
+      "The upload failed: could not start.",
+    );
+    await finish(1);
+    await finish(2);
+    expect(onUploaded).toHaveBeenCalledTimes(1);
+  });
+
+  test("while the browser is offline, waiting rows wait, and start when it is back online", async () => {
+    const five = files(5);
+    let online = true;
+    vi.spyOn(navigator, "onLine", "get").mockImplementation(() => online);
+    const { started, start, fetchResult, fail } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={five}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 5 files/i).click());
+    expect(started).toHaveLength(3);
+    online = false;
+    await fail(0, connectionLost());
+    await fail(1, connectionLost());
+    await fail(2, connectionLost());
+    // Nothing more is started into a dead connection.
+    expect(started).toHaveLength(3);
+    expect(rowOf("Part 4.stl").textContent).toMatch(/Waiting/);
+    expect(rowOf("Part 5.stl").textContent).toMatch(/Waiting/);
+
+    online = true;
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+    // First sent first: the two that waited, then the first that lost the connection.
+    expect(started.slice(3).map((s) => s.file.name)).toEqual([
+      "Part 4.stl",
+      "Part 5.stl",
+      "Part 1.stl",
+    ]);
+    expect(rowOf("Part 2.stl").textContent).toMatch(/Waiting/);
   });
 });

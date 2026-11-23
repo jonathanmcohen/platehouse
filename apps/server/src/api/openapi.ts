@@ -38,9 +38,15 @@ import fastifySwagger from "@fastify/swagger";
 import type { FastifyInstance, FastifySchema } from "fastify";
 import { SCRUB_MAX_CHARS } from "../scrub.js";
 import {
+  DISK_FULL_MESSAGE,
+  MAX_UNFINISHED_PER_PRINCIPAL,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOADS_PER_PRINCIPAL,
   REQUEST_TIMEOUT_MS,
   SLOW_LINK_BYTES_PER_SECOND,
+  TEMP_TOTAL_MESSAGE,
+  TOO_MANY_UNFINISHED_MESSAGE,
+  TOO_MANY_UPLOADS_MESSAGE,
 } from "../uploads/tus.js";
 
 /** Where the API is mounted; also the path part of servers[0].url. */
@@ -364,16 +370,22 @@ const UPLOAD_ID_PARAM = {
 // What an upload's address answers once the upload is over, said once here
 // so HEAD and PATCH agree (issues #276, #277), and docs/api.md's upload
 // status table repeats these words exactly (test/api/openapi.test.ts):
-// - the hourly sweep deletes an upload untouched for 24 hours, and an
-//   ingested upload's kept info file 24 hours after the ingest, data and
-//   info file both, so the address then answers 404, never 410;
+// - the hourly sweep deletes an unfinished upload 24 hours after it was
+//   created, whatever has arrived, or once it has sat an hour with no byte;
+//   any upload untouched for 24 hours; and an ingested upload's kept info
+//   file 24 hours after the ingest, data and info file both, so the address
+//   then answers 404, never 410;
 // - a finish whose import cannot be queued removes the upload too (404 after);
 // - HEAD answers 410 only after an import that failed with nothing saved (an
 //   imported upload answers 200, finished); PATCH answers 410 after any
 //   import, since its store sees the data file gone either way.
+/** When the sweep removes an upload, as the 404s and the HEAD description say it. */
+const SWEPT =
+  "an unfinished one 24 hours after it was created, whatever had arrived, or after an hour " +
+  "with no byte; any upload after 24 hours untouched; a finished one 24 hours after its import";
 const UPLOAD_404 =
-  "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 " +
-  "hours after its import), or it was removed because its import could not be queued";
+  `No such upload: the id is unknown, the upload was removed by the hourly sweep (${SWEPT}), ` +
+  "or it was removed because its import could not be queued";
 const RESEND_UNLESS_FILE =
   "send the file again as a new upload, unless that reason is about the file itself (an " +
   "unsupported type, or a duplicate under duplicates skip)";
@@ -439,8 +451,10 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       "poll GET /uploads/{id}/result until it says done or failed. The body of this request " +
       "may already carry the first bytes, or the whole file, when it is sent with " +
       "Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\n" +
-      "Nothing is stored until the last byte arrives, and an upload left unfinished for 24 " +
-      "hours is deleted.",
+      "Nothing is stored until the last byte arrives. An unfinished upload is deleted 24 " +
+      "hours after it was created, whatever has arrived by then, or after an hour when it " +
+      `has received no byte. One token may hold at most ${MAX_UNFINISHED_PER_PRINCIPAL} ` +
+      "unfinished uploads at once.",
     tags: ["Uploads"],
     operationId: "createUpload",
     headers: {
@@ -491,8 +505,9 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         type: "null",
       },
       400: text(
-        "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, has a " +
-          "duplicates other than skip or allow, or breaks a rule above. The body says which.",
+        "Upload-Length is missing or 0 (an empty file), or Upload-Metadata is malformed, has " +
+          "no filename, has a duplicates other than skip or allow, or breaks a rule above. The " +
+          "body says which.",
         "Upload-Metadata must carry the file's name as filename\n",
       ),
       401: UNAUTHORIZED_RESPONSE,
@@ -504,10 +519,39 @@ const TUS_DOCS: Record<string, FastifySchema> = {
         "This file is not a supported .3mf, .stl, .step, .stp or .scad file; nothing was saved\n",
       ),
       500: TUS_500,
+      429: text(
+        `This token already has ${MAX_UNFINISHED_PER_PRINCIPAL} unfinished uploads, or ` +
+          `${MAX_UPLOADS_PER_PRINCIPAL} uploads on the server in any state (a finished one is ` +
+          "kept a day after its import). Finish one of them, or wait: an unfinished upload is " +
+          "deleted 24 hours after it was created, or after an hour when it has received no " +
+          "byte. The body says which. Nothing was saved.",
+        `${TOO_MANY_UNFINISHED_MESSAGE}\n`,
+      ),
       501: text(
         "A tus extension Platehouse does not offer: Upload-Defer-Length or Upload-Concat",
         "creation-defer-length extension is not (yet) supported.\n",
       ),
+      507: {
+        description:
+          "The server has no room for this upload: the unfinished uploads together would " +
+          "pass the server's UPLOAD_TEMP_MAX_BYTES, the server already holds 10,000 uploads, " +
+          "or its disk would keep less than 1 GiB free beyond this upload and the bytes other " +
+          "uploads are still to receive, or fewer than 10,000 free inodes. The body says " +
+          "which. Nothing was saved; try again later.",
+        content: {
+          "text/plain": {
+            schema: { type: "string" },
+            examples: {
+              total: { summary: "Over UPLOAD_TEMP_MAX_BYTES", value: `${TEMP_TOTAL_MESSAGE}\n` },
+              disk: { summary: "Less than 1 GiB would stay free", value: `${DISK_FULL_MESSAGE}\n` },
+              uploads: {
+                summary: "10,000 uploads already held",
+                value: `${TOO_MANY_UPLOADS_MESSAGE}\n`,
+              },
+            },
+          },
+        },
+      },
       503: {
         description:
           "JSON: the model named by modelId, or the token, could not be checked (the " +
@@ -530,8 +574,8 @@ const TUS_DOCS: Record<string, FastifySchema> = {
       "Use it after a cut-off, such as a network change. Once the file has been imported, " +
       "Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed " +
       "with nothing saved, the answer is 410, and GET /uploads/{id}/result says why. An " +
-      "upload removed by the 24-hour sweep, or because its import could not be queued, is " +
-      "404.",
+      `upload removed by the hourly sweep (${SWEPT}), or because its import could not be ` +
+      "queued, is 404.",
     tags: ["Uploads"],
     operationId: "resumeUpload",
     headers: {

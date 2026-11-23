@@ -29,7 +29,8 @@
 //   before this handler runs. It is a GET: it changes nothing a user can
 //   see, and making the mesh twice gives the same answer.
 // - The browser then loads the GLB from /blobs/<id> (the delivery route,
-//   delivery/download.ts, immutable and cached), never the whole .3mf.
+//   delivery/download.ts, which has the browser check with the
+//   server on each view), never the whole .3mf.
 // - Answers are JSON and never cached. A failure carries no detail from the
 //   database, the store or the file system.
 import { type PlateMeshProblem, ReadUnavailable } from "@platehouse/threemf";

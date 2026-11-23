@@ -19,6 +19,7 @@ import {
   RenderFailed,
   SLICER_NOT_AN_STL,
   type SlicerTarget,
+  TempFileError,
 } from "../../src/derived/client.js";
 import {
   type MeshPreviewInput,
@@ -232,6 +233,16 @@ describe("a STEP file's preview, from its stored mesh", () => {
     const message = (error as Error).message;
     expect(message.startsWith(`${DERIVED_MESSAGES.previewFailed} `)).toBe(true);
     expect(message).toMatch(/too large/i);
+  });
+
+  test("a job folder the STL cannot be written to fails as a temp file problem, and nothing is sent", async () => {
+    // Issue #415: a full or read-only temp folder, or one removed under the
+    // job, is not the file's fault and not the slicer's, so it is told apart
+    // from both and the job tries it again later.
+    const dir = join(tmp, "no-such-job-folder");
+    const error = await failure(meshPreviewOutputs(NOWHERE, mesh(stubGlb("mesh"), { dir })));
+    expect(error).toBeInstanceOf(TempFileError);
+    expect((error as TempFileError).cause.code).toBe("ENOENT");
   });
 
   test("OpenSCAD's refusal is shown after the preview sentence", async () => {

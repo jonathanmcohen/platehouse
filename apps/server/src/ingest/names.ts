@@ -90,3 +90,17 @@ export function fileStems(originalNames: readonly string[]): Set<string> {
   }
   return stems;
 }
+
+/**
+ * Whether a file name holds a control character: C0 (below U+0020) or DEL
+ * (U+007F). The upload route refuses such a name, and the inbox moves such a
+ * file to failed, so no newline or terminal escape reaches a log line, a
+ * model's name or the Activity page from a file name.
+ */
+export function hasControlCharacter(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}

@@ -20,16 +20,28 @@
 //   (CamelCasePlugin), which answers the settings row and the failed file
 //   and no rows for every other read. Every id here is made up for the test.
 import { spawnSync } from "node:child_process";
+import { basename, sep } from "node:path";
 
 // Every read made through a file handle opened on a reason file, as
 // [path, bytes asked for], so a test can show how much of the file was read.
-// Every other open, and every other fs call, is the real one.
+// fsSpy also records each stat of a reason file, each lstat of an entry in
+// a failed/ folder, and each listing of a failed/ folder that asks for entry
+// types (opendir, or readdir with withFileTypes), and beforeReasonOpen runs
+// just before a reason file is opened: the last moment another writer can
+// swap it. Every other open, and every other fs call, is the real one.
 const reasonReads = vi.hoisted(() => [] as Array<[string, number]>);
+const fsSpy = vi.hoisted(() => ({
+  reasonStats: [] as string[],
+  failedLstats: [] as string[],
+  typedListings: 0,
+  beforeReasonOpen: undefined as ((path: string) => Promise<void>) | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const open: typeof real.open = async (...args) => {
-    const handle = await real.open(...args);
     const path = String(args[0]);
+    if (path.endsWith(".reason.txt")) await fsSpy.beforeReasonOpen?.(path);
+    const handle = await real.open(...args);
     if (!path.endsWith(".reason.txt")) return handle;
     const read = handle.read.bind(handle);
     handle.read = ((...readArgs: unknown[]) => {
@@ -39,10 +51,45 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     }) as typeof handle.read;
     return handle;
   };
-  return { ...real, default: { ...real, open }, open };
+  const stat = (async (...args: Parameters<typeof real.stat>) => {
+    if (String(args[0]).endsWith(".reason.txt")) fsSpy.reasonStats.push(String(args[0]));
+    return real.stat(...args);
+  }) as typeof real.stat;
+  const lstat = (async (...args: Parameters<typeof real.lstat>) => {
+    const path = String(args[0]);
+    if (path.includes(`${sep}failed${sep}`)) fsSpy.failedLstats.push(basename(path));
+    return real.lstat(...args);
+  }) as typeof real.lstat;
+  const isFailed = (path: unknown) => String(path).endsWith(`${sep}failed`);
+  const opendir: typeof real.opendir = async (...args) => {
+    if (isFailed(args[0])) fsSpy.typedListings += 1;
+    return real.opendir(...args);
+  };
+  const readdir = (async (...args: Parameters<typeof real.readdir>) => {
+    const options = args[1];
+    if (isFailed(args[0]) && typeof options === "object" && options?.withFileTypes === true) {
+      fsSpy.typedListings += 1;
+    }
+    return real.readdir(...args);
+  }) as typeof real.readdir;
+  const hooked = { open, stat, lstat, opendir, readdir };
+  return { ...real, default: { ...real, ...hooked }, ...hooked };
 });
 
-import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -238,9 +285,13 @@ describe("readInboxFailures", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ph-activity-"));
+    fsSpy.reasonStats.length = 0;
+    fsSpy.failedLstats.length = 0;
+    fsSpy.typedListings = 0;
   });
 
   afterEach(async () => {
+    fsSpy.beforeReasonOpen = undefined;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -381,6 +432,188 @@ describe("readInboxFailures", () => {
       "f4.3mf",
       "f3.3mf",
     ]);
+  });
+
+  // Whoever can write the inbox can write failed/ too, and need not be a
+  // member: a reason file is opened as the watcher opens a settled file
+  // (inbox/watch.ts OPEN_SETTLED), never through a symlink and never
+  // waiting on a FIFO, and only a regular file is read.
+  test("a reason file swapped for a symlink after the listing is not followed", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const other = join(dir, "other.txt");
+    await writeFile(other, "OTHER FILE TEXT");
+    for (const name of ["kept.3mf", "swapped.3mf"]) {
+      await writeFile(join(failed, name), "x");
+      await writeFile(join(failed, `${name}.reason.txt`), `Reason for ${name}.`);
+    }
+    const swapped = join(failed, "swapped.3mf.reason.txt");
+    fsSpy.beforeReasonOpen = async (path) => {
+      if (path !== swapped) return;
+      fsSpy.beforeReasonOpen = undefined;
+      await unlink(swapped);
+      await symlink(other, swapped);
+    };
+    const { readable, items } = await readInboxFailures(dir, 10);
+    expect(readable).toBe(true);
+    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : ""))).toEqual(["kept.3mf"]);
+    expect(JSON.stringify(items)).not.toContain("OTHER FILE TEXT");
+  });
+
+  // The watcher writes each reason file new (flag wx), so a real one has one
+  // link. A second name for a file outside failed/ is not read.
+  test("a reason file hard-linked to a file outside failed is not read", async (ctx) => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const other = join(dir, "other.txt");
+    await writeFile(other, "OTHER FILE TEXT");
+    await writeFile(join(failed, "kept.3mf"), "x");
+    await writeFile(join(failed, "kept.3mf.reason.txt"), "Kept.");
+    await writeFile(join(failed, "linked.3mf"), "x");
+    try {
+      await link(other, join(failed, "linked.3mf.reason.txt"));
+    } catch (error) {
+      // Written reason for the skip: a filesystem that refuses hard links can
+      // hold no such reason file to test.
+      const code = (error as { code?: string }).code;
+      if (code === "EPERM" || code === "ENOTSUP" || code === "EXDEV") return ctx.skip();
+      throw error;
+    }
+    const { readable, items } = await readInboxFailures(dir, 10);
+    expect(readable).toBe(true);
+    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : ""))).toEqual(["kept.3mf"]);
+    expect(JSON.stringify(items)).not.toContain("OTHER FILE TEXT");
+  });
+
+  test("a reason file replaced by another file after it was dated is not read", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    for (const name of ["kept.3mf", "replaced.3mf"]) {
+      await writeFile(join(failed, name), "x");
+      await writeFile(join(failed, `${name}.reason.txt`), `Reason for ${name}.`);
+    }
+    const replaced = join(failed, "replaced.3mf.reason.txt");
+    fsSpy.beforeReasonOpen = async (path) => {
+      if (path !== replaced) return;
+      fsSpy.beforeReasonOpen = undefined;
+      const other = join(dir, "other.txt");
+      await writeFile(other, "OTHER FILE TEXT");
+      await rename(other, replaced);
+    };
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items.map((i) => (i.type === "inbox_failed" ? i.name : ""))).toEqual(["kept.3mf"]);
+    expect(JSON.stringify(items)).not.toContain("OTHER FILE TEXT");
+  });
+
+  test("a reason file swapped for a FIFO after the listing does not block and is skipped", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "kept.3mf"), "x");
+    await writeFile(join(failed, "kept.3mf.reason.txt"), "Kept.");
+    await writeFile(join(failed, "pipe.3mf"), "x");
+    const pipe = join(failed, "pipe.3mf.reason.txt");
+    await writeFile(pipe, "Pipe.");
+    fsSpy.beforeReasonOpen = async (path) => {
+      if (path !== pipe) return;
+      fsSpy.beforeReasonOpen = undefined;
+      await unlink(pipe);
+      const made = spawnSync("mkfifo", [pipe]);
+      expect(made.status, String(made.stderr)).toBe(0);
+    };
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<"blocked">((resolve) => {
+      timer = setTimeout(() => resolve("blocked"), 2_000);
+    });
+    try {
+      const result = await Promise.race([readInboxFailures(dir, 10), late]);
+      expect(result).not.toBe("blocked");
+      if (result === "blocked") return;
+      expect(result.items.map((i) => (i.type === "inbox_failed" ? i.name : ""))).toEqual([
+        "kept.3mf",
+      ]);
+    } finally {
+      clearTimeout(timer);
+      // Frees a read left waiting on the FIFO, so the run can end: a writer's
+      // open succeeds only while a reader waits, and fails with ENXIO if none does.
+      await open(pipe, constants.O_WRONLY | constants.O_NONBLOCK).then(
+        (h) => h.close(),
+        () => undefined,
+      );
+    }
+  });
+
+  test("dates each reason from its lstat, never following a link", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "a.3mf"), "x");
+    const reason = join(failed, "a.3mf.reason.txt");
+    await writeFile(reason, "A.");
+    await utimes(reason, new Date(4_000_000), new Date(4_000_000));
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items).toMatchObject([{ name: "a.3mf", at: (await lstat(reason)).mtime.toISOString() }]);
+    expect(fsSpy.reasonStats).toEqual([]);
+  });
+
+  test("answers unreadable when failed is a symlink to a folder", async () => {
+    const elsewhere = join(dir, "elsewhere");
+    await mkdir(elsewhere);
+    await writeFile(join(elsewhere, "a.3mf"), "x");
+    await writeFile(join(elsewhere, "a.3mf.reason.txt"), "From elsewhere.");
+    await symlink(elsewhere, join(dir, "failed"));
+    expect(await readInboxFailures(dir, 10)).toEqual({ readable: false, items: [] });
+  });
+
+  test("answers unreadable when failed is swapped for a symlink while it is read", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "a.3mf"), "x");
+    await writeFile(join(failed, "a.3mf.reason.txt"), "A.");
+    fsSpy.beforeReasonOpen = async () => {
+      fsSpy.beforeReasonOpen = undefined;
+      await rename(failed, join(dir, "moved"));
+      await symlink(join(dir, "moved"), failed);
+    };
+    expect(await readInboxFailures(dir, 10)).toEqual({ readable: false, items: [] });
+  });
+
+  // Some filesystems (NFS, XFS without ftype, some FUSE) do not say what
+  // type an entry is, and a typed listing then stats every entry, on Node's
+  // main thread for opendir. failed/ is listed by name only, and only a
+  // reason file's name is ever stat'ed.
+  test("lists failed by name only and lstats nothing but reason files", async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    await writeFile(join(failed, "a.3mf"), "x");
+    await writeFile(join(failed, "a.3mf.reason.txt"), "A.");
+    await mkdir(join(failed, "folder.3mf"));
+    await writeFile(join(failed, "folder.3mf.reason.txt"), "Folder.");
+    await writeFile(join(failed, "plain.stl"), "x");
+    const { items } = await readInboxFailures(dir, 10);
+    expect(items).toHaveLength(2);
+    expect(fsSpy.typedListings).toBe(0);
+    expect(fsSpy.failedLstats.sort()).toEqual(["a.3mf.reason.txt", "folder.3mf.reason.txt"]);
+  });
+
+  // 12,000 entries, 6,000 reason files each beside its file. Only the first
+  // 10,000 names listed are looked at, and each of the 2,000 left out takes
+  // at most one reason file with it (itself, or the file it belongs to), so
+  // at most 5,000 are stat'ed; with no cut it would be all 6,000.
+  test("looks at no more than 10,000 names of failed", { timeout: 60_000 }, async () => {
+    const failed = join(dir, "failed");
+    await mkdir(failed);
+    const names = Array.from({ length: 6_000 }, (_, i) => `n${i}.stl`).flatMap((n) => [
+      n,
+      `${n}.reason.txt`,
+    ]);
+    for (let i = 0; i < names.length; i += 500) {
+      await Promise.all(names.slice(i, i + 500).map((n) => writeFile(join(failed, n), "x")));
+    }
+    const { readable, items } = await readInboxFailures(dir, 10);
+    expect(readable).toBe(true);
+    expect(items).toHaveLength(10);
+    expect(fsSpy.failedLstats.length).toBeGreaterThan(0);
+    expect(fsSpy.failedLstats.length).toBeLessThanOrEqual(5_000);
+    for (const name of fsSpy.failedLstats) expect(name.endsWith(".reason.txt")).toBe(true);
   });
 
   test("says the folder could not be read when failed is not a folder", async () => {

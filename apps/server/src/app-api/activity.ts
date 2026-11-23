@@ -27,7 +27,8 @@
 //   so a slicer that is down makes the page say so rather than hang. The
 //   inbox's failed/ folder is read at most once every INBOX_CACHE_MS.
 // - Events are capped at EVENT_LIMIT, newest first, across every kind.
-import { open, readdir, stat } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Health } from "@platehouse/slicer-contract";
 import type { FastifyInstance } from "fastify";
@@ -37,7 +38,13 @@ import type { DB, FileKind } from "../db/types.js";
 import { derivedParts } from "../derived/client.js";
 import { printerName } from "../estimates/display.js";
 import { isReason, reasonWords } from "../estimates/reasons.js";
-import { FAILED_DIR, parseReasonFile, REASON_SUFFIX } from "../inbox/watch.js";
+import {
+  FAILED_DIR,
+  INBOX_PASS_LIMIT,
+  OPEN_SETTLED,
+  parseReasonFile,
+  REASON_SUFFIX,
+} from "../inbox/watch.js";
 import { parseDuplicateMessage } from "../ingest/duplicates.js";
 import { MAINTENANCE_TASKS, QUEUE, UPGRADE_TASKS } from "../jobs/queues.js";
 import { activityRepo, type FailedDerived, type QueueCount } from "../repos/activity.js";
@@ -374,10 +381,42 @@ export function mergeEvents(lists: ReadonlyArray<readonly ActivityEvent[]>): Act
     .slice(0, EVENT_LIMIT);
 }
 
-/** The first bytes of a file, at most limit of them; nothing past limit is read. */
-async function readStart(path: string, limit: number): Promise<Buffer> {
-  const handle = await open(path, "r");
+/** A regular file with no other name: what the watcher writes a reason file as. */
+function isOwnFile(st: BigIntStats): boolean {
+  return st.isFile() && st.nlink === 1n;
+}
+
+/** Which file a reason file was when it was dated: its device and inode. */
+interface FileIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
+/**
+ * The first bytes of the file at path, at most limit of them; nothing past
+ * limit is read. undefined unless what is opened is the very file expected
+ * (same device and inode), a regular file with one link: not a symlink
+ * (O_NOFOLLOW fails with ELOOP; where a platform lacks O_NOFOLLOW, the
+ * inode check refuses the file a link led to), not a FIFO, socket or other
+ * entry put there after the listing (O_NONBLOCK, so opening a FIFO never
+ * waits for a writer), not another file renamed over the name, and not a
+ * second name for a file elsewhere (a hard link).
+ */
+async function readStart(
+  path: string,
+  limit: number,
+  expected: FileIdentity,
+): Promise<Buffer | undefined> {
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
+    handle = await open(path, OPEN_SETTLED);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") return undefined;
+    throw error;
+  }
+  try {
+    const st = await handle.stat({ bigint: true });
+    if (!isOwnFile(st) || st.dev !== expected.dev || st.ino !== expected.ino) return undefined;
     const buffer = Buffer.alloc(limit);
     let filled = 0;
     while (filled < limit) {
@@ -405,6 +444,21 @@ async function readStart(path: string, limit: number): Promise<Buffer> {
  * readable is false when no inbox is set up or failed/ cannot be listed,
  * so the page can say its failures may be missing; a failed/ that does not
  * exist yet simply has none.
+ *
+ * Whoever can write the inbox can write failed/, and need not be a member,
+ * so nothing in it is trusted. failed/ must be a real folder, not a symlink,
+ * when the read starts, and still be when it ends, or readable is false
+ * (Node cannot open a file relative to an open folder, so this does not
+ * confine the read by itself; the device and inode checks below do).
+ * failed/ is listed by name only: a listing that asks for each entry's type
+ * stats every entry on a filesystem that does not say (NFS, XFS without
+ * ftype, some FUSE). Only the first INBOX_PASS_LIMIT names are looked at,
+ * as the watcher looks at no more than that in one pass, and only a reason
+ * file's name is stat'ed. Each is dated by its lstat and counts only as a
+ * regular file with one link on failed/'s device (the watcher writes each
+ * new, so a real one has one link). It is then opened as the watcher opens
+ * a settled file (OPEN_SETTLED) and read only if the open file is that same
+ * one (readStart): anything else is skipped, not followed or waited on.
  */
 export async function readInboxFailures(
   inboxDir: string | undefined,
@@ -412,38 +466,45 @@ export async function readInboxFailures(
 ): Promise<{ readable: boolean; items: ActivityEvent[] }> {
   if (inboxDir === undefined) return { readable: false, items: [] };
   const dir = join(inboxDir, FAILED_DIR);
-  let names: string[];
+  let folder: BigIntStats;
+  let listed: string[];
   try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    // Every name in failed/, whatever its type: presence is the test.
-    const present = new Set(entries.map((e) => e.name));
-    names = entries
-      .filter(
-        (e) =>
-          e.isFile() &&
-          e.name.endsWith(REASON_SUFFIX) &&
-          e.name.length > REASON_SUFFIX.length &&
-          present.has(e.name.slice(0, -REASON_SUFFIX.length)),
-      )
-      .map((e) => e.name);
+    folder = await lstat(dir, { bigint: true });
+    if (!folder.isDirectory()) return { readable: false, items: [] };
+    const all = await readdir(dir);
+    listed = all.length > INBOX_PASS_LIMIT ? all.slice(0, INBOX_PASS_LIMIT) : all;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { readable: true, items: [] };
     return { readable: false, items: [] };
   }
-  const dated: Array<{ name: string; mtime: number }> = [];
+  // Every name looked at, whatever its type: presence is the test.
+  const present = new Set(listed);
+  const names = listed.filter(
+    (name) =>
+      name.endsWith(REASON_SUFFIX) &&
+      name.length > REASON_SUFFIX.length &&
+      present.has(name.slice(0, -REASON_SUFFIX.length)),
+  );
+  const dated: Array<FileIdentity & { name: string; mtime: number }> = [];
   for (const name of names) {
     try {
-      dated.push({ name, mtime: (await stat(join(dir, name))).mtimeMs });
+      const st = await lstat(join(dir, name), { bigint: true });
+      if (isOwnFile(st) && st.dev === folder.dev) {
+        dated.push({ name, mtime: st.mtime.getTime(), dev: st.dev, ino: st.ino });
+      }
     } catch {
       // Gone since the listing: nothing to show.
     }
   }
   dated.sort((a, b) => b.mtime - a.mtime || (a.name < b.name ? -1 : 1));
   const items: ActivityEvent[] = [];
-  for (const { name, mtime } of dated.slice(0, limit)) {
+  for (const { name, mtime, dev, ino } of dated.slice(0, limit)) {
     let reason = "";
     try {
-      reason = (await readStart(join(dir, name), REASON_BYTES)).toString("utf8");
+      const bytes = await readStart(join(dir, name), REASON_BYTES, { dev, ino });
+      // Not the file that was dated: swapped since, so skipped.
+      if (bytes === undefined) continue;
+      reason = bytes.toString("utf8");
     } catch {
       reason = "";
     }
@@ -462,6 +523,16 @@ export async function readInboxFailures(
       reasonCode: parsed.code,
       ...(duplicate === undefined ? {} : { duplicate }),
     });
+  }
+  // failed/ swapped for a symlink or another folder and left so: what was
+  // read may have come from somewhere else, so none of it is shown.
+  try {
+    const after = await lstat(dir, { bigint: true });
+    if (!after.isDirectory() || after.ino !== folder.ino || after.dev !== folder.dev) {
+      return { readable: false, items: [] };
+    }
+  } catch {
+    return { readable: false, items: [] };
   }
   return { readable: true, items };
 }

@@ -81,6 +81,7 @@ const DERIVED_KEYS: Readonly<Record<string, MessageKey>> = {
   previewSlicerDown: "derived.previewSlicerDown",
   previewStoreDown: "derived.previewStoreDown",
   previewQueueFailed: "derived.previewQueueFailed",
+  previewTempFailed: "derived.previewTempFailed",
   previewFailed: "derived.previewFailed",
   previewRejected: "derived.previewRejected",
   stlTooLarge: "derived.stlTooLarge",

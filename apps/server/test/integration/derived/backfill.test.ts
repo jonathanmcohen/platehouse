@@ -8,8 +8,11 @@
 // whole library. Two runs at once queue each file once, and a run after the
 // work is done queues nothing.
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { TempFileError } from "../../../src/derived/client.js";
 import {
   createDerived,
   DERIVED_KINDS,
@@ -419,6 +422,66 @@ describe("the preview backfill (issue #316)", () => {
     });
     expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(0);
     expect((await previewJobs(storeDown.fileId)).map((j) => j.data.kind)).toEqual(["preview-step"]);
+  });
+
+  test("a preview whose temp folder could not be written is recorded on its last attempt and tried again", async () => {
+    // Issue #415: a job folder that cannot be made (a full disk, a read-only
+    // or missing TMP_DIR) fails every picture job before the slicer is
+    // asked. An earlier attempt is left to pg-boss's retry with nothing
+    // recorded; the last records the temp file sentence, which the backfill
+    // queues again, rather than ending as a render that did not finish.
+    const noTemp = createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: env.boss,
+      retryDelaySeconds: 1,
+      tmpDir: join(tmpdir(), `platehouse-no-such-folder-${randomBytes(6).toString("hex")}`),
+    });
+    const stl = await legacyStl("Temp folder bracket");
+    const step = await legacyStep("Temp folder housing");
+    const jobs: [string, DerivedJob][] = [];
+    for (const [fileId, kind] of [
+      [stl.fileId, DERIVED_KINDS.renderStl],
+      [step.fileId, DERIVED_KINDS.previewStep],
+    ] as const) {
+      const file = await env.repos.files.get(fileId);
+      if (!file) throw new Error("file not stored");
+      jobs.push([fileId, { kind, fileId, sourceBlobId: file.blobId }]);
+    }
+    env.stub.renders.reset();
+
+    for (const [fileId, job] of jobs) {
+      await expect(
+        noTemp.runJob(job, { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit }),
+      ).rejects.toBeInstanceOf(TempFileError);
+      expect(await env.repos.files.get(fileId)).toMatchObject({
+        previewStatus: null,
+        previewMessage: null,
+      });
+      expect(
+        await noTemp.runJob(job, {
+          retryCount: SLICER_RETRY.retryLimit,
+          retryLimit: SLICER_RETRY.retryLimit,
+        }),
+      ).toEqual({ status: "failed", reason: "temp_failed" });
+      expect(await env.repos.files.get(fileId)).toMatchObject({
+        previewStatus: "failed",
+        previewMessage: DERIVED_MESSAGES.previewTempFailed,
+        renderPngBlobId: null,
+      });
+    }
+    // Nothing was ever sent to the slicer.
+    expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(0);
+
+    const run = await env.derived.backfillPreviews(later());
+    for (const [fileId] of jobs) {
+      expect(run.queued).toContain(fileId);
+      const file = await settledFile(env, fileId);
+      expect(file).toMatchObject({ previewStatus: "ok", previewMessage: null });
+      expect(file.renderPngBlobId).not.toBeNull();
+    }
+    expect(env.stub.renders.callsTo("/v1/step/glb")).toHaveLength(0);
   });
 
   test("an outage failure waits out the grace period before it is tried again", async () => {

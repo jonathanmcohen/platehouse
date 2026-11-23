@@ -30,7 +30,12 @@ import { Shell } from "../src/shell/Shell";
 import { Sidebar } from "../src/shell/Sidebar";
 import { TrashList } from "../src/trash/TrashList";
 import { UploadDialog } from "../src/upload/UploadDialog";
-import { resultMessage, type StartUpload, type UploadHandlers } from "../src/upload/useTusUpload";
+import {
+  failureMessage,
+  resultMessage,
+  type StartUpload,
+  type UploadHandlers,
+} from "../src/upload/useTusUpload";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -694,6 +699,20 @@ describe("every other place that shows server text follows the same rule", () =>
     );
   });
 
+  test("an inbox file refused for a control character in its name is said by its code outside English", () => {
+    expect(inboxReasonIn(translator("en"), { reason: SAID, reasonCode: "control_chars" })).toBe(
+      SAID,
+    );
+    for (const locale of ["es", "fr"]) {
+      const words = inboxReasonIn(translator(locale), {
+        reason: SAID,
+        reasonCode: "control_chars",
+      });
+      expect(words).toBe(translator(locale).t("inbox.reason.controlChars"));
+      expect(words).not.toBe(SAID);
+    }
+  });
+
   test("a printer name is the server's own in English, even in a form the catalog writes differently", () => {
     render("en", <PrinterName name="Bambu Lab P1S, 0.40 mm nozzle" />);
     expect(container.textContent).toBe("Bambu Lab P1S, 0.40 mm nozzle");
@@ -729,6 +748,39 @@ describe("every other place that shows server text follows the same rule", () =>
     expect(sentenceFor(429, body, translator("fr"))).toBe(
       "Trop de tentatives depuis cette connexion. Patientez quelques minutes, puis r\u00e9essayez.",
     );
+  });
+});
+
+describe("an upload refused for too many uploads on the server, in every language", () => {
+  function translator(locale: string) {
+    return createTranslator(locale, CATALOGS[locale] as Messages, CATALOGS.en as Messages);
+  }
+  const held = (body: string) =>
+    Object.assign(new Error("tus: unexpected response"), {
+      originalRequest: {},
+      originalResponse: {
+        getStatus: () => 429,
+        getBody: () => body,
+        getHeader: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/plain; charset=utf-8" : undefined,
+      },
+    });
+  const HELD =
+    "You already have 2000 uploads on the server, finished ones included; nothing was saved. " +
+    "A finished upload is cleared a day after its import; try again later.\n";
+  const UNFINISHED =
+    "You already have 20 unfinished uploads; nothing was saved. Finish or wait for one of " +
+    "them, then try again.\n";
+
+  test("each language has its own line for it, and keeps its Retry line for the 20", () => {
+    for (const locale of ["en", "es", "fr"]) {
+      const words = translator(locale);
+      expect(failureMessage(held(HELD), words), locale).toBe(words.t("upload.tooManyRecent"));
+      expect(failureMessage(held(UNFINISHED), words), locale).toBe(
+        words.t("upload.tooManyUnfinished"),
+      );
+      expect(words.t("upload.tooManyRecent")).not.toBe("upload.tooManyRecent");
+    }
   });
 });
 

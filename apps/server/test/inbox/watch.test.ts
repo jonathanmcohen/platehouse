@@ -42,6 +42,7 @@ import {
   BACKOFF_FIRST_MS,
   BACKOFF_MAX_MS,
   CHANGED_REASON,
+  CONTROL_CHARS_REASON,
   createInboxWatcher,
   FAILED_DIR,
   HELD_REASON,
@@ -50,6 +51,7 @@ import {
   HOLD_PREFIX,
   type ImportedFile,
   type ImportedQuery,
+  INBOX_PASS_LIMIT,
   type InboxProbes,
   type InboxWatcherDeps,
   inboxFileId,
@@ -112,6 +114,10 @@ const fsHooks = vi.hoisted(() => ({
   beforeLstat: undefined as ((path: string) => Promise<void>) | undefined,
   /** Runs before an unlink of path; when it throws, unlink fails with that error. */
   beforeUnlink: undefined as ((path: string) => Promise<void>) | undefined,
+  /** Listings that asked for entry types (readdir with withFileTypes), by path. */
+  typedListings: [] as string[],
+  /** Runs before a folder at path is listed; when it throws, readdir fails with that error. */
+  beforeReaddir: undefined as ((path: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -153,7 +159,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     await fsHooks.beforeUnlink?.(String(args[0]));
     return actual.unlink(...args);
   };
-  const hooked = { open, link, rename, symlink, copyFile, mkdir, lstat, unlink };
+  const readdir = (async (...args: Parameters<typeof actual.readdir>) => {
+    const options = args[1];
+    if (typeof options === "object" && options?.withFileTypes === true) {
+      fsHooks.typedListings.push(String(args[0]));
+    }
+    await fsHooks.beforeReaddir?.(String(args[0]));
+    return actual.readdir(...args);
+  }) as typeof actual.readdir;
+  const hooked = { open, link, rename, symlink, copyFile, mkdir, lstat, unlink, readdir };
   return { ...actual, default: { ...actual, ...hooked }, ...hooked };
 });
 
@@ -210,6 +224,8 @@ afterEach(async () => {
   fsHooks.beforeCreate = undefined;
   fsHooks.beforeLstat = undefined;
   fsHooks.beforeUnlink = undefined;
+  fsHooks.typedListings.length = 0;
+  fsHooks.beforeReaddir = undefined;
   await chmod(inbox, 0o755).catch(() => undefined);
   await chmod(join(root, "tmp", "inbox-copies"), 0o755).catch(() => undefined);
   await rm(root, { recursive: true, force: true });
@@ -3965,6 +3981,374 @@ describe("names that are not UTF-8", () => {
     for (const raw of [cafe, cafe2]) {
       expect(lines.filter((l) => l.includes(`bytes ${raw.toString("hex")}`))).toHaveLength(1);
     }
+  });
+});
+
+// A name with a control character (a newline, a terminal escape) is
+// refused, as the upload route refuses one (ingest/names.ts
+// hasControlCharacter): the file moves to failed with a reason that says to
+// rename it, and no log line carries the character itself.
+describe("names with control characters", () => {
+  test.for([
+    ["a newline", "line\nbreak.stl"],
+    ["an escape", "esc\u001b[31mred.stl"],
+  ] as const)(
+    "a settled file whose name has %s moves to failed with code control_chars",
+    async ([, name], ctx) => {
+      const fake = fakeIngest();
+      const w = watcher(fake);
+      try {
+        await writeFile(join(inbox, name), "solid a\nendsolid a\n");
+      } catch (error) {
+        // Written reason for the skip: a filesystem that refuses such a name
+        // can hold no such file to test. APFS and ext4 both take it.
+        const code = (error as { code?: string }).code;
+        if (code === "EILSEQ" || code === "EINVAL") return ctx.skip();
+        throw error;
+      }
+      await w.pollOnce();
+      const early = await tick(w, 14_999);
+      expect(early.failed).toEqual([]);
+
+      const pass = await tick(w, 1);
+      expect(pass.failed).toEqual([{ name, reason: CONTROL_CHARS_REASON }]);
+      expect(CONTROL_CHARS_REASON).toContain("rename it");
+      expect(fake.calls).toEqual([]);
+      expect(await readdir(inbox)).toEqual([FAILED_DIR]);
+      expect((await readdir(join(inbox, FAILED_DIR))).sort()).toEqual(
+        [name, `${name}${REASON_SUFFIX}`].sort(),
+      );
+      expect(await readFile(join(inbox, FAILED_DIR, `${name}${REASON_SUFFIX}`), "utf8")).toBe(
+        `control_chars: ${CONTROL_CHARS_REASON}\n`,
+      );
+      // The name is logged escaped, so it cannot start a made-up log line.
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) expect(hasControl(line)).toBe(false);
+      expect(lines.some((l) => l.includes(JSON.stringify(name)))).toBe(true);
+    },
+  );
+});
+
+// A holding folder's name and what is in it are chosen by whoever writes
+// the inbox, so a log line names them escaped too.
+describe("holding folders named with control characters", () => {
+  test("a held file that cannot move to failed is logged with its folder's name escaped", async (ctx) => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}x\ny`);
+    try {
+      await mkdir(holding);
+    } catch (error) {
+      // Written reason for the skip: a filesystem that refuses such a name
+      // can hold no such folder to test. APFS and ext4 both take it.
+      const code = (error as { code?: string }).code;
+      if (code === "EILSEQ" || code === "EINVAL") return ctx.skip();
+      throw error;
+    }
+    await writeFile(join(holding, "a\u001bb.stl"), "solid a\nendsolid a\n");
+    // failed is a file, so nothing can move into it.
+    await writeFile(join(inbox, FAILED_DIR), "not a folder");
+    const w = watcher(fake);
+    await w.pollOnce();
+    expect(lines.some((l) => l.includes("it stays at"))).toBe(true);
+    expect(lines.some((l) => l.includes("could not clear the holding folder"))).toBe(true);
+    for (const line of lines) expect(hasControl(line)).toBe(false);
+  });
+});
+
+/** Whether text holds a C0 control character or DEL. */
+function hasControl(text: string): boolean {
+  return [...text].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+}
+
+// One pass looks at no more than INBOX_PASS_LIMIT names, so an inbox someone
+// filled with files cannot make a pass take without end. Every name is
+// still listed, so a file past the cut is not taken for gone.
+describe("the pass limit", () => {
+  test("one pass lstats the first INBOX_PASS_LIMIT names, says it cut, and a file past the cut keeps its state", {
+    timeout: 60_000,
+  }, async () => {
+    expect(INBOX_PASS_LIMIT).toBe(10_000);
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    // last.stl sorts after every a-file below.
+    await writeFile(join(inbox, "last.stl"), "solid z\nendsolid z\n");
+    await w.pollOnce();
+    expect(fake.calls).toEqual([]);
+
+    const crowd = Array.from(
+      { length: INBOX_PASS_LIMIT + 4 },
+      (_, i) => `a${String(i).padStart(5, "0")}.stl`,
+    );
+    for (let i = 0; i < crowd.length; i += 500) {
+      await Promise.all(crowd.slice(i, i + 500).map((n) => writeFile(join(inbox, n), "x")));
+    }
+    const lstatted: string[] = [];
+    fsHooks.beforeLstat = async (path) => {
+      if (path.endsWith(".stl")) lstatted.push(basename(path));
+    };
+    await tick(w, 5_000);
+    fsHooks.beforeLstat = undefined;
+    expect(lstatted).toHaveLength(INBOX_PASS_LIMIT);
+    expect(lstatted).not.toContain("last.stl");
+    expect(lines.filter((l) => l.includes(`${crowd.length + 1} files`))).toHaveLength(1);
+    expect(lines.some((l) => l.includes(`looks at ${INBOX_PASS_LIMIT} by name`))).toBe(true);
+
+    // The crowd goes; last.stl was seen 15 seconds ago and never forgotten,
+    // so the next pass imports it at once.
+    for (let i = 0; i < crowd.length; i += 500) {
+      await Promise.all(crowd.slice(i, i + 500).map((n) => rm(join(inbox, n))));
+    }
+    await tick(w, 10_000);
+    expect(fake.calls).toEqual(["last.stl"]);
+  });
+
+  // A cut that always took the first INBOX_PASS_LIMIT by name would never
+  // reach a file after them while they stay (a file that could not be moved
+  // to failed, say), so each pass starts after the last name the one before
+  // looked at, and comes round again to the start.
+  test("files past the cut get their turn while the first INBOX_PASS_LIMIT stay", {
+    timeout: 60_000,
+  }, async () => {
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    const stay = Array.from(
+      { length: INBOX_PASS_LIMIT },
+      (_, i) => `a${String(i).padStart(5, "0")}.stl`,
+    );
+    const late = ["z0.stl", "z1.stl", "z2.stl", "z3.stl", "z4.stl"];
+    const all = [...stay, ...late];
+    for (let i = 0; i < all.length; i += 500) {
+      await Promise.all(all.slice(i, i + 500).map((n) => writeFile(join(inbox, n), "x")));
+    }
+    const lstatted = new Set<string>();
+    fsHooks.beforeLstat = async (path) => {
+      if (path.endsWith(".stl")) lstatted.add(basename(path));
+    };
+    await w.pollOnce();
+    await tick(w, 5_000);
+    fsHooks.beforeLstat = undefined;
+    for (const name of late) expect(lstatted.has(name)).toBe(true);
+  });
+});
+
+// The inbox is listed by name only: a listing that asks for each entry's
+// type stats every entry on a filesystem that does not say (NFS, XFS
+// without ftype, some FUSE), before any limit applies.
+describe("the inbox listing", () => {
+  test("asks for no entry types, and still sweeps a holding folder but not a symlink named like one", async () => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    await writeFile(join(holding, "left.stl"), "solid a\nendsolid a\n");
+    const elsewhere = join(root, "elsewhere");
+    await mkdir(elsewhere);
+    await writeFile(join(elsewhere, "keep.stl"), "solid a\nendsolid a\n");
+    const linked = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000001`);
+    await symlink(elsewhere, linked);
+    const w = watcher(fake);
+    const pass = await w.pollOnce();
+    expect(fsHooks.typedListings.filter((p) => p === inbox)).toEqual([]);
+    expect(pass.failed).toEqual([{ name: "left.stl", reason: HELD_REASON }]);
+    expect(await readdir(elsewhere)).toEqual(["keep.stl"]);
+    expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+  });
+});
+
+// Holding folders count against the same limit: whoever writes the inbox
+// can make any number of them, and put any number of files in one.
+describe("the holding folder limit", () => {
+  test("one pass sweeps at most INBOX_PASS_LIMIT holding folders, and the next pass sweeps the rest", {
+    timeout: 60_000,
+  }, async () => {
+    const fake = fakeIngest();
+    const folders = Array.from(
+      { length: INBOX_PASS_LIMIT + 5 },
+      (_, i) => `${HOLD_PREFIX}${String(i).padStart(6, "0")}`,
+    );
+    for (let i = 0; i < folders.length; i += 500) {
+      await Promise.all(folders.slice(i, i + 500).map((f) => mkdir(join(inbox, f))));
+    }
+    const holdsLeft = async () =>
+      (await readdir(inbox)).filter((e) => e.startsWith(HOLD_PREFIX)).length;
+    const w = watcher(fake);
+    await w.pollOnce();
+    expect(await holdsLeft()).toBe(5);
+    expect(lines.filter((l) => l.includes("holding folders")).length).toBe(1);
+    await tick(w, 5_000);
+    expect(await holdsLeft()).toBe(0);
+  });
+
+  test("the files in holding folders count against the same limit", {
+    timeout: 120_000,
+  }, async () => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    const files = Array.from({ length: INBOX_PASS_LIMIT + 2 }, (_, i) => `f${i}.stl`);
+    for (let i = 0; i < files.length; i += 500) {
+      await Promise.all(files.slice(i, i + 500).map((f) => writeFile(join(holding, f), "x")));
+    }
+    const w = watcher(fake);
+    // The folder itself counts as one, so 9,999 of its files move at the first pass.
+    const first = await w.pollOnce();
+    expect(first.failed).toHaveLength(INBOX_PASS_LIMIT - 1);
+    const second = await tick(w, 5_000);
+    expect(second.failed).toHaveLength(3);
+    expect((await readdir(inbox)).filter((e) => e.startsWith(HOLD_PREFIX))).toEqual([]);
+  });
+
+  // A held file that cannot move to failed (failed is a file, say) gives up
+  // on its folder for this round, as before the limit: the folder is not
+  // left part way to be tried, and logged, again at every pass, and the
+  // folders after it are still reached.
+  test("a holding folder whose files cannot move is given up on, not retried and logged at every pass", {
+    timeout: 60_000,
+  }, async () => {
+    const fake = fakeIngest();
+    const big = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    const after = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000001`);
+    await mkdir(big);
+    await mkdir(after);
+    const files = Array.from({ length: INBOX_PASS_LIMIT + 2 }, (_, i) => `f${i}.stl`);
+    for (let i = 0; i < files.length; i += 500) {
+      await Promise.all(files.slice(i, i + 500).map((f) => writeFile(join(big, f), "x")));
+    }
+    await writeFile(join(after, "later.stl"), "x");
+    await writeFile(join(inbox, FAILED_DIR), "not a folder");
+    const w = watcher(fake);
+    await w.pollOnce();
+    const couldNotMove = (l: string) => l.startsWith("inbox: could not move ");
+    expect(lines.filter(couldNotMove).length).toBeLessThan(10);
+    // The folder after the big one was reached in the same pass.
+    expect(lines.some((l) => couldNotMove(l) && l.includes("later.stl"))).toBe(true);
+    lines.length = 0;
+    await tick(w, 5_000);
+    expect(lines.filter(couldNotMove)).toEqual([]);
+  });
+
+  // A holding folder is a name in the inbox, which its writer can swap for a
+  // symlink after it was checked: the sweep stops at the change and moves
+  // nothing from wherever the link leads.
+  test("a holding folder swapped for a symlink after its check moves nothing from where the link leads", async () => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    await writeFile(join(holding, "left.stl"), "x");
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "other.stl"), "x");
+    let swapped = false;
+    fsHooks.beforeReaddir = async (path) => {
+      if (path !== holding || swapped) return;
+      swapped = true;
+      renameSync(holding, join(root, "moved-hold"));
+      await symlink(outside, holding);
+    };
+    const w = watcher(fake);
+    const pass = await w.pollOnce();
+    expect(swapped).toBe(true);
+    expect(pass.failed).toEqual([]);
+    expect(await readdir(outside)).toEqual(["other.stl"]);
+    expect((await lstat(holding)).isSymbolicLink()).toBe(true);
+    const changed = lines.filter((l) => l.includes("changed while it was swept"));
+    expect(changed).toHaveLength(1);
+    expect(hasControl(changed[0] ?? "")).toBe(false);
+  });
+
+  // The folder can still be swapped after the last check and before the
+  // move itself. The file that landed in failed is then checked against the
+  // one listed in the holding folder; another file is moved back where it
+  // came from, and nothing more is moved from that folder.
+  test("a holding folder swapped between the check and the move: the file moved is not the one listed, so it goes back", async () => {
+    const fake = fakeIngest();
+    const holding = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000`);
+    await mkdir(holding);
+    await writeFile(join(holding, "a.stl"), "held");
+    await writeFile(join(holding, "b.stl"), "held too");
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "a.stl"), "not the inbox's");
+    let swapped = false;
+    fsHooks.beforeCreate = async (path) => {
+      if (swapped || path !== join(inbox, FAILED_DIR, "a.stl")) return;
+      swapped = true;
+      renameSync(holding, join(root, "moved-hold"));
+      await symlink(outside, holding);
+    };
+    const w = watcher(fake);
+    const pass = await w.pollOnce();
+    expect(swapped).toBe(true);
+    expect(pass.failed).toEqual([]);
+    // Back where it was taken from, and nothing of it left in failed.
+    expect(await readdir(outside)).toEqual(["a.stl"]);
+    expect(await readFile(join(outside, "a.stl"), "utf8")).toBe("not the inbox's");
+    expect(await readdir(join(inbox, FAILED_DIR))).toEqual([]);
+    // The rest of the folder is left alone.
+    expect((await readdir(join(root, "moved-hold"))).sort()).toEqual(["a.stl", "b.stl"]);
+    const changed = lines.filter((l) => l.includes("changed while it was swept"));
+    expect(changed).toHaveLength(1);
+    expect(hasControl(changed[0] ?? "")).toBe(false);
+  });
+
+  // Whoever writes the inbox can name a folder like a kept holding folder at
+  // any time. Only those found at the first pass, or marked by this process,
+  // are swept; any other is left alone.
+  test("a folder named like a kept holding folder that appears after the first pass is never swept", async () => {
+    const fake = fakeIngest();
+    const w = watcher(fake);
+    await w.pollOnce();
+    const late = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000-changed`);
+    await mkdir(late);
+    await writeFile(join(late, "a.stl"), "x");
+    const second = await tick(w, 5_000);
+    const third = await tick(w, 5_000);
+    expect([...second.failed, ...third.failed]).toEqual([]);
+    expect(await readdir(late)).toEqual(["a.stl"]);
+  });
+
+  test("a kept holding folder found at the first pass is swept, and again at later passes while failed cannot be used", async () => {
+    const fake = fakeIngest();
+    const kept = join(inbox, `${HOLD_PREFIX}0190a6f0-0000-7000-8000-000000000000-changed`);
+    await mkdir(kept);
+    await writeFile(join(kept, "a.stl"), "x");
+    await writeFile(join(inbox, FAILED_DIR), "not a folder");
+    const w = watcher(fake);
+    await w.pollOnce();
+    expect(await readdir(kept)).toEqual(["a.stl"]);
+    await rm(join(inbox, FAILED_DIR));
+    const later = await tick(w, 5_000);
+    expect(later.failed).toEqual([{ name: "a.stl", reason: CHANGED_REASON }]);
+    expect(await exists(kept)).toBe(false);
+  });
+});
+
+describe("error text in inbox log lines", () => {
+  test("a control character in an error's text is escaped, as in a name", async (ctx) => {
+    const fake = fakeIngest();
+    const name = "a\u001b[31mb.stl";
+    try {
+      await writeFile(join(inbox, name), "solid a\nendsolid a\n");
+    } catch (error) {
+      // Written reason for the skip: a filesystem that refuses such a name
+      // can hold no such file to test. APFS and ext4 both take it.
+      const code = (error as { code?: string }).code;
+      if (code === "EILSEQ" || code === "EINVAL") return ctx.skip();
+      throw error;
+    }
+    // The file goes just before it is moved, so the rename's error carries its path.
+    fsHooks.beforeCreate = async (path) => {
+      if (path.startsWith(join(inbox, FAILED_DIR, "a")) && !path.endsWith(REASON_SUFFIX)) {
+        await rm(join(inbox, name), { force: true });
+      }
+    };
+    const w = watcher(fake);
+    await w.pollOnce();
+    await tick(w, 15_000);
+    const couldNot = lines.filter((l) => l.startsWith("inbox: could not move "));
+    expect(couldNot).toHaveLength(1);
+    expect(couldNot[0]).toContain("ENOENT");
+    expect(couldNot[0]).toContain("\\u001b");
+    for (const line of lines) expect(hasControl(line)).toBe(false);
   });
 });
 
