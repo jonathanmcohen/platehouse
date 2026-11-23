@@ -23,10 +23,11 @@
 // per call is the only way the reader allocates a mesh array or takes an
 // inflated byte, and each is charged before it happens:
 // - memory: every Float32Array and Uint32Array of mesh data is made by
-//   Budget.float32 or Budget.uint32, which refuse one that would take the
-//   arrays alive past limits.meshBytes, and is freed through Budget.free.
-//   A mesh is read at most once and never replaced, so no copy is held
-//   that the budget does not count;
+//   Budget.float32 or Budget.uint32, which refuse one that would take all
+//   the arrays allocated in the read past limits.meshBytes. A freed array
+//   keeps its charge until the read ends (its memory is only freed by a
+//   later garbage collection). A mesh is read into fixed blocks and copied
+//   once at the end, so it costs at most twice its size plus two blocks;
 // - inflate: every byte inflated, the config entries and every read of
 //   every model part, is charged to Budget.inflate before it is used, against
 //   one total, limits.inflateBytes;
@@ -119,11 +120,11 @@ export const PLATE_MESH_LIMITS: Readonly<PlateMeshLimits> = Object.freeze({
 export interface PlateMeshBudgetReport {
   /** The limits the read ran under. */
   limits: Readonly<PlateMeshLimits>;
-  /** The most bytes of mesh arrays alive at once. */
+  /** The most bytes of mesh arrays owned at once (freed ones do not count). */
   peakLiveBytes: number;
   /** Bytes of mesh arrays still alive when the read ended: the result's, or 0. */
   liveBytes: number;
-  /** Bytes of mesh arrays allocated in all. */
+  /** Bytes of mesh arrays allocated in all, freed ones too: this is what meshBytes limits. */
   allocatedBytes: number;
   inflatedBytes: number;
   work: number;
@@ -251,7 +252,10 @@ class Budget {
   }
 
   private charge(bytes: number): void {
-    if (this.live + bytes > this.limits.meshBytes) this.over("mesh memory");
+    // Against everything allocated so far, not what is alive: V8 frees an
+    // array's memory only at a later garbage collection, so a freed array
+    // still counts until the read ends.
+    if (this.allocated + bytes > this.limits.meshBytes) this.over("mesh memory");
     this.live += bytes;
     this.allocated += bytes;
     if (this.live > this.peak) this.peak = this.live;
@@ -271,7 +275,11 @@ class Budget {
     return a;
   }
 
-  /** Frees an array this budget made; anything else is ignored. */
+  /**
+   * Drops an array this budget made from the ones in use (so liveBytes is
+   * right); anything else is ignored. Its charge stays: the memory is not
+   * back until the garbage collector runs.
+   */
   free(a: Float32Array | Uint32Array): void {
     if (!this.owned.delete(a)) return;
     this.live -= a.byteLength;
@@ -553,10 +561,61 @@ interface PartData {
   reads: number;
 }
 
-/** A mesh being read; its arrays are the budget's, and grow by doubling. */
+/** The most bytes in one block of a mesh being read. */
+export const BLOCK_BYTES = 256 * 1024;
+
+/** Elements of the largest block, a multiple of 3 so no vertex or triangle is split. */
+const BLOCK_ELEMENTS = Math.floor(BLOCK_BYTES / 4 / 3) * 3;
+
+/** Elements of the first block: 256 vertices or triangles. */
+const FIRST_BLOCK_ELEMENTS = 3 * 256;
+
+/**
+ * Numbers appended three at a time into blocks of the budget: the first
+ * block is small, each next one twice as big up to BLOCK_BYTES, then the
+ * size stays. A block is filled before the next is made and is never
+ * reallocated or copied while reading.
+ */
+class Blocks<A extends Float32Array | Uint32Array> {
+  readonly list: A[] = [];
+  private fill = 0;
+  private readonly make: (length: number) => A;
+
+  constructor(make: (length: number) => A) {
+    this.make = make;
+    this.list.push(make(FIRST_BLOCK_ELEMENTS));
+  }
+
+  push3(a: number, b: number, c: number): void {
+    let last = this.list[this.list.length - 1] as A;
+    if (this.fill === last.length) {
+      last = this.make(Math.min(last.length * 2, BLOCK_ELEMENTS));
+      this.list.push(last);
+      this.fill = 0;
+    }
+    last[this.fill] = a;
+    last[this.fill + 1] = b;
+    last[this.fill + 2] = c;
+    this.fill += 3;
+  }
+
+  /** The numbers appended, as views of the blocks in order. */
+  views(): A[] {
+    return this.list.map((block, i) =>
+      i === this.list.length - 1 ? (block.subarray(0, this.fill) as A) : block,
+    );
+  }
+}
+
+/**
+ * A mesh being read. Its numbers go into blocks of the budget; done() gives
+ * a mesh that fits in one block as a view of it, and copies a bigger one
+ * into arrays of its exact size, so a mesh costs at most twice its final
+ * size plus two blocks.
+ */
 class MeshBuilder {
-  private positions: Float32Array;
-  private indices: Uint32Array;
+  private readonly positions: Blocks<Float32Array>;
+  private readonly indices: Blocks<Uint32Array>;
   private vertexCount = 0;
   private triangleCount = 0;
   private broken = false;
@@ -564,8 +623,8 @@ class MeshBuilder {
 
   constructor(budget: Budget) {
     this.budget = budget;
-    this.positions = budget.float32(3 * 256);
-    this.indices = budget.uint32(3 * 256);
+    this.positions = new Blocks((n) => budget.float32(n));
+    this.indices = new Blocks((n) => budget.uint32(n));
   }
 
   vertex(a: Map<string, string>): void {
@@ -580,13 +639,7 @@ class MeshBuilder {
       this.broken = true;
       return;
     }
-    if (3 * (this.vertexCount + 1) > this.positions.length) {
-      const bigger = this.budget.float32(this.positions.length * 2);
-      bigger.set(this.positions);
-      this.budget.free(this.positions);
-      this.positions = bigger;
-    }
-    this.positions.set([x, y, z], 3 * this.vertexCount);
+    this.positions.push3(x, y, z);
     this.vertexCount++;
   }
 
@@ -608,42 +661,61 @@ class MeshBuilder {
       this.broken = true;
       return;
     }
-    if (3 * (this.triangleCount + 1) > this.indices.length) {
-      const bigger = this.budget.uint32(this.indices.length * 2);
-      bigger.set(this.indices);
-      this.budget.free(this.indices);
-      this.indices = bigger;
-    }
-    this.indices.set([v1, v2, v3], 3 * this.triangleCount);
+    this.indices.push3(v1, v2, v3);
     this.triangleCount++;
   }
 
   /**
-   * The mesh, as views of the builder's own arrays (no copy), or null when
-   * it has no triangles, more vertices than its triangles could use (three
-   * each; the rest would only be bytes in the GLB, review of PR #368), or
-   * anything in it cannot be read; then its arrays are freed.
+   * The mesh, or null when it has no triangles, more vertices than its
+   * triangles could use (three each; the rest would only be bytes in the
+   * GLB, review of PR #368), or anything in it cannot be read; then its
+   * blocks are freed. A mesh in one block is returned as views of it; a
+   * bigger one is copied into exact-size arrays and its blocks are freed.
    */
   done(): Mesh | null {
-    const mesh: Mesh = {
-      positions: this.positions.subarray(0, 3 * this.vertexCount),
-      indices: this.indices.subarray(0, 3 * this.triangleCount),
-    };
+    const positions = this.positions.views();
+    const indices = this.indices.views();
     const unreadable =
       this.broken ||
       this.triangleCount === 0 ||
       this.vertexCount > 3 * this.triangleCount ||
-      mesh.indices.some((i) => i >= this.vertexCount);
+      indices.some((block) => block.some((i) => i >= this.vertexCount));
     if (unreadable) {
       this.drop();
       return null;
     }
+    const [onlyPositions] = positions;
+    const [onlyIndices] = indices;
+    if (
+      onlyPositions !== undefined &&
+      onlyIndices !== undefined &&
+      positions.length === 1 &&
+      indices.length === 1
+    ) {
+      // Each in one block: the views are the result, and the blocks stay owned.
+      return { positions: onlyPositions, indices: onlyIndices };
+    }
+    const mesh: Mesh = {
+      positions: this.budget.float32(3 * this.vertexCount),
+      indices: this.budget.uint32(3 * this.triangleCount),
+    };
+    copyBlocks(positions, mesh.positions);
+    copyBlocks(indices, mesh.indices);
+    this.drop();
     return mesh;
   }
 
   drop(): void {
-    this.budget.free(this.positions);
-    this.budget.free(this.indices);
+    for (const block of this.positions.list) this.budget.free(block);
+    for (const block of this.indices.list) this.budget.free(block);
+  }
+}
+
+function copyBlocks<A extends Float32Array | Uint32Array>(from: A[], to: A): void {
+  let at = 0;
+  for (const block of from) {
+    to.set(block as never, at);
+    at += block.length;
   }
 }
 

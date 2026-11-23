@@ -7,8 +7,10 @@
 // built here; no designer file is used.
 import { describe, expect, it } from "vitest";
 import {
+  BLOCK_BYTES,
   PLATE_MESH_LIMITS,
   type PlateMesh,
+  type PlateMeshBudgetReport,
   PlateMeshError,
   type PlateMeshProblem,
   ReadUnavailable,
@@ -707,5 +709,106 @@ describe("readPlateMesh limits", () => {
       [20, 12],
       [110, 12],
     ]);
+  });
+});
+
+describe("readPlateMesh mesh memory", () => {
+  const oneObjectPlate = (objects: string[], ids: number[]): string =>
+    file([
+      {
+        name: ROOT,
+        data: modelXml(
+          objects,
+          ids.map((id) => buildItem(id, IDENTITY)),
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          ids.map((id) => ({ id })),
+          [{ index: 1, instances: ids.map((id) => [id, 0] as [number, number]) }],
+        ),
+      },
+    ]);
+
+  const reportOf = async (
+    path: string,
+    limits: { meshBytes?: number } = {},
+  ): Promise<{ mesh: PlateMesh; report: PlateMeshBudgetReport }> => {
+    let report: PlateMeshBudgetReport | undefined;
+    const mesh = await readPlateMesh(path, 1, { limits, onBudget: (r) => (report = r) });
+    if (report === undefined) throw new Error("no report");
+    return { mesh, report };
+  };
+
+  it("freed arrays keep their charge until the read ends", async () => {
+    // Object 1 is broken (its triangle names a missing vertex) and is dropped
+    // after its first arrays were made; object 2 is a good box.
+    const broken = meshXml(
+      [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      [[0, 1, 7]],
+    );
+    const path = oneObjectPlate([meshObject(1, broken), meshObject(2, boxMesh(10))], [1, 2]);
+    const { report } = await reportOf(path);
+    const oneMesh = report.liveBytes;
+    expect(oneMesh).toBeGreaterThan(0);
+    expect(report.allocatedBytes).toBeGreaterThan(oneMesh);
+    // Room for the box and not for the box plus what the broken mesh took.
+    const meshBytes = oneMesh + (report.allocatedBytes - oneMesh) / 2;
+    expect(await problemOfLimits(path, { meshBytes })).toBe("too_large");
+    await expect(
+      readPlateMesh(path, 1, { limits: { meshBytes: report.allocatedBytes } }),
+    ).resolves.toBeDefined();
+  });
+
+  async function problemOfLimits(path: string, limits: { meshBytes: number }) {
+    try {
+      await readPlateMesh(path, 1, { limits });
+    } catch (err) {
+      if (err instanceof PlateMeshError) return err.problem;
+      throw err;
+    }
+    throw new Error("expected a PlateMeshError, got a mesh");
+  }
+
+  it("a mesh costs at most twice its final size", async () => {
+    const triangles = 100_000;
+    const vertices = Array.from({ length: 50_000 }, (_, i) => [i, i % 7, i % 11]);
+    const tris = Array.from({ length: triangles }, (_, i) => [
+      i % 50_000,
+      (i + 1) % 50_000,
+      (i + 2) % 50_000,
+    ]);
+    const path = oneObjectPlate([meshObject(1, meshXml(vertices, tris))], [1]);
+    const { mesh, report } = await reportOf(path);
+    const piece = mesh.pieces[0];
+    if (piece === undefined) throw new Error("no piece");
+    expect(piece.indices.length).toBe(3 * triangles);
+    const finalBytes = piece.positions.byteLength + piece.indices.byteLength;
+    expect(report.allocatedBytes).toBeLessThanOrEqual(2 * finalBytes + 2 * BLOCK_BYTES);
+  });
+
+  it("keeps many small meshes far below the memory limit", async () => {
+    const count = 2000;
+    const ids = Array.from({ length: count }, (_, i) => i + 1);
+    const path = oneObjectPlate(
+      ids.map((id) => meshObject(id, boxMesh(10))),
+      ids,
+    );
+    const { mesh, report } = await reportOf(path);
+    expect(mesh.instances).toHaveLength(count);
+    expect(report.allocatedBytes).toBeLessThan(report.limits.meshBytes / 10);
+  });
+
+  it("the largest mesh the limits accept fits the charge", () => {
+    const triangles = 5_000_000;
+    const vertices = 2_500_000;
+    expect(2 * (triangles * 12 + vertices * 12) + 4 * BLOCK_BYTES).toBeLessThanOrEqual(
+      PLATE_MESH_LIMITS.meshBytes,
+    );
   });
 });

@@ -148,14 +148,23 @@ export function readPlateMeshInWorker(
       ...(opts.execArgv === undefined ? {} : { execArgv: opts.execArgv }),
     });
     opts.onSpawn?.(worker);
+    const exited = new Promise<void>((done) => worker.once("exit", () => done()));
     let settled = false;
+    // The outcome is recorded at once but the promise settles only after the
+    // worker has exited: its memory is freed with its thread, and the caller
+    // (the memory gate) must not start the next read before that.
     const finish = (settle: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      settle();
       // A worker that answered has nothing left to do; one that did not is stopped.
-      void worker.terminate();
+      worker
+        .terminate()
+        .then(
+          () => exited,
+          () => exited,
+        )
+        .then(settle, settle);
     };
     const timer = setTimeout(
       () =>

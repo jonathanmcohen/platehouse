@@ -4,6 +4,7 @@ export { makerWorldDesignId, makerWorldUrl } from "./makerworld-link.js";
 export { type RangeSource, readMakerWorldXml } from "./model-xml.js";
 export { readProject } from "./parse.js";
 export {
+  BLOCK_BYTES,
   type MeshInstance,
   type MeshPiece,
   PLATE_MESH_LIMITS,
