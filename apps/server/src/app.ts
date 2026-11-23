@@ -77,6 +77,10 @@
 //   and X-Content-Type-Options (web/security-headers.ts, issue #449),
 //   unless its route set its own; frameworkError sets them on Fastify's own
 //   400 and 414 too. HSTS is left to the TLS-terminating proxy.
+// - An error on a root route (not in a scope with its own handler) is
+//   answered by the root error handler: a 4xx keeps its status and message,
+//   a store outage is 503 {error: "unavailable"}, anything else is logged
+//   and answered 500 {error: "internal"} with no path or cause (issue #455).
 
 import { STATUS_CODES } from "node:http";
 import fastifyCookie from "@fastify/cookie";
@@ -107,7 +111,7 @@ import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.j
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
-import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
+import { type DeliveryDeps, isStoreOutage, registerDownloads } from "./delivery/download.js";
 import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
 import { createLocales, type Locales } from "./locales/locales.js";
 import {
@@ -444,6 +448,26 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     frameworkErrors: frameworkError,
   });
 
+  // Errors on root routes (a static file that cannot be read, a hook that
+  // fails). Scopes with their own handler keep it. A 4xx keeps its status
+  // and message; a store outage is 503 as the scoped handlers answer it;
+  // anything else is logged and answered 500 with no detail, so no path,
+  // host or query reaches the client. The security headers are set by the
+  // onSend hook below, which also runs for these answers.
+  app.setErrorHandler(async (error: FastifyError, request, reply) => {
+    const status = error.statusCode;
+    if (status !== undefined && status >= 400 && status < 500) {
+      return reply.code(status).send({
+        error: STATUS_CODES[status] ?? "Error",
+        code: error.code,
+        message: error.message,
+        statusCode: status,
+      });
+    }
+    request.log.error({ err: error }, "app: a request failed");
+    if (isStoreOutage(error)) return reply.code(503).send({ error: "unavailable" });
+    return reply.code(500).send({ error: "internal" });
+  });
   // The CSP, Referrer-Policy and nosniff on every answer (web/security-headers.ts),
   // added first so every route, scope, refusal and error answer gets them.
   addSecurityHeaders(app);
