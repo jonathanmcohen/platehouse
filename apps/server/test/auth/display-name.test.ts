@@ -3,6 +3,7 @@
 // preferred_username, else email; trimmed, at most MAX_DISPLAY_NAME
 // characters, and null when none of them is a usable string.
 import { describe, expect, test } from "vitest";
+import { cleanName } from "../../src/auth/names.js";
 import { displayNameOf, MAX_DISPLAY_NAME } from "../../src/auth/oidc.js";
 
 describe("displayNameOf", () => {
@@ -54,5 +55,20 @@ describe("displayNameOf", () => {
     );
     expect(displayNameOf({ name: "a\u200db" })).toBe("a\u200db");
     expect(displayNameOf({ name: "\u200c\u200d", email: "sp@x.test" })).toBe("sp@x.test");
+  });
+
+  test("a name of only joiners and white space is null, and the next claim is used", () => {
+    expect(displayNameOf({ name: "\u200d \u200d" })).toBeNull();
+    expect(displayNameOf({ name: "\u200d \u200d", email: "sp@x.test" })).toBe("sp@x.test");
+    expect(displayNameOf({ name: "\u200c\u202e \u200d", email: "sp@x.test" })).toBe("sp@x.test");
+    expect(displayNameOf({ name: "\u200d\t\u200c", email: "sp@x.test" })).toBe("sp@x.test");
+  });
+});
+
+describe("cleanName", () => {
+  test("a stored name of only joiners and white space reads back as no name", () => {
+    expect(cleanName("\u200d \u200d")).toBeNull();
+    expect(cleanName("\u200d \u200c")).toBeNull();
+    expect(cleanName("a\u200d b")).toBe("a\u200d b");
   });
 });

@@ -24,8 +24,11 @@ function spaceControls(text: string): string {
  */
 const FORMAT_CHARACTERS = /(?![\u200c\u200d])\p{Cf}/gu;
 
-/** Joiners alone draw nothing, so a name of only those is no name. */
-const ONLY_JOINERS = /^[\u200c\u200d]+$/u;
+/**
+ * Joiners and white space draw nothing, so a name of only those is no name
+ * (it would show as a blank label).
+ */
+const NOTHING_TO_SHOW = /^[\s\u200c\u200d]*$/u;
 
 /**
  * A name with control and format characters taken out, white space trimmed
@@ -34,6 +37,6 @@ const ONLY_JOINERS = /^[\u200c\u200d]+$/u;
  */
 export function cleanName(value: string): string | null {
   const clean = spaceControls(value.replace(FORMAT_CHARACTERS, "")).replace(/\s+/g, " ").trim();
-  if (clean === "" || ONLY_JOINERS.test(clean)) return null;
+  if (NOTHING_TO_SHOW.test(clean)) return null;
   return Array.from(clean).slice(0, MAX_DISPLAY_NAME).join("");
 }
