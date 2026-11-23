@@ -30,10 +30,10 @@ export const PLATE_MESH_READ_PEAK_MB =
  * mesh's chunks and their joined copy while Buffer.concat runs (readAll in
  * derived/derived.ts), twice the largest stored mesh a preview reads
  * (PREVIEW_MESH_MAX_BYTES in derived/preview.ts, the contract's
- * stlBodyBytes), so 512 MiB. The STL is made a chunk at a time and written
+ * stepOutputBytes), so 512 MiB. The STL is made a chunk at a time and written
  * to disk, never held.
  */
-export const STEP_PREVIEW_PEAK_MB = (2 * LIMITS.stlBodyBytes) / MiB;
+export const STEP_PREVIEW_PEAK_MB = (2 * LIMITS.stepOutputBytes) / MiB;
 
 /**
  * The most memory, in MiB, one place in the memory gate holds: a plate

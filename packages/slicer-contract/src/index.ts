@@ -33,8 +33,11 @@
 //
 // 413 too_large comes before the body is read when its Content-Length is
 // over the route's limit (LIMITS), and as soon as it passes the limit when
-// there is none. Any route answers an unexpected server error with 500 and a
-// plain-text body, not an error schema.
+// there is none. An answer is never over its route's output limit
+// (renderOutputBytes, stepOutputBytes): an output over it is refused with
+// the route's 422 instead, so a caller may stop reading at the limit. Any
+// route answers an unexpected server error with 500 and a plain-text body,
+// not an error schema.
 //
 // The slicer runs one heavy job at a time: a slice, a render (a .scad's or
 // an STL preview) or a STEP conversion. A POST to any of those routes while
@@ -73,6 +76,20 @@ export const LIMITS = Object.freeze({
    * write, so an STL preview fits /work beside its PNG.
    */
   stlBodyBytes: 268_435_456,
+  /**
+   * Largest STL or PNG a render answers with (256 MiB): /v1/scad/stl,
+   * /v1/scad/png and /v1/stl/png. It is OpenSCAD's file-size limit in the
+   * sandbox, so a bigger output is never written; the route answers 422
+   * renderError instead. The app streams the answer to disk under this cap.
+   */
+  renderOutputBytes: 268_435_456,
+  /**
+   * Largest GLB POST /v1/step/glb answers with (256 MiB). A mesh the
+   * converter makes over this is not sent: the route answers 422
+   * convertError, saying how large it was. The app streams the answer to
+   * disk under this cap, and reads a stored mesh this size for a preview.
+   */
+  stepOutputBytes: 268_435_456,
   /** Plates are numbered 1 to 128 (a file has at most 128 plates). */
   maxPlate: 128,
   /** A failed slice's detail is Orca's error_string, cut to this length. */

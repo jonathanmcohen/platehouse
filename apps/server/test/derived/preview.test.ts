@@ -99,8 +99,23 @@ const STL = Buffer.from("solid x\nendsolid x\n");
 describe("an STL's preview", () => {
   test("streams the STL to /v1/stl/png and gives back one render_png", async () => {
     const { target, got } = await slicer(200, PNG);
-    const outputs = await stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length);
-    expect(outputs).toEqual([{ kind: "render_png", contentType: "image/png", bytes: PNG }]);
+    const dir = await jobDir();
+    const outputs = await stlPreviewOutputs(
+      target,
+      async () => Readable.from([STL]),
+      STL.length,
+      dir,
+    );
+    // The PNG is streamed to a file in the job's folder, for the job to store.
+    expect(outputs).toEqual([
+      {
+        kind: "render_png",
+        contentType: "image/png",
+        path: join(dir, "preview.png"),
+        size: PNG.length,
+      },
+    ]);
+    expect((await readFile(join(dir, "preview.png"))).equals(PNG)).toBe(true);
     expect(got).toEqual([{ path: "/v1/stl/png", type: "application/octet-stream", body: STL }]);
   });
 
@@ -114,6 +129,7 @@ describe("an STL's preview", () => {
           return Readable.from([STL]);
         },
         LIMITS.stlBodyBytes + 1,
+        tmp,
       ),
     );
     expect(error).toBeInstanceOf(RenderFailed);
@@ -125,7 +141,7 @@ describe("an STL's preview", () => {
     const message = "ERROR: STL import: unexpected end of file";
     const { target } = await slicer(422, { error: "render_failed", message });
     const error = await failure(
-      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length),
+      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length, tmp),
     );
     expect(error).toBeInstanceOf(RenderFailed);
     expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewRejected} ${message}`);
@@ -137,7 +153,7 @@ describe("an STL's preview", () => {
   test("the slicer's own refusal of an STL with no triangles is not put in OpenSCAD's mouth", async () => {
     const { target } = await slicer(422, { error: "render_failed", message: SLICER_NOT_AN_STL });
     const error = await failure(
-      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length),
+      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length, tmp),
     );
     expect(error).toBeInstanceOf(RenderFailed);
     expect((error as Error).message).toBe(`${DERIVED_MESSAGES.previewFailed} ${SLICER_NOT_AN_STL}`);
@@ -154,7 +170,7 @@ describe("an STL's preview", () => {
   test("a 413 from the slicer says the STL is too large", async () => {
     const { target } = await slicer(413, { error: "too_large" });
     const error = await failure(
-      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length),
+      stlPreviewOutputs(target, async () => Readable.from([STL]), STL.length, tmp),
     );
     expect((error as Error).message).toBe(DERIVED_MESSAGES.stlTooLarge);
   });
@@ -168,13 +184,16 @@ afterAll(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
+/** A fresh folder, as a job makes for its files. */
+const jobDir = () => mkdtemp(join(tmp, "job-"));
+
 /** A STEP preview's input: glb as the stored mesh, with a gate that lets everything through. */
 function mesh(glb: Buffer, more: Partial<MeshPreviewInput> = {}): MeshPreviewInput {
   return {
     size: glb.length,
     read: async () => glb,
     hold: (task) => task(),
-    tmpDir: tmp,
+    dir: tmp,
     ...more,
   };
 }
@@ -182,8 +201,17 @@ function mesh(glb: Buffer, more: Partial<MeshPreviewInput> = {}): MeshPreviewInp
 describe("a STEP file's preview, from its stored mesh", () => {
   test("sends the mesh as a binary STL and gives back one render_png", async () => {
     const { target, got } = await slicer(200, PNG);
-    const outputs = await meshPreviewOutputs(target, mesh(stubGlb("mesh")));
-    expect(outputs).toEqual([{ kind: "render_png", contentType: "image/png", bytes: PNG }]);
+    const dir = await jobDir();
+    const outputs = await meshPreviewOutputs(target, mesh(stubGlb("mesh"), { dir }));
+    expect(outputs).toEqual([
+      {
+        kind: "render_png",
+        contentType: "image/png",
+        path: join(dir, "preview.png"),
+        size: PNG.length,
+      },
+    ]);
+    expect((await readFile(join(dir, "preview.png"))).equals(PNG)).toBe(true);
     expect(got).toHaveLength(1);
     expect(got[0]?.path).toBe("/v1/stl/png");
     expect(got[0]?.type).toBe("application/octet-stream");
@@ -274,7 +302,8 @@ describe("a STEP file's preview, from its stored mesh", () => {
   });
 
   test("its peak is the mesh's chunks and their joined copy: twice PREVIEW_MESH_MAX_BYTES", () => {
-    expect(PREVIEW_MESH_MAX_BYTES).toBe(LIMITS.stlBodyBytes);
+    // The largest mesh the slicer may answer a STEP conversion with.
+    expect(PREVIEW_MESH_MAX_BYTES).toBe(LIMITS.stepOutputBytes);
     expect(STEP_PREVIEW_PEAK_MB).toBe((2 * PREVIEW_MESH_MAX_BYTES) / (1024 * 1024));
   });
 });
@@ -317,12 +346,16 @@ describe("a STEP file's preview and the memory gate", () => {
     expect(got[0]?.body.length).toBe(134);
   });
 
-  test("leaves no temp folder behind, sent or failed", async () => {
+  test("leaves only its PNG in the job's folder when sent, and nothing when it fails", async () => {
     const { target } = await slicer(200, PNG);
-    await meshPreviewOutputs(target, mesh(stubGlb("mesh")));
-    await failure(meshPreviewOutputs(NOWHERE, mesh(stubGlb("mesh"))));
-    await failure(meshPreviewOutputs(NOWHERE, mesh(Buffer.from("not a glb"))));
-    expect(await readdir(tmp)).toEqual([]);
+    const sent = await jobDir();
+    await meshPreviewOutputs(target, mesh(stubGlb("mesh"), { dir: sent }));
+    // The STL it sent is gone; the PNG is the job's to store and remove.
+    expect(await readdir(sent)).toEqual(["preview.png"]);
+    const failed = await jobDir();
+    await failure(meshPreviewOutputs(NOWHERE, mesh(stubGlb("mesh"), { dir: failed })));
+    await failure(meshPreviewOutputs(NOWHERE, mesh(Buffer.from("not a glb"), { dir: failed })));
+    expect(await readdir(failed)).toEqual([]);
   });
 
   test("a preview started while a plate build runs reads and sends nothing until the build ends", async () => {

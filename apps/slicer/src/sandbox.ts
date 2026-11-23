@@ -32,6 +32,7 @@
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { LIMITS } from "@platehouse/slicer-contract";
 
 /**
  * Paths OpenSCAD may run code from, besides its own AppImage tree: the
@@ -195,7 +196,7 @@ export const OPENSCAD_PROCESS_LIMIT = 512;
  * OpenSCAD with SIGXFSZ when it writes past this, so the output never grows
  * past it in /work; a file of exactly this size passes both.
  */
-export const MAX_RENDER_OUTPUT_BYTES = 256 * 1024 * 1024;
+export const MAX_RENDER_OUTPUT_BYTES = LIMITS.renderOutputBytes;
 
 /**
  * prlimit's arguments, before its "--". The CPU-time limit is the wall-clock

@@ -13,8 +13,9 @@
 // partway (the store went away while a STEP file was read from it) rejects
 // with the body's own error, a StoreUnavailable for an outage or a
 // StoreError for a store that refused, never as a lost slicer connection.
+import { open, rm } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { slicerContract } from "@platehouse/slicer-contract";
+import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 
 /**
  * The sentence that says the renders a file shows are from an earlier
@@ -273,6 +274,43 @@ export class RenderFailed extends Error {
   }
 }
 
+const MIB = 1024 * 1024;
+
+/**
+ * The slicer's answer passed its route's cap (ANSWER_LIMITS) while it was
+ * streamed: it was not kept, and the job fails as for any answer the
+ * program refused (render_failed). The contract says the slicer never
+ * sends one (it refuses such an output with its own 422 first), so this is
+ * an older or misbehaving slicer.
+ */
+export class AnswerTooLarge extends RenderFailed {
+  constructor(maxBytes: number) {
+    super(
+      `The slicer's answer was over the ${Math.floor(maxBytes / MIB)} MiB limit for it, so it was not kept.`,
+    );
+    this.name = "AnswerTooLarge";
+  }
+}
+
+/**
+ * The largest answer each render route may send, from the slicer contract:
+ * the answer is streamed to a temp file and stopped as soon as it passes
+ * this, so no answer is ever held whole in the app's memory.
+ */
+export const ANSWER_LIMITS = Object.freeze({
+  "/v1/scad/stl": LIMITS.renderOutputBytes,
+  "/v1/scad/png": LIMITS.renderOutputBytes,
+  "/v1/stl/png": LIMITS.renderOutputBytes,
+  "/v1/step/glb": LIMITS.stepOutputBytes,
+});
+
+/**
+ * The most of an error answer (any status but a 200) read into memory: 64
+ * KiB. The slicer's refusals are short JSON, its 500s short text; a longer
+ * one is a fault, and the rest is never read.
+ */
+export const ERROR_ANSWER_MAX_BYTES = 64 * 1024;
+
 /** True for the errors a pg-boss retry may cure: 409 busy and a lost connection. */
 export function isRetryable(error: unknown): boolean {
   return error instanceof SlicerBusy || error instanceof SlicerUnreachable;
@@ -288,7 +326,7 @@ export interface SlicerTarget {
 }
 
 export interface RenderRequest {
-  route: "/v1/scad/stl" | "/v1/scad/png" | "/v1/step/glb" | "/v1/stl/png";
+  route: keyof typeof ANSWER_LIMITS;
   body: Buffer | Readable;
   contentType: string;
   /** The content type a 200 must carry. */
@@ -297,6 +335,76 @@ export interface RenderRequest {
   refusal: "render" | "convert";
   /** What a 413 too_large shows. */
   tooLarge: string;
+  /**
+   * Where a 200's body is streamed (a file in the job's temp folder; it is
+   * removed if the request fails), and the most it may be: the route's
+   * ANSWER_LIMITS unless a test sets a smaller one.
+   */
+  answer: { path: string; maxBytes?: number };
+}
+
+/** A 200's body, streamed to a file. */
+export interface RenderAnswer {
+  path: string;
+  size: number;
+}
+
+/**
+ * Reads at most max bytes of an error answer into memory; a longer one is
+ * the slicer's fault, and the rest of it is never read.
+ */
+async function readSmall(
+  body: ReadableStream<Uint8Array> | null,
+  max: number,
+  route: string,
+  status: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  if (body === null) return Buffer.alloc(0);
+  for await (const chunk of body) {
+    size += chunk.byteLength;
+    if (size > max) throw new SlicerFault(route, `${status} with a body over ${max} bytes`);
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Streams a 200's body to path a chunk at a time, stopping with
+ * AnswerTooLarge as soon as it passes max; stopping cancels the body, so the
+ * rest is never read. A failure to open or write the file is reported to
+ * onFileError before it is thrown, so it is told apart from the connection
+ * failing, which comes from reading the body and is thrown as it is.
+ */
+async function saveAnswer(
+  body: ReadableStream<Uint8Array> | null,
+  path: string,
+  max: number,
+  onFileError: (error: unknown) => void,
+): Promise<number> {
+  const onFile = async <T>(op: () => Promise<T>): Promise<T> => {
+    try {
+      return await op();
+    } catch (error) {
+      onFileError(error);
+      throw error;
+    }
+  };
+  const file = await onFile(() => open(path, "w"));
+  let size = 0;
+  try {
+    if (body !== null) {
+      for await (const chunk of body) {
+        size += chunk.byteLength;
+        if (size > max) throw new AnswerTooLarge(max);
+        await onFile(() => file.write(chunk));
+      }
+    }
+  } finally {
+    await file.close().catch(() => undefined);
+  }
+  return size;
 }
 
 function mediaType(header: string | null): string {
@@ -335,12 +443,31 @@ function webBody(source: Readable, onError: (error: unknown) => void): ReadableS
 }
 
 /**
- * Posts one body to a render route and returns the bytes of a 200. A
- * streamed body that fails while it is read rejects with that failure as it
- * is (see webBody); every other failure to get an answer is SlicerDown or
- * SlicerUnreachable.
+ * Posts one body to a render route and streams a 200's body to
+ * req.answer.path, never holding it in memory, stopping with AnswerTooLarge
+ * as soon as it passes the route's cap (ANSWER_LIMITS). Any other answer is
+ * read into memory only up to ERROR_ANSWER_MAX_BYTES. A streamed request
+ * body that fails while it is read rejects with that failure as it is (see
+ * webBody), a temp file that cannot be written with the file system's own
+ * error; every other failure to get an answer is SlicerDown or
+ * SlicerUnreachable. Whenever it rejects, the answer file is removed.
  */
-export async function postRender(target: SlicerTarget, req: RenderRequest): Promise<Buffer> {
+export async function postRender(target: SlicerTarget, req: RenderRequest): Promise<RenderAnswer> {
+  const path = req.answer.path;
+  try {
+    return await postRenderTo(target, req, path);
+  } catch (error) {
+    await rm(path, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function postRenderTo(
+  target: SlicerTarget,
+  req: RenderRequest,
+  path: string,
+): Promise<RenderAnswer> {
+  const maxBytes = req.answer.maxBytes ?? ANSWER_LIMITS[req.route];
   const url = new URL(req.route, target.baseUrl);
   let bodyError: { error: unknown } | undefined;
   const body =
@@ -369,7 +496,12 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
   }
   let status: number;
   let type: string;
-  let bytes: Buffer;
+  // A 200 of the right type is streamed to the answer file (size), anything
+  // else read into memory up to ERROR_ANSWER_MAX_BYTES (bytes), or not read
+  // at all when its status says enough.
+  let size = 0;
+  let bytes: Buffer = Buffer.alloc(0);
+  let fileError: { error: unknown } | undefined;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -380,8 +512,22 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
     });
     status = res.status;
     type = mediaType(res.headers.get("content-type"));
-    bytes = Buffer.from(await res.arrayBuffer());
+    if (status === 200 && type === req.accept) {
+      size = await saveAnswer(res.body, path, maxBytes, (error) => {
+        fileError ??= { error };
+      });
+    } else if (status === 200 || KNOWN.has(status)) {
+      // A 200 of the wrong type is a fault whatever it holds, and 409, 404
+      // and 413 say all they mean in their status: none is read.
+      await res.body?.cancel();
+    } else {
+      bytes = await readSmall(res.body, ERROR_ANSWER_MAX_BYTES, req.route, status);
+    }
   } catch (error) {
+    // Decided here, not a connection failure: an answer over its cap, an
+    // error answer over its limit, or a temp file that cannot be written.
+    if (error instanceof AnswerTooLarge || error instanceof SlicerFault) throw error;
+    if (fileError !== undefined) throw fileError.error;
     // The body failed, not the slicer: its own error, so a store outage
     // reaches the job as StoreUnavailable and the job waits for the store.
     if (bodyError !== undefined) throw bodyError.error;
@@ -399,10 +545,10 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
 
   switch (status) {
     case 200:
-      if (type !== req.accept || bytes.length === 0) {
+      if (type !== req.accept || size === 0) {
         throw new SlicerFault(req.route, `200 with ${type || "no content type"}`);
       }
-      return bytes;
+      return { path, size };
     case 409:
       throw new SlicerBusy(req.route);
     // A slicer image older than this app has no such route (/v1/stl/png is
@@ -437,9 +583,20 @@ export async function postRender(target: SlicerTarget, req: RenderRequest): Prom
   }
 }
 
-/** One derived blob's bytes, before they are stored. */
+/**
+ * The statuses whose answer says enough without its body: 409 busy, 404
+ * (an older slicer image), 413 too_large. Their bodies are never read.
+ */
+const KNOWN: ReadonlySet<number> = new Set([409, 404, 413]);
+
+/**
+ * One derived blob before it is stored: the slicer's answer, in a file in
+ * the job's temp folder (postRender), stored from the file and removed with
+ * the folder when the job ends.
+ */
 export interface RenderOutput {
   kind: "render_stl" | "render_png" | "mesh_glb";
   contentType: string;
-  bytes: Buffer;
+  path: string;
+  size: number;
 }

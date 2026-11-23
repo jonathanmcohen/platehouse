@@ -158,13 +158,17 @@ export type ConvertResult = { ok: true; bytes: Buffer } | { ok: false; message: 
 /** The name the STEP file takes inside its job folder. */
 export const STEP_INPUT = "input.stp";
 
+const MIB = 1024 * 1024;
+
 /**
  * Runs the worker (this file, or a test stand-in) on dir/input.stp
  * (STEP_INPUT), which the caller has already written, so the server never
- * holds the body in memory.
+ * holds the body in memory. A mesh over maxOutputBytes (the contract's
+ * LIMITS.stepOutputBytes, 256 MiB) is refused from its size on disk, never
+ * read or sent: the app streams the answer under the same cap.
  */
 export async function runStepWorker(
-  opts: { worker: string; timeoutSeconds: number },
+  opts: { worker: string; timeoutSeconds: number; maxOutputBytes: number },
   dir: string,
   track?: (kill: (() => void) | null) => void,
 ): Promise<ConvertResult> {
@@ -183,6 +187,13 @@ export async function runStepWorker(
     };
   }
   if (run.code === 0 && existsSync(output) && statSync(output).size > 0) {
+    const size = statSync(output).size;
+    if (size > opts.maxOutputBytes) {
+      return {
+        ok: false,
+        message: `The converted mesh is ${Math.ceil(size / MIB)} MiB, over the ${Math.floor(opts.maxOutputBytes / MIB)} MiB limit for a mesh, so it was not sent.`,
+      };
+    }
     return { ok: true, bytes: readFileSync(output) };
   }
   return {

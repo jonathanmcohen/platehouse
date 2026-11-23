@@ -7,6 +7,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LIMITS } from "@platehouse/slicer-contract";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   LANDRUN_STRICT_ABI,
@@ -380,6 +381,8 @@ describe("prlimit arguments", () => {
   // cap (the kernel sends SIGXFSZ), instead of only refusing the file after.
   test("the file-size limit is the render output cap, so a file the cap lets through is never stopped", () => {
     expect(MAX_RENDER_OUTPUT_BYTES).toBe(256 * 1024 * 1024);
+    // The same cap the contract documents and the app streams answers under.
+    expect(MAX_RENDER_OUTPUT_BYTES).toBe(LIMITS.renderOutputBytes);
     expect(prlimitArgs(120)).toContain(`--fsize=${MAX_RENDER_OUTPUT_BYTES}`);
   });
 });

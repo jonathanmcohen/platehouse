@@ -10,6 +10,9 @@
 //   turned into a binary STL (mesh.ts) and sent the same way. A mesh that
 //   cannot be read, or whose STL would be over the limit, fails before
 //   anything is sent.
+// - The PNG that comes back is streamed to a file in the job's folder, dir,
+//   under the contract's renderOutputBytes (postRender), never held in
+//   memory; the job stores it from there.
 //
 // A STEP preview reads its whole mesh into the app's memory, so it shares
 // the process's memory gate with the plate mesh builds (review of PR #409;
@@ -21,11 +24,12 @@
 //   STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the memory budget counts
 //   (test/compose-example.test.ts).
 // - Inside the gate (hold) the mesh is read, turned into an STL and written
-//   to a temp folder of its own under tmpDir; then the gate is let go and
-//   the mesh with it. The STL is sent from the file after that, so the
-//   preview never asks the slicer for anything while it holds or waits for
-//   the gate, and a plate build never waits for the slicer.
-// - The temp folder is removed whatever happens.
+//   to the job's folder; then the gate is let go and the mesh with it. The
+//   STL is sent from the file after that, so the preview never asks the
+//   slicer for anything while it holds or waits for the gate, and a plate
+//   build never waits for the slicer.
+// - The STL is removed once it has been sent or has failed; the job's
+//   folder, with the PNG, is removed by the job.
 //
 // A failure the file should show starts with Platehouse's own sentence
 // (DERIVED_MESSAGES.previewFailed, or previewRejected before OpenSCAD's own
@@ -33,12 +37,13 @@
 // lost connection, a slicer that is down or older than this app) comes from
 // postRender as it does for every render, and the job decides (derived.ts).
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { LIMITS } from "@platehouse/slicer-contract";
 import {
+  AnswerTooLarge,
   DERIVED_MESSAGES,
   postRender,
   RenderFailed,
@@ -53,37 +58,45 @@ const MIB = 1024 * 1024;
 
 /**
  * The largest stored mesh a STEP preview reads: 256 MiB, the contract's
- * stlBodyBytes. Refusing a larger one should turn away no preview that would
- * have worked: the GLB the slicer writes spends at most 48 bytes on a
- * triangle (three float32 positions and three uint32 indices) and the STL
- * spends 50, so a mesh over 256 MiB would make an STL over the same limit.
+ * stepOutputBytes, the largest GLB the slicer answers a conversion with.
+ * A larger one can only be a mesh stored before that limit; refusing it
+ * should turn away no preview that would have worked: the GLB the slicer
+ * writes spends at most 48 bytes on a triangle (three float32 positions and
+ * three uint32 indices) and the STL spends 50, so a mesh over 256 MiB would
+ * make an STL over the renderer's 256 MiB limit.
  */
-export const PREVIEW_MESH_MAX_BYTES = LIMITS.stlBodyBytes;
+export const PREVIEW_MESH_MAX_BYTES = LIMITS.stepOutputBytes;
 
-/** Posts an STL to /v1/stl/png; OpenSCAD's refusal comes back after the preview sentence. */
+/**
+ * Posts an STL to /v1/stl/png, streaming the PNG to dir/preview.png;
+ * OpenSCAD's refusal comes back after the preview sentence.
+ */
 async function postPreview(
   target: SlicerTarget,
   body: Readable,
   tooLarge: string,
+  dir: string,
 ): Promise<RenderOutput[]> {
   try {
-    const bytes = await postRender(target, {
+    const answer = await postRender(target, {
       route: "/v1/stl/png",
       body,
       contentType: "application/octet-stream",
       accept: PNG,
       refusal: "render",
       tooLarge,
+      answer: { path: join(dir, "preview.png") },
     });
-    return [{ kind: "render_png", contentType: PNG, bytes }];
+    return [{ kind: "render_png", contentType: PNG, ...answer }];
   } catch (error) {
     // A 413 is already the sentence the file shows. A 422 is OpenSCAD's own
     // words, which get the sentence before them, except the slicer's own
     // refusal of an STL with no triangles, sent before OpenSCAD runs, which
-    // gets the preview sentence alone (issue #379).
+    // gets the preview sentence alone (issue #379), as does an answer over
+    // its cap, which is Platehouse's own words, never OpenSCAD's.
     if (error instanceof RenderFailed && error.message !== tooLarge) {
       const lead =
-        error.message === SLICER_NOT_AN_STL
+        error.message === SLICER_NOT_AN_STL || error instanceof AnswerTooLarge
           ? DERIVED_MESSAGES.previewFailed
           : DERIVED_MESSAGES.previewRejected;
       throw new RenderFailed(`${lead} ${error.message}`);
@@ -92,14 +105,18 @@ async function postPreview(
   }
 }
 
-/** The preview picture of an STL whose source open() streams, size bytes long. */
+/**
+ * The preview picture of an STL whose source open() streams, size bytes
+ * long, as a file in dir.
+ */
 export async function stlPreviewOutputs(
   target: SlicerTarget,
   open: () => Promise<Readable>,
   size: number,
+  dir: string,
 ): Promise<RenderOutput[]> {
   if (size > LIMITS.stlBodyBytes) throw new RenderFailed(DERIVED_MESSAGES.stlTooLarge);
-  return postPreview(target, await open(), DERIVED_MESSAGES.stlTooLarge);
+  return postPreview(target, await open(), DERIVED_MESSAGES.stlTooLarge, dir);
 }
 
 /** What a STEP file's preview is made from, and how its memory is gated. */
@@ -113,8 +130,8 @@ export interface MeshPreviewInput {
    * (memory/gate.ts, memoryGate), resolving with its result.
    */
   hold: <T>(task: () => Promise<T>) => Promise<T>;
-  /** TMP_DIR: the STL is written to a folder of its own here while it is sent. */
-  tmpDir: string;
+  /** The job's temp folder: the STL is written here while it is sent, and the PNG kept. */
+  dir: string;
   /** The largest STL that may be sent: the contract's, unless a test sets a smaller one. */
   limit?: number;
 }
@@ -135,9 +152,8 @@ export async function meshPreviewOutputs(
       `${DERIVED_MESSAGES.previewFailed} The mesh is too large to preview: ${Math.ceil(input.size / MIB)} MiB, over the ${Math.floor(PREVIEW_MESH_MAX_BYTES / MIB)} MiB a preview reads.`,
     );
   }
-  const dir = await mkdtemp(join(input.tmpDir, "step-preview-"));
+  const path = join(input.dir, "mesh.stl");
   try {
-    const path = join(dir, "mesh.stl");
     const tooLarge = await input.hold(async () => {
       let stl: ReturnType<typeof stlFromGlb>;
       try {
@@ -155,8 +171,8 @@ export async function meshPreviewOutputs(
       await pipeline(stl.open(), createWriteStream(path));
       return message;
     });
-    return await postPreview(target, createReadStream(path), tooLarge);
+    return await postPreview(target, createReadStream(path), tooLarge, input.dir);
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(path, { force: true }).catch(() => undefined);
   }
 }
