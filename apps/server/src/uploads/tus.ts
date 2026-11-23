@@ -793,6 +793,12 @@ export function createUploads(deps: {
     owner: string | undefined,
     holder: string | undefined,
   ): Promise<() => void> {
+    // The folder may not be there yet: tus's FileStore makes it in its
+    // constructor without waiting for it, so a creation can arrive first
+    // under load (main.ts waits for prepareUploads; a caller that does not
+    // relies on that mkdir), and TMP_DIR can be emptied while the server
+    // runs. Reading it then, or writing the upload's files, would fail.
+    await mkdir(dir, { recursive: true });
     // Taken before the folder is read. A reservation is given back only once
     // its upload's files are written (POST_CREATE in registerTus), so one
     // given back after this point is already in the folder when it is read,

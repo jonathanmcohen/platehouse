@@ -78,9 +78,10 @@ class FakeQueue implements UploadQueue {
 const PREFIX = "/api/v1/uploads";
 
 /**
- * The free space the tests' upload stores report: plenty, so no test depends
- * on the room left in os.tmpdir(). Only the tests about free space give
- * their own, and one keeps the real disk.
+ * The free space and free inodes the tests' upload stores report: plenty, so
+ * no test depends on the room left in os.tmpdir() on the machine running it.
+ * Only the tests about free space or inodes give their own, and one keeps
+ * the real disk.
  */
 const plentyOfRoom = async () => Number.MAX_SAFE_INTEGER;
 const KEY = { "x-test-key": "letmein" };
@@ -119,6 +120,7 @@ beforeEach(async () => {
     queue,
     log: (line) => lines.push(line),
     freeBytes: plentyOfRoom,
+    freeFiles: plentyOfRoom,
   });
   server = await startApp(async (app) => {
     await registerTus(app, { prefix: PREFIX, authHook: keyHook, uploads });
@@ -345,6 +347,17 @@ describe("tus routes", () => {
     expect(rest.status).toBe(204);
     expect((await readFile(join(uploads.dir, id))).equals(body)).toBe(true);
     expect(queue.enqueued.has(id)).toBe(true);
+  });
+
+  // The store makes its folder in its constructor without waiting for it,
+  // and TMP_DIR can be emptied while the server runs, so a creation can
+  // arrive before the folder is there; it makes the folder, not a 500.
+  test("a creation that arrives before the uploads folder is there makes it and is created", async () => {
+    await rm(uploads.dir, { recursive: true, force: true });
+    const res = await create(10, { filename: "a.stl" });
+    expect(res.status, res.body).toBe(201);
+    const id = idOf(res.headers.location);
+    expect(await tempFiles()).toEqual([id, `${id}.json`].sort());
   });
 
   test("HEAD reports the offset and the length", async () => {
@@ -1018,6 +1031,7 @@ describe("limits on unfinished uploads", () => {
       queue,
       log: (line) => lines.push(line),
       freeBytes: plentyOfRoom,
+      freeFiles: plentyOfRoom,
       ...opts,
     });
     limited = await startApp(async (app) => {
