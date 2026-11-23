@@ -37,7 +37,9 @@
 services:
   platehouse:
     container_name: platehouse
-    image: ghcr.io/jonathanmcohen/platehouse:0.1.0
+    # The version tag is the pin: change it, and the slicer image below, to
+    # the release you want, and to the previous one to go back.
+    image: ghcr.io/jonathanmcohen/platehouse:0.1.1
     restart: unless-stopped
     # The server takes up to 30 s to stop cleanly. Docker's default 10 s
     # would kill it partway through.
@@ -90,9 +92,10 @@ services:
 
   platehouse-slicer:
     container_name: platehouse-slicer
-    # Pin an orca-X.Y.Z tag, or follow "stable", which moves to a new
-    # OrcaSlicer release only after it has passed a test slice.
-    image: ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1
+    # Keep this on the same version as the app: the version tag is the pin.
+    # orca-X.Y.Z follows the newest release build for that OrcaSlicer version,
+    # and "stable" the newest main build that passed a test slice.
+    image: ghcr.io/jonathanmcohen/platehouse-slicer:0.1.1
     restart: unless-stopped
     # The image's own slicer user. No other container on the same host
     # should run as uid 10001: the sandbox's process limit counts every

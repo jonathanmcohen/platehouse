@@ -126,9 +126,10 @@ location if it is off. After you go back, upload those files again. The warning 
 
 ### The slicer
 
-The slicer image is tagged `orca-X.Y.Z` for the OrcaSlicer version it contains, and `stable`
-points to the newest one that has passed a test slice. To move to a new OrcaSlicer version, change
-the tag and recreate the slicer:
+The slicer image is tagged with the release version, `platehouse-slicer:0.1.1`, the same as the
+app image, and that version tag is the pin. `orca-X.Y.Z` follows the newest release build for that
+OrcaSlicer version, and `stable` the newest main build that passed a smoke slice. To move to a new
+release, change the version tag and recreate the slicer:
 
 ```bash
 docker compose pull platehouse-slicer
@@ -136,8 +137,8 @@ docker compose up -d --no-deps platehouse-slicer
 ```
 
 When the slicer's OrcaSlicer version changes, Platehouse re-estimates the library in the
-background, since a new version can give different numbers. To go back, set the previous tag
-again.
+background, since a new version can give different numbers. To go back, set the previous version
+tag again.
 
 Pull the slicer image again when you upgrade the app, even if you keep the same tag: a Platehouse
 release ships its slicer changes in the slicer image. The STL and STEP preview pictures added in

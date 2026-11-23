@@ -143,6 +143,7 @@ jobs:
     outputs:
       version: ${{ steps.pick.outputs.version }}
       stable: ${{ steps.pick.outputs.stable }}
+      orca: ${{ steps.pick.outputs.orca }}
       release: ${{ steps.pick.outputs.release }}
       orca_sha256: ${{ steps.pins.outputs.orca_sha256 }}
       orca_src_sha: ${{ steps.pins.outputs.orca_src_sha }}
@@ -168,7 +169,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/logs"
           {
             # stable moves on daily and manual runs and on a plain vX.Y.Z tag;
-            # a prerelease tag publishes the orca tags and leaves stable alone.
+            # a prerelease tag leaves stable alone, and orca-X.Y.Z too, which
+            # deployments pin: only the run tag and the release's version are
+            # published for it. orca-X.Y.Z moves on every other run.
             # A run by hand builds apps/slicer from the ref it was started on,
             # so it must start from main or a release tag, as release.yml's
             # gate requires: a dispatch from any other branch would publish
@@ -177,6 +180,7 @@ jobs:
             # (X.Y.Z or X.Y.Z-rc.1 for v0.1.0-rc.1), tagged beside the orca
             # tags; empty for a daily run or a run from main.
             stable=true
+            orca=true
             release=""
             if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ] && [[ "$REF" != refs/tags/* ]]; then
               echo "::error::${REF} is not main or a release tag; a run by hand must start from main or a vX.Y.Z tag, so nothing is built"
@@ -190,12 +194,14 @@ jobs:
               fi
               if [[ ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 stable=false
-                echo "${REF#refs/tags/} is a prerelease tag: stable will not move"
+                orca=false
+                echo "${REF#refs/tags/} is a prerelease tag: stable and orca-X.Y.Z will not move"
               fi
               release="${REF#refs/tags/v}"
               echo "The image will also be tagged ${release}, the release's version"
             fi
             echo "stable=${stable}" >>"$GITHUB_OUTPUT"
+            echo "orca=${orca}" >>"$GITHUB_OUTPUT"
             echo "release=${release}" >>"$GITHUB_OUTPUT"
             if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
               if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -596,10 +602,10 @@ jobs:
             echo "The pushed image is the tested image, manifest ${TESTED}"
           } 2>&1 | tee -a "$RUNNER_TEMP/logs/check.log"
 
-      # 5) The version tags (orca-X.Y.Z, the run tag and, on a run from a
-      #    release tag, the release's version RELEASE), read back; then
-      #    stable, read back, unless this is a prerelease tag's run
-      #    (MOVE_STABLE false). A carbon copy each (--prefer-index=false), so
+      # 5) The version tags (orca-X.Y.Z unless this is a prerelease tag's run
+      #    (MOVE_ORCA false), the run tag and, on a run from a release tag,
+      #    the release's version RELEASE), read back; then stable, read back,
+      #    unless this is a prerelease tag's run (MOVE_STABLE false). A carbon copy each (--prefer-index=false), so
       #    every tag is the tested digest.
       - name: Tag the image and move stable
         id: tag
@@ -608,6 +614,7 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           MOVE_STABLE: ${{ needs.detect.outputs.stable }}
+          MOVE_ORCA: ${{ needs.detect.outputs.orca }}
           RELEASE: ${{ needs.detect.outputs.release }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
@@ -629,6 +636,10 @@ jobs:
               echo "::error::detect gave no stable decision ('${MOVE_STABLE}'); nothing is tagged"
               exit 1
             fi
+            if [ "$MOVE_ORCA" != "true" ] && [ "$MOVE_ORCA" != "false" ]; then
+              echo "::error::detect gave no orca decision ('${MOVE_ORCA}'); nothing is tagged"
+              exit 1
+            fi
             # RELEASE is empty, or the semver version of the release tag the
             # run started from (the same rule as the pick step's tag check),
             # and a valid image tag (at most 128 characters).
@@ -642,12 +653,16 @@ jobs:
             # tagged: the tags this step has pointed, or is pointing, at the
             # digest, for the failure issue. Written before each create, so a
             # create or readback that fails part way still names its tags.
-            tags="orca-${VERSION}, ${run_tag}"
-            release_args=()
-            if [ -n "$RELEASE" ]; then
-              tags="${tags}, ${RELEASE}"
-              release_args=(-t "${IMAGE}:${RELEASE}")
-            fi
+            # names: the tags of this run, in the order they are made and read
+            # back; orca-X.Y.Z only when MOVE_ORCA is true.
+            names=()
+            if [ "$MOVE_ORCA" = "true" ]; then names+=("orca-${VERSION}"); fi
+            names+=("$run_tag")
+            if [ -n "$RELEASE" ]; then names+=("$RELEASE"); fi
+            tags="$(printf ', %s' "${names[@]}")"
+            tags="${tags:2}"
+            create_args=()
+            for name in "${names[@]}"; do create_args+=(-t "${IMAGE}:${name}"); done
             echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
             readback() {
               local got
@@ -657,11 +672,8 @@ jobs:
                 exit 1
               fi
             }
-            docker buildx imagetools create --prefer-index=false \
-              -t "${IMAGE}:orca-${VERSION}" -t "${IMAGE}:${run_tag}" "${release_args[@]}" "$src"
-            readback "${IMAGE}:orca-${VERSION}"
-            readback "${IMAGE}:${run_tag}"
-            if [ -n "$RELEASE" ]; then readback "${IMAGE}:${RELEASE}"; fi
+            docker buildx imagetools create --prefer-index=false "${create_args[@]}" "$src"
+            for name in "${names[@]}"; do readback "${IMAGE}:${name}"; done
             if [ "$MOVE_STABLE" = "true" ]; then
               tags="${tags}, stable"
               echo "tagged=${tags}" >>"$GITHUB_OUTPUT"
@@ -676,7 +688,7 @@ jobs:
               echo "- digest: \`${DIGEST}\`"
               echo "- tags: ${tags}"
               if [ "$MOVE_STABLE" != "true" ]; then
-                echo "- stable not moved (prerelease tag). The daily run will not move it either: it sees orca-${VERSION} and builds nothing. stable reaches this version on a plain release tag or a run by hand."
+                echo "- orca-${VERSION} and stable not moved (prerelease tag). The next daily run builds orca-${VERSION} if it does not exist yet and moves both; a plain release tag or a run by hand moves them too."
               fi
             } >>"$GITHUB_STEP_SUMMARY"
             echo "Published ${tags} at ${DIGEST}"

@@ -107,8 +107,10 @@ switched on there (Source: GitHub Actions). See [apps/docs/README.md](apps/docs/
 ## Slicer image
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
-`ghcr.io/jonathanmcohen/platehouse-slicer`. A deployment pins an `orca-X.Y.Z` tag, as
-`examples/docker-compose.yml` does, or follows the `stable` tag. A test server can follow the
+`ghcr.io/jonathanmcohen/platehouse-slicer`. A deployment pins the version tag
+(`platehouse-slicer:0.1.1`, the same as the app image), as `examples/docker-compose.yml` does.
+`orca-X.Y.Z` follows the newest release build for that OrcaSlicer version, and `stable` the newest
+main build that passed a smoke slice; to go back, set the previous version tag. A test server can follow the
 `rc` tag instead (below).
 
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
@@ -118,11 +120,11 @@ slices does it push `orca-X.Y.Z` and a run tag, `orca-X.Y.Z-r<run number>`, and 
 the same digest. A re-run of a run (Re-run all jobs or Re-run failed jobs) keeps its run number, so its run tag is
 `orca-X.Y.Z-r<run number>.<attempt>` and the first attempt's tag stays on the image it named. It also runs on every release tag, at the latest Orca release, so a change to the slicer
 ships with the release, and it can be run by hand from the Actions tab (a version, or a forced
-failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the two
-`orca-` tags but leaves `stable` alone; a plain `vX.Y.Z` tag moves it. Before anything is pushed,
+failure to test the failure path). A prerelease tag such as `v0.1.0-rc.1` publishes the run tag and the release's version but
+leaves `orca-X.Y.Z` and `stable` alone; a plain `vX.Y.Z` tag moves both. Before anything is pushed,
 a Trivy scan lists fixable HIGH and CRITICAL findings in the job log; it is a report and never
-fails the run. A version first published by a prerelease tag stays off `stable` until a plain
-release tag or a run by hand: the daily run sees its `orca-X.Y.Z` tag and builds nothing.
+fails the run. A prerelease tag leaves `orca-X.Y.Z` and `stable` where they were, so the next daily run builds
+that version when its `orca-X.Y.Z` tag does not exist yet, and moves both.
 
 The image installs its Ubuntu packages from one fixed snapshot of the Ubuntu archive,
 `APT_SNAPSHOT` in `apps/slicer/Dockerfile` (the slicing gate image, `tools/slicing-gate/Dockerfile`,

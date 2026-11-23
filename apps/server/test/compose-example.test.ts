@@ -70,6 +70,16 @@ describe("examples/docker-compose.yml", () => {
     for (const [name, lines] of services()) expect(field(lines, "container_name")).toBe(name);
   });
 
+  test("both images are pinned to this release's version tag", () => {
+    const version = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+    expect(field(services().get("platehouse") ?? [], "image")).toBe(
+      `ghcr.io/jonathanmcohen/platehouse:${version}`,
+    );
+    expect(field(services().get("platehouse-slicer") ?? [], "image")).toBe(
+      `ghcr.io/jonathanmcohen/platehouse-slicer:${version}`,
+    );
+  });
+
   test("starts the app after platehouse-db is healthy", () => {
     const app = services().get("platehouse") ?? [];
     const at = app.findIndex((l) => /^ {4}depends_on:\s*$/.test(l));
