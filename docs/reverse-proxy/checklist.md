@@ -20,13 +20,19 @@ Paste the token and press Enter. Clear it when you are done with `unset PH_TOKEN
 curl -sSI "$PH/healthz"
 ```
 
-Expect `HTTP/2 200` (or `HTTP/1.1 200`) and all three headers:
+Expect `HTTP/2 200` (or `HTTP/1.1 200`) and these four headers, each once. The first comes from
+the proxy; Platehouse sends the other three itself:
 
 ```text
 strict-transport-security: max-age=31536000
+content-security-policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
 referrer-policy: no-referrer
-content-security-policy: frame-ancestors 'none'
+x-content-type-options: nosniff
 ```
+
+If `content-security-policy` is missing, shows only `frame-ancestors 'none'`, or appears twice,
+the proxy is still setting its own policy, as older versions of these guides did: remove that line
+from the proxy so the app's policy reaches the browser unchanged.
 
 And http should redirect to https:
 

@@ -4,11 +4,16 @@
 // the app and the mock issuer leaves one row that logout deletes. A row's id
 // is the base64url SHA-256 of the cookie value, never the cookie value, and
 // the maintenance delete removes rows past either expiry and keeps live ones.
-import { createHash } from "node:crypto";
-import type { Kysely } from "kysely";
+// Token creation and Sign out everywhere wait for each other on the session
+// row (issue #414): two connections race them, held at a known point by a
+// third transaction, and no live token of the signed-out user is left.
+import { createHash, randomBytes } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
+import { type Kysely, sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { createTokens, dbTokenStore } from "../../../src/api/tokens.js";
+import { type CreatedToken, createTokens, dbTokenStore } from "../../../src/api/tokens.js";
 import { dbUserList } from "../../../src/app-api/users.js";
+import { TOKEN_SIGN_IN_WINDOW_MS } from "../../../src/auth/fresh.js";
 import {
   createSessions,
   dbSessionStore,
@@ -154,17 +159,23 @@ describe("createSessions over the sessions table", () => {
     expect((await rowOf(unnamed.id))?.displayName).toBeNull();
   });
 
-  test("endAllFor deletes every session of one subject and no other", async () => {
+  test("signOutEverywhere deletes every session of one subject and no other", async () => {
     const sessions = createSessions({ store: dbSessionStore(db) });
     const a1 = await sessions.start("subject-a");
     const a2 = await sessions.start("subject-a");
     const b = await sessions.start("subject-b");
-    expect(await sessions.endAllFor("subject-a")).toBe(2);
+    expect(await sessions.signOutEverywhere("subject-a", false)).toEqual({
+      sessionsEnded: 2,
+      tokensRevoked: 0,
+    });
     expect(await rowOf(a1.id)).toBeUndefined();
     expect(await rowOf(a2.id)).toBeUndefined();
     expect(await rowOf(b.id)).toBeDefined();
     expect(await sessions.find(b.id)).toBeDefined();
-    expect(await sessions.endAllFor("subject-a")).toBe(0);
+    expect(await sessions.signOutEverywhere("subject-a", false)).toEqual({
+      sessionsEnded: 0,
+      tokensRevoked: 0,
+    });
   });
 
   test("the schema refuses a display name over 200 characters", async () => {
@@ -226,18 +237,192 @@ describe("dbUserList over the sessions and api_tokens tables (issue #322)", () =
     expect(users).toHaveLength(2);
   });
 
-  test("revokeAllFrom revokes every live token of one creator and no other", async () => {
+  test("signOutEverywhere with revokeTokens revokes every live token of one creator and no other", async () => {
     const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const sessions = createSessions({ store: dbSessionStore(db) });
     const a = await tokens.createToken("a1", { subject: "subject-a", name: null });
     const a2 = await tokens.createToken("a2", { subject: "subject-a", name: "A" });
     const b = await tokens.createToken("b", { subject: "subject-b", name: "B" });
     const none = await tokens.createToken("old");
-    expect(await tokens.revokeAllFrom("subject-a")).toBe(2);
+    expect(await sessions.signOutEverywhere("subject-a", true)).toEqual({
+      sessionsEnded: 0,
+      tokensRevoked: 2,
+    });
     expect(await tokens.authenticate(`Bearer ${a.token}`)).toBeUndefined();
     expect(await tokens.authenticate(`Bearer ${a2.token}`)).toBeUndefined();
     expect((await tokens.authenticate(`Bearer ${b.token}`))?.id).toBe(b.id);
     expect((await tokens.authenticate(`Bearer ${none.token}`))?.id).toBe(none.id);
-    expect(await tokens.revokeAllFrom("subject-a")).toBe(0);
+    expect(await sessions.signOutEverywhere("subject-a", true)).toEqual({
+      sessionsEnded: 0,
+      tokensRevoked: 0,
+    });
+  });
+});
+
+describe("token creation and Sign out everywhere wait for each other (issue #414)", () => {
+  beforeEach(async () => {
+    await db.deleteFrom("apiTokens").execute();
+  });
+
+  /** A session row for subject, signed in agoMs ago; returns its row id. */
+  async function signedIn(subject: string, agoMs = 0): Promise<string> {
+    const id = sha256(randomBytes(32).toString("base64url"));
+    const now = Date.now();
+    await dbSessionStore(db).create({
+      id,
+      subject,
+      displayName: "Synthetic Racer",
+      createdAt: new Date(now - agoMs),
+      expiresAt: new Date(now + DAY),
+      idleExpiresAt: new Date(now + DAY),
+    });
+    return id;
+  }
+
+  /** Live tokens this subject made. */
+  async function liveTokens(subject: string): Promise<number> {
+    const { rows } = await sql<{ n: number }>`
+      select count(*)::int as n from api_tokens
+       where created_by_subject = ${subject} and revoked_at is null
+    `.execute(db);
+    return rows[0]?.n ?? 0;
+  }
+
+  /**
+   * Waits until a statement whose text matches pattern is waiting on a lock:
+   * the point a racing transaction is known to have reached. Fails after 10 s.
+   */
+  async function waitingOnLock(pattern: string, what: string): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const { rows } = await sql<{ waiting: number }>`
+        select count(*)::int as waiting from pg_stat_activity
+         where datname = current_database() and wait_event_type = 'Lock'
+           and query ilike ${pattern} and query not ilike '%pg_stat_activity%'
+      `.execute(db);
+      if ((rows[0]?.waiting ?? 0) > 0) return;
+      if (Date.now() > deadline) throw new Error(`${what} never waited on a lock`);
+      await sleep(20);
+    }
+  }
+
+  /**
+   * A transaction on a connection of its own that holds api_tokens in SHARE
+   * mode until released: an insert into api_tokens, or an update of it, waits
+   * for it. That stops a racing transaction at a known statement, after the
+   * statements before it have taken their locks.
+   */
+  async function holdTokenTable() {
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held: () => void = () => {};
+    const isHeld = new Promise<void>((resolve) => {
+      held = resolve;
+    });
+    const done = db.transaction().execute(async (trx) => {
+      await sql`lock table api_tokens in share mode`.execute(trx);
+      held();
+      await released;
+    });
+    await Promise.race([isHeld, done]);
+    return { release, done };
+  }
+
+  test("a fresh session gets a token made by its subject, with its display name", async () => {
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const id = await signedIn("subject-made");
+    const created = await tokens.createTokenForSession(id, "Script", new Date());
+    if (created === "stale") throw new Error("refused a fresh session");
+    const row = await tokens.authenticate(`Bearer ${created.token}`);
+    expect(row?.createdBySubject).toBe("subject-made");
+    expect(row?.createdByName).toBe("Synthetic Racer");
+  });
+
+  test("a session signed in longer ago than the window answers stale and makes nothing", async () => {
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const id = await signedIn("subject-old", TOKEN_SIGN_IN_WINDOW_MS + 1000);
+    expect(await tokens.createTokenForSession(id, "Script", new Date())).toBe("stale");
+    expect(await db.selectFrom("apiTokens").select("id").execute()).toEqual([]);
+  });
+
+  test("creation with a session deleted before it starts answers stale", async () => {
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const id = await signedIn("subject-gone");
+    expect(await dbSessionStore(db).delete(id)).toBe(true);
+    expect(await tokens.createTokenForSession(id, "Script", new Date())).toBe("stale");
+    expect(await db.selectFrom("apiTokens").select("id").execute()).toEqual([]);
+  });
+
+  test("a token made while its maker is signed out everywhere is revoked or refused", async () => {
+    // The creation reads the session row first and holds it; Sign out
+    // everywhere then waits for it, and its revoke catches the new token.
+    const subject = "subject-race-create-first";
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const id = await signedIn(subject);
+    const hold = await holdTokenTable();
+    let creating: Promise<CreatedToken | "stale"> | undefined;
+    let signingOut: Promise<{ sessionsEnded: number; tokensRevoked: number }> | undefined;
+    try {
+      creating = tokens.createTokenForSession(id, "Raced script", new Date());
+      // The creation has read and locked the session row; its insert waits.
+      await waitingOnLock('insert into "api_tokens"%', "the token insert");
+      signingOut = sessions.signOutEverywhere(subject, true);
+      // Ending the sessions waits for the creation that holds the row.
+      await waitingOnLock('delete from "sessions"%', "Sign out everywhere's delete");
+      hold.release();
+      await hold.done;
+      const created = await creating;
+      const out = await signingOut;
+      expect(await liveTokens(subject)).toBe(0);
+      if (created !== "stale") {
+        expect(await tokens.authenticate(`Bearer ${created.token}`)).toBeUndefined();
+      }
+      // In this order the creation went first, so it made the token and the
+      // sign-out revoked it.
+      expect(created).not.toBe("stale");
+      expect(out).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    } finally {
+      hold.release();
+      await hold.done.catch(() => {});
+      await creating?.catch(() => undefined);
+      await signingOut?.catch(() => undefined);
+    }
+  });
+
+  test("a token asked for while its maker is being signed out everywhere is refused", async () => {
+    // Sign out everywhere has deleted the session rows and not committed; the
+    // creation's locked read waits for it, then finds no session.
+    const subject = "subject-race-sign-out-first";
+    const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
+    const sessions = createSessions({ store: dbSessionStore(db) });
+    const id = await signedIn(subject);
+    const hold = await holdTokenTable();
+    let creating: Promise<CreatedToken | "stale"> | undefined;
+    let signingOut: Promise<{ sessionsEnded: number; tokensRevoked: number }> | undefined;
+    try {
+      signingOut = sessions.signOutEverywhere(subject, true);
+      // The sessions are deleted in its transaction; its revoke waits.
+      await waitingOnLock('update "api_tokens"%', "Sign out everywhere's revoke");
+      creating = tokens.createTokenForSession(id, "Raced script", new Date());
+      // The creation's read of the session row waits for the sign-out.
+      await waitingOnLock('select%from "sessions"%for share%', "the creation's session read");
+      hold.release();
+      await hold.done;
+      const out = await signingOut;
+      const created = await creating;
+      expect(await liveTokens(subject)).toBe(0);
+      expect(created).toBe("stale");
+      expect(out).toEqual({ sessionsEnded: 1, tokensRevoked: 0 });
+      expect(await db.selectFrom("apiTokens").select("id").execute()).toEqual([]);
+    } finally {
+      hold.release();
+      await hold.done.catch(() => {});
+      await signingOut?.catch(() => undefined);
+      await creating?.catch(() => undefined);
+    }
   });
 });
 
@@ -339,7 +524,9 @@ describe("a login through the app with sessions in Postgres", () => {
     const tokens = createTokens({ store: dbTokenStore(db), log: () => {} });
     const made = await tokens.createToken("Long script", { subject: sub, name: "Synthetic Long" });
     expect((await tokens.authenticate(`Bearer ${made.token}`))?.createdBySubject).toBe(sub);
-    expect(await tokens.revokeAllFrom(sub)).toBe(1);
+    expect(
+      await createSessions({ store: dbSessionStore(db) }).signOutEverywhere(sub, true),
+    ).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
   });
 
   test("a 256-character subject is refused at sign-in, and no session row is written", async () => {

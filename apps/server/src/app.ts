@@ -73,6 +73,14 @@
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
 //   (LOG_REDACT_PATHS), so no API token or session cookie reaches the log.
+// - Every answer carries the app's Content-Security-Policy, Referrer-Policy
+//   and X-Content-Type-Options (web/security-headers.ts, issue #449),
+//   unless its route set its own; frameworkError sets them on Fastify's own
+//   400 and 414 too. HSTS is left to the TLS-terminating proxy.
+// - An error on a root route (not in a scope with its own handler) is
+//   answered by the root error handler: a 4xx keeps its status and message,
+//   a store outage is 503 {error: "unavailable"}, anything else is logged
+//   and answered 500 {error: "internal"} with no path or cause (issue #455).
 
 import { STATUS_CODES } from "node:http";
 import fastifyCookie from "@fastify/cookie";
@@ -103,7 +111,7 @@ import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.j
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
-import { type DeliveryDeps, registerDownloads } from "./delivery/download.js";
+import { type DeliveryDeps, isStoreOutage, registerDownloads } from "./delivery/download.js";
 import { LINK_ROUTE, registerLinks } from "./delivery/links.js";
 import { createLocales, type Locales } from "./locales/locales.js";
 import {
@@ -113,6 +121,7 @@ import {
   SLOW_LINK_BYTES_PER_SECOND,
   type Uploads,
 } from "./uploads/tus.js";
+import { addSecurityHeaders, setSecurityHeaders } from "./web/security-headers.js";
 import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
 /** Where the tus upload handler is mounted: one for the UI, one for the Public API v1. */
@@ -144,8 +153,6 @@ export interface AppAuth {
   publicOrigin: string;
   /** Config.absoluteUrl: an absolute URL on PUBLIC_ORIGIN, never from a request. */
   absoluteUrl(path: string): string;
-  /** OIDC_GROUP, named on the refusal page. */
-  group: string;
   /** The login cookie's signing key (loginCookieKey). */
   cookieSecret: Buffer;
   /** The clock for the login cookie's 10 minutes; the real one when left out. */
@@ -408,6 +415,8 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   releaseUnreadBody(request, reply);
+  // No onSend hook runs for this answer, so the security headers are set here.
+  setSecurityHeaders(reply);
   if (routeClass(request.url) === "link") {
     return reply.code(403).header("cache-control", "no-store").send();
   }
@@ -418,6 +427,19 @@ function frameworkError(error: FastifyError, request: FastifyRequest, reply: Fas
     statusCode: status,
   });
 }
+
+/** Headers a failed route may have set that must not stay on the error answer. */
+const FAILED_ANSWER_HEADERS: readonly string[] = [
+  "content-type",
+  "content-length",
+  "content-disposition",
+  "content-range",
+  "content-encoding",
+  "accept-ranges",
+  "cache-control",
+  "etag",
+  "last-modified",
+];
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { auth } = deps;
@@ -437,6 +459,49 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     frameworkErrors: frameworkError,
   });
 
+  // Errors on root routes (a static file that cannot be read, a hook that
+  // fails). Scopes with their own handler keep it. A 4xx keeps its status
+  // and message; a store outage is 503 as the scoped handlers answer it;
+  // anything else is logged and answered 500 with no detail, so no path,
+  // host or query reaches the client. The security headers are set by the
+  // onSend hook below, which also runs for these answers.
+  app.setErrorHandler(async (error: FastifyError, request, reply) => {
+    // The status as Fastify's default handler works it out: the error's own,
+    // else one the route already set, else 500.
+    const loose = error as FastifyError & {
+      status?: number;
+      headers?: Record<string, string | number | string[]>;
+    };
+    const own = loose.statusCode ?? loose.status;
+    const set = reply.statusCode;
+    const fromError = own !== undefined && own >= 400 && own <= 599;
+    const status = fromError ? own : set >= 400 && set <= 599 ? set : 500;
+    // What the failed route had set for its own answer (a static file's type,
+    // length, caching and validators) does not describe this one.
+    for (const name of FAILED_ANSWER_HEADERS) reply.removeHeader(name);
+    if (status < 500) {
+      if (loose.headers !== undefined) reply.headers(loose.headers);
+      // The error's own message and code are kept only when the error chose
+      // the status; an error the route did not mean as a 4xx says nothing.
+      return reply.code(status).send(
+        fromError
+          ? {
+              error: STATUS_CODES[status] ?? "Error",
+              code: error.code,
+              message: error.message,
+              statusCode: status,
+            }
+          : { error: STATUS_CODES[status] ?? "Error", statusCode: status },
+      );
+    }
+    request.log.error({ err: error }, "app: a request failed");
+    reply.header("cache-control", "no-store");
+    if (isStoreOutage(error)) return reply.code(503).send({ error: "unavailable" });
+    return reply.code(500).send({ error: "internal" });
+  });
+  // The CSP, Referrer-Policy and nosniff on every answer (web/security-headers.ts),
+  // added first so every route, scope, refusal and error answer gets them.
+  addSecurityHeaders(app);
   // Cookies are parsed before the gate runs; the login cookie is signed.
   await app.register(fastifyCookie, { secret: auth.cookieSecret });
   // The OpenAPI generator sees every route registered after it.
@@ -500,7 +565,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     sessions: auth.sessions,
     publicOrigin: auth.publicOrigin,
     absoluteUrl: auth.absoluteUrl,
-    group: auth.group,
     ...(auth.now === undefined ? {} : { now: auth.now }),
   });
 

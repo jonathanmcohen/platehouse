@@ -14,8 +14,9 @@
 //   the issuer cannot be reached that sign-in fails, so nothing new is made.
 // - Sign out everywhere (POST /app/api/users/sign-out) ends every session of
 //   one user and, when asked, revokes every live token that user made.
-//   Every signed-in user may use it: the app has no roles, and every member
-//   of the group can already revoke any token and change any setting.
+//   Signing yourself out needs a live session; signing someone else out, or
+//   revoking a token someone else made, needs a fresh sign-in as a new token
+//   does (the last describe block).
 //
 // No container: sessions and tokens are in memory, against the mock issuer
 // (sessions-db.test.ts and settings.test.ts run the same against Postgres).
@@ -23,11 +24,13 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createTokens, TOKEN_PATTERN, type Tokens } from "../../../src/api/tokens.js";
 import { refusingApi } from "../../../src/api/v1.js";
 import { TOKEN_SIGN_IN_WINDOW_MS } from "../../../src/app-api/tokens.js";
+import { SIGN_IN_REQUIRED_MESSAGE } from "../../../src/auth/fresh.js";
 import { SESSION_COOKIE, sessionRowId } from "../../../src/auth/sessions.js";
 import {
   type AuthTestApp,
   authTestApp,
   type MemoryTokenStore,
+  memorySessionStore,
   memoryTokenList,
   memoryTokenStore,
   memoryUserList,
@@ -46,10 +49,14 @@ let tokens: Tokens;
 let lines: string[] = [];
 
 beforeEach(async () => {
-  tokenStore = memoryTokenStore();
+  // Linked both ways: a token is made for a session in the session store,
+  // and Sign out everywhere revokes from the token store.
+  const sessionStore = memorySessionStore();
+  tokenStore = memoryTokenStore(sessionStore);
   tokens = createTokens({ store: tokenStore, log: () => {} });
   lines = [];
   t = await authTestApp({
+    store: sessionStore,
     logger: { write: (line: string) => lines.push(line) },
     api: { tokens, library: refusingApi.library },
     appApi: (auth) => ({
@@ -57,7 +64,6 @@ beforeEach(async () => {
       users: {
         list: memoryUserList(auth.store, tokenStore),
         sessions: auth.sessions,
-        tokens,
       },
     }),
   });
@@ -355,7 +361,8 @@ describe("a refused sign-in ends the session the browser holds", () => {
     t.issuer.user = { ...t.issuer.user, sub: "subject-no-cookie", groups: ["other"] };
     const run = await runLogin(t);
     expect(run.callback.statusCode).toBe(403);
-    expect(run.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+    expect(run.callback.body).toContain("Your account is not allowed to use this Platehouse.");
+    expect(run.callback.body).not.toContain(TEST_GROUP);
     expect(setCookie(run.callback, SESSION_COOKIE)).toBeUndefined();
     expect(t.store.rows.size).toBe(1);
     expect((await call("GET", "/app/api/tokens", bystander)).status).toBe(200);
@@ -378,7 +385,8 @@ describe("a refused sign-in ends the session the browser holds", () => {
     t.store.failWith = new Error("the database is down");
     const again = await signInAgain(stale, { groups: ["other"] });
     expect(again.callback.statusCode).toBe(403);
-    expect(again.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+    expect(again.callback.body).toContain("Your account is not allowed to use this Platehouse.");
+    expect(again.callback.body).not.toContain(TEST_GROUP);
     expect(setCookie(again.callback, SESSION_COOKIE)?.attributes.get("max-age")).toBe("0");
     expect(
       lines.some((line) => line.includes("auth: could not end the refused user's session")),
@@ -552,5 +560,124 @@ describe("Sign out everywhere", () => {
     });
     expect(crossSite.statusCode).toBe(403);
     expect((await call("GET", "/app/api/users", me)).status).toBe(200);
+  });
+});
+
+// Acts on other people need a fresh sign-in too: a session kept by someone
+// since removed from the group must not be able to sign everyone else out, or
+// revoke what they made. Acts on your own sessions and tokens need only a
+// live session.
+describe("acts on other people need a fresh sign-in", () => {
+  const REFUSED = {
+    error: "sign_in_required",
+    message: SIGN_IN_REQUIRED_MESSAGE,
+    code: "sign_in_required",
+    signIn: "/auth/login?next=/settings",
+  };
+
+  test("an older session cannot sign another user out, and nothing ends", async () => {
+    const me = await signIn("subject-old");
+    const theirs = await signIn("subject-victim");
+    const made = await makeToken(theirs, "Their script");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-victim",
+      revokeTokens: true,
+    });
+    expect(res.status, res.text).toBe(403);
+    expect(res.json()).toEqual(REFUSED);
+    expect((await call("GET", "/app/api/tokens", theirs)).status).toBe(200);
+    expect(await v1Status(made.token)).toBe(200);
+  });
+
+  test("an older session can still sign itself out everywhere", async () => {
+    const me = await signIn("subject-old");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-old",
+      revokeTokens: false,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 0 });
+  });
+
+  test("an older session cannot revoke a token another user made, and nothing is revoked", async () => {
+    const me = await signIn("subject-old");
+    const theirs = await signIn("subject-maker");
+    const made = await makeToken(theirs, "Their script");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+
+    const res = await call("DELETE", `/app/api/tokens/${made.id}`, me);
+    expect(res.status, res.text).toBe(403);
+    expect(res.json()).toEqual(REFUSED);
+    expect(await v1Status(made.token)).toBe(200);
+  });
+
+  test("an older session cannot revoke a token with no recorded maker", async () => {
+    const me = await signIn("subject-old");
+    const old = await tokens.createToken("Old script");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+    const row = [...tokenStore.rows.values()].find((r) => r.name === "Old script");
+    const res = await call("DELETE", `/app/api/tokens/${row?.id}`, me);
+    expect(res.status, res.text).toBe(403);
+    expect(res.json()).toEqual(REFUSED);
+    expect(await v1Status(old.token)).toBe(200);
+  });
+
+  test("a fresh session can revoke a token with no recorded maker", async () => {
+    const me = await signIn("subject-fresh");
+    const old = await tokens.createToken("Old script");
+    const row = [...tokenStore.rows.values()].find((r) => r.name === "Old script");
+    const res = await call("DELETE", `/app/api/tokens/${row?.id}`, me);
+    expect(res.status, res.text).toBe(204);
+    expect(await v1Status(old.token)).toBe(401);
+  });
+
+  test("an older session can sign itself out with revokeTokens, revoking its own tokens", async () => {
+    const me = await signIn("subject-old");
+    const mine = await makeToken(me, "My script");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-old",
+      revokeTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect(await v1Status(mine.token)).toBe(401);
+  });
+
+  test("an older session can revoke a token it made itself", async () => {
+    const me = await signIn("subject-old");
+    const made = await makeToken(me, "My script");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+    const res = await call("DELETE", `/app/api/tokens/${made.id}`, me);
+    expect(res.status, res.text).toBe(204);
+    expect(await v1Status(made.token)).toBe(401);
+  });
+
+  test("a fresh session can sign another user out and revoke their token", async () => {
+    const me = await signIn("subject-fresh");
+    const theirs = await signIn("subject-other");
+    const made = await makeToken(theirs, "Their script");
+    const second = await makeToken(theirs, "Their second script");
+
+    const revoke = await call("DELETE", `/app/api/tokens/${made.id}`, me);
+    expect(revoke.status, revoke.text).toBe(204);
+    expect(await v1Status(made.token)).toBe(401);
+
+    const out = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-other",
+      revokeTokens: true,
+    });
+    expect(out.status, out.text).toBe(200);
+    expect(out.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect(await v1Status(second.token)).toBe(401);
+  });
+
+  test("a revoke of an unknown token by an older session is 404, as for a fresh one", async () => {
+    const me = await signIn("subject-old");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+    expect((await call("DELETE", "/app/api/tokens/no-such-token", me)).status).toBe(404);
   });
 });

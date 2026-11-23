@@ -4,7 +4,8 @@
 //
 //   GET  /app/api/users           {users: [{subject, name, sessions, tokens, you}]}
 //   POST /app/api/users/sign-out  {subject, revokeTokens} -> 200
-//                                 {sessionsEnded, tokensRevoked} | 400
+//                                 {sessionsEnded, tokensRevoked} | 400 |
+//                                 403 sign_in_required | 429 rate_limited
 //
 // - Platehouse has no user table: a user is an OIDC subject. The list is
 //   everyone with a live session or a live API token they made (dbUserList),
@@ -16,18 +17,39 @@
 //   request. With revokeTokens it then revokes every live API token they
 //   made. A token made before Platehouse recorded who made it has no maker
 //   and is never revoked here; Settings lists it as made by an unknown user,
-//   to revoke by hand. Sessions end first, so the user cannot make a new
-//   token in between (a new token needs a fresh sign-in anyway). Both steps
-//   can be repeated: a second press ends and revokes nothing more.
-// - Who may use it: every signed-in user. Platehouse has no roles: everyone
-//   in OIDC_GROUP has the same full access, and can already revoke any API
-//   token and change every setting, so this adds no power anyone lacked. A
-//   user can sign themselves out everywhere; their own session ends too.
+//   to revoke by hand. Both steps are one transaction
+//   (Sessions.signOutEverywhere), and token creation reads the maker's
+//   session row under a lock in the same transaction as its insert (issue
+//   #414), so the two wait for each other: a token made at the same moment
+//   is either refused, because its session is gone, or committed before the
+//   sessions end and so revoked with the rest. No token the user makes
+//   while being signed out this way is left live. Both steps can be
+//   repeated: a second press ends and revokes nothing more.
+// - Who may use it: signing yourself out everywhere needs a live session,
+//   and your own session ends too. Signing someone else out, and so
+//   revoking their tokens, also needs a sign-in in the last
+//   TOKEN_SIGN_IN_WINDOW_MS (auth/fresh.ts), else 403 sign_in_required and
+//   nothing ends: the group is checked only at sign-in, so a session kept by
+//   someone since removed from it must not be able to sign everyone else
+//   out. Platehouse has no roles: everyone in OIDC_GROUP has the same access.
+// - One session may call Sign out everywhere at most SESSION_LIMIT_MAX
+//   times in any SESSION_LIMIT_WINDOW_MS (10 in 10 minutes, auth/limit.ts,
+//   issue #424), whoever it signs out; the next answers 429
+//   {error: "rate_limited"} with Retry-After in seconds, and ends nothing. A
+//   call is counted once the fresh sign-in check (for someone else) has
+//   passed, before anything ends, as token creation counts.
 // - The request log records no body (app.ts), so no subject is logged.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
-import type { Tokens } from "../api/tokens.js";
+import { isFresh, refuseStale } from "../auth/fresh.js";
 import { sessionOf } from "../auth/gate.js";
+import {
+  createSessionLimiter,
+  refuseLimited,
+  SESSION_LIMIT_MAX,
+  SESSION_LIMIT_WINDOW_MS,
+} from "../auth/limit.js";
+import { cleanName } from "../auth/names.js";
 import { MAX_SUBJECT_LENGTH } from "../auth/oidc.js";
 import type { Sessions } from "../auth/sessions.js";
 import type { DB } from "../db/types.js";
@@ -48,8 +70,8 @@ export interface KnownUser {
 export interface UsersApiDeps {
   /** Everyone with a live session or a live token they made, at now. */
   list(now: Date): Promise<KnownUser[]>;
-  sessions: Pick<Sessions, "endAllFor">;
-  tokens: Pick<Tokens, "revokeAllFrom">;
+  /** Ends the sessions and revokes the tokens in one transaction. */
+  sessions: Pick<Sessions, "signOutEverywhere">;
   /** The clock "live" is read on; the real one when left out. */
   now?: () => Date;
 }
@@ -124,6 +146,13 @@ export async function registerUsersApi(
   app: FastifyInstance,
   deps: UsersApiDeps | undefined,
 ): Promise<void> {
+  const clock = () => (deps?.now ?? (() => new Date()))();
+  // Sign out everywhere calls per session, on the same clock as the sign-in window.
+  const signOuts = createSessionLimiter({
+    max: SESSION_LIMIT_MAX,
+    windowMs: SESSION_LIMIT_WINDOW_MS,
+    now: () => clock().getTime(),
+  });
   await appApiScope(app, (scope) => {
     scope.get("/users", async (request) => {
       const { list } = need(deps);
@@ -132,7 +161,12 @@ export async function registerUsersApi(
       const users = await list(now);
       return {
         users: users
-          .map((user) => ({ ...user, you: user.subject === you }))
+          // A name recorded before names were cleaned is cleaned here too.
+          .map((user) => ({
+            ...user,
+            name: user.name === null ? null : cleanName(user.name),
+            you: user.subject === you,
+          }))
           .sort(
             (a, b) =>
               Number(b.you) - Number(a.you) ||
@@ -145,11 +179,25 @@ export async function registerUsersApi(
     scope.post<{ Body: { subject: string; revokeTokens: boolean } }>(
       "/users/sign-out",
       { schema: { body: SIGN_OUT } },
-      async (request) => {
-        const { sessions, tokens } = need(deps);
+      async (request, reply) => {
+        const { sessions } = need(deps);
         const { subject, revokeTokens } = request.body;
-        const sessionsEnded = await sessions.endAllFor(subject);
-        const tokensRevoked = revokeTokens ? await tokens.revokeAllFrom(subject) : 0;
+        // The gate let this request in with a session (session-class route).
+        const session = sessionOf(request);
+        const now = clock();
+        if (session === undefined || (subject !== session.subject && !isFresh(session, now))) {
+          return refuseStale(reply);
+        }
+        // Counted only once the session may make this call, and before any work.
+        const limited = signOuts.take(session.id);
+        if (!limited.ok) {
+          request.log.warn("app api: Sign out everywhere over the per-session limit");
+          return refuseLimited(reply, limited.retryAfterSeconds);
+        }
+        const { sessionsEnded, tokensRevoked } = await sessions.signOutEverywhere(
+          subject,
+          revokeTokens,
+        );
         request.log.info({ sessionsEnded, tokensRevoked }, "app api: signed a user out everywhere");
         return { sessionsEnded, tokensRevoked };
       },

@@ -49,8 +49,9 @@
 //      same check itself;
 //    - requireSession: a live session (sessions.ts), or the refusal: a page
 //      (a GET or HEAD that accepts HTML) is sent to /auth/login on
-//      PUBLIC_ORIGIN with 302, anything else is 401 JSON. A session store
-//      that fails answers 503 with no detail.
+//      PUBLIC_ORIGIN with 302, with next= naming the page when returnPath
+//      (routes.ts) accepts its path, anything else is 401 JSON. A session
+//      store that fails answers 503 with no detail.
 //    Bearer and link requests pass to their routes' own checks; no such
 //    route is open: every /api/v1 route, the tus uploads at /api/v1/uploads
 //    included (app.ts apiUploadHook), and the 404 for an unknown /api/v1
@@ -70,6 +71,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Session } from "../db/types.js";
 import { type AuthHook, releaseUnreadBody } from "../uploads/tus.js";
 import { ROOT_FILES } from "../web/shell.js";
+import { returnPath } from "./routes.js";
 import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, type Sessions } from "./sessions.js";
 
 export type RouteClass = "bearer" | "link" | "public" | "session";
@@ -206,7 +208,11 @@ export function installGate(app: FastifyInstance, deps: GateDeps): { requireSess
   function refuse(request: FastifyRequest, reply: FastifyReply) {
     reply.header("cache-control", "no-store");
     if ((request.method === "GET" || request.method === "HEAD") && acceptsHtml(request)) {
-      return reply.redirect(deps.absoluteUrl("/auth/login"), 302);
+      // Back to the page asked for, when it is a path the login keeps; the
+      // query string is never carried.
+      const next = returnPath(request.url.split("?", 1)[0]);
+      const login = next === undefined ? "/auth/login" : `/auth/login?next=${next}`;
+      return reply.redirect(deps.absoluteUrl(login), 302);
     }
     return reply.code(401).send({ error: "unauthorized" });
   }

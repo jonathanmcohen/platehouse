@@ -8,10 +8,11 @@
 // token whose maker is unknown is never revoked here; the token list above
 // shows those, to revoke by hand.
 //
-// Every signed-in user may use it: Platehouse has no roles, and everyone in
-// the sign-in group can already revoke any token. After a change the status
-// line says what was ended, the list is read again, and so is the token
-// list (onTokensRevoked) when tokens were revoked. Signing yourself out
+// Every signed-in user may use it, but signing someone else out needs a
+// sign-in in the last few minutes: the server refuses it otherwise with
+// sign_in_required, and the page says so with a Sign in again link. After a
+// change the status line says what was ended, the list is read again, and so
+// is the token list (onTokensRevoked) when tokens were revoked. Signing yourself out
 // everywhere ends this session too, so the page says so and offers a Sign in
 // link instead of reading the list again. Focus goes to the section heading
 // after the dialog closes, since the row's own button may be gone.
@@ -20,9 +21,9 @@
 // row, the button label, the confirmation and the status line (PR #364
 // review): display names come from the issuer and need not be unique, and
 // signing out the wrong person, or revoking their tokens, cannot be undone.
-import { useId, useRef, useState } from "react";
+import { Fragment, type ReactNode, useId, useRef, useState } from "react";
 import { type I18n, useI18n } from "../i18n/I18n";
-import { appApi, useAppApi } from "./api";
+import { appApi, needsSignIn, SIGN_IN_AGAIN_URL, useAppApi } from "./api";
 import { ConfirmDialog } from "./Dialog";
 
 /** One user as GET /app/api/users lists them. */
@@ -40,15 +41,55 @@ interface SignOutAnswer {
   tokensRevoked: number;
 }
 
+/** First strong isolate and pop directional isolate, around a name in plain text. */
+const ISOLATE_START = "\u2068";
+const ISOLATE_END = "\u2069";
+
 /**
  * How a person is named in Settings: their name with their OIDC subject
  * beside it, so two people with the same name can be told apart, else the
- * subject alone. The token list's "Made by" line uses it too.
+ * subject alone. The name is isolated (first strong isolate to pop
+ * directional isolate), so a name written right to left, or one with an
+ * unclosed direction control, cannot reorder the user id after it. The
+ * token list's "Made by" line, the button's label, the confirmation and the
+ * status line use it; the list row isolates the name with a <bdi> instead.
  */
 export function userLabel(t: I18n["t"], user: { subject: string; name: string | null }): string {
   return user.name === null
     ? user.subject
-    : t("settings.userWithId", { name: user.name, subject: user.subject });
+    : t("settings.userWithId", {
+        name: `${ISOLATE_START}${user.name}${ISOLATE_END}`,
+        subject: user.subject,
+      });
+}
+
+/** Stands for the name while a sentence is split around it; never shown. */
+const NAME_MARK = "\u0000";
+
+/**
+ * A person as the list's row shows them, the same words as userLabel and
+ * "(you)", with the name alone inside a <bdi>: a name written in the other
+ * direction cannot then reorder the user id or "(you)" beside it. The
+ * translations keep their own word order: the name's place is found by
+ * writing the sentence once with a mark where it goes.
+ */
+function UserName({ user }: { user: KnownUser }): ReactNode {
+  const { t } = useI18n();
+  if (user.name === null) {
+    const label = userLabel(t, user);
+    return user.you ? t("signOut.you", { name: label }) : label;
+  }
+  const withMark = t("settings.userWithId", { name: NAME_MARK, subject: user.subject });
+  const sentence = user.you ? t("signOut.you", { name: withMark }) : withMark;
+  const parts = sentence.split(NAME_MARK);
+  return parts.map((part, index) => (
+    // The parts never change order, so their index is a stable key.
+    // biome-ignore lint/suspicious/noArrayIndexKey: fixed split of one sentence
+    <Fragment key={index}>
+      {index > 0 ? <bdi>{user.name}</bdi> : null}
+      {part}
+    </Fragment>
+  ));
 }
 
 export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void }) {
@@ -57,6 +98,8 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
   const [asking, setAsking] = useState<KnownUser | null>(null);
   const [revokeTokens, setRevokeTokens] = useState(false);
   const [status, setStatus] = useState<{ text: string; self: boolean } | null>(null);
+  /** True after a sign-out of someone else refused for an older sign-in. */
+  const [signInNeeded, setSignInNeeded] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const boxId = useId();
   const users = list.data?.users ?? [];
@@ -67,10 +110,22 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
   }
 
   async function signOut(user: KnownUser) {
-    const answer = await appApi<SignOutAnswer>("POST", "/users/sign-out", {
-      subject: user.subject,
-      revokeTokens,
-    });
+    setSignInNeeded(false);
+    let answer: SignOutAnswer;
+    try {
+      answer = await appApi<SignOutAnswer>("POST", "/users/sign-out", {
+        subject: user.subject,
+        revokeTokens,
+      });
+    } catch (failure) {
+      if (!needsSignIn(failure)) throw failure;
+      // Signing someone else out needs a recent sign-in: close the dialog and
+      // offer the sign-in; nothing was ended.
+      setAsking(null);
+      setStatus(null);
+      setSignInNeeded(true);
+      return;
+    }
     setAsking(null);
     if (user.you) {
       setStatus({ text: t("signOut.doneSelf"), self: true });
@@ -104,6 +159,11 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
           </>
         ) : null}
       </p>
+      {signInNeeded ? (
+        <p role="alert" className="studio-alert studio-alert-alert" data-sign-out-refused>
+          {t("signOut.signInRequired")} <a href={SIGN_IN_AGAIN_URL}>{t("signOut.signInAgain")}</a>
+        </p>
+      ) : null}
       {list.error === undefined ? null : (
         <p className="studio-alert studio-alert-alert">{list.error}</p>
       )}
@@ -118,7 +178,9 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
           {users.map((user) => (
             <li key={user.subject} className="studio-list-item">
               <div className="studio-row">
-                <strong>{shown(user)}</strong>
+                <strong>
+                  <UserName user={user} />
+                </strong>
                 <button
                   type="button"
                   className="studio-button ph-small ph-button-danger"

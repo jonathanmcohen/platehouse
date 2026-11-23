@@ -718,6 +718,18 @@ describe("every other place that shows server text follows the same rule", () =>
       translator("en").t("api.failed"),
     );
   });
+  test("a 429 over the session's limit says to wait and try again later, in every language", () => {
+    const body = { error: "rate_limited" };
+    expect(sentenceFor(429, body, translator("en"))).toBe(
+      "Too many tries from this sign-in. Wait a few minutes, then try again.",
+    );
+    expect(sentenceFor(429, body, translator("es"))).toBe(
+      "Demasiados intentos desde este inicio de sesi\u00f3n. Espera unos minutos y vuelve a intentarlo.",
+    );
+    expect(sentenceFor(429, body, translator("fr"))).toBe(
+      "Trop de tentatives depuis cette connexion. Patientez quelques minutes, puis r\u00e9essayez.",
+    );
+  });
 });
 
 describe("an upload's own outcomes on a Spanish page (issue 295)", () => {
