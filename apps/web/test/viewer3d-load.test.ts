@@ -8,8 +8,10 @@
 // three.js itself failing to load (the network dropped, or a page older
 // than a redeploy asking for a chunk the new build no longer serves) is a
 // ThreeLoadError, so it is not blamed on the browser either.
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { defaultLoadThree, MeshLoadError } from "../src/model/Viewer3d";
+import { defaultLoadThree, MeshLoadError, Viewer3d } from "../src/model/Viewer3d";
 
 const SOURCE = { kind: "glb", url: "/blobs/01900000-0000-7000-8000-000000000001" } as const;
 
@@ -27,6 +29,7 @@ async function failureOf(fetchStub: typeof fetch, signal?: AbortSignal): Promise
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.doUnmock("three/addons/controls/OrbitControls.js");
+  vi.doUnmock("three");
   vi.resetModules();
 });
 
@@ -80,5 +83,71 @@ describe("defaultLoadThree", () => {
     );
     expect(error).toBeInstanceOf(fresh.ThreeLoadError);
     expect(error).not.toBeInstanceOf(fresh.MeshLoadError);
+  });
+});
+
+const STL = `solid t
+facet normal 0 0 1
+outer loop
+vertex 0 0 0
+vertex 1 0 0
+vertex 0 1 0
+endloop
+endfacet
+endsolid t
+`;
+
+describe("the viewer's renderer", () => {
+  test("loses its WebGL context before it is disposed, when the view is dropped", async () => {
+    const calls: string[] = [];
+    vi.doMock("three", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("three")>();
+      class StubRenderer {
+        domElement = document.createElement("canvas");
+        setPixelRatio() {}
+        setSize() {}
+        setAnimationLoop() {}
+        render() {}
+        forceContextLoss() {
+          calls.push("forceContextLoss");
+        }
+        dispose() {
+          calls.push("dispose");
+        }
+      }
+      return { ...actual, WebGLRenderer: StubRenderer };
+    });
+    vi.resetModules();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.stubGlobal("fetch", async () => new Response(STL, { status: 200 }));
+    const fresh = await import("../src/model/Viewer3d");
+    const viewer = await fresh.defaultLoadThree();
+    const handle = await viewer.show(document.createElement("div"), {
+      kind: "stl",
+      url: SOURCE.url,
+    });
+    handle.dispose();
+    expect(calls).toEqual(["forceContextLoss", "dispose"]);
+  });
+});
+
+describe("Viewer3d while the view loads", () => {
+  test("announces the loading placeholder as a status", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(createElement(Viewer3d, { source: null, label: "a.stl", download: "/d" }));
+    });
+    const placeholder = host.querySelector(".studio-placeholder");
+    expect(placeholder?.getAttribute("role")).toBe("status");
+    await act(async () => root.unmount());
+    host.remove();
   });
 });

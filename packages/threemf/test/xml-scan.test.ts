@@ -166,3 +166,17 @@ describe("attrs", () => {
     expect(took).toBeLessThan(1000);
   });
 });
+
+describe("named entities", () => {
+  const value = (v: string) => attrs(`<a x="${v}"/>`).get("x");
+
+  it("decodes the five XML names", () => {
+    expect(value("a &amp; b &lt;&gt; &quot;&apos;")).toBe("a & b <> \"'");
+  });
+
+  it("leaves a name that is not one of them as written, Object.prototype's included", () => {
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(value(`&${name};`)).toBe(`&${name};`);
+    }
+  });
+});

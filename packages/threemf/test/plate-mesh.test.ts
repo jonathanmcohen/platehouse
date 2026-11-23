@@ -146,6 +146,28 @@ describe("readPlateMesh on a multi-plate file with every mesh in 3D/3dmodel.mode
   });
 });
 
+describe("readPlateMesh on a file whose settings list no plates", () => {
+  const withPictures = (pictures: string[]): string =>
+    file([
+      { name: ROOT, data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], []) },
+      ...pictures.map((name) => ({ name, data: "png" })),
+    ]);
+
+  it("shows every build item for plate 1 when at most one plate picture is there", async () => {
+    for (const pictures of [[], ["Metadata/plate_1.png"]]) {
+      const mesh = await readPlateMesh(withPictures(pictures), 1);
+      expect(mesh.instances).toHaveLength(1);
+    }
+  });
+
+  it("is not a plate the file lists, for any plate, when the pictures name several", async () => {
+    const path = withPictures(["Metadata/plate_1.png", "Metadata/plate_2.png"]);
+    expect(await problemOf(path, 1)).toBe("no_plate");
+    expect(await problemOf(path, 2)).toBe("no_plate");
+  });
+});
+
 describe("readPlateMesh on a split file (meshes in 3D/Objects/*.model)", () => {
   const OBJ1 = "/3D/Objects/object_1.model";
   const OBJ2 = "/3D/Objects/object_2.model";

@@ -37,7 +37,7 @@ export interface ViewerHandle {
   zoom(factor: number): void;
   /** Back to the first view. */
   reset(): void;
-  /** Stops drawing and frees the WebGL context. */
+  /** Stops drawing and gives up the WebGL context (forceContextLoss, then dispose). */
   dispose(): void;
 }
 
@@ -228,6 +228,10 @@ export const defaultLoadThree: ThreeLoader = async () => {
               for (const m of materials) if (m instanceof THREE.Material) m.dispose();
             }
           });
+          // dispose() frees three.js's own resources but not the WebGL
+          // context, and a browser holds only a few contexts at once, so the
+          // context is given up first.
+          renderer.forceContextLoss();
           renderer.dispose();
           renderer.domElement.remove();
         },
@@ -328,7 +332,9 @@ export function Viewer3d({ source, label, download, loadThree, onFailed, actions
             </span>
           </p>
         ) : handle === null ? (
-          <p className="studio-placeholder">{t("viewer.loading")}</p>
+          <p className="studio-placeholder" role="status">
+            {t("viewer.loading")}
+          </p>
         ) : null}
       </div>
       {actions}

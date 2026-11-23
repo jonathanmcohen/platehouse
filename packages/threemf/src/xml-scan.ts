@@ -224,7 +224,7 @@ function decodeEntities(v: string): string {
   return v.replace(/&(#x[0-9A-Fa-f]+|#[0-9]+|[a-z]+);/g, (whole, ref: string) => {
     if (ref.startsWith("#x")) return fromCode(Number.parseInt(ref.slice(2), 16), whole);
     if (ref.startsWith("#")) return fromCode(Number.parseInt(ref.slice(1), 10), whole);
-    return NAMED[ref] ?? whole;
+    return Object.hasOwn(NAMED, ref) ? (NAMED[ref] ?? whole) : whole;
   });
 }
 

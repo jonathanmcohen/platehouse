@@ -70,6 +70,8 @@ import { LIMITS } from "./limits.js";
 import { attrs, TagScanner } from "./xml-scan.js";
 
 const MODEL_SETTINGS = "Metadata/model_settings.config";
+/** A plate picture; the page lists plates from these when the settings name none. */
+const PLATE_PICTURE = /^Metadata\/plate_([1-9][0-9]*)(?:_small)?\.png$/;
 const PROJECT_SETTINGS = "Metadata/project_settings.config";
 const ROOT = "3D/3dmodel.model";
 const COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
@@ -879,6 +881,16 @@ interface Placed {
   colour: string | null;
 }
 
+/** How many plates the entry names' pictures list. */
+function plateCount(entries: ReadonlyMap<string, unknown>): number {
+  const indexes = new Set<string>();
+  for (const name of entries.keys()) {
+    const index = PLATE_PICTURE.exec(name)?.[1];
+    if (index !== undefined) indexes.add(index);
+  }
+  return indexes.size;
+}
+
 async function readFromArchive(
   reader: yauzl.RandomAccessReader,
   size: number,
@@ -901,7 +913,9 @@ async function readFromArchive(
     if (instances !== null && instances !== undefined && instances.length === 0) {
       throw new PlateMeshError("no_objects", `plate ${plate} is empty`);
     }
-    if (instances === null && plate !== 1) {
+    if (instances === null && (plate !== 1 || plateCount(entries) > 1)) {
+      // The page lists several plates from their pictures, but with no plate
+      // blocks the file does not say which build items are on which.
       throw new PlateMeshError("no_plate", `the file lists no plate ${plate}`);
     }
     const tops = new Set((instances ?? []).map((i) => i.objectId));
