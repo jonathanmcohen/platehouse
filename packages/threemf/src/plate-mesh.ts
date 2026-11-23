@@ -32,8 +32,15 @@
 //   every model part, is charged to Budget.inflate before it is used, against
 //   one total, limits.inflateBytes;
 // - work: every character the tag scanner looks at (an unfinished tag that
-//   is looked at again counted again), every config character parsed and
-//   every step of the component walk is charged to Budget.step;
+//   is looked at again counted again) and every config character parsed is
+//   charged to Budget.step, against limits.work. It is also bounded by
+//   limits.inflateBytes, and leaves room for the largest mesh the triangle
+//   limit accepts to be read twice;
+// - walk: every step of the component walk, of building the plate's
+//   requests and of assembling the result is charged to Budget.walk,
+//   against limits.walkSteps, apart from the characters: a walk step costs
+//   about 27 ns, so the walk ends within a few seconds while a mesh of
+//   5,000,000 triangles still has the characters it needs;
 // - placing: each mesh placed on the plate charges its triangles (counted
 //   while its part was first read, before the mesh itself is read) against
 //   limits.triangles, and each component followed counts against
@@ -98,8 +105,10 @@ export interface PlateMeshLimits {
   meshBytes: number;
   /** Bytes inflated in all, over the config entries and every read of every model part. */
   inflateBytes: number;
-  /** Parsing work: characters scanned and parsed, and steps of the component walk. */
+  /** Parsing work: characters scanned and parsed. */
   work: number;
+  /** Steps of the component walk, of building requests and of assembling the result. */
+  walkSteps: number;
   /** Meshes placed on one plate, counted as components are followed. */
   instances: number;
   /** Components and build items held over the model parts read. */
@@ -112,7 +121,8 @@ export const PLATE_MESH_LIMITS: Readonly<PlateMeshLimits> = Object.freeze({
   triangles: 5_000_000,
   meshBytes: 256 * MiB,
   inflateBytes: 1024 * MiB,
-  work: 200_000_000,
+  work: 2_000_000_000,
+  walkSteps: 200_000_000,
   instances: 10_000,
   components: 100_000,
   depth: 16,
@@ -130,6 +140,7 @@ export interface PlateMeshBudgetReport {
   allocatedBytes: number;
   inflatedBytes: number;
   work: number;
+  walkSteps: number;
   /** Triangles drawn, every placed copy counted. */
   drawnTriangles: number;
 }
@@ -242,6 +253,7 @@ class Budget {
   private allocated = 0;
   private inflated = 0;
   private worked = 0;
+  private walked = 0;
   private drawn = 0;
   private held = 0;
 
@@ -311,6 +323,11 @@ class Budget {
     this.worked += units;
   }
 
+  walk(): void {
+    if (this.walked + 1 > this.limits.walkSteps) this.over("component walk");
+    this.walked += 1;
+  }
+
   place(triangles: number): void {
     if (this.drawn + triangles > this.limits.triangles) this.over("triangles drawn");
     this.drawn += triangles;
@@ -328,6 +345,7 @@ class Budget {
       allocatedBytes: this.allocated,
       inflatedBytes: this.inflated,
       work: this.worked,
+      walkSteps: this.walked,
       drawnTriangles: this.drawn,
     };
   }
@@ -926,7 +944,7 @@ async function readFromArchive(
     // every build item when the file lists no plates and plate 1 is asked for.
     let requests: Request[] = [];
     const request = (r: Request): void => {
-      budget.step();
+      budget.walk();
       if (requests.length >= budget.limits.instances) {
         throw new PlateMeshError("too_large", "placed meshes over the limit");
       }
@@ -947,7 +965,7 @@ async function readFromArchive(
       // Each object's build items in file order, indexed once.
       const itemsOf = new Map<number, Component[]>();
       for (const item of root.items) {
-        budget.step();
+        budget.walk();
         const list = itemsOf.get(item.objectId);
         if (list === undefined) itemsOf.set(item.objectId, [item]);
         else list.push(item);
@@ -987,7 +1005,7 @@ async function readFromArchive(
       if (kept === undefined) {
         kept = [];
         for (const c of comps) {
-          budget.step();
+          budget.walk();
           if (c.transform === null) continue;
           if (!printed(settings, r.top, r.part ?? c.objectId)) continue;
           kept.push(c);
@@ -1012,12 +1030,12 @@ async function readFromArchive(
       }
       const next: Request[] = [];
       for (const r of requests) {
-        budget.step();
+        budget.walk();
         const data = parts.get(r.path) as PartData;
         const comps = data.components.get(r.objectId);
         if (comps !== undefined) {
           for (const c of childrenOf(r, comps)) {
-            budget.step();
+            budget.walk();
             // Each number of both is finite, but the product may not be:
             // 1e200 times 1e200 is Infinity (review finding #393). Such a
             // copy cannot be drawn, so it is skipped like an unreadable one.
@@ -1103,7 +1121,7 @@ function assemble(
   const instances: MeshInstance[] = [];
   let triangles = 0;
   for (const p of placed) {
-    budget.step();
+    budget.walk();
     const mesh = parts.get(p.path)?.meshes.get(p.objectId) ?? null;
     if (mesh === null) continue;
     triangles += mesh.indices.length / 3;

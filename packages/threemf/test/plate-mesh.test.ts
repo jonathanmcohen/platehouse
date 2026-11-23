@@ -539,6 +539,43 @@ describe("readPlateMesh limits", () => {
     }
   });
 
+  it("the largest mesh the triangle limit accepts fits the character budget, read twice", async () => {
+    // Character work and component-walk steps are budgeted apart, so an
+    // ordinary large mesh is never refused for the characters it takes.
+    expect(PLATE_MESH_LIMITS.work).toBe(2_000_000_000);
+    expect(PLATE_MESH_LIMITS.walkSteps).toBe(200_000_000);
+    // A grid of about 200,000 triangles with decimal coordinates, as a
+    // slicer writes them; its work per triangle, scaled to the largest
+    // mesh and doubled (a part may be read twice), must fit.
+    const side = 317;
+    const vertices: number[][] = [];
+    for (let y = 0; y < side; y++) {
+      for (let x = 0; x < side; x++) {
+        vertices.push([+(x * 0.613577).toFixed(6), +(y * 0.613577).toFixed(6), 12.345678]);
+      }
+    }
+    const triangles: number[][] = [];
+    for (let y = 0; y < side - 1; y++) {
+      for (let x = 0; x < side - 1; x++) {
+        const v = y * side + x;
+        triangles.push([v, v + 1, v + side + 1], [v, v + side + 1, v + side]);
+      }
+    }
+    const big = file([
+      { name: ROOT, data: modelXml([meshObject(1, meshXml(vertices, triangles))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], [{ index: 1, instances: [[1, 0]] }]) },
+    ]);
+    let report: PlateMeshBudgetReport | undefined;
+    const mesh = await readPlateMesh(big, 1, { onBudget: (r) => (report = r) });
+    expect(mesh.triangles).toBe(triangles.length);
+    expect(triangles.length).toBeGreaterThan(195_000);
+    if (report === undefined) throw new Error("no report");
+    const perTriangle = report.work / triangles.length;
+    expect(perTriangle * PLATE_MESH_LIMITS.triangles * 2).toBeLessThanOrEqual(
+      PLATE_MESH_LIMITS.work,
+    );
+  }, 60_000);
+
   it.each([Number.NaN, 0, -1, Number.POSITIVE_INFINITY, 1e12])(
     "ignores a maxTriangles of %s that would lift or break the limit",
     async (max) => {
