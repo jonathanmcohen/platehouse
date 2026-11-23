@@ -189,15 +189,17 @@ describe("the platehouse service's memory holds every .3mf reader", () => {
     );
   });
 
-  test("a project read's peak is its directory, its config entries, one thumbnail and the model prefix", () => {
+  test("a project read's peak is its directory, its config entries, one thumbnail and its upload parts, and the model prefix", () => {
     const config = THREEMF_LIMITS.configBytes;
     // Three config entries kept as text, and the one being read: its chunks
     // and their Buffer.concat copy.
     const configs = 3 * config + 2 * config;
     // One thumbnail at a time (pass 2): its chunks and their copy.
     const thumbnail = 2 * THREEMF_LIMITS.pngBytes;
+    // The S3 upload's part buffers for that thumbnail (storage/s3.ts putBlob).
+    const uploadParts = THREEMF_LIMITS.pngBytes;
     expect(PROJECT_READ_PEAK_BYTES).toBe(
-      MAX_ZIP_DIRECTORY_BYTES + configs + thumbnail + 2 * MODEL_PREFIX_BYTES,
+      MAX_ZIP_DIRECTORY_BYTES + configs + thumbnail + uploadParts + 2 * MODEL_PREFIX_BYTES,
     );
   });
 

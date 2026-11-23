@@ -46,14 +46,18 @@ export const MAX_EXTRA_FIELDS = 32;
  * Buffer.concat copy are two more LIMITS.configBytes (readCapped); one
  * thumbnail, pass 2 handing them over one at a time, again as chunks and a
  * copy, 2 * LIMITS.pngBytes (pass 1 counts bytes and holds none, so the
- * file's thumbnailBytesPerFile total is never held); and the model prefix
- * with its concatenation copy, 2 * MODEL_PREFIX_BYTES (readModelPrefix).
- * That is 4 + 25 + 20 + 0.5 = 49.5 MiB.
+ * file's thumbnailBytesPerFile total is never held); the S3 upload's part
+ * buffers for that thumbnail while ingest stores it (the SDK's multipart
+ * upload cuts the object into parts it holds until sent; the object is at
+ * most LIMITS.pngBytes, so so are the parts), one more LIMITS.pngBytes; and
+ * the model prefix with its concatenation copy, 2 * MODEL_PREFIX_BYTES
+ * (readModelPrefix). That is 4 + 25 + 20 + 10 + 0.5 = 59.5 MiB.
  */
 export const PROJECT_READ_PEAK_BYTES =
   MAX_ZIP_DIRECTORY_BYTES +
   (3 + 2) * LIMITS.configBytes +
   2 * LIMITS.pngBytes +
+  LIMITS.pngBytes +
   2 * MODEL_PREFIX_BYTES;
 
 /**
