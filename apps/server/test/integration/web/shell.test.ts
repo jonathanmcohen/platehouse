@@ -103,7 +103,9 @@ describe("a built web app", () => {
       for (const method of ["GET", "HEAD"] as const) {
         const res = await t.app.inject({ method, url, headers: { accept: HTML } });
         expect(res.statusCode, `${method} ${url}`).toBe(302);
-        expect(res.headers.location, `${method} ${url}`).toBe(`${TEST_ORIGIN}/auth/login`);
+        // The login keeps the page asked for; the start page is plain.
+        const login = url === "/" ? "/auth/login" : `/auth/login?next=${url}`;
+        expect(res.headers.location, `${method} ${url}`).toBe(`${TEST_ORIGIN}${login}`);
       }
     }
   });

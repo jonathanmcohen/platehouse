@@ -281,7 +281,10 @@ describe("every registered route", () => {
           // what is left is the class's answer to no credentials.
           headers: { accept: "application/json", origin: TEST_ORIGIN },
         });
-        const toLogin = res.headers.location === `${TEST_ORIGIN}/auth/login`;
+        const location = String(res.headers.location ?? "");
+        const toLogin =
+          location === `${TEST_ORIGIN}/auth/login` ||
+          location.startsWith(`${TEST_ORIGIN}/auth/login?`);
         switch (cls) {
           case "session":
           case "bearer":

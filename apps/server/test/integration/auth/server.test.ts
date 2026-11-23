@@ -54,7 +54,9 @@ describe("the running server", () => {
     expect((await get(RESULT)).status).toBe(401);
     const page = await get("/models/abc", { accept: "text/html" });
     expect(page.status).toBe(302);
-    expect(page.headers.get("location")).toBe(`${env.config.publicOrigin}/auth/login`);
+    expect(page.headers.get("location")).toBe(
+      `${env.config.publicOrigin}/auth/login?next=/models/abc`,
+    );
   });
 
   test("with the OIDC provider unreachable, /auth/login is 503 and the API keeps its own 401", async () => {
