@@ -213,7 +213,7 @@ describe("the platehouse service's memory holds every .3mf reader", () => {
   // PLATE_MESH_BUILDS places holds a plate read or a STEP preview, never
   // both, and must fit the larger of the two.
   test("a place in the memory gate fits a plate read or a STEP preview's mesh read", () => {
-    expect(STEP_PREVIEW_PEAK_MB).toBeGreaterThan(0);
+    expect(STEP_PREVIEW_PEAK_MB).toBe((2 * LIMITS.stepOutputBytes) / MiB);
     expect(MEMORY_GATE_PEAK_MB).toBe(Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB));
   });
 
@@ -253,9 +253,17 @@ describe("the platehouse service's memory holds every .3mf reader", () => {
       expect([LIMITS.renderOutputBytes, LIMITS.stepOutputBytes]).toContain(cap);
     }
     expect(PREVIEW_MESH_MAX_BYTES).toBe(LIMITS.stepOutputBytes);
-    // None of them is a term of the budget or a held small read.
-    const named = [...BUDGET.map((b) => b.term), ...SMALL_BUFFERS.map((b) => b.path)].join("\n");
-    for (const route of Object.keys(ANSWER_LIMITS)) expect(named).not.toContain(route);
+    // None of them is held: a 200's body is only ever streamed to its file.
+    // The one place client.ts joins a body into a Buffer is readSmall, and it
+    // is called only for an error answer, under ERROR_ANSWER_MAX_BYTES.
+    const client = readFileSync(join(dir, "client.ts"), "utf8");
+    expect(client).not.toMatch(/arrayBuffer\(|\.text\(\)|\.json\(\)/);
+    expect(client.match(/Buffer\.concat\(/g)?.length).toBe(1);
+    const calls = [...client.matchAll(/\breadSmall\(([^)]*)\)/g)].filter(
+      (m) => !(m[1] ?? "").includes("body: "),
+    );
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call[1]).toContain("ERROR_ANSWER_MAX_BYTES");
   });
 });
 

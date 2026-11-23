@@ -1,5 +1,7 @@
 // What the process's memory gate (gate.ts) holds at its peak, for the app's
-// memory budget: test/compose-example.test.ts checks one place of the gate
+// memory budget: test/compose-example.test.ts adds up every term of the
+// budget (one gate place, a late-freed STEP buffer, ingest's and the
+// re-conversion's .3mf reads, the server's allowance) and checks the sum
 // against the 2 GiB mem_limit in examples/docker-compose.yml.
 import { LIMITS } from "@platehouse/slicer-contract";
 import { MAX_ZIP_DIRECTORY_BYTES, PLATE_MESH_LIMITS } from "@platehouse/threemf";
@@ -9,8 +11,8 @@ const MiB = 1024 * 1024;
 
 /**
  * What a plate read's worker costs before it reads anything: its isolate,
- * Node's runtime and the loaded modules, outside the heap limit. Measured
- * at about 30 MiB; 40 leaves room.
+ * Node's runtime and the loaded modules, outside the heap limit. An
+ * allowance for those, not a measurement.
  */
 export const PLATE_WORKER_BASELINE_MB = 40;
 

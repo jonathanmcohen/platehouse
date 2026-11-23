@@ -16,11 +16,11 @@
 //   heap is a plain too_large: its heap limit is its own, whatever else the
 //   machine is doing. A worker's failure ends only that worker. The heap
 //   limit does not cap the worker's whole memory, though: its mesh arrays
-//   and the zip reader's entry records are outside the heap. So the whole
-//   of one read is bounded as PLATE_MESH_READ_PEAK_MB (memory/peaks.ts), and
-//   the reads that run at once (PLATE_MESH_BUILDS) are sized against the
-//   container's memory limit, past which the kernel would end the whole
-//   server, not one worker.
+//   and the zip reader's directory records are outside the heap. So the
+//   whole of one read is bounded as PLATE_MESH_READ_PEAK_MB (memory/peaks.ts),
+//   and that is one term of the budget summed against the container's memory
+//   limit in test/compose-example.test.ts (BUDGET); past the limit the kernel
+//   would end the whole server, not one worker.
 // - Whatever the worker sends back passes validatePlateMesh (packages/threemf)
 //   here, on the main thread, before it is used: a mesh that fails is the
 //   file's fault (no_mesh or too_large) and nothing is made from it.
@@ -62,7 +62,7 @@ export const PLATE_MESH_TIMEOUT_MS = 60_000;
  * The worker's JavaScript heap: room for the reader's parsed config, its
  * component lists and its entry index, and no more. These limits cap the
  * V8 heap only. The reader's mesh arrays (ArrayBuffers) and the zip
- * reader's entry records (Buffers) are stored outside it, and Node does
+ * reader's directory records (Buffers) are stored outside it, and Node does
  * not count them against the worker, so they are bounded elsewhere: see
  * PLATE_MESH_READ_PEAK_MB in memory/peaks.ts.
  */
