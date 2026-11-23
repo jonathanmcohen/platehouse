@@ -9,7 +9,8 @@
 //   POST   /app/api/tokens       {name} -> 201 {id, name, prefix, createdAt,
 //                                lastUsedAt, createdBy, token} | 403
 //                                sign_in_required
-//   DELETE /app/api/tokens/:id   204 | 404 unknown or already revoked
+//   DELETE /app/api/tokens/:id   204 | 403 sign_in_required | 404 unknown or
+//                                already revoked
 //
 // - createdBy is who made the token (issue #322): {subject, name}, the OIDC
 //   subject and the display name of the session that made it (name null
@@ -23,7 +24,10 @@
 //   signIn, the login URL that comes back to Settings; that sign-in checks
 //   the group again, so someone who left it gets no fresh session and no
 //   token. While the issuer cannot be reached the sign-in fails, so the
-//   create stays refused: it is never let through unchecked.
+//   create stays refused: it is never let through unchecked. Revoking a
+//   token someone else made, or one with no recorded maker, needs the same
+//   fresh sign-in (auth/fresh.ts); revoking one you made needs a live
+//   session only.
 // - A token is made and revoked by createToken and revokeToken (api/tokens.ts). The
 //   token itself is in the create answer only: it is never stored (only its
 //   SHA-256 and first 8 characters are), never listed and never logged. The
@@ -38,6 +42,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Kysely } from "kysely";
 import { MAX_TOKEN_NAME_LENGTH, type Tokens } from "../api/tokens.js";
+import { isFresh, refuseStale, TOKEN_SIGN_IN_URL, TOKEN_SIGN_IN_WINDOW_MS } from "../auth/fresh.js";
 import { sessionOf } from "../auth/gate.js";
 import type { ApiToken, DB } from "../db/types.js";
 import { appApiScope, need, refuse } from "./settings.js";
@@ -45,20 +50,7 @@ import { appApiScope, need, refuse } from "./settings.js";
 /** What a token name out of bounds says (400, code token_name_length). */
 export const TOKEN_NAME_LENGTH_MESSAGE = `A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters.`;
 
-/**
- * How recent a session's sign-in must be for it to make a new API token
- * (issue #322): long enough to make a token straight after the sign-in it
- * asks for, short enough that someone removed from the group cannot use an
- * old session to make one.
- */
-export const TOKEN_SIGN_IN_WINDOW_MS = 5 * 60 * 1000;
-
-/** Where a refused create sends the user: a fresh sign-in that comes back to Settings. */
-export const TOKEN_SIGN_IN_URL = "/auth/login?next=/settings";
-
-/** What a create from an older sign-in says (403, code sign_in_required). */
-export const SIGN_IN_REQUIRED_MESSAGE =
-  "To create an API token, sign in again first. Platehouse checks that you are still allowed in when you sign in.";
+export { TOKEN_SIGN_IN_URL, TOKEN_SIGN_IN_WINDOW_MS };
 
 /** A live token as the list shows it: never the token itself. */
 export type ListedToken = Pick<
@@ -141,12 +133,8 @@ export async function registerTokensApi(
         const { tokens, list } = need(deps);
         // The gate let this request in with a session (session-class route).
         const session = sessionOf(request);
-        const at = (deps?.now ?? (() => new Date()))().getTime();
-        if (session === undefined || at - session.createdAt.getTime() > TOKEN_SIGN_IN_WINDOW_MS) {
-          return refuse(reply, 403, "sign_in_required", SIGN_IN_REQUIRED_MESSAGE, {
-            code: "sign_in_required",
-            signIn: TOKEN_SIGN_IN_URL,
-          });
+        if (session === undefined || !isFresh(session, (deps?.now ?? (() => new Date()))())) {
+          return refuseStale(reply);
         }
         let created: Awaited<ReturnType<TokensApiDeps["tokens"]["createToken"]>>;
         try {
@@ -190,7 +178,19 @@ export async function registerTokensApi(
       "/tokens/:id",
       { schema: { params: ID_PARAMS } },
       async (request, reply) => {
-        const { tokens } = need(deps);
+        const { tokens, list } = need(deps);
+        const session = sessionOf(request);
+        // A token someone else made, or one with no recorded maker, is an act
+        // on another person and needs a fresh sign-in; one you made, only a
+        // live session. An id no live token has is 404 either way.
+        const token = (await list()).find((t) => t.id === request.params.id);
+        const madeByCaller =
+          token !== undefined &&
+          session !== undefined &&
+          token.createdBySubject === session.subject;
+        if (token !== undefined && !madeByCaller) {
+          if (!isFresh(session, (deps?.now ?? (() => new Date()))())) return refuseStale(reply);
+        }
         if (!(await tokens.revokeToken(request.params.id))) {
           return refuse(reply, 404, "not_found");
         }

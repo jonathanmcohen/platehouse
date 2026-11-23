@@ -88,8 +88,27 @@ To cut someone off completely:
 3. In the API token list, revoke any token they had a copy of but did not make, and any token
    made by an unknown user that you cannot account for.
 
-Everyone who signs in sees and changes the same library. There are no roles: anyone who can sign
-in can revoke any token and sign anyone out everywhere, themselves included.
+Everyone who signs in sees and changes the same library. There are no roles: anyone in the group
+can sign anyone out everywhere, themselves included, and revoke any token. Signing yourself out,
+or revoking a token you made, needs only a live session. Signing someone else out, or revoking a
+token someone else made (or one made by an unknown user), needs a sign-in in the last 5 minutes,
+the same as making a token: otherwise Settings asks you to sign in again first, and nothing
+changes. So a session kept by someone you removed from the group cannot be used to sign other
+people out or to revoke their tokens.
+
+### Cutting someone off by hand
+
+If you cannot reach Settings, run these against the Platehouse database, with the person's user id
+(the `sub` claim your provider gives them) in place of `the-user-id`. The first ends every session
+they have; the second revokes every token they made. A session is checked on every request, so
+both take effect at once.
+
+```sql
+delete from sessions where subject = 'the-user-id';
+
+update api_tokens set revoked_at = now()
+ where created_by_subject = 'the-user-id' and revoked_at is null;
+```
 
 ## Sessions
 

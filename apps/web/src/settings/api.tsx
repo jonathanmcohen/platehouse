@@ -35,6 +35,22 @@ export class AppApiError extends Error {
 }
 
 /**
+ * The login that comes back to Settings, for a fresh sign-in. Fixed here
+ * rather than read from the refusal, so an answer can never send the browser
+ * anywhere else.
+ */
+export const SIGN_IN_AGAIN_URL = "/auth/login?next=/settings";
+
+/** True for the server's refusal of an act that needs a sign-in more recent than the session's. */
+export function needsSignIn(failure: unknown): boolean {
+  return (
+    failure instanceof AppApiError &&
+    failure.status === 403 &&
+    (failure.body as { error?: unknown } | null)?.error === "sign_in_required"
+  );
+}
+
+/**
  * The words for each refusal the app API names by code (its error, or a finer
  * code beside it). The English words are the server's own sentences, so an
  * English page reads exactly what the server wrote.

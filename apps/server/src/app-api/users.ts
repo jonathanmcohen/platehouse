@@ -4,7 +4,8 @@
 //
 //   GET  /app/api/users           {users: [{subject, name, sessions, tokens, you}]}
 //   POST /app/api/users/sign-out  {subject, revokeTokens} -> 200
-//                                 {sessionsEnded, tokensRevoked} | 400
+//                                 {sessionsEnded, tokensRevoked} | 400 |
+//                                 403 sign_in_required
 //
 // - Platehouse has no user table: a user is an OIDC subject. The list is
 //   everyone with a live session or a live API token they made (dbUserList),
@@ -19,14 +20,18 @@
 //   to revoke by hand. Sessions end first, so the user cannot make a new
 //   token in between (a new token needs a fresh sign-in anyway). Both steps
 //   can be repeated: a second press ends and revokes nothing more.
-// - Who may use it: every signed-in user. Platehouse has no roles: everyone
-//   in OIDC_GROUP has the same full access, and can already revoke any API
-//   token and change every setting, so this adds no power anyone lacked. A
-//   user can sign themselves out everywhere; their own session ends too.
+// - Who may use it: signing yourself out everywhere needs a live session,
+//   and your own session ends too. Signing someone else out, and so
+//   revoking their tokens, also needs a sign-in in the last
+//   TOKEN_SIGN_IN_WINDOW_MS (auth/fresh.ts), else 403 sign_in_required and
+//   nothing ends: the group is checked only at sign-in, so a session kept by
+//   someone since removed from it must not be able to sign everyone else
+//   out. Platehouse has no roles: everyone in OIDC_GROUP has the same access.
 // - The request log records no body (app.ts), so no subject is logged.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import type { Tokens } from "../api/tokens.js";
+import { isFresh, refuseStale } from "../auth/fresh.js";
 import { sessionOf } from "../auth/gate.js";
 import { MAX_SUBJECT_LENGTH } from "../auth/oidc.js";
 import type { Sessions } from "../auth/sessions.js";
@@ -145,9 +150,15 @@ export async function registerUsersApi(
     scope.post<{ Body: { subject: string; revokeTokens: boolean } }>(
       "/users/sign-out",
       { schema: { body: SIGN_OUT } },
-      async (request) => {
+      async (request, reply) => {
         const { sessions, tokens } = need(deps);
         const { subject, revokeTokens } = request.body;
+        // The gate let this request in with a session (session-class route).
+        const session = sessionOf(request);
+        const now = (deps?.now ?? (() => new Date()))();
+        if (session === undefined || (subject !== session.subject && !isFresh(session, now))) {
+          return refuseStale(reply);
+        }
         const sessionsEnded = await sessions.endAllFor(subject);
         const tokensRevoked = revokeTokens ? await tokens.revokeAllFrom(subject) : 0;
         request.log.info({ sessionsEnded, tokensRevoked }, "app api: signed a user out everywhere");

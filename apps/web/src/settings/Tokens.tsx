@@ -16,13 +16,15 @@
 // userLabel in ./SignOutEverywhere), or that its maker is unknown for a
 // token made before Platehouse recorded that. A new token needs a recent
 // sign-in; when the server refuses one with sign_in_required, the page says
-// so with a Sign in again link to the login, which comes back here. Sign out
+// so with a Sign in again link to the login, which comes back here; revoking
+// a token someone else made (or one with no known maker) is refused the same
+// way, and the token stays listed. Sign out
 // everywhere sits below the list, and the list is read again after it
 // revokes someone's tokens.
 import { type FormEvent, type RefObject, useId, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useI18n } from "../i18n/I18n";
-import { AppApiError, appApi, segment, useAppApi, useErrorText } from "./api";
+import { appApi, needsSignIn, SIGN_IN_AGAIN_URL, segment, useAppApi, useErrorText } from "./api";
 import { ConfirmDialog, Dialog } from "./Dialog";
 import { useRowFocus } from "./focus";
 import { SignOutEverywhere, userLabel } from "./SignOutEverywhere";
@@ -42,22 +44,6 @@ export interface ListedToken {
   lastUsedAt: string | null;
   /** Null for a token made before Platehouse recorded who made it. */
   createdBy: TokenCreator | null;
-}
-
-/**
- * The login that comes back to Settings, for a fresh sign-in. Fixed here
- * rather than read from the refusal, so an answer can never send the browser
- * anywhere else.
- */
-export const SIGN_IN_AGAIN_URL = "/auth/login?next=/settings";
-
-/** True for the server's refusal of a new token from an older sign-in. */
-function needsSignIn(failure: unknown): boolean {
-  return (
-    failure instanceof AppApiError &&
-    failure.status === 403 &&
-    (failure.body as { error?: unknown } | null)?.error === "sign_in_required"
-  );
 }
 
 /** The create answer: the listed fields and, this once, the token itself. */
@@ -119,8 +105,8 @@ export function Tokens() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
-  /** True after a create refused for an older sign-in: the page offers Sign in again. */
-  const [signInNeeded, setSignInNeeded] = useState(false);
+  /** The act refused for an older sign-in, if any: the page offers Sign in again. */
+  const [signInAct, setSignInAct] = useState<"create" | "revoke" | null>(null);
   /** The new token, held only while its dialog is open. */
   const [created, setCreated] = useState<{ name: string; value: string } | null>(null);
   const [revoking, setRevoking] = useState<ListedToken | null>(null);
@@ -142,7 +128,7 @@ export function Tokens() {
     }
     setBusy(true);
     setError(undefined);
-    setSignInNeeded(false);
+    setSignInAct(null);
     try {
       const answer = await appApi<CreatedAnswer>("POST", "/tokens", { name: trimmed });
       // Only the listed fields go into the list; the token stays in the dialog.
@@ -158,7 +144,7 @@ export function Tokens() {
       setName("");
       setCreated({ name: answer.name, value: answer.token });
     } catch (failure) {
-      if (needsSignIn(failure)) setSignInNeeded(true);
+      if (needsSignIn(failure)) setSignInAct("create");
       else setError(errorText(failure));
     } finally {
       setBusy(false);
@@ -166,7 +152,17 @@ export function Tokens() {
   }
 
   async function revoke(item: ListedToken) {
-    await appApi("DELETE", `/tokens/${segment(item.id)}`);
+    setSignInAct(null);
+    try {
+      await appApi("DELETE", `/tokens/${segment(item.id)}`);
+    } catch (failure) {
+      if (!needsSignIn(failure)) throw failure;
+      // Revoking someone else's token needs a recent sign-in: close the
+      // dialog and offer the sign-in, keeping the token listed.
+      setRevoking(null);
+      setSignInAct("revoke");
+      return;
+    }
     // Its own button is gone with it; the dialog hands focus to its neighbour.
     revokeReturn.current = focus.after(item.id);
     list.set((prev) => ({ tokens: prev.tokens.filter((r) => r.id !== item.id) }));
@@ -204,9 +200,10 @@ export function Tokens() {
             {error}
           </p>
         )}
-        {signInNeeded ? (
+        {signInAct !== null ? (
           <p role="alert" className="studio-alert studio-alert-alert">
-            {t("tokens.signInRequired")} <a href={SIGN_IN_AGAIN_URL}>{t("tokens.signInAgain")}</a>
+            {t(signInAct === "revoke" ? "tokens.signInRequiredRevoke" : "tokens.signInRequired")}{" "}
+            <a href={SIGN_IN_AGAIN_URL}>{t("tokens.signInAgain")}</a>
           </p>
         ) : null}
         {list.error === undefined ? null : (

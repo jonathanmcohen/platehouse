@@ -173,6 +173,13 @@ function json(status: number, body?: unknown): Response {
   });
 }
 
+/** What the server answers an act on other people from an older sign-in. */
+const STALE_ANSWER = {
+  error: "sign_in_required",
+  code: "sign_in_required",
+  signIn: "/auth/login?next=/settings",
+};
+
 function sameName(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
@@ -344,6 +351,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
     return json(201, { ...row, token });
   }
   if (method === "DELETE" && seg[0] === "tokens") {
+    if (state.signInRequired) return json(403, STALE_ANSWER);
     state.tokens = state.tokens.filter((t) => t.id !== seg[1]);
     return json(204);
   }
@@ -351,6 +359,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   // Sign out everywhere, as the server does: every session of the user ends,
   // and with revokeTokens every live token they made is revoked.
   if (method === "POST" && path === "/app/api/users/sign-out") {
+    if (state.signInRequired && body.subject !== "subject-me") return json(403, STALE_ANSWER);
     const user = state.users.find((u) => u.subject === body.subject);
     const sessionsEnded = user?.sessions ?? 0;
     const theirs = state.tokens.filter((t) => t.createdBy?.subject === body.subject);
@@ -1350,6 +1359,47 @@ describe("the settings page", () => {
     expect(alert?.textContent).toContain("sign in again");
     const again = link("Sign in again");
     expect(again.getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("a revoke refused for an old sign-in says to sign in again, and keeps the token", async () => {
+    state.signInRequired = true;
+    state.tokens = [
+      {
+        id: "t-stale",
+        name: "Stale script",
+        prefix: "ph_stale1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        lastUsedAt: null,
+        createdBy: { subject: "subject-other", name: null },
+      },
+    ];
+    await show("/settings", <SettingsPage />);
+    await click(button("Revoke Stale script"));
+    await click(button("Revoke", dialog() as HTMLElement));
+    expect(callsTo("DELETE", "/app/api/tokens/t-stale")).toHaveLength(1);
+    expect(text()).toContain("Stale script");
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("sign in again");
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("Sign out everywhere refused for an old sign-in says to sign in again", async () => {
+    state.signInRequired = true;
+    state.users.push({
+      subject: "subject-gone",
+      name: "Synthetic Gone",
+      sessions: 2,
+      tokens: 1,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out Synthetic Gone (user id subject-gone) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(1);
+    expect(signOutStatus()).toBe("");
+    const alert = document.querySelector("[data-sign-out-refused]");
+    expect(alert?.textContent).toContain("sign in again");
+    expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
   });
 
   test("Sign out everywhere lists each user and asks before ending their sessions", async () => {

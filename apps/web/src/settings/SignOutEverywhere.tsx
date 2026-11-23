@@ -8,8 +8,9 @@
 // token whose maker is unknown is never revoked here; the token list above
 // shows those, to revoke by hand.
 //
-// Every signed-in user may use it: Platehouse has no roles, and everyone in
-// the sign-in group can already revoke any token. After a change the status
+// Every signed-in user may use it, but signing someone else out needs a
+// sign-in in the last few minutes: the server refuses it otherwise with
+// sign_in_required, and the page says so with a Sign in again link. After a change the status
 // line says what was ended, the list is read again, and so is the token
 // list (onTokensRevoked) when tokens were revoked. Signing yourself out
 // everywhere ends this session too, so the page says so and offers a Sign in
@@ -22,7 +23,7 @@
 // signing out the wrong person, or revoking their tokens, cannot be undone.
 import { useId, useRef, useState } from "react";
 import { type I18n, useI18n } from "../i18n/I18n";
-import { appApi, useAppApi } from "./api";
+import { appApi, needsSignIn, SIGN_IN_AGAIN_URL, useAppApi } from "./api";
 import { ConfirmDialog } from "./Dialog";
 
 /** One user as GET /app/api/users lists them. */
@@ -57,6 +58,8 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
   const [asking, setAsking] = useState<KnownUser | null>(null);
   const [revokeTokens, setRevokeTokens] = useState(false);
   const [status, setStatus] = useState<{ text: string; self: boolean } | null>(null);
+  /** True after a sign-out of someone else refused for an older sign-in. */
+  const [signInNeeded, setSignInNeeded] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const boxId = useId();
   const users = list.data?.users ?? [];
@@ -67,10 +70,22 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
   }
 
   async function signOut(user: KnownUser) {
-    const answer = await appApi<SignOutAnswer>("POST", "/users/sign-out", {
-      subject: user.subject,
-      revokeTokens,
-    });
+    setSignInNeeded(false);
+    let answer: SignOutAnswer;
+    try {
+      answer = await appApi<SignOutAnswer>("POST", "/users/sign-out", {
+        subject: user.subject,
+        revokeTokens,
+      });
+    } catch (failure) {
+      if (!needsSignIn(failure)) throw failure;
+      // Signing someone else out needs a recent sign-in: close the dialog and
+      // offer the sign-in; nothing was ended.
+      setAsking(null);
+      setStatus(null);
+      setSignInNeeded(true);
+      return;
+    }
     setAsking(null);
     if (user.you) {
       setStatus({ text: t("signOut.doneSelf"), self: true });
@@ -104,6 +119,11 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
           </>
         ) : null}
       </p>
+      {signInNeeded ? (
+        <p role="alert" className="studio-alert studio-alert-alert" data-sign-out-refused>
+          {t("signOut.signInRequired")} <a href={SIGN_IN_AGAIN_URL}>{t("tokens.signInAgain")}</a>
+        </p>
+      ) : null}
       {list.error === undefined ? null : (
         <p className="studio-alert studio-alert-alert">{list.error}</p>
       )}
