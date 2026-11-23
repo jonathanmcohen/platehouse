@@ -3,13 +3,19 @@
 // rules written there hold for both: entries are found by their raw name
 // bytes, every cap counts bytes actually inflated, a filesystem error is
 // ReadUnavailable and anything else the zip reader or inflate throws is
-// Damaged. listEntries also caps the directory it lists (entries, record
-// bytes, extra fields per entry), so the memory it holds stays small.
+// Damaged. listEntries also caps the directory it lists (entries, the memory
+// the listing holds, extra fields per entry), so that memory stays small.
 import type { FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 import yauzl from "yauzl";
 import { Damaged, isSystemError, ReadUnavailable } from "./errors.js";
-import { MAX_EXTRA_FIELDS, MAX_ZIP_DIRECTORY_BYTES, MAX_ZIP_ENTRIES } from "./limits.js";
+import {
+  MAX_EXTRA_FIELDS,
+  MAX_ZIP_DIRECTORY_BYTES,
+  MAX_ZIP_ENTRIES,
+  ZIP_ENTRY_OVERHEAD_BYTES,
+  ZIP_EXTRA_FIELD_OVERHEAD_BYTES,
+} from "./limits.js";
 
 const READ_CHUNK = 64 * 1024;
 
@@ -110,10 +116,11 @@ export function openArchive(
  * character per byte, so a key equals a Bambu name only when the bytes are
  * exactly that ASCII name. The first entry of a duplicated name wins.
  *
- * The zip reader keeps every listed entry, with its extra fields parsed into
- * objects, so the listing is capped to bound that memory: the entry count is
- * checked before the first entry is read, then the bytes of directory records
- * and the extra fields of each entry as they arrive.
+ * The listing keeps every entry the zip reader makes, with its extra fields
+ * parsed into objects, so it is capped to bound that memory: the entry count
+ * is checked before the first entry is read, then, as each entry arrives, the
+ * memory held so far (its record bytes, plus the objects made of it at the
+ * rates measured in limits.ts) and its extra fields.
  */
 export function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry>> {
   return new Promise((resolve, reject) => {
@@ -138,7 +145,13 @@ export function listEntries(zip: yauzl.ZipFile): Promise<Map<string, yauzl.Entry
         return;
       }
       directoryBytes +=
-        46 + entry.fileNameLength + entry.extraFieldLength + entry.fileCommentLength;
+        46 +
+        entry.fileNameLength +
+        entry.extraFieldLength +
+        entry.fileCommentLength +
+        ZIP_ENTRY_OVERHEAD_BYTES +
+        entry.fileNameLength +
+        entry.extraFields.length * ZIP_EXTRA_FIELD_OVERHEAD_BYTES;
       if (directoryBytes > MAX_ZIP_DIRECTORY_BYTES) {
         done(() => reject(new Damaged("zip directory over the limit")));
         return;

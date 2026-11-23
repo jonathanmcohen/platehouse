@@ -19,7 +19,13 @@
 // integer columns) failed the save instead of reading as hostile input.
 import { describe, expect, it } from "vitest";
 import { LIMITS, PlateMeshError, type Project, readPlateMesh, readProject } from "../src/index.js";
-import { MAX_EXTRA_FIELDS, MAX_ZIP_ENTRIES } from "../src/limits.js";
+import {
+  MAX_EXTRA_FIELDS,
+  MAX_ZIP_DIRECTORY_BYTES,
+  MAX_ZIP_ENTRIES,
+  ZIP_ENTRY_OVERHEAD_BYTES,
+  ZIP_EXTRA_FIELD_OVERHEAD_BYTES,
+} from "../src/limits.js";
 import {
   build3mf,
   build3mfWithEntries,
@@ -193,10 +199,20 @@ const rows: Row[] = [
     expect: "clean",
   },
   {
-    name: "70 entries each with one 60000-byte extra field",
+    name: "140 entries each with one 60000-byte extra field",
     kind: "crafted archive",
     breaks: "MAX_ZIP_DIRECTORY_BYTES",
-    file: () => padded(70, () => bigField(60000)),
+    file: () => padded(140, () => bigField(60000)),
+    expect: "null",
+  },
+  {
+    // About 360 KB of directory records, far under the cap in raw bytes, but
+    // the zip reader makes an object of every entry and every extra field,
+    // about 11 MiB of heap here; the cap counts that too.
+    name: "2000 entries with 32 empty extra fields each",
+    kind: "crafted archive",
+    breaks: "MAX_ZIP_DIRECTORY_BYTES",
+    file: () => padded(2000, () => emptyFields(MAX_EXTRA_FIELDS)),
     expect: "null",
   },
   {
@@ -617,6 +633,17 @@ describe("hostile files", () => {
 
   it.each(rows.filter((r) => !r.slow))("$name ($kind)", checkRow);
   it.each(rows.filter((r) => r.slow))("$name ($kind)", checkRow, SLOW_ROW_MS);
+
+  it("the zip directory cap counts the zip reader's objects as well as the record bytes", () => {
+    // Measured with yauzl 3.4.0 (limits.ts): about 650 bytes of heap per
+    // entry and 150 to 300 per extra field, beside the record bytes.
+    expect(MAX_ZIP_DIRECTORY_BYTES).toBe(8 * MiB);
+    expect(ZIP_ENTRY_OVERHEAD_BYTES).toBe(768);
+    expect(ZIP_EXTRA_FIELD_OVERHEAD_BYTES).toBe(320);
+    // The 2000-entry row above is under the cap in raw record bytes alone.
+    const raw = 2000 * (46 + "p/1999".length + 4 * MAX_EXTRA_FIELDS);
+    expect(raw).toBeLessThan(MAX_ZIP_DIRECTORY_BYTES / 8);
+  });
 
   it("the healthy control file for the rows above reads", async () => {
     const project = await readProject(writeTmp(good()));
