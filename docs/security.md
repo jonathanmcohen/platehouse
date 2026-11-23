@@ -120,22 +120,40 @@ traefik.http.middlewares.platehouse-auth-limit.ratelimit.burst: "10"
 Both examples count the connection's own address, which is the visitor's when nothing sits in
 front of your proxy.
 
-If another proxy, such as a load balancer or a tunnel, sits in front of yours, every connection
-comes from that one proxy, so every visitor shares one limit (and one allowlist entry). Then:
+If another device, such as a load balancer or a tunnel, sits in front of your proxy, every
+connection comes from that one device, so every visitor shares one limit (and one allowlist
+entry). How to fix that depends on what kind of device it is:
 
-- **Trust only the front proxy's address.** Read the visitor's address from `X-Forwarded-For`
-  only on connections from the front proxy, never from anyone else: from anyone else, the header
-  says whatever the client put in it. With nginx, use the `realip` module:
-  `set_real_ip_from` with the front proxy's address only, and `real_ip_header X-Forwarded-For`.
-  With Traefik, list only the front proxy's address in the entrypoint's
-  `forwardedHeaders.trustedIPs` (Traefik drops forwarded headers from any other address), then
-  give the rate limit's `sourceCriterion.ipStrategy` and the allowlist's `ipStrategy` a `depth` of
-  `1`, so they use the address the front proxy saw.
-- **Check that visitors' own addresses are seen.** From one device, open `/auth/login` more than
-  20 times within a minute until the proxy answers `429`. Then, within the same minute, open it from
-  a device on another network, such as a phone off your Wi-Fi: it should still get through. If it
-  gets `429` too, the proxy is still seeing the front proxy's address, and all your visitors share
-  one limit.
+- **An HTTP proxy that adds `X-Forwarded-For` itself.** Trust that header only on connections
+  from the front proxy's own address, never from anyone else: from anyone else, it says whatever
+  the client put in it. Do this only if you know the front proxy adds the visitor's address to the
+  header on every request. With nginx, use the `realip` module: `set_real_ip_from` with the front
+  proxy's address only, and `real_ip_header X-Forwarded-For`. With Traefik, list only the front
+  proxy's address in the entrypoint's `forwardedHeaders.trustedIPs` (Traefik drops forwarded
+  headers from any other address), then give the rate limit's `sourceCriterion.ipStrategy` and
+  the allowlist's `ipStrategy` a `depth` of `1`, so they use the address the front proxy saw.
+- **A TCP (layer 4) load balancer or tunnel.** It passes each request on unchanged, so an
+  `X-Forwarded-For` header arriving through it is the client's own, and a client can claim any
+  address in it, an address inside your allowlist included. Never trust the header behind such a
+  device. Turn on the PROXY protocol on the device instead, which sends the visitor's address
+  ahead of each connection, and accept it only from the device's address. With nginx, add
+  `proxy_protocol` to the `listen` line, with `set_real_ip_from` set to the device's address and
+  `real_ip_header proxy_protocol`. With Traefik, list only the device's address in the
+  entrypoint's `proxyProtocol.trustedIPs`, and leave `ipStrategy` unset, so the rate limit and the
+  allowlist match the address the PROXY protocol gave.
+
+Then check that visitors' own addresses are seen:
+
+1. From one device, open `/auth/login` again and again until the proxy answers `429`. With the
+   examples above that happens after about 10 requests in a minute.
+2. Within the same minute, open it from a second device with a different address, as your proxy
+   sees it, on a network the allowlist lets in, such as another device on your VPN. It should get
+   through. If it gets `429` too, the proxy sees the front device's address for everyone, and all
+   your visitors share one limit.
+3. If you use the allowlist, open it from a device on a network outside it, such as a phone off
+   your Wi-Fi. It should get `403` from the allowlist, which also shows the phone's own address was
+   seen. If it gets through, or gets `429`, the allowlist is not matching visitors' own addresses.
+   Without the allowlist, the phone should simply get through.
 
 ## Slicer links
 
