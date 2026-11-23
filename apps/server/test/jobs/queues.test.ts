@@ -61,6 +61,15 @@ describe("queueSettings", () => {
     });
   });
 
+  test("the upgrade queue is stately, never retried and worked one job at a time", () => {
+    expect(QUEUE.upgrade).toBe("upgrade");
+    expect(queueSettings().upgrade).toEqual({
+      name: "upgrade",
+      queue: { policy: "stately", retryLimit: 0 },
+      work: { localConcurrency: 1 },
+    });
+  });
+
   test("maintenance runs one job at a time", () => {
     expect(queueSettings().maintenance).toMatchObject({
       name: QUEUE.maintenance,
@@ -72,13 +81,20 @@ describe("queueSettings", () => {
 /** A boss that records what startQueues asks of it and runs no job. */
 function fakeBoss() {
   const calls: string[] = [];
+  const unscheduled: Array<{ name: string; key: string }> = [];
+  const scheduled: Array<{ name: string; task: string }> = [];
   const sent: Array<{ name: string; data: { task: string }; options: unknown }> = [];
   const handlers = new Map<string, (jobs: unknown[]) => unknown>();
   const boss = {
     createQueue: vi.fn(async () => {}),
     updateQueue: vi.fn(async () => {}),
-    schedule: vi.fn(async (_name: string, _cron: string, data: { task: string }) => {
+    schedule: vi.fn(async (name: string, _cron: string, data: { task: string }) => {
       calls.push(`schedule ${data.task}`);
+      scheduled.push({ name, task: data.task });
+    }),
+    unschedule: vi.fn(async (name: string, key: string) => {
+      calls.push(`unschedule ${key}`);
+      unscheduled.push({ name, key });
     }),
     work: vi.fn(async (name: string, _opts: unknown, handler: (jobs: unknown[]) => unknown) => {
       calls.push(`work ${name}`);
@@ -91,7 +107,7 @@ function fakeBoss() {
       return "job-id";
     }),
   };
-  return { boss: boss as unknown as PgBoss, calls, sent, handlers };
+  return { boss: boss as unknown as PgBoss, calls, sent, scheduled, unscheduled, handlers };
 }
 
 function deps(extra: Partial<QueueDeps>): QueueDeps {
@@ -189,27 +205,25 @@ describe("startQueues", () => {
 });
 
 // The description re-conversion (#357) is a one-time step on upgrade, not a
-// schedule: startQueues sends it to the maintenance queue once the workers
-// are up, only while it has not finished, and the maintenance worker runs it.
+// schedule: startQueues sends it to the upgrade queue once the workers
+// are up, only while it has not finished, and the upgrade worker runs it.
 // The description re-conversion on upgrade (#357). Its lifecycle as a whole is
 // checked by the seeded simulation in test/library/reconvert-lifecycle.test.ts;
 // these are the named cases from the review rounds and issues #381 and #382.
 describe("the description re-conversion on upgrade", () => {
   const TASK = UPGRADE_TASKS.reconvertDescriptions;
-  const JOB = { name: QUEUE.maintenance, data: { task: TASK }, options: { retryLimit: 0 } };
+  const JOB = { name: QUEUE.upgrade, data: { task: TASK }, options: { retryLimit: 0 } };
 
-  /** A maintenance job for the re-conversion, as pg-boss hands it to the worker. */
+  /** A job for the re-conversion, as pg-boss hands it to the upgrade worker. */
   function reconvertJob(signal = new AbortController().signal, expireInSeconds = 900) {
     return { data: { task: TASK }, signal, expireInSeconds };
   }
 
-  /** Starts the queues with a re-conversion, and gives the maintenance worker. */
+  /** Starts the queues with a re-conversion, and gives the upgrade and maintenance workers. */
   async function started(over: Partial<QueueDeps> = {}) {
     const fake = fakeBoss();
-    const unschedule = vi.fn(async (_name: string, _key: string) => {
-      fake.calls.push(`unschedule ${_key}`);
-    });
-    (fake.boss as unknown as { unschedule: typeof unschedule }).unschedule = unschedule;
+    const unschedule = (fake.boss as unknown as { unschedule: ReturnType<typeof vi.fn> })
+      .unschedule;
     await startQueues(
       fake.boss,
       deps({
@@ -218,23 +232,25 @@ describe("the description re-conversion on upgrade", () => {
         ...over,
       }),
     );
-    const work = fake.handlers.get(QUEUE.maintenance);
-    if (work === undefined) throw new Error("no maintenance worker");
+    const work = fake.handlers.get(QUEUE.upgrade);
+    const maintenanceWork = fake.handlers.get(QUEUE.maintenance);
+    if (work === undefined || maintenanceWork === undefined) throw new Error("no worker");
     fake.sent.length = 0;
     fake.calls.length = 0;
-    return { ...fake, unschedule, work };
+    fake.unscheduled.length = 0;
+    unschedule.mockClear();
+    return { ...fake, unschedule, work, maintenanceWork };
   }
 
   test("while pending, is scheduled every 5 minutes and sent at once, with no pg-boss retry", async () => {
     const { boss, calls, sent } = fakeBoss();
-    (boss as unknown as { unschedule: () => Promise<void> }).unschedule = async () => {};
     await startQueues(
       boss,
       deps({ reconvertPending: async () => true, reconvertDescriptions: async () => null }),
     );
     expect(RECONVERT_CRON).toBe("*/5 * * * *");
     expect(boss.schedule).toHaveBeenCalledWith(
-      QUEUE.maintenance,
+      QUEUE.upgrade,
       RECONVERT_CRON,
       { task: TASK },
       {
@@ -244,26 +260,20 @@ describe("the description re-conversion on upgrade", () => {
       },
     );
     expect(sent).toEqual([JOB]);
-    expect(calls.indexOf(`send ${QUEUE.maintenance} ${TASK}`)).toBe(calls.length - 1);
-    expect(calls.indexOf(`work ${QUEUE.maintenance}`)).toBeLessThan(calls.length - 1);
+    expect(calls.indexOf(`send ${QUEUE.upgrade} ${TASK}`)).toBe(calls.length - 1);
+    expect(calls.indexOf(`work ${QUEUE.upgrade}`)).toBeLessThan(calls.length - 1);
   });
 
   test("once finished, is neither scheduled nor sent, and a schedule left over is removed", async () => {
-    const { boss, sent } = fakeBoss();
-    const unschedule = vi.fn(async () => {});
-    (boss as unknown as { unschedule: typeof unschedule }).unschedule = unschedule;
+    const { boss, sent, scheduled, unscheduled } = fakeBoss();
     await startQueues(
       boss,
       deps({ reconvertPending: async () => false, reconvertDescriptions: async () => null }),
     );
     expect(sent).toEqual([]);
-    expect(boss.schedule).not.toHaveBeenCalledWith(
-      QUEUE.maintenance,
-      RECONVERT_CRON,
-      expect.anything(),
-      expect.anything(),
-    );
-    expect(unschedule).toHaveBeenCalledWith(QUEUE.maintenance, TASK);
+    expect(scheduled.filter((s) => s.task === TASK)).toEqual([]);
+    expect(sent.filter((s) => s.name === QUEUE.upgrade)).toEqual([]);
+    expect(unscheduled).toContainEqual({ name: QUEUE.upgrade, key: TASK });
   });
 
   test("is not sent when the server gives no re-conversion", async () => {
@@ -300,7 +310,7 @@ describe("the description re-conversion on upgrade", () => {
     });
     await work([reconvertJob()]);
     expect(sent).toEqual([]);
-    expect(unschedule).toHaveBeenCalledWith(QUEUE.maintenance, TASK);
+    expect(unschedule).toHaveBeenCalledWith(QUEUE.upgrade, TASK);
   });
 
   test("a job that finds the step finished removes the schedule without running", async () => {
@@ -313,7 +323,7 @@ describe("the description re-conversion on upgrade", () => {
     pending = false;
     await work([reconvertJob()]);
     expect(reconvertDescriptions).not.toHaveBeenCalled();
-    expect(unschedule).toHaveBeenCalledWith(QUEUE.maintenance, TASK);
+    expect(unschedule).toHaveBeenCalledWith(QUEUE.upgrade, TASK);
   });
 
   test("a job that finds another run holding the step does nothing more (the lock)", async () => {
@@ -324,7 +334,7 @@ describe("the description re-conversion on upgrade", () => {
   });
 
   // Round 3: a run in slices inside the job's expiry.
-  test("a run that paused goes on in a new maintenance job", async () => {
+  test("a paused slice goes on in a new upgrade job", async () => {
     const { work, sent } = await started();
     await work([reconvertJob()]);
     expect(sent).toEqual([JOB]);
@@ -521,6 +531,89 @@ describe("the description re-conversion on upgrade", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+
+  test("the upgrade queue is created stately and worked one job at a time", async () => {
+    const { boss, calls } = fakeBoss();
+    await startQueues(boss, deps({}));
+    expect(boss.createQueue).toHaveBeenCalledWith(
+      QUEUE.upgrade,
+      expect.objectContaining({ policy: "stately" }),
+    );
+    expect(boss.work).toHaveBeenCalledWith(
+      QUEUE.upgrade,
+      expect.objectContaining({ localConcurrency: 1 }),
+      expect.any(Function),
+    );
+    expect(calls).toContain(`work ${QUEUE.upgrade}`);
+  });
+
+  test("is scheduled and sent on the upgrade queue, never on maintenance", async () => {
+    const { boss, sent, scheduled } = fakeBoss();
+    await startQueues(
+      boss,
+      deps({ reconvertPending: async () => true, reconvertDescriptions: async () => null }),
+    );
+    expect(scheduled.filter((s) => s.task === TASK)).toEqual([{ name: QUEUE.upgrade, task: TASK }]);
+    expect(sent.filter((s) => s.data.task === TASK).map((s) => s.name)).toEqual([QUEUE.upgrade]);
+  });
+
+  test.each([true, false])(
+    "start-up removes the old maintenance schedule for it (pending: %s)",
+    async (pending) => {
+      const { boss, unscheduled } = fakeBoss();
+      await startQueues(
+        boss,
+        deps({ reconvertPending: async () => pending, reconvertDescriptions: async () => null }),
+      );
+      expect(unscheduled).toContainEqual({ name: QUEUE.maintenance, key: TASK });
+    },
+  );
+
+  test("start-up carries on when there is no old maintenance schedule to remove", async () => {
+    const { boss, sent } = fakeBoss();
+    (boss as unknown as { unschedule: () => Promise<never> }).unschedule = async () => {
+      throw new Error("Schedule not found");
+    };
+    await expect(
+      startQueues(
+        boss,
+        deps({ reconvertPending: async () => true, reconvertDescriptions: async () => null }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(sent.map((s) => s.name)).toEqual([QUEUE.upgrade]);
+  });
+
+  test("a job left on the maintenance queue ends at once without a slice, and the run goes on on upgrade", async () => {
+    const reconvertDescriptions = vi.fn(async () => RECONVERT_PAUSED);
+    const { maintenanceWork, sent } = await started({ reconvertDescriptions });
+    await maintenanceWork([{ data: { task: TASK } }]);
+    expect(reconvertDescriptions).not.toHaveBeenCalled();
+    expect(sent).toEqual([JOB]);
+  });
+
+  test("a job left on the maintenance queue sends nothing once the step has finished", async () => {
+    let pending = true;
+    const reconvertDescriptions = vi.fn(async () => RECONVERT_PAUSED);
+    const { maintenanceWork, sent } = await started({
+      reconvertPending: async () => pending,
+      reconvertDescriptions,
+    });
+    pending = false;
+    await maintenanceWork([{ data: { task: TASK } }]);
+    expect(reconvertDescriptions).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  test("when finished, nothing is scheduled or sent on upgrade, and its schedule is removed", async () => {
+    const { boss, sent, scheduled, unscheduled } = fakeBoss();
+    await startQueues(
+      boss,
+      deps({ reconvertPending: async () => false, reconvertDescriptions: async () => null }),
+    );
+    expect(scheduled.some((s) => s.name === QUEUE.upgrade)).toBe(false);
+    expect(sent.some((s) => s.name === QUEUE.upgrade)).toBe(false);
+    expect(unscheduled).toContainEqual({ name: QUEUE.upgrade, key: TASK });
   });
 
   test("reconvertBackoffMs doubles from 5 minutes up to an hour", () => {

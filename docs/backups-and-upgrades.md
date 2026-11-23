@@ -70,13 +70,26 @@ them within it deletes them all.
 
 :::
 
-To restore into an empty database, once you have done the steps above:
+To restore, once you have done the steps above, recreate the database and restore into the new,
+empty one. Do not restore over the existing database with `pg_restore --clean`: it drops only the
+objects the dump holds, so a newer version's tables, which an older dump does not hold, would stay
+and stop the next upgrade with "relation already exists". The app must be stopped first, because
+`dropdb` fails while it holds connections:
 
 ```bash
 docker compose stop platehouse
-docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --clean --if-exists < platehouse-2026-01-01.dump
+docker exec platehouse-db dropdb -U platehouse platehouse
+docker exec platehouse-db createdb -U platehouse platehouse
+docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --exit-on-error --single-transaction < platehouse-2026-01-01.dump
 docker compose start platehouse
 ```
+
+Use your own `DB_USER` and `DB_NAME` in place of `platehouse` in the three database commands.
+
+This ends with `start`, which is right when the images are the version the dump came from. To go
+back to an older version, set both image tags back first and finish with
+`docker compose up -d --no-deps platehouse platehouse-slicer` instead, as [Upgrading](#upgrading)
+says.
 
 Then upload the files of the models added since the dump again, as the warning says.
 
@@ -92,22 +105,27 @@ Then upload the files of the models added since the dump again, as the warning s
 Platehouse follows semantic versioning. Read the [changelog](./changelog.md) before upgrading.
 
 1. Back up the database and check the bucket's versioning is on.
-2. Change the app image tag in `docker-compose.yml` to the new version, for example
-   `ghcr.io/jonathanmcohen/platehouse:0.1.1`.
-3. Pull and recreate the app alone:
+2. Change both image tags in `docker-compose.yml`, the app's and the slicer's, to the new version,
+   for example `ghcr.io/jonathanmcohen/platehouse:X.Y.Z` and
+   `ghcr.io/jonathanmcohen/platehouse-slicer:X.Y.Z`.
+3. Pull and recreate the app and the slicer, and nothing else:
 
    ```bash
-   docker compose pull platehouse
-   docker compose up -d --no-deps platehouse
+   docker compose pull platehouse platehouse-slicer
+   docker compose up -d --no-deps platehouse platehouse-slicer
    ```
 
-   `--no-deps` recreates only the app. A plain `docker compose up -d` also recreates any other
+   `--no-deps` recreates only those two. A plain `docker compose up -d` also recreates any other
    service whose settings changed, the database included, which you may not want mid-upgrade.
 4. Check it came up: `docker compose ps` shows the app `healthy`, and
    `docker compose logs platehouse` shows no errors.
 
 The app applies any database changes itself when it starts. They only move forward, so going back
-to an older version means restoring the database dump you took in step 1. Read the warning below
+to an older version means first setting both image tags back to that version (see
+[the slicer](#the-slicer) for 0.1.0), then restoring the database dump you took in step 1, into a
+recreated database as described under [restoring the database](#the-database), not a cleaned one,
+and finishing with `docker compose up -d --no-deps platehouse platehouse-slicer` instead of the
+`start` that section ends with, which would start the image you are leaving. Read the warning below
 before you restore it.
 
 :::warning Going back can delete what was uploaded since step 1
@@ -126,22 +144,22 @@ location if it is off. After you go back, upload those files again. The warning 
 
 ### The slicer
 
-The slicer image is tagged `orca-X.Y.Z` for the OrcaSlicer version it contains, and `stable`
-points to the newest one that has passed a test slice. To move to a new OrcaSlicer version, change
-the tag and recreate the slicer:
-
-```bash
-docker compose pull platehouse-slicer
-docker compose up -d --no-deps platehouse-slicer
-```
+The slicer image is tagged with the release version, `platehouse-slicer:X.Y.Z`, the same as the
+app image, and that version tag is the pin. `orca-X.Y.Z` follows the newest build of that
+OrcaSlicer version from main or a release, never a release candidate, and `stable` the newest such
+build of any OrcaSlicer version. You move to a new release with the Upgrading steps above, which
+change both tags together.
 
 When the slicer's OrcaSlicer version changes, Platehouse re-estimates the library in the
-background, since a new version can give different numbers. To go back, set the previous tag
-again.
+background, since a new version can give different numbers. From 0.1.1 on, to go back, set both
+images to the previous version tag. 0.1.0 has no slicer version tag, because those began after it.
+To go back to 0.1.0, set the slicer to `ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1-r3`,
+the build 0.1.0's example file resolved to (`orca-2.5.1` itself still points at it, but is a moving
+tag), together with `ghcr.io/jonathanmcohen/platehouse:0.1.0`.
 
-Pull the slicer image again when you upgrade the app, even if you keep the same tag: a Platehouse
-release ships its slicer changes in the slicer image. The STL and STEP preview pictures added in
-0.1.1 need a slicer image from 0.1.1 or later. With an older one, a preview waits for the slicer,
+A pinned deployment gets the slicer's fixes, such as a newer Ubuntu snapshot or OrcaSlicer, with
+the next Platehouse release's version tag. Pulling the same version tag again gets nothing new. The
+STL and STEP preview pictures added in 0.1.1 need a slicer image from 0.1.1 or later. With an older one, a preview waits for the slicer,
 for up to 2 hours, and then shows "The slicer is not answering, so the preview picture could not
 be made. It will be tried again automatically." It is tried again in the background, so the
 picture appears once the slicer image is updated.
@@ -183,8 +201,11 @@ docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --
 
 Do not run `rc` on a server you rely on. A release candidate can have bugs the release fixes, and
 the app's database changes only move forward, so going back from a candidate means restoring the
-dump you took before you pulled it (see the restore steps above, and their warning about files
-uploaded since the dump).
+dump you took before you pulled it. First set both image tags back to the previous version (see
+[the slicer](#the-slicer) for 0.1.0), then recreate the database and restore into it, as described
+under [restoring the database](#the-database), but finish with
+`docker compose up -d --no-deps platehouse platehouse-slicer` instead of `start`, which would start
+the candidate again. Read the warning there about files uploaded since the dump.
 
 ### Postgres
 

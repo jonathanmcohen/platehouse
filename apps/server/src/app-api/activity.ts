@@ -276,7 +276,7 @@ export function queueRows(counts: readonly QueueCount[]): QueueRow[] {
   for (const c of counts) {
     let id: QueueRowId;
     if (c.queue === QUEUE.ingest) id = "ingest";
-    else if (c.queue === QUEUE.maintenance) id = "scheduled";
+    else if (c.queue === QUEUE.maintenance || c.queue === QUEUE.upgrade) id = "scheduled";
     else if (c.queue === QUEUE.slicer) {
       id =
         (c.kind !== null && Object.hasOwn(SLICER_KIND_ROWS, c.kind) && SLICER_KIND_ROWS[c.kind]) ||
@@ -552,8 +552,13 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
           version,
           new Date(now.getTime() - RATE_WINDOW_MS),
         );
-        const queues = await repo.queueCounts([QUEUE.ingest, QUEUE.slicer, QUEUE.maintenance]);
-        const lastRuns = await repo.lastRuns(QUEUE.maintenance);
+        const queues = await repo.queueCounts([
+          QUEUE.ingest,
+          QUEUE.slicer,
+          QUEUE.maintenance,
+          QUEUE.upgrade,
+        ]);
+        const lastRuns = await repo.lastRuns([QUEUE.maintenance, QUEUE.upgrade]);
         const models = await repo.recentModels(QUEUE.ingest, EVENT_LIMIT);
         const estimates = await repo.failedEstimates(settings.printerId, version, EVENT_LIMIT);
         const derived = await repo.failedDerived(EVENT_LIMIT);
@@ -580,12 +585,14 @@ export function createAppActivity(deps: AppActivityDeps): AppActivity {
   return {
     async read(): Promise<ActivityView> {
       const now = clock();
-      const [data, health, inbox, schedules] = await Promise.all([
+      const [data, health, inbox, maintenanceSchedules, upgradeSchedules] = await Promise.all([
         readDatabase(now),
         healthWithin(deps.slicer, healthMs),
         inboxFailures(),
         deps.boss.getSchedules(QUEUE.maintenance),
+        deps.boss.getSchedules(QUEUE.upgrade),
       ]);
+      const schedules = [...maintenanceSchedules, ...upgradeSchedules];
       const {
         settings,
         library,

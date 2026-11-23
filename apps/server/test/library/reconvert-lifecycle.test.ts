@@ -2,13 +2,16 @@
 // checked by a seeded simulation rather than case by case. Three review
 // rounds each found one more way a stop, an outage or a lost job left the
 // step unfinished or the process exiting 1. This drives the real code, the
-// maintenance worker in startQueues, createDescriptionReconvert and
+// upgrade worker in startQueues, createDescriptionReconvert and
 // storeTextReader, against fakes with the behaviour that matters:
 //
 // - a pg-boss whose jobs and schedules outlive a process, that retries a
-//   failed job as the maintenance queue's defaults do (2 retries, no delay),
-//   fires its crons, and stops gracefully as pg-boss 12 does: it waits 10 s
-//   for the job in hand, and only then aborts the job's signal;
+//   failed job up to the retryLimit its send gives (the upgrade queue and
+//   every send use retryLimit 0, so in practice it never retries; the fake
+//   models a standard, non-collapsing queue, where the real upgrade queue
+//   is stately and collapses a send while a job waits), fires its crons,
+//   and stops gracefully as pg-boss 12 does: it waits 10 s for the job in
+//   hand, and only then aborts the job's signal;
 // - a database holding the models, the progress and the lock, that can go
 //   down for any length of time and drops a dead process's lock;
 // - an object store serving real .3mf bytes with a latency, where a file can
@@ -441,21 +444,21 @@ class World {
       createQueue: async () => {},
       updateQueue: async () => {},
       schedule: async (
-        _n: string,
+        name: string,
         cron: string,
         data: { task: string },
         options: Schedule["options"],
       ) => {
         if (!this.alive.has(epoch)) throw new ProcessGone("the process is gone");
-        this.schedules.set(String(options?.key ?? data.task), {
+        this.schedules.set(`${name}/${String(options?.key ?? data.task)}`, {
           cron,
           data,
           options: options ?? {},
         });
       },
-      unschedule: async (_n: string, key: string) => {
+      unschedule: async (name: string, key: string) => {
         if (!this.alive.has(epoch)) throw new ProcessGone("the process is gone");
-        this.schedules.delete(key);
+        this.schedules.delete(`${name}/${key}`);
       },
       send: async (_n: string, data: { task: string }, options?: { retryLimit?: number }) => {
         await Promise.resolve();
@@ -471,7 +474,7 @@ class World {
         return String(this.jobIds);
       },
       work: async (name: string, _opts: unknown, h: (jobs: unknown[]) => unknown) => {
-        if (name === "maintenance") handler = h;
+        if (name === "upgrade") handler = h;
         return name;
       },
       getSchedules: async () => [],

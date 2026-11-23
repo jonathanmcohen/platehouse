@@ -124,8 +124,9 @@ container, the slicer, which is locked down.
   packages with its next build after that change is merged: a Platehouse release, a new OrcaSlicer
   version, or a build run by hand. The image builds scan for known high and critical problems with
   a fix available and report them without failing the build; the slicer's lack of internet access
-  is why that is acceptable. To get the fixes, pull your slicer image tag again when you update
-  Platehouse.
+  is why that is acceptable. A deployment pinned to a version tag gets the fixes with the next
+  Platehouse release's version tag, so update Platehouse to get them: pulling the same version tag
+  again gets nothing new.
 - OpenSCAD can still read the system libraries, fonts and programs it needs to run; the sandbox
   keeps it away from your data, not from the operating system files inside its own container.
 - Some limits are documented in the code as known: for example, the sandbox does not block UDP.

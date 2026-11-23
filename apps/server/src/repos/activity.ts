@@ -208,15 +208,15 @@ export function activityRepo(db: Kysely<DB>) {
       return rows;
     },
 
-    /** The newest finished run pg-boss still keeps of each task on the maintenance queue. */
-    async lastRuns(queue: string): Promise<LastRun[]> {
+    /** The newest finished run pg-boss still keeps of each task on these queues (maintenance, upgrade). */
+    async lastRuns(queues: readonly string[]): Promise<LastRun[]> {
       const { rows } = await sql<LastRun>`
         select distinct on (data->>'task')
                data->>'task' as task,
                state::text as state,
                completed_on as at
           from ${job}
-         where name = ${queue}
+         where name = any(${[...queues]}::text[])
            and completed_on is not null
            and state in ('completed', 'failed')
            and data->>'task' is not null

@@ -24,8 +24,13 @@ This page walks through a first install with the example files in the repository
 
 ## 1. Get the example files
 
-Make a folder for the project and copy `examples/docker-compose.yml` and
-`examples/.env.example` into it. Rename `.env.example` to `.env`.
+Platehouse's source is at <https://github.com/jonathanmcohen/platehouse>. You need two files from
+it: [`examples/docker-compose.yml`](https://github.com/jonathanmcohen/platehouse/blob/main/examples/docker-compose.yml)
+and [`examples/.env.example`](https://github.com/jonathanmcohen/platehouse/blob/main/examples/.env.example).
+Open each link, use Raw to save it, and put both in a new folder for the project. Rename
+`.env.example` to `.env`.
+
+If you have cloned the repository, copy them from your clone instead:
 
 ```bash
 mkdir platehouse && cd platehouse

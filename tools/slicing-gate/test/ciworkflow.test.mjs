@@ -1679,6 +1679,7 @@ for (const [name, env, want] of [
       assert.equal(r.status, 0, r.log);
       assert.equal(r.outputs.version, want.version);
       assert.equal(r.outputs.stable, want.stable, "whether stable moves");
+      assert.equal(r.outputs.orca, want.stable, "orca-X.Y.Z moves exactly when stable does: a prerelease tag moves neither");
       assert.match(r.calls, new RegExp(`^gh api repos/OrcaSlicer/OrcaSlicer/${want.call.replace(/\./g, "\\.")}$`, "m"));
     }
   });
@@ -2149,7 +2150,7 @@ const DIGEST = `sha256:${sha("d")}`;
 const tagRun = (env) =>
   runSlicerStep("build", "Tag the image and move stable", {
     stubs: DOCKER_TAG_STUB,
-    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_STABLE: "true", RELEASE: "", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, D_RELEASE: DIGEST, ...env },
+    env: { VERSION: "2.5.1", RUN_NUMBER: "42", RUN_ATTEMPT: "1", MOVE_STABLE: "true", MOVE_ORCA: "true", RELEASE: "", DIGEST, D_ORCA: DIGEST, D_RUN: DIGEST, D_STABLE: DIGEST, D_RELEASE: DIGEST, ...env },
   });
 
 // Issue #221: a re-run keeps github.run_number, so attempt 1 keeps
@@ -2235,27 +2236,72 @@ for (const release of ["v0.2.0", "0.2", "0.2.0;id", "01.2.0", "0.2.0 -t x", `0.2
   });
 }
 
-test("slicer-image tag: a prerelease tag's run pushes the version tags and leaves stable alone", () => {
-  const r = tagRun({ MOVE_STABLE: "false" });
+test("slicer-image tag: a prerelease tag's run pushes the run tag and the release version and leaves orca-X.Y.Z and stable alone", () => {
+  const r = tagRun({ MOVE_STABLE: "false", MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" });
   assert.equal(r.status, 0, r.log);
   assert.deepEqual(r.calls.trim().split("\n"), [
-    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1 -t ${IMG}:orca-2.5.1-r42 ${IMG}@${DIGEST}`,
-    `docker buildx imagetools inspect ${IMG}:orca-2.5.1 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1-r42 -t ${IMG}:0.2.0-rc.1 ${IMG}@${DIGEST}`,
     `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:0.2.0-rc.1 --format {{.Manifest.Digest}}`,
   ]);
   assert.doesNotMatch(r.calls, /:stable/, "stable is neither moved nor read");
-  assert.match(r.summary, /- tags: orca-2\.5\.1, orca-2\.5\.1-r42\n- stable not moved \(prerelease tag\)/);
-  // The daily run will not promote it either, so the summary says what will.
-  assert.match(r.summary, /daily run will not move it/);
+  assert.doesNotMatch(r.calls, /:orca-2\.5\.1[ \n]/, "orca-X.Y.Z is neither moved nor read");
+  assert.match(r.summary, /- tags: orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n- orca-2\.5\.1 and stable not moved \(prerelease tag\)/);
+  // The summary says what will move them.
+  assert.match(r.summary, /next daily run builds orca-2\.5\.1 if it does not exist yet/);
   assert.match(r.summary, /plain release tag or a run by hand/);
 });
+
+// Issue #435: an rc tag's run built the latest Orca release and moved
+// orca-X.Y.Z, which a deployment pins, onto the rc's slicer. A prerelease tag
+// now leaves orca-X.Y.Z alone as well as stable; a plain release tag, a run by
+// hand and the daily run move it as before.
+test("slicer-image: detect decides whether orca-X.Y.Z moves, and the tag step reads it (issue #435)", () => {
+  const detect = jobBlock(slicerText(), "detect");
+  assert.ok(detect.includes("\n      orca: ${{ steps.pick.outputs.orca }}\n"), "detect outputs orca");
+  const pick = stepBlock(detect, "Pick the version");
+  assert.match(pick, /echo "orca=\$\{orca\}" >>"\$GITHUB_OUTPUT"/, "the pick step writes orca= to GITHUB_OUTPUT");
+  const prerelease = pick.slice(pick.indexOf("stable=false"));
+  assert.match(prerelease.slice(0, prerelease.indexOf("fi")), /orca=false/, "the prerelease branch sets orca=false");
+  const tag = stepBlock(jobBlock(slicerText(), "build"), "Tag the image and move stable");
+  assert.match(tag, /\n {10}MOVE_ORCA: \$\{\{ needs\.detect\.outputs\.orca \}\}\n/);
+  assert.doesNotMatch(tag, /-t "\$\{IMAGE\}:orca-\$\{VERSION\}"/, "the orca tag is never passed unconditionally");
+});
+
+test("slicer-image tag: a prerelease tag's run leaves orca-X.Y.Z alone and reads back only what it made (issue #435)", () => {
+  const r = tagRun({ MOVE_STABLE: "false", MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" });
+  assert.equal(r.status, 0, r.log);
+  assert.deepEqual(r.calls.trim().split("\n"), [
+    `docker buildx imagetools create --prefer-index=false -t ${IMG}:orca-2.5.1-r42 -t ${IMG}:0.2.0-rc.1 ${IMG}@${DIGEST}`,
+    `docker buildx imagetools inspect ${IMG}:orca-2.5.1-r42 --format {{.Manifest.Digest}}`,
+    `docker buildx imagetools inspect ${IMG}:0.2.0-rc.1 --format {{.Manifest.Digest}}`,
+  ]);
+  assert.equal(r.outputs.tagged, "orca-2.5.1-r42, 0.2.0-rc.1");
+  assert.match(r.summary, /- tags: orca-2\.5\.1-r42, 0\.2\.0-rc\.1\n/);
+});
+
+test("slicer-image tag: a plain release tag's run still moves orca-X.Y.Z", () => {
+  const r = tagRun({ MOVE_ORCA: "true", RELEASE: "0.2.0" });
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.calls, new RegExp(`-t ${IMG}:orca-2\\.5\\.1 -t ${IMG}:orca-2\\.5\\.1-r42 -t ${IMG}:0\\.2\\.0 `));
+  assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, 0.2.0, stable");
+});
+
+for (const bad of ["", "yes"]) {
+  test(`slicer-image tag: an orca decision of '${bad}' from detect tags nothing`, () => {
+    const r = tagRun({ MOVE_ORCA: bad });
+    assert.notEqual(r.status, 0, r.log);
+    assert.match(r.log, /::error::detect gave no orca decision/);
+    assert.equal(r.calls, "", "no docker call");
+  });
+}
 
 // The tags the step pointed (or was pointing) at the digest, as the output the
 // failure issue reads. Each is recorded before its imagetools create, so a
 // create that fails part way still counts.
 for (const [name, env, want] of [
   ["a full run records every tag", {}, "orca-2.5.1, orca-2.5.1-r42, stable"],
-  ["a prerelease run records the two version tags", { MOVE_STABLE: "false" }, "orca-2.5.1, orca-2.5.1-r42"],
+  ["a prerelease run records the run tag and the release version", { MOVE_STABLE: "false", MOVE_ORCA: "false", RELEASE: "0.2.0-rc.1" }, "orca-2.5.1-r42, 0.2.0-rc.1"],
   ["a version tag read back wrong records the two version tags", { D_ORCA: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42"],
   ["stable read back wrong records stable too", { D_STABLE: `sha256:${sha("e")}` }, "orca-2.5.1, orca-2.5.1-r42, stable"],
   ["no digest records nothing", { DIGEST: "" }, undefined],
@@ -2505,6 +2551,9 @@ test("slicer-image issue: a prerelease tag's failure after tagging says Re-run f
   // build and keeps detect's outputs (version, pins, stable=false), so it
   // builds 2.5.1 itself and leaves stable alone (PR #302 review).
   assert.match(body, /keeps detect's outputs, so it builds 2\.5\.1 again and leaves stable alone/);
+  // A prerelease run never creates orca-X.Y.Z, so the daily run is not shut out of the version.
+  assert.doesNotMatch(body, /may have left it/);
+  assert.match(body, /does not move orca-2\.5\.1, so the daily run builds 2\.5\.1 itself if orca-2\.5\.1 is not in the registry yet/);
   // Issue #221: Re-run all jobs runs detect again, which reads Orca's latest
   // release, so the body warns against it.
   assert.match(body, /not Re-run all jobs/);
@@ -2630,7 +2679,7 @@ test("slicer-image: the docs do not claim a failure never tags, and say what the
   assert.doesNotMatch(slicerText(), /On any failure stable is not touched/);
   const section = readme.slice(readme.indexOf("## Slicer image"), readme.indexOf("### Rolling the slicer back"));
   assert.match(section, /lists the tags it had already pointed at the new digest/);
-  assert.match(section, /first published by a prerelease tag/);
+  assert.match(section, /A prerelease tag leaves `orca-X\.Y\.Z` and `stable` where they were/);
   // Issue #221: the run tag rule, in both README sections.
   assert.match(section, /`orca-X\.Y\.Z-r<run number>\.<attempt>`/);
   assert.match(section, /reads OrcaSlicer's latest release again/);

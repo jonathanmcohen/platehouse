@@ -53,7 +53,7 @@
 //   (SourceOutage, from storeTextReader) or the database. A file that is
 //   damaged in any way, missing, or that the converter cannot read, counts
 //   that model as could not be read, and the run goes on.
-// - The maintenance queue drives it (jobs/queues.ts): at start-up, on a
+// - The upgrade queue drives it (jobs/queues.ts): at start-up, on a
 //   short schedule while it is pending, and with the next job after a slice.
 //   An outage only delays it, with a back-off, and the schedule ends when
 //   the step finishes. Only one run goes at a time (exclusive, below).

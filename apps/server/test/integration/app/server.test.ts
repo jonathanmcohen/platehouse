@@ -71,9 +71,19 @@ function boss(): PgBoss {
   return probe;
 }
 
-/** Sends a job and waits until a worker has taken it and finished, either way. */
+/**
+ * Sends a job and waits until a worker has taken it and finished, either way.
+ * The upgrade queue is stately: send returns null when a job is already
+ * waiting there (the app's own re-conversion job, from start-up or its
+ * schedule). A probe on it carries its own singletonKey, so it never collapses
+ * into the app's job and is always created.
+ */
 async function settled(queue: string, data: object) {
-  const id = await boss().send(queue, data, { retryLimit: 0 });
+  const options =
+    queue === QUEUE.upgrade
+      ? { retryLimit: 0, singletonKey: `probe-${uuidv7()}` }
+      : { retryLimit: 0 };
+  const id = await boss().send(queue, data, options);
   if (id === null) throw new Error("job not created");
   const job = await until(
     () => boss().getJobById(queue, id),
@@ -129,7 +139,7 @@ describe("health", () => {
 });
 
 describe("queues and workers", () => {
-  test("the app creates the ingest, slicer and maintenance queues", async () => {
+  test("the app creates the ingest, slicer, maintenance and upgrade queues", async () => {
     const names = (await boss().getQueues())
       .map((q) => q.name)
       .filter((name) => !name.startsWith("__pgboss__"))
@@ -213,16 +223,28 @@ describe("queues and workers", () => {
       30_000,
     );
     expect(step?.result).toMatchObject({ changed: expect.any(Number), kept: expect.any(Number) });
-    const job = await settled(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions });
+    const job = await settled(QUEUE.upgrade, { task: UPGRADE_TASKS.reconvertDescriptions });
     expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
-    // Its schedule, made at the start while it was pending (#382), is gone
-    // once it has finished.
+    // Its schedule, made on the upgrade queue at the start while it was
+    // pending (#382), is gone once it has finished.
     const schedules = await until(
-      () => boss().getSchedules(QUEUE.maintenance),
+      () => boss().getSchedules(QUEUE.upgrade),
       (list) => !list.some((s) => s.key === UPGRADE_TASKS.reconvertDescriptions),
       30_000,
     );
     expect(schedules.map((s) => s.key)).not.toContain(UPGRADE_TASKS.reconvertDescriptions);
+  });
+
+  // #412: a job an earlier candidate left on the maintenance queue is handed
+  // over at once. The step has finished, so it completes and sends nothing.
+  test("an old re-conversion job on the maintenance queue completes without a slice", async () => {
+    const job = await settled(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions });
+    expect(job.state, JSON.stringify(job.output ?? null)).toBe("completed");
+    const queued = await boss().findJobs(QUEUE.upgrade, { queued: true });
+    expect(queued).toEqual([]);
+    expect(await boss().getSchedules(QUEUE.maintenance)).not.toContainEqual(
+      expect.objectContaining({ key: UPGRADE_TASKS.reconvertDescriptions }),
+    );
   });
 });
 
