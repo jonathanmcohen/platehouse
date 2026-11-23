@@ -327,7 +327,7 @@
   "library.view.pages": "Pages",
   "login.pageTitle": "{title} - Platehouse",
   "login.refused.email": "The email address on your sign-in account is not verified. Verify it with your sign-in provider, then try again.",
-  "login.refused.group": "Your sign-in account is not in the {group} group. Ask for it to be added, then try again.",
+  "login.refused.group": "Your account is not allowed to use this Platehouse. Ask for access, then try again.",
   "login.refused.subject": "Your sign-in provider gave your account a user id longer than {max} characters, which OpenID Connect does not allow, so Platehouse cannot sign you in. Ask whoever runs the sign-in provider to give your account a shorter user id.",
   "login.refused.title": "Login refused",
   "login.tryAgain": "Try again",

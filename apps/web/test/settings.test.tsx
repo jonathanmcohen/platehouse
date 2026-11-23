@@ -1439,6 +1439,29 @@ describe("the settings page", () => {
     expect(text()).toContain("Gone's script");
   });
 
+  test("Sign out everywhere shows each name inside a bdi, the user id outside it", async () => {
+    state.users.push({
+      subject: "subject-rtl",
+      name: "\u05e9\u05dc\u05d5\u05dd Synthetic",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-sign-out-status] ~ ul li strong"),
+    );
+    expect(rows).toHaveLength(2);
+    const rtl = rows.find((row) => row.textContent?.includes("subject-rtl")) as HTMLElement;
+    const wrapped = rtl.querySelectorAll("bdi");
+    expect(wrapped).toHaveLength(1);
+    expect(wrapped[0]?.textContent).toBe("\u05e9\u05dc\u05d5\u05dd Synthetic");
+    expect(rtl.textContent).toBe("\u05e9\u05dc\u05d5\u05dd Synthetic (user id subject-rtl)");
+    const mine = rows.find((row) => row.textContent?.includes("subject-me")) as HTMLElement;
+    expect(mine.querySelector("bdi")?.textContent).toBe("Synthetic Me");
+    expect(mine.textContent).toBe("Synthetic Me (user id subject-me) (you)");
+  });
+
   test("Sign out everywhere can also revoke the user's tokens", async () => {
     state.users.push({
       subject: "subject-gone",

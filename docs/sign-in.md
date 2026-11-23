@@ -51,7 +51,8 @@ and for the token exchange.
 ## The allowed group
 
 Only a user whose `groups` claim holds `OIDC_GROUP` exactly gets in. Everyone else sees a plain
-page saying why they were refused. To let someone in, add them to the group at your provider;
+page saying they are not allowed to use this Platehouse; it does not name the group, so a person
+who is refused learns nothing about how your provider is set up. To let someone in, add them to the group at your provider;
 to take access away, remove them. Platehouse checks the group each time someone signs in, and
 only then. Removing someone stops their next sign-in. If they try to sign in again and
 Platehouse itself refuses them (the provider let them sign in, but they are not in the group,
@@ -121,7 +122,14 @@ update api_tokens set revoked_at = now()
   site cannot sign you out.
 - **Sign out everywhere** in **Settings** ends every session of one person, on every browser, and
   can also revoke the API tokens they made. The list beside it shows everyone with a live session
-  or a token they made, by the name your provider gave at their last sign-in.
+  or a token they made. Each person is named by the name on their newest live session that has
+  one; a person with no live session that has a name is named by the name recorded on their newest
+  live token, and one with neither is shown by user id alone. The user id is always shown beside
+  the name, since two people can have the same name. Names are cleaned when they are recorded:
+  control characters and invisible text-direction characters are removed, so a name cannot
+  change how the text around it reads.
+- Signing out or revoking refuses new requests at once. A request that is already running, such as
+  a long upload, finishes.
 
 ## When the provider is down
 

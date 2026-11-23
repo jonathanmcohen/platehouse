@@ -419,7 +419,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
             await words(request),
             403,
             ["login.refused.title"],
-            ["login.refused.group", { group: deps.group }],
+            ["login.refused.group"],
           );
         case "email_not_verified":
           return sendPage(

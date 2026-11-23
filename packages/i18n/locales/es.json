@@ -334,7 +334,7 @@
   "library.view.pages": "P\u00e1ginas",
   "login.pageTitle": "{title} - Platehouse",
   "login.refused.email": "La direcci\u00f3n de correo de tu cuenta de inicio de sesi\u00f3n no est\u00e1 verificada. Verif\u00edcala con tu proveedor de inicio de sesi\u00f3n y vuelve a intentarlo.",
-  "login.refused.group": "Tu cuenta de inicio de sesi\u00f3n no est\u00e1 en el grupo {group}. Pide que te a\u00f1adan y vuelve a intentarlo.",
+  "login.refused.group": "Tu cuenta no tiene permiso para usar esta instancia de Platehouse. Pide acceso y vuelve a intentarlo.",
   "login.refused.subject": "Tu proveedor de inicio de sesi\u00f3n dio a tu cuenta un identificador de usuario de m\u00e1s de {max} caracteres, algo que OpenID Connect no permite, as\u00ed que Platehouse no puede iniciar tu sesi\u00f3n. Pide a quien administra el proveedor de inicio de sesi\u00f3n que d\u00e9 a tu cuenta un identificador m\u00e1s corto.",
   "login.refused.title": "Inicio de sesi\u00f3n rechazado",
   "login.tryAgain": "Reintentar",

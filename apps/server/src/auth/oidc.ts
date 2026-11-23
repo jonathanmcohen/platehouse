@@ -122,9 +122,17 @@ function spaceControls(text: string): string {
 }
 
 /**
+ * Format characters (category Cf): the left-to-right and right-to-left marks,
+ * the embedding, override and isolate controls, zero-width characters and
+ * the like. They draw nothing but can reorder the text around them, so a
+ * name that shows in a list beside other text cannot carry them.
+ */
+const FORMAT_CHARACTERS = /\p{Cf}/gu;
+
+/**
  * The name to show for whoever signed in (issue #322): the first of the
  * name, preferred_username and email claims that is a string with something
- * in it once control characters are taken out and white space is trimmed
+ * in it once control and format characters are taken out and white space is trimmed
  * and collapsed, cut to MAX_DISPLAY_NAME characters; null when none is. It
  * only labels a session and the tokens it makes: nothing is let in or kept
  * out by it.
@@ -133,7 +141,7 @@ export function displayNameOf(claims: Record<string, unknown>): string | null {
   for (const key of ["name", "preferred_username", "email"]) {
     const value = claims[key];
     if (typeof value !== "string") continue;
-    const clean = spaceControls(value).replace(/\s+/g, " ").trim();
+    const clean = spaceControls(value.replace(FORMAT_CHARACTERS, "")).replace(/\s+/g, " ").trim();
     if (clean !== "") return Array.from(clean).slice(0, MAX_DISPLAY_NAME).join("");
   }
   return null;

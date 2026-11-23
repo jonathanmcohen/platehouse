@@ -35,4 +35,16 @@ describe("displayNameOf", () => {
   test("drops control characters, so a name cannot break a log line or the page", () => {
     expect(displayNameOf({ name: "Synthetic\nPerson\u0000" })).toBe("Synthetic Person");
   });
+
+  test("strips bidirectional marks and other format characters", () => {
+    expect(displayNameOf({ name: "Syn\u200etheti\u200fc" })).toBe("Synthetic");
+    expect(displayNameOf({ name: "\u202aSyn\u202b\u202c\u202d\u202ethetic" })).toBe("Synthetic");
+    expect(displayNameOf({ name: "\u2066Syn\u2067\u2068the\u2069tic" })).toBe("Synthetic");
+    expect(displayNameOf({ name: "Syn\u200bthe\ufeffti\u00adc" })).toBe("Synthetic");
+  });
+
+  test("a name of only format characters is null, and the next claim is used", () => {
+    expect(displayNameOf({ name: "\u202e\u2066\u200f" })).toBeNull();
+    expect(displayNameOf({ name: "\u202e\u200f", email: "sp@x.test" })).toBe("sp@x.test");
+  });
 });

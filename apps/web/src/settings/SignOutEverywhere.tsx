@@ -21,7 +21,7 @@
 // row, the button label, the confirmation and the status line (PR #364
 // review): display names come from the issuer and need not be unique, and
 // signing out the wrong person, or revoking their tokens, cannot be undone.
-import { useId, useRef, useState } from "react";
+import { Fragment, type ReactNode, useId, useRef, useState } from "react";
 import { type I18n, useI18n } from "../i18n/I18n";
 import { appApi, needsSignIn, SIGN_IN_AGAIN_URL, useAppApi } from "./api";
 import { ConfirmDialog } from "./Dialog";
@@ -50,6 +50,35 @@ export function userLabel(t: I18n["t"], user: { subject: string; name: string | 
   return user.name === null
     ? user.subject
     : t("settings.userWithId", { name: user.name, subject: user.subject });
+}
+
+/** Stands for the name while a sentence is split around it; never shown. */
+const NAME_MARK = "\u0000";
+
+/**
+ * A person as the list's row shows them, the same words as userLabel and
+ * "(you)", with the name alone inside a <bdi>: a name written in the other
+ * direction cannot then reorder the user id or "(you)" beside it. The
+ * translations keep their own word order: the name's place is found by
+ * writing the sentence once with a mark where it goes.
+ */
+function UserName({ user }: { user: KnownUser }): ReactNode {
+  const { t } = useI18n();
+  if (user.name === null) {
+    const label = userLabel(t, user);
+    return user.you ? t("signOut.you", { name: label }) : label;
+  }
+  const withMark = userLabel(t, { subject: user.subject, name: NAME_MARK });
+  const sentence = user.you ? t("signOut.you", { name: withMark }) : withMark;
+  const parts = sentence.split(NAME_MARK);
+  return parts.map((part, index) => (
+    // The parts never change order, so their index is a stable key.
+    // biome-ignore lint/suspicious/noArrayIndexKey: fixed split of one sentence
+    <Fragment key={index}>
+      {index > 0 ? <bdi>{user.name}</bdi> : null}
+      {part}
+    </Fragment>
+  ));
 }
 
 export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void }) {
@@ -138,7 +167,9 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
           {users.map((user) => (
             <li key={user.subject} className="studio-list-item">
               <div className="studio-row">
-                <strong>{shown(user)}</strong>
+                <strong>
+                  <UserName user={user} />
+                </strong>
                 <button
                   type="button"
                   className="studio-button ph-small ph-button-danger"
