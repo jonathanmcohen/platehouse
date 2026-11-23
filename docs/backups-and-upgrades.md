@@ -70,13 +70,21 @@ them within it deletes them all.
 
 :::
 
-To restore into an empty database, once you have done the steps above:
+To restore, once you have done the steps above, recreate the database and restore into the new,
+empty one. Do not restore over the existing database with `pg_restore --clean`: it drops only the
+objects the dump holds, so a newer version's tables, which an older dump does not hold, would stay
+and stop the next upgrade with "relation already exists". The app must be stopped first, because
+`dropdb` fails while it holds connections:
 
 ```bash
 docker compose stop platehouse
-docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --clean --if-exists < platehouse-2026-01-01.dump
+docker exec platehouse-db dropdb -U platehouse platehouse
+docker exec platehouse-db createdb -U platehouse platehouse
+docker exec -i platehouse-db pg_restore -U platehouse -d platehouse --exit-on-error --single-transaction < platehouse-2026-01-01.dump
 docker compose start platehouse
 ```
+
+Use your own `DB_USER` and `DB_NAME` in place of `platehouse` in the three database commands.
 
 Then upload the files of the models added since the dump again, as the warning says.
 
@@ -107,8 +115,9 @@ Platehouse follows semantic versioning. Read the [changelog](./changelog.md) bef
    `docker compose logs platehouse` shows no errors.
 
 The app applies any database changes itself when it starts. They only move forward, so going back
-to an older version means restoring the database dump you took in step 1. Read the warning below
-before you restore it.
+to an older version means restoring the database dump you took in step 1, into a recreated
+database as described under [restoring the database](#the-database), not a cleaned one. Read the
+warning below before you restore it.
 
 :::warning Going back can delete what was uploaded since step 1
 
@@ -184,8 +193,9 @@ docker buildx imagetools inspect ghcr.io/jonathanmcohen/platehouse:0.2.0-rc.1 --
 
 Do not run `rc` on a server you rely on. A release candidate can have bugs the release fixes, and
 the app's database changes only move forward, so going back from a candidate means restoring the
-dump you took before you pulled it (see the restore steps above, and their warning about files
-uploaded since the dump).
+dump you took before you pulled it. Recreate the database and restore into it, as described under
+[restoring the database](#the-database), and read the warning there about files uploaded since the
+dump.
 
 ### Postgres
 
