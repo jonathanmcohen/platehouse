@@ -1,8 +1,8 @@
 // The plate mesh reader's limits hold by construction (issue #358, review
 // findings #383 and #384): for any input, one readPlateMesh call never holds
 // more than its memory budget in mesh arrays, never inflates more than its
-// total, never does more than its parsing work, and stops with too_large at
-// the point a limit would be passed.
+// total, never does more than its parsing work or its component walk, and
+// stops with too_large at the point a limit would be passed.
 //
 // The checks do not take the reader's word for it. Every hostile file from
 // the seeded generator (support/hostile.ts) is read with two meters the
@@ -39,7 +39,7 @@ import {
   readPlateMesh,
   validatePlateMesh,
 } from "../src/index.js";
-import { writeTmp } from "./support/fixture-builder.js";
+import { buildZip, writeTmp } from "./support/fixture-builder.js";
 import {
   duplicateSkipped,
   FAMILIES,
@@ -51,6 +51,7 @@ import {
   wideIndex,
 } from "./support/hostile.js";
 import {
+  boxMesh,
   buildItem,
   componentObject,
   meshObject,
@@ -66,6 +67,7 @@ const LIMITS: Partial<PlateMeshLimits> = {
   meshBytes: 4 * MiB,
   inflateBytes: 8 * MiB,
   work: 50_000_000,
+  walkSteps: 20_000_000,
   triangles: 150_000,
   instances: 2_000,
   components: 20_000,
@@ -172,6 +174,7 @@ describe("readPlateMesh keeps every limit on hostile files", () => {
     // are ASCII, one character a byte), and the total stays within the limit.
     expect(report.work, what).toBeGreaterThanOrEqual(report.inflatedBytes);
     expect(report.work, what).toBeLessThanOrEqual(LIMITS.work as number);
+    expect(report.walkSteps, what).toBeLessThanOrEqual(LIMITS.walkSteps as number);
     // Nothing left charged but what the result holds.
     expect(report.liveBytes, what).toBe(
       run.outcome instanceof PlateMeshError ? 0 : liveBytesOf(run.outcome),
@@ -368,6 +371,7 @@ describe("the third round of review findings, by name", () => {
     // The tetrahedron, once; object 50 places nothing.
     expect((run.outcome as PlateMesh).instances).toHaveLength(1);
     // Walking object 50 once is about 100,000 steps; once per instance would be 1e9.
+    expect(run.report?.walkSteps ?? Number.POSITIVE_INFINITY).toBeLessThan(20_000_000);
     expect(run.report?.work ?? Number.POSITIVE_INFINITY).toBeLessThan(20_000_000);
     expect(took).toBeLessThan(5_000);
   }, 120_000);
@@ -405,4 +409,37 @@ describe("every result is a mesh that passes the validator, or a verdict on the 
     // The validator the server runs on the main thread before anything is stored.
     expect(() => validatePlateMesh(run.outcome, LIMITS), file.label).not.toThrow();
   });
+});
+
+describe("the component walk budget", () => {
+  it("a walk of copies that all overflow ends on the walk budget", async () => {
+    // Walk steps have their own limit, apart from the characters scanned:
+    // about 27 ns a step, so the whole budget is a few seconds.
+    expect(PLATE_MESH_LIMITS.walkSteps).toBe(200_000_000);
+    expect(PLATE_MESH_LIMITS.work).toBe(2_000_000_000);
+    const scale = "1e20 0 0 0 1e20 0 0 0 1e20 0 0 0";
+    const components = Array.from({ length: 90_000 }, () => ({ objectId: 1, transform: scale }));
+    const items = Array.from({ length: 3_000 }, () => buildItem(2, scale));
+    const bytes = buildZip([
+      {
+        name: "3D/3dmodel.model",
+        data: modelXml([meshObject(1, boxMesh(10)), componentObject(2, components)], items),
+      },
+      {
+        name: "Metadata/model_settings.config",
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }],
+          [{ index: 1, instances: items.map((_, i): [number, number] => [2, i]) }],
+        ),
+      },
+    ]);
+    const started = performance.now();
+    const run = await metered(bytes, {});
+    const took = performance.now() - started;
+    expect(run.outcome).toBeInstanceOf(PlateMeshError);
+    expect((run.outcome as PlateMeshError).problem).toBe("too_large");
+    expect((run.outcome as PlateMeshError).message).toContain("component walk");
+    expect(run.report?.walkSteps).toBe(PLATE_MESH_LIMITS.walkSteps);
+    expect(took).toBeLessThan(30_000);
+  }, 30_000);
 });

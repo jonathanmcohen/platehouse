@@ -15,7 +15,7 @@ import {
   PLATE_MESH_UNAVAILABLE_MESSAGE,
   registerPlateMeshApi,
 } from "../../src/app-api/plate-mesh.js";
-import { BuildQueueBusy } from "../../src/plate-mesh/limit.js";
+import { BuildQueueBusy } from "../../src/memory/gate.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../src/storage/s3.js";
 
 const PLATE_ID = "01900000-0000-7000-8000-0000000000d1";

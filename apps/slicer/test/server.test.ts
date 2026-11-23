@@ -510,6 +510,19 @@ describe("slicing", () => {
     expect(await res.json()).toEqual({ error: "not_3mf" });
   });
 
+  test("a .3mf with an entry carrying 33 extra fields is 422 not_3mf and Orca never runs", async () => {
+    const extra = Buffer.concat(Array.from({ length: 33 }, () => Buffer.from([0xfe, 0xca, 0, 0])));
+    const s = setup();
+    const base = await start(s.config);
+    const res = await postSlice(
+      base,
+      buildSliceable({ plates: 2, filaments: 2, firstEntryExtra: extra }),
+    );
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "not_3mf" });
+    expect(() => readFileSync(s.fake.argsLog)).toThrow();
+  });
+
   test("a Content-Length over 512 MiB is 413 before any body is read", async () => {
     const base = await start(setup().config);
     const res = await headersOnly(sliceUrl(base, P1S, 1), {
@@ -973,6 +986,26 @@ describe("OpenSCAD and STEP", () => {
     res = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
     expect(res.status).toBe(422);
     expect(slicerContract.convertError.parse(await res.json()).message).toContain("no shapes");
+  });
+
+  // Review of PR #409, follow-up: the app never holds a slicer answer whole,
+  // and a STEP conversion's GLB had no limit. A mesh over
+  // LIMITS.stepOutputBytes is refused as 422 convert_failed, never read or
+  // sent, and its job folder is emptied as for any other refusal.
+  test("a GLB over LIMITS.stepOutputBytes is 422 convert_failed, and one at the limit is sent", async () => {
+    // The fake worker writes "glTF": 4 bytes.
+    const over = setup({ limits: { ...LIMITS, stepOutputBytes: 3 } });
+    let base = await start(over.config);
+    let res = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(res.status).toBe(422);
+    const refusal = slicerContract.convertError.parse(await res.json());
+    expect(refusal.message).toMatch(/over the .* limit for a mesh/);
+    expect(readdirSync(over.config.workDir)).toEqual([]);
+    const at = setup({ limits: { ...LIMITS, stepOutputBytes: 4 } });
+    base = await start(at.config);
+    res = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("glTF");
   });
 
   test("the STEP body reaches the worker byte for byte", async () => {

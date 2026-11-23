@@ -11,9 +11,11 @@
 // STEP file is never converted a second time for its preview. A preview that
 // fails keeps the mesh, shows the icon and says why.
 import { randomBytes } from "node:crypto";
-import { truncate } from "node:fs/promises";
+import { mkdtemp, readdir, rm, truncate } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { LIMITS } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
@@ -29,7 +31,7 @@ import {
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { memoryGate } from "../../../src/plate-mesh/limit.js";
+import { memoryGate } from "../../../src/memory/gate.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
@@ -804,7 +806,7 @@ describe("a STEP preview picture left pending with no job behind it is settled",
    * with retryLimit 0 when noRetries, so a job the test fails ends failed
    * rather than waiting for a retry.
    */
-  function holding(opts: { noRetries?: boolean } = {}) {
+  function holding(opts: { noRetries?: boolean; tmpDir?: string } = {}) {
     const send: PgBoss["send"] = async (...args: unknown[]) => {
       const [name, data, options] = args as [string, object, Record<string, unknown>];
       return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
@@ -819,6 +821,7 @@ describe("a STEP preview picture left pending with no job behind it is settled",
       slicerUrl: env.stub.url,
       queue: { send, findJobs: env.boss.findJobs.bind(env.boss) },
       retryDelaySeconds: 1,
+      ...(opts.tmpDir === undefined ? {} : { tmpDir: opts.tmpDir }),
     });
   }
 
@@ -1049,6 +1052,60 @@ describe("a STEP preview picture left pending with no job behind it is settled",
         expect(await env.repos.files.get(fileId)).toMatchObject({ previewStatus: "ok" });
       } finally {
         gate.release();
+      }
+    });
+
+    test("two previews of the same file from two jobs use a key each, so both run", async () => {
+      const { derived, job } = await meshWithHeldPreview("gate, two jobs");
+      const before = env.stub.renders.callsTo("/v1/stl/png").length;
+      const gate = holdGate();
+      try {
+        const runs = ["job-a", "job-b"].map((jobId) =>
+          derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit, jobId }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        gate.release();
+        await gate.held;
+        expect(await Promise.all(runs)).toEqual([{ status: "ok" }, { status: "ok" }]);
+        expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(before + 2);
+      } finally {
+        gate.release();
+      }
+    });
+
+    // Review of PR #409, follow-up: the slicer's answer is streamed to a
+    // file in the job's own temp folder and stored from it; the folder goes
+    // whatever the job's end.
+    test("a job's temp folder is gone after a stored mesh, a refused conversion and a lost connection", async () => {
+      const tmp = await mkdtemp(join(tmpdir(), "derived-jobs-"));
+      try {
+        const derived = holding({ tmpDir: tmp });
+        const convert = async (label: string) => {
+          const { fileId } = await env.ingest.ingestFile({
+            tmpPath: await writeUpload(env, uniqueStep(label)),
+            originalName: "Part.step",
+            target: "new",
+          });
+          const file = await env.repos.files.get(fileId);
+          if (!file) throw new Error("file not stored");
+          return derived.runJob(
+            { kind: DERIVED_KINDS.convertStep, fileId, sourceBlobId: file.blobId },
+            { retryCount: 0, retryLimit: SLICER_RETRY.retryLimit },
+          );
+        };
+        expect(await convert("temp folder, stored")).toEqual({ status: "ok" });
+        expect(await readdir(tmp)).toEqual([]);
+        env.stub.renders.queue("/v1/step/glb", { kind: "failed", message: "no shapes" });
+        expect(await convert("temp folder, refused")).toEqual({
+          status: "failed",
+          reason: "render_failed",
+        });
+        expect(await readdir(tmp)).toEqual([]);
+        env.stub.renders.queue("/v1/step/glb", { kind: "drop" });
+        await expect(convert("temp folder, lost")).rejects.toThrow();
+        expect(await readdir(tmp)).toEqual([]);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
       }
     });
 

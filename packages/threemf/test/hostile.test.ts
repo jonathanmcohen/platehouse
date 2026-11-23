@@ -18,8 +18,14 @@
 // store (a NUL in text, a plate index or filament slot past the 32-bit
 // integer columns) failed the save instead of reading as hostile input.
 import { describe, expect, it } from "vitest";
-import { LIMITS, type Project, readProject } from "../src/index.js";
-import { MAX_ZIP_ENTRIES } from "../src/limits.js";
+import { LIMITS, PlateMeshError, type Project, readPlateMesh, readProject } from "../src/index.js";
+import {
+  MAX_EXTRA_FIELDS,
+  MAX_ZIP_DIRECTORY_BYTES,
+  MAX_ZIP_ENTRIES,
+  ZIP_ENTRY_OVERHEAD_BYTES,
+  ZIP_EXTRA_FIELD_OVERHEAD_BYTES,
+} from "../src/limits.js";
 import {
   build3mf,
   build3mfWithEntries,
@@ -71,12 +77,49 @@ const INT32_MAX = 2147483647;
 const sliced1 = { index: 1, prediction: 60, weight: 1, printerModelId: "C12", nozzle: "0.4" };
 
 /**
- * Every ceiling that refuses a file: the LIMITS keys, and MAX_ZIP_ENTRIES,
- * which lives beside LIMITS rather than in it. The completeness check below
- * reads this list, so a standalone ceiling is covered too.
+ * Every ceiling that refuses a file: the LIMITS keys, and the zip directory
+ * caps, which live beside LIMITS rather than in it. The completeness check
+ * below reads this list, so a standalone ceiling is covered too.
  */
-const CEILINGS = [...Object.keys(LIMITS), "MAX_ZIP_ENTRIES"] as const;
-type Ceiling = keyof typeof LIMITS | "MAX_ZIP_ENTRIES";
+const CEILINGS = [
+  ...Object.keys(LIMITS),
+  "MAX_ZIP_ENTRIES",
+  "MAX_ZIP_DIRECTORY_BYTES",
+  "MAX_EXTRA_FIELDS",
+] as const;
+type Ceiling =
+  | keyof typeof LIMITS
+  | "MAX_ZIP_ENTRIES"
+  | "MAX_ZIP_DIRECTORY_BYTES"
+  | "MAX_EXTRA_FIELDS";
+
+/** The project with every entry's central record carrying the given extra field bytes. */
+const withCentralExtra = (extra: Buffer, only?: number): Buffer =>
+  buildZip(
+    projectEntries({ ...onePlate, pngs: { 1: png("one") } }).map((e, i) =>
+      only === undefined || i === only ? { ...e, centralExtra: extra } : e,
+    ),
+  );
+
+/** n empty extra fields (id 0xCAFE, size 0). */
+const emptyFields = (n: number): Buffer =>
+  Buffer.concat(range(n).map(() => Buffer.from([0xfe, 0xca, 0x00, 0x00])));
+
+/** One extra field of the given data size (id 0xCAFE). */
+const bigField = (size: number): Buffer =>
+  Buffer.concat([Buffer.from([0xfe, 0xca, size & 0xff, size >> 8]), Buffer.alloc(size)]);
+
+/** The healthy project plus n padding entries, each with the given central extra bytes. */
+const padded = (n: number, extra: (i: number) => Buffer): Buffer =>
+  buildZip([
+    ...projectEntries({ ...onePlate, pngs: { 1: png("one") } }),
+    ...range(n).map((i) => ({
+      name: `p/${i}`,
+      data: Buffer.alloc(0),
+      method: 0 as const,
+      centralExtra: extra(i),
+    })),
+  ]);
 
 interface Row {
   name: string;
@@ -128,12 +171,56 @@ const rows: Row[] = [
     // A central directory listing more entries than any Bambu project has.
     // Every entry is otherwise sound and the project in it reads, so only
     // the entry ceiling refuses it (parse.test.ts reads one at the ceiling).
-    name: "one entry past the 100000-entry ceiling",
+    name: "one entry past the 10000-entry ceiling",
     kind: "crafted archive",
     breaks: "MAX_ZIP_ENTRIES",
     slow: true,
     file: () => build3mfWithEntries({ ...onePlate, pngs: { 1: png("one") } }, MAX_ZIP_ENTRIES + 1),
     expect: "null",
+  },
+  {
+    name: "an end record claiming more entries than the ceiling over one real entry",
+    kind: "crafted archive",
+    breaks: "MAX_ZIP_ENTRIES",
+    file: () => buildZip([{ name: "a", data: "x" }], { entryCount: MAX_ZIP_ENTRIES + 1 }),
+    expect: "null",
+  },
+  {
+    name: "an entry with one extra field past the ceiling",
+    kind: "crafted archive",
+    breaks: "MAX_EXTRA_FIELDS",
+    file: () => withCentralExtra(emptyFields(MAX_EXTRA_FIELDS + 1), 0),
+    expect: "null",
+  },
+  {
+    name: "an entry with exactly the extra field ceiling",
+    kind: "crafted archive",
+    file: () => withCentralExtra(emptyFields(MAX_EXTRA_FIELDS), 0),
+    expect: "clean",
+  },
+  {
+    name: "140 entries each with one 60000-byte extra field",
+    kind: "crafted archive",
+    breaks: "MAX_ZIP_DIRECTORY_BYTES",
+    file: () => padded(140, () => bigField(60000)),
+    expect: "null",
+  },
+  {
+    // About 360 KB of directory records, far under the cap in raw bytes, but
+    // the zip reader makes an object of every entry and every extra field,
+    // about 11 MiB of heap here; the cap counts that too.
+    name: "2000 entries with 32 empty extra fields each",
+    kind: "crafted archive",
+    breaks: "MAX_ZIP_DIRECTORY_BYTES",
+    file: () => padded(2000, () => emptyFields(MAX_EXTRA_FIELDS)),
+    expect: "null",
+  },
+  {
+    name: "1000 entries with three ordinary extra fields each",
+    kind: "crafted archive",
+    file: () =>
+      padded(1000, (i) => Buffer.concat([bigField(8), bigField(16 + (i % 9)), bigField(32)])),
+    expect: "clean",
   },
   {
     name: "a truncated Zip64 extra field",
@@ -494,7 +581,7 @@ function allStrings(v: unknown): string[] {
   return [];
 }
 
-// A row whose file is large to build and list (the 100001-entry archive takes
+// A row whose file is large to build and list (the 10001-entry archive takes
 // about 2 s alone) gets a longer timeout, so it does not time out when the
 // whole suite runs in parallel; every other row keeps the default, so a row
 // that ties up the reader still fails there.
@@ -528,8 +615,35 @@ async function checkRow(row: Row): Promise<void> {
 }
 
 describe("hostile files", () => {
+  // The same files through the plate mesh reader, which shares the lister:
+  // each one a ceiling row breaks is damage there, not a crash.
+  it.each(
+    rows.filter(
+      (r) =>
+        !r.slow &&
+        (r.breaks === "MAX_ZIP_ENTRIES" ||
+          r.breaks === "MAX_ZIP_DIRECTORY_BYTES" ||
+          r.breaks === "MAX_EXTRA_FIELDS"),
+    ),
+  )("$name reads as a damaged plate mesh", async (row) => {
+    const err = await readPlateMesh(writeTmp(row.file()), 1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PlateMeshError);
+    expect((err as PlateMeshError).problem).toBe("damaged");
+  });
+
   it.each(rows.filter((r) => !r.slow))("$name ($kind)", checkRow);
   it.each(rows.filter((r) => r.slow))("$name ($kind)", checkRow, SLOW_ROW_MS);
+
+  it("the zip directory cap counts the zip reader's objects as well as the record bytes", () => {
+    // Measured with yauzl 3.4.0 (limits.ts): about 650 bytes of heap per
+    // entry and 150 to 300 per extra field, beside the record bytes.
+    expect(MAX_ZIP_DIRECTORY_BYTES).toBe(8 * MiB);
+    expect(ZIP_ENTRY_OVERHEAD_BYTES).toBe(768);
+    expect(ZIP_EXTRA_FIELD_OVERHEAD_BYTES).toBe(320);
+    // The 2000-entry row above is under the cap in raw record bytes alone.
+    const raw = 2000 * (46 + "p/1999".length + 4 * MAX_EXTRA_FIELDS);
+    expect(raw).toBeLessThan(MAX_ZIP_DIRECTORY_BYTES / 8);
+  });
 
   it("the healthy control file for the rows above reads", async () => {
     const project = await readProject(writeTmp(good()));
@@ -538,11 +652,11 @@ describe("hostile files", () => {
 
   // Each ceiling row names the ceiling it breaks, and the set of those names
   // must equal CEILINGS, the keys of LIMITS plus the standalone
-  // MAX_ZIP_ENTRIES: a LIMITS ceiling added, renamed or dropped
+  // zip directory caps: a LIMITS ceiling added, renamed or dropped
   // without a hostile row that names it fails here (#19). The row's own case
   // above is what shows its file is refused, and the inclusive-ceiling tests
   // in parse.test.ts show a file at each ceiling still reads.
-  it("every ceiling, LIMITS and MAX_ZIP_ENTRIES, has a hostile row", () => {
+  it("every ceiling, LIMITS and the zip directory caps, has a hostile row", () => {
     const broken = new Set(rows.flatMap((r) => (r.breaks === undefined ? [] : [r.breaks])));
     expect([...broken].sort()).toEqual([...CEILINGS].sort());
   });

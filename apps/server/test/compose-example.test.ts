@@ -11,16 +11,28 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PLATE_MESH_LIMITS } from "@platehouse/threemf";
+import { LIMITS } from "@platehouse/slicer-contract";
+import {
+  MAKERWORLD_XML_READ_PEAK_BYTES,
+  MAX_ZIP_DIRECTORY_BYTES,
+  MODEL_PREFIX_BYTES,
+  PLATE_MESH_LIMITS,
+  PROJECT_READ_PEAK_BYTES,
+  LIMITS as THREEMF_LIMITS,
+} from "@platehouse/threemf";
 import { describe, expect, test } from "vitest";
-import { STEP_PREVIEW_PEAK_MB } from "../src/derived/preview.js";
+import { ANSWER_LIMITS, ERROR_ANSWER_MAX_BYTES } from "../src/derived/client.js";
+import { PREVIEW_MESH_MAX_BYTES } from "../src/derived/preview.js";
+import { MAX_ANSWER_BYTES as ESTIMATE_ANSWER_MAX_BYTES } from "../src/estimates/client.js";
+import { INGEST_CONCURRENCY } from "../src/jobs/queues.js";
+import { PLATE_MESH_BUILDS } from "../src/memory/gate.js";
 import {
   MEMORY_GATE_PEAK_MB,
-  PLATE_MESH_BUILDS,
   PLATE_MESH_READ_PEAK_MB,
-} from "../src/plate-mesh/plate-mesh.js";
+  PLATE_WORKER_BASELINE_MB,
+  STEP_PREVIEW_PEAK_MB,
+} from "../src/memory/peaks.js";
 import { PLATE_MESH_WORKER_LIMITS } from "../src/plate-mesh/worker-read.js";
-import { MAX_UPLOAD_BYTES } from "../src/uploads/tus.js";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const COMPOSE = readFileSync(join(ROOT, "examples", "docker-compose.yml"), "utf8");
@@ -107,43 +119,159 @@ function mebibytes(value: string | undefined): number {
 }
 
 /**
- * What the platehouse service needs beside its plate mesh reads: the server's
- * own heap, its requests and its other jobs. An allowance, not a measurement.
+ * What the platehouse service needs beside the reads named in BUDGET: the
+ * server's own heap, its requests and its other jobs, and the part buffers
+ * of the S3 multipart uploads that store a STEP file's GLB, a render's
+ * picture or STL, and an upload's or inbox file's source (storage/s3.ts
+ * putBlob, lib-storage's defaults: up to 4 parts of 5 MiB in flight, about
+ * 20 MiB an upload). An allowance, not a measurement, and not to be shrunk
+ * to make a sum fit.
  */
 const SERVER_ALLOWANCE_MB = 512;
 
+/**
+ * Reads held whole that are small and bounded, counted inside
+ * SERVER_ALLOWANCE_MB: each at most `bytes`, at most `atOnce` at a time.
+ */
+const SMALL_BUFFERS = [
+  // A .scad source, read whole to send it twice (derived/derived.ts readAll);
+  // slicer jobs run one at a time.
+  { path: ".scad source", bytes: LIMITS.scadBodyBytes, atOnce: 1 },
+  // A slice answer from the slicer (estimates/client.ts); one at a time.
+  { path: "slice answer", bytes: ESTIMATE_ANSWER_MAX_BYTES, atOnce: 1 },
+  // A render route's error answer (derived/client.ts); one at a time.
+  { path: "render error answer", bytes: ERROR_ANSWER_MAX_BYTES, atOnce: 1 },
+];
+
+/**
+ * Every term of the memory budget, in MiB, one per line. A new path that
+ * holds a large buffer is added here on purpose, or the sum is not honest.
+ */
+const BUDGET = [
+  // Plate reads and STEP previews: the places of the memory gate.
+  { term: "PLATE_MESH_BUILDS * MEMORY_GATE_PEAK_MB", mb: PLATE_MESH_BUILDS * MEMORY_GATE_PEAK_MB },
+  // A STEP preview mesh buffer that is not yet collected when the next
+  // gate place starts (it is freed late, not at the gate's release).
+  { term: "STEP_PREVIEW_PEAK_MB", mb: STEP_PREVIEW_PEAK_MB },
+  // .3mf reads at ingest, outside the gate: at most INGEST_CONCURRENCY at
+  // once for the queue's jobs and the inbox watcher together, which share
+  // one limit (ingest/read-limit.ts).
+  {
+    term: "INGEST_CONCURRENCY * PROJECT_READ_PEAK_BYTES",
+    mb: (INGEST_CONCURRENCY * PROJECT_READ_PEAK_BYTES) / MiB,
+  },
+  // The description re-conversion's ranged read, one at a time.
+  { term: "MAKERWORLD_XML_READ_PEAK_BYTES", mb: MAKERWORLD_XML_READ_PEAK_BYTES / MiB },
+  { term: "SERVER_ALLOWANCE_MB", mb: SERVER_ALLOWANCE_MB },
+];
+
+// Paths that stream and hold no large buffer, so they are not in BUDGET:
+// - every slicer render answer (STEP GLB, OpenSCAD STL and PNG, STL and STEP
+//   preview PNGs): streamed to a temp file under TMP_DIR with its cap
+//   enforced while it streams (derived/client.ts, ANSWER_LIMITS), then
+//   stored from the file;
+// - the STEP and STL sources sent to the slicer: streamed from the store;
+// - a STEP preview's STL: made a chunk at a time and written to a temp file;
+// - uploads (uploads/tus.ts) and inbox imports: written to disk, then stored
+//   from the file;
+// - a plate's GLB: views of the plate read's mesh arrays, inside its peak;
+// - blob downloads: streamed from the store to the browser.
+
 // Issue #358 review: a plate mesh worker's heap limit caps only its
-// JavaScript heap. Its mesh arrays and the zip reader's entry records live
-// outside that heap, so the worker limits alone do not keep the server inside
+// JavaScript heap. Its mesh arrays and the zip reader's raw directory bytes
+// live outside that heap, so the worker limits alone do not keep the server inside
 // its container; the kernel ends the whole server, not one worker, when the
-// container passes mem_limit. So the reads that can run at once must fit,
+// container passes mem_limit. So every reader that can run at once must fit,
 // with room left for the server.
-describe("the platehouse service's memory holds its plate mesh reads", () => {
-  test("a read's peak is its heap, its mesh arrays and the biggest file's entry records", () => {
+describe("the platehouse service's memory holds every .3mf reader", () => {
+  test("a plate read's peak is its heap, its mesh arrays, its directory and the worker's baseline", () => {
     const heap = PLATE_MESH_WORKER_LIMITS.maxOldGenerationSizeMb ?? Number.NaN;
     const young = PLATE_MESH_WORKER_LIMITS.maxYoungGenerationSizeMb ?? Number.NaN;
     const mesh = PLATE_MESH_LIMITS.meshBytes / MiB;
-    const entries = MAX_UPLOAD_BYTES / MiB;
-    expect(PLATE_MESH_READ_PEAK_MB).toBe(heap + young + mesh + entries);
+    const directory = MAX_ZIP_DIRECTORY_BYTES / MiB;
+    expect(PLATE_WORKER_BASELINE_MB).toBe(40);
+    expect(PLATE_MESH_READ_PEAK_MB).toBe(
+      heap + young + mesh + directory + PLATE_WORKER_BASELINE_MB,
+    );
+  });
+
+  test("a project read's peak is its directory, its config entries, one thumbnail and its upload parts, and the model prefix", () => {
+    const config = THREEMF_LIMITS.configBytes;
+    // Three config entries kept as text, and the one being read: its chunks
+    // and their Buffer.concat copy.
+    const configs = 3 * config + 2 * config;
+    // One thumbnail at a time (pass 2): its chunks and their copy.
+    const thumbnail = 2 * THREEMF_LIMITS.pngBytes;
+    // The S3 upload's part buffers for that thumbnail (storage/s3.ts putBlob).
+    const uploadParts = THREEMF_LIMITS.pngBytes;
+    expect(PROJECT_READ_PEAK_BYTES).toBe(
+      MAX_ZIP_DIRECTORY_BYTES + configs + thumbnail + uploadParts + 2 * MODEL_PREFIX_BYTES,
+    );
+  });
+
+  test("a MakerWorld read's peak is its directory, its model prefix and its range windows", () => {
+    expect(MAKERWORLD_XML_READ_PEAK_BYTES).toBe(
+      MAX_ZIP_DIRECTORY_BYTES + 2 * MODEL_PREFIX_BYTES + 2 * 256 * 1024,
+    );
   });
 
   // Review of PR #409: a STEP file's preview reads its whole mesh into the
   // app too (derived/preview.ts). It goes through the same gate as the plate
-  // reads (plate-mesh/limit.ts, memoryGate), so each of the gate's
+  // reads (memory/gate.ts, memoryGate), so each of the gate's
   // PLATE_MESH_BUILDS places holds a plate read or a STEP preview, never
   // both, and must fit the larger of the two.
   test("a place in the memory gate fits a plate read or a STEP preview's mesh read", () => {
-    expect(STEP_PREVIEW_PEAK_MB).toBeGreaterThan(0);
+    expect(STEP_PREVIEW_PEAK_MB).toBe((2 * LIMITS.stepOutputBytes) / MiB);
     expect(MEMORY_GATE_PEAK_MB).toBe(Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB));
   });
 
-  test("the jobs the memory gate runs at once, and the server's allowance, fit under mem_limit", () => {
+  test("every term of the budget, with the server's allowance, fits under mem_limit", () => {
     const app = services().get("platehouse") ?? [];
     const limit = mebibytes(field(app, "mem_limit"));
     expect(mebibytes(field(app, "memswap_limit"))).toBe(limit);
-    const place = Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB);
-    const needed = PLATE_MESH_BUILDS * place + SERVER_ALLOWANCE_MB;
+    expect(SERVER_ALLOWANCE_MB).toBe(512);
+    expect(BUDGET.map((b) => b.term)).toEqual([
+      "PLATE_MESH_BUILDS * MEMORY_GATE_PEAK_MB",
+      "STEP_PREVIEW_PEAK_MB",
+      "INGEST_CONCURRENCY * PROJECT_READ_PEAK_BYTES",
+      "MAKERWORLD_XML_READ_PEAK_BYTES",
+      "SERVER_ALLOWANCE_MB",
+    ]);
+    const needed = BUDGET.reduce((sum, b) => sum + b.mb, 0);
     expect(needed).toBeLessThanOrEqual(limit);
+  });
+
+  test("the small reads held whole fit well inside the server's allowance", () => {
+    const total = SMALL_BUFFERS.reduce((sum, b) => sum + b.bytes * b.atOnce, 0) / MiB;
+    expect(total).toBeLessThanOrEqual(SERVER_ALLOWANCE_MB / 8);
+  });
+
+  // Review of PR #409, follow-up: no slicer answer is held whole. Each
+  // render route's answer is streamed to a temp file under a cap (client.ts,
+  // ANSWER_LIMITS) and stored from the file, so none is a buffer here.
+  test("every route posted to the slicer for an answer body is streamed under a cap", () => {
+    const dir = join(ROOT, "apps", "server", "src", "derived");
+    const posted = readdirSync(dir)
+      .filter((f) => f.endsWith(".ts"))
+      .flatMap((f) => [...readFileSync(join(dir, f), "utf8").matchAll(/route: "(\/v1\/[^"]+)"/g)])
+      .map((m) => m[1]);
+    // A new route is added to ANSWER_LIMITS on purpose, with its cap.
+    expect(Object.keys(ANSWER_LIMITS).sort()).toEqual([...new Set(posted)].sort());
+    for (const cap of Object.values(ANSWER_LIMITS)) {
+      expect([LIMITS.renderOutputBytes, LIMITS.stepOutputBytes]).toContain(cap);
+    }
+    expect(PREVIEW_MESH_MAX_BYTES).toBe(LIMITS.stepOutputBytes);
+    // None of them is held: a 200's body is only ever streamed to its file.
+    // The one place client.ts joins a body into a Buffer is readSmall, and it
+    // is called only for an error answer, under ERROR_ANSWER_MAX_BYTES.
+    const client = readFileSync(join(dir, "client.ts"), "utf8");
+    expect(client).not.toMatch(/arrayBuffer\(|\.text\(\)|\.json\(\)/);
+    expect(client.match(/Buffer\.concat\(/g)?.length).toBe(1);
+    const calls = [...client.matchAll(/\breadSmall\(([^)]*)\)/g)].filter(
+      (m) => !(m[1] ?? "").includes("body: "),
+    );
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call[1]).toContain("ERROR_ANSWER_MAX_BYTES");
   });
 });
 

@@ -48,6 +48,8 @@ const COLOURS = [
 export interface SliceableOptions {
   plates: number;
   filaments: number;
+  /** Extra field bytes for the first entry's central record, to build a crafted directory. */
+  firstEntryExtra?: Buffer;
 }
 
 /** The world position of plate `index` (0-based) in a project of `count` plates. */
@@ -194,5 +196,11 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
 
 /** The project as .3mf bytes. */
 export function buildSliceable(opts: SliceableOptions): Buffer {
-  return buildZip([...sliceableEntries(opts)].map(([name, data]) => ({ name, data })));
+  return buildZip(
+    [...sliceableEntries(opts)].map(([name, data], i) =>
+      i === 0 && opts.firstEntryExtra
+        ? { name, data, centralExtra: opts.firstEntryExtra }
+        : { name, data },
+    ),
+  );
 }

@@ -132,8 +132,12 @@ export interface SlicerClientOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
-/** The largest answer read: contract answers are small JSON. */
-const MAX_ANSWER_BYTES = 1024 * 1024;
+/**
+ * The largest answer read: contract answers are small JSON. It is held whole
+ * in memory, so test/compose-example.test.ts counts it in the server's
+ * allowance.
+ */
+export const MAX_ANSWER_BYTES = 1024 * 1024;
 
 /** A slicer message quoted into an error is cut to this. */
 const MESSAGE_CHARS = 300;

@@ -10,13 +10,15 @@ import {
 } from "../src/index.js";
 
 describe("slicer contract v1", () => {
-  test("is version 1 with the contract's body limits", () => {
+  test("is version 1 with the contract's body and answer limits", () => {
     expect(CONTRACT_VERSION).toBe(1);
     expect(LIMITS).toEqual({
       sliceBodyBytes: 536_870_912,
       scadBodyBytes: 1_048_576,
       stepBodyBytes: 268_435_456,
       stlBodyBytes: 268_435_456,
+      renderOutputBytes: 268_435_456,
+      stepOutputBytes: 268_435_456,
       maxPlate: 128,
       detailChars: 2000,
     });

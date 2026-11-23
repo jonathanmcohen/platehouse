@@ -9,12 +9,14 @@
 // It also pins how the client tells a slicer that cannot render right now (it
 // takes no connection, or its OpenSCAD sandbox self-test failed) from a lost
 // connection and from OpenSCAD's own verdict on the file.
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   isRetryable,
   postRender,
@@ -30,6 +32,17 @@ import { StoreUnavailable } from "../../../src/storage/s3.js";
 const GLB = "model/gltf-binary";
 
 let server: Server | undefined;
+
+/** Where each request's answer is streamed, as a job's temp folder would hold it. */
+let dir = "";
+
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "render-client-"));
+});
+
+afterAll(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
 
 afterEach(async () => {
   const s = server;
@@ -80,6 +93,7 @@ function stepRequest(body: Readable) {
     accept: GLB,
     refusal: "convert" as const,
     tooLarge: "too large",
+    answer: { path: join(dir, "mesh.glb") },
   };
 }
 
@@ -87,11 +101,13 @@ describe("render request timers", () => {
   test("the program's time starts once the body is sent, so a slow body still gets its answer", async () => {
     const baseUrl = await slicer();
     // The body takes about 600 ms to arrive, three times the program budget.
-    const bytes = await postRender(
+    const answer = await postRender(
       { baseUrl, timeoutMs: 200, uploadTimeoutMs: 5_000 },
       stepRequest(trickle(6, 100)),
     );
-    expect(bytes.toString("utf8")).toBe("glb:chunk1;chunk2;chunk3;chunk4;chunk5;chunk6;");
+    expect((await readFile(answer.path)).toString("utf8")).toBe(
+      "glb:chunk1;chunk2;chunk3;chunk4;chunk5;chunk6;",
+    );
   });
 
   test("a program that runs past its time after the body is sent is given up on", async () => {
@@ -210,6 +226,7 @@ function scadRequest() {
     accept: "model/stl",
     refusal: "render" as const,
     tooLarge: "too large",
+    answer: { path: join(dir, "render.stl") },
   };
 }
 
@@ -278,6 +295,7 @@ describe("a slicer that cannot render right now", () => {
         accept: "image/png",
         refusal: "render",
         tooLarge: "too large",
+        answer: { path: join(dir, "preview.png") },
       }),
     );
     expect(error).toBeInstanceOf(SlicerDown);

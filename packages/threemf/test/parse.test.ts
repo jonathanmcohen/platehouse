@@ -149,6 +149,19 @@ describe("the plate list", () => {
     expect(Buffer.from(project.plates[0]?.name ?? "", "utf8")).toEqual(Buffer.from(name, "utf8"));
   });
 
+  it("cuts a plate name to 200 code points, keeping an emoji at the edge whole or dropping it", async () => {
+    const long = await mustRead(build3mf({ plates: [{ index: 1, name: "a".repeat(300) }] }));
+    expect(long.plates[0]?.name).toBe("a".repeat(200));
+    const kept = await mustRead(
+      build3mf({ plates: [{ index: 1, name: `${"a".repeat(199)}\u{1F600}b` }] }),
+    );
+    expect(kept.plates[0]?.name).toBe(`${"a".repeat(199)}\u{1F600}`);
+    const dropped = await mustRead(
+      build3mf({ plates: [{ index: 1, name: `${"a".repeat(200)}\u{1F600}` }] }),
+    );
+    expect(dropped.plates[0]?.name).toBe("a".repeat(200));
+  });
+
   it("decodes XML escapes in plate names", async () => {
     const project = await mustRead(build3mf({ plates: [{ index: 1, name: 'Lid & "base" <v2>' }] }));
     expect(project.plates[0]?.name).toBe('Lid & "base" <v2>');
@@ -1127,11 +1140,11 @@ describe("a NUL in a text value is dropped", () => {
 
 describe("ceilings are inclusive", () => {
   // The hostile row one past it comes back null; this one, otherwise the
-  // same file, reads. Building and listing 100000 entries takes about 2 s
+  // same file, reads. Building and listing 10000 entries takes about 0.2 s
   // alone, so it gets a longer timeout than the default 5 s for a full,
   // parallel run.
-  it("reads a file of exactly 100000 entries (MAX_ZIP_ENTRIES)", { timeout: 60_000 }, async () => {
-    expect(MAX_ZIP_ENTRIES).toBe(100000);
+  it("reads a file of exactly 10000 entries (MAX_ZIP_ENTRIES)", { timeout: 60_000 }, async () => {
+    expect(MAX_ZIP_ENTRIES).toBe(10000);
     const file = build3mfWithEntries(
       { plates: [{ index: 1 }], pngs: { 1: png("one") } },
       MAX_ZIP_ENTRIES,

@@ -37,6 +37,7 @@
 import type { JobWithMetadata, PgBoss } from "pg-boss";
 import { CHECK_RENDERS_CRON } from "../derived/derived.js";
 import type { IngestInput, IngestResult } from "../ingest/ingest.js";
+import { INGEST_CONCURRENCY } from "../ingest/read-limit.js";
 import { RECONVERT_PAUSED } from "../library/reconvert.js";
 
 export const QUEUE = {
@@ -48,8 +49,11 @@ export const QUEUE = {
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
 
-/** Ingest jobs worked at once. */
-export const INGEST_CONCURRENCY = 2;
+/**
+ * Ingest jobs worked at once. The .3mf reads themselves are held to the same
+ * number across the queue and the inbox watcher (ingest/read-limit.ts).
+ */
+export { INGEST_CONCURRENCY };
 
 /**
  * How a slicer job is retried when the slicer answers 409 busy or the

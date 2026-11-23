@@ -191,9 +191,9 @@
 // (newerQueued), so the file never reads as done, or as failed, before its
 // last upload has rendered.
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { Readable } from "node:stream";
+import { join } from "node:path";
 import { LIMITS } from "@platehouse/slicer-contract";
 import { CompiledQuery, type Kysely, sql, type Transaction } from "kysely";
 import type { PgBoss } from "pg-boss";
@@ -207,7 +207,7 @@ import {
   type StoredFile,
 } from "../ingest/ingest.js";
 import { QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
-import { type BuildQueue, memoryGate } from "../plate-mesh/limit.js";
+import { type BuildQueue, memoryGate } from "../memory/gate.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
@@ -366,11 +366,15 @@ export interface DerivedDeps {
   backfillBatch?: number;
   /**
    * The queue a STEP preview's mesh read runs through; the process's
-   * memoryGate (plate-mesh/limit.ts), shared with the plate mesh builds,
+   * memoryGate (memory/gate.ts), shared with the plate mesh builds,
    * when left out.
    */
   memoryGate?: BuildQueue;
-  /** TMP_DIR: a STEP preview's STL is written here while it is sent; the OS's when left out. */
+  /**
+   * TMP_DIR: each job's own folder is made here for the slicer's answers,
+   * streamed to disk and stored from there, and a STEP preview's STL; the
+   * OS's when left out.
+   */
   tmpDir?: string;
 }
 
@@ -932,9 +936,10 @@ export function createDerived(deps: DerivedDeps) {
    * size. A mesh is read only under the process's memory gate, shared with
    * the plate mesh builds, and only when its recorded size is at most
    * PREVIEW_MESH_MAX_BYTES (preview.ts), so the read's peak is
-   * STEP_PREVIEW_PEAK_MB, which the app's memory budget counts (2g in the
-   * example Compose file; test/compose-example.test.ts). The STL made from
-   * it is written to a temp file a chunk at a time (mesh.ts), never held.
+   * STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the app's memory budget
+   * counts (2g in the example Compose file; test/compose-example.test.ts).
+   * The STL made from it is written to a temp file a chunk at a time
+   * (mesh.ts), never held.
    */
   async function readAll(key: string): Promise<Buffer> {
     const chunks: Buffer[] = [];
@@ -1139,9 +1144,10 @@ export function createDerived(deps: DerivedDeps) {
       for (const out of outputs) {
         const id = uuidv7();
         const key = blobKey(file.modelId, id);
-        const stored = await store.putBlob(Readable.from([out.bytes]), {
+        // Streamed from the answer's file in the job's folder (runJob).
+        const stored = await store.putBlob(createReadStream(out.path), {
           key,
-          size: out.bytes.length,
+          size: out.size,
           contentType: out.contentType,
         });
         put.push({ id, key, kind: out.kind, contentType: out.contentType, ...stored });
@@ -1649,22 +1655,37 @@ export function createDerived(deps: DerivedDeps) {
       return staleOut();
     }
 
+    // The job's own temp folder: every slicer answer is streamed to a file
+    // here under its cap (client.ts, postRender) and stored from it, so no
+    // answer is held in memory. It is removed when the job ends, however it
+    // ends.
+    const dir = await mkdtemp(join(tmpDir, "render-"));
     try {
       const size = source.size ?? 0;
       let outputs: RenderOutput[];
       switch (job.kind) {
         case DERIVED_KINDS.renderScad:
-          outputs = await renderScadOutputs(target, size, () => readAll(source.key));
+          outputs = await renderScadOutputs(target, size, () => readAll(source.key), dir);
           break;
         case DERIVED_KINDS.convertStep:
-          outputs = await convertStepOutputs(target, () => store.getBlobStream(source.key), size);
+          outputs = await convertStepOutputs(
+            target,
+            () => store.getBlobStream(source.key),
+            size,
+            dir,
+          );
           break;
         case DERIVED_KINDS.renderStl:
-          outputs = await stlPreviewOutputs(target, () => store.getBlobStream(source.key), size);
+          outputs = await stlPreviewOutputs(
+            target,
+            () => store.getBlobStream(source.key),
+            size,
+            dir,
+          );
           break;
         case DERIVED_KINDS.previewStep: {
           // The mesh is read only under the memory gate, shared with the
-          // plate mesh builds (plate-mesh/limit.ts), run first so it waits
+          // plate mesh builds (memory/gate.ts), run first so it waits
           // for the one job running and no more. The gate is asked for
           // before anything is sent to the slicer and let go before the STL
           // is sent (preview.ts), so the preview never holds the slicer
@@ -1673,11 +1694,11 @@ export function createDerived(deps: DerivedDeps) {
           // longer the file's is Superseded and the job has nothing to do.
           const meshKey = mesh?.key ?? "";
           outputs = await meshPreviewOutputs(target, {
-            size: mesh?.size ?? 0,
+            size: mesh?.size ?? null,
             read: () => readAll(meshKey),
             hold: (task) =>
               gate.run(
-                `step-preview:${file.id}`,
+                `step-preview:${selfJobId ?? uuidv7()}`,
                 async () => {
                   const now = await repos.files.get(file.id);
                   if (now === undefined || now.blobId !== source.id || now.meshBlobId !== meshId) {
@@ -1688,7 +1709,7 @@ export function createDerived(deps: DerivedDeps) {
                 staying,
                 { first: true },
               ),
-            tmpDir,
+            dir,
           });
           break;
         }
@@ -1780,6 +1801,9 @@ export function createDerived(deps: DerivedDeps) {
       );
       console.error(`derived: file ${file.id} ended with slicer_error: ${describe(error)}`);
       return { status: "failed", reason: "slicer_error" };
+    } finally {
+      // The slicer's answers and the preview's STL, stored or not.
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

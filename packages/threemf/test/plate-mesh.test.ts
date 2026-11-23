@@ -7,8 +7,10 @@
 // built here; no designer file is used.
 import { describe, expect, it } from "vitest";
 import {
+  BLOCK_BYTES,
   PLATE_MESH_LIMITS,
   type PlateMesh,
+  type PlateMeshBudgetReport,
   PlateMeshError,
   type PlateMeshProblem,
   ReadUnavailable,
@@ -141,6 +143,28 @@ describe("readPlateMesh on a multi-plate file with every mesh in 3D/3dmodel.mode
 
   it("is not a plate the file lists", async () => {
     expect(await problemOf(path, 4)).toBe("no_plate");
+  });
+});
+
+describe("readPlateMesh on a file whose settings list no plates", () => {
+  const withPictures = (pictures: string[]): string =>
+    file([
+      { name: ROOT, data: modelXml([meshObject(1, boxMesh(10))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], []) },
+      ...pictures.map((name) => ({ name, data: "png" })),
+    ]);
+
+  it("shows every build item for plate 1 when at most one plate picture is there", async () => {
+    for (const pictures of [[], ["Metadata/plate_1.png"]]) {
+      const mesh = await readPlateMesh(withPictures(pictures), 1);
+      expect(mesh.instances).toHaveLength(1);
+    }
+  });
+
+  it("is not a plate the file lists, for any plate, when the pictures name several", async () => {
+    const path = withPictures(["Metadata/plate_1.png", "Metadata/plate_2.png"]);
+    expect(await problemOf(path, 1)).toBe("no_plate");
+    expect(await problemOf(path, 2)).toBe("no_plate");
   });
 });
 
@@ -515,6 +539,43 @@ describe("readPlateMesh limits", () => {
     }
   });
 
+  it("the largest mesh the triangle limit accepts fits the character budget, read twice", async () => {
+    // Character work and component-walk steps are budgeted apart, so an
+    // ordinary large mesh is never refused for the characters it takes.
+    expect(PLATE_MESH_LIMITS.work).toBe(2_000_000_000);
+    expect(PLATE_MESH_LIMITS.walkSteps).toBe(200_000_000);
+    // A grid of about 200,000 triangles with decimal coordinates, as a
+    // slicer writes them; its work per triangle, scaled to the largest
+    // mesh and doubled (a part may be read twice), must fit.
+    const side = 317;
+    const vertices: number[][] = [];
+    for (let y = 0; y < side; y++) {
+      for (let x = 0; x < side; x++) {
+        vertices.push([+(x * 0.613577).toFixed(6), +(y * 0.613577).toFixed(6), 12.345678]);
+      }
+    }
+    const triangles: number[][] = [];
+    for (let y = 0; y < side - 1; y++) {
+      for (let x = 0; x < side - 1; x++) {
+        const v = y * side + x;
+        triangles.push([v, v + 1, v + side + 1], [v, v + side + 1, v + side]);
+      }
+    }
+    const big = file([
+      { name: ROOT, data: modelXml([meshObject(1, meshXml(vertices, triangles))], [buildItem(1)]) },
+      { name: SETTINGS, data: settingsXml([{ id: 1 }], [{ index: 1, instances: [[1, 0]] }]) },
+    ]);
+    let report: PlateMeshBudgetReport | undefined;
+    const mesh = await readPlateMesh(big, 1, { onBudget: (r) => (report = r) });
+    expect(mesh.triangles).toBe(triangles.length);
+    expect(triangles.length).toBeGreaterThan(195_000);
+    if (report === undefined) throw new Error("no report");
+    const perTriangle = report.work / triangles.length;
+    expect(perTriangle * PLATE_MESH_LIMITS.triangles * 2).toBeLessThanOrEqual(
+      PLATE_MESH_LIMITS.work,
+    );
+  }, 60_000);
+
   it.each([Number.NaN, 0, -1, Number.POSITIVE_INFINITY, 1e12])(
     "ignores a maxTriangles of %s that would lift or break the limit",
     async (max) => {
@@ -707,5 +768,106 @@ describe("readPlateMesh limits", () => {
       [20, 12],
       [110, 12],
     ]);
+  });
+});
+
+describe("readPlateMesh mesh memory", () => {
+  const oneObjectPlate = (objects: string[], ids: number[]): string =>
+    file([
+      {
+        name: ROOT,
+        data: modelXml(
+          objects,
+          ids.map((id) => buildItem(id, IDENTITY)),
+        ),
+      },
+      {
+        name: SETTINGS,
+        data: settingsXml(
+          ids.map((id) => ({ id })),
+          [{ index: 1, instances: ids.map((id) => [id, 0] as [number, number]) }],
+        ),
+      },
+    ]);
+
+  const reportOf = async (
+    path: string,
+    limits: { meshBytes?: number } = {},
+  ): Promise<{ mesh: PlateMesh; report: PlateMeshBudgetReport }> => {
+    let report: PlateMeshBudgetReport | undefined;
+    const mesh = await readPlateMesh(path, 1, { limits, onBudget: (r) => (report = r) });
+    if (report === undefined) throw new Error("no report");
+    return { mesh, report };
+  };
+
+  it("freed arrays keep their charge until the read ends", async () => {
+    // Object 1 is broken (its triangle names a missing vertex) and is dropped
+    // after its first arrays were made; object 2 is a good box.
+    const broken = meshXml(
+      [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      [[0, 1, 7]],
+    );
+    const path = oneObjectPlate([meshObject(1, broken), meshObject(2, boxMesh(10))], [1, 2]);
+    const { report } = await reportOf(path);
+    const oneMesh = report.liveBytes;
+    expect(oneMesh).toBeGreaterThan(0);
+    expect(report.allocatedBytes).toBeGreaterThan(oneMesh);
+    // Room for the box and not for the box plus what the broken mesh took.
+    const meshBytes = oneMesh + (report.allocatedBytes - oneMesh) / 2;
+    expect(await problemOfLimits(path, { meshBytes })).toBe("too_large");
+    await expect(
+      readPlateMesh(path, 1, { limits: { meshBytes: report.allocatedBytes } }),
+    ).resolves.toBeDefined();
+  });
+
+  async function problemOfLimits(path: string, limits: { meshBytes: number }) {
+    try {
+      await readPlateMesh(path, 1, { limits });
+    } catch (err) {
+      if (err instanceof PlateMeshError) return err.problem;
+      throw err;
+    }
+    throw new Error("expected a PlateMeshError, got a mesh");
+  }
+
+  it("a mesh costs at most twice its final size", async () => {
+    const triangles = 100_000;
+    const vertices = Array.from({ length: 50_000 }, (_, i) => [i, i % 7, i % 11]);
+    const tris = Array.from({ length: triangles }, (_, i) => [
+      i % 50_000,
+      (i + 1) % 50_000,
+      (i + 2) % 50_000,
+    ]);
+    const path = oneObjectPlate([meshObject(1, meshXml(vertices, tris))], [1]);
+    const { mesh, report } = await reportOf(path);
+    const piece = mesh.pieces[0];
+    if (piece === undefined) throw new Error("no piece");
+    expect(piece.indices.length).toBe(3 * triangles);
+    const finalBytes = piece.positions.byteLength + piece.indices.byteLength;
+    expect(report.allocatedBytes).toBeLessThanOrEqual(2 * finalBytes + 2 * BLOCK_BYTES);
+  });
+
+  it("keeps many small meshes far below the memory limit", async () => {
+    const count = 2000;
+    const ids = Array.from({ length: count }, (_, i) => i + 1);
+    const path = oneObjectPlate(
+      ids.map((id) => meshObject(id, boxMesh(10))),
+      ids,
+    );
+    const { mesh, report } = await reportOf(path);
+    expect(mesh.instances).toHaveLength(count);
+    expect(report.allocatedBytes).toBeLessThan(report.limits.meshBytes / 10);
+  });
+
+  it("the largest mesh the limits accept fits the charge", () => {
+    const triangles = 5_000_000;
+    const vertices = 2_500_000;
+    expect(2 * (triangles * 12 + vertices * 12) + 4 * BLOCK_BYTES).toBeLessThanOrEqual(
+      PLATE_MESH_LIMITS.meshBytes,
+    );
   });
 });

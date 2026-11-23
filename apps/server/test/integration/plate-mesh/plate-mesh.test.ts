@@ -14,12 +14,10 @@ import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
-import { memoryGate } from "../../../src/plate-mesh/limit.js";
+import { memoryGate, PLATE_MESH_BUILDS, PLATE_MESH_WAITING } from "../../../src/memory/gate.js";
 import {
   createPlateMeshes,
-  PLATE_MESH_BUILDS,
   PLATE_MESH_BUSY_RETRY_MS,
-  PLATE_MESH_WAITING,
   type PlateMeshStore,
 } from "../../../src/plate-mesh/plate-mesh.js";
 import { PLATE_MESH_TIMEOUT_MS } from "../../../src/plate-mesh/worker-read.js";
@@ -388,6 +386,49 @@ describe("GET /app/api/plates/:id/mesh", () => {
       clock += 100 * PLATE_MESH_BUSY_RETRY_MS;
       expect((await open(noMesh.id)).json()).toMatchObject({ code: "no_mesh" });
       expect(reads).toBe(3);
+    } finally {
+      await slow.close();
+    }
+  });
+
+  test("after one plate of a file times out, another plate of the same file answers too_large without a worker or a read", async () => {
+    const stored = await ingest(
+      "Many plates slow.3mf",
+      buildSliceable({ plates: 2, filaments: 1 }),
+    );
+    const [first, second] = await platesOf(stored.fileId);
+    if (first === undefined || second === undefined) throw new Error("no plates");
+    let clock = 1_000_000;
+    let reads = 0;
+    const slow = Fastify();
+    await registerPlateMeshApi(
+      slow,
+      createPlateMeshes({
+        db: env.db,
+        store: {
+          putBlob: (stream, opts) => env.store.putBlob(stream, opts),
+          deleteBlobs: (keys) => env.store.deleteBlobs(keys),
+          getBlobStream: (key) => {
+            reads += 1;
+            return env.store.getBlobStream(key);
+          },
+        },
+        tmpDir,
+        worker: { ...WORKER, timeoutMs: 1 },
+        now: () => clock,
+      }),
+    );
+    await slow.ready();
+    const open = (id: string) => slow.inject({ method: "GET", url: `/app/api/plates/${id}/mesh` });
+    try {
+      expect((await open(first.id)).json()).toMatchObject({ error: "no_mesh", code: "too_large" });
+      expect(reads).toBe(1);
+      // Another plate of the same file: answered from memory, nothing read.
+      clock += 1;
+      const other = await open(second.id);
+      expect(other.statusCode).toBe(422);
+      expect(other.json()).toMatchObject({ error: "no_mesh", code: "too_large" });
+      expect(reads).toBe(1);
     } finally {
       await slow.close();
     }

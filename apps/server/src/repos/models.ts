@@ -4,6 +4,7 @@ import { isUuid, uuidv7 } from "../db/ids.js";
 import { inTransaction } from "../db/kysely.js";
 import type { DB, NameSource } from "../db/types.js";
 import { cutName, fileStems } from "../ingest/names.js";
+import { joinWithNote } from "../library/converted-description.js";
 import { descriptionSha256 } from "../library/description-hash.js";
 
 export interface Model {
@@ -684,8 +685,10 @@ export function modelsRepo(db: Kysely<DB>) {
           }
         > = {};
         if (empty(row.descriptionMd)) {
-          const parts = [value(found.descriptionMd), fillLicence ? note : undefined];
-          const description = parts.filter((p) => p !== undefined).join("\n\n");
+          const description = joinWithNote(
+            value(found.descriptionMd) ?? "",
+            fillLicence ? note : undefined,
+          );
           if (description !== "") {
             set.descriptionMd = description;
             if (found.descriptionSource !== undefined) {

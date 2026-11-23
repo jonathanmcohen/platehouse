@@ -20,7 +20,8 @@
 // Manyfold import among them), one edited, one whose file is gone or cannot
 // be read. A description is only ever written back with a compare-and-set on
 // the text and hash it was read with, so one changed while this ran is left
-// alone too.
+// alone too. One proved a converter's whose new conversion is over the
+// 200,000 code point limit is left as it is as well, rather than emptied.
 //
 // Gentle on the object store: one model at a time, one file at a time, and
 // only the MakerWorld text of each file is read, through ranged reads
@@ -63,11 +64,11 @@ import {
   CONVERTER_VERSION,
   earlierConversions,
   extractMakerWorld,
-  htmlToMarkdown,
   mapLicense,
 } from "@platehouse/makerworld";
 import { ReadUnavailable, readMakerWorldXml } from "@platehouse/threemf";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
+import { conversion, joinWithNote } from "./converted-description.js";
 import { descriptionSha256 } from "./description-hash.js";
 
 export { descriptionSha256 };
@@ -133,6 +134,12 @@ export type Decision =
   | { kind: "unproven" }
   /** Its source could not be read, so nothing can be proved. */
   | { kind: "unreadable" }
+  /**
+   * Proved a converter's, but the current converter's text for it is over
+   * the limit, so it would be stored as no description: it is kept as it is
+   * (written by 0.1.0 or a release candidate, before the limit).
+   */
+  | { kind: "too_long" }
   /** The current converter writes the same text. */
   | { kind: "same"; fileId: string; description: string }
   /** The current converter writes this instead. */
@@ -200,12 +207,11 @@ export function composeDescription(
   note: string | null,
   withNote: boolean,
 ): string {
-  const parts = [markdown, withNote && note?.trim() ? note : ""].filter((p) => p !== "");
-  return parts.join("\n\n");
+  return joinWithNote(markdown, withNote && note?.trim() ? note : null);
 }
 
-/** The current converter's text, trimmed as ingest stores it. */
-const convertNow = (html: string | null): string => (html ? htmlToMarkdown(html).trim() : "");
+/** The current converter's text, trimmed as ingest stores it; null when over the limit. */
+const convertNow = conversion;
 
 /** True when the description carries the note at its foot, as fillMetadata adds it. */
 function endsWithNote(description: string, note: string | null): boolean {
@@ -219,7 +225,9 @@ function outcome(
   text: SourceText,
   withNote: boolean,
 ): Decision {
-  const description = composeDescription(convertNow(text.html), text.note, withNote);
+  const markdown = convertNow(text.html);
+  if (markdown === null) return { kind: "too_long" };
+  const description = composeDescription(markdown, text.note, withNote);
   return description === stored.description
     ? { kind: "same", fileId, description }
     : { kind: "changed", fileId, description };

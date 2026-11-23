@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeEntities, extractMakerWorld } from "../src/extract.js";
+import { decodeEntities, extractMakerWorld, MAX_CAPTION_CODE_POINTS } from "../src/extract.js";
 import { htmlToMarkdown } from "../src/markdown.js";
 
 // Ported by behaviour from the tests of an earlier Manyfold metadata script
@@ -25,6 +25,18 @@ const PREFIX = `<?xml version="1.0" encoding="UTF-8"?>
  `;
 
 describe("extractMakerWorld", () => {
+  const withTitle = (title: string) =>
+    extractMakerWorld(
+      `<model><metadata name="Designer">Jane</metadata><metadata name="Title">${title}</metadata>`,
+    )?.title;
+
+  it("cuts a title to 2,000 code points, keeping an emoji at the edge whole or dropping it", () => {
+    expect(withTitle("a".repeat(2500))).toBe("a".repeat(MAX_CAPTION_CODE_POINTS));
+    expect(withTitle(`${"a".repeat(1999)}\u{1F600}`)).toBe(`${"a".repeat(1999)}\u{1F600}`);
+    expect(withTitle(`${"a".repeat(2000)}\u{1F600}`)).toBe("a".repeat(2000));
+    expect(withTitle("Short")).toBe("Short");
+  });
+
   it("extracts title, designer, description and license from a real-shaped prefix", () => {
     const mw = extractMakerWorld(PREFIX);
     expect(mw).not.toBeNull();

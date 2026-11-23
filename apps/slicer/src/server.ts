@@ -711,7 +711,11 @@ export function createSlicer(config: SlicerConfig): Slicer {
       case "POST /v1/step/glb":
         return withBody(req, res, config.limits.stepBodyBytes, STEP_INPUT, async (job) => {
           const r = await runStepWorker(
-            { worker: config.stepWorker, timeoutSeconds: config.stepTimeoutSeconds },
+            {
+              worker: config.stepWorker,
+              timeoutSeconds: config.stepTimeoutSeconds,
+              maxOutputBytes: config.limits.stepOutputBytes,
+            },
             job.dir,
             job.track,
           );

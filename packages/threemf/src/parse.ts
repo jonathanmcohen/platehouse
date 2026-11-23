@@ -373,6 +373,23 @@ interface Listed {
   objectCount: number;
 }
 
+/** The longest plate name kept, in code points. */
+export const MAX_PLATE_NAME_CODE_POINTS = 200;
+
+/** The first max code points of text; a character is never split. */
+export function cutCodePoints(text: string, max: number): string {
+  // Every code point is at most 2 UTF-16 units, so a shorter string fits.
+  if (text.length <= max) return text;
+  let end = 0;
+  let count = 0;
+  for (const ch of text) {
+    if (count === max) break;
+    end += ch.length;
+    count += 1;
+  }
+  return text.slice(0, end);
+}
+
 function platesFromModelSettings(text: string | null): Listed[] | null {
   if (text === null) return null;
   const config = parseXml(text);
@@ -384,7 +401,10 @@ function platesFromModelSettings(text: string | null): Listed[] | null {
     const meta = metadata(block);
     const index = storedIndex(meta.get("plater_id"));
     if (index === null || index < 1 || seen.has(index)) continue;
-    const name = withoutNul(meta.get("plater_name") ?? "");
+    const name = cutCodePoints(
+      withoutNul(meta.get("plater_name") ?? ""),
+      MAX_PLATE_NAME_CODE_POINTS,
+    );
     seen.set(index, {
       index,
       // A blank name is no name, so the page shows "Plate N" for it.

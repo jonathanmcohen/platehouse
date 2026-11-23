@@ -22,22 +22,23 @@
 //    stored mesh_glb blob of its model answers that blob.
 // 2. A plate that already had no 3D view (a PlateMeshError) answers the same
 //    problem from memory, without reading the file again: the .3mf of a file
-//    never changes. The memory is this process's, holds at most
-//    REMEMBERED_PROBLEMS plates and is gone after a restart, so a later
+//    never changes (problems.ts). The memory is this process's, holds a
+//    bounded number of entries and is gone after a restart, so a later
 //    version that reads more files tries them again. A too_large that came
 //    from the read's timeout, or from a worker that stopped without
 //    answering (PlateMeshBusy), may be the machine's fault rather than the
-//    file's, so it is remembered for PLATE_MESH_BUSY_RETRY_MS only: long
-//    enough that a file that never reads in time does not take a build for
-//    a minute on every open, short enough that a plate whose read was slow
-//    only because the server was busy is read again once the load is gone.
-// 3. Builds go through one queue (limit.ts, review finding #385): the
+//    file's, so the first one is remembered against the file, for every one
+//    of its plates, for PLATE_MESH_BUSY_RETRY_MS only: a file that never
+//    reads in time costs one timeout, not one per plate, and a file whose
+//    read was slow only because the server was busy is read again once the
+//    load is gone. A second one for the same file is remembered for good.
+// 3. Builds go through one queue (memory/gate.ts, review finding #385): the
 //    process's memory gate, which STEP previews' mesh reads share (review
-//    of PR #409; limit.ts says how). Opens of the same plate share one
+//    of PR #409; memory/gate.ts says how). Opens of the same plate share one
 //    build. A process makes at most PLATE_MESH_BUILDS plates' meshes at
 //    once, STEP previews included (each run holds a temp copy of the .3mf,
-//    and up to PLATE_MESH_READ_PEAK_MB of memory while its worker reads it),
-//    at most PLATE_MESH_WAITING
+//    and up to PLATE_MESH_READ_PEAK_MB (memory/peaks.ts) of memory while
+//    its worker reads it), at most PLATE_MESH_WAITING
 //    more wait, and an open past that is refused as busy (503, try again)
 //    with nothing started. A STEP preview that is waiting goes first and
 //    takes no waiting place. A waiting build whose browsers have all gone (the
@@ -50,7 +51,7 @@
 //    recorded size, so a short read is never taken for a damaged file.
 //    The plate is read in a worker thread (worker-read.ts: a heap limit,
 //    a timeout past which the worker is terminated and the plate is
-//    too_large, remembered for a short while as step 2 says), never on the main
+//    too_large, remembered as step 2 says), never on the main
 //    thread, and what the worker sends back passes validatePlateMesh before
 //    anything is made from it; encodePlateGlb makes the GLB as chunks
 //    that are views of the plate's mesh arrays, which are streamed to the
@@ -67,85 +68,29 @@
 // A store that is down or refuses, or a temp folder that cannot be written,
 // throws (the route answers 503) and records nothing, so the next open tries
 // again. Only the reader's own verdict on the file is remembered for good;
-// a too_large that may be the machine's (PlateMeshBusy) for a short while.
+// a too_large that may be the machine's (PlateMeshBusy) for a short while
+// the first time, and for good the second.
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import {
-  PLATE_MESH_LIMITS,
-  PlateMeshError,
-  type PlateMeshProblem,
-  ReadUnavailable,
-} from "@platehouse/threemf";
+import { PlateMeshError, ReadUnavailable } from "@platehouse/threemf";
 import type { Kysely, Transaction } from "kysely";
 import type { AppPlateMeshes, PlateMeshAnswer } from "../app-api/plate-mesh.js";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { DB } from "../db/types.js";
-import { STEP_PREVIEW_PEAK_MB } from "../derived/preview.js";
+import { type BuildQueue, memoryGate } from "../memory/gate.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
-import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
 import { encodePlateGlb, GLB_CONTENT_TYPE, type PlateGlb } from "./glb.js";
-import { type BuildQueue, memoryGate } from "./limit.js";
-import {
-  PLATE_MESH_WORKER_LIMITS,
-  PlateMeshBusy,
-  readPlateMeshInWorker,
-  type WorkerReadOptions,
-} from "./worker-read.js";
+import { createProblemMemory } from "./problems.js";
+import { readPlateMeshInWorker, type WorkerReadOptions } from "./worker-read.js";
 
 export type PlateMeshStore = Pick<BlobStore, "getBlobStream" | "putBlob" | "deleteBlobs">;
 
-/** How many plates' problems one process remembers; the oldest is forgotten first. */
-export const REMEMBERED_PROBLEMS = 1000;
-
-/**
- * How long a too_large that may be the machine's (PlateMeshBusy: the read
- * timed out, or its worker stopped without answering) is answered from
- * memory before the plate is read again: 10 minutes.
- */
-export const PLATE_MESH_BUSY_RETRY_MS = 10 * 60_000;
-
-const MiB = 1024 * 1024;
-
-/**
- * The most memory, in MiB, one plate read can hold at once: its worker's
- * heap (PLATE_MESH_WORKER_LIMITS, worker-read.ts), the reader's mesh arrays
- * (its budget's PLATE_MESH_LIMITS.meshBytes, 256 MiB), and the zip reader's
- * entry records, which are at most the file's central directory and so at
- * most the biggest file Platehouse takes (MAX_UPLOAD_BYTES, 512 MiB; the
- * inbox has the same cap). That is 1344 MiB. The worker's heap limit covers
- * only the first: the mesh arrays and entry records are stored outside the
- * JavaScript heap, and Node does not count them against the worker.
- */
-export const PLATE_MESH_READ_PEAK_MB =
-  (PLATE_MESH_WORKER_LIMITS.maxOldGenerationSizeMb ?? 0) +
-  (PLATE_MESH_WORKER_LIMITS.maxYoungGenerationSizeMb ?? 0) +
-  PLATE_MESH_LIMITS.meshBytes / MiB +
-  MAX_UPLOAD_BYTES / MiB;
-
-/**
- * How many plates' meshes one process makes at once, STEP previews' mesh
- * reads included, and how many more builds may wait: the memory gate's
- * sizes (limit.ts). One: a worker past its heap limit ends only that
- * worker, but the container's memory limit counts the whole read, and past
- * it the kernel ends the whole server. One place, MEMORY_GATE_PEAK_MB,
- * leaves room for the server itself under the 2 GiB mem_limit that
- * examples/docker-compose.yml gives it; two would not fit
- * (test/compose-example.test.ts checks it).
- */
-export { PLATE_MESH_BUILDS, PLATE_MESH_WAITING } from "./limit.js";
-
-/**
- * The most memory, in MiB, one place in the memory gate holds: a plate
- * read (PLATE_MESH_READ_PEAK_MB) or a STEP preview's mesh read
- * (STEP_PREVIEW_PEAK_MB, derived/preview.ts), whichever is larger. The gate
- * runs one of them at a time in each place, never both.
- */
-export const MEMORY_GATE_PEAK_MB = Math.max(PLATE_MESH_READ_PEAK_MB, STEP_PREVIEW_PEAK_MB);
+export { PLATE_MESH_BUSY_RETRY_MS, REMEMBERED_PROBLEMS } from "./problems.js";
 
 export interface PlateMeshDeps {
   db: Kysely<DB>;
@@ -156,7 +101,7 @@ export interface PlateMeshDeps {
   worker?: Partial<WorkerReadOptions>;
   /** The time in milliseconds, for PLATE_MESH_BUSY_RETRY_MS; Date.now when left out (tests move it). */
   now?: () => number;
-  /** The queue builds run through; the process's memoryGate (limit.ts) when left out. */
+  /** The queue builds run through; the process's memoryGate (memory/gate.ts) when left out. */
   gate?: BuildQueue;
 }
 
@@ -191,21 +136,12 @@ function fileSystem(error: unknown): unknown {
 export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
   const { db, store } = deps;
   const repos = createRepos(db);
-  // The process's one memory gate, shared with STEP previews (limit.ts).
+  // The process's one memory gate, shared with STEP previews (memory/gate.ts).
   const builds = deps.gate ?? memoryGate;
   /** For a caller with no signal of its own: one that never aborts. */
   const staying = new AbortController().signal;
   const now = deps.now ?? Date.now;
-  /** Each plate's problem, and when it stops being answered from memory. */
-  const problems = new Map<string, { problem: PlateMeshProblem; until: number }>();
-
-  function remember(plateId: string, problem: PlateMeshProblem, until: number): void {
-    problems.set(plateId, { problem, until });
-    if (problems.size > REMEMBERED_PROBLEMS) {
-      const oldest = problems.keys().next().value;
-      if (oldest !== undefined) problems.delete(oldest);
-    }
-  }
+  const problems = createProblemMemory({ now });
 
   /** The plate of a live model's .3mf, with its stored mesh if it has one. */
   async function lookup(plateId: string): Promise<PlateRow | undefined> {
@@ -355,11 +291,7 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
         glb = encodePlateGlb(await readPlateMeshInWorker(path, row.index, deps.worker));
       } catch (error) {
         if (error instanceof PlateMeshError) {
-          remember(
-            row.id,
-            error.problem,
-            error instanceof PlateMeshBusy ? now() + PLATE_MESH_BUSY_RETRY_MS : Infinity,
-          );
+          problems.remember(row.id, row.sourceBlobId, error);
           return { status: "no_mesh", problem: error.problem };
         }
         throw error;
@@ -376,11 +308,8 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
       const row = await lookup(plateId);
       if (row === undefined) return NOT_FOUND;
       if (row.meshId !== null) return { status: "ok", blobId: row.meshId };
-      const known = problems.get(row.id);
-      if (known !== undefined) {
-        if (now() < known.until) return { status: "no_mesh", problem: known.problem };
-        problems.delete(row.id);
-      }
+      const known = problems.lookup(row.id, row.sourceBlobId);
+      if (known !== undefined) return { status: "no_mesh", problem: known };
       return builds.run(
         row.id,
         async (): Promise<PlateMeshAnswer> => {
@@ -388,6 +317,9 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
           const now = await lookup(row.id);
           if (now === undefined) return NOT_FOUND;
           if (now.meshId !== null) return { status: "ok", blobId: now.meshId };
+          // Another plate of the file may have timed out meanwhile.
+          const known = problems.lookup(now.id, now.sourceBlobId);
+          if (known !== undefined) return { status: "no_mesh", problem: known };
           return make(now);
         },
         signal,

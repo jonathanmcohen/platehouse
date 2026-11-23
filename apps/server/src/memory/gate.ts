@@ -18,10 +18,11 @@
 // The process's memory gate (memoryGate, below; review of PR #409). Every
 // job in the app whose memory the container budget counts runs through this
 // one queue, so at most PLATE_MESH_BUILDS of them hold their peak at once:
-// the plate mesh builds (plate-mesh.ts) and a STEP file's preview picture,
-// which reads its whole stored mesh into memory (derived/preview.ts). A
-// STEP preview shares the build's place, so with PLATE_MESH_BUILDS at 1 a
-// preview and a plate build never hold their memory at the same time.
+// the plate mesh builds (plate-mesh/plate-mesh.ts) and a STEP file's preview
+// picture, which reads its whole stored mesh into memory
+// (derived/preview.ts). A STEP preview shares the build's place, so with
+// PLATE_MESH_BUILDS at 1 a preview and a plate build never hold their memory
+// at the same time.
 // test/compose-example.test.ts checks that one place fits the larger of
 // the two peaks under the app's mem_limit.
 //
@@ -204,11 +205,13 @@ export function createBuildQueue(sizes: { running: number; waiting: number }): B
 /**
  * How many jobs the memory gate runs at once: plate mesh builds and STEP
  * previews' mesh reads together. One: a plate read's peak
- * (PLATE_MESH_READ_PEAK_MB in plate-mesh.ts, 1344 MiB) or a STEP preview's
- * (STEP_PREVIEW_PEAK_MB in derived/preview.ts, 512 MiB) leaves room for the
- * server itself under the 2 GiB mem_limit that examples/docker-compose.yml
- * gives it; two would not fit, and past mem_limit the kernel ends the whole
- * server (test/compose-example.test.ts checks it).
+ * (PLATE_MESH_READ_PEAK_MB in peaks.ts, 880 MiB) or a STEP preview's
+ * (STEP_PREVIEW_PEAK_MB in peaks.ts, 512 MiB) leaves room, with ingest's
+ * .3mf reads, the description re-conversion's read, a late-freed STEP
+ * preview buffer and the server itself, under the 2 GiB mem_limit that
+ * examples/docker-compose.yml gives it; two would not fit, and past
+ * mem_limit the kernel ends the whole server (test/compose-example.test.ts
+ * adds up every term and checks it).
  */
 export const PLATE_MESH_BUILDS = 1;
 
@@ -216,7 +219,7 @@ export const PLATE_MESH_BUILDS = 1;
 export const PLATE_MESH_WAITING = 8;
 
 /**
- * The process's one memory gate (see the file comment). plate-mesh.ts and
+ * The process's one memory gate (see the file comment). plate-mesh/plate-mesh.ts and
  * derived/derived.ts both use it unless a test hands them a queue of its own.
  */
 export const memoryGate: BuildQueue = createBuildQueue({

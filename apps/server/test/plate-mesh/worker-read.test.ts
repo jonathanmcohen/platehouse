@@ -117,6 +117,59 @@ describe("readPlateMeshInWorker", () => {
     expect(reading).toBeGreaterThan(0);
   });
 
+  test("settles after an answer only once the worker has exited", async () => {
+    const path = file("exit-after-answer.3mf", buildSliceable({ plates: 1, filaments: 1 }));
+    let spawned: Worker | undefined;
+    let exited = false;
+    await readPlateMeshInWorker(path, 1, {
+      ...SOURCE,
+      onSpawn: (w: Worker) => {
+        spawned = w;
+        w.once("exit", () => {
+          exited = true;
+        });
+      },
+    });
+    expect(exited).toBe(true);
+    expect(spawned?.threadId).toBe(-1);
+  });
+
+  test("rejects after a timeout only once the worker has exited", async () => {
+    const path = file("exit-after-timeout.3mf", hostile("hugeMesh", 7).bytes);
+    let exited = false;
+    const answer = await verdict(
+      readPlateMeshInWorker(path, 1, {
+        ...SOURCE,
+        timeoutMs: 100,
+        onSpawn: (w: Worker) => {
+          w.once("exit", () => {
+            exited = true;
+          });
+        },
+      }),
+    );
+    expect(answer).toBe("too_large (busy)");
+    expect(exited).toBe(true);
+  });
+
+  test("a worker that exits by itself settles once, as PlateMeshBusy, after its exit", async () => {
+    const path = file("exit-by-itself.3mf", buildSliceable({ plates: 1, filaments: 1 }));
+    let exited = false;
+    const answer = await verdict(
+      readPlateMeshInWorker(path, 1, {
+        ...SOURCE,
+        url: new URL("./support/crash-worker.ts", import.meta.url),
+        onSpawn: (w: Worker) => {
+          w.once("exit", () => {
+            exited = true;
+          });
+        },
+      }),
+    );
+    expect(answer).toBe("too_large (busy)");
+    expect(exited).toBe(true);
+  });
+
   test("a worker past its heap limit is too_large, not PlateMeshBusy, and the next read still works", async () => {
     const path = file("heap.3mf", hostile("hugeMesh", 7).bytes);
     const answer = await verdict(

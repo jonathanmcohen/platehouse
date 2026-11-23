@@ -11,7 +11,7 @@ import {
   memoryGate,
   PLATE_MESH_BUILDS,
   PLATE_MESH_WAITING,
-} from "../../src/plate-mesh/limit.js";
+} from "../../src/memory/gate.js";
 
 /** A build that runs until finish() is called, recording that it started. */
 function held(value = "mesh") {
@@ -41,6 +41,24 @@ function caller() {
 }
 
 describe("createBuildQueue", () => {
+  test("a waiting preview takes no waiting place from the builds", async () => {
+    const q = createBuildQueue({ running: 1, waiting: 1 });
+    const running = held("running");
+    const preview = held("preview");
+    const next = held("next");
+    const runs = [
+      q.run("plate-running", running.task, caller().signal),
+      q.run("step-preview:job-1", preview.task, caller().signal, { first: true }),
+      q.run("plate-next", next.task, caller().signal),
+    ];
+    await settle();
+    expect(q.waiting()).toBe(2);
+    running.finish();
+    preview.finish();
+    next.finish();
+    expect(await Promise.all(runs)).toEqual(["running", "preview", "next"]);
+  });
+
   test("runs at most `running` builds at once and starts a waiting one when a place frees", async () => {
     const q = createBuildQueue({ running: 2, waiting: 8 });
     const builds = [held("a"), held("b"), held("c")];
