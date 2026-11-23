@@ -398,7 +398,17 @@ async function saveAnswer(
       for await (const chunk of body) {
         size += chunk.byteLength;
         if (size > max) throw new AnswerTooLarge(max);
-        await onFile(() => file.write(chunk));
+        // A write may take fewer bytes than it is given, so the rest of the
+        // chunk is written until none is left.
+        for (let at = 0; at < chunk.byteLength; ) {
+          const { bytesWritten } = await onFile(() => file.write(chunk, at, chunk.byteLength - at));
+          if (bytesWritten <= 0) {
+            const error = new Error(`no bytes written to ${path}`);
+            onFileError(error);
+            throw error;
+          }
+          at += bytesWritten;
+        }
       }
     }
   } finally {
