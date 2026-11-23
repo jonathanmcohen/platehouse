@@ -54,6 +54,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - The Spanish translation's time estimates agree in number: "quedan unas 1 hora y 9 minutos" is now "tiempo restante: alrededor de una hora y 9 minutos", with "una hora" and "un minuto" for one and the number for more, and "1 placa pendiente" for one plate. The French wording was already right and is now pinned by tests ([#406](https://github.com/jonathanmcohen/platehouse/pull/406)).
 - Select mode's "Select all on this page" is disabled when the page shows no models, as "Select all 0 matching" already was, and a press then selects nothing ([#406](https://github.com/jonathanmcohen/platehouse/pull/406)).
 - The slicer image now carries the standard OCI labels, as the app image does: its version label read 24.04, inherited from the Ubuntu base, and its revision was empty. The version is the release's (0.1.1-rc.2, say) on a build from a release tag and the OrcaSlicer version on a daily or manual build; revision, source, created, url and licenses come from the repository, with the slicer's own title and description. The workflow checks the labels on the tested image before anything is pushed (docker/check-image-labels.sh) ([#406](https://github.com/jonathanmcohen/platehouse/pull/406)).
+- A .3mf that is slow to read now costs one timeout for the whole file, not one per plate, and the plate reader's work limit is lower, so one file cannot keep the 3D view busy for others.
 
 ## [0.1.0] - 2026-11-21
 

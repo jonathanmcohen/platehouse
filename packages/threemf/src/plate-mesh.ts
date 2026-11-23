@@ -109,7 +109,7 @@ export const PLATE_MESH_LIMITS: Readonly<PlateMeshLimits> = Object.freeze({
   triangles: 5_000_000,
   meshBytes: 256 * MiB,
   inflateBytes: 1024 * MiB,
-  work: 2_000_000_000,
+  work: 200_000_000,
   instances: 10_000,
   components: 100_000,
   depth: 16,

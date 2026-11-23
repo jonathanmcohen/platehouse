@@ -39,7 +39,7 @@ import {
   readPlateMesh,
   validatePlateMesh,
 } from "../src/index.js";
-import { writeTmp } from "./support/fixture-builder.js";
+import { buildZip, writeTmp } from "./support/fixture-builder.js";
 import {
   duplicateSkipped,
   FAMILIES,
@@ -51,6 +51,7 @@ import {
   wideIndex,
 } from "./support/hostile.js";
 import {
+  boxMesh,
   buildItem,
   componentObject,
   meshObject,
@@ -405,4 +406,30 @@ describe("every result is a mesh that passes the validator, or a verdict on the 
     // The validator the server runs on the main thread before anything is stored.
     expect(() => validatePlateMesh(run.outcome, LIMITS), file.label).not.toThrow();
   });
+});
+
+describe("the work budget", () => {
+  it("a walk of copies that all overflow ends on the work budget", async () => {
+    expect(PLATE_MESH_LIMITS.work).toBe(200_000_000);
+    const scale = "1e20 0 0 0 1e20 0 0 0 1e20 0 0 0";
+    const components = Array.from({ length: 90_000 }, () => ({ objectId: 1, transform: scale }));
+    const items = Array.from({ length: 3_000 }, () => buildItem(2, scale));
+    const bytes = buildZip([
+      {
+        name: "3D/3dmodel.model",
+        data: modelXml([meshObject(1, boxMesh(10)), componentObject(2, components)], items),
+      },
+      {
+        name: "Metadata/model_settings.config",
+        data: settingsXml(
+          [{ id: 1 }, { id: 2 }],
+          [{ index: 1, instances: items.map((_, i): [number, number] => [2, i]) }],
+        ),
+      },
+    ]);
+    const run = await metered(bytes, {});
+    expect(run.outcome).toBeInstanceOf(PlateMeshError);
+    expect((run.outcome as PlateMeshError).problem).toBe("too_large");
+    expect((run.outcome as PlateMeshError).message).toContain("parsing work");
+  }, 30_000);
 });
