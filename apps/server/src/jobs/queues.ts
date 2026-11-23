@@ -24,7 +24,10 @@
 //   minute with another, and minute 35 is on no hourly, 10-minute or
 //   15-minute schedule either. The 5-minute backfill does share minutes
 //   with all of them; the worker runs one maintenance job at a time in any
-//   case, and a backfill run is a quick query when there is nothing to do.
+//   case, and a backfill run is a quick query when there is nothing to do;
+// - upgrade: the one-time upgrade steps (UPGRADE_TASKS), the description
+//   re-conversion today, on a stately queue of their own, one job at a time,
+//   so duplicate jobs collapse and maintenance tasks never wait behind it.
 // The server (main.ts) passes a ServerQueueDeps, which requires
 // slicerJobs, pollOrca, onIngested, checkRenders and backfillPreviews, so it
 // cannot leave a queue without its worker or those schedules without their handlers. The
@@ -40,6 +43,7 @@ export const QUEUE = {
   ingest: "ingest",
   slicer: "slicer",
   maintenance: "maintenance",
+  upgrade: "upgrade",
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -68,7 +72,7 @@ export interface QueueSetting {
   name: QueueName;
   /** createQueue options. */
   queue: {
-    policy: "standard" | "singleton";
+    policy: "standard" | "singleton" | "stately";
     retryLimit?: number;
     retryBackoff?: boolean;
     retryDelay?: number;
@@ -96,6 +100,11 @@ export function queueSettings(): Record<keyof typeof QUEUE, QueueSetting> {
       queue: { policy: "standard" },
       work: { localConcurrency: 1 },
     },
+    upgrade: {
+      name: QUEUE.upgrade,
+      queue: { policy: "stately", retryLimit: 0 },
+      work: { localConcurrency: 1 },
+    },
   };
 }
 
@@ -111,20 +120,23 @@ export const MAINTENANCE_TASKS = {
 } as const;
 
 /**
- * The maintenance queue's one-time upgrade steps: the description
- * re-conversion (#357, library/reconvert.ts). Its lifecycle is built so that
- * whatever happens to the process or what it depends on, a stop is clean, no
- * description is written wrongly or twice, and the step finishes once things
- * are healthy, without anyone restarting the server (#381, #382):
+ * The upgrade queue's one-time steps: the description re-conversion (#357,
+ * library/reconvert.ts). Its lifecycle is built so that whatever happens to
+ * the process or what it depends on, a stop is clean, no description is
+ * written wrongly or twice, and the step finishes once things are healthy,
+ * without anyone restarting the server (#381, #382):
  *
  * - Driven three ways, each only while the step is pending: a job sent at
  *   start-up, a schedule every RECONVERT_CRON (made at start-up, removed when
  *   the step finishes, and listed on the Activity page meanwhile), and the
  *   next job sent after a slice that paused. So a failed or lost job, or an
  *   outage, only delays it.
- * - Never two runs at once: the worker takes one maintenance job at a time,
- *   and the run itself holds a database lock (reconvert.ts exclusive), so a
- *   second server, or a job sent while one runs, does nothing.
+ * - Never two runs at once: the upgrade queue is stately and worked one job
+ *   at a time, so at most one job waits and one runs, and the run itself
+ *   holds a database lock (reconvert.ts exclusive), so a second server does
+ *   nothing. The step has its own queue (#412): on the maintenance queue the
+ *   schedule and each paused slice added a job, about two for every one
+ *   finished, and the other maintenance tasks waited behind them.
  * - Each job is sent with no pg-boss retry, and its handler never throws for
  *   an outage. A run that fails (the object store or the database down)
  *   backs off instead: the jobs that come within RECONVERT_BACKOFF_MS of the
@@ -135,9 +147,10 @@ export const MAINTENANCE_TASKS = {
  *   model and abandons any read in flight, so the job returns well inside
  *   pg-boss's 10 s graceful stop and nothing is cut off. pg-boss's own
  *   job.signal, which it aborts only after that wait, is honoured too.
- *
- * The maintenance queue's standard policy does not dedupe jobs, so more than
- * one job may wait at once; the lock makes that harmless.
+ * - A server that ran 0.1.1-rc.1 or rc.2 may have the step's schedule and
+ *   jobs on the maintenance queue. Start-up removes that schedule, and a job
+ *   of the step that arrives there ends at once, sending one job to the
+ *   upgrade queue if the step is still pending.
  */
 export const UPGRADE_TASKS = {
   reconvertDescriptions: "reconvert-descriptions",
@@ -156,15 +169,13 @@ export function reconvertBackoffMs(failures: number): number {
 }
 
 /**
- * How long one maintenance job runs the description re-conversion before it
+ * How long one upgrade job runs the description re-conversion before it
  * stops and sends the next job (#357), at most a third of the job's expiry
- * (15 minutes on the maintenance queue, pg-boss's default). pg-boss fails a
- * job that outlasts its expiry while the handler carries on, and the
- * maintenance worker, one job at a time, fetches nothing until the handler
- * returns. So a run in slices never has its job failed, and the scheduled
- * maintenance tasks wait at most one slice and the model it is on: those
- * queued meanwhile were created before the next re-conversion job, so they
- * run first. The run also stops when pg-boss aborts the job's signal.
+ * (15 minutes on the upgrade queue, pg-boss's default). pg-boss fails a
+ * job that outlasts its expiry while the handler carries on, so a run in
+ * slices never has its job failed. The run has its own queue, so the
+ * maintenance tasks never wait for a slice. The run also stops when pg-boss
+ * aborts the job's signal.
  */
 export const RECONVERT_SLICE_SECONDS = 300;
 
@@ -322,18 +333,25 @@ interface MaintenanceJob {
 }
 
 /**
- * Creates the three queues, registers the maintenance schedules and starts
- * the ingest and maintenance workers on a started boss. Safe on every start:
+ * Creates the four queues, registers the maintenance schedules and starts
+ * the ingest, maintenance and upgrade workers on a started boss. Safe on every start:
  * a queue that exists keeps its policy (the slicer queue's retry settings are
  * applied again), and a schedule is keyed, so it is replaced rather than
- * added again. The slicer queue is worked, one job at a time, only when
+ * added again. The re-conversion's schedule on the maintenance queue, left by
+ * 0.1.1-rc.1 and rc.2, is removed (an error for one that is absent is
+ * ignored). The slicer queue is worked, one job at a time, only when
  * slicerJobs is given; the Orca poll is scheduled, and run once before this
  * returns, only when pollOrca is; the render check is scheduled only when
  * checkRenders is, and the session delete only when purgeSessions is.
  */
 export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> {
   const settings = queueSettings();
-  for (const setting of [settings.ingest, settings.slicer, settings.maintenance]) {
+  for (const setting of [
+    settings.ingest,
+    settings.slicer,
+    settings.maintenance,
+    settings.upgrade,
+  ]) {
     await boss.createQueue(setting.name, setting.queue);
   }
   // createQueue leaves a queue that exists as it is, so the slicer's retry
@@ -394,14 +412,20 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     );
   }
 
+  // The description re-conversion ran on the maintenance queue in 0.1.1-rc.1
+  // and rc.2 (#412): drop the schedule it left there, so it stops adding jobs.
+  await boss
+    .unschedule(QUEUE.maintenance, UPGRADE_TASKS.reconvertDescriptions)
+    .catch(() => undefined);
+
   // The description re-conversion's job (UPGRADE_TASKS). Its back-off lives
   // in this process: a restart tries again at once.
   let reconvertFailures = 0;
   let reconvertRetryAt = 0;
   const sendReconvert = () =>
-    boss.send(QUEUE.maintenance, { task: UPGRADE_TASKS.reconvertDescriptions }, { retryLimit: 0 });
+    boss.send(QUEUE.upgrade, { task: UPGRADE_TASKS.reconvertDescriptions }, { retryLimit: 0 });
   const unscheduleReconvert = () =>
-    boss.unschedule(QUEUE.maintenance, UPGRADE_TASKS.reconvertDescriptions);
+    boss.unschedule(QUEUE.upgrade, UPGRADE_TASKS.reconvertDescriptions);
   const reconvertJob = async (job: { signal: AbortSignal; expireInSeconds: number }) => {
     const run = deps.reconvertDescriptions;
     const pending = deps.reconvertPending;
@@ -457,6 +481,17 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
       });
     } else if (result !== null) {
       await unscheduleReconvert().catch(() => undefined);
+    }
+  };
+
+  // A re-conversion job found on the maintenance queue (#412): sends one job
+  // to the upgrade queue if the step is still pending, and never throws.
+  const handOverReconvert = async () => {
+    try {
+      if (deps.reconvertPending && (await deps.reconvertPending())) await sendReconvert();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`queues: moving the re-conversion job to upgrade: ${message.slice(0, 200)}`);
     }
   };
 
@@ -532,7 +567,9 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
           await deps.purgeSessions(new Date());
           return;
         case UPGRADE_TASKS.reconvertDescriptions:
-          await reconvertJob(job);
+          // Left on this queue by 0.1.1-rc.1 or rc.2: run no slice here; the
+          // run goes on from the upgrade queue while the step is pending.
+          await handOverReconvert();
           return;
         case MAINTENANCE_TASKS.backfillPreviews:
           if (!deps.backfillPreviews) throw new Error("No preview backfill is registered");
@@ -544,6 +581,18 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     },
   );
 
+  await boss.work<MaintenanceJob>(
+    QUEUE.upgrade,
+    { ...settings.upgrade.work, ...polling },
+    async ([job]) => {
+      if (job === undefined) throw new Error("upgrade worker was handed no job");
+      if (job.data.task !== UPGRADE_TASKS.reconvertDescriptions) {
+        throw new Error(`Unknown upgrade task: ${String(job.data.task).slice(0, 64)}`);
+      }
+      await reconvertJob(job);
+    },
+  );
+
   // The description re-conversion on upgrade (#357): while it is pending, its
   // schedule and a job now; once it has finished, no schedule. A failure here
   // is logged and never stops the app; the schedule, or the next start, goes on.
@@ -551,7 +600,7 @@ export async function startQueues(boss: PgBoss, deps: QueueDeps): Promise<void> 
     try {
       if (await deps.reconvertPending()) {
         await boss.schedule(
-          QUEUE.maintenance,
+          QUEUE.upgrade,
           RECONVERT_CRON,
           { task: UPGRADE_TASKS.reconvertDescriptions },
           { tz, key: UPGRADE_TASKS.reconvertDescriptions, retryLimit: 0 },
