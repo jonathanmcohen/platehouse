@@ -12,7 +12,7 @@
 // memory. That the built index.html fits the policy (its script and
 // stylesheet are same-origin files, nothing inline) is checked on the real
 // vite build in shell.test.ts.
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { SESSION_COOKIE, type Sessions } from "../../src/auth/sessions.js";
 import type { Session } from "../../src/db/types.js";
-import { createUploads } from "../../src/uploads/tus.js";
+import { createUploads, uploadsDir } from "../../src/uploads/tus.js";
 import { addSecurityHeaders, SECURITY_HEADERS } from "../../src/web/security-headers.js";
 
 const ORIGIN = "https://platehouse.test";
@@ -66,7 +66,28 @@ beforeEach(async () => {
   await writeFile(join(dir, "web", "assets", "index-AbC123.js"), "export {};\n");
 });
 
+/**
+ * Resolves once path is a directory. createUploads's tus FileStore starts
+ * making TMP_DIR/uploads in its constructor with a callback mkdir that
+ * nothing waits for, and app.close() does not wait for it either. Left
+ * running, it can still be making the folder when afterEach removes the temp
+ * folder, and its callback then throws ENOENT as an uncaught exception. The
+ * folder existing means the mkdir has finished: making it is its last step.
+ */
+async function madeDirectory(path: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      if ((await stat(path)).isDirectory()) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (Date.now() > deadline) throw new Error(`${path} was never made`);
+  }
+}
+
 afterEach(async () => {
+  // Every app this file builds is closed before its temp folder goes.
   await app?.close();
   app = undefined;
   await rm(dir, { recursive: true, force: true });
@@ -92,13 +113,17 @@ async function newApp(): Promise<FastifyInstance> {
     end: async () => {},
     signOutEverywhere: async () => ({ sessionsEnded: 1, tokensRevoked: 0 }),
   };
+  const tmpDir = join(dir, "tmp");
+  const uploads = createUploads({
+    tmpDir,
+    queue: { enqueue: async () => {}, result: async () => undefined },
+    log: () => {},
+  });
+  // The store's own mkdir has finished before the test goes on (see madeDirectory).
+  await madeDirectory(uploadsDir(tmpDir));
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
-    uploads: createUploads({
-      tmpDir: join(dir, "tmp"),
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads,
     auth: {
       oidc: {
         begin: async () => ({
