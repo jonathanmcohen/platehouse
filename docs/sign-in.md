@@ -100,17 +100,30 @@ people out or to revoke their tokens.
 
 ### Cutting someone off by hand
 
-If you cannot reach Settings, run these against the Platehouse database, with the person's user id
-(the `sub` claim your provider gives them) in place of `the-user-id`. The first ends every session
-they have; the second revokes every token they made. A session is checked on every request, so
-both take effect at once.
+If you cannot use Settings (for example, the provider is down, so you cannot make the fresh
+sign-in that signing someone else out needs), run these against the Platehouse database, with the
+person's user id (the `sub` claim your provider gives them) in place of `the-user-id`. The first
+statement ends every session they have; the second revokes every token they made. A session is
+checked on every request, so both take effect at once.
 
 ```sql
+begin;
+
 delete from sessions where subject = 'the-user-id';
 
 update api_tokens set revoked_at = now()
  where created_by_subject = 'the-user-id' and revoked_at is null;
+
+commit;
 ```
+
+The order matters: sessions first, then tokens. Ending the sessions first means a token being made
+at that moment is either refused or made in time for the second statement to revoke it; the other
+way round, a token made between the two statements would stay live. Run them as one transaction,
+as above, or one after the other in this order.
+
+Write the user id as a SQL string literal: inside single quotes, with any single quote in the id
+itself doubled (`'` becomes `''`).
 
 ## Sessions
 
@@ -138,5 +151,10 @@ Platehouse starts and keeps running while the provider is unreachable. People wh
 signed in keep working. A new sign-in shows "Login is unavailable right now" until the provider
 answers again. API tokens keep working throughout, but no new one can be made: that needs a
 fresh sign-in.
+
+For the same reason, while the provider is down nobody can make a fresh sign-in, so nobody can sign
+someone else out or revoke a token someone else made. Signing yourself out and revoking a token you
+made still work. To cut someone off in the meantime, use the SQL in
+[Cutting someone off by hand](#cutting-someone-off-by-hand).
 
 If sign-in fails, see [Troubleshooting](./troubleshooting.md#sign-in).

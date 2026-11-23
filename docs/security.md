@@ -120,6 +120,17 @@ traefik.http.middlewares.platehouse-auth-limit.ratelimit.burst: "10"
 Both examples count the connection's own address, which is the visitor's when nothing sits in
 front of your proxy.
 
+A per-address limit counts each IPv6 address on its own, and one home or office network usually
+has a whole /64 block of IPv6 addresses, so one visitor can count as many. If your proxy supports
+it, key the limit on the /64 instead. With Traefik, add this label to the ones above:
+
+```yaml
+traefik.http.middlewares.platehouse-auth-limit.ratelimit.sourceCriterion.ipStrategy.ipv6Subnet: "64"
+```
+
+nginx has no simple setting for this, so if your sign-in pages can be reached over IPv6, the
+allowlist is the stronger guard there.
+
 If another device, such as a load balancer or a tunnel, sits in front of your proxy, every
 connection comes from that one device, so every visitor shares one limit (and one allowlist
 entry). How to fix that depends on what kind of device it is:
@@ -154,6 +165,18 @@ Then check that visitors' own addresses are seen:
    your Wi-Fi. It should get `403` from the allowlist, which also shows the phone's own address was
    seen. If it gets through, or gets `429`, the allowlist is not matching visitors' own addresses.
    Without the allowlist, the phone should simply get through.
+4. Check that a client cannot choose the address your proxy sees. Repeat steps 1 and 3 with an
+   `X-Forwarded-For` header naming another address, such as one inside your allowlist in place of
+   `192.0.2.10` here:
+
+   ```sh
+   curl -sI -H 'X-Forwarded-For: 192.0.2.10' https://platehouse.example.com/auth/login
+   ```
+
+   The header must change nothing: the device that got `429` in step 1 still gets `429` within the
+   same minute, and the device outside the allowlist still gets `403`. If the header changes the
+   answer, your proxy trusts `X-Forwarded-For` from anyone; trust it only from the front proxy's
+   own address, as above.
 
 ## Slicer links
 
