@@ -4,7 +4,9 @@
 // Postgres and object store are in test/integration/library/reconvert.test.ts.
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
+import { earlierConversions } from "@platehouse/makerworld";
 import { describe, expect, test, vi } from "vitest";
+import { MAX_DESCRIPTION_CODE_POINTS } from "../../src/library/converted-description.js";
 import {
   composeDescription,
   createDescriptionReconvert,
@@ -235,6 +237,68 @@ describe("decide, for a description ingest recorded writing", () => {
     );
     expect(decision).toEqual({ kind: "unreadable" });
     expect(readText).not.toHaveBeenCalled();
+  });
+});
+
+describe("decide, for a description whose conversion is now over the limit", () => {
+  // Stored by 0.1.0 or a release candidate, before descriptions over 200,000
+  // code points were left out: the current converter's text for it would be
+  // "" (or the licence note alone), which would wipe the person's description.
+  const LONG_HTML = `<p>${"a".repeat(MAX_DESCRIPTION_CODE_POINTS + 10)}</p>`;
+  const earlier = [...earlierConversions(LONG_HTML)].map((c) => c.markdown);
+
+  test("keeps one an earlier converter wrote, with or without its note", async () => {
+    expect(earlier.length).toBeGreaterThan(0);
+    const before = earlier[0] as string;
+    expect(before.length).toBeGreaterThan(MAX_DESCRIPTION_CODE_POINTS);
+    const { readText } = reader({ [FILE_A]: { html: LONG_HTML, note: NOTE } });
+    expect(await decide(stored({ description: before }), [file(FILE_A)], readText)).toEqual({
+      kind: "too_long",
+    } satisfies Decision);
+    // With its note it is not proved at all now (the note is never added
+    // past the limit), and so is left as it is too.
+    const withNote = await decide(
+      stored({ description: `${before}\n\n${NOTE}` }),
+      [file(FILE_A)],
+      readText,
+    );
+    expect(["too_long", "unproven"]).toContain(withNote.kind);
+  });
+
+  test("keeps one with a record of where it came from", async () => {
+    const before = earlier[0] as string;
+    const { readText } = reader({ [FILE_A]: { html: LONG_HTML, note: null } });
+    const decision = await decide(
+      stored({
+        description: before,
+        sha256: descriptionSha256(before),
+        converter: 3,
+        fileId: FILE_A,
+      }),
+      [file(FILE_A)],
+      readText,
+    );
+    expect(decision).toEqual({ kind: "too_long" });
+  });
+
+  test("a run counts it as left as it is and writes nothing", async () => {
+    const before = earlier[0] as string;
+    const mem = memoryStore([stored({ modelId: model(1), description: before })], {
+      [model(1)]: [file(fileOf(1))],
+    });
+    const reconvert = createDescriptionReconvert({
+      store: mem.store,
+      readText: reader({ [fileOf(1)]: { html: LONG_HTML, note: NOTE } }).readText,
+      log: () => {},
+    });
+    expect(await reconvert.run()).toEqual({
+      checked: 1,
+      changed: 0,
+      unchanged: 0,
+      kept: 1,
+      unreadable: 0,
+    });
+    expect(mem.writes).toEqual([]);
   });
 });
 

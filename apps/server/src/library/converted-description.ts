@@ -10,9 +10,17 @@ export const MAX_DESCRIPTION_CODE_POINTS = 200_000;
  * construct. Ingest and the description re-conversion both store through it.
  */
 export function convertedDescription(html: string | null): string {
+  return conversion(html) ?? "";
+}
+
+/**
+ * The same, but null when there is a converted text and it is over the
+ * limit, so a caller can tell that apart from no description at all.
+ */
+export function conversion(html: string | null): string | null {
   if (!html) return "";
   const markdown = htmlToMarkdown(html).trim();
-  return fits(markdown) ? markdown : "";
+  return fits(markdown) ? markdown : null;
 }
 
 /** True when text is at most MAX_DESCRIPTION_CODE_POINTS code points. */
