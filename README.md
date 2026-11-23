@@ -108,10 +108,14 @@ switched on there (Source: GitHub Actions). See [apps/docs/README.md](apps/docs/
 
 `.github/workflows/slicer-image.yml` publishes the slicer image,
 `ghcr.io/jonathanmcohen/platehouse-slicer`. A deployment pins the version tag
-(`platehouse-slicer:0.1.1`, the same as the app image), as `examples/docker-compose.yml` does.
-`orca-X.Y.Z` follows the newest release build for that OrcaSlicer version, and `stable` the newest
-main build that passed a smoke slice; to go back, set the previous version tag. A test server can follow the
-`rc` tag instead (below).
+(`platehouse-slicer:X.Y.Z`, the same as the app image), as `examples/docker-compose.yml` does.
+`orca-X.Y.Z` follows the newest build of that OrcaSlicer version from main or a release, never a
+release candidate, and `stable` the newest such build of any OrcaSlicer version. To go back
+to a release from 0.1.1 on, set both images to the previous version tag. 0.1.0 has no slicer
+version tag (those began after it), so to go back to it set the slicer to
+`ghcr.io/jonathanmcohen/platehouse-slicer:orca-2.5.1-r3`, the build 0.1.0's example file resolved
+to (`orca-2.5.1` itself still points at it, but is a moving tag), together with
+`ghcr.io/jonathanmcohen/platehouse:0.1.0`. A test server can follow the `rc` tag instead (below).
 
 Every day at 05:00 UTC the workflow reads OrcaSlicer's latest stable release. When
 `orca-X.Y.Z` for that version is not in the registry yet, it builds `apps/slicer/Dockerfile`
@@ -139,7 +143,9 @@ workflow on that branch itself: it builds both images, runs the container tests 
 gate tests, and the slicer job ends with the same Trivy report as above, so the pull request shows
 what is still open in the new image. Review and merge it like any other pull request. Merging does
 not publish anything: the new packages reach the published image with the next build of it (a
-release tag, a new OrcaSlicer version, or a run by hand). The Trivy scans stay reports and never
+release tag, a new OrcaSlicer version, or a run by hand), and a deployment pinned to a version tag
+gets them with the next Platehouse release's version tag; pulling the same version tag again gets
+nothing new. The Trivy scans stay reports and never
 fail a build (the slicer has no internet access). The branch belongs to the workflow, which
 replaces it each month, so fix a broken snapshot on another branch. The workflow can also be run by
 hand from main (Actions, apt-snapshot, Run workflow). It needs the repository setting "Allow GitHub
@@ -164,8 +170,9 @@ A failure before tagging creates or moves no tag, and `stable` stays where it wa
 while tagging (a readback that does not match, or a passing GHCR error) can leave `orca-X.Y.Z`,
 and `stable` if it had got that far, at the new digest; the issue then
 lists the tags it had already pointed at the new digest. Once `orca-X.Y.Z` exists the daily run
-will not retry that version, so the issue says to run the workflow by hand. For a prerelease
-tag's run the issue suggests Re-run failed jobs instead, as a run by hand would move `stable`. It
+will not retry that version, and a run that moves it may have left it, so the issue says to run
+the workflow by hand. A prerelease tag's run never creates or moves `orca-X.Y.Z`, so the daily run
+still builds that version if it is missing; the issue suggests Re-run failed jobs, as a run by hand would move `stable`. It
 re-runs the build job with the first attempt's version and pins, so it builds the failed version
 again and leaves `stable` alone. The issue warns against Re-run all jobs, which runs the
 detect job again and so reads OrcaSlicer's latest release again: if Orca has shipped a newer
