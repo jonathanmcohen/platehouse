@@ -13,7 +13,7 @@ import { buildApp } from "../../src/app.js";
 import { SESSION_COOKIE, type Sessions } from "../../src/auth/sessions.js";
 import type { Session } from "../../src/db/types.js";
 import { StoreUnavailable } from "../../src/storage/s3.js";
-import { createUploads } from "../../src/uploads/tus.js";
+import { readyUploads } from "../support/uploads.js";
 
 const ORIGIN = "https://platehouse.test";
 const COOKIE = "c".repeat(43);
@@ -68,13 +68,11 @@ async function newApp(find?: Sessions["find"]): Promise<FastifyInstance> {
     end: async () => {},
     signOutEverywhere: async () => ({ sessionsEnded: 1, tokensRevoked: 0 }),
   };
+  // The store has made its folder before the app is built (support/uploads.ts).
+  const uploads = await readyUploads(join(dir, "tmp"));
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
-    uploads: createUploads({
-      tmpDir: join(dir, "tmp"),
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads,
     auth: {
       oidc: {
         begin: async () => ({
