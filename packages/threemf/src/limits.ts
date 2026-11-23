@@ -37,3 +37,32 @@ export const MAX_ZIP_DIRECTORY_BYTES = 4 * MiB;
 
 /** Extra fields on one entry; a real project's entries carry a few. */
 export const MAX_EXTRA_FIELDS = 32;
+
+/**
+ * The most bytes one readProject holds at once (parse.ts): the zip
+ * directory's records (MAX_ZIP_DIRECTORY_BYTES); the three config entries
+ * (model_settings, slice_info, project_settings), each kept as text of at
+ * most LIMITS.configBytes, plus the one being read, whose chunks and their
+ * Buffer.concat copy are two more LIMITS.configBytes (readCapped); one
+ * thumbnail, pass 2 handing them over one at a time, again as chunks and a
+ * copy, 2 * LIMITS.pngBytes (pass 1 counts bytes and holds none, so the
+ * file's thumbnailBytesPerFile total is never held); and the model prefix
+ * with its concatenation copy, 2 * MODEL_PREFIX_BYTES (readModelPrefix).
+ * That is 4 + 25 + 20 + 0.5 = 49.5 MiB.
+ */
+export const PROJECT_READ_PEAK_BYTES =
+  MAX_ZIP_DIRECTORY_BYTES +
+  (3 + 2) * LIMITS.configBytes +
+  2 * LIMITS.pngBytes +
+  2 * MODEL_PREFIX_BYTES;
+
+/**
+ * The most bytes one readMakerWorldXml holds at once (model-xml.ts): the zip
+ * directory's records (MAX_ZIP_DIRECTORY_BYTES), the model prefix with its
+ * concatenation copy (2 * MODEL_PREFIX_BYTES), and the reader's range window
+ * with the copy made while it is collected, at most 2 * 256 KiB (a window is
+ * 64 KiB, or the one record being read if that is larger, at most about 192
+ * KiB). That is 5 MiB.
+ */
+export const MAKERWORLD_XML_READ_PEAK_BYTES =
+  MAX_ZIP_DIRECTORY_BYTES + 2 * MODEL_PREFIX_BYTES + 2 * 256 * 1024;

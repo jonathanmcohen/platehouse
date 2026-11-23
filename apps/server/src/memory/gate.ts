@@ -204,11 +204,13 @@ export function createBuildQueue(sizes: { running: number; waiting: number }): B
 /**
  * How many jobs the memory gate runs at once: plate mesh builds and STEP
  * previews' mesh reads together. One: a plate read's peak
- * (PLATE_MESH_READ_PEAK_MB in peaks.ts, 1344 MiB) or a STEP preview's
- * (STEP_PREVIEW_PEAK_MB in peaks.ts, 512 MiB) leaves room for the
- * server itself under the 2 GiB mem_limit that examples/docker-compose.yml
- * gives it; two would not fit, and past mem_limit the kernel ends the whole
- * server (test/compose-example.test.ts checks it).
+ * (PLATE_MESH_READ_PEAK_MB in peaks.ts, 876 MiB) or a STEP preview's
+ * (STEP_PREVIEW_PEAK_MB in peaks.ts, 512 MiB) leaves room, with ingest's
+ * .3mf reads, the description re-conversion's read, a late-freed STEP
+ * preview buffer and the server itself, under the 2 GiB mem_limit that
+ * examples/docker-compose.yml gives it; two would not fit, and past
+ * mem_limit the kernel ends the whole server (test/compose-example.test.ts
+ * adds up every term and checks it).
  */
 export const PLATE_MESH_BUILDS = 1;
 

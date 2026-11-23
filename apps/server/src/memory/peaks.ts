@@ -2,28 +2,34 @@
 // memory budget: test/compose-example.test.ts checks one place of the gate
 // against the 2 GiB mem_limit in examples/docker-compose.yml.
 import { LIMITS } from "@platehouse/slicer-contract";
-import { PLATE_MESH_LIMITS } from "@platehouse/threemf";
+import { MAX_ZIP_DIRECTORY_BYTES, PLATE_MESH_LIMITS } from "@platehouse/threemf";
 import { PLATE_MESH_WORKER_LIMITS } from "../plate-mesh/worker-read.js";
-import { MAX_UPLOAD_BYTES } from "../uploads/tus.js";
 
 const MiB = 1024 * 1024;
 
 /**
+ * What a plate read's worker costs before it reads anything: its isolate,
+ * Node's runtime and the loaded modules, outside the heap limit. Measured
+ * at about 30 MiB; 40 leaves room.
+ */
+export const PLATE_WORKER_BASELINE_MB = 40;
+
+/**
  * The most memory, in MiB, one plate read can hold at once: its worker's
- * heap (PLATE_MESH_WORKER_LIMITS, plate-mesh/worker-read.ts), the reader's
- * mesh arrays (its budget's PLATE_MESH_LIMITS.meshBytes, 256 MiB), and the
- * zip reader's entry records, which are at most the file's central directory
- * and so at most the biggest file Platehouse takes (MAX_UPLOAD_BYTES, 512
- * MiB; the inbox has the same cap). That is 1344 MiB. The worker's heap limit
- * covers only the first: the mesh arrays and entry records are stored
- * outside the JavaScript heap, and Node does not count them against the
- * worker.
+ * heap (PLATE_MESH_WORKER_LIMITS, plate-mesh/worker-read.ts: 512 old plus
+ * 64 young), the reader's mesh arrays (every one it allocates is charged to
+ * PLATE_MESH_LIMITS.meshBytes, 256 MiB), the zip directory's records (at
+ * most MAX_ZIP_DIRECTORY_BYTES, 4 MiB, not the file's size), and the
+ * worker's own baseline (PLATE_WORKER_BASELINE_MB). That is 876 MiB. The
+ * worker's heap limit covers only the first: the mesh arrays and the records
+ * are stored outside the JavaScript heap.
  */
 export const PLATE_MESH_READ_PEAK_MB =
   (PLATE_MESH_WORKER_LIMITS.maxOldGenerationSizeMb ?? 0) +
   (PLATE_MESH_WORKER_LIMITS.maxYoungGenerationSizeMb ?? 0) +
   PLATE_MESH_LIMITS.meshBytes / MiB +
-  MAX_UPLOAD_BYTES / MiB;
+  MAX_ZIP_DIRECTORY_BYTES / MiB +
+  PLATE_WORKER_BASELINE_MB;
 
 /**
  * The most memory, in MiB, a STEP preview's mesh read holds at once: the
