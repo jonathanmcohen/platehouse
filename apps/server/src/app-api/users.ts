@@ -5,7 +5,7 @@
 //   GET  /app/api/users           {users: [{subject, name, sessions, tokens, you}]}
 //   POST /app/api/users/sign-out  {subject, revokeTokens} -> 200
 //                                 {sessionsEnded, tokensRevoked} | 400 |
-//                                 403 sign_in_required
+//                                 403 sign_in_required | 429 rate_limited
 //
 // - Platehouse has no user table: a user is an OIDC subject. The list is
 //   everyone with a live session or a live API token they made (dbUserList),
@@ -32,11 +32,23 @@
 //   nothing ends: the group is checked only at sign-in, so a session kept by
 //   someone since removed from it must not be able to sign everyone else
 //   out. Platehouse has no roles: everyone in OIDC_GROUP has the same access.
+// - One session may call Sign out everywhere at most SESSION_LIMIT_MAX
+//   times in any SESSION_LIMIT_WINDOW_MS (10 in 10 minutes, auth/limit.ts,
+//   issue #424), whoever it signs out; the next answers 429
+//   {error: "rate_limited"} with Retry-After in seconds, and ends nothing. A
+//   call is counted once the fresh sign-in check (for someone else) has
+//   passed, before anything ends, as token creation counts.
 // - The request log records no body (app.ts), so no subject is logged.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
 import { isFresh, refuseStale } from "../auth/fresh.js";
 import { sessionOf } from "../auth/gate.js";
+import {
+  createSessionLimiter,
+  refuseLimited,
+  SESSION_LIMIT_MAX,
+  SESSION_LIMIT_WINDOW_MS,
+} from "../auth/limit.js";
 import { MAX_SUBJECT_LENGTH } from "../auth/oidc.js";
 import type { Sessions } from "../auth/sessions.js";
 import type { DB } from "../db/types.js";
@@ -133,6 +145,13 @@ export async function registerUsersApi(
   app: FastifyInstance,
   deps: UsersApiDeps | undefined,
 ): Promise<void> {
+  const clock = () => (deps?.now ?? (() => new Date()))();
+  // Sign out everywhere calls per session, on the same clock as the sign-in window.
+  const signOuts = createSessionLimiter({
+    max: SESSION_LIMIT_MAX,
+    windowMs: SESSION_LIMIT_WINDOW_MS,
+    now: () => clock().getTime(),
+  });
   await appApiScope(app, (scope) => {
     scope.get("/users", async (request) => {
       const { list } = need(deps);
@@ -159,9 +178,15 @@ export async function registerUsersApi(
         const { subject, revokeTokens } = request.body;
         // The gate let this request in with a session (session-class route).
         const session = sessionOf(request);
-        const now = (deps?.now ?? (() => new Date()))();
+        const now = clock();
         if (session === undefined || (subject !== session.subject && !isFresh(session, now))) {
           return refuseStale(reply);
+        }
+        // Counted only once the session may make this call, and before any work.
+        const limited = signOuts.take(session.id);
+        if (!limited.ok) {
+          request.log.warn("app api: Sign out everywhere over the per-session limit");
+          return refuseLimited(reply, limited.retryAfterSeconds);
         }
         const { sessionsEnded, tokensRevoked } = await sessions.signOutEverywhere(
           subject,

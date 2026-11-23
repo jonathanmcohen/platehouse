@@ -8,7 +8,7 @@
 //                                lastUsedAt, createdBy}]}
 //   POST   /app/api/tokens       {name} -> 201 {id, name, prefix, createdAt,
 //                                lastUsedAt, createdBy, token} | 403
-//                                sign_in_required
+//                                sign_in_required | 429 rate_limited
 //   DELETE /app/api/tokens/:id   204 | 403 sign_in_required | 404 unknown or
 //                                already revoked
 //
@@ -36,6 +36,12 @@
 //   tokens in one transaction, so the two wait for each other: a token asked
 //   for while its maker is signed out everywhere with the revoke box ticked
 //   is either refused or made and then revoked, never left live.
+// - One session may make at most SESSION_LIMIT_MAX tokens in any
+//   SESSION_LIMIT_WINDOW_MS (10 in 10 minutes, auth/limit.ts, issue #424);
+//   the next answers 429 {error: "rate_limited"} with Retry-After in seconds,
+//   and nothing is made. A create is counted once the fresh sign-in check has
+//   passed, before the store is asked: a stale session gets the 403, which
+//   says what to do, and uses up none of its count.
 // - A token is made and revoked by createTokenForSession and revokeToken (api/tokens.ts). The
 //   token itself is in the create answer only: it is never stored (only its
 //   SHA-256 and first 8 characters are), never listed and never logged. The
@@ -52,6 +58,12 @@ import type { Kysely } from "kysely";
 import { MAX_TOKEN_NAME_LENGTH, type Tokens } from "../api/tokens.js";
 import { isFresh, refuseStale, TOKEN_SIGN_IN_URL, TOKEN_SIGN_IN_WINDOW_MS } from "../auth/fresh.js";
 import { sessionOf } from "../auth/gate.js";
+import {
+  createSessionLimiter,
+  refuseLimited,
+  SESSION_LIMIT_MAX,
+  SESSION_LIMIT_WINDOW_MS,
+} from "../auth/limit.js";
 import type { ApiToken, DB } from "../db/types.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
@@ -128,6 +140,13 @@ export async function registerTokensApi(
   app: FastifyInstance,
   deps: TokensApiDeps | undefined,
 ): Promise<void> {
+  const clock = () => (deps?.now ?? (() => new Date()))();
+  // Token creations per session, on the same clock as the sign-in window.
+  const creations = createSessionLimiter({
+    max: SESSION_LIMIT_MAX,
+    windowMs: SESSION_LIMIT_WINDOW_MS,
+    now: () => clock().getTime(),
+  });
   await appApiScope(app, (scope) => {
     scope.get("/tokens", async () => {
       const { list } = need(deps);
@@ -141,9 +160,15 @@ export async function registerTokensApi(
         const { tokens, list } = need(deps);
         // The gate let this request in with a session (session-class route).
         const session = sessionOf(request);
-        const now = (deps?.now ?? (() => new Date()))();
+        const now = clock();
         if (session === undefined || !isFresh(session, now)) {
           return refuseStale(reply);
+        }
+        // Counted only once the session may make a token, and before any work.
+        const limited = creations.take(session.id);
+        if (!limited.ok) {
+          request.log.warn("app api: token creation over the per-session limit");
+          return refuseLimited(reply, limited.retryAfterSeconds);
         }
         let created: Awaited<ReturnType<TokensApiDeps["tokens"]["createTokenForSession"]>>;
         try {
