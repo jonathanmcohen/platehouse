@@ -17,8 +17,9 @@
 //   503 "Login is unavailable right now". A next= query naming a plain
 //   path (returnPath: segments of letters, digits, - and _) rides in the
 //   signed cookie, and the callback sends the browser there instead of the
-//   start page; anything else in next= is ignored. Settings uses it to come
-//   back after the fresh sign-in a new API token needs (issue #322).
+//   start page; anything else in next= is ignored. The gate's redirect of a
+//   page asked for without a session uses it (gate.ts), and so does Settings,
+//   to come back after the fresh sign-in a new API token needs (issue #322).
 // - GET /auth/callback finds the login cookie by the state in its query and
 //   spends that one cookie whatever happens, leaving any other login's
 //   alone. A state that is not a plain token is 400 and names no cookie. It
@@ -159,8 +160,9 @@ interface LoginState {
  * slash-separated segments of letters, digits, - and _ only, so no other
  * host, no dot segment, escape, backslash, doubled slash or query can get
  * in. The callback builds the URL on PUBLIC_ORIGIN (absoluteUrl) all the
- * same. Settings uses it to come back after the fresh sign-in a new API
- * token needs (issue #322).
+ * same. The gate's redirect of a page asked for without a session uses it
+ * (gate.ts), and so does Settings, to come back after the fresh sign-in a
+ * new API token needs (issue #322).
  */
 const RETURN_PATH = /^(?:\/[A-Za-z0-9_-]+)+$/;
 

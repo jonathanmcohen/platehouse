@@ -49,8 +49,9 @@
 //      same check itself;
 //    - requireSession: a live session (sessions.ts), or the refusal: a page
 //      (a GET or HEAD that accepts HTML) is sent to /auth/login on
-//      PUBLIC_ORIGIN with 302, anything else is 401 JSON. A session store
-//      that fails answers 503 with no detail.
+//      PUBLIC_ORIGIN with 302, with next= naming the page when returnPath
+//      (routes.ts) accepts its path, anything else is 401 JSON. A session
+//      store that fails answers 503 with no detail.
 //    Bearer and link requests pass to their routes' own checks; no such
 //    route is open: every /api/v1 route, the tus uploads at /api/v1/uploads
 //    included (app.ts apiUploadHook), and the 404 for an unknown /api/v1
