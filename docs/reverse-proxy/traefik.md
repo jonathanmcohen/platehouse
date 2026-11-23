@@ -66,10 +66,9 @@ services:
       traefik.http.routers.platehouse.middlewares: platehouse-headers
       traefik.http.routers.platehouse.service: platehouse
       traefik.http.services.platehouse.loadbalancer.server.port: "3000"
-      # Security headers. Platehouse sets none of them itself.
+      # HSTS. Platehouse sends its own Content-Security-Policy, Referrer-Policy
+      # and X-Content-Type-Options; do not set those here.
       traefik.http.middlewares.platehouse-headers.headers.stsSeconds: "31536000"
-      traefik.http.middlewares.platehouse-headers.headers.referrerPolicy: no-referrer
-      traefik.http.middlewares.platehouse-headers.headers.contentSecurityPolicy: "frame-ancestors 'none'"
 ```
 
 ### Optional: an IP allowlist
@@ -83,13 +82,19 @@ traefik.http.routers.platehouse.middlewares: platehouse-allowlist,platehouse-hea
 ```
 
 With no `ipStrategy`, Traefik matches the connection's own address, not a header a client can
-set. Keep it that way unless another proxy sits in front of Traefik.
+set. Keep it that way unless another proxy sits in front of Traefik; if one does, see
+[Rate limits](../security.md#rate-limits) for trusting only that proxy's address.
 
 ## Why it looks like this
 
-- **The middleware chain is written out**, the headers and optionally the allowlist, and nothing
-  else. Never add an authentication middleware (such as forward-auth or an OIDC plugin): the API
+- **The middleware chain is written out**, the HSTS header and optionally the allowlist, and
+  nothing else. Never add an authentication middleware (such as forward-auth or an OIDC plugin): the API
   and slicer links are cookieless and would be sent to a login page.
+- **The headers middleware sets HSTS only.** Platehouse sends its own `Content-Security-Policy`,
+  with `frame-ancestors 'none'`, and its own `Referrer-Policy` and `X-Content-Type-Options`, on
+  every answer, and Traefik passes them through. If your labels or files set
+  `contentSecurityPolicy` from an older version of this guide, remove it: Traefik would replace
+  the app's policy with that one. The old `referrerPolicy` can go as well.
 - **No `compress` and no `buffering` middleware.** Traefik streams bodies and does not compress
   unless you add them. The streamed downloads on `/s/`, `/files/`, `/blobs/` and `/api/v1/files/`
   need it that way, and with no `buffering` middleware there is no body-size limit in Traefik, so
@@ -122,9 +127,7 @@ http:
   middlewares:
     platehouse-headers:
       headers:
-        stsSeconds: 31536000
-        referrerPolicy: no-referrer
-        contentSecurityPolicy: "frame-ancestors 'none'"
+        stsSeconds: 31536000 # HSTS only; the app sends the other headers
   services:
     platehouse:
       loadBalancer:

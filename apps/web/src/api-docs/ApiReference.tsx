@@ -7,9 +7,12 @@
 //
 // - Built from the app's own pieces (studio.css and organise.css tokens and
 //   shapes, api-docs.css for the rest); nothing is fetched, from a CDN or
-//   anywhere: the document is bundled, so the page needs no token and works
-//   under the app's CSP. The settings page loads this module only when the
-//   page is opened, so the document is not in the main bundle.
+//   anywhere: the document is bundled, so the page needs no token. It works
+//   under the Content-Security-Policy the server sends on every answer
+//   (apps/server/src/web/security-headers.ts: scripts, styles and fetches
+//   from the app's own origin only, no inline style): no CDN, no inline
+//   script, no style attribute. The settings page loads this module only
+//   when the page is opened, so the document is not in the main bundle.
 // - Every operation is a details element: a keyboard opens it with Enter or
 //   Space, a screen reader announces it as expandable, and its summary holds
 //   a heading, so the page's headings list every operation. Sections use
@@ -49,7 +52,11 @@ import raw from "./openapi.json";
 
 const DOC = raw as unknown as ApiDocument;
 
-/** The deepest indent api-docs.css draws; deeper fields share it. No inline style (CSP). */
+/**
+ * The deepest indent api-docs.css draws; deeper fields share it. The depth is
+ * a class, not an inline style, which the server's CSP (style-src 'self')
+ * would block.
+ */
 const MAX_DEPTH = 5;
 
 function Paragraphs({ text }: { text: string }) {

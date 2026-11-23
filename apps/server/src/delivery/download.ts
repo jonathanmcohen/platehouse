@@ -181,6 +181,15 @@ export function sendContent(
   );
 }
 
+/** True for an error from the blob store: an outage, a missing object or a refusal. */
+export function isStoreOutage(error: unknown): boolean {
+  return (
+    error instanceof StoreUnavailable ||
+    error instanceof BlobNotFound ||
+    error instanceof StoreError
+  );
+}
+
 /**
  * The answer when the store cannot give the bytes: 503 "This file is
  * unavailable right now", the cause in the log only, with no content
@@ -188,11 +197,7 @@ export function sendContent(
  * error, which the caller rethrows.
  */
 export function unavailable(error: unknown, request: FastifyRequest, reply: FastifyReply) {
-  if (
-    error instanceof StoreUnavailable ||
-    error instanceof BlobNotFound ||
-    error instanceof StoreError
-  ) {
+  if (isStoreOutage(error)) {
     request.log.warn({ err: error }, "delivery: the bytes could not be read");
     dropContentHeaders(reply);
     return reply

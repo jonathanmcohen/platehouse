@@ -41,6 +41,9 @@ import {
   randomPKCECodeVerifier,
   randomState,
 } from "openid-client";
+import { cleanName } from "./names.js";
+
+export { MAX_DISPLAY_NAME } from "./names.js";
 
 /** The scopes Platehouse asks for. */
 export const OIDC_SCOPE = "openid email profile groups";
@@ -110,22 +113,10 @@ export interface OidcClient {
   finish(callbackUrl: URL, checks: LoginChecks): Promise<{ subject: string; name?: string | null }>;
 }
 
-/** The longest display name a session keeps (the schema's limit, migration 0013). */
-export const MAX_DISPLAY_NAME = 200;
-
-/** text with each control character (C0, DEL and C1) made a space. */
-function spaceControls(text: string): string {
-  return Array.from(text, (ch) => {
-    const code = ch.codePointAt(0) ?? 0;
-    return code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : ch;
-  }).join("");
-}
-
 /**
  * The name to show for whoever signed in (issue #322): the first of the
  * name, preferred_username and email claims that is a string with something
- * in it once control characters are taken out and white space is trimmed
- * and collapsed, cut to MAX_DISPLAY_NAME characters; null when none is. It
+ * in it once cleanName has cleaned it; null when none is. It
  * only labels a session and the tokens it makes: nothing is let in or kept
  * out by it.
  */
@@ -133,8 +124,8 @@ export function displayNameOf(claims: Record<string, unknown>): string | null {
   for (const key of ["name", "preferred_username", "email"]) {
     const value = claims[key];
     if (typeof value !== "string") continue;
-    const clean = spaceControls(value).replace(/\s+/g, " ").trim();
-    if (clean !== "") return Array.from(clean).slice(0, MAX_DISPLAY_NAME).join("");
+    const clean = cleanName(value);
+    if (clean !== null) return clean;
   }
   return null;
 }

@@ -324,7 +324,8 @@ describe("GET /auth/callback", () => {
       await appFor({ groups });
       const run = await runLogin(t);
       expect(run.callback.statusCode).toBe(403);
-      expect(run.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+      expect(run.callback.body).toContain("Your account is not allowed to use this Platehouse.");
+      expect(run.callback.body).not.toContain(TEST_GROUP);
       expect(run.sessionCookie).toBeUndefined();
       expect(t.store.rows.size).toBe(0);
     });

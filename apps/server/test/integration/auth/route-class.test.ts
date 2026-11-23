@@ -281,7 +281,10 @@ describe("every registered route", () => {
           // what is left is the class's answer to no credentials.
           headers: { accept: "application/json", origin: TEST_ORIGIN },
         });
-        const toLogin = res.headers.location === `${TEST_ORIGIN}/auth/login`;
+        const location = String(res.headers.location ?? "");
+        const toLogin =
+          location === `${TEST_ORIGIN}/auth/login` ||
+          location.startsWith(`${TEST_ORIGIN}/auth/login?`);
         switch (cls) {
           case "session":
           case "bearer":
@@ -341,7 +344,7 @@ describe("every registered route", () => {
       cookies: { [SESSION_COOKIE]: sessionCookie },
     });
     expect(page.statusCode).toBe(302);
-    expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login`);
+    expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login?next=/no-such-page`);
     expect(api.statusCode).toBe(401);
     expect(signedIn.statusCode).toBe(404);
   });

@@ -286,6 +286,22 @@ describe("parseShellTemplate", () => {
       // public/ is copied to the root of the build, where ROOT_FILES serves it.
       const written = readdirSync(out);
       for (const path of Object.keys(ROOT_FILES)) expect(written, path).toContain(path.slice(1));
+      // The app's CSP (web/security-headers.ts, issue #449) allows scripts
+      // and styles from its own origin only: the build's module script and
+      // stylesheet are same-origin paths under /assets/, and nothing is
+      // inline: no script without a src, no style element, no style attribute.
+      const scripts = [...built.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0]);
+      expect(scripts.length).toBeGreaterThan(0);
+      for (const tag of scripts) expect(tag, tag).toMatch(/\ssrc="\/assets\/[^"/][^"]*\.js"/);
+      const stylesheets = [...built.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*>/gi)].map(
+        (m) => m[0],
+      );
+      expect(stylesheets.length).toBeGreaterThan(0);
+      for (const tag of stylesheets) {
+        expect(tag, tag).toMatch(/\shref="\/assets\/[^"/][^"]*\.css"/);
+      }
+      expect(built).not.toMatch(/<style\b/i);
+      expect(built).not.toMatch(/\sstyle\s*=/i);
       const shell = parseShellTemplate(built);
       // The build carries no data-accent; render adds it after data-theme
       // and changes nothing else.
@@ -561,7 +577,7 @@ describe("the icon files at the root", () => {
           },
           find: async () => undefined,
           end: async () => {},
-          endAllFor: async () => 0,
+          signOutEverywhere: async () => ({ sessionsEnded: 0, tokensRevoked: 0 }),
         },
         publicOrigin: "https://platehouse.test",
         absoluteUrl: (path) => `https://platehouse.test${path}`,

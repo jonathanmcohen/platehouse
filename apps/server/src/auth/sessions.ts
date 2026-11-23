@@ -23,7 +23,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { DB, Session } from "../db/types.js";
-import { type NewSession, sessionsRepo } from "../repos/sessions.js";
+import { type NewSession, type SignedOut, sessionsRepo } from "../repos/sessions.js";
+
+export type { SignedOut };
 
 /** The session cookie (the sessions table in db/migrations/0001_init.sql). */
 export const SESSION_COOKIE = "__Host-ph_session";
@@ -63,8 +65,13 @@ export interface SessionStore {
   /** The session, unless it is past its absolute or idle expiry at now. */
   get(id: string, now: Date): Promise<Session | undefined>;
   delete(id: string): Promise<boolean>;
-  /** Deletes every session of one subject; returns how many. */
-  deleteForSubject(subject: string): Promise<number>;
+  /**
+   * Sign out everywhere, in one transaction: deletes every session of one
+   * subject, then, with revokeTokens, revokes every live API token they made.
+   * The delete waits for a token being made from one of those sessions
+   * (api/tokens.ts createTokenForSession), so the revoke finds that token.
+   */
+  signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut>;
   /** Moves a session's idle expiry to idleExpiresAt. */
   touch(id: string, idleExpiresAt: Date): Promise<void>;
 }
@@ -76,7 +83,7 @@ export function dbSessionStore(db: Kysely<DB>): SessionStore {
     create: (input) => repo.create(input),
     get: (id, now) => repo.get(id, now),
     delete: (id) => repo.delete(id),
-    deleteForSubject: (subject) => repo.deleteForSubject(subject),
+    signOutEverywhere: (subject, revokeTokens) => repo.signOutEverywhere(subject, revokeTokens),
     async touch(id, idleExpiresAt) {
       await db.updateTable("sessions").set({ idleExpiresAt }).where("id", "=", id).execute();
     },
@@ -103,8 +110,13 @@ export interface Sessions {
   find(cookie: string | undefined): Promise<Session | undefined>;
   /** Ends the session behind this cookie value; nothing happens when there is none. */
   end(cookie: string | undefined): Promise<void>;
-  /** Ends every session of one subject (Sign out everywhere); returns how many. */
-  endAllFor(subject: string): Promise<number>;
+  /**
+   * Sign out everywhere (issue #322): ends every session of one subject and,
+   * with revokeTokens, revokes every live API token they made, in one
+   * transaction that a token being made at the same moment waits for, or
+   * that waits for it (issue #414). Returns how many of each.
+   */
+  signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut>;
 }
 
 /**
@@ -161,6 +173,6 @@ export function createSessions(deps: { store: SessionStore; now?: () => Date }):
       if (isSessionId(cookie)) await store.delete(sessionRowId(cookie));
     },
 
-    endAllFor: (subject) => store.deleteForSubject(subject),
+    signOutEverywhere: (subject, revokeTokens) => store.signOutEverywhere(subject, revokeTokens),
   };
 }

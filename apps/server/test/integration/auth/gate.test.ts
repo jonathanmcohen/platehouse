@@ -43,7 +43,7 @@ describe("a session route with no session", () => {
     for (const method of ["GET", "HEAD"] as const) {
       const res = await t.app.inject({ method, url: "/models/abc", headers: { accept: HTML } });
       expect(res.statusCode, method).toBe(302);
-      expect(res.headers.location, method).toBe(`${TEST_ORIGIN}/auth/login`);
+      expect(res.headers.location, method).toBe(`${TEST_ORIGIN}/auth/login?next=/models/abc`);
       expect(res.headers["cache-control"], method).toBe("no-store");
     }
   });
@@ -54,7 +54,7 @@ describe("a session route with no session", () => {
       url: "/models/abc",
       headers: { accept: HTML, host: "evil.example", "x-forwarded-host": "evil.example" },
     });
-    expect(res.headers.location).toBe(`${TEST_ORIGIN}/auth/login`);
+    expect(res.headers.location).toBe(`${TEST_ORIGIN}/auth/login?next=/models/abc`);
   });
 
   test("anything else gets 401 JSON", async () => {

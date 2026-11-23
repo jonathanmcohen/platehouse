@@ -13,13 +13,61 @@
 // - axe finds no violations with the view open, dark and light;
 // - choosing another plate in the strip shows that plate in 3D;
 // - Show picture goes back to the plate and puts focus on Show in 3D.
+//
+// The app's own Content-Security-Policy (issue #449; Traefik here adds no
+// headers, so the browser enforces the app's alone): the page answers with
+// it, and the browser reports no violation while the 3D view is drawn, nor
+// around a tus upload through the page's upload dialog. The file uploaded is
+// the seeded Calibration cubes file byte for byte, so the server skips it as
+// a duplicate and the library the other specs see does not change.
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, type Response, test } from "@playwright/test";
+import { buildSliceable } from "../../packages/threemf/test/support/sliceable.js";
 import { ORIGIN } from "../support/env.js";
 import { AXE_PAGES, openPage } from "../support/pages.js";
+import { readSeed, sha256 } from "../support/seed.js";
 
 const MODEL = AXE_PAGES.find((p) => p.name === "model");
+const LIBRARY = AXE_PAGES.find((p) => p.name === "library");
 const MESH_PATH = /^\/app\/api\/plates\/[0-9a-f-]+\/mesh$/;
+
+/** The policy apps/server/src/web/security-headers.ts sends. */
+const CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/**
+ * Records every CSP violation the page reports from its next navigation on:
+ * securitypolicyviolation events and the console's CSP errors. Call it
+ * before opening the page; the returned function lists what was seen, and
+ * fails if the page's own answer did not carry the app's policy.
+ */
+async function watchCsp(page: Page): Promise<() => Promise<string[]>> {
+  const seen: string[] = [];
+  const documents: (string | undefined)[] = [];
+  page.on("console", (msg) => {
+    if (/content security policy/i.test(msg.text())) seen.push(`console: ${msg.text()}`);
+  });
+  page.on("response", (res) => {
+    if (res.request().isNavigationRequest() && res.request().frame() === page.mainFrame()) {
+      documents.push(res.headers()["content-security-policy"]);
+    }
+  });
+  await page.addInitScript(() => {
+    const list: string[] = [];
+    (window as unknown as { cspViolations: string[] }).cspViolations = list;
+    document.addEventListener("securitypolicyviolation", (event) => {
+      list.push(`${event.effectiveDirective} blocked ${event.blockedURI || "inline"}`);
+    });
+  });
+  return async () => {
+    expect(documents.length, "the page was opened").toBeGreaterThan(0);
+    for (const header of documents) expect(header).toBe(CSP);
+    const reported = await page.evaluate(
+      () => (window as unknown as { cspViolations?: string[] }).cspViolations ?? [],
+    );
+    return [...seen, ...reported];
+  };
+}
 
 function isMesh(res: Response): boolean {
   return MESH_PATH.test(new URL(res.url()).pathname);
@@ -37,6 +85,7 @@ async function openModel(page: Page): Promise<string[]> {
 test("plate 3D view: Show in 3D loads that plate's mesh alone and draws it, and Show picture goes back", async ({
   page,
 }) => {
+  const violations = await watchCsp(page);
   const paths = await openModel(page);
   const viewer = page.locator(".studio-viewer");
   await expect(viewer.getByText("No thumbnail for Plate 1.")).toBeVisible();
@@ -65,6 +114,8 @@ test("plate 3D view: Show in 3D loads that plate's mesh alone and draws it, and 
   }
   await expect(viewer.getByRole("button", { name: "Show picture" })).toBeFocused();
   expect(paths.filter((p) => p.endsWith("/download") || p.startsWith("/s/"))).toEqual([]);
+  // The app's CSP lets the 3D view load and draw (issue #449).
+  expect(await violations()).toEqual([]);
 
   // Another plate while the view is open: that plate in 3D.
   const second = page.waitForResponse(isMesh);
@@ -76,6 +127,38 @@ test("plate 3D view: Show in 3D loads that plate's mesh alone and draws it, and 
   await expect(viewer.locator("canvas")).toHaveCount(0);
   await expect(viewer.getByText("No thumbnail for Plate 2.")).toBeVisible();
   await expect(viewer.getByRole("button", { name: "Show in 3D" })).toBeFocused();
+});
+
+test("the app's CSP: a tus upload through the upload dialog reports no violation (#449)", async ({
+  page,
+}) => {
+  if (LIBRARY === undefined) throw new Error("no library page");
+  const bytes = buildSliceable({ plates: 3, filaments: 2 });
+  // The seeded file again, so the server skips it and stores nothing.
+  expect(sha256(bytes)).toBe(readSeed().calibration.sha256);
+  const violations = await watchCsp(page);
+  await openPage(page, LIBRARY);
+
+  await page.locator("header").getByRole("button", { name: "Add", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add files" });
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: "Calibration cubes.3mf",
+    mimeType: "application/octet-stream",
+    buffer: bytes,
+  });
+  const created = page.waitForResponse(
+    (res) => res.request().method() === "POST" && new URL(res.url()).pathname === "/app/uploads",
+  );
+  const sent = page.waitForResponse(
+    (res) =>
+      res.request().method() === "PATCH" && new URL(res.url()).pathname.startsWith("/app/uploads/"),
+  );
+  await dialog.getByRole("button", { name: "Upload 1 file" }).click();
+  expect((await created).status()).toBe(201);
+  expect((await sent).status()).toBe(204);
+  await expect(dialog.getByText("Skipped", { exact: true })).toBeVisible();
+
+  expect(await violations()).toEqual([]);
 });
 
 for (const theme of ["dark", "light"] as const) {

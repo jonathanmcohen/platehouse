@@ -15,12 +15,9 @@ platehouse.example.com {
 	# @outside not remote_ip 192.168.0.0/16 172.16.0.0/12
 	# respond @outside 403
 
-	# Security headers. Platehouse sets none of them itself.
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		Referrer-Policy "no-referrer"
-		Content-Security-Policy "frame-ancestors 'none'"
-	}
+	# HSTS. Platehouse sends its own Content-Security-Policy, Referrer-Policy
+	# and X-Content-Type-Options; do not set those here.
+	header Strict-Transport-Security "max-age=31536000"
 
 	# Uploads of up to 512 MiB.
 	request_body {
@@ -37,6 +34,12 @@ platehouse.example.com {
 
 ## Why it looks like this
 
+- **Only HSTS is set here.** Platehouse sends its own `Content-Security-Policy`, with
+  `frame-ancestors 'none'`, and its own `Referrer-Policy` and `X-Content-Type-Options`, on every
+  answer, and `reverse_proxy` passes them through. If your site block sets
+  `Content-Security-Policy` from an older version of this guide, remove that line: it would
+  replace the app's policy, or be sent beside it and narrow it. The old `Referrer-Policy` line
+  can go as well.
 - **TLS is automatic.** Caddy gets and renews a certificate for the site name and redirects http
   to https. For an internal name with no public DNS, use `tls internal` or your own certificate
   with `tls /path/cert.pem /path/key.pem`.

@@ -332,7 +332,10 @@ describe("every registered route, with delivery mounted", () => {
           url: concretePath(route.path),
           headers: { accept: "application/json", origin: TEST_ORIGIN },
         });
-        const toLogin = res.headers.location === `${TEST_ORIGIN}/auth/login`;
+        const location = String(res.headers.location ?? "");
+        const toLogin =
+          location === `${TEST_ORIGIN}/auth/login` ||
+          location.startsWith(`${TEST_ORIGIN}/auth/login?`);
         switch (cls) {
           case "session":
           case "bearer":
@@ -359,7 +362,7 @@ describe("every registered route, with delivery mounted", () => {
     for (const url of [`/files/${FILE_A}/download`, `/blobs/${BLOB_T}`]) {
       const res = await app.inject({ method: "GET", url, headers: { accept: "text/html" } });
       expect(res.statusCode, url).toBe(302);
-      expect(res.headers.location, url).toBe(`${TEST_ORIGIN}/auth/login`);
+      expect(res.headers.location, url).toBe(`${TEST_ORIGIN}/auth/login?next=${url}`);
     }
   });
 

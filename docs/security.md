@@ -66,6 +66,118 @@ Each API client, such as a script or another tool on one computer, gets its own 
 Treat a token like a password: keep it in a password manager or your tool's secret store, not in a
 script you share.
 
+## Rate limits
+
+Platehouse limits two acts in Settings per session, that is per sign-in on one browser:
+
+- making an API token, at most 10 in any 10 minutes;
+- **Sign out everywhere**, at most 10 times in any 10 minutes, whoever it signs out.
+
+The next one is refused with `429` and a `Retry-After` header that says how many seconds to wait.
+A request that is refused first for another reason, such as a sign-in older than 5 minutes, is not
+counted. Each limit is counted on its own, and a new sign-in starts a new count. The counts are
+kept in the server's memory, so a restart clears them.
+
+Platehouse does not limit requests per client address. If your sign-in pages can be reached by
+people outside your household, limit them at your reverse proxy: everything under `/auth/` (the
+login, the provider's return to Platehouse, and sign out). A sign-in takes two requests there, so
+10 per minute per address leaves plenty of room. Leave the rest of the site, and above all the API
+and slicer links, out of this limit.
+
+With nginx, define the zone in the `http` block and add a location for `/auth/` beside the others
+in the [nginx guide](./reverse-proxy/nginx.md):
+
+```nginx
+# In the http block: 10 requests per minute per client address.
+limit_req_zone $binary_remote_addr zone=platehouse_auth:10m rate=10r/m;
+
+# In the server block, beside location /:
+location /auth/ {
+    limit_req zone=platehouse_auth burst=10 nodelay;
+    limit_req_status 429;
+    proxy_pass http://platehouse;
+}
+```
+
+With Traefik, add a second router for the `/auth/` path prefix with a `ratelimit` middleware,
+next to the router in the [Traefik guide](./reverse-proxy/traefik.md). Its rule is longer, so
+Traefik picks it over the main router for those paths. A router runs only its own middlewares, so
+this chain repeats the main router's IP allowlist first; without it, `/auth/` would be outside the
+allowlist. If you do not use the allowlist, take `platehouse-allowlist,` out of the chain:
+
+```yaml
+traefik.http.routers.platehouse-auth.rule: Host(`platehouse.example.com`) && PathPrefix(`/auth/`)
+traefik.http.routers.platehouse-auth.entrypoints: websecure
+traefik.http.routers.platehouse-auth.tls: "true"
+traefik.http.routers.platehouse-auth.tls.certresolver: letsencrypt
+traefik.http.routers.platehouse-auth.middlewares: platehouse-allowlist,platehouse-auth-limit,platehouse-headers
+traefik.http.routers.platehouse-auth.service: platehouse
+traefik.http.middlewares.platehouse-auth-limit.ratelimit.average: "10"
+traefik.http.middlewares.platehouse-auth-limit.ratelimit.period: 1m
+traefik.http.middlewares.platehouse-auth-limit.ratelimit.burst: "10"
+```
+
+Both examples count the connection's own address, which is the visitor's when nothing sits in
+front of your proxy.
+
+A per-address limit counts each IPv6 address on its own, and one home or office network usually
+has a whole /64 block of IPv6 addresses, so one visitor can count as many. If your proxy supports
+it, key the limit on the /64 instead. With Traefik, add this label to the ones above:
+
+```yaml
+traefik.http.middlewares.platehouse-auth-limit.ratelimit.sourceCriterion.ipStrategy.ipv6Subnet: "64"
+```
+
+nginx has no simple setting for this, so if your sign-in pages can be reached over IPv6, the
+allowlist is the stronger guard there.
+
+If another device, such as a load balancer or a tunnel, sits in front of your proxy, every
+connection comes from that one device, so every visitor shares one limit (and one allowlist
+entry). How to fix that depends on what kind of device it is:
+
+- **An HTTP proxy that adds `X-Forwarded-For` itself.** Trust that header only on connections
+  from the front proxy's own address, never from anyone else: from anyone else, it says whatever
+  the client put in it. Do this only if you know the front proxy adds the visitor's address to the
+  header on every request. With nginx, use the `realip` module: `set_real_ip_from` with the front
+  proxy's address only, and `real_ip_header X-Forwarded-For`. With Traefik, list only the front
+  proxy's address in the entrypoint's `forwardedHeaders.trustedIPs` (Traefik drops forwarded
+  headers from any other address), then give the rate limit's `sourceCriterion.ipStrategy` and
+  the allowlist's `ipStrategy` a `depth` of `1`, so they use the address the front proxy saw.
+- **A TCP (layer 4) load balancer or tunnel.** It passes each request on unchanged, so an
+  `X-Forwarded-For` header arriving through it is the client's own, and a client can claim any
+  address in it, an address inside your allowlist included. Never trust the header behind such a
+  device. Turn on the PROXY protocol on the device instead, which sends the visitor's address
+  ahead of each connection, and accept it only from the device's address. With nginx, add
+  `proxy_protocol` to the `listen` line, with `set_real_ip_from` set to the device's address and
+  `real_ip_header proxy_protocol`. With Traefik, list only the device's address in the
+  entrypoint's `proxyProtocol.trustedIPs`, and leave `ipStrategy` unset, so the rate limit and the
+  allowlist match the address the PROXY protocol gave.
+
+Then check that visitors' own addresses are seen:
+
+1. From one device, open `/auth/login` again and again until the proxy answers `429`. With the
+   examples above that happens after about 10 requests in a minute.
+2. Within the same minute, open it from a second device with a different address, as your proxy
+   sees it, on a network the allowlist lets in, such as another device on your VPN. It should get
+   through. If it gets `429` too, the proxy sees the front device's address for everyone, and all
+   your visitors share one limit.
+3. If you use the allowlist, open it from a device on a network outside it, such as a phone off
+   your Wi-Fi. It should get `403` from the allowlist, which also shows the phone's own address was
+   seen. If it gets through, or gets `429`, the allowlist is not matching visitors' own addresses.
+   Without the allowlist, the phone should simply get through.
+4. Check that a client cannot choose the address your proxy sees. Repeat steps 1 and 3 with an
+   `X-Forwarded-For` header naming another address, such as one inside your allowlist in place of
+   `192.0.2.10` here:
+
+   ```sh
+   curl -sI -H 'X-Forwarded-For: 192.0.2.10' https://platehouse.example.com/auth/login
+   ```
+
+   The header must change nothing: the device that got `429` in step 1 still gets `429` within the
+   same minute, and the device outside the allowlist still gets `403`. If the header changes the
+   answer, your proxy trusts `X-Forwarded-For` from anyone; trust it only from the front proxy's
+   own address, as above.
+
 ## Slicer links
 
 A slicer link opens one file for 10 minutes without a sign-in, because slicers send no cookies.
@@ -73,8 +185,8 @@ Its key is signed with a key derived from `LINK_SECRET`, so it cannot be forged 
 is checked before anything is looked up. A link to a file in the trash stops working.
 
 Anyone who has a live link can download that one file until it expires. Platehouse's own log never
-records links, but your reverse proxy's access log does, so limit who can read that log. The proxy
-should also send `Referrer-Policy: no-referrer`, so a link never leaks in a Referer header.
+records links, but your reverse proxy's access log does, so limit who can read that log. Platehouse
+sends `Referrer-Policy: no-referrer` on every answer, so a link never leaks in a Referer header.
 
 ## The slicer sandbox
 

@@ -17,8 +17,9 @@
 //   503 "Login is unavailable right now". A next= query naming a plain
 //   path (returnPath: segments of letters, digits, - and _) rides in the
 //   signed cookie, and the callback sends the browser there instead of the
-//   start page; anything else in next= is ignored. Settings uses it to come
-//   back after the fresh sign-in a new API token needs (issue #322).
+//   start page; anything else in next= is ignored. The gate's redirect of a
+//   page asked for without a session uses it (gate.ts), and so does Settings,
+//   to come back after the fresh sign-in a new API token needs (issue #322).
 // - GET /auth/callback finds the login cookie by the state in its query and
 //   spends that one cookie whatever happens, leaving any other login's
 //   alone. A state that is not a plain token is 400 and names no cookie. It
@@ -28,7 +29,7 @@
 //   name the claims give, sets __Host-ph_session and sends the browser to
 //   PUBLIC_ORIGIN/ (or the login's next path on PUBLIC_ORIGIN). A missing,
 //   forged or expired login cookie, or a response that does not check out,
-//   is 400; a user not let in is 403 with the reason (not in the group,
+//   is 400; a user not let in is 403 with the reason (not allowed in, which never names the group,
 //   email not verified, or a user id over MAX_SUBJECT_LENGTH characters,
 //   which the log records by its length, never its value); the issuer
 //   unreachable is 503. A 403 refusal also ends the session the browser
@@ -138,7 +139,6 @@ export interface AuthRouteDeps {
   /** PUBLIC_ORIGIN, scheme and host only: the Origin POST /auth/logout must carry. */
   publicOrigin: string;
   absoluteUrl(path: string): string;
-  group: string;
   now?: () => Date;
   /** The languages, for the pages' words; the built-in languages when left out. */
   locales?: Locales;
@@ -160,8 +160,9 @@ interface LoginState {
  * slash-separated segments of letters, digits, - and _ only, so no other
  * host, no dot segment, escape, backslash, doubled slash or query can get
  * in. The callback builds the URL on PUBLIC_ORIGIN (absoluteUrl) all the
- * same. Settings uses it to come back after the fresh sign-in a new API
- * token needs (issue #322).
+ * same. The gate's redirect of a page asked for without a session uses it
+ * (gate.ts), and so does Settings, to come back after the fresh sign-in a
+ * new API token needs (issue #322).
  */
 const RETURN_PATH = /^(?:\/[A-Za-z0-9_-]+)+$/;
 
@@ -419,7 +420,7 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
             await words(request),
             403,
             ["login.refused.title"],
-            ["login.refused.group", { group: deps.group }],
+            ["login.refused.group"],
           );
         case "email_not_verified":
           return sendPage(
