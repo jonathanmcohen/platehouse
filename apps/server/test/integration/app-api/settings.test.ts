@@ -11,7 +11,9 @@
 // stub, tokens in api_tokens, and the trash. The request
 // log is captured from buildApp's logger stream, and the last test reads it:
 // no token this file made appears in any line, with or without its prefix.
-// Sessions are in memory (the login tests' support). Every file is generated.
+// Sessions are in the sessions table too, read through the login tests'
+// support: a token is made in one transaction with a locked read of its
+// maker's session row (issue #414). Every file is generated.
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { FastifyInstance } from "fastify";
@@ -35,7 +37,7 @@ import {
   TOKEN_SIGN_IN_WINDOW_MS,
 } from "../../../src/app-api/tokens.js";
 import { patternClass } from "../../../src/auth/gate.js";
-import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import { dbSessionStore, SESSION_COOKIE } from "../../../src/auth/sessions.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import { createSlicerClient } from "../../../src/estimates/client.js";
 import { plateNumbers } from "../../../src/estimates/display.js";
@@ -225,7 +227,7 @@ beforeAll(async () => {
   tokens = createTokens({ store: dbTokenStore(env.db) });
   purgeStore = env.store;
   tokenList = dbTokenList(env.db);
-  auth = await testAuth();
+  auth = await testAuth({ store: dbSessionStore(env.db) });
   app = await buildApp({
     health: { database: async () => 1, queuesRunning: () => true },
     uploads: createUploads({

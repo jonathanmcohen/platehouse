@@ -36,6 +36,7 @@ import {
 } from "../../../src/auth/sessions.js";
 import { uuidv7 } from "../../../src/db/ids.js";
 import type { ApiToken, Session } from "../../../src/db/types.js";
+import type { NewToken } from "../../../src/repos/tokens.js";
 import { createUploads, type Uploads } from "../../../src/uploads/tus.js";
 
 /** The public origin the auth tests use. */
@@ -339,6 +340,11 @@ export interface MemoryStore extends SessionStore {
   gets: number;
   /** When set, every call fails with this error, as a database that is down would. */
   failWith?: Error;
+  /**
+   * The tokens Sign out everywhere revokes from; memoryTokenStore(store) sets
+   * it. Without it, signOutEverywhere with revokeTokens throws.
+   */
+  tokens?: MemoryTokenStore;
 }
 
 export function memorySessionStore(): MemoryStore {
@@ -367,16 +373,22 @@ export function memorySessionStore(): MemoryStore {
       if (store.failWith) throw store.failWith;
       return rows.delete(id);
     },
-    async deleteForSubject(subject) {
+    async signOutEverywhere(subject, revokeTokens) {
       if (store.failWith) throw store.failWith;
-      let deleted = 0;
+      if (revokeTokens && store.tokens === undefined) {
+        throw new Error("memorySessionStore: no token store to revoke from");
+      }
+      // One synchronous run, as the table's one transaction: nothing else
+      // runs between the deletes and the revokes.
+      let sessionsEnded = 0;
       for (const [id, row] of rows) {
         if (row.subject === subject) {
           rows.delete(id);
-          deleted += 1;
+          sessionsEnded += 1;
         }
       }
-      return deleted;
+      const tokensRevoked = revokeTokens ? (store.tokens?.revokeForCreator(subject) ?? 0) : 0;
+      return { sessionsEnded, tokensRevoked };
     },
     async touch(id, idleExpiresAt) {
       if (store.failWith) throw store.failWith;
@@ -392,27 +404,50 @@ export interface MemoryTokenStore extends TokenStore {
   readonly rows: Map<string, ApiToken>;
   /** How many times findByHash was called. */
   lookups: number;
+  /** Revokes every live token this subject made, at once; returns how many. */
+  revokeForCreator(subject: string): number;
 }
 
-export function memoryTokenStore(): MemoryTokenStore {
+/**
+ * Tokens in memory. With sessions, createForSession reads that store's rows
+ * (without, it throws), and the session store's Sign out everywhere revokes
+ * from this one: the two are linked both ways. Each call runs without a
+ * pause between its read and its write, as the table's transactions do.
+ */
+export function memoryTokenStore(sessions?: MemoryStore): MemoryTokenStore {
   const rows = new Map<string, ApiToken>();
+  const insert = (input: NewToken): ApiToken => {
+    const row: ApiToken = {
+      id: uuidv7(),
+      name: input.name,
+      prefix: input.prefix,
+      tokenHash: Buffer.from(input.tokenHash),
+      createdAt: new Date(),
+      lastUsedAt: null,
+      revokedAt: null,
+      createdBySubject: input.createdBy?.subject ?? null,
+      createdByName: input.createdBy?.name ?? null,
+    };
+    rows.set(row.id, row);
+    return row;
+  };
   const store: MemoryTokenStore = {
     rows,
     lookups: 0,
     async create(input) {
-      const row: ApiToken = {
-        id: uuidv7(),
-        name: input.name,
-        prefix: input.prefix,
-        tokenHash: Buffer.from(input.tokenHash),
-        createdAt: new Date(),
-        lastUsedAt: null,
-        revokedAt: null,
-        createdBySubject: input.createdBy?.subject ?? null,
-        createdByName: input.createdBy?.name ?? null,
-      };
-      rows.set(row.id, row);
-      return row;
+      return insert(input);
+    },
+    async createForSession(sessionId, input, admit) {
+      if (sessions === undefined) {
+        throw new Error("memoryTokenStore: no session store to make a token for a session");
+      }
+      if (sessions.failWith) throw sessions.failWith;
+      const session = sessions.rows.get(sessionId);
+      if (session === undefined || !admit({ ...session })) return undefined;
+      return insert({
+        ...input,
+        createdBy: { subject: session.subject, name: session.displayName },
+      });
     },
     async findByHash(hash) {
       store.lookups += 1;
@@ -427,7 +462,7 @@ export function memoryTokenStore(): MemoryTokenStore {
       rows.set(id, { ...row, revokedAt: new Date() });
       return true;
     },
-    async revokeForCreator(subject) {
+    revokeForCreator(subject) {
       let revoked = 0;
       for (const [id, row] of rows) {
         if (row.revokedAt === null && row.createdBySubject === subject) {
@@ -442,6 +477,7 @@ export function memoryTokenStore(): MemoryTokenStore {
       if (row !== undefined) rows.set(id, { ...row, lastUsedAt: at });
     },
   };
+  if (sessions !== undefined) sessions.tokens = store;
   return store;
 }
 

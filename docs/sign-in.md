@@ -84,7 +84,9 @@ To cut someone off completely:
    account is disabled), it ends nothing. Their other sessions carry on until the next step.
 2. In **Settings**, under **Sign out everywhere**, press **Sign out** beside their name, tick the
    box to also revoke the API tokens they made, and press **Sign out everywhere**. Every session
-   they have ends at once, and every token they made stops working.
+   they have ends at once, and every token they made stops working, including one they were
+   making at that moment: a token being made waits for Sign out everywhere, or Sign out
+   everywhere waits for it and then revokes it, so it is never left working.
 3. In the API token list, revoke any token they had a copy of but did not make, and any token
    made by an unknown user that you cannot account for.
 

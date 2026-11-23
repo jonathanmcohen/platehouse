@@ -28,7 +28,15 @@
 //   token someone else made, or one with no recorded maker, needs the same
 //   fresh sign-in (auth/fresh.ts); revoking one you made needs a live
 //   session only.
-// - A token is made and revoked by createToken and revokeToken (api/tokens.ts). The
+// - A create is checked twice. The gate's session must be fresh, as above;
+//   then createTokenForSession (api/tokens.ts) reads that session's row again
+//   under a lock, in the same transaction as the insert, and answers "stale",
+//   the same 403 sign_in_required, when the row is gone or no longer fresh
+//   (issue #414). Sign out everywhere deletes the rows and revokes the
+//   tokens in one transaction, so the two wait for each other: a token asked
+//   for while its maker is signed out everywhere with the revoke box ticked
+//   is either refused or made and then revoked, never left live.
+// - A token is made and revoked by createTokenForSession and revokeToken (api/tokens.ts). The
 //   token itself is in the create answer only: it is never stored (only its
 //   SHA-256 and first 8 characters are), never listed and never logged. The
 //   request log records no body and no answer (app.ts, requestLogValue), and
@@ -59,7 +67,7 @@ export type ListedToken = Pick<
 >;
 
 export interface TokensApiDeps {
-  tokens: Pick<Tokens, "createToken" | "revokeToken">;
+  tokens: Pick<Tokens, "createTokenForSession" | "revokeToken">;
   /** Every live token, newest first. */
   list(): Promise<ListedToken[]>;
   /** The clock the sign-in window is measured on; the real one when left out. */
@@ -133,15 +141,15 @@ export async function registerTokensApi(
         const { tokens, list } = need(deps);
         // The gate let this request in with a session (session-class route).
         const session = sessionOf(request);
-        if (session === undefined || !isFresh(session, (deps?.now ?? (() => new Date()))())) {
+        const now = (deps?.now ?? (() => new Date()))();
+        if (session === undefined || !isFresh(session, now)) {
           return refuseStale(reply);
         }
-        let created: Awaited<ReturnType<TokensApiDeps["tokens"]["createToken"]>>;
+        let created: Awaited<ReturnType<TokensApiDeps["tokens"]["createTokenForSession"]>>;
         try {
-          created = await tokens.createToken(request.body.name, {
-            subject: session.subject,
-            name: session.displayName,
-          });
+          // The session is read again under a lock with the insert: one
+          // signed out everywhere since the gate read it is "stale".
+          created = await tokens.createTokenForSession(session.id, request.body.name, now);
         } catch (error) {
           if (error instanceof RangeError) {
             return refuse(reply, 400, "bad_request", TOKEN_NAME_LENGTH_MESSAGE, {
@@ -151,26 +159,28 @@ export async function registerTokensApi(
           }
           throw error;
         }
+        if (created === "stale") return refuseStale(reply);
+        const made = created;
         let row: ListedToken | undefined;
         try {
-          row = (await list()).find((t) => t.id === created.id);
+          row = (await list()).find((t) => t.id === made.id);
           if (row === undefined) throw new Error("the new token is not in the list");
         } catch (error) {
           // The token is made but this answer, the only place its value is
           // ever shown, cannot be built. Revoke it, so no live token is left
           // whose value nobody saw; the page says to try again.
           try {
-            await tokens.revokeToken(created.id);
+            await tokens.revokeToken(made.id);
           } catch (revokeError) {
             request.log.error(
-              { err: revokeError, tokenId: created.id },
+              { err: revokeError, tokenId: made.id },
               "app api: could not revoke a token whose create answer failed",
             );
           }
           throw error;
         }
         // The one answer that carries the token; no-store, like every answer here.
-        return reply.code(201).send({ ...entry(row), token: created.token });
+        return reply.code(201).send({ ...entry(row), token: made.token });
       },
     );
 

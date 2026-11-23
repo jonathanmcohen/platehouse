@@ -30,6 +30,7 @@ import {
   type AuthTestApp,
   authTestApp,
   type MemoryTokenStore,
+  memorySessionStore,
   memoryTokenList,
   memoryTokenStore,
   memoryUserList,
@@ -48,10 +49,14 @@ let tokens: Tokens;
 let lines: string[] = [];
 
 beforeEach(async () => {
-  tokenStore = memoryTokenStore();
+  // Linked both ways: a token is made for a session in the session store,
+  // and Sign out everywhere revokes from the token store.
+  const sessionStore = memorySessionStore();
+  tokenStore = memoryTokenStore(sessionStore);
   tokens = createTokens({ store: tokenStore, log: () => {} });
   lines = [];
   t = await authTestApp({
+    store: sessionStore,
     logger: { write: (line: string) => lines.push(line) },
     api: { tokens, library: refusingApi.library },
     appApi: (auth) => ({
@@ -59,7 +64,6 @@ beforeEach(async () => {
       users: {
         list: memoryUserList(auth.store, tokenStore),
         sessions: auth.sessions,
-        tokens,
       },
     }),
   });

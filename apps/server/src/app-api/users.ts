@@ -17,9 +17,14 @@
 //   request. With revokeTokens it then revokes every live API token they
 //   made. A token made before Platehouse recorded who made it has no maker
 //   and is never revoked here; Settings lists it as made by an unknown user,
-//   to revoke by hand. Sessions end first, so the user cannot make a new
-//   token in between (a new token needs a fresh sign-in anyway). Both steps
-//   can be repeated: a second press ends and revokes nothing more.
+//   to revoke by hand. Both steps are one transaction
+//   (Sessions.signOutEverywhere), and token creation reads the maker's
+//   session row under a lock in the same transaction as its insert (issue
+//   #414), so the two wait for each other: a token made at the same moment
+//   is either refused, because its session is gone, or committed before the
+//   sessions end and so revoked with the rest. No token the user makes
+//   while being signed out this way is left live. Both steps can be
+//   repeated: a second press ends and revokes nothing more.
 // - Who may use it: signing yourself out everywhere needs a live session,
 //   and your own session ends too. Signing someone else out, and so
 //   revoking their tokens, also needs a sign-in in the last
@@ -30,7 +35,6 @@
 // - The request log records no body (app.ts), so no subject is logged.
 import type { FastifyInstance } from "fastify";
 import { type Kysely, sql } from "kysely";
-import type { Tokens } from "../api/tokens.js";
 import { isFresh, refuseStale } from "../auth/fresh.js";
 import { sessionOf } from "../auth/gate.js";
 import { MAX_SUBJECT_LENGTH } from "../auth/oidc.js";
@@ -53,8 +57,8 @@ export interface KnownUser {
 export interface UsersApiDeps {
   /** Everyone with a live session or a live token they made, at now. */
   list(now: Date): Promise<KnownUser[]>;
-  sessions: Pick<Sessions, "endAllFor">;
-  tokens: Pick<Tokens, "revokeAllFrom">;
+  /** Ends the sessions and revokes the tokens in one transaction. */
+  sessions: Pick<Sessions, "signOutEverywhere">;
   /** The clock "live" is read on; the real one when left out. */
   now?: () => Date;
 }
@@ -151,7 +155,7 @@ export async function registerUsersApi(
       "/users/sign-out",
       { schema: { body: SIGN_OUT } },
       async (request, reply) => {
-        const { sessions, tokens } = need(deps);
+        const { sessions } = need(deps);
         const { subject, revokeTokens } = request.body;
         // The gate let this request in with a session (session-class route).
         const session = sessionOf(request);
@@ -159,8 +163,10 @@ export async function registerUsersApi(
         if (session === undefined || (subject !== session.subject && !isFresh(session, now))) {
           return refuseStale(reply);
         }
-        const sessionsEnded = await sessions.endAllFor(subject);
-        const tokensRevoked = revokeTokens ? await tokens.revokeAllFrom(subject) : 0;
+        const { sessionsEnded, tokensRevoked } = await sessions.signOutEverywhere(
+          subject,
+          revokeTokens,
+        );
         request.log.info({ sessionsEnded, tokensRevoked }, "app api: signed a user out everywhere");
         return { sessionsEnded, tokensRevoked };
       },

@@ -1,7 +1,9 @@
 // API tokens and the bearer check. A missing or bad token is 401, and tokens
 // keep working while the OIDC provider is down. Each API client, such as a script or an AI assistant on one machine, has its own
-// token, made by createToken and ended by revokeToken (the settings page's
-// routes in app-api/tokens.ts call both; this module has no UI of its own).
+// token, made by createToken or createTokenForSession and ended by
+// revokeToken (the settings page's routes in app-api/tokens.ts make tokens
+// with createTokenForSession and revoke them with revokeToken; this module
+// has no UI of its own).
 //
 // - A token is ph_ followed by 43 base64url characters: 32 random bytes from
 //   the system's CSPRNG. createToken hands it back once and stores only its
@@ -9,8 +11,16 @@
 //   characters, so the list can tell tokens apart; the token itself is never
 //   stored, logged or shown again. It also records who made it, the OIDC
 //   subject and display name of the session (issue #322), so Sign out
-//   everywhere can revoke one user's tokens with revokeAllFrom. A token made
-//   before that was recorded has no maker and is never revoked that way.
+//   everywhere can revoke one user's tokens (auth/sessions.ts
+//   signOutEverywhere). A token made before that was recorded has no maker
+//   and is never revoked that way.
+// - createTokenForSession makes a token for one session and reads that
+//   session's row again under a lock in the same transaction as the insert
+//   (issue #414): it answers "stale", and makes nothing, when the row is gone
+//   or its sign-in is no longer fresh (auth/fresh.ts isFresh). Sign out
+//   everywhere deletes the rows and revokes the tokens in one transaction,
+//   so the two wait for each other: a token made while its maker is signed
+//   out everywhere with the revoke box ticked is either refused or revoked.
 // - authenticate reads the Authorization header strictly: the scheme Bearer
 //   (any case), one space, then the token, with nothing before or after it.
 //   A header that is not token-shaped is refused without a lookup. A
@@ -36,8 +46,14 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
-import type { ApiToken, DB } from "../db/types.js";
-import { type NewToken, type TokenCreator, tokensRepo } from "../repos/tokens.js";
+import { isFresh } from "../auth/fresh.js";
+import type { ApiToken, DB, Session } from "../db/types.js";
+import {
+  type NewToken,
+  type SessionToken,
+  type TokenCreator,
+  tokensRepo,
+} from "../repos/tokens.js";
 import type { AuthHook } from "../uploads/tus.js";
 
 /** Every token starts with these letters. */
@@ -70,12 +86,21 @@ const BEARER_HEADER = /^Bearer ([^\s]+)$/i;
  */
 export interface TokenStore {
   create(input: NewToken): Promise<{ id: string }>;
+  /**
+   * In one transaction: reads the session with this row id under a lock that
+   * Sign out everywhere's delete waits for, and, when it is there and admit
+   * says yes to it as read, stores the token made by that session's subject
+   * and display name; undefined otherwise, and nothing is stored.
+   */
+  createForSession(
+    sessionId: string,
+    input: SessionToken,
+    admit: (session: Session) => boolean,
+  ): Promise<{ id: string } | undefined>;
   /** The live token with this hash; a revoked one is never found. */
   findByHash(hash: Buffer): Promise<ApiToken | undefined>;
   /** False when the token is unknown or already revoked. */
   revoke(id: string): Promise<boolean>;
-  /** Revokes every live token this subject made; returns how many. */
-  revokeForCreator(subject: string): Promise<number>;
   touchLastUsed(id: string, at: Date): Promise<void>;
 }
 
@@ -91,10 +116,20 @@ export interface Tokens {
    * maker is unknown); RangeError for a name outside 1 to 100 characters.
    */
   createToken(name: string, createdBy?: TokenCreator | null): Promise<CreatedToken>;
+  /**
+   * A new token made by the session with this row id, its maker that
+   * session's subject and display name; "stale" when the session is gone or
+   * was signed in longer than TOKEN_SIGN_IN_WINDOW_MS before now, as read
+   * under a lock in the same transaction as the insert (issue #414).
+   * RangeError for a name outside 1 to 100 characters.
+   */
+  createTokenForSession(
+    sessionId: string,
+    name: string,
+    now: Date,
+  ): Promise<CreatedToken | "stale">;
   /** Ends one token; false when it is unknown or already revoked. */
   revokeToken(id: string): Promise<boolean>;
-  /** Ends every live token this subject made (Sign out everywhere); returns how many. */
-  revokeAllFrom(subject: string): Promise<number>;
   /** The live token an Authorization header carries, or undefined. */
   authenticate(authorization: string | string[] | undefined): Promise<ApiToken | undefined>;
 }
@@ -124,9 +159,9 @@ export function dbTokenStore(db: Kysely<DB>): TokenStore {
   const repo = tokensRepo(db);
   return {
     create: (input) => repo.create(input),
+    createForSession: (sessionId, input, admit) => repo.createForSession(sessionId, input, admit),
     findByHash: (hash) => repo.findByHash(hash),
     revoke: (id) => repo.revoke(id),
-    revokeForCreator: (subject) => repo.revokeForCreator(subject),
     touchLastUsed: (id, at) => repo.touchLastUsed(id, at),
   };
 }
@@ -145,25 +180,37 @@ export function createTokens(deps: {
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? ((line: string) => console.warn(line));
 
-  return {
-    async createToken(name, createdBy) {
-      const trimmed = name.trim();
-      if (trimmed === "" || trimmed.length > MAX_TOKEN_NAME_LENGTH) {
-        throw new RangeError(`A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters`);
-      }
-      const token = generateToken();
-      const row = await store.create({
+  /** A new token and what the store keeps of it; RangeError for a name out of bounds. */
+  function newToken(name: string): { token: string; input: SessionToken } {
+    const trimmed = name.trim();
+    if (trimmed === "" || trimmed.length > MAX_TOKEN_NAME_LENGTH) {
+      throw new RangeError(`A token's name is 1 to ${MAX_TOKEN_NAME_LENGTH} characters`);
+    }
+    const token = generateToken();
+    return {
+      token,
+      input: {
         name: trimmed,
         prefix: token.slice(0, DISPLAY_PREFIX_LENGTH),
         tokenHash: hashToken(token),
-        createdBy: createdBy ?? null,
-      });
+      },
+    };
+  }
+
+  return {
+    async createToken(name, createdBy) {
+      const { token, input } = newToken(name);
+      const row = await store.create({ ...input, createdBy: createdBy ?? null });
       return { id: row.id, token };
     },
 
-    revokeToken: (id) => store.revoke(id),
+    async createTokenForSession(sessionId, name, at) {
+      const { token, input } = newToken(name);
+      const row = await store.createForSession(sessionId, input, (session) => isFresh(session, at));
+      return row === undefined ? "stale" : { id: row.id, token };
+    },
 
-    revokeAllFrom: (subject) => store.revokeForCreator(subject),
+    revokeToken: (id) => store.revoke(id),
 
     async authenticate(authorization) {
       const presented = bearerToken(authorization);

@@ -541,7 +541,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         settings: { settings: repos.settings, estimates },
         tokens: { tokens, list: dbTokenList(db) },
         organise: { db, trash },
-        users: { list: dbUserList(db), sessions, tokens },
+        users: { list: dbUserList(db), sessions },
       } satisfies AppApiDeps,
       // The Activity page: read-only numbers, queues, slicer health and events.
       activity: createAppActivity({

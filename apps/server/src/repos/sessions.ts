@@ -1,10 +1,18 @@
 import type { Kysely } from "kysely";
+import { inTransaction } from "../db/kysely.js";
 import type { DB, Session } from "../db/types.js";
+import { tokensRepo } from "./tokens.js";
 
 // Login sessions behind the __Host-ph_session cookie. The id is the base64url
 // SHA-256 of the cookie value (auth/sessions.ts's sessionRowId), made by the
 // caller, never the cookie value itself; it is 43 characters, and the
 // schema refuses any other shape.
+
+/** What Sign out everywhere did: sessions deleted and tokens revoked. */
+export interface SignedOut {
+  sessionsEnded: number;
+  tokensRevoked: number;
+}
 
 export interface NewSession {
   id: string;
@@ -52,13 +60,29 @@ export function sessionsRepo(db: Kysely<DB>) {
       return result.numDeletedRows > 0n;
     },
 
-    /** Ends every session of one subject (Sign out everywhere); returns how many. */
+    /** Deletes every session of one subject; returns how many. */
     async deleteForSubject(subject: string): Promise<number> {
       const result = await db
         .deleteFrom("sessions")
         .where("subject", "=", subject)
         .executeTakeFirst();
       return Number(result.numDeletedRows);
+    },
+
+    /**
+     * Sign out everywhere, in one transaction: deletes every session of the
+     * subject, then, with revokeTokens, revokes every live token they made.
+     * The delete waits for a token creation holding one of those rows
+     * (repos/tokens.ts createForSession) to commit, so the revoke after it
+     * finds that token; a creation that reaches a row after the delete waits
+     * for this commit and finds no session.
+     */
+    async signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut> {
+      return inTransaction(db, async (trx) => {
+        const sessionsEnded = await sessionsRepo(trx).deleteForSubject(subject);
+        const tokensRevoked = revokeTokens ? await tokensRepo(trx).revokeForCreator(subject) : 0;
+        return { sessionsEnded, tokensRevoked };
+      });
     },
   };
 }
