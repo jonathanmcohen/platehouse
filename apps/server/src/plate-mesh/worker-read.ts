@@ -17,7 +17,7 @@
 //   machine is doing. A worker's failure ends only that worker. The heap
 //   limit does not cap the worker's whole memory, though: its mesh arrays
 //   and the zip reader's entry records are outside the heap. So the whole
-//   of one read is bounded as PLATE_MESH_READ_PEAK_MB (plate-mesh.ts), and
+//   of one read is bounded as PLATE_MESH_READ_PEAK_MB (memory/peaks.ts), and
 //   the reads that run at once (PLATE_MESH_BUILDS) are sized against the
 //   container's memory limit, past which the kernel would end the whole
 //   server, not one worker.
@@ -64,7 +64,7 @@ export const PLATE_MESH_TIMEOUT_MS = 60_000;
  * V8 heap only. The reader's mesh arrays (ArrayBuffers) and the zip
  * reader's entry records (Buffers) are stored outside it, and Node does
  * not count them against the worker, so they are bounded elsewhere: see
- * PLATE_MESH_READ_PEAK_MB in plate-mesh.ts.
+ * PLATE_MESH_READ_PEAK_MB in memory/peaks.ts.
  */
 export const PLATE_MESH_WORKER_LIMITS: Readonly<ResourceLimits> = Object.freeze({
   maxOldGenerationSizeMb: 512,

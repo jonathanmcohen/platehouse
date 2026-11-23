@@ -13,11 +13,11 @@
 //
 // A STEP preview reads its whole mesh into the app's memory, so it shares
 // the process's memory gate with the plate mesh builds (review of PR #409;
-// plate-mesh/limit.ts, memoryGate), and at most one of them holds its peak
+// memory/gate.ts, memoryGate), and at most one of them holds its peak
 // at a time:
 // - A mesh stored larger than PREVIEW_MESH_MAX_BYTES is refused from its
-//   recorded size, before it is read and before the gate is asked for, so
-//   the read's peak is bounded: STEP_PREVIEW_PEAK_MB, which the memory
+//   recorded size (a mesh with no recorded size is refused too), before it is read and before the gate is asked for, so
+//   the read's peak is bounded: STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the memory
 //   budget counts (test/compose-example.test.ts).
 // - Inside the gate (hold) the mesh is read, turned into an STL and written
 //   to a temp folder of its own under tmpDir; then the gate is let go and
@@ -58,14 +58,6 @@ const MIB = 1024 * 1024;
  * spends 50, so a mesh over 256 MiB would make an STL over the same limit.
  */
 export const PREVIEW_MESH_MAX_BYTES = LIMITS.stlBodyBytes;
-
-/**
- * The most memory, in MiB, a STEP preview's mesh read holds at once: the
- * mesh's chunks and their joined copy while Buffer.concat runs (readAll in
- * derived.ts), twice PREVIEW_MESH_MAX_BYTES, so 512 MiB. The STL is made a
- * chunk at a time and written to disk, never held.
- */
-export const STEP_PREVIEW_PEAK_MB = (2 * PREVIEW_MESH_MAX_BYTES) / MIB;
 
 /** Posts an STL to /v1/stl/png; OpenSCAD's refusal comes back after the preview sentence. */
 async function postPreview(
@@ -111,13 +103,13 @@ export async function stlPreviewOutputs(
 
 /** What a STEP file's preview is made from, and how its memory is gated. */
 export interface MeshPreviewInput {
-  /** The stored mesh's size in bytes, from its blob row. */
-  size: number;
+  /** The stored mesh's size in bytes, from its blob row; null when the row has none. */
+  size: number | null;
   /** Reads the whole stored mesh. */
   read: () => Promise<Buffer>;
   /**
    * Runs task, the part that holds the mesh in memory, under the memory gate
-   * (plate-mesh/limit.ts, memoryGate), resolving with its result.
+   * (memory/gate.ts, memoryGate), resolving with its result.
    */
   hold: <T>(task: () => Promise<T>) => Promise<T>;
   /** TMP_DIR: the STL is written to a folder of its own here while it is sent. */
@@ -132,6 +124,11 @@ export async function meshPreviewOutputs(
   input: MeshPreviewInput,
 ): Promise<RenderOutput[]> {
   const limit = input.limit ?? LIMITS.stlBodyBytes;
+  if (input.size === null) {
+    throw new RenderFailed(
+      `${DERIVED_MESSAGES.previewFailed} The mesh's size is not recorded, so it cannot be checked before it is read.`,
+    );
+  }
   if (input.size > PREVIEW_MESH_MAX_BYTES) {
     throw new RenderFailed(
       `${DERIVED_MESSAGES.previewFailed} The mesh is too large to preview: ${Math.ceil(input.size / MIB)} MiB, over the ${Math.floor(PREVIEW_MESH_MAX_BYTES / MIB)} MiB a preview reads.`,

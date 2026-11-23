@@ -390,7 +390,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       sliceTimeoutMs: sliceTimeoutMs(config.slicer.plateSeconds),
     });
     // A STEP preview's mesh read and the plate mesh builds (below) share the
-    // process's one memory gate (plate-mesh/limit.ts), which both use when
+    // process's one memory gate (memory/gate.ts), which both use when
     // given none.
     const derived = createDerived({
       db,

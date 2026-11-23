@@ -207,7 +207,7 @@ import {
   type StoredFile,
 } from "../ingest/ingest.js";
 import { QUEUE, SLICER_RETRY, type SlicerJobHandlers } from "../jobs/queues.js";
-import { type BuildQueue, memoryGate } from "../plate-mesh/limit.js";
+import { type BuildQueue, memoryGate } from "../memory/gate.js";
 import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
@@ -366,7 +366,7 @@ export interface DerivedDeps {
   backfillBatch?: number;
   /**
    * The queue a STEP preview's mesh read runs through; the process's
-   * memoryGate (plate-mesh/limit.ts), shared with the plate mesh builds,
+   * memoryGate (memory/gate.ts), shared with the plate mesh builds,
    * when left out.
    */
   memoryGate?: BuildQueue;
@@ -932,7 +932,7 @@ export function createDerived(deps: DerivedDeps) {
    * size. A mesh is read only under the process's memory gate, shared with
    * the plate mesh builds, and only when its recorded size is at most
    * PREVIEW_MESH_MAX_BYTES (preview.ts), so the read's peak is
-   * STEP_PREVIEW_PEAK_MB, which the app's memory budget counts (2g in the
+   * STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the app's memory budget counts (2g in the
    * example Compose file; test/compose-example.test.ts). The STL made from
    * it is written to a temp file a chunk at a time (mesh.ts), never held.
    */
@@ -1664,7 +1664,7 @@ export function createDerived(deps: DerivedDeps) {
           break;
         case DERIVED_KINDS.previewStep: {
           // The mesh is read only under the memory gate, shared with the
-          // plate mesh builds (plate-mesh/limit.ts), run first so it waits
+          // plate mesh builds (memory/gate.ts), run first so it waits
           // for the one job running and no more. The gate is asked for
           // before anything is sent to the slicer and let go before the STL
           // is sent (preview.ts), so the preview never holds the slicer
@@ -1673,11 +1673,11 @@ export function createDerived(deps: DerivedDeps) {
           // longer the file's is Superseded and the job has nothing to do.
           const meshKey = mesh?.key ?? "";
           outputs = await meshPreviewOutputs(target, {
-            size: mesh?.size ?? 0,
+            size: mesh?.size ?? null,
             read: () => readAll(meshKey),
             hold: (task) =>
               gate.run(
-                `step-preview:${file.id}`,
+                `step-preview:${selfJobId ?? uuidv7()}`,
                 async () => {
                   const now = await repos.files.get(file.id);
                   if (now === undefined || now.blobId !== source.id || now.meshBlobId !== meshId) {

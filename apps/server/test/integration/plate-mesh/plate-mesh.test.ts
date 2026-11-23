@@ -14,12 +14,10 @@ import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { registerPlateMeshApi } from "../../../src/app-api/plate-mesh.js";
-import { memoryGate } from "../../../src/plate-mesh/limit.js";
+import { memoryGate, PLATE_MESH_BUILDS, PLATE_MESH_WAITING } from "../../../src/memory/gate.js";
 import {
   createPlateMeshes,
-  PLATE_MESH_BUILDS,
   PLATE_MESH_BUSY_RETRY_MS,
-  PLATE_MESH_WAITING,
   type PlateMeshStore,
 } from "../../../src/plate-mesh/plate-mesh.js";
 import { PLATE_MESH_TIMEOUT_MS } from "../../../src/plate-mesh/worker-read.js";

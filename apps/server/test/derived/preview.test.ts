@@ -24,10 +24,10 @@ import {
   type MeshPreviewInput,
   meshPreviewOutputs,
   PREVIEW_MESH_MAX_BYTES,
-  STEP_PREVIEW_PEAK_MB,
   stlPreviewOutputs,
 } from "../../src/derived/preview.js";
-import { memoryGate } from "../../src/plate-mesh/limit.js";
+import { memoryGate } from "../../src/memory/gate.js";
+import { STEP_PREVIEW_PEAK_MB } from "../../src/memory/peaks.js";
 import { stubGlb } from "../support/slicer-stub.js";
 
 let server: Server | undefined;
@@ -244,6 +244,33 @@ describe("a STEP file's preview, from its stored mesh", () => {
     expect(held).toBe(false);
   });
 
+  test("a mesh whose blob row has no size is refused, and is never read or held", async () => {
+    let read = false;
+    let held = false;
+    const error = await failure(
+      meshPreviewOutputs(
+        NOWHERE,
+        mesh(stubGlb("mesh"), {
+          size: null,
+          read: async () => {
+            read = true;
+            return stubGlb("mesh");
+          },
+          hold: (task) => {
+            held = true;
+            return task();
+          },
+        }),
+      ),
+    );
+    expect(error).toBeInstanceOf(RenderFailed);
+    const message = (error as Error).message;
+    expect(message.startsWith(`${DERIVED_MESSAGES.previewFailed} `)).toBe(true);
+    expect(message).toMatch(/size/i);
+    expect(read).toBe(false);
+    expect(held).toBe(false);
+  });
+
   test("its peak is the mesh's chunks and their joined copy: twice PREVIEW_MESH_MAX_BYTES", () => {
     expect(PREVIEW_MESH_MAX_BYTES).toBe(LIMITS.stlBodyBytes);
     expect(STEP_PREVIEW_PEAK_MB).toBe((2 * PREVIEW_MESH_MAX_BYTES) / (1024 * 1024));
@@ -254,7 +281,7 @@ describe("a STEP file's preview, from its stored mesh", () => {
 const settleLong = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 // The 0.1.1 memory gate (review of PR #409): a STEP preview's mesh read and
-// the plate mesh builds share one gate (plate-mesh/limit.ts, memoryGate), so
+// the plate mesh builds share one gate (memory/gate.ts, memoryGate), so
 // at most one of them holds its memory at a time. The preview holds the gate
 // only while it reads the mesh and writes the STL to a temp file, never
 // while it sends it, so it never holds the slicer while it waits for the

@@ -29,7 +29,7 @@ import {
   RENDER_CHECK_GRACE_MS,
 } from "../../../src/derived/derived.js";
 import { QUEUE, SLICER_RETRY } from "../../../src/jobs/queues.js";
-import { memoryGate } from "../../../src/plate-mesh/limit.js";
+import { memoryGate } from "../../../src/memory/gate.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../../../src/storage/s3.js";
 import { renderedBytes } from "../../support/slicer-stub.js";
 import {
@@ -1047,6 +1047,24 @@ describe("a STEP preview picture left pending with no job behind it is settled",
         expect(await run).toEqual({ status: "ok" });
         expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(before + 1);
         expect(await env.repos.files.get(fileId)).toMatchObject({ previewStatus: "ok" });
+      } finally {
+        gate.release();
+      }
+    });
+
+    test("two previews of the same file from two jobs use a key each, so both run", async () => {
+      const { derived, job } = await meshWithHeldPreview("gate, two jobs");
+      const before = env.stub.renders.callsTo("/v1/stl/png").length;
+      const gate = holdGate();
+      try {
+        const runs = ["job-a", "job-b"].map((jobId) =>
+          derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit, jobId }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        gate.release();
+        await gate.held;
+        expect(await Promise.all(runs)).toEqual([{ status: "ok" }, { status: "ok" }]);
+        expect(env.stub.renders.callsTo("/v1/stl/png")).toHaveLength(before + 2);
       } finally {
         gate.release();
       }

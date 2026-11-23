@@ -19,7 +19,7 @@
 //                                  503 {error: "busy", message}, with
 //                                  Retry-After: 5: the server is already
 //                                  making as many 3D views as it will hold
-//                                  (plate-mesh/limit.ts); nothing was started
+//                                  (memory/gate.ts); nothing was started
 //
 // - The browser going away (its fetch aborted, the connection closed) aborts
 //   the signal handed to the service, so a build of this plate that is still
@@ -35,7 +35,7 @@
 import { type PlateMeshProblem, ReadUnavailable } from "@platehouse/threemf";
 import type { FastifyInstance } from "fastify";
 import { isUuid } from "../db/ids.js";
-import { BuildQueueBusy } from "../plate-mesh/limit.js";
+import { BuildQueueBusy } from "../memory/gate.js";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
 import { BLOB_PREFIX } from "./library.js";
 

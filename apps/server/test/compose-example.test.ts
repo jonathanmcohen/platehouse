@@ -13,12 +13,12 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PLATE_MESH_LIMITS } from "@platehouse/threemf";
 import { describe, expect, test } from "vitest";
-import { STEP_PREVIEW_PEAK_MB } from "../src/derived/preview.js";
+import { PLATE_MESH_BUILDS } from "../src/memory/gate.js";
 import {
   MEMORY_GATE_PEAK_MB,
-  PLATE_MESH_BUILDS,
   PLATE_MESH_READ_PEAK_MB,
-} from "../src/plate-mesh/plate-mesh.js";
+  STEP_PREVIEW_PEAK_MB,
+} from "../src/memory/peaks.js";
 import { PLATE_MESH_WORKER_LIMITS } from "../src/plate-mesh/worker-read.js";
 import { MAX_UPLOAD_BYTES } from "../src/uploads/tus.js";
 
@@ -129,7 +129,7 @@ describe("the platehouse service's memory holds its plate mesh reads", () => {
 
   // Review of PR #409: a STEP file's preview reads its whole mesh into the
   // app too (derived/preview.ts). It goes through the same gate as the plate
-  // reads (plate-mesh/limit.ts, memoryGate), so each of the gate's
+  // reads (memory/gate.ts, memoryGate), so each of the gate's
   // PLATE_MESH_BUILDS places holds a plate read or a STEP preview, never
   // both, and must fit the larger of the two.
   test("a place in the memory gate fits a plate read or a STEP preview's mesh read", () => {
