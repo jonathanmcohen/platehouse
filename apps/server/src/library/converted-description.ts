@@ -12,13 +12,28 @@ export const MAX_DESCRIPTION_CODE_POINTS = 200_000;
 export function convertedDescription(html: string | null): string {
   if (!html) return "";
   const markdown = htmlToMarkdown(html).trim();
+  return fits(markdown) ? markdown : "";
+}
+
+/** True when text is at most MAX_DESCRIPTION_CODE_POINTS code points. */
+export function fits(text: string): boolean {
   // Every code point is at most 2 UTF-16 units, so a shorter string fits.
-  if (markdown.length > MAX_DESCRIPTION_CODE_POINTS) {
-    let count = 0;
-    for (const _ of markdown) {
-      count += 1;
-      if (count > MAX_DESCRIPTION_CODE_POINTS) return "";
-    }
+  if (text.length <= MAX_DESCRIPTION_CODE_POINTS) return true;
+  let count = 0;
+  for (const _ of text) {
+    count += 1;
+    if (count > MAX_DESCRIPTION_CODE_POINTS) return false;
   }
-  return markdown;
+  return true;
+}
+
+/**
+ * The description as stored: the text, then the licence note after a blank
+ * line, a blank part left out. When the note would take the whole over the
+ * limit, the note alone is left out (the licence note column still holds it),
+ * so what is stored always fits.
+ */
+export function joinWithNote(markdown: string, note: string | null | undefined): string {
+  const withNote = [markdown, note ?? ""].filter((p) => p !== "").join("\n\n");
+  return fits(withNote) ? withNote : markdown;
 }

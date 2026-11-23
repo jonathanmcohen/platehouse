@@ -68,7 +68,7 @@ import {
 } from "@platehouse/makerworld";
 import { ReadUnavailable, readMakerWorldXml } from "@platehouse/threemf";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
-import { convertedDescription } from "./converted-description.js";
+import { convertedDescription, joinWithNote } from "./converted-description.js";
 import { descriptionSha256 } from "./description-hash.js";
 
 export { descriptionSha256 };
@@ -201,8 +201,7 @@ export function composeDescription(
   note: string | null,
   withNote: boolean,
 ): string {
-  const parts = [markdown, withNote && note?.trim() ? note : ""].filter((p) => p !== "");
-  return parts.join("\n\n");
+  return joinWithNote(markdown, withNote && note?.trim() ? note : null);
 }
 
 /** The current converter's text, trimmed as ingest stores it. */

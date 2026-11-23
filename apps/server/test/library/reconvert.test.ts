@@ -58,6 +58,13 @@ function reader(texts: Record<string, SourceText | null>) {
 }
 
 describe("composeDescription", () => {
+  test("leaves the note out when it would take the stored text over 200,000 code points", () => {
+    const text = "a".repeat(199_995);
+    expect(composeDescription(text, NOTE, true)).toBe(text);
+    const small = "a".repeat(100_000);
+    expect(composeDescription(small, NOTE, true)).toBe(`${small}\n\n${NOTE}`);
+  });
+
   test("is what fillMetadata stores: the text, then the note after a blank line", () => {
     expect(composeDescription("Text", NOTE, true)).toBe(`Text\n\n${NOTE}`);
     expect(composeDescription("Text", NOTE, false)).toBe("Text");
