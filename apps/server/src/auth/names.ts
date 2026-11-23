@@ -22,10 +22,10 @@ function spaceControls(text: string): string {
  * are not direction controls, and Persian, some Indic scripts and emoji
  * sequences need them to be written correctly.
  */
-const FORMAT_CHARACTERS = /(?![‌‍])\p{Cf}/gu;
+const FORMAT_CHARACTERS = /(?![\u200c\u200d])\p{Cf}/gu;
 
 /** Joiners alone draw nothing, so a name of only those is no name. */
-const ONLY_JOINERS = /^[‌‍]+$/u;
+const ONLY_JOINERS = /^[\u200c\u200d]+$/u;
 
 /**
  * A name with control and format characters taken out, white space trimmed

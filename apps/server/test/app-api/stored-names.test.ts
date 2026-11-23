@@ -12,7 +12,7 @@ import { SESSION_COOKIE, type Sessions } from "../../src/auth/sessions.js";
 const ORIGIN = "https://platehouse.test";
 const START = new Date("2026-11-23T12:00:00.000Z");
 const COOKIE = "a".repeat(43);
-const OVERRIDDEN = "Synthetic ‮Override⁦ Person";
+const OVERRIDDEN = "Synthetic \u202eOverride\u2066 Person";
 const CLEANED = "Synthetic Override Person";
 
 async function server() {
@@ -65,7 +65,7 @@ async function server() {
         createdAt: START,
         lastUsedAt: null,
         createdBySubject: "subject-c",
-        createdByName: "‮‏",
+        createdByName: "\u202e\u200f",
       },
     ],
     now: () => START,
@@ -73,7 +73,7 @@ async function server() {
   await registerUsersApi(app, {
     list: async () => [
       { subject: "subject-b", name: OVERRIDDEN, sessions: 1, tokens: 1 },
-      { subject: "subject-c", name: "‮‏", sessions: 1, tokens: 0 },
+      { subject: "subject-c", name: "\u202e\u200f", sessions: 1, tokens: 0 },
     ],
     sessions,
     now: () => START,
