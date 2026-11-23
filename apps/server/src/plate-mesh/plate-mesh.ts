@@ -361,6 +361,9 @@ export function createPlateMeshes(deps: PlateMeshDeps): AppPlateMeshes {
           const now = await lookup(row.id);
           if (now === undefined) return NOT_FOUND;
           if (now.meshId !== null) return { status: "ok", blobId: now.meshId };
+          // Another plate of the file may have timed out meanwhile.
+          const known = problems.lookup(now.id, now.sourceBlobId);
+          if (known !== undefined) return { status: "no_mesh", problem: known };
           return make(now);
         },
         signal,

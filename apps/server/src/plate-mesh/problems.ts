@@ -11,6 +11,9 @@
 //   costs one timeout, not one per plate. A second one for the same blob is
 //   kept for good, for every plate of it.
 //
+// Strikes are not reset by a later success, and forgetting an entry (it is
+// the oldest past the maximum) resets that file's count.
+//
 // The memory is one process's and holds at most REMEMBERED_PROBLEMS entries
 // (a plate or a file each); the oldest is forgotten first.
 import type { PlateMeshError, PlateMeshProblem } from "@platehouse/threemf";
@@ -57,6 +60,9 @@ export function createProblemMemory(opts: {
     remember(plateId, blobId, error) {
       if (error instanceof PlateMeshBusy) {
         const before = entries.get(`blob:${blobId}`);
+        // A timeout inside the window of an earlier one (a build that was
+        // already running or queued) is the same incident, not a second strike.
+        if (before?.kind === "busy" && opts.now() < before.until) return;
         const strikes = before?.kind === "busy" ? before.strikes + 1 : 1;
         put(`blob:${blobId}`, {
           kind: "busy",

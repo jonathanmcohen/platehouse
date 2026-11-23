@@ -54,6 +54,15 @@ describe("the problem memory", () => {
     expect(mem.lookup("p9", "blob-a")).toBe("too_large");
   });
 
+  test("a busy verdict remembered twice inside the window stays temporary", () => {
+    const { clock, mem } = memory();
+    mem.remember("p1", "blob-a", new PlateMeshBusy("timed out"));
+    clock.t += 1000;
+    mem.remember("p2", "blob-a", new PlateMeshBusy("timed out too"));
+    clock.t += PLATE_MESH_BUSY_RETRY_MS;
+    expect(mem.lookup("p1", "blob-a")).toBeUndefined();
+  });
+
   test("a busy verdict for one file does not answer for the same plate once its file is another", () => {
     const { mem } = memory();
     mem.remember("p1", "blob-a", new PlateMeshBusy("timed out"));
