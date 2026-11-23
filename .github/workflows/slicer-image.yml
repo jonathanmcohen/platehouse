@@ -21,16 +21,17 @@
 #   the daily run asks the registry.
 # - on a pushed release tag v*.*.*, at the latest Orca release, so a change to
 #   the slicer wrapper ships with the release. It always builds. A prerelease
-#   tag (v0.1.0-rc.1) publishes orca-X.Y.Z and its run tag but
-#   leaves stable alone (the maintainer, 2026-11-15); a plain vX.Y.Z tag moves it. The
-#   daily run never promotes such a version, as its orca-X.Y.Z exists; the
-#   run's summary says so.
+#   tag (v0.1.0-rc.1) publishes only its run tag and its X.Y.Z-rc.N version
+#   tag, and leaves orca-X.Y.Z and stable alone (the maintainer, 2026-11-15;
+#   issue #435); a plain vX.Y.Z tag moves both. The next daily run builds
+#   that Orca version when its orca-X.Y.Z does not exist yet, and moves both;
+#   the run's summary says so.
 # - by hand (workflow_dispatch), at orca_version when given, else the latest
 #   release. It must be started from main or a release tag (like release.yml,
 #   it refuses any other branch before anything is built, so unreviewed slicer
 #   code never reaches stable); from main or a plain vX.Y.Z tag it always
-#   builds and moves stable, from a prerelease tag it leaves stable alone, as
-#   a push of that tag would. force_fail fails the smoke
+#   builds and moves stable, from a prerelease tag it leaves orca-X.Y.Z and
+#   stable alone, as a push of that tag would. force_fail fails the smoke
 #   slice on purpose after it ran, to test the failure path.
 #   GitHub runs a schedule or a dispatch only for a workflow file on the
 #   default branch, so neither works until this file reaches main.
@@ -58,14 +59,14 @@
 # the image a second time, by digest and with no tag, and its manifest digest
 # (docker/build-push-action's digest output, never imageid; PR #217) must
 # equal the tested build's, or the job fails before any tag. Then orca-X.Y.Z
-# and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
+# (not on a prerelease tag) and the run tag, orca-X.Y.Z-r<run number> (orca-X.Y.Z-r<run number>.<attempt>
 # on a re-run, which keeps the run number; issue #221), are pointed at that
 # digest and read back, and
-# only then stable (not on a prerelease tag).
+# only then stable (neither orca-X.Y.Z nor stable on a prerelease tag).
 #
 # The release's version tag. A run started from a release tag vX.Y.Z or
 # vX.Y.Z-rc.N (its push, a re-run of it, or a run by hand from that tag) also
-# tags the image X.Y.Z or X.Y.Z-rc.N, in the same create as the orca tags,
+# tags the image X.Y.Z or X.Y.Z-rc.N, in the same create as the run tag,
 # so the build made for a release can be found afterwards by the same name as
 # the app image's platehouse:X.Y.Z. Daily runs and runs from main tag no
 # version. This workflow never moves rc: .github/workflows/rc-tag.yml runs
@@ -82,7 +83,7 @@
 # tag. A failure inside it (a readback, or a passing GHCR error) can leave
 # orca-X.Y.Z, and stable if it had got that far, at the new digest; the step
 # records the tags it reached and the failure issue lists them. The daily run
-# then sees orca-X.Y.Z and never retries, so the issue says to run by hand.
+# then sees orca-X.Y.Z (if it was made) and never retries, so the issue says to run by hand.
 #
 # Rollback: README.md, "Slicer image". Point stable back at the previous
 # orca-X.Y.Z with the same imagetools command.
@@ -605,8 +606,8 @@ jobs:
       # 5) The version tags (orca-X.Y.Z unless this is a prerelease tag's run
       #    (MOVE_ORCA false), the run tag and, on a run from a release tag,
       #    the release's version RELEASE), read back; then stable, read back,
-      #    unless this is a prerelease tag's run (MOVE_STABLE false). A carbon copy each (--prefer-index=false), so
-      #    every tag is the tested digest.
+      #    unless this is a prerelease tag's run (MOVE_STABLE false). A carbon
+      #    copy each (--prefer-index=false), so every tag is the tested digest.
       - name: Tag the image and move stable
         id: tag
         env:
