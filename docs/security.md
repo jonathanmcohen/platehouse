@@ -101,24 +101,41 @@ location /auth/ {
 
 With Traefik, add a second router for the `/auth/` path prefix with a `ratelimit` middleware,
 next to the router in the [Traefik guide](./reverse-proxy/traefik.md). Its rule is longer, so
-Traefik picks it over the main router for those paths:
+Traefik picks it over the main router for those paths. A router runs only its own middlewares, so
+this chain repeats the main router's IP allowlist first; without it, `/auth/` would be outside the
+allowlist. If you do not use the allowlist, take `platehouse-allowlist,` out of the chain:
 
 ```yaml
 traefik.http.routers.platehouse-auth.rule: Host(`platehouse.example.com`) && PathPrefix(`/auth/`)
 traefik.http.routers.platehouse-auth.entrypoints: websecure
 traefik.http.routers.platehouse-auth.tls: "true"
 traefik.http.routers.platehouse-auth.tls.certresolver: letsencrypt
-traefik.http.routers.platehouse-auth.middlewares: platehouse-auth-limit,platehouse-headers
+traefik.http.routers.platehouse-auth.middlewares: platehouse-allowlist,platehouse-auth-limit,platehouse-headers
 traefik.http.routers.platehouse-auth.service: platehouse
 traefik.http.middlewares.platehouse-auth-limit.ratelimit.average: "10"
 traefik.http.middlewares.platehouse-auth-limit.ratelimit.period: 1m
 traefik.http.middlewares.platehouse-auth-limit.ratelimit.burst: "10"
 ```
 
-If you use the IP allowlist, put it first in this router's chain too. Both examples count the
-connection's own address. If another proxy, such as a load balancer, sits in front, they would
-count every visitor as that one proxy: set up nginx's `realip` module, or the middleware's
-`sourceCriterion.ipStrategy` in Traefik, to trust it.
+Both examples count the connection's own address, which is the visitor's when nothing sits in
+front of your proxy.
+
+If another proxy, such as a load balancer or a tunnel, sits in front of yours, every connection
+comes from that one proxy, so every visitor shares one limit (and one allowlist entry). Then:
+
+- **Trust only the front proxy's address.** Read the visitor's address from `X-Forwarded-For`
+  only on connections from the front proxy, never from anyone else: from anyone else, the header
+  says whatever the client put in it. With nginx, use the `realip` module:
+  `set_real_ip_from` with the front proxy's address only, and `real_ip_header X-Forwarded-For`.
+  With Traefik, list only the front proxy's address in the entrypoint's
+  `forwardedHeaders.trustedIPs` (Traefik drops forwarded headers from any other address), then
+  give the rate limit's `sourceCriterion.ipStrategy` and the allowlist's `ipStrategy` a `depth` of
+  `1`, so they use the address the front proxy saw.
+- **Check that visitors' own addresses are seen.** From one device, open `/auth/login` more than
+  20 times within a minute until the proxy answers `429`. Then, within the same minute, open it from
+  a device on another network, such as a phone off your Wi-Fi: it should still get through. If it
+  gets `429` too, the proxy is still seeing the front proxy's address, and all your visitors share
+  one limit.
 
 ## Slicer links
 
@@ -127,8 +144,8 @@ Its key is signed with a key derived from `LINK_SECRET`, so it cannot be forged 
 is checked before anything is looked up. A link to a file in the trash stops working.
 
 Anyone who has a live link can download that one file until it expires. Platehouse's own log never
-records links, but your reverse proxy's access log does, so limit who can read that log. The proxy
-should also send `Referrer-Policy: no-referrer`, so a link never leaks in a Referer header.
+records links, but your reverse proxy's access log does, so limit who can read that log. Platehouse
+sends `Referrer-Policy: no-referrer` on every answer, so a link never leaks in a Referer header.
 
 ## The slicer sandbox
 

@@ -33,10 +33,9 @@ server {
     ssl_certificate_key /etc/nginx/certs/platehouse.example.com/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
-    # Security headers. Platehouse sets none of them itself.
+    # HSTS. Platehouse sends its own Content-Security-Policy, Referrer-Policy
+    # and X-Content-Type-Options; do not add those here.
     add_header Strict-Transport-Security "max-age=31536000" always;
-    add_header Referrer-Policy "no-referrer" always;
-    add_header Content-Security-Policy "frame-ancestors 'none'" always;
 
     # Uploads of up to 512 MiB, passed straight through, with time for slow links.
     client_max_body_size    600m;
@@ -84,9 +83,15 @@ server {
 - **`proxy_buffering off` and `gzip off`** on the streaming paths send downloads as they come
   from the bucket. Many distributions turn `gzip on` in `nginx.conf`; the location turns it off
   again for these paths.
-- **`add_header ... always`** sets the headers on error answers too. nginx only inherits
-  `add_header` into a location that has none of its own, so if you add one inside a location,
-  repeat the three security headers there.
+- **`add_header ... always`** sets HSTS on error answers too. nginx only inherits `add_header`
+  into a location that has none of its own, so if you add one inside a location, repeat the HSTS
+  line there.
+- **No `Content-Security-Policy` line.** Platehouse sends its own policy, with
+  `frame-ancestors 'none'`, and its own `Referrer-Policy` and `X-Content-Type-Options`, on every
+  answer, and nginx passes them through. If your configuration has an
+  `add_header Content-Security-Policy` line from an older version of this guide, remove it:
+  nginx would send it as a second policy, and a browser enforces both, so it can only narrow the
+  app's. The old `Referrer-Policy` line can go as well.
 - **The forwarded headers** are for the app's request log. Platehouse builds every link from
   `PUBLIC_ORIGIN`, not from these.
 - **The allowlist** matches the client's own address. If something else sits in front of nginx,

@@ -31,10 +31,9 @@ address.
     SSLCertificateKeyFile /etc/ssl/platehouse/privkey.pem
     SSLProtocol           -all +TLSv1.2 +TLSv1.3
 
-    # Security headers. Platehouse sets none of them itself.
+    # HSTS. Platehouse sends its own Content-Security-Policy, Referrer-Policy
+    # and X-Content-Type-Options; do not set those here.
     Header always set Strict-Transport-Security "max-age=31536000"
-    Header always set Referrer-Policy "no-referrer"
-    Header always set Content-Security-Policy "frame-ancestors 'none'"
 
     # Keep an encoded slash (%2F) encoded and pass it on as sent. Needs
     # "nocanon" on ProxyPass below. Set it here: it is not inherited from
@@ -72,6 +71,12 @@ sudo apachectl configtest && sudo systemctl reload apache2
 
 ## Why it looks like this
 
+- **Only HSTS is set here.** Platehouse sends its own `Content-Security-Policy`, with
+  `frame-ancestors 'none'`, and its own `Referrer-Policy` and `X-Content-Type-Options`, on every
+  answer, and `mod_proxy` passes them through. If your site has a
+  `Header always set Content-Security-Policy` line from an older version of this guide, remove
+  it: Apache would send it beside the app's policy, or in place of it, and either way it can only
+  narrow or replace the app's. The old `Referrer-Policy` line can go as well.
 - **`AllowEncodedSlashes NoDecode` with `nocanon`.** By default Apache refuses any path with
   `%2F` in it with a 404. `NoDecode` lets it through without decoding it, and `nocanon` makes
   `mod_proxy` pass the path to the app exactly as it arrived. Both are needed for API paths with

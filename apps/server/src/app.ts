@@ -73,6 +73,10 @@
 //   Upload-Metadata cut to its key names (not the file name or model id)
 //   and pino redacting Authorization, Cookie and Proxy-Authorization
 //   (LOG_REDACT_PATHS), so no API token or session cookie reaches the log.
+// - Every answer carries the app's Content-Security-Policy, Referrer-Policy
+//   and X-Content-Type-Options (web/security-headers.ts, issue #449),
+//   unless its route set its own; frameworkError sets them on Fastify's own
+//   400 and 414 too. HSTS is left to the TLS-terminating proxy.
 
 import { STATUS_CODES } from "node:http";
 import fastifyCookie from "@fastify/cookie";
@@ -113,6 +117,7 @@ import {
   SLOW_LINK_BYTES_PER_SECOND,
   type Uploads,
 } from "./uploads/tus.js";
+import { addSecurityHeaders, setSecurityHeaders } from "./web/security-headers.js";
 import { defaultWebDir, registerWeb, type WebDeps } from "./web/shell.js";
 
 /** Where the tus upload handler is mounted: one for the UI, one for the Public API v1. */
@@ -408,6 +413,8 @@ async function answers(check: () => Promise<unknown>, ms: number): Promise<boole
  */
 function frameworkError(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   releaseUnreadBody(request, reply);
+  // No onSend hook runs for this answer, so the security headers are set here.
+  setSecurityHeaders(reply);
   if (routeClass(request.url) === "link") {
     return reply.code(403).header("cache-control", "no-store").send();
   }
@@ -437,6 +444,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     frameworkErrors: frameworkError,
   });
 
+  // The CSP, Referrer-Policy and nosniff on every answer (web/security-headers.ts),
+  // added first so every route, scope, refusal and error answer gets them.
+  addSecurityHeaders(app);
   // Cookies are parsed before the gate runs; the login cookie is signed.
   await app.register(fastifyCookie, { secret: auth.cookieSecret });
   // The OpenAPI generator sees every route registered after it.
