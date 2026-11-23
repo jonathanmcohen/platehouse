@@ -37,8 +37,8 @@
 //    of PR #409; memory/gate.ts says how). Opens of the same plate share one
 //    build. A process makes at most PLATE_MESH_BUILDS plates' meshes at
 //    once, STEP previews included (each run holds a temp copy of the .3mf,
-//    and up to PLATE_MESH_READ_PEAK_MB (memory/peaks.ts) of memory while its worker reads it),
-//    at most PLATE_MESH_WAITING
+//    and up to PLATE_MESH_READ_PEAK_MB (memory/peaks.ts) of memory while
+//    its worker reads it), at most PLATE_MESH_WAITING
 //    more wait, and an open past that is refused as busy (503, try again)
 //    with nothing started. A STEP preview that is waiting goes first and
 //    takes no waiting place. A waiting build whose browsers have all gone (the

@@ -932,9 +932,9 @@ export function createDerived(deps: DerivedDeps) {
    * size. A mesh is read only under the process's memory gate, shared with
    * the plate mesh builds, and only when its recorded size is at most
    * PREVIEW_MESH_MAX_BYTES (preview.ts), so the read's peak is
-   * STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the app's memory budget counts (2g in the
-   * example Compose file; test/compose-example.test.ts). The STL made from
-   * it is written to a temp file a chunk at a time (mesh.ts), never held.
+   * STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the app's memory budget
+   * counts (2g in the example Compose file;
+   * test/compose-example.test.ts). The STL made from it is written to a temp file a chunk at a time (mesh.ts), never held.
    */
   async function readAll(key: string): Promise<Buffer> {
     const chunks: Buffer[] = [];

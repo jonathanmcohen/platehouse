@@ -15,10 +15,11 @@
 // the process's memory gate with the plate mesh builds (review of PR #409;
 // memory/gate.ts, memoryGate), and at most one of them holds its peak
 // at a time:
-// - A mesh stored larger than PREVIEW_MESH_MAX_BYTES is refused from its
-//   recorded size (a mesh with no recorded size is refused too), before it is read and before the gate is asked for, so
-//   the read's peak is bounded: STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the memory
-//   budget counts (test/compose-example.test.ts).
+// - A mesh stored larger than PREVIEW_MESH_MAX_BYTES, or with no recorded
+//   size, is refused from its recorded size, before it is read and before
+//   the gate is asked for, so the read's peak is bounded:
+//   STEP_PREVIEW_PEAK_MB (memory/peaks.ts), which the memory budget counts
+//   (test/compose-example.test.ts).
 // - Inside the gate (hold) the mesh is read, turned into an STL and written
 //   to a temp folder of its own under tmpDir; then the gate is let go and
 //   the mesh with it. The STL is sent from the file after that, so the

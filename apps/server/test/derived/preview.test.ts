@@ -266,7 +266,9 @@ describe("a STEP file's preview, from its stored mesh", () => {
     expect(error).toBeInstanceOf(RenderFailed);
     const message = (error as Error).message;
     expect(message.startsWith(`${DERIVED_MESSAGES.previewFailed} `)).toBe(true);
-    expect(message).toMatch(/size/i);
+    expect(message).toBe(
+      `${DERIVED_MESSAGES.previewFailed} The mesh's size is not recorded, so it cannot be checked before it is read.`,
+    );
     expect(read).toBe(false);
     expect(held).toBe(false);
   });
