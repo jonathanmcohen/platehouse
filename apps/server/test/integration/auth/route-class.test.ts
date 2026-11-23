@@ -341,7 +341,7 @@ describe("every registered route", () => {
       cookies: { [SESSION_COOKIE]: sessionCookie },
     });
     expect(page.statusCode).toBe(302);
-    expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login`);
+    expect(page.headers.location).toBe(`${TEST_ORIGIN}/auth/login?next=/no-such-page`);
     expect(api.statusCode).toBe(401);
     expect(signedIn.statusCode).toBe(404);
   });
