@@ -68,6 +68,7 @@ import {
 } from "@platehouse/makerworld";
 import { ReadUnavailable, readMakerWorldXml } from "@platehouse/threemf";
 import { BlobNotFound, StoreError, StoreUnavailable } from "../storage/s3.js";
+import { convertedDescription } from "./converted-description.js";
 import { descriptionSha256 } from "./description-hash.js";
 
 export { descriptionSha256 };
@@ -205,7 +206,7 @@ export function composeDescription(
 }
 
 /** The current converter's text, trimmed as ingest stores it. */
-const convertNow = (html: string | null): string => (html ? htmlToMarkdown(html).trim() : "");
+const convertNow = convertedDescription;
 
 /** True when the description carries the note at its foot, as fillMetadata adds it. */
 function endsWithNote(description: string, note: string | null): boolean {

@@ -149,6 +149,19 @@ describe("the plate list", () => {
     expect(Buffer.from(project.plates[0]?.name ?? "", "utf8")).toEqual(Buffer.from(name, "utf8"));
   });
 
+  it("cuts a plate name to 200 code points, keeping an emoji at the edge whole or dropping it", async () => {
+    const long = await mustRead(build3mf({ plates: [{ index: 1, name: "a".repeat(300) }] }));
+    expect(long.plates[0]?.name).toBe("a".repeat(200));
+    const kept = await mustRead(
+      build3mf({ plates: [{ index: 1, name: `${"a".repeat(199)}\u{1F600}b` }] }),
+    );
+    expect(kept.plates[0]?.name).toBe(`${"a".repeat(199)}\u{1F600}`);
+    const dropped = await mustRead(
+      build3mf({ plates: [{ index: 1, name: `${"a".repeat(200)}\u{1F600}` }] }),
+    );
+    expect(dropped.plates[0]?.name).toBe("a".repeat(200));
+  });
+
   it("decodes XML escapes in plate names", async () => {
     const project = await mustRead(build3mf({ plates: [{ index: 1, name: 'Lid & "base" <v2>' }] }));
     expect(project.plates[0]?.name).toBe('Lid & "base" <v2>');

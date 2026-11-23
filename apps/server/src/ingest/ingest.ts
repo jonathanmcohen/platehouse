@@ -80,6 +80,7 @@ import { makerWorldDesignId, type Project, readProject } from "@platehouse/three
 import { type Kysely, sql, type Transaction } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { BlobKind, DB, FileKind, ParseStatus } from "../db/types.js";
+import { convertedDescription } from "../library/converted-description.js";
 import { createRepos } from "../repos/index.js";
 import type { FoundMetadata } from "../repos/models.js";
 import { blobKey } from "../storage/keys.js";
@@ -280,7 +281,7 @@ function metadataOf(project: Project | null, fileId: string): FoundMetadata {
   const details = xml ? extractMakerWorld(xml) : null;
   if (!xml || details === null) return {};
   const license = mapLicense(details.license);
-  const markdown = details.descriptionHtml ? htmlToMarkdown(details.descriptionHtml).trim() : "";
+  const markdown = convertedDescription(details.descriptionHtml);
   // A footer licence sets no SPDX id. fillMetadata stores it as the licence
   // note whenever the model has none, and adds it at the foot of the
   // description only when the description is empty (the maintainer, 2026-11-08: a
