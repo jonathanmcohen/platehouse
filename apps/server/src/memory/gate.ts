@@ -20,8 +20,9 @@
 // one queue, so at most PLATE_MESH_BUILDS of them hold their peak at once:
 // the plate mesh builds (plate-mesh/plate-mesh.ts) and a STEP file's preview
 // picture, which reads its whole stored mesh into memory
-// (derived/preview.ts). A STEP preview shares the build's place, so with PLATE_MESH_BUILDS at 1 a
-// preview and a plate build never hold their memory at the same time.
+// (derived/preview.ts). A STEP preview shares the build's place, so with
+// PLATE_MESH_BUILDS at 1 a preview and a plate build never hold their memory
+// at the same time.
 // test/compose-example.test.ts checks that one place fits the larger of
 // the two peaks under the app's mem_limit.
 //

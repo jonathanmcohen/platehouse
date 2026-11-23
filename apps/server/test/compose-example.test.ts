@@ -120,8 +120,12 @@ function mebibytes(value: string | undefined): number {
 
 /**
  * What the platehouse service needs beside the reads named in BUDGET: the
- * server's own heap, its requests and its other jobs. An allowance, not a
- * measurement, and not to be shrunk to make a sum fit.
+ * server's own heap, its requests and its other jobs, and the part buffers
+ * of the S3 multipart uploads that store a STEP file's GLB, a render's
+ * picture or STL, and an upload's or inbox file's source (storage/s3.ts
+ * putBlob, lib-storage's defaults: up to 4 parts of 5 MiB in flight, about
+ * 20 MiB an upload). An allowance, not a measurement, and not to be shrunk
+ * to make a sum fit.
  */
 const SERVER_ALLOWANCE_MB = 512;
 
