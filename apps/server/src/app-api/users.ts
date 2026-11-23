@@ -49,6 +49,7 @@ import {
   SESSION_LIMIT_MAX,
   SESSION_LIMIT_WINDOW_MS,
 } from "../auth/limit.js";
+import { cleanName } from "../auth/names.js";
 import { MAX_SUBJECT_LENGTH } from "../auth/oidc.js";
 import type { Sessions } from "../auth/sessions.js";
 import type { DB } from "../db/types.js";
@@ -160,7 +161,12 @@ export async function registerUsersApi(
       const users = await list(now);
       return {
         users: users
-          .map((user) => ({ ...user, you: user.subject === you }))
+          // A name recorded before names were cleaned is cleaned here too.
+          .map((user) => ({
+            ...user,
+            name: user.name === null ? null : cleanName(user.name),
+            you: user.subject === you,
+          }))
           .sort(
             (a, b) =>
               Number(b.you) - Number(a.you) ||

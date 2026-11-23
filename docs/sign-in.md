@@ -51,11 +51,10 @@ and for the token exchange.
 ## The allowed group
 
 Only a user whose `groups` claim holds `OIDC_GROUP` exactly gets in. Everyone else sees a plain
-page saying they are not allowed to use this Platehouse; it does not name the group, so a person
-who is refused learns nothing about how your provider is set up. To let someone in, add them to the group at your provider;
-to take access away, remove them. Platehouse checks the group each time someone signs in, and
-only then. Removing someone stops their next sign-in. If they try to sign in again and
-Platehouse itself refuses them (the provider let them sign in, but they are not in the group,
+page saying they are not allowed to use this Platehouse; the page does not name the group. To let
+someone in, add them to the group at your provider; to take access away, remove them. Platehouse
+checks the group each time someone signs in, and only then. Removing someone stops their next
+sign-in. If they try to sign in again and Platehouse itself refuses them (the provider let them sign in, but they are not in the group,
 their email is not verified, or their user id is too long), the session that browser already had
 ends too, and they are signed out there at once. A refusal at the provider ends nothing: if you
 also limit the client to the group at the provider (Pocket ID's allowed user groups, an Authentik
@@ -125,9 +124,11 @@ update api_tokens set revoked_at = now()
   or a token they made. Each person is named by the name on their newest live session that has
   one; a person with no live session that has a name is named by the name recorded on their newest
   live token, and one with neither is shown by user id alone. The user id is always shown beside
-  the name, since two people can have the same name. Names are cleaned when they are recorded:
-  control characters and invisible text-direction characters are removed, so a name cannot
-  change how the text around it reads.
+  the name, since two people can have the same name. Names are cleaned when they are
+  recorded and again when the list is shown, so one recorded by an earlier release is cleaned too:
+  control characters and invisible text-direction characters are removed (the joiners some
+  scripts need are kept). Settings also sets each name apart from the user id beside it, so a
+  name written right to left does not reorder the text around it.
 - Signing out or revoking refuses new requests at once. A request that is already running, such as
   a long upload, finishes.
 

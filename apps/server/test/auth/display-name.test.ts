@@ -47,4 +47,12 @@ describe("displayNameOf", () => {
     expect(displayNameOf({ name: "\u202e\u2066\u200f" })).toBeNull();
     expect(displayNameOf({ name: "\u202e\u200f", email: "sp@x.test" })).toBe("sp@x.test");
   });
+
+  test("keeps the zero-width non-joiner and joiner, which some scripts and emoji need", () => {
+    expect(displayNameOf({ name: "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645" })).toBe(
+      "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+    );
+    expect(displayNameOf({ name: "a\u200db" })).toBe("a\u200db");
+    expect(displayNameOf({ name: "\u200c\u200d", email: "sp@x.test" })).toBe("sp@x.test");
+  });
 });

@@ -512,7 +512,6 @@ export async function start(config: Config, options: StartOptions = {}): Promise
         sessions,
         publicOrigin: config.publicOrigin,
         absoluteUrl: (path) => config.absoluteUrl(path),
-        group: config.oidc.group,
         cookieSecret: loginCookieKey(config.linkSecret),
       },
       api: { tokens, library: apiLibrary },

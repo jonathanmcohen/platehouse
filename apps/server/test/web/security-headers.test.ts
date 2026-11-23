@@ -112,7 +112,6 @@ async function newApp(): Promise<FastifyInstance> {
       sessions,
       publicOrigin: ORIGIN,
       absoluteUrl: (path) => `${ORIGIN}${path}`,
-      group: "platehouse",
       cookieSecret: Buffer.alloc(32, 7),
     },
     web: { dir: join(dir, "web") },

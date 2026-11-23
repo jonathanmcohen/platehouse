@@ -28,7 +28,7 @@
 //   name the claims give, sets __Host-ph_session and sends the browser to
 //   PUBLIC_ORIGIN/ (or the login's next path on PUBLIC_ORIGIN). A missing,
 //   forged or expired login cookie, or a response that does not check out,
-//   is 400; a user not let in is 403 with the reason (not in the group,
+//   is 400; a user not let in is 403 with the reason (not allowed in, which never names the group,
 //   email not verified, or a user id over MAX_SUBJECT_LENGTH characters,
 //   which the log records by its length, never its value); the issuer
 //   unreachable is 503. A 403 refusal also ends the session the browser
@@ -138,7 +138,6 @@ export interface AuthRouteDeps {
   /** PUBLIC_ORIGIN, scheme and host only: the Origin POST /auth/logout must carry. */
   publicOrigin: string;
   absoluteUrl(path: string): string;
-  group: string;
   now?: () => Date;
   /** The languages, for the pages' words; the built-in languages when left out. */
   locales?: Locales;

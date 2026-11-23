@@ -64,6 +64,7 @@ import {
   SESSION_LIMIT_MAX,
   SESSION_LIMIT_WINDOW_MS,
 } from "../auth/limit.js";
+import { cleanName } from "../auth/names.js";
 import type { ApiToken, DB } from "../db/types.js";
 import { appApiScope, need, refuse } from "./settings.js";
 
@@ -117,7 +118,11 @@ function entry(row: ListedToken) {
     createdBy:
       row.createdBySubject === null
         ? null
-        : { subject: row.createdBySubject, name: row.createdByName },
+        : {
+            subject: row.createdBySubject,
+            // A name recorded before names were cleaned is cleaned here too.
+            name: row.createdByName === null ? null : cleanName(row.createdByName),
+          },
   };
 }
 

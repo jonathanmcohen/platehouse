@@ -185,7 +185,6 @@ describe("the login pages", () => {
         },
         publicOrigin: "https://platehouse.test",
         absoluteUrl: (path) => `https://platehouse.test${path}`,
-        group: "platehouse",
         locales: createLocales(),
       });
       return (await app.inject({ method: "GET", url: "/auth/login", headers })).body;

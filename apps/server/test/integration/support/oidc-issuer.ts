@@ -585,7 +585,6 @@ export async function testAuth(
     sessions,
     publicOrigin: TEST_ORIGIN,
     absoluteUrl: (path) => `${TEST_ORIGIN}${path}`,
-    group: TEST_GROUP,
     cookieSecret: loginCookieKey(randomBytes(32).toString("hex")),
     now: () => clock.now,
   };

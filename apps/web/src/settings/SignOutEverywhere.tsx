@@ -41,15 +41,26 @@ interface SignOutAnswer {
   tokensRevoked: number;
 }
 
+/** First strong isolate and pop directional isolate, around a name in plain text. */
+const ISOLATE_START = "\u2068";
+const ISOLATE_END = "\u2069";
+
 /**
  * How a person is named in Settings: their name with their OIDC subject
  * beside it, so two people with the same name can be told apart, else the
- * subject alone. The token list's "Made by" line uses it too.
+ * subject alone. The name is isolated (first strong isolate to pop
+ * directional isolate), so a name written right to left, or one with an
+ * unclosed direction control, cannot reorder the user id after it. The
+ * token list's "Made by" line, the button's label, the confirmation and the
+ * status line use it; the list row isolates the name with a <bdi> instead.
  */
 export function userLabel(t: I18n["t"], user: { subject: string; name: string | null }): string {
   return user.name === null
     ? user.subject
-    : t("settings.userWithId", { name: user.name, subject: user.subject });
+    : t("settings.userWithId", {
+        name: `${ISOLATE_START}${user.name}${ISOLATE_END}`,
+        subject: user.subject,
+      });
 }
 
 /** Stands for the name while a sentence is split around it; never shown. */
@@ -68,7 +79,7 @@ function UserName({ user }: { user: KnownUser }): ReactNode {
     const label = userLabel(t, user);
     return user.you ? t("signOut.you", { name: label }) : label;
   }
-  const withMark = userLabel(t, { subject: user.subject, name: NAME_MARK });
+  const withMark = t("settings.userWithId", { name: NAME_MARK, subject: user.subject });
   const sentence = user.you ? t("signOut.you", { name: withMark }) : withMark;
   const parts = sentence.split(NAME_MARK);
   return parts.map((part, index) => (

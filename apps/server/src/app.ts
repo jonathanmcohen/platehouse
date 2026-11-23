@@ -153,8 +153,6 @@ export interface AppAuth {
   publicOrigin: string;
   /** Config.absoluteUrl: an absolute URL on PUBLIC_ORIGIN, never from a request. */
   absoluteUrl(path: string): string;
-  /** OIDC_GROUP, named on the refusal page. */
-  group: string;
   /** The login cookie's signing key (loginCookieKey). */
   cookieSecret: Buffer;
   /** The clock for the login cookie's 10 minutes; the real one when left out. */
@@ -567,7 +565,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     sessions: auth.sessions,
     publicOrigin: auth.publicOrigin,
     absoluteUrl: auth.absoluteUrl,
-    group: auth.group,
     ...(auth.now === undefined ? {} : { now: auth.now }),
   });
 

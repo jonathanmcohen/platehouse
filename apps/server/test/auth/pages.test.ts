@@ -42,7 +42,6 @@ async function withAuthApp(
       },
       publicOrigin: "https://platehouse.test",
       absoluteUrl: (path) => `https://platehouse.test${path}`,
-      group: "platehouse",
     });
     await run(app);
   } finally {
@@ -88,7 +87,7 @@ describe("the page for a user not in the group", () => {
         },
       }),
       finish: async () => {
-        throw new LoginError("not_in_group", "not in the group");
+        throw new LoginError("not_in_group", "not in the zz-test-group-41 group");
       },
     };
     await withAuthApp(async (app) => {
@@ -103,8 +102,8 @@ describe("the page for a user not in the group", () => {
       });
       expect(res.statusCode).toBe(403);
       expect(res.body).toContain("Your account is not allowed to use this Platehouse.");
-      expect(res.body).not.toContain("platehouse</");
-      expect(res.body.toLowerCase()).not.toContain(" platehouse group");
+      expect(res.body).not.toContain("zz-test-group-41");
+      expect(JSON.stringify(res.headers)).not.toContain("zz-test-group-41");
       expect(res.body).not.toMatch(/\bgroup\b/);
     }, oidc);
   });

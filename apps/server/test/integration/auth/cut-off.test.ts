@@ -361,7 +361,8 @@ describe("a refused sign-in ends the session the browser holds", () => {
     t.issuer.user = { ...t.issuer.user, sub: "subject-no-cookie", groups: ["other"] };
     const run = await runLogin(t);
     expect(run.callback.statusCode).toBe(403);
-    expect(run.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+    expect(run.callback.body).toContain("Your account is not allowed to use this Platehouse.");
+    expect(run.callback.body).not.toContain(TEST_GROUP);
     expect(setCookie(run.callback, SESSION_COOKIE)).toBeUndefined();
     expect(t.store.rows.size).toBe(1);
     expect((await call("GET", "/app/api/tokens", bystander)).status).toBe(200);
@@ -384,7 +385,8 @@ describe("a refused sign-in ends the session the browser holds", () => {
     t.store.failWith = new Error("the database is down");
     const again = await signInAgain(stale, { groups: ["other"] });
     expect(again.callback.statusCode).toBe(403);
-    expect(again.callback.body).toContain(`not in the ${TEST_GROUP} group`);
+    expect(again.callback.body).toContain("Your account is not allowed to use this Platehouse.");
+    expect(again.callback.body).not.toContain(TEST_GROUP);
     expect(setCookie(again.callback, SESSION_COOKIE)?.attributes.get("max-age")).toBe("0");
     expect(
       lines.some((line) => line.includes("auth: could not end the refused user's session")),
