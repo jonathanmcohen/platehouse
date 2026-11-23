@@ -430,6 +430,19 @@ function frameworkError(error: FastifyError, request: FastifyRequest, reply: Fas
   });
 }
 
+/** Headers a failed route may have set that must not stay on the error answer. */
+const FAILED_ANSWER_HEADERS: readonly string[] = [
+  "content-type",
+  "content-length",
+  "content-disposition",
+  "content-range",
+  "content-encoding",
+  "accept-ranges",
+  "cache-control",
+  "etag",
+  "last-modified",
+];
+
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { auth } = deps;
   const api = deps.api ?? refusingApi;
@@ -455,8 +468,21 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   // host or query reaches the client. The security headers are set by the
   // onSend hook below, which also runs for these answers.
   app.setErrorHandler(async (error: FastifyError, request, reply) => {
-    const status = error.statusCode;
-    if (status !== undefined && status >= 400 && status < 500) {
+    // The status as Fastify's default handler works it out: the error's own,
+    // else one the route already set, else 500.
+    const loose = error as FastifyError & {
+      status?: number;
+      headers?: Record<string, string | number | string[]>;
+    };
+    const own = loose.statusCode ?? loose.status;
+    const set = reply.statusCode;
+    const status =
+      own !== undefined && own >= 400 && own <= 599 ? own : set >= 400 && set <= 599 ? set : 500;
+    // What the failed route had set for its own answer (a static file's type,
+    // length, caching and validators) does not describe this one.
+    for (const name of FAILED_ANSWER_HEADERS) reply.removeHeader(name);
+    if (status < 500) {
+      if (loose.headers !== undefined) reply.headers(loose.headers);
       return reply.code(status).send({
         error: STATUS_CODES[status] ?? "Error",
         code: error.code,
@@ -465,6 +491,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       });
     }
     request.log.error({ err: error }, "app: a request failed");
+    reply.header("cache-control", "no-store");
     if (isStoreOutage(error)) return reply.code(503).send({ error: "unavailable" });
     return reply.code(500).send({ error: "internal" });
   });

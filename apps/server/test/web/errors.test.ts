@@ -4,7 +4,7 @@
 // {error: "unavailable"} as the scoped handlers answer it, anything else is
 // 500 {error: "internal"} with the cause in the log only. Every answer still
 // carries the security headers. Scopes with their own handler are unchanged.
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -164,4 +164,67 @@ describe("the root error handler (issue #455)", () => {
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({ error: "Not Found", statusCode: 404 });
   });
+
+  test("a 416 from /assets/ keeps its Content-Range header", async () => {
+    await writeFile(join(dir, "web", "assets", "a.js"), "export {};\n");
+    const res = await (await newApp()).inject({
+      method: "GET",
+      url: "/assets/a.js",
+      headers: { range: "bytes=9999-" },
+    });
+    expect(res.statusCode).toBe(416);
+    expect(res.headers["content-range"]).toBe("bytes */11");
+    expectSecurityHeaders(res.headers);
+  });
+
+  test("a route that set a 4xx with reply.code() and then threw keeps that status", async () => {
+    const root = await newApp();
+    root.get("/test/conflict", async (_request, reply) => {
+      reply.code(409);
+      throw new Error("/srv/private/detail");
+    });
+    const res = await root.inject({
+      method: "GET",
+      url: "/test/conflict",
+      cookies: { [SESSION_COOKIE]: COOKIE },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().statusCode).toBe(409);
+  });
+
+  test("a route that threw after setting a status and a header keeps neither of the failed answer", async () => {
+    const root = await newApp();
+    root.get("/test/stale", async (_request, reply) => {
+      reply.raw.setHeader("content-type", "text/javascript");
+      reply.raw.setHeader("cache-control", "public, max-age=31536000, immutable");
+      reply.raw.setHeader("etag", '"abc"');
+      throw new Error("/srv/private/detail");
+    });
+    const res = await root.inject({
+      method: "GET",
+      url: "/test/stale",
+      cookies: { [SESSION_COOKIE]: COOKIE },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: "internal" });
+    expect(res.headers["cache-control"]).not.toContain("immutable");
+    expect(res.headers.etag).toBeUndefined();
+    expectSecurityHeaders(res.headers);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "an /assets/ file that can be found but not opened answers 500 {error: internal} and no caching headers",
+    async () => {
+      const file = join(dir, "web", "assets", "locked.js");
+      await writeFile(file, "export {};\n");
+      await chmod(file, 0o000);
+      const res = await (await newApp()).inject({ method: "GET", url: "/assets/locked.js" });
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toEqual({ error: "internal" });
+      expect(res.headers["cache-control"] ?? "").not.toContain("immutable");
+      expect(res.headers.etag).toBeUndefined();
+      expect(res.headers["last-modified"]).toBeUndefined();
+      expectSecurityHeaders(res.headers);
+    },
+  );
 });
