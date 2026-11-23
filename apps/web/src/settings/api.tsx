@@ -53,7 +53,8 @@ export function needsSignIn(failure: unknown): boolean {
 /**
  * The words for each refusal the app API names by code (its error, or a finer
  * code beside it). The English words are the server's own sentences, so an
- * English page reads exactly what the server wrote.
+ * English page reads exactly what the server wrote. rate_limited (the 429 of a
+ * session over its limit) comes with no sentence, so every page shows its words.
  */
 const CODE_KEYS: Readonly<Record<string, MessageKey>> = {
   unknown_printer: "api.unknownPrinter",
@@ -64,6 +65,7 @@ const CODE_KEYS: Readonly<Record<string, MessageKey>> = {
   token_name_length: "api.tokenNameLength",
   titles_not_previewed: "api.titlesNotPreviewed",
   plan_changed: "api.planChanged",
+  rate_limited: "api.rateLimited",
 };
 
 /**

@@ -101,6 +101,8 @@ interface FakeState {
   }>;
   /** When true, a new token is refused because the session's sign-in is too old (issue #322). */
   signInRequired: boolean;
+  /** When true, token creation and Sign out everywhere are over the session's limit (429). */
+  rateLimited: boolean;
   trash: Array<{
     id: string;
     name: string;
@@ -170,6 +172,14 @@ function json(status: number, body?: unknown): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), {
     status,
     headers: body === undefined ? {} : { "content-type": "application/json" },
+  });
+}
+
+/** What the server answers a session over its limit (apps/server/src/auth/limit.ts). */
+function limited(): Response {
+  return new Response(JSON.stringify({ error: "rate_limited" }), {
+    status: 429,
+    headers: { "content-type": "application/json", "retry-after": "540" },
   });
 }
 
@@ -329,6 +339,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   }
   if (method === "GET" && path === "/app/api/tokens") return json(200, { tokens: state.tokens });
   if (method === "POST" && path === "/app/api/tokens") {
+    if (state.rateLimited) return limited();
     // A session signed in too long ago is refused, as the server does (issue #322).
     if (state.signInRequired) {
       return json(403, STALE_ANSWER);
@@ -355,6 +366,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   // Sign out everywhere, as the server does: every session of the user ends,
   // and with revokeTokens every live token they made is revoked.
   if (method === "POST" && path === "/app/api/users/sign-out") {
+    if (state.rateLimited) return limited();
     if (state.signInRequired && body.subject !== "subject-me") return json(403, STALE_ANSWER);
     const user = state.users.find((u) => u.subject === body.subject);
     const sessionsEnded = user?.sessions ?? 0;
@@ -537,6 +549,7 @@ beforeEach(() => {
     ],
     users: [{ subject: "subject-me", name: "Synthetic Me", sessions: 1, tokens: 0, you: true }],
     signInRequired: false,
+    rateLimited: false,
     trash: [
       {
         id: "m-trashed-1",
@@ -1396,6 +1409,38 @@ describe("the settings page", () => {
     const alert = document.querySelector("[data-sign-out-refused]");
     expect(alert?.textContent).toContain("sign in again");
     expect(link("Sign in again").getAttribute("href")).toBe("/auth/login?next=/settings");
+  });
+
+  test("a token refused for too many tries says to wait and try again later", async () => {
+    state.rateLimited = true;
+    await show("/settings", <SettingsPage />);
+    await type(labelled<HTMLInputElement>("Token name"), "Busy script");
+    await click(button("Create token"));
+    expect(callsTo("POST", "/app/api/tokens")).toHaveLength(1);
+    expect(dialog()).toBeNull();
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain(
+      "Too many tries from this sign-in. Wait a few minutes, then try again.",
+    );
+  });
+
+  test("Sign out everywhere refused for too many tries says to wait and try again later", async () => {
+    state.rateLimited = true;
+    state.users.push({
+      subject: "subject-busy",
+      name: "Synthetic Busy",
+      sessions: 1,
+      tokens: 0,
+      you: false,
+    });
+    await show("/settings", <SettingsPage />);
+    await click(button("Sign out \u2068Synthetic Busy\u2069 (user id subject-busy) everywhere"));
+    await click(button("Sign out everywhere", dialog() as HTMLElement));
+    expect(callsTo("POST", "/app/api/users/sign-out")).toHaveLength(1);
+    expect(signOutStatus()).toBe("");
+    expect(text()).toContain(
+      "Too many tries from this sign-in. Wait a few minutes, then try again.",
+    );
   });
 
   test("Sign out everywhere lists each user and asks before ending their sessions", async () => {
