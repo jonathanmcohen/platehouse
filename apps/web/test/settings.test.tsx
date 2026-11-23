@@ -176,6 +176,7 @@ function json(status: number, body?: unknown): Response {
 /** What the server answers an act on other people from an older sign-in. */
 const STALE_ANSWER = {
   error: "sign_in_required",
+  message: "Sign in again first. Platehouse checks that you are still allowed in when you sign in.",
   code: "sign_in_required",
   signIn: "/auth/login?next=/settings",
 };
@@ -330,12 +331,7 @@ async function fakeApi(input: RequestInfo | URL, init: RequestInit = {}): Promis
   if (method === "POST" && path === "/app/api/tokens") {
     // A session signed in too long ago is refused, as the server does (issue #322).
     if (state.signInRequired) {
-      return json(403, {
-        error: "sign_in_required",
-        message: "Sign in again to create an API token.",
-        code: "sign_in_required",
-        signIn: "/auth/login?next=/settings",
-      });
+      return json(403, STALE_ANSWER);
     }
     const token = freshToken();
     issued.push(token);

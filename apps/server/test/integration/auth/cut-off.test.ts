@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createTokens, TOKEN_PATTERN, type Tokens } from "../../../src/api/tokens.js";
 import { refusingApi } from "../../../src/api/v1.js";
 import { TOKEN_SIGN_IN_WINDOW_MS } from "../../../src/app-api/tokens.js";
+import { SIGN_IN_REQUIRED_MESSAGE } from "../../../src/auth/fresh.js";
 import { SESSION_COOKIE, sessionRowId } from "../../../src/auth/sessions.js";
 import {
   type AuthTestApp,
@@ -563,6 +564,7 @@ describe("Sign out everywhere", () => {
 describe("acts on other people need a fresh sign-in", () => {
   const REFUSED = {
     error: "sign_in_required",
+    message: SIGN_IN_REQUIRED_MESSAGE,
     code: "sign_in_required",
     signIn: "/auth/login?next=/settings",
   };
@@ -613,7 +615,30 @@ describe("acts on other people need a fresh sign-in", () => {
     const row = [...tokenStore.rows.values()].find((r) => r.name === "Old script");
     const res = await call("DELETE", `/app/api/tokens/${row?.id}`, me);
     expect(res.status, res.text).toBe(403);
+    expect(res.json()).toEqual(REFUSED);
     expect(await v1Status(old.token)).toBe(200);
+  });
+
+  test("a fresh session can revoke a token with no recorded maker", async () => {
+    const me = await signIn("subject-fresh");
+    const old = await tokens.createToken("Old script");
+    const row = [...tokenStore.rows.values()].find((r) => r.name === "Old script");
+    const res = await call("DELETE", `/app/api/tokens/${row?.id}`, me);
+    expect(res.status, res.text).toBe(204);
+    expect(await v1Status(old.token)).toBe(401);
+  });
+
+  test("an older session can sign itself out with revokeTokens, revoking its own tokens", async () => {
+    const me = await signIn("subject-old");
+    const mine = await makeToken(me, "My script");
+    ageSession(me, TOKEN_SIGN_IN_WINDOW_MS + MINUTE);
+    const res = await call("POST", "/app/api/users/sign-out", me, {
+      subject: "subject-old",
+      revokeTokens: true,
+    });
+    expect(res.status, res.text).toBe(200);
+    expect(res.json()).toEqual({ sessionsEnded: 1, tokensRevoked: 1 });
+    expect(await v1Status(mine.token)).toBe(401);
   });
 
   test("an older session can revoke a token it made itself", async () => {

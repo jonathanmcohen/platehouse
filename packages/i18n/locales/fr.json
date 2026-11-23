@@ -524,6 +524,7 @@
   "signOut.none": "Personne n'est connect\u00e9 et aucun jeton d'API n'a de cr\u00e9ateur connu.",
   "signOut.revokeTokens": "R\u00e9voquer aussi {tokens, plural, one {le # jeton d'API} many {les # jetons d'API} other {les # jetons d'API}} qu'il a cr\u00e9\u00e9s",
   "signOut.signIn": "Se connecter",
+  "signOut.signInAgain": "Se reconnecter",
   "signOut.signInRequired": "Pour d\u00e9connecter quelqu'un d'autre partout, reconnectez-vous d'abord. Platehouse v\u00e9rifie \u00e0 la connexion que vous avez toujours acc\u00e8s.",
   "signOut.you": "{name} (vous)",
   "titles.button": "Utiliser les titres des fichiers",

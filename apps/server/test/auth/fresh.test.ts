@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 import {
   isFresh,
   refuseStale,
+  SIGN_IN_REQUIRED_MESSAGE,
   TOKEN_SIGN_IN_URL,
   TOKEN_SIGN_IN_WINDOW_MS,
 } from "../../src/auth/fresh.js";
@@ -61,6 +62,7 @@ describe("refuseStale", () => {
     expect(sent.status).toBe(403);
     expect(sent.body).toEqual({
       error: "sign_in_required",
+      message: SIGN_IN_REQUIRED_MESSAGE,
       code: "sign_in_required",
       signIn: "/auth/login?next=/settings",
     });

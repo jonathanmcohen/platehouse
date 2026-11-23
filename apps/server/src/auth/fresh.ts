@@ -29,10 +29,15 @@ export function isFresh(session: Session | undefined, now: Date): boolean {
   );
 }
 
+/** What a refused act says, in English (the web app shows the code in its own language). */
+export const SIGN_IN_REQUIRED_MESSAGE =
+  "Sign in again first. Platehouse checks that you are still allowed in when you sign in.";
+
 /** The refusal of an act from an older sign-in: 403 sign_in_required, with where to sign in again. */
 export function refuseStale(reply: FastifyReply): FastifyReply {
   return reply.code(403).send({
     error: "sign_in_required",
+    message: SIGN_IN_REQUIRED_MESSAGE,
     code: "sign_in_required",
     signIn: TOKEN_SIGN_IN_URL,
   });

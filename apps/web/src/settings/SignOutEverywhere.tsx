@@ -10,9 +10,9 @@
 //
 // Every signed-in user may use it, but signing someone else out needs a
 // sign-in in the last few minutes: the server refuses it otherwise with
-// sign_in_required, and the page says so with a Sign in again link. After a change the status
-// line says what was ended, the list is read again, and so is the token
-// list (onTokensRevoked) when tokens were revoked. Signing yourself out
+// sign_in_required, and the page says so with a Sign in again link. After a
+// change the status line says what was ended, the list is read again, and so
+// is the token list (onTokensRevoked) when tokens were revoked. Signing yourself out
 // everywhere ends this session too, so the page says so and offers a Sign in
 // link instead of reading the list again. Focus goes to the section heading
 // after the dialog closes, since the row's own button may be gone.
@@ -121,7 +121,7 @@ export function SignOutEverywhere({ onTokensRevoked }: { onTokensRevoked(): void
       </p>
       {signInNeeded ? (
         <p role="alert" className="studio-alert studio-alert-alert" data-sign-out-refused>
-          {t("signOut.signInRequired")} <a href={SIGN_IN_AGAIN_URL}>{t("tokens.signInAgain")}</a>
+          {t("signOut.signInRequired")} <a href={SIGN_IN_AGAIN_URL}>{t("signOut.signInAgain")}</a>
         </p>
       ) : null}
       {list.error === undefined ? null : (
