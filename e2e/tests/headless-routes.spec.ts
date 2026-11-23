@@ -144,7 +144,7 @@ test.describe("UI routes through Traefik", () => {
     expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  test("a fresh browser signs in through the issuer and lands on the library", async ({
+  test("a fresh browser signs in through the issuer and returns to the page it asked for", async ({
     browser,
   }) => {
     const context = await browser.newContext({
@@ -154,8 +154,10 @@ test.describe("UI routes through Traefik", () => {
     try {
       const page = await context.newPage();
       await page.goto(`${ORIGIN}/settings`);
-      expect(new URL(page.url()).origin).toBe(ORIGIN);
-      await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+      const landed = new URL(page.url());
+      expect(landed.origin).toBe(ORIGIN);
+      expect(landed.pathname).toBe("/settings");
+      await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
       const cookies = await context.cookies(ORIGIN);
       const session = cookies.find((c) => c.name.startsWith("__Host-"));
       expect(session?.secure).toBe(true);
