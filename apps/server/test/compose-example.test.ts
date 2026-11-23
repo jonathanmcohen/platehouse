@@ -178,8 +178,8 @@ const BUDGET = [
 // - blob downloads: streamed from the store to the browser.
 
 // Issue #358 review: a plate mesh worker's heap limit caps only its
-// JavaScript heap. Its mesh arrays and the zip reader's entry records live
-// outside that heap, so the worker limits alone do not keep the server inside
+// JavaScript heap. Its mesh arrays and the zip reader's raw directory bytes
+// live outside that heap, so the worker limits alone do not keep the server inside
 // its container; the kernel ends the whole server, not one worker, when the
 // container passes mem_limit. So every reader that can run at once must fit,
 // with room left for the server.

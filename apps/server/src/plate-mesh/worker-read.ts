@@ -16,7 +16,8 @@
 //   heap is a plain too_large: its heap limit is its own, whatever else the
 //   machine is doing. A worker's failure ends only that worker. The heap
 //   limit does not cap the worker's whole memory, though: its mesh arrays
-//   and the zip reader's directory records are outside the heap. So the
+//   and the zip reader's raw directory bytes are outside the heap (the
+//   parsed entry objects are inside it). So the
 //   whole of one read is bounded as PLATE_MESH_READ_PEAK_MB (memory/peaks.ts),
 //   and that is one term of the budget summed against the container's memory
 //   limit in test/compose-example.test.ts (BUDGET); past the limit the kernel
@@ -62,8 +63,9 @@ export const PLATE_MESH_TIMEOUT_MS = 60_000;
  * The worker's JavaScript heap: room for the reader's parsed config, its
  * component lists and its entry index, and no more. These limits cap the
  * V8 heap only. The reader's mesh arrays (ArrayBuffers) and the zip
- * reader's directory records (Buffers) are stored outside it, and Node does
- * not count them against the worker, so they are bounded elsewhere: see
+ * reader's raw directory bytes (Buffers) are stored outside it, and Node
+ * does not count them against the worker, so they are bounded elsewhere
+ * (the parsed entry objects are inside the heap and counted too): see
  * PLATE_MESH_READ_PEAK_MB in memory/peaks.ts.
  */
 export const PLATE_MESH_WORKER_LIMITS: Readonly<ResourceLimits> = Object.freeze({
