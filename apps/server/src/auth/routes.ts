@@ -477,6 +477,10 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
       return reply.code(503).send({ error: "unavailable" });
     }
     reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
+    // Asks the browser to drop its cached copies of this site, including
+    // source files and meshes it kept on disk, and any 0.1.0 cached for a
+    // year. Browsers that support the "cache" directive do; not all do.
+    reply.header("clear-site-data", '"cache"');
     return reply.code(204).send();
   });
 }

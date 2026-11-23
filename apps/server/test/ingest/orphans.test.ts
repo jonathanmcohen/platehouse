@@ -2,8 +2,9 @@
 // copy of the bytes, so the sweep refuses to delete when the blobs table
 // holds no stored rows (an empty volume, or a wrong DATABASE_URL pointing at
 // an empty database), or when a run would delete more than its limit: 10
-// objects, or a tenth of the objects it listed in the blob layout when that
-// is more, and never more than 100.
+// models, or a tenth of the models it listed in the blob layout when that
+// is more, and never more than 100. A model is the models/<id>/ prefix, so
+// one interrupted import (up to 129 objects) is one model.
 //
 // The guard limits a run; it does not prevent deletion. A database with
 // stored rows that is not this bucket's (an older dump, another Platehouse
@@ -16,6 +17,7 @@ import { uuidv7 } from "../../src/db/ids.js";
 import type { DB } from "../../src/db/types.js";
 import {
   createOrphanSweep,
+  modelOf,
   ORPHAN_DELETE_CAP,
   ORPHAN_DELETE_FLOOR,
   ORPHAN_DELETE_SHARE,
@@ -27,7 +29,7 @@ import {
 import { blobKey } from "../../src/storage/keys.js";
 
 describe("orphanDeleteLimit", () => {
-  test("the limits are 10 objects, a tenth of those listed, and 100 at most", () => {
+  test("the limits are 10 models, a tenth of those listed, and 100 at most", () => {
     expect(ORPHAN_DELETE_FLOOR).toBe(10);
     expect(ORPHAN_DELETE_SHARE).toBe(0.1);
     expect(ORPHAN_DELETE_CAP).toBe(100);
@@ -42,47 +44,74 @@ describe("orphanDeleteLimit", () => {
     [999, 99],
     [1000, 100],
     [50_000, 100],
-  ])("with %i objects listed in the blob layout a run may delete %i", (listed, limit) => {
+  ])("with %i models listed in the blob layout a run may delete %i", (listed, limit) => {
     expect(orphanDeleteLimit(listed)).toBe(limit);
+  });
+});
+
+describe("modelOf", () => {
+  test("is the models/<id>/ prefix of a blob key", () => {
+    const model = uuidv7();
+    expect(modelOf(blobKey(model, uuidv7()))).toBe(`models/${model}/`);
   });
 });
 
 describe("orphanRefusal", () => {
   test("allows a run whose orphans are within the limit while stored rows exist", () => {
-    expect(orphanRefusal({ orphans: 10, inLayout: 40, hasStoredRows: true })).toBeUndefined();
-    expect(orphanRefusal({ orphans: 25, inLayout: 250, hasStoredRows: true })).toBeUndefined();
+    expect(
+      orphanRefusal({ orphanModels: 10, modelsInLayout: 40, hasStoredRows: true }),
+    ).toBeUndefined();
+    expect(
+      orphanRefusal({ orphanModels: 25, modelsInLayout: 250, hasStoredRows: true }),
+    ).toBeUndefined();
   });
 
   // The known limit: with stored rows, only the size limit applies.
   test("allows a small mismatch against a populated database that is not this bucket's", () => {
     // A restore from yesterday's dump: today's 3 uploads have no rows.
-    expect(orphanRefusal({ orphans: 3, inLayout: 1_000, hasStoredRows: true })).toBeUndefined();
+    expect(
+      orphanRefusal({ orphanModels: 3, modelsInLayout: 1_000, hasStoredRows: true }),
+    ).toBeUndefined();
     // A library of 8 objects pointed at another Platehouse database.
-    expect(orphanRefusal({ orphans: 8, inLayout: 8, hasStoredRows: true })).toBeUndefined();
+    expect(
+      orphanRefusal({ orphanModels: 8, modelsInLayout: 8, hasStoredRows: true }),
+    ).toBeUndefined();
     // Two instances on one bucket: the smaller one's 50 objects, in the larger one's sweep.
-    expect(orphanRefusal({ orphans: 50, inLayout: 1_050, hasStoredRows: true })).toBeUndefined();
+    expect(
+      orphanRefusal({ orphanModels: 50, modelsInLayout: 1_050, hasStoredRows: true }),
+    ).toBeUndefined();
   });
 
   test("refuses any delete when the blobs table holds no stored rows", () => {
-    const reason = orphanRefusal({ orphans: 1, inLayout: 1, hasStoredRows: false });
+    const reason = orphanRefusal({ orphanModels: 1, modelsInLayout: 1, hasStoredRows: false });
     expect(reason).toContain("no stored rows");
   });
 
   test("refuses a run over its limit, naming the counts", () => {
-    const reason = orphanRefusal({ orphans: 11, inLayout: 40, hasStoredRows: true });
-    expect(reason).toContain("11 of 40");
+    const reason = orphanRefusal({ orphanModels: 11, modelsInLayout: 40, hasStoredRows: true });
+    expect(reason).toContain("11 of 40 models");
     expect(reason).toContain("limit of 10");
   });
 
   test("refuses a run that would empty most of a large library", () => {
-    expect(orphanRefusal({ orphans: 101, inLayout: 5000, hasStoredRows: true })).toContain(
-      "limit of 100",
-    );
-    expect(orphanRefusal({ orphans: 4900, inLayout: 5000, hasStoredRows: true })).toBeDefined();
+    expect(
+      orphanRefusal({ orphanModels: 101, modelsInLayout: 5000, hasStoredRows: true }),
+    ).toContain("limit of 100");
+    expect(
+      orphanRefusal({ orphanModels: 4900, modelsInLayout: 5000, hasStoredRows: true }),
+    ).toBeDefined();
+  });
+
+  test("refuses a restored old database: 15 orphaned models in a layout of 40", () => {
+    const reason = orphanRefusal({ orphanModels: 15, modelsInLayout: 40, hasStoredRows: true });
+    expect(reason).toContain("15 of 40 models");
+    expect(reason).toContain("limit of 10");
   });
 
   test("has nothing to refuse when there are no orphans", () => {
-    expect(orphanRefusal({ orphans: 0, inLayout: 5000, hasStoredRows: false })).toBeUndefined();
+    expect(
+      orphanRefusal({ orphanModels: 0, modelsInLayout: 5000, hasStoredRows: false }),
+    ).toBeUndefined();
   });
 });
 
@@ -90,6 +119,8 @@ describe("orphanRefusal", () => {
 // must stand out from the daily one. It goes to console.warn, where the daily
 // line goes to console.info; main.ts passes neither hook, so these defaults
 // are what the running server does.
+type ListedForTest = { key: string; size: number; lastModified: Date };
+
 describe("where a run's line goes", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -110,11 +141,30 @@ describe("where a run's line goes", () => {
     return { selectFrom: () => query } as unknown as Kysely<DB>;
   }
 
+  /** Like fakeDb(true), but the blobs query finds a row for each key in `known`. */
+  function fakeDbKnowing(known: Set<string>): Kysely<DB> {
+    let keys: string[] = [];
+    const query = {
+      select: () => query,
+      where: (_column: string, _op: string, value: unknown) => {
+        if (Array.isArray(value)) keys = value as string[];
+        return query;
+      },
+      limit: () => query,
+      execute: async () => keys.filter((k) => known.has(k)).map((key) => ({ key })),
+      executeTakeFirst: async () => ({ id: uuidv7() }),
+    };
+    return { selectFrom: () => query } as unknown as Kysely<DB>;
+  }
+
   /** A bucket holding `count` objects in the blob layout, all over 24 hours old. */
-  function fakeStore(count: number): { store: OrphanStore; deleted: string[] } {
+  function fakeStore(
+    count: number,
+    models?: string[],
+  ): { store: OrphanStore; deleted: string[]; objects: ListedForTest[] } {
     const lastModified = new Date(Date.now() - 2 * ORPHAN_MIN_AGE_MS);
-    const objects = Array.from({ length: count }, () => ({
-      key: blobKey(uuidv7(), uuidv7()),
+    const objects = Array.from({ length: count }, (_, i) => ({
+      key: blobKey(models ? (models[i % models.length] as string) : uuidv7(), uuidv7()),
       size: 1,
       lastModified,
     }));
@@ -125,7 +175,7 @@ describe("where a run's line goes", () => {
         deleted.push(...keys);
       },
     };
-    return { store, deleted };
+    return { store, deleted, objects };
   }
 
   function catchConsole(): { info: string[]; warn: string[] } {
@@ -160,6 +210,61 @@ describe("where a run's line goes", () => {
     expect(lines.info).toEqual([]);
     expect(lines.warn).toHaveLength(1);
     expect(lines.warn[0]).toContain("deleted nothing");
+  });
+
+  test("one interrupted import (129 objects in one model) is deleted in full", async () => {
+    const lines = catchConsole();
+    const library = fakeStore(
+      20,
+      Array.from({ length: 20 }, () => uuidv7()),
+    );
+    const model = uuidv7();
+    const interrupted = fakeStore(129, [model]);
+    const objects = [...library.objects, ...interrupted.objects];
+    const store: OrphanStore = {
+      listPage: async () => ({ objects, next: undefined }),
+      deleteBlobs: interrupted.store.deleteBlobs,
+    };
+    // The 20 library objects are known to the database; only the import's are orphans.
+    const known = new Set(library.objects.map((o) => o.key));
+    const db = fakeDbKnowing(known);
+    const result = await createOrphanSweep({ db, store }).sweepOrphans(new Date());
+    expect(result.refused).toBeUndefined();
+    expect(interrupted.deleted).toHaveLength(129);
+    expect(result.deleted).toBe(129);
+    expect(result.orphans).toBe(129);
+    expect(result.orphanModels).toBe(1);
+    expect(result.modelsInLayout).toBe(21);
+    expect(lines.warn).toEqual([]);
+    expect(lines.info[0]).toContain("129 objects");
+    expect(lines.info[0]).toContain("objects of 1 model with no blob row");
+    expect(lines.info[0]).toContain("(21 models)");
+  });
+
+  test("a restored old database (15 orphaned models in a layout of 40) is refused", async () => {
+    const lines = catchConsole();
+    const known = fakeStore(
+      25,
+      Array.from({ length: 25 }, () => uuidv7()),
+    );
+    const lost = fakeStore(
+      45,
+      Array.from({ length: 15 }, () => uuidv7()),
+    );
+    const objects = [...known.objects, ...lost.objects];
+    const store: OrphanStore = {
+      listPage: async () => ({ objects, next: undefined }),
+      deleteBlobs: lost.store.deleteBlobs,
+    };
+    const db = fakeDbKnowing(new Set(known.objects.map((o) => o.key)));
+    const result = await createOrphanSweep({ db, store }).sweepOrphans(new Date());
+    expect(result.refused).toContain("15 of 40 models");
+    expect(result.orphanModels).toBe(15);
+    expect(result.modelsInLayout).toBe(40);
+    expect(lost.deleted).toEqual([]);
+    expect(result.deleted).toBe(0);
+    expect(lines.warn).toHaveLength(1);
+    expect(lines.warn[0]).toContain("15 models");
   });
 
   test("a run that deletes its orphans goes to console.info and warns nothing", async () => {

@@ -39,12 +39,14 @@ import {
 import { buildApp } from "../../../src/app.js";
 import { patternClass, type RouteClass } from "../../../src/auth/gate.js";
 import { SESSION_COOKIE } from "../../../src/auth/sessions.js";
+import type { BlobKind } from "../../../src/db/types.js";
 import {
   BLOB_CACHE_CONTROL,
   type DeliveryDeps,
   FILE_CACHE_CONTROL,
   type LinkFile,
   linkFileName,
+  REVALIDATE_CACHE_CONTROL,
 } from "../../../src/delivery/download.js";
 import { LINK_LIFETIME_SECONDS, type SlicerLink } from "../../../src/delivery/links.js";
 import { reportObjectSize, StoreUnavailable } from "../../../src/storage/s3.js";
@@ -62,6 +64,12 @@ const FILE_B = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ea0";
 const BLOB_T = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8eb1";
 const STREAMED = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ec2";
 const STREAMED_BLOB = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ed3";
+const BLOB_SRC = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ee4";
+const BLOB_GLB = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ee5";
+const BLOB_STL = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ee6";
+const BLOB_PNG = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ee7";
+const BLOB_FUTURE = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ee9";
+const BLOB_TRASHED = "0198f0c4-6a1b-7c2d-8e3f-4a5b6c7d8ee8";
 
 interface StubItem {
   name: string;
@@ -93,9 +101,32 @@ const files = new Map<string, StubItem>([
     },
   ],
 ]);
-const blobs = new Map<string, { contentType: string; bytes: Buffer }>([
-  [BLOB_T, { contentType: "image/png", bytes: Buffer.from("thumbnail png bytes") }],
+const blobs = new Map<string, { contentType: string; bytes: Buffer; kind: BlobKind }>([
+  [
+    BLOB_T,
+    { contentType: "image/png", bytes: Buffer.from("thumbnail png bytes"), kind: "thumbnail" },
+  ],
+  [BLOB_SRC, { contentType: "model/3mf", bytes: Buffer.from("source bytes"), kind: "source" }],
+  [
+    BLOB_GLB,
+    { contentType: "model/gltf-binary", bytes: Buffer.from("glb bytes"), kind: "mesh_glb" },
+  ],
+  [BLOB_STL, { contentType: "model/stl", bytes: Buffer.from("stl bytes"), kind: "render_stl" }],
+  // A kind added after this was written: it must default to revalidation.
+  [
+    BLOB_FUTURE,
+    {
+      contentType: "application/octet-stream",
+      bytes: Buffer.from("future bytes"),
+      kind: "some_future_kind" as BlobKind,
+    },
+  ],
+  [BLOB_PNG, { contentType: "image/png", bytes: Buffer.from("png bytes"), kind: "render_png" }],
 ]);
+/** Blobs of a trashed model: the library finds nothing, as the real one does. */
+const trashedBlobs = new Set<string>([BLOB_TRASHED]);
+/** How many blob heads the stubs confirmed with the store (a HeadObject on the real one). */
+let blobHeads = 0;
 
 /** How many streams the stubs opened (each one a GetObject on the real store). */
 let opened = 0;
@@ -177,11 +208,18 @@ const deliveryLibrary: DeliveryDeps["library"] = {
       ? undefined
       : { id, name: item.name, originalName: item.originalName, kind: item.kind };
   },
+  async blobKind(id) {
+    if (dbFails) throw dbFails;
+    if (trashedBlobs.has(id)) return undefined;
+    if (id === STREAMED_BLOB) return "source";
+    return blobs.get(id)?.kind;
+  },
   async blobHead(id) {
     if (dbFails) throw dbFails;
     const item = blobs.get(id);
     if (item === undefined) return undefined;
     if (storeFails) throw storeFails;
+    blobHeads += 1;
     return head(item, id);
   },
   async openBlob(id) {
@@ -948,7 +986,7 @@ describe("GET /files/:id/download and GET /blobs/:id", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
-  test("a blob is served with its content type and the immutable cache header", async () => {
+  test("a thumbnail is served with its content type and the immutable cache header", async () => {
     const res = await app.inject({ method: "GET", url: `/blobs/${BLOB_T}`, cookies: cookies() });
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe("thumbnail png bytes");
@@ -956,6 +994,106 @@ describe("GET /files/:id/download and GET /blobs/:id", () => {
     expect(res.headers["cache-control"]).toBe(BLOB_CACHE_CONTROL);
     expect(BLOB_CACHE_CONTROL).toBe("private, max-age=31536000, immutable");
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  describe("blob caching", () => {
+    const get = (id: string, headers: Record<string, string> = {}) =>
+      app.inject({ method: "GET", url: `/blobs/${id}`, cookies: cookies(), headers });
+
+    test("a blob answer never carries Clear-Site-Data", async () => {
+      for (const id of [BLOB_SRC, BLOB_T]) {
+        const res = await get(id);
+        expect(res.headers["clear-site-data"], id).toBeUndefined();
+      }
+    });
+
+    test("the revalidate value is private, no-cache", () => {
+      expect(REVALIDATE_CACHE_CONTROL).toBe("private, no-cache");
+    });
+
+    test.each([
+      ["source", BLOB_SRC],
+      ["mesh_glb", BLOB_GLB],
+      ["render_stl", BLOB_STL],
+    ])("a %s blob is revalidated with its id as ETag", async (_kind, id) => {
+      for (const method of ["GET", "HEAD"] as const) {
+        const res = await app.inject({ method, url: `/blobs/${id}`, cookies: cookies() });
+        expect(res.statusCode, method).toBe(200);
+        expect(res.headers["cache-control"], method).toBe("private, no-cache");
+        expect(res.headers.etag, method).toBe(`"${id}"`);
+      }
+    });
+
+    test("a kind nobody listed is revalidated, never cached for a year", async () => {
+      const res = await get(BLOB_FUTURE);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe("private, no-cache");
+      expect(res.headers.etag).toBe(`"${BLOB_FUTURE}"`);
+    });
+
+    test.each([
+      ["thumbnail", BLOB_T],
+      ["render_png", BLOB_PNG],
+    ])("a %s blob keeps the immutable header and sends no ETag", async (_kind, id) => {
+      const res = await get(id);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe(BLOB_CACHE_CONTROL);
+      expect(res.headers.etag).toBeUndefined();
+    });
+
+    test("a matching If-None-Match is 304 with the headers, no body and no store read", async () => {
+      const before = { opened, blobHeads };
+      const res = await get(BLOB_SRC, { "if-none-match": `"${BLOB_SRC}"` });
+      expect(res.statusCode).toBe(304);
+      expect(res.headers.etag).toBe(`"${BLOB_SRC}"`);
+      expect(res.headers["cache-control"]).toBe("private, no-cache");
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["content-length"]).toBeUndefined();
+      expect(res.rawPayload.length).toBe(0);
+      expect({ opened, blobHeads }).toEqual(before);
+    });
+
+    test.each([
+      ["a weak tag", `W/"${BLOB_SRC}"`],
+      ["a star", "*"],
+      ["a list holding it", `"other", W/"${BLOB_SRC}"`],
+    ])("%s also matches", async (_name, value) => {
+      const res = await get(BLOB_SRC, { "if-none-match": value });
+      expect(res.statusCode).toBe(304);
+    });
+
+    test("another value answers 200 with the bytes", async () => {
+      const res = await get(BLOB_SRC, { "if-none-match": `"${BLOB_GLB}"` });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe("source bytes");
+    });
+
+    test("a conditional request for a thumbnail is a plain 200", async () => {
+      const res = await get(BLOB_T, { "if-none-match": `"${BLOB_T}"` });
+      expect(res.statusCode).toBe(200);
+    });
+
+    test("a conditional request for a trashed model's blob is 404 and touches no store", async () => {
+      const before = { opened, blobHeads };
+      for (const value of [`"${BLOB_TRASHED}"`, "*"]) {
+        const res = await get(BLOB_TRASHED, { "if-none-match": value });
+        expect(res.statusCode, value).toBe(404);
+        expect(res.headers["cache-control"], value).toBe("no-store");
+      }
+      expect({ opened, blobHeads }).toEqual(before);
+    });
+
+    test("an outage on a revalidated blob is 503 with no-store and no ETag", async () => {
+      storeFails = new StoreUnavailable("GetObject", "ECONNREFUSED");
+      try {
+        const res = await get(BLOB_SRC);
+        expect(res.statusCode).toBe(503);
+        expect(res.headers["cache-control"]).toBe("no-store");
+        expect(res.headers.etag).toBeUndefined();
+      } finally {
+        storeFails = undefined;
+      }
+    });
   });
 
   test("a file renamed without its extension downloads and links with the real one", async () => {
@@ -1269,6 +1407,7 @@ describe("a stream that fails before its first byte is answered with no attachme
       expect(res.statusCode, url).toBe(503);
       expect(res.json(), url).toEqual({ error: "unavailable", message: FILE_UNAVAILABLE_MESSAGE });
       expect(res.headers["content-disposition"], url).toBeUndefined();
+      expect(res.headers.etag, url).toBeUndefined();
       expect(res.headers["cache-control"], url).toBe("no-store");
     }
   });
@@ -1280,6 +1419,7 @@ describe("a stream that fails before its first byte is answered with no attachme
       expect(res.statusCode, url).toBe(500);
       expect(res.json(), url).toEqual({ error: "internal" });
       expect(res.headers["content-disposition"], url).toBeUndefined();
+      expect(res.headers.etag, url).toBeUndefined();
       expect(res.headers["cache-control"], url).toBe("no-store");
     }
   });

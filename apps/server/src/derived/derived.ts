@@ -154,8 +154,9 @@
 // an upload that died part way leaves behind. It is a maintenance-queue job
 // (CHECK_RENDERS_CRON, every 15 minutes; main.ts registers the schedule),
 // and it acts only on rows written more than RENDER_CHECK_GRACE_MS ago,
-// twice a render job's 15-minute expiry. Each step re-checks, holding the
-// row's lock, that no queued or active job owns what it changes:
+// twice pg-boss's default 15-minute job expiry, and longer than a STEP
+// conversion's own (CONVERT_EXPIRE_SECONDS, 1050 s). Each step re-checks,
+// holding the row's lock, that no queued or active job owns what it changes:
 // - If the database fails right after ingest commits, afterUpload cannot
 //   queue the job or record queueFailed, and the .scad or STEP file is left
 //   with derived_status null and no job. The check queues it.
@@ -212,6 +213,7 @@ import { createRepos } from "../repos/index.js";
 import { blobKey } from "../storage/keys.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 import {
+  CONVERT_EXPIRE_SECONDS,
   DERIVED_MESSAGES,
   isRetryable,
   PREVIOUS_RENDERS_SENTENCE,
@@ -222,6 +224,7 @@ import {
   SlicerDown,
   SlicerFault,
   type SlicerTarget,
+  TempFileError,
 } from "./client.js";
 import { PREVIEW_RETRIED, previewState } from "./picture.js";
 import { meshPreviewOutputs, stlPreviewOutputs } from "./preview.js";
@@ -249,6 +252,20 @@ export const DERIVED_KINDS = {
 } as const;
 
 export type DerivedKind = (typeof DERIVED_KINDS)[keyof typeof DERIVED_KINDS];
+
+/**
+ * The send options for a job of this kind on the slicer queue: a STEP
+ * conversion also gets its expiry (CONVERT_EXPIRE_SECONDS), which covers
+ * storing its mesh; every other kind is sent with options unchanged.
+ */
+export function slicerSendOptions<T extends object>(
+  kind: DerivedKind,
+  options: T,
+): T | (T & { expireInSeconds: number }) {
+  return kind === DERIVED_KINDS.convertStep
+    ? { ...options, expireInSeconds: CONVERT_EXPIRE_SECONDS }
+    : options;
+}
 
 /** pg-boss job states in which a job still owns its file and source: queued or running. */
 const LIVE_STATES: ReadonlySet<string> = new Set(["created", "retry", "active"]);
@@ -282,7 +299,9 @@ export interface DerivedOutcome {
    * and the same job was sent again to wait for it. failed with slicer_down
    * or store_down: it stayed down past SLICER_DOWN_LIMIT_MS, and the job
    * stopped waiting. failed with store_refused: the store answered and
-   * refused, or the source object is gone (issue #102).
+   * refused, or the source object is gone (issue #102). failed with
+   * temp_failed: a preview picture's last attempt could not write in its
+   * own temp folder (issue #415).
    */
   status: "ok" | "failed" | "skipped" | "requeued";
   reason?:
@@ -291,7 +310,8 @@ export interface DerivedOutcome {
     | "stale"
     | "slicer_down"
     | "store_down"
-    | "store_refused";
+    | "store_refused"
+    | "temp_failed";
 }
 
 export type DerivedErrorCode =
@@ -386,17 +406,19 @@ export interface BackfillResult {
 
 /**
  * How long a render job may run before pg-boss expires it: pg-boss's default
- * of 15 minutes, since neither the slicer queue (jobs/queues.ts) nor a render
- * job sets its own. A job that is still 'active' past this is failed, or
- * retried, by pg-boss itself.
+ * of 15 minutes, since the slicer queue (jobs/queues.ts) sets none. Only a
+ * STEP conversion is sent with its own, CONVERT_EXPIRE_SECONDS (1050 s,
+ * slicerSendOptions), which is longer but still under twice this. A job that
+ * is still 'active' past its expiry is failed, or retried, by pg-boss itself.
  */
 const RENDER_JOB_EXPIRY_MS = 15 * 60 * 1000;
 
 /**
  * How long the render check (checkRenders) leaves a file or a staged source
- * alone after it was written: twice a render job's expiry, so a job that
- * died while active has been expired by pg-boss, and an upload's own
- * afterUpload has long since had its turn, before the check looks at it.
+ * alone after it was written: twice a render job's expiry, longer than a
+ * STEP conversion's too, so a job that died while active has been expired
+ * by pg-boss, and an upload's own afterUpload has long since had its turn,
+ * before the check looks at it.
  */
 export const RENDER_CHECK_GRACE_MS = 2 * RENDER_JOB_EXPIRY_MS;
 
@@ -772,7 +794,11 @@ export function createDerived(deps: DerivedDeps) {
           })
           .where("id", "=", file.id)
           .execute();
-        const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
+        const id = await deps.queue.send(
+          QUEUE.slicer,
+          job,
+          slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }),
+        );
         if (id === null) throw new Error("pg-boss created no job");
         await recomputePreview(trx, file.id);
         return id;
@@ -901,7 +927,11 @@ export function createDerived(deps: DerivedDeps) {
         })
         .where("id", "=", file.id)
         .execute();
-      const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
+      const id = await deps.queue.send(
+        QUEUE.slicer,
+        job,
+        slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }),
+      );
       if (id === null) throw new Error("pg-boss created no job");
       await recomputePreview(trx, file.id);
     };
@@ -1464,8 +1494,8 @@ export function createDerived(deps: DerivedDeps) {
 
   /**
    * Records a final failure that is the slicer's or the store's, not the
-   * file's (slicer_error, store_refused, or slicer_down or store_down past
-   * its limit), with
+   * file's (slicer_error, store_refused, temp_failed, or slicer_down or
+   * store_down past its limit), with
    * message, while the file still has the source the job started from; a
    * replacement is dropped and the previous version kept. A file that
    * already shows 'ok' for the job's own source (renders for it committed,
@@ -1580,11 +1610,15 @@ export function createDerived(deps: DerivedDeps) {
       deadlineOf(job) ?? clock().getTime() + SLICER_DOWN_LIMIT_MS,
     ).toISOString();
     const next: DerivedJob = { ...job, waits: waits + 1, waitDeadline };
-    const id = await deps.queue.send(QUEUE.slicer, next, {
-      ...retry,
-      retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
-      startAfter,
-    });
+    const id = await deps.queue.send(
+      QUEUE.slicer,
+      next,
+      slicerSendOptions(next.kind, {
+        ...retry,
+        retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
+        startAfter,
+      }),
+    );
     if (id === null) throw new Error("pg-boss created no job");
     console.warn(
       `derived: file ${job.fileId} waits for the ${outage}, asking again in ${startAfter} s: ${describe(error)}`,
@@ -1595,8 +1629,10 @@ export function createDerived(deps: DerivedDeps) {
   /**
    * Runs one render or mesh job (the slicer queue's worker calls this).
    * Throws only to have pg-boss retry: before the last attempt, on a 409
-   * busy, a lost connection or a store refusal that may pass (a 5xx, or a
-   * throttled or timed-out request); or on an unexpected error, on any
+   * busy, a lost connection, a store refusal that may pass (a 5xx, or a
+   * throttled or timed-out request) or a preview picture's temp folder
+   * that could not be written (TempFileError); or on an unexpected error
+   * (a render's or a conversion's TempFileError among them), on any
    * attempt, with nothing recorded (the render check settles the file if
    * the last attempt fails that way). A slicer or a store that is down
    * sends the job again instead (waitOut).
@@ -1658,9 +1694,13 @@ export function createDerived(deps: DerivedDeps) {
     // The job's own temp folder: every slicer answer is streamed to a file
     // here under its cap (client.ts, postRender) and stored from it, so no
     // answer is held in memory. It is removed when the job ends, however it
-    // ends.
-    const dir = await mkdtemp(join(tmpDir, "render-"));
+    // ends. One that cannot be made is a TempFileError (issue #415), which
+    // the catch below decides like any other failure of the job.
+    let dir: string | undefined;
     try {
+      dir = await mkdtemp(join(tmpDir, "render-")).catch((error: unknown) => {
+        throw new TempFileError(error);
+      });
       const size = source.size ?? 0;
       let outputs: RenderOutput[];
       switch (job.kind) {
@@ -1781,6 +1821,26 @@ export function createDerived(deps: DerivedDeps) {
         console.error(`derived: file ${file.id} ended with store_refused: ${describe(error)}`);
         return { status: "failed", reason: "store_refused" };
       }
+      // The job could not write in its own temp folder: a full disk, or a
+      // read-only or missing TMP_DIR, which says nothing about the file or
+      // the slicer (issue #415). pg-boss retries it; once the last attempt
+      // has failed, a preview picture records a sentence the backfill tries
+      // again, where it would otherwise end as a render that did not finish,
+      // which is never tried again. A .scad render or a STEP conversion has
+      // no backfill, so for them it goes on below as before.
+      if (error instanceof TempFileError && isPreviewKind(job.kind)) {
+        if (!last) throw error;
+        await commitSlicerError(
+          job.kind,
+          file,
+          source,
+          replacing,
+          DERIVED_MESSAGES.previewTempFailed,
+          selfJobId,
+        );
+        console.error(`derived: file ${file.id} ended with temp_failed: ${describe(error)}`);
+        return { status: "failed", reason: "temp_failed" };
+      }
       // Only the slicer's own failures get the slicer message. Any other
       // error (a database error, a bug) says nothing about the slicer and
       // may even follow a commit that went through, so it is rethrown with
@@ -1803,7 +1863,7 @@ export function createDerived(deps: DerivedDeps) {
       return { status: "failed", reason: "slicer_error" };
     } finally {
       // The slicer's answers and the preview's STL, stored or not.
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -1853,7 +1913,11 @@ export function createDerived(deps: DerivedDeps) {
         fileId: row.id,
         sourceBlobId: row.blobId,
       };
-      const id = await deps.queue.send(QUEUE.slicer, job, { ...retry, db: bossDb(trx) });
+      const id = await deps.queue.send(
+        QUEUE.slicer,
+        job,
+        slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }),
+      );
       if (id === null) throw new Error("pg-boss created no job");
       return true;
     });

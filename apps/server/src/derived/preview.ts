@@ -30,6 +30,8 @@
 //   build never waits for the slicer.
 // - The STL is removed once it has been sent or has failed; the job's
 //   folder, with the PNG, is removed by the job.
+// - An STL that cannot be written to the job's folder fails with
+//   TempFileError (issue #415), which the job tries again.
 //
 // A failure the file should show starts with Platehouse's own sentence
 // (DERIVED_MESSAGES.previewFailed, or previewRejected before OpenSCAD's own
@@ -50,6 +52,7 @@ import {
   type RenderOutput,
   SLICER_NOT_AN_STL,
   type SlicerTarget,
+  TempFileError,
 } from "./client.js";
 import { MeshUnreadable, stlFromGlb } from "./mesh.js";
 
@@ -136,6 +139,25 @@ export interface MeshPreviewInput {
   limit?: number;
 }
 
+/**
+ * Writes the STL to path in the job's folder. A failure of the file (a full
+ * disk, a read-only or missing folder) is a TempFileError (issue #415);
+ * the STL itself is in memory, so anything else is thrown as it is.
+ */
+async function writeStl(stl: Readable, path: string): Promise<void> {
+  const file = createWriteStream(path);
+  let fileError: { error: unknown } | undefined;
+  file.once("error", (error) => {
+    fileError ??= { error };
+  });
+  try {
+    await pipeline(stl, file);
+  } catch (error) {
+    if (fileError !== undefined) throw new TempFileError(fileError.error);
+    throw error;
+  }
+}
+
 /** The preview picture of a STEP file, from its stored GLB mesh (see the file comment). */
 export async function meshPreviewOutputs(
   target: SlicerTarget,
@@ -168,7 +190,7 @@ export async function meshPreviewOutputs(
       }
       const message = `${DERIVED_MESSAGES.previewFailed} The mesh is too large to preview: ${Math.ceil(stl.size / MIB)} MiB as an STL, over the ${Math.floor(limit / MIB)} MiB the renderer takes.`;
       if (stl.size > limit) throw new RenderFailed(message);
-      await pipeline(stl.open(), createWriteStream(path));
+      await writeStl(stl.open(), path);
       return message;
     });
     return await postPreview(target, createReadStream(path), tooLarge, input.dir);

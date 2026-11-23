@@ -25,7 +25,8 @@ import {
 import type { ApiToken } from "../../src/db/types.js";
 import { InvalidCursor } from "../../src/library/search.js";
 import { BlobNotFound, StoreUnavailable } from "../../src/storage/s3.js";
-import { createUploads, registerTus } from "../../src/uploads/tus.js";
+import { registerTus } from "../../src/uploads/tus.js";
+import { readyUploads } from "../support/uploads.js";
 
 // Built from parts so no source line holds a whole token-shaped string.
 const GOOD = `ph_${"A".repeat(20)}${"B".repeat(23)}`;
@@ -179,11 +180,7 @@ beforeAll(async () => {
   await registerTus(app, {
     prefix: "/api/v1/uploads",
     authHook: apiUploadHook(deps),
-    uploads: createUploads({
-      tmpDir: tmp,
-      queue: { enqueue: async () => {}, result: async () => undefined },
-      log: () => {},
-    }),
+    uploads: await readyUploads(tmp),
   });
   await app.ready();
 });

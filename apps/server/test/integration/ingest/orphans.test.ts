@@ -60,8 +60,8 @@ function sweeper(store: OrphanStore = env.store, pageSize?: number) {
 }
 
 /** An object in the blob layout with no blob row, as a crashed ingest leaves. */
-async function putOrphan(): Promise<string> {
-  const key = blobKey(uuidv7(), uuidv7());
+async function putOrphan(modelId: string = uuidv7()): Promise<string> {
+  const key = blobKey(modelId, uuidv7());
   const bytes = randomBytes(16);
   await env.store.putBlob(Readable.from([bytes]), {
     key,
@@ -203,6 +203,19 @@ describe("the orphan sweep", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("deleted nothing");
     await env.store.deleteBlobs(many);
+  });
+
+  test("deletes one interrupted import in full, however many objects it left", async () => {
+    // More objects than the limit, but all under one model prefix: one model.
+    const model = uuidv7();
+    const objects = await Promise.all(
+      Array.from({ length: ORPHAN_DELETE_FLOOR * 2 }, () => putOrphan(model)),
+    );
+    const result = await sweeper().sweepOrphans(dayLater());
+    for (const key of objects) expect(await exists(key)).toBe(false);
+    expect(result.refused).toBeUndefined();
+    expect(result.deleted).toBe(objects.length);
+    expect(result.orphanModels).toBe(1);
   });
 
   test("deletes a run's orphans when they are exactly at the limit", async () => {

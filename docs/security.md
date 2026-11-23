@@ -150,8 +150,9 @@ entry). How to fix that depends on what kind of device it is:
   ahead of each connection, and accept it only from the device's address. With nginx, add
   `proxy_protocol` to the `listen` line, with `set_real_ip_from` set to the device's address and
   `real_ip_header proxy_protocol`. With Traefik, list only the device's address in the
-  entrypoint's `proxyProtocol.trustedIPs`, and leave `ipStrategy` unset, so the rate limit and the
-  allowlist match the address the PROXY protocol gave.
+  entrypoint's `proxyProtocol.trustedIPs`, and leave `ipStrategy.depth` and `excludedIPs` unset
+  (`ipv6Subnet` may still be set), so the rate limit and the allowlist match the address the PROXY
+  protocol gave.
 
 Then check that visitors' own addresses are seen:
 
@@ -187,6 +188,53 @@ is checked before anything is looked up. A link to a file in the trash stops wor
 Anyone who has a live link can download that one file until it expires. Platehouse's own log never
 records links, but your reverse proxy's access log does, so limit who can read that log. Platehouse
 sends `Referrer-Policy: no-referrer` on every answer, so a link never leaks in a Referer header.
+
+## Browser cache
+
+Source files, 3D meshes and STL previews are checked with Platehouse on each view: the browser
+asks first, so a signed-out browser or a model in the trash is never served from its copy, and an
+unchanged file is answered with a short `304 Not Modified`, not downloaded again. A browser may
+still keep a copy on disk. Thumbnails and PNG previews are kept longer, because they never change.
+
+Signing out asks the browser to clear its cache for Platehouse, including copies saved by earlier
+versions, and browsers that support this do so. Not all do: Safari does not. Nothing is cleared
+when a session expires, when you are signed out from another device, or when Platehouse is
+served over plain HTTP. On a shared computer, sign out, then clear the browser's data for this
+site yourself after use.
+
+## Inbox folder
+
+Anyone who can write to the inbox folder can:
+
+- add files to the library without signing in;
+- remove, rename or replace files other people put in the inbox or in `inbox/failed/`;
+- read the reasons in `inbox/failed/`, which name the model that already holds a duplicate, so
+  they tell whether a file is in the library;
+- write reason text of their own, which the [Activity](./using/activity.md) page shows.
+
+So share the folder only with people who could be members of your Platehouse. Share the inbox
+folder itself, not a folder above it, and where your NAS or host allows it, mount the share with
+`nodev`. Give the inbox its own mount or volume, with nothing else Platehouse writes on it (the
+example Compose file's separate bind mount does this): someone who can swap folders in the inbox
+can otherwise point some of Platehouse's moves at other folders on the same mount.
+
+Platehouse treats what is in the folder as untrusted:
+
+- It does not open a file in it through a symbolic link, and does not wait on a special file put
+  there.
+- It moves a file whose name holds a control character, such as a line break, to `failed/`.
+- It still lists the whole folder at every pass, but looks at no more than 10,000 files in one
+  pass, taking them in turn. It sweeps a holding folder (any folder named like the ones it makes)
+  only when the folder was there when it started, including one someone else made, or it made
+  the folder itself, and sweeps no more than 10,000 such folders and files in them in one pass.
+- Before each step of that sweep, it checks that the holding folder is still the one it listed,
+  and after each move into `failed/`, that the file moved is the one it listed. When the folder
+  has changed it stops sweeping it; when the file moved is another, it moves that file back where
+  it can, then stops. These checks narrow the gap but cannot fully prevent a swap made between a
+  check and the move on a shared mount, which is why the inbox should have its own.
+- The Activity page lists `inbox/failed/` by name, looks at no more than 10,000 of its entries, and
+  shows a reason file only when it is an ordinary file with no other name (no symbolic or hard
+  link), the same file it found when it listed the folder.
 
 ## The slicer sandbox
 

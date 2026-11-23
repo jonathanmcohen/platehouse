@@ -43,6 +43,39 @@ and never logs a secret, token or slicer link.
   [Duplicate files](./using/adding-files.md#duplicate-files).
 - **A file is refused**: only `.3mf`, `.stl`, `.step`, `.stp` and `.scad` are taken, up to 512 MiB,
   and the contents must match the extension.
+- **"The upload could not be confirmed"**: the file was sent, but the dialog could not learn how
+  its import ended. Usually the import is still queued behind other files, or ran long: an import
+  may take up to an hour, and the dialog waits up to 70 minutes while the server says it is still
+  working. It also stops after five failed checks in a row (the server or the connection was
+  away), or when the server no longer knows the upload. Look for the model in the library before
+  sending the file again: it often appears once the import finishes. If it is still missing after
+  an hour, press **Retry**.
+- **"The server is out of room for uploads"**: the server refused the upload with 507.
+  Unfinished uploads already hold `UPLOAD_TEMP_MAX_BYTES` together, `TMP_DIR` already holds
+  10,000 uploads, or this one would leave the disk under `TMP_DIR` with less than 1 GiB free or
+  fewer than 10,000 free inodes. The free space counts the bytes other unfinished uploads are
+  still to receive, so a 507 can come while the disk still shows room. Nothing was saved.
+  The server logs each refusal with the session or token it was for:
+  - For `UPLOAD_TEMP_MAX_BYTES`, the line also names the three users holding the most bytes.
+    Free space on that disk or raise `UPLOAD_TEMP_MAX_BYTES`, or wait for their uploads to finish
+    or be removed.
+  - For the 10,000 uploads, it names the three users holding the most uploads. Finished uploads
+    are kept for a day after their import, so this clears as they age out.
+  - For the free space or inodes, it names no one: free space on the disk under `TMP_DIR`.
+
+  **Retry** may also work once other uploads have finished. See
+  [Storage](./storage.md#what-is-stored-where).
+- **"Too many of your uploads are unfinished"**: the server refused the upload with 429, because
+  your session already has 20 uploads that have not finished. Nothing was saved.
+  The dialog sends three at a time, so the others are usually in another tab or were left by an
+  earlier batch that stopped part way. An unfinished upload is deleted an hour after it was
+  created if it has received nothing, and 24 hours after otherwise. Let the others finish, then
+  press **Retry**.
+- **"You have sent a great many files recently"**: the server refused the upload with 429,
+  because your session or API token already has 2,000 uploads on the server, finished ones
+  included. A finished upload's record is kept for a day after its import, so this clears by
+  itself: try again tomorrow. Nothing was saved. Whoever runs Platehouse can see it in the
+  server's log, which names the session or token refused.
 - **"No Bambu plate data in this file"**: the `.3mf` was stored, but Platehouse could not read plate
   data from it. It may be damaged, not a Bambu or OrcaSlicer project, or over one of the safety
   limits (for example more than 128 plates).
@@ -52,7 +85,7 @@ and never logs a secret, token or slicer link.
 A file that cannot be imported moves to `inbox/failed/`, with `name.reason.txt` beside it saying
 why. The file is one line: a stable code, a colon, then the reason in English, for example
 `changed: This file changed while Platehouse was importing it, ...`. The code lets a script tell
-the reasons apart without reading the sentence. The codes are changed, unconfirmed, unremoved, unchecked, swapped, put_back_failed, still_writing, held, non_utf8, too_large, unsupported_type, model_not_found, duplicate, retries_exhausted and failed. An older reason
+the reasons apart without reading the sentence. The codes are changed, unconfirmed, unremoved, unchecked, swapped, put_back_failed, still_writing, held, non_utf8, control_chars, too_large, unsupported_type, model_not_found, duplicate, retries_exhausted and failed. An older reason
 file has the sentence alone. The [Activity](./using/activity.md) page lists failed
 inbox files too. The common reasons:
 
@@ -62,6 +95,7 @@ inbox files too. The common reasons:
 | The file type or contents are not supported.                                              | Only `.3mf`, `.stl`, `.step`, `.stp` and `.scad`, with matching contents.                                                                                                                                               |
 | The file is larger than the upload limit (512 MiB).                                       | Split or shrink it.                                                                                                                                                                                                     |
 | The file name is not valid UTF-8.                                                         | Rename it.                                                                                                                                                                                                              |
+| The file name has a control character in it, such as a line break.                        | Rename it.                                                                                                                                                                                                              |
 | The import failed three times in a row; the reason quotes the error.                      | Read the error. Move the file back into the inbox to try again.                                                                                                                                                         |
 | The file was still being written.                                                         | Something was still writing it when it was taken. Move it back once the copy has finished.                                                                                                                              |
 | It could not be put back under its name, or another file took its name.                   | A file with the same name arrived during the import. Check both files.                                                                                                                                                  |
@@ -107,11 +141,15 @@ shown. The [Activity](./using/activity.md) page lists failed estimates with the 
   kernel is older than Linux 6.12 (Landlock ABI 6), or the slicer's settings were changed from the
   example. Slicing and STEP files still work. The slicer's log says which.
 - **"The slicer is not answering. The render will need to be started again."**: the slicer was down
-  for over 2 hours. Bring it back and upload or replace the file again.
+  for over 2 hours. Bring it back and upload the file again.
 - **"The slicer is not answering, so the preview picture could not be made. It will be tried again
   automatically."** (or the same for storage): an STL's or STEP file's preview picture waited over
   2 hours, or could not be queued. Nothing to do once the slicer or storage is back: the background
   job tries it again. With a slicer image older than the app, update the slicer image.
+- **"Platehouse could not write a temporary file; it will be tried again automatically."**: an STL's
+  or STEP file's preview picture could not be written to the app's temp folder (`TMP_DIR`) on every
+  try, usually because the disk is full or the folder is read-only or missing. Free space or fix
+  the folder's permissions; the background job tries the picture again.
 - **"Storage is not answering..."** or **"Storage refused this file..."**: the bucket was down, or
   refused the request (wrong key permissions, missing bucket). Check the storage settings.
 - **A render error with OpenSCAD's own message**: the `.scad` file itself has a problem; the message

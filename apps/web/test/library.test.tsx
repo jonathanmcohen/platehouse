@@ -974,6 +974,29 @@ function refusal(status: number, body: string, contentType?: string): Error {
 }
 
 describe("upload failures read as plain words", () => {
+  // The two 429s the upload route sends (uploads/tus.ts), word for word.
+  const TOO_MANY_UNFINISHED =
+    "You already have 20 unfinished uploads; nothing was saved. Finish or wait for one of " +
+    "them, then try again.\n";
+  const TOO_MANY_HELD =
+    "You already have 2000 uploads on the server, finished ones included; nothing was saved. " +
+    "A finished upload is cleared a day after its import; try again later.\n";
+
+  test("a 429 for too many unfinished uploads says to let some finish, then use Retry", () => {
+    expect(failureMessage(refusal(429, TOO_MANY_UNFINISHED, TEXT))).toBe(
+      "Too many of your uploads are unfinished; nothing was saved. Let some finish, then use Retry.",
+    );
+  });
+
+  test("a 429 for too many uploads on the server says to try again tomorrow, not to Retry", () => {
+    const text = failureMessage(refusal(429, TOO_MANY_HELD, TEXT));
+    expect(text).toBe(
+      "You have sent a great many files recently; nothing was saved. Try again tomorrow, or " +
+        "ask whoever runs Platehouse.",
+    );
+    expect(text).not.toMatch(/Retry/);
+  });
+
   test("a refusal shows the server's own reason, not tus-js-client's diagnostic", () => {
     const text = failureMessage(
       refusal(415, "Not a supported file type: use .3mf, .stl, .step, .stp or .scad\n", TEXT),
@@ -1114,8 +1137,15 @@ describe("the result check after the last byte", () => {
     );
   });
 
+  test("a 429, 502 or 504 (often a proxy in the way) is an error to ask again, not an answer", async () => {
+    for (const status of [429, 502, 504]) {
+      answer(status, { error: "x" });
+      await expect(fetchUploadResult(UPLOAD), String(status)).rejects.toThrow(`HTTP ${status}`);
+    }
+  });
+
   test("any other refusal is not waited on either", async () => {
-    for (const status of [400, 403, 500, 502]) {
+    for (const status of [400, 403, 500]) {
       answer(status, { error: "x" });
       expect(await fetchUploadResult(UPLOAD), String(status)).toEqual({
         status: "failed",

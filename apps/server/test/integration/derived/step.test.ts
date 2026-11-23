@@ -20,10 +20,12 @@ import { Readable } from "node:stream";
 import { LIMITS } from "@platehouse/slicer-contract";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { CONVERT_EXPIRE_SECONDS } from "../../../src/derived/client.js";
 import {
   createDerived,
   DERIVED_KINDS,
   DERIVED_MESSAGES,
+  type Derived,
   type DerivedDeps,
   DerivedError,
   type DerivedJob,
@@ -1129,5 +1131,121 @@ describe("a STEP preview picture left pending with no job behind it is settled",
         gate.release();
       }
     });
+  });
+});
+
+// Issue #441: a STEP conversion's job expiry covers storing its mesh, on
+// every send of a conversion job: queued for a file, for a replacement, by
+// the render check, and again after a wait for a slicer that is down. The
+// preview job a conversion queues keeps its options as they were.
+describe("a STEP conversion's job expiry", () => {
+  interface Sent {
+    kind: string;
+    fileId: string;
+    options: Record<string, unknown>;
+  }
+
+  /** A queue that records each send and holds its job an hour, so only the test runs it. */
+  function recordingQueue(sent: Sent[]): DerivedDeps["queue"] {
+    const send: PgBoss["send"] = async (...args: unknown[]) => {
+      const [name, data, options] = args as [string, DerivedJob, Record<string, unknown>];
+      sent.push({ kind: data.kind, fileId: data.fileId, options });
+      return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
+        ...options,
+        startAfter: 3600,
+      });
+    };
+    return { send, findJobs: env.boss.findJobs.bind(env.boss) };
+  }
+
+  function recording(sent: Sent[], overrides: Partial<DerivedDeps> = {}): Derived {
+    return createDerived({
+      db: env.db,
+      store: env.store,
+      slicerUrl: env.stub.url,
+      queue: recordingQueue(sent),
+      retryDelaySeconds: 1,
+      ...overrides,
+    });
+  }
+
+  /** Takes the file's one held conversion off the queue and runs it as its first attempt. */
+  async function runHeldConversion(fileId: string, derived: Derived) {
+    const held = (await env.boss.findJobs<DerivedJob>(QUEUE.slicer, { data: { fileId } })).filter(
+      (j) => j.state === "created",
+    );
+    expect(held).toHaveLength(1);
+    const job = held[0];
+    if (!job) throw new Error("no held job");
+    expect(job.data.kind).toBe(DERIVED_KINDS.convertStep);
+    // pg-boss keeps the expiry the send gave.
+    expect(job.expireInSeconds).toBe(CONVERT_EXPIRE_SECONDS);
+    await env.boss.cancel(QUEUE.slicer, job.id);
+    return derived.runJob(job.data, { retryCount: 0, retryLimit: job.retryLimit });
+  }
+
+  async function nothingListening(): Promise<string> {
+    const s = createServer();
+    await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = s.address() as AddressInfo;
+    await new Promise<void>((resolve) => s.close(() => resolve()));
+    return `http://127.0.0.1:${port}`;
+  }
+
+  /** A STEP file converted the usual way, with every job of it finished. */
+  async function convertedStep(label: string): Promise<string> {
+    const { fileId } = await uploadStep(uniqueStep(label));
+    await settledFile(env, fileId);
+    await until(
+      () => env.boss.findJobs(QUEUE.slicer, { data: { fileId } }),
+      (js) => js.every((j) => j.state === "completed"),
+    );
+    return fileId;
+  }
+
+  test("a conversion and its requeue after a wait for the slicer carry the expiry, and its preview does not", async () => {
+    const fileId = await convertedStep("expiry");
+    const sent: Sent[] = [];
+    await recording(sent).convertStep(fileId);
+    const down = recording(sent, { slicerUrl: await nothingListening() });
+    expect(await runHeldConversion(fileId, down)).toEqual({
+      status: "requeued",
+      reason: "slicer_down",
+    });
+    expect(await runHeldConversion(fileId, recording(sent))).toEqual({ status: "ok" });
+
+    expect(sent.map((s) => [s.kind, s.fileId, s.options.expireInSeconds])).toEqual([
+      [DERIVED_KINDS.convertStep, fileId, CONVERT_EXPIRE_SECONDS],
+      [DERIVED_KINDS.convertStep, fileId, CONVERT_EXPIRE_SECONDS],
+      [DERIVED_KINDS.previewStep, fileId, undefined],
+    ]);
+    // The requeue keeps its own wait beside the expiry.
+    expect(sent[1]?.options.startAfter).toEqual(expect.any(Number));
+    expect(sent[2]?.options).not.toHaveProperty("expireInSeconds");
+  });
+
+  test("a replacement's conversion and one the render check queues carry the expiry", async () => {
+    const replaced = await convertedStep("expiry, replaced");
+    const sent: Sent[] = [];
+    await recording(sent).replaceFile(
+      replaced,
+      await writeUpload(env, uniqueStep("expiry, replacement")),
+    );
+
+    // Stored with no afterCommit, so it has no status and no job.
+    const unqueued = await env.ingest.ingestFile({
+      tmpPath: await writeUpload(env, uniqueStep("expiry, never queued")),
+      originalName: "Unqueued expiry.step",
+      target: "new",
+    });
+    const result = await recording(sent).checkRenders(
+      new Date(Date.now() + RENDER_CHECK_GRACE_MS + 60_000),
+    );
+    expect(result.queued).toContain(unqueued.fileId);
+
+    const ofFile = (fileId: string) =>
+      sent.filter((s) => s.fileId === fileId).map((s) => [s.kind, s.options.expireInSeconds]);
+    expect(ofFile(replaced)).toEqual([[DERIVED_KINDS.convertStep, CONVERT_EXPIRE_SECONDS]]);
+    expect(ofFile(unqueued.fileId)).toEqual([[DERIVED_KINDS.convertStep, CONVERT_EXPIRE_SECONDS]]);
   });
 });

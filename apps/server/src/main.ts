@@ -101,7 +101,7 @@ import { createPlateMeshes } from "./plate-mesh/plate-mesh.js";
 import { descriptionsRepo } from "./repos/descriptions.js";
 import { createRepos } from "./repos/index.js";
 import { createBlobStore } from "./storage/s3.js";
-import { bossUploadQueue, createUploads } from "./uploads/tus.js";
+import { bossUploadQueue, createUploads, prepareUploads } from "./uploads/tus.js";
 import { defaultWebDir, type WebDeps } from "./web/shell.js";
 
 /** The longest a shutdown may take before the process exits anyway. */
@@ -411,7 +411,12 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       store,
       afterCommit: (stored) => derived.afterUpload(stored),
     });
-    const uploads = createUploads({ tmpDir: config.tmpDir, queue: bossUploadQueue(startedBoss) });
+    await prepareUploads(config.tmpDir);
+    const uploads = createUploads({
+      tmpDir: config.tmpDir,
+      queue: bossUploadQueue(startedBoss),
+      maxTempBytes: config.uploadTempMaxBytes,
+    });
     const trash = createTrash({ db, store });
     const orphans = createOrphanSweep({ db, store });
     const onIngested = (result: IngestResult) => estimates.enqueueFile(result.fileId);

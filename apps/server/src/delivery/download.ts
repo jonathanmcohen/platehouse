@@ -6,7 +6,10 @@
 //
 //   GET /files/:id/download   session   the file as an attachment
 //   GET /blobs/:id            session   a blob (thumbnail, render, mesh, or
-//                                       a file's source), immutable
+//                                       a file's source); thumbnails and PNG
+//                                       renders are cached for a year, the
+//                                       rest are checked with the server on
+//                                       each view (ETag, 304)
 //   GET /s/<token>/<name>     link      the file of a slicer link (links.ts)
 //
 // - A file is read through the Public API's library (api/v1.ts createApiLibrary:
@@ -65,7 +68,7 @@ import {
   type FileHead,
   linkFileName,
 } from "../api/v1.js";
-import type { DB, FileKind } from "../db/types.js";
+import type { BlobKind, DB, FileKind } from "../db/types.js";
 import { createRepos } from "../repos/index.js";
 import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../storage/s3.js";
 
@@ -73,8 +76,40 @@ import { BlobNotFound, type BlobStore, StoreError, StoreUnavailable } from "../s
 // file the delivery routes send; they are exported here as before.
 export { checkObjectSize, linkFileName };
 
-/** What GET /blobs/:id answers in Cache-Control: a blob's bytes never change. */
+/**
+ * What GET /blobs/:id answers in Cache-Control for a thumbnail or a PNG
+ * render: the bytes never change and show no more than the page does.
+ */
 export const BLOB_CACHE_CONTROL = "private, max-age=31536000, immutable";
+
+/**
+ * What GET /blobs/:id answers for a source file, a mesh, an STL render and
+ * any kind not listed in LONG_CACHED_KINDS: the browser is asked to check
+ * with the server before each use, so a signed-out browser or a trashed
+ * model's file is never served from its copy. The browser may still keep a
+ * copy on disk. Sign-out asks it to clear its cache (Clear-Site-Data,
+ * auth/routes.ts), which browsers that support the "cache" directive do; an
+ * expired session, or one ended from another device, sends no such request.
+ */
+export const REVALIDATE_CACHE_CONTROL = "private, no-cache";
+
+/**
+ * The blob kinds cached for a year: images that never change. Every other
+ * kind, a future one included, is revalidated with the blob id as ETag.
+ */
+const LONG_CACHED_KINDS: ReadonlySet<BlobKind> = new Set(["thumbnail", "render_png"]);
+
+/**
+ * True when an If-None-Match header names the blob's tag: "*", or any tag
+ * of its comma-separated list once a W/ prefix is dropped (weak comparison).
+ */
+export function matchesEtag(header: string | undefined, etag: string): boolean {
+  if (header === undefined) return false;
+  return header.split(",").some((part) => {
+    const tag = part.trim().replace(/^W\//, "");
+    return tag === "*" || tag === etag;
+  });
+}
 
 /** What the file routes answer in Cache-Control. */
 export const FILE_CACHE_CONTROL = "private, no-store";
@@ -89,6 +124,12 @@ export interface LinkFile {
 
 /** What delivery reads beyond the Public API's file content: blobs, and a file for its link. */
 export interface DeliveryLibrary {
+  /**
+   * The kind of a stored blob of a live model, read from the database
+   * alone; undefined when unknown, malformed or its model is trashed.
+   * BlobNotFound when the row is not stored.
+   */
+  blobKind(id: string): Promise<BlobKind | undefined>;
   /** A live file; undefined when unknown, malformed or its model is trashed. */
   linkFile(id: string): Promise<LinkFile | undefined>;
   /**
@@ -125,13 +166,16 @@ export function createDeliveryLibrary(deps: {
   }
 
   /** A blob of a live model with its key; BlobNotFound when its row is not stored. */
-  async function storedBlob(id: string): Promise<{ head: FileHead; key: string } | undefined> {
+  async function storedBlob(
+    id: string,
+  ): Promise<{ head: FileHead; key: string; kind: BlobKind } | undefined> {
     const blob = await repos.blobs.get(id);
     if (blob === undefined || !(await liveModel(blob.modelId))) return undefined;
     if (blob.state !== "stored" || blob.size === null) throw new BlobNotFound("GetObject");
     return {
       head: { name: blob.id, contentType: blob.contentType, size: Number(blob.size) },
       key: blob.key,
+      kind: blob.kind,
     };
   }
 
@@ -140,6 +184,10 @@ export function createDeliveryLibrary(deps: {
       const file = await repos.files.get(id);
       if (file === undefined || !(await liveModel(file.modelId))) return undefined;
       return { id: file.id, name: file.name, originalName: file.originalName, kind: file.kind };
+    },
+
+    async blobKind(id) {
+      return (await storedBlob(id))?.kind;
     },
 
     async blobHead(id) {
@@ -166,8 +214,9 @@ export function createDeliveryLibrary(deps: {
 export function sendContent(
   reply: FastifyReply,
   content: FileHead | FileContent,
-  opts: { attachment: boolean; cacheControl?: string },
+  opts: { attachment: boolean; cacheControl?: string; etag?: string },
 ) {
+  if (opts.etag !== undefined) reply.header("etag", opts.etag);
   reply
     .header("content-type", content.contentType)
     .header("content-length", String(content.size))
@@ -235,7 +284,7 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
       request: FastifyRequest,
       reply: FastifyReply,
       read: (head: boolean) => Promise<FileHead | FileContent | undefined>,
-      opts: { attachment: boolean; cacheControl: string },
+      opts: { attachment: boolean; cacheControl: string; etag?: string },
     ) {
       let content: FileHead | FileContent | undefined;
       try {
@@ -268,11 +317,40 @@ export async function registerDownloads(app: FastifyInstance, deps: DeliveryDeps
 
     scope.get<IdParams>("/blobs/:id", async (request, reply) => {
       const { id } = request.params;
+      let kind: BlobKind | undefined;
+      try {
+        // The live-model and stored checks come first, from the database
+        // alone, so a conditional request for a gone blob is 404 and no
+        // answer, 304 included, reaches a store that has not been asked.
+        kind = await deps.library.blobKind(id);
+      } catch (error) {
+        const answered = unavailable(error, request, reply);
+        if (answered !== undefined) return answered;
+        throw error;
+      }
+      if (kind === undefined) return notFound(reply);
+      if (LONG_CACHED_KINDS.has(kind)) {
+        return serve(
+          request,
+          reply,
+          (head) => (head ? deps.library.blobHead(id) : deps.library.openBlob(id)),
+          { attachment: false, cacheControl: BLOB_CACHE_CONTROL },
+        );
+      }
+      const etag = `"${id}"`;
+      if (matchesEtag(request.headers["if-none-match"], etag)) {
+        return reply
+          .code(304)
+          .header("etag", etag)
+          .header("cache-control", REVALIDATE_CACHE_CONTROL)
+          .header("x-content-type-options", "nosniff")
+          .send();
+      }
       return serve(
         request,
         reply,
         (head) => (head ? deps.library.blobHead(id) : deps.library.openBlob(id)),
-        { attachment: false, cacheControl: BLOB_CACHE_CONTROL },
+        { attachment: false, cacheControl: REVALIDATE_CACHE_CONTROL, etag },
       );
     });
   });

@@ -92,7 +92,7 @@ import Fastify, {
   type FastifyServerOptions,
 } from "fastify";
 import { registerOpenApi } from "./api/openapi.js";
-import { createBearerHook } from "./api/tokens.js";
+import { createBearerHook, tokenOf } from "./api/tokens.js";
 import { API_PREFIX, type ApiDeps, apiUploadHook, refusingApi, registerV1 } from "./api/v1.js";
 import { type AppActivity, registerActivityApi } from "./app-api/activity.js";
 import { type AppLibrary, emptyAppLibrary, registerLibraryApi } from "./app-api/library.js";
@@ -107,7 +107,7 @@ import {
 import { registerSettingsApi, type SettingsApiDeps } from "./app-api/settings.js";
 import { registerTokensApi, type TokensApiDeps } from "./app-api/tokens.js";
 import { registerUsersApi, type UsersApiDeps } from "./app-api/users.js";
-import { installGate, isLinkPath, patternClass, routeClass } from "./auth/gate.js";
+import { installGate, isLinkPath, patternClass, routeClass, sessionOf } from "./auth/gate.js";
 import type { OidcClient } from "./auth/oidc.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import type { Sessions } from "./auth/sessions.js";
@@ -574,6 +574,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     uploads: deps.uploads,
     // The web app shows a failure by its code, in its language.
     resultCodes: "all",
+    // Each session may hold only so many unfinished uploads (Uploads.reserve).
+    principalOf: (request) => {
+      const id = sessionOf(request)?.id;
+      return id === undefined ? undefined : `session:${id}`;
+    },
+    // Who the log names when uploads are refused for want of room: the
+    // session's user, which outlives the session row.
+    holderOf: (request) => {
+      const subject = sessionOf(request)?.subject;
+      return subject === undefined ? undefined : `user ${JSON.stringify(subject)}`;
+    },
   });
   await registerLibraryApi(app, deps.library ?? emptyAppLibrary);
   await registerModelApi(app, deps.model ?? emptyAppModel);
@@ -589,6 +600,20 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     prefix: UPLOAD_PREFIXES.api,
     authHook: apiUploadHook(api),
     uploads: deps.uploads,
+    // Each API token may hold only so many unfinished uploads (Uploads.reserve).
+    principalOf: (request) => {
+      const id = tokenOf(request)?.id;
+      return id === undefined ? undefined : `token:${id}`;
+    },
+    // The token's row id and the user who made it, never the token itself.
+    holderOf: (request) => {
+      const token = tokenOf(request);
+      if (token === undefined) return undefined;
+      const maker = token.createdBySubject;
+      return maker === null
+        ? `token ${token.id} (its maker was not recorded)`
+        : `token ${token.id} made by user ${JSON.stringify(maker)}`;
+    },
   });
   // /healthz reads web, which is set here before the app can answer.
   const web = await registerWeb(app, webDeps, locales);

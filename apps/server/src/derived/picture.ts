@@ -42,7 +42,8 @@ export function isPictureShown(previewStatus: string | null): boolean {
  * The failures of a picture the preview backfill queues again by itself:
  * the slicer or storage stayed down past the 2-hour wait (a slicer image
  * older than the app, which answers the preview route 404, ends this way
- * too), and a job that could not be queued. Each says it will be tried
+ * too), a job that could not be queued, and a job whose last attempt could
+ * not write in its own temp folder (issue #415). Each says it will be tried
  * again automatically (issue #379). Every other failure is the file's, or
  * is how a file that crashes or hangs the slicer ends (a slicer error, a
  * render that did not finish), or a store refusal that a retry does not
@@ -52,6 +53,7 @@ export const PREVIEW_RETRIED: readonly string[] = [
   DERIVED_MESSAGES.previewSlicerDown,
   DERIVED_MESSAGES.previewStoreDown,
   DERIVED_MESSAGES.previewQueueFailed,
+  DERIVED_MESSAGES.previewTempFailed,
 ];
 
 /** The stored facts a file's picture status is worked out from. */

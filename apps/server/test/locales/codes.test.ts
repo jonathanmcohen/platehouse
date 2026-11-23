@@ -18,6 +18,7 @@ import {
 import { OTHER_PRINTER_LABEL, printerName } from "../../src/estimates/display.js";
 import {
   CHANGED_REASON,
+  CONTROL_CHARS_REASON,
   HELD_REASON,
   NON_UTF8_REASON,
   parseReasonFile,
@@ -66,6 +67,7 @@ describe("inbox reason files", () => {
     [STILL_WRITING_REASON, "still_writing"],
     [HELD_REASON, "held"],
     [NON_UTF8_REASON, "non_utf8"],
+    [CONTROL_CHARS_REASON, "control_chars"],
     [TOO_LARGE_REASON, "too_large"],
     [tooLargeReason(1024), "too_large"],
     [repeatedErrorReason(new Error("boom")), "retries_exhausted"],

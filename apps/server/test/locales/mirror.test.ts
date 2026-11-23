@@ -26,6 +26,7 @@ import { DERIVED_SENTENCES } from "../../src/derived/client.js";
 import { REASON_WORDS } from "../../src/estimates/reasons.js";
 import {
   CHANGED_REASON,
+  CONTROL_CHARS_REASON,
   HELD_REASON,
   NON_UTF8_REASON,
   PUT_BACK_FAILED_REASON,
@@ -144,6 +145,7 @@ describe("inbox reasons (inbox/watch.ts)", () => {
     ["inbox.reason.stillWriting", STILL_WRITING_REASON],
     ["inbox.reason.held", HELD_REASON],
     ["inbox.reason.nonUtf8", NON_UTF8_REASON],
+    ["inbox.reason.controlChars", CONTROL_CHARS_REASON],
   ])("%s", (key, sentence) => {
     expect(en(key)).toBe(sentence);
   });

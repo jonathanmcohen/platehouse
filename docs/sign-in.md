@@ -107,7 +107,7 @@ statement ends every session they have; the second revokes every token they made
 checked on every request, so both take effect at once.
 
 ```sql
-begin;
+begin isolation level read committed;
 
 delete from sessions where subject = 'the-user-id';
 

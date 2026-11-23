@@ -42,6 +42,21 @@
 // page, and offers Import anyway, which sends that file again and stores it.
 // The link moves within the app and hides the dialog, so uploads still
 // sending carry on; outside a router (the tests) it is a plain link.
+//
+// Three files are sent at a time; a row waiting its turn reads Waiting. A
+// failed row offers Retry, a button named for its file ("Retry: <name>"), as
+// a list of failed rows would otherwise offer several buttons all called
+// Retry; Import anyway is named for its file the same way. Retry and Import
+// anyway leave with the state that offered them, so pressing one moves focus
+// to that row's status (focusable from script only), never to the page.
+// useTusUpload holds the rest: resuming when the browser is back online and
+// asking before the page is left while files are sending.
+//
+// A polite live region says each row's outcome once, "<name>: <status>",
+// when it is Added, Skipped or failed with its reason. Starting to send,
+// Waiting, the percentages and Adding to the library are not said: the
+// outcome follows each of them, and the percentages would be read on every
+// tick.
 import {
   type DragEvent,
   type MouseEvent,
@@ -61,6 +76,7 @@ import {
   type FetchResult,
   type StartUpload,
   type UploadItem,
+  type UploadStatus,
   type UploadTarget,
   useTusUpload,
 } from "./useTusUpload";
@@ -129,6 +145,8 @@ function statusText(item: UploadItem, i18n: Pick<I18n, "t" | "fmt">): string {
       return t("upload.status.ready");
     case "unsupported":
       return item.message ?? t("upload.status.unsupported");
+    case "waiting":
+      return t("upload.status.waiting");
     case "uploading":
       return i18n.fmt.percent(percent(item));
     case "adding":
@@ -195,6 +213,17 @@ function DuplicateNote({
   );
 }
 
+/** The row states the live region says: each row's outcome. */
+const ANNOUNCED: ReadonlySet<UploadStatus> = new Set(["done", "failed", "duplicate"]);
+
+/** How many recent announcements the live region keeps. */
+const ANNOUNCEMENTS_KEPT = 10;
+
+/** Moves focus from a row's button, about to go, to that row's status. */
+function focusRowStatus(button: HTMLElement) {
+  button.closest("li")?.querySelector<HTMLElement>(".ph-upload-status")?.focus();
+}
+
 const FOCUSABLE =
   'button:not([disabled]), input:not([disabled]):not([hidden]), [href], [tabindex]:not([tabindex="-1"])';
 
@@ -240,6 +269,32 @@ export function UploadDialog({
     },
   });
   const { addFiles, items, busy } = upload;
+  /** The live region's lines, oldest first. */
+  const [said, setSaid] = useState<{ id: number; text: string }[]>([]);
+  /** Each row's status when last seen, so a change is said once. */
+  const seen = useRef(new Map<string, UploadStatus>());
+  const saidCount = useRef(0);
+
+  // Says each row's outcome once, while the dialog is open.
+  useEffect(() => {
+    const before = seen.current;
+    const next = new Map<string, UploadStatus>();
+    const lines: { id: number; text: string }[] = [];
+    for (const item of items) {
+      next.set(item.key, item.status);
+      const was = before.get(item.key);
+      if (was === undefined || was === item.status || !ANNOUNCED.has(item.status) || !open) {
+        continue;
+      }
+      saidCount.current += 1;
+      lines.push({
+        id: saidCount.current,
+        text: i18n.t("upload.announce", { name: item.file.name, status: statusText(item, i18n) }),
+      });
+    }
+    seen.current = next;
+    if (lines.length > 0) setSaid((list) => [...list, ...lines].slice(-ANNOUNCEMENTS_KEPT));
+  }, [items, i18n, open]);
 
   useEffect(() => {
     if (files.length > 0) addFiles(files);
@@ -301,6 +356,7 @@ export function UploadDialog({
   const ready = items.filter((i) => i.status === "ready").length;
 
   function close() {
+    setSaid([]);
     if (!busy) {
       upload.clearSettled();
       setCombine(false);
@@ -364,6 +420,11 @@ export function UploadDialog({
           {t("upload.supported")}
         </p>
         <p className="studio-muted">{t("upload.duplicates")}</p>
+        <div className="studio-visually-hidden" role="status" aria-live="polite">
+          {said.map((line) => (
+            <p key={line.id}>{line.text}</p>
+          ))}
+        </div>
 
         {items.length === 0 ? (
           <p className="studio-empty">{t("upload.empty")}</p>
@@ -385,6 +446,7 @@ export function UploadDialog({
                       ? "ph-upload-status ph-upload-status-bad"
                       : "ph-upload-status"
                   }
+                  tabIndex={-1}
                 >
                   {statusText(item, i18n)}
                 </span>
@@ -396,9 +458,28 @@ export function UploadDialog({
                     <button
                       type="button"
                       className="studio-button"
-                      onClick={() => upload.importAnyway(item.key)}
+                      aria-label={t("upload.importAnywayFile", { name: item.file.name })}
+                      onClick={(event) => {
+                        upload.importAnyway(item.key);
+                        focusRowStatus(event.currentTarget);
+                      }}
                     >
                       {t("upload.importAnyway")}
+                    </button>
+                  </div>
+                ) : null}
+                {item.status === "failed" && item.target !== undefined ? (
+                  <div className="ph-upload-actions">
+                    <button
+                      type="button"
+                      className="studio-button"
+                      aria-label={t("upload.retryFile", { name: item.file.name })}
+                      onClick={(event) => {
+                        upload.retry(item.key);
+                        focusRowStatus(event.currentTarget);
+                      }}
+                    >
+                      {t("upload.retry")}
                     </button>
                   </div>
                 ) : null}

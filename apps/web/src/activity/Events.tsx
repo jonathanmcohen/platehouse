@@ -43,6 +43,7 @@ const INBOX_REASON_KEYS: Readonly<Record<string, MessageKey>> = {
   still_writing: "inbox.reason.stillWriting",
   held: "inbox.reason.held",
   non_utf8: "inbox.reason.nonUtf8",
+  control_chars: "inbox.reason.controlChars",
   too_large: "inbox.reason.tooLarge",
   unsupported_type: "upload.result.unsupportedType",
   model_not_found: "upload.result.modelNotFound",

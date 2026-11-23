@@ -3415,7 +3415,7 @@
         "operationId": "createUpload",
         "summary": "Start an upload",
         "tags": ["Uploads"],
-        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named from the .3mf's MakerWorld title when it has one, else from the file's name.\n\nduplicates says what happens when a live model already holds a file with the same SHA-256: allow (the default) stores it anyway and the result lists the copies; skip stores nothing and the result is failed with code duplicate. A file in the trash never counts.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives, and an upload left unfinished for 24 hours is deleted.",
+        "description": "Creates a resumable upload of a known size (tus 1.0.0 creation). The size goes in Upload-Length, at most 536870912 bytes (512 MiB). Upload-Metadata must carry filename, whose extension says what the file is: .3mf, .stl, .step, .stp or .scad. Add modelId to put the file into an existing model, or batch (and combine) to group several uploads; with neither, the file becomes a model of its own, named from the .3mf's MakerWorld title when it has one, else from the file's name.\n\nduplicates says what happens when a live model already holds a file with the same SHA-256: allow (the default) stores it anyway and the result lists the copies; skip stores nothing and the result is failed with code duplicate. A file in the trash never counts.\n\nThe answer's Location is the upload's address. Send the bytes there with PATCH, then poll GET /uploads/{id}/result until it says done or failed. The body of this request may already carry the first bytes, or the whole file, when it is sent with Content-Type: application/offset+octet-stream (tus creation-with-upload).\n\nNothing is stored until the last byte arrives. An unfinished upload is deleted 24 hours after it was created, whatever has arrived by then, or after an hour when it has received no byte. One token may hold at most 20 unfinished uploads at once.",
         "parameters": [
           {
             "schema": {
@@ -3477,7 +3477,7 @@
             }
           },
           "400": {
-            "description": "Upload-Length is missing, or Upload-Metadata is malformed, has no filename, has a duplicates other than skip or allow, or breaks a rule above. The body says which.",
+            "description": "Upload-Length is missing or 0 (an empty file), or Upload-Metadata is malformed, has no filename, has a duplicates other than skip or allow, or breaks a rule above. The body says which.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -3573,6 +3573,17 @@
               }
             }
           },
+          "429": {
+            "description": "This token already has 20 unfinished uploads, or 2000 uploads on the server in any state (a finished one is kept a day after its import). Finish one of them, or wait: an unfinished upload is deleted 24 hours after it was created, or after an hour when it has received no byte. The body says which. Nothing was saved.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "You already have 20 unfinished uploads; nothing was saved. Finish or wait for one of them, then try again.\n"
+              }
+            }
+          },
           "500": {
             "description": "Something unexpected went wrong while handling the bytes. If the upload has an address, ask HEAD where to carry on; if not, start again.",
             "content": {
@@ -3624,6 +3635,30 @@
                 "example": "The upload could not be queued; nothing was saved. Try again.\n"
               }
             }
+          },
+          "507": {
+            "description": "The server has no room for this upload: the unfinished uploads together would pass the server's UPLOAD_TEMP_MAX_BYTES, the server already holds 10,000 uploads, or its disk would keep less than 1 GiB free beyond this upload and the bytes other uploads are still to receive, or fewer than 10,000 free inodes. The body says which. Nothing was saved; try again later.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "total": {
+                    "summary": "Over UPLOAD_TEMP_MAX_BYTES",
+                    "value": "Unfinished uploads already hold all the room this server keeps for them; nothing was saved. Try again once some have finished.\n"
+                  },
+                  "disk": {
+                    "summary": "Less than 1 GiB would stay free",
+                    "value": "The server's disk does not have room for this upload; nothing was saved. Try again later.\n"
+                  },
+                  "uploads": {
+                    "summary": "10,000 uploads already held",
+                    "value": "The server is holding as many uploads as it keeps at once; nothing was saved. Try again later.\n"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -3633,7 +3668,7 @@
         "operationId": "resumeUpload",
         "summary": "Where to resume an upload",
         "tags": ["Uploads"],
-        "description": "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. Use it after a cut-off, such as a network change. Once the file has been imported, Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed with nothing saved, the answer is 410, and GET /uploads/{id}/result says why. An upload removed by the 24-hour sweep, or because its import could not be queued, is 404.",
+        "description": "Upload-Offset says how many bytes have arrived; send the rest with PATCH from there. Use it after a cut-off, such as a network change. Once the file has been imported, Upload-Offset equals Upload-Length, so nothing is sent again. If the import failed with nothing saved, the answer is 410, and GET /uploads/{id}/result says why. An upload removed by the hourly sweep (an unfinished one 24 hours after it was created, whatever had arrived, or after an hour with no byte; any upload after 24 hours untouched; a finished one 24 hours after its import), or because its import could not be queued, is 404.",
         "parameters": [
           {
             "schema": {
@@ -3688,7 +3723,7 @@
             }
           },
           "404": {
-            "description": "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued"
+            "description": "No such upload: the id is unknown, the upload was removed by the hourly sweep (an unfinished one 24 hours after it was created, whatever had arrived, or after an hour with no byte; any upload after 24 hours untouched; a finished one 24 hours after its import), or it was removed because its import could not be queued"
           },
           "410": {
             "description": "The import failed and nothing was saved. GET /uploads/{id}/result says why; send the file again as a new upload, unless that reason is about the file itself (an unsupported type, or a duplicate under duplicates skip)"
@@ -3862,7 +3897,7 @@
             }
           },
           "404": {
-            "description": "No such upload: the id is unknown, the upload was removed after 24 hours untouched (or 24 hours after its import), or it was removed because its import could not be queued",
+            "description": "No such upload: the id is unknown, the upload was removed by the hourly sweep (an unfinished one 24 hours after it was created, whatever had arrived, or after an hour with no byte; any upload after 24 hours untouched; a finished one 24 hours after its import), or it was removed because its import could not be queued",
             "content": {
               "text/plain": {
                 "schema": {

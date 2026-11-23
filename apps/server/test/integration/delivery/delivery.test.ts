@@ -92,6 +92,9 @@ interface Answer {
 /** Every answer this file read, for the no-S3-detail check. */
 const answers: Answer[] = [];
 
+/** The ETag this app sends on a revalidated blob: its quoted id, a UUID. */
+const OWN_ETAG = /^"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"$/;
+
 async function call(
   method: string,
   path: string,
@@ -331,12 +334,44 @@ describe("downloads and blobs", () => {
     expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="/);
   });
 
-  test("a blob is served with the immutable cache header", async () => {
+  test("a thumbnail is served with the immutable cache header", async () => {
     const seeded = await seedStoredModel(env);
     const res = await call("GET", `/blobs/${seeded.thumbnail.id}`, { session: true });
     expect(res.status).toBe(200);
     expect(res.text).toMatch(/^png /);
     expect(res.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+  });
+
+  test("a source blob is revalidated, and a matching If-None-Match is 304 without a body", async () => {
+    const seeded = await seedStoredModel(env);
+    const path = `/blobs/${seeded.source.id}`;
+    const etag = `"${seeded.source.id}"`;
+    const plain = await call("GET", path, { session: true });
+    expect(plain.status).toBe(200);
+    expect(plain.headers.get("cache-control")).toBe("private, no-cache");
+    expect(plain.headers.get("etag")).toBe(etag);
+    for (const value of [etag, `W/${etag}`, "*"]) {
+      const res = await call("GET", path, { session: true, headers: { "if-none-match": value } });
+      expect(res.status, value).toBe(304);
+      expect(res.headers.get("etag"), value).toBe(etag);
+      expect(res.headers.get("cache-control"), value).toBe("private, no-cache");
+      expect(res.bytes.length, value).toBe(0);
+    }
+    const other = await call("GET", path, {
+      session: true,
+      headers: { "if-none-match": '"something-else"' },
+    });
+    expect(other.status).toBe(200);
+  });
+
+  test("a conditional request for a trashed model's blob is 404", async () => {
+    const seeded = await seedStoredModel(env);
+    await env.repos.models.trash(seeded.model.id);
+    const res = await call("GET", `/blobs/${seeded.source.id}`, {
+      session: true,
+      headers: { "if-none-match": `"${seeded.source.id}"` },
+    });
+    expect(res.status).toBe(404);
   });
 
   test("a trashed model's file and blobs are 404", async () => {
@@ -580,7 +615,11 @@ describe("no S3 detail in any answer", () => {
       const headerText = [...answer.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
       for (const name of answer.headers.keys()) {
         expect(name.toLowerCase().startsWith("x-amz"), name).toBe(false);
-        expect(name.toLowerCase(), name).not.toBe("etag");
+        // Only our own blob-id ETag is allowed ("<uuid>", quoted); an S3 ETag
+        // is a quoted MD5 hex and would show a store's own header.
+        if (name.toLowerCase() === "etag") {
+          expect(answer.headers.get(name), name).toMatch(OWN_ETAG);
+        }
       }
       for (const needle of forbidden) {
         expect(headerText.includes(needle), `${needle} in headers`).toBe(false);

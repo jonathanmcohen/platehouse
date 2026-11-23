@@ -15,11 +15,28 @@
 //   #77). A finished upload's fingerprint is removed too: the server answers a
 //   HEAD on an ingested upload as finished, so resuming it would store
 //   nothing (uploads/tus.ts).
+// - Three files are sent at a time (UPLOAD_POOL); the rest wait their turn,
+//   and a waiting file's upload is only created on the server when its turn
+//   comes, so it never counts toward the server's 20 unfinished uploads per
+//   session or ages out there before a byte is sent.
+// - tus-js-client resends a request that failed for a reason that may pass
+//   (shouldRetryUpload): never while the browser is offline, and never a
+//   507 (the server is out of room) or a 429 (too many unfinished uploads),
+//   which asking again at once will not change.
+// - A failed row offers Retry, which sends the file again to where it was
+//   first sent. A row that failed because the connection was lost starts
+//   again by itself when the browser comes back online; while it is
+//   offline, waiting rows are not started (they would only fail). While a file is
+//   waiting or sending, leaving the page asks first (beforeunload).
 // - When the last byte is accepted, GET <upload>/result is polled until the
-//   ingest is done or failed. Only a 503 (the server cannot read the result
-//   now) or a lost connection is asked again; a 401 says the file was sent
-//   but the session ended, and any other refusal (a 404 for an upload the
-//   server no longer knows) says the upload could not be confirmed.
+//   ingest is done or failed: at once, then after waits of 1 s, 5 s, then
+//   15 s each (RESULT_BACKOFF_MS). A pending answer, or a 503 (the server cannot read
+//   the result now), keeps waiting, up to RESULT_TIMEOUT_MS. A lost
+//   connection, or a 429, 502 or 504 (a proxy in the way), is asked again,
+//   but RESULT_ERROR_LIMIT of them in a row give up. A 401 says the file was
+//   sent but the session ended, and any other refusal (a 404 for an upload
+//   the server no longer knows) says at once that the upload could not be
+//   confirmed.
 // - A file over the server's 512 MiB limit (MAX_UPLOAD_BYTES in
 //   apps/server/src/uploads/tus.ts) is listed with the reason and never
 //   sent, like a type Platehouse does not take. A refused or failed upload
@@ -76,6 +93,13 @@ export const MAX_UPLOAD_BYTES = 536_870_912;
 /** Shown on a row whose file is over MAX_UPLOAD_BYTES; it is never sent. */
 export const TOO_LARGE_TEXT = ENGLISH_I18N.t("upload.tooLarge");
 
+/**
+ * The words that mark the upload route's 429 for too many uploads on the
+ * server in any state (uploads/tus.ts TOO_MANY_HELD_MESSAGE), as against
+ * its 429 for too many unfinished ones.
+ */
+const TOO_MANY_HELD_WORDS = "uploads on the server";
+
 /** Longest server reason shown as it is; a longer body gets the status line. */
 const REASON_CHARS = 300;
 
@@ -129,6 +153,15 @@ export function failureMessage(error: Error, i18n: Words = ENGLISH_I18N): string
     const status = response.getStatus();
     if (status === 413) return t("upload.tooLargeSentence");
     if (status === 401) return t("upload.sessionEnded");
+    if (status === 507) return t("upload.serverFull");
+    if (status === 429) {
+      // The server's 429 for too many uploads in any state, finished ones
+      // included (uploads/tus.ts TOO_MANY_HELD_MESSAGE), is not cured by a
+      // Retry once others finish, so it has its own line.
+      return plainReason(response)?.includes(TOO_MANY_HELD_WORDS)
+        ? t("upload.tooManyRecent")
+        : t("upload.tooManyUnfinished");
+    }
     if (status >= 500) return t("upload.serverBusy", { status });
     // The tus handler's own reason is an English line: shown as it is in
     // English, and in another language replaced by a line for the status.
@@ -149,11 +182,73 @@ export function failureMessage(error: Error, i18n: Words = ENGLISH_I18N): string
   );
 }
 
-/** How often a finished upload's result is asked for while its ingest runs. */
-export const RESULT_POLL_MS = 1_000;
+/**
+ * Whether tus-js-client's failure was a lost connection: a request that got
+ * no answer. Such a row starts again when the browser comes back online.
+ */
+export function isConnectionLost(error: Error): boolean {
+  const detailed = error as Error & {
+    originalRequest?: unknown;
+    originalResponse?: HttpResponse | null;
+  };
+  return (detailed.originalResponse ?? null) === null && detailed.originalRequest !== undefined;
+}
 
-/** How long a result is waited for before the row says it could not be confirmed. */
-export const RESULT_TIMEOUT_MS = 10 * 60 * 1_000;
+/** How many files are sent at once; the rest wait their turn. */
+export const UPLOAD_POOL = 3;
+
+/**
+ * Whether tus-js-client sends a failed request again (its onShouldRetry).
+ * Never while the browser says it is offline: the row fails with a lost
+ * connection and starts again when it is back. Never a 507 (the server is
+ * out of room) or a 429 (too many unfinished uploads): asking again at once
+ * will not change either. Otherwise as tus-js-client decides by default: a
+ * lost connection, a 5xx, a 409 or a 423 is sent again, any other 4xx not.
+ */
+export function shouldRetryUpload(error: Error): boolean {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+  const response = (error as Error & { originalResponse?: HttpResponse | null }).originalResponse;
+  const status = response?.getStatus() ?? 0;
+  if (status === 507 || status === 429) return false;
+  return status < 400 || status >= 500 || status === 409 || status === 423;
+}
+
+/**
+ * The waits between asks for a finished upload's result: 1 s, then 5 s, then
+ * 15 s each time after.
+ */
+export const RESULT_BACKOFF_MS: readonly number[] = [1_000, 5_000, 15_000];
+
+/**
+ * The wait before the next ask, after `attempt` asks have been answered
+ * pending or failed: the backoff, or `fixedMs` for every wait when given.
+ */
+export function resultWaitMs(attempt: number, fixedMs?: number): number {
+  if (fixedMs !== undefined) return fixedMs;
+  return RESULT_BACKOFF_MS[Math.min(attempt, RESULT_BACKOFF_MS.length - 1)] ?? 15_000;
+}
+
+/**
+ * How long a pending result is waited for before the row says it could not
+ * be confirmed: 70 minutes. The server gives an import an hour
+ * (INGEST_EXPIRE_SECONDS in apps/server/src/jobs/queues.ts) before it is
+ * failed, and the rest is time it may wait for its turn.
+ */
+export const RESULT_TIMEOUT_MS = 70 * 60 * 1_000;
+
+/** How many errors in a row asking for a result give up as not confirmed. */
+export const RESULT_ERROR_LIMIT = 5;
+
+/** Answers to GET <upload>/result that may pass: asked again, as a lost connection is. */
+const PASSING_RESULT_STATUS: ReadonlySet<number> = new Set([429, 502, 504]);
+
+/** A GET <upload>/result answer that may pass, as makeFetchUploadResult throws it. */
+class ResultUnavailable extends Error {
+  constructor(status: number) {
+    super(`the upload's result could not be read (HTTP ${status})`);
+    this.name = "ResultUnavailable";
+  }
+}
 
 /** Shown when a sent file's ingest outcome cannot be known. */
 export const NOT_CONFIRMED_TEXT = ENGLISH_I18N.t("upload.notConfirmed");
@@ -255,6 +350,7 @@ export function uploadOptions(
     storeFingerprintForResuming: true,
     removeFingerprintOnSuccess: true,
     retryDelays: [0, 1_000, 3_000, 5_000, 10_000],
+    onShouldRetry: (error) => shouldRetryUpload(error),
     onProgress: (sent, total) => handlers.onProgress(sent, total),
     onSuccess: () => {
       const url = uploadUrl();
@@ -320,15 +416,18 @@ export type FetchResult = (uploadUrl: string) => Promise<UploadResult>;
 /**
  * GET <upload>/result: the server's answer for a finished upload. A 503 is the
  * server saying it cannot read the result now, so it stays pending and is
- * asked again (as a lost connection is, by waitForResult). A 401 is a session
- * that ended while the ingest ran: the file was sent, so the row says to sign
- * in and check the library. Any other refusal, such as the 404 for an upload
+ * asked again. A 429, 502 or 504 (often a proxy in the way) may pass: it
+ * throws ResultUnavailable, which waitForResult counts as an error
+ * and asks again, as it does a lost connection. A 401 is a session that
+ * ended while the ingest ran: the file was sent, so the row says to sign in
+ * and check the library. Any other refusal, such as the 404 for an upload
  * the server no longer knows, will not change by asking again.
  */
 export function makeFetchUploadResult(): FetchResult {
   return async (uploadUrl) => {
     const res = await fetch(`${uploadUrl}/result`, { headers: { accept: "application/json" } });
     if (res.status === 503) return { status: "pending" };
+    if (PASSING_RESULT_STATUS.has(res.status)) throw new ResultUnavailable(res.status);
     // These two are the page's own outcomes, not the server's words, so they
     // carry a code and no error: resultMessage then says them in the shown
     // language every time, never as server English (issue 295).
@@ -367,6 +466,8 @@ export function resultMessage(result: UploadResult, i18n: Words = ENGLISH_I18N):
 export type UploadStatus =
   | "ready"
   | "unsupported"
+  /** Sent, waiting for one of the UPLOAD_POOL places; nothing is on the server yet. */
+  | "waiting"
   | "uploading"
   | "adding"
   | "done"
@@ -382,8 +483,12 @@ export interface UploadItem {
   /** A failure's reason, or why a file is not sent. */
   message?: string;
   modelId?: string;
-  /** Where the file was sent, so Import anyway sends it to the same place. */
+  /** Where the file was sent, so Import anyway and Retry send it to the same place. */
   target?: UploadTarget;
+  /** The duplicates policy it was last sent with, so Retry sends it the same way. */
+  policy?: DuplicatePolicy;
+  /** A failure because the connection was lost: it starts again when back online. */
+  offline?: boolean;
   /** For a duplicate: the live files that already hold it, oldest first. */
   duplicates?: DuplicateMatch[];
 }
@@ -403,7 +508,7 @@ function duplicateList(value: unknown): DuplicateMatch[] {
 export interface UseTusUploadOptions {
   start?: StartUpload;
   fetchResult?: FetchResult;
-  /** How long to wait between result polls; RESULT_POLL_MS when left out. */
+  /** One wait for every result poll; RESULT_BACKOFF_MS when left out. */
   resultDelayMs?: number;
   /** Runs once when every sent file has finished, done or failed. */
   onFinished?: (items: UploadItem[]) => void;
@@ -430,6 +535,23 @@ function itemFor(file: File, i18n: Words): UploadItem {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** A row sent and waiting for one of the UPLOAD_POOL places. */
+interface Turn {
+  item: UploadItem;
+  target: UploadTarget;
+  duplicates: DuplicatePolicy;
+}
+
+/** Whether a row's file is still to reach the server: leaving the page would lose it. */
+const isSending = (item: UploadItem) => item.status === "waiting" || item.status === "uploading";
+
+/** Asks before the page is left while a file is still sending. */
+function askBeforeLeaving(event: BeforeUnloadEvent) {
+  event.preventDefault();
+  // Browsers that predate preventDefault here ask when returnValue is set.
+  event.returnValue = "";
+}
+
 /** The files of one upload dialog and how far each has got. */
 export function useTusUpload(opts: UseTusUploadOptions = {}) {
   const start = opts.start ?? startTusUpload;
@@ -437,9 +559,13 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
   const words = useRef(i18n);
   words.current = i18n;
   const fetchResult = opts.fetchResult ?? fetchUploadResult;
-  const delay = opts.resultDelayMs ?? RESULT_POLL_MS;
+  const fixedDelay = opts.resultDelayMs;
   const [items, setItems] = useState<UploadItem[]>([]);
+  /** The uploads tus is sending now, at most UPLOAD_POOL, by row key. */
   const handles = useRef(new Map<string, UploadHandle>());
+  /** The rows sent and waiting their turn, first sent first. */
+  const queue = useRef<Turn[]>([]);
+  const mounted = useRef(true);
   const onFinished = useRef(opts.onFinished);
   onFinished.current = opts.onFinished;
   const latest = useRef<UploadItem[]>([]);
@@ -450,7 +576,7 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
     setItems((list) => list.map((item) => (item.key === key ? { ...item, ...patch } : item)));
   }, []);
 
-  // Once every sent file has ended, report it once.
+  // Once every sent file has ended, report it once. A waiting row has not.
   useEffect(() => {
     if (!running.current) return;
     const sent = items.filter((i) => i.status !== "ready" && i.status !== "unsupported");
@@ -464,11 +590,23 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
   }, [items]);
 
   useEffect(() => {
+    mounted.current = true;
     const open = handles.current;
+    const waiting = queue.current;
     return () => {
+      mounted.current = false;
+      waiting.length = 0;
       for (const handle of open.values()) handle.abort();
     };
   }, []);
+
+  // While a file is waiting or sending, leaving the page asks first.
+  const sending = items.some(isSending);
+  useEffect(() => {
+    if (!sending) return;
+    window.addEventListener("beforeunload", askBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", askBeforeLeaving);
+  }, [sending]);
 
   /** Adds files to the list; a file already listed and not yet sent is not added twice. */
   const addFiles = useCallback((files: File[]) => {
@@ -489,7 +627,11 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
 
   /** Removes the rows that are not in flight: done, failed, unsupported or not sent. */
   const clearSettled = useCallback(() => {
-    setItems((list) => list.filter((i) => i.status === "uploading" || i.status === "adding"));
+    setItems((list) =>
+      list.filter(
+        (i) => i.status === "waiting" || i.status === "uploading" || i.status === "adding",
+      ),
+    );
   }, []);
 
   /** Removes only the rows that went in; a failed or unsent row stays to be seen. */
@@ -497,23 +639,31 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
     setItems((list) => list.filter((i) => i.status !== "done"));
   }, []);
 
+  /**
+   * Asks for a finished upload's result until it is done or failed: at once,
+   * then after waits of 1 s, 5 s, then 15 s each. Pending keeps waiting, up
+   * to RESULT_TIMEOUT_MS; RESULT_ERROR_LIMIT errors in a row give up.
+   */
   async function waitForResult(key: string, uploadUrl: string) {
     const until = Date.now() + RESULT_TIMEOUT_MS;
-    for (;;) {
-      let result: UploadResult;
+    let errors = 0;
+    for (let attempt = 0; ; attempt += 1) {
+      let result: UploadResult | undefined;
       try {
         result = await fetchResult(uploadUrl);
+        errors = 0;
       } catch {
-        result = { status: "pending" };
+        errors += 1;
       }
-      if (result.status === "done") {
+      if (!mounted.current) return;
+      if (result?.status === "done") {
         update(key, {
           status: "done",
           ...(result.modelId === undefined ? {} : { modelId: result.modelId }),
         });
         return;
       }
-      if (result.status === "failed") {
+      if (result?.status === "failed") {
         const duplicates = duplicateList(result.duplicates);
         if (result.code === "duplicate" && duplicates.length > 0) {
           update(key, { status: "duplicate", duplicates });
@@ -522,34 +672,85 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
         update(key, { status: "failed", message: resultMessage(result, words.current) });
         return;
       }
-      if (Date.now() > until) {
+      if (errors >= RESULT_ERROR_LIMIT || Date.now() > until) {
         update(key, { status: "failed", message: words.current.t("upload.notConfirmed") });
         return;
       }
-      await sleep(delay);
+      await sleep(resultWaitMs(attempt, fixedDelay));
     }
   }
 
-  /** Starts one file's upload to the target, its row already marked uploading. */
-  function send(item: UploadItem, target: UploadTarget, duplicates: DuplicatePolicy) {
-    const handle = start(
-      item.file,
-      target,
-      {
-        onProgress: (sent, total) => update(item.key, { sent, total }),
-        onSuccess: (uploadUrl) => {
-          handles.current.delete(item.key);
-          update(item.key, { status: "adding", sent: item.file.size, total: item.file.size });
-          void waitForResult(item.key, uploadUrl);
+  /** Ends a row that failed to send: its place is freed for the next waiting row. */
+  function sendFailed(key: string, error: Error) {
+    handles.current.delete(key);
+    update(key, {
+      status: "failed",
+      message: failureMessage(error, words.current),
+      offline: isConnectionLost(error),
+    });
+    pump();
+  }
+
+  /**
+   * Starts one waiting row's upload: only now is it created on the server.
+   * Its place is taken before start, so a start that fails at once, by
+   * calling onError or by throwing, frees it.
+   */
+  function send({ item, target, duplicates }: Turn) {
+    const { key, file } = item;
+    handles.current.set(key, { abort() {} });
+    update(key, { status: "uploading", sent: 0 });
+    let handle: UploadHandle;
+    try {
+      handle = start(
+        file,
+        target,
+        {
+          onProgress: (sent, total) => update(key, { sent, total }),
+          onSuccess: (uploadUrl) => {
+            handles.current.delete(key);
+            update(key, { status: "adding", sent: file.size, total: file.size });
+            // Asked for first, so the next row's start cannot keep this one unconfirmed.
+            void waitForResult(key, uploadUrl);
+            pump();
+          },
+          onError: (error) => sendFailed(key, error),
         },
-        onError: (error) => {
-          handles.current.delete(item.key);
-          update(item.key, { status: "failed", message: failureMessage(error, words.current) });
-        },
-      },
-      duplicates,
+        duplicates,
+      );
+    } catch (error) {
+      sendFailed(key, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (handles.current.has(key)) handles.current.set(key, handle);
+  }
+
+  /**
+   * Starts waiting rows, first sent first, while fewer than UPLOAD_POOL are
+   * sending. Not while the browser is offline: they would only fail, so they
+   * wait, and the online handler starts them.
+   */
+  function pump() {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    while (mounted.current && handles.current.size < UPLOAD_POOL) {
+      const turn = queue.current.shift();
+      if (turn === undefined) return;
+      send(turn);
+    }
+  }
+
+  /** Puts a row in line to be sent, unless it is already waiting or sending. */
+  function enqueue(item: UploadItem, target: UploadTarget, duplicates: DuplicatePolicy) {
+    const { key } = item;
+    if (handles.current.has(key) || queue.current.some((turn) => turn.item.key === key)) return;
+    queue.current.push({ item, target, duplicates });
+    setItems((list) =>
+      list.map((i) => {
+        if (i.key !== key) return i;
+        const { message: _message, offline: _offline, ...rest } = i;
+        return { ...rest, status: "waiting" as const, sent: 0, target, policy: duplicates };
+      }),
     );
-    handles.current.set(item.key, handle);
   }
 
   /** Sends every ready file to the target, skipping any already in the library. */
@@ -557,22 +758,47 @@ export function useTusUpload(opts: UseTusUploadOptions = {}) {
     const ready = latest.current.filter((i) => i.status === "ready");
     if (ready.length === 0) return;
     running.current = true;
-    setItems((list) =>
-      list.map((i) => (i.status === "ready" ? { ...i, status: "uploading" as const, target } : i)),
-    );
-    for (const item of ready) send(item, target, "skip");
+    for (const item of ready) enqueue(item, target, "skip");
+    pump();
   };
 
   /** Sends a skipped duplicate again, to where it was first sent, stored anyway. */
   const importAnyway = (key: string) => {
     const item = latest.current.find((i) => i.key === key);
     if (item?.status !== "duplicate" || item.target === undefined) return;
-    const { target } = item;
     running.current = true;
-    update(key, { status: "uploading", sent: 0, duplicates: [] });
-    send(item, target, "allow");
+    update(key, { duplicates: [] });
+    enqueue(item, item.target, "allow");
+    pump();
   };
 
-  const busy = items.some((i) => i.status === "uploading" || i.status === "adding");
-  return { items, addFiles, begin, importAnyway, clearSettled, clearDone, busy };
+  /** Sends a failed row's file again, to where and how it was first sent. */
+  const retry = (key: string) => {
+    const item = latest.current.find((i) => i.key === key);
+    if (item?.status !== "failed" || item.target === undefined) return;
+    running.current = true;
+    enqueue(item, item.target, item.policy ?? "skip");
+    pump();
+  };
+
+  // Back online: each row that failed because the connection was lost starts
+  // again, once (enqueue skips a row already waiting or sending), after the
+  // rows that waited while the browser was offline.
+  const resume = useRef(() => {});
+  resume.current = () => {
+    for (const item of latest.current) {
+      if (item.status !== "failed" || item.offline !== true || item.target === undefined) continue;
+      running.current = true;
+      enqueue(item, item.target, item.policy ?? "skip");
+    }
+    pump();
+  };
+  useEffect(() => {
+    const onOnline = () => resume.current();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
+
+  const busy = items.some((i) => isSending(i) || i.status === "adding");
+  return { items, addFiles, begin, importAnyway, retry, clearSettled, clearDone, busy };
 }

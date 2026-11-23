@@ -23,6 +23,7 @@ import {
   SlicerFault,
   type SlicerTarget,
   SlicerUnreachable,
+  TempFileError,
 } from "../../src/derived/client.js";
 
 const MiB = 1024 * 1024;
@@ -261,7 +262,7 @@ describe("a slicer answer", () => {
     }
   });
 
-  test("a temp file that cannot be written fails with the file system's error, not as a lost slicer", async () => {
+  test("a temp file that cannot be written fails as a temp file problem with the file system's error, not as a lost slicer", async () => {
     const { target } = await slicer((res) => {
       res.writeHead(200, { "content-type": "model/gltf-binary" });
       res.end(pattern(1024));
@@ -270,7 +271,8 @@ describe("a slicer answer", () => {
       postRender(target, request(join(dir, "no-such-folder", "a.glb"), MiB)),
     );
     expect(error).not.toBeInstanceOf(SlicerUnreachable);
-    expect((error as NodeJS.ErrnoException).code).toBe("ENOENT");
+    expect(error).toBeInstanceOf(TempFileError);
+    expect((error as TempFileError).cause.code).toBe("ENOENT");
   });
 });
 

@@ -26,11 +26,15 @@
 // deletes nothing, logging why, when either holds:
 // - the blobs table holds no stored rows (an empty volume, or a wrong
 //   DATABASE_URL pointing at an empty database);
-// - the run would delete more than its limit: ORPHAN_DELETE_FLOOR objects, or
-//   ORPHAN_DELETE_SHARE of the objects it listed in the blob layout when that
-//   is more, and never more than ORPHAN_DELETE_CAP.
-// Orphans are rare (a process that died mid-ingest), so a refused run is a
-// sign to look at the database before anything is deleted.
+// - the run would delete orphans from more models than its limit: a model is
+//   one models/<modelId>/ prefix, and the limit is ORPHAN_DELETE_FLOOR
+//   models, or ORPHAN_DELETE_SHARE of the models it listed in the blob layout
+//   when that is more, and never more than ORPHAN_DELETE_CAP.
+// The limit counts models, not objects, because one interrupted import
+// leaves up to 129 objects under one model prefix, which is one model's
+// worth of leftovers, while a restored old database leaves many whole models
+// with no rows. Orphans are rare (a process that died mid-ingest), so a
+// refused run is a sign to look at the database before anything is deleted.
 //
 // The guard limits how much one run can delete when the database is wrong;
 // it does not prevent deletion. A database that has stored rows of its own
@@ -38,7 +42,7 @@
 // DATABASE_URL pointing at another Platehouse database, a second instance on
 // the same bucket) passes the first test, and a mismatch within the limit is
 // deleted: the uploads made since an older dump, once 24 hours old, or every
-// object of a library of ORPHAN_DELETE_FLOOR objects or fewer. Nothing in the
+// model of a library of ORPHAN_DELETE_FLOOR models or fewer. Nothing in the
 // key tells such an object from a real orphan, since a new model's objects
 // have no models row either until its ingest commits. Bucket versioning is
 // the protection here, and the settings page warns while it is off.
@@ -50,39 +54,46 @@ import type { BlobStore } from "../storage/s3.js";
 /** How old an object with no blob row must be before the sweep deletes it. */
 export const ORPHAN_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** A run may always delete this many orphans... */
+/** A run may always delete orphans from this many models... */
 export const ORPHAN_DELETE_FLOOR = 10;
-/** ...or this share of the objects it listed in the blob layout, when that is more... */
+/** ...or this share of the models it listed in the blob layout, when that is more... */
 export const ORPHAN_DELETE_SHARE = 0.1;
-/** ...but never more than this many. */
+/** ...but never more than this many models. */
 export const ORPHAN_DELETE_CAP = 100;
 
 const PREFIX = "models/";
 
-/** How many orphans one run may delete, given the objects it listed in the blob layout. */
-export function orphanDeleteLimit(inLayout: number): number {
-  const share = Math.floor(inLayout * ORPHAN_DELETE_SHARE);
+/** The models/<modelId>/ prefix of a key in the blob layout. */
+export function modelOf(key: string): string {
+  const [root, modelId] = key.split("/");
+  return `${root}/${modelId}/`;
+}
+
+/** How many models one run may delete orphans from, given the models it listed in the blob layout. */
+export function orphanDeleteLimit(modelsInLayout: number): number {
+  const share = Math.floor(modelsInLayout * ORPHAN_DELETE_SHARE);
   return Math.min(ORPHAN_DELETE_CAP, Math.max(ORPHAN_DELETE_FLOOR, share));
 }
 
 /** Why a run must delete nothing, or undefined when it may delete its orphans. */
 export function orphanRefusal(run: {
-  orphans: number;
-  inLayout: number;
+  orphanModels: number;
+  modelsInLayout: number;
   hasStoredRows: boolean;
 }): string | undefined {
-  if (run.orphans === 0) return undefined;
+  if (run.orphanModels === 0) return undefined;
   if (!run.hasStoredRows) {
     return (
       "the blobs table holds no stored rows, so the database may have lost its rows or not " +
       "be this library's; check DATABASE_URL and the database"
     );
   }
-  const limit = orphanDeleteLimit(run.inLayout);
-  if (run.orphans > limit) {
+  const limit = orphanDeleteLimit(run.modelsInLayout);
+  if (run.orphanModels > limit) {
     return (
-      `it would delete ${run.orphans} of ${run.inLayout} objects in the key layout, over the ` +
-      `limit of ${limit} a run may delete; check the database before deleting them`
+      `it would delete objects of ${run.orphanModels} of ${run.modelsInLayout} models in the ` +
+      `key layout, over the limit of ${limit} models a run may delete; check the database ` +
+      "before deleting them"
     );
   }
   return undefined;
@@ -100,20 +111,31 @@ export interface OrphanSweepResult {
   outsideLayout: number;
   /** Objects found in the blob layout with no blob row, older than 24 hours. */
   orphans: number;
+  /** The distinct models (models/<id>/ prefixes) those orphans are under. */
+  orphanModels: number;
+  /** The distinct models listed in the blob layout, the base of the limit. */
+  modelsInLayout: number;
   /** Why the run deleted nothing although it found orphans; undefined when it did not refuse. */
   refused?: string;
+}
+
+/** n models, or 1 model. */
+function models(n: number): string {
+  return n === 1 ? "1 model" : `${n} models`;
 }
 
 function logLine(r: OrphanSweepResult): string {
   if (r.refused !== undefined) {
     return (
-      `orphan sweep: listed ${r.listed} objects under ${PREFIX}, found ${r.orphans} with no ` +
-      `blob row older than 24 hours and deleted nothing: ${r.refused}`
+      `orphan sweep: listed ${r.listed} objects under ${PREFIX} (${models(r.modelsInLayout)}), ` +
+      `found ${r.orphans} objects of ${models(r.orphanModels)} with no blob row older than ` +
+      `24 hours and deleted nothing: ${r.refused}`
     );
   }
   return (
-    `orphan sweep: listed ${r.listed} objects under ${PREFIX}, deleted ${r.deleted} with no ` +
-    `blob row older than 24 hours, left ${r.outsideLayout} outside the key layout`
+    `orphan sweep: listed ${r.listed} objects under ${PREFIX} (${models(r.modelsInLayout)}), ` +
+    `deleted ${r.deleted} objects of ${models(r.orphanModels)} with no blob row older than ` +
+    `24 hours, left ${r.outsideLayout} outside the key layout`
   );
 }
 
@@ -143,12 +165,19 @@ export function createOrphanSweep(deps: {
    */
   async function sweepOrphans(now: Date): Promise<OrphanSweepResult> {
     const cutoff = now.getTime() - ORPHAN_MIN_AGE_MS;
-    const result: OrphanSweepResult = { listed: 0, deleted: 0, outsideLayout: 0, orphans: 0 };
+    const result: OrphanSweepResult = {
+      listed: 0,
+      deleted: 0,
+      outsideLayout: 0,
+      orphans: 0,
+      orphanModels: 0,
+      modelsInLayout: 0,
+    };
     try {
       // The whole prefix is listed before anything is deleted, so the guard
       // sees the run's full count.
       const orphans: string[] = [];
-      let inLayout = 0;
+      const layoutModels = new Set<string>();
       let token: string | undefined;
       do {
         const page = await store.listPage(PREFIX, {
@@ -162,7 +191,7 @@ export function createOrphanSweep(deps: {
             result.outsideLayout += 1;
             continue;
           }
-          inLayout += 1;
+          layoutModels.add(modelOf(o.key));
           if (o.lastModified !== undefined && o.lastModified.getTime() < cutoff) old.push(o.key);
         }
         if (old.length > 0) {
@@ -173,6 +202,8 @@ export function createOrphanSweep(deps: {
         token = page.next;
       } while (token !== undefined);
       result.orphans = orphans.length;
+      result.orphanModels = new Set(orphans.map(modelOf)).size;
+      result.modelsInLayout = layoutModels.size;
 
       if (orphans.length > 0) {
         const stored = await db
@@ -182,8 +213,8 @@ export function createOrphanSweep(deps: {
           .limit(1)
           .executeTakeFirst();
         const refused = orphanRefusal({
-          orphans: orphans.length,
-          inLayout,
+          orphanModels: result.orphanModels,
+          modelsInLayout: result.modelsInLayout,
           hasStoredRows: stored !== undefined,
         });
         if (refused !== undefined) {

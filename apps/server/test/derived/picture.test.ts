@@ -2,6 +2,7 @@
 // stored facts. These pin that function, previewState, branch by branch, and
 // that only an ok picture is shown.
 import { describe, expect, test } from "vitest";
+import { DERIVED_MESSAGES } from "../../src/derived/client.js";
 import {
   isPictureShown,
   PREVIEW_RETRIED,
@@ -101,11 +102,25 @@ describe("previewState", () => {
   });
 
   test("the outage reasons the backfill retries say so", () => {
-    expect(PREVIEW_RETRIED.length).toBe(3);
+    expect(PREVIEW_RETRIED.length).toBe(4);
     for (const message of PREVIEW_RETRIED) {
       expect(message).toMatch(/tried again automatically/);
       expect(message).not.toMatch(/started again/);
     }
+  });
+});
+
+describe("a temp file problem (issue #415)", () => {
+  test("says it will be tried again, and the backfill tries it again", () => {
+    expect(DERIVED_MESSAGES.previewTempFailed).toBe(
+      "Platehouse could not write a temporary file; it will be tried again automatically.",
+    );
+    expect(PREVIEW_RETRIED).toContain(DERIVED_MESSAGES.previewTempFailed);
+  });
+
+  test("is not the render check's sentence, which the backfill leaves alone", () => {
+    expect(DERIVED_MESSAGES.previewTempFailed).not.toBe(DERIVED_MESSAGES.renderLost);
+    expect(PREVIEW_RETRIED).not.toContain(DERIVED_MESSAGES.renderLost);
   });
 });
 

@@ -115,6 +115,13 @@ export const DERIVED_MESSAGES = {
   /** A preview picture whose job could not be queued; the backfill queues it again. */
   previewQueueFailed:
     "The preview picture could not be queued. It will be tried again automatically.",
+  /**
+   * A preview picture whose job could not write in its own temp folder
+   * (TempFileError: a full disk, a read-only or missing TMP_DIR) on its
+   * last attempt (issue #415). The backfill queues it again.
+   */
+  previewTempFailed:
+    "Platehouse could not write a temporary file; it will be tried again automatically.",
   /** An STL over the contract's 256 MiB limit is never sent, and has no preview. */
   stlTooLarge:
     "This STL file is larger than the 256 MiB the preview renderer takes, so it has no preview picture.",
@@ -183,11 +190,21 @@ export const RENDER_TIMEOUT_MS = (120 + 30) * 1000;
  * UPLOAD_SECONDS in apps/slicer/src/server.ts. RENDER_TIMEOUT_MS starts only
  * once the body has been read to its end, so a slow bucket does not eat the
  * program's time; a body that stalls past this counts as a lost connection.
- * Both together, 750 s, fit inside pg-boss's default 15-minute job expiry. A
- * .scad body is at most 1 MiB and in memory, so it gets RENDER_TIMEOUT_MS
- * alone.
+ * Both together are 750 s. A .scad body is at most 1 MiB and in memory, so it
+ * gets RENDER_TIMEOUT_MS alone.
  */
 export const RENDER_UPLOAD_TIMEOUT_MS = 600 * 1000;
+
+/**
+ * How long a STEP conversion job may run before pg-boss expires it: the
+ * conversion's own budget (RENDER_UPLOAD_TIMEOUT_MS plus RENDER_TIMEOUT_MS,
+ * 750 s) and 300 s more to store the GLB in the bucket afterwards, 1050 s in
+ * all. Under pg-boss's default, 15 minutes, a slow bucket could have a job
+ * that had already stored its mesh expired and run again. Each conversion
+ * job is sent with it (slicerSendOptions in derived.ts), since the slicer
+ * queue's other jobs keep their own expiry.
+ */
+export const CONVERT_EXPIRE_SECONDS = (RENDER_UPLOAD_TIMEOUT_MS + RENDER_TIMEOUT_MS) / 1000 + 300;
 
 /** The slicer answered 409 busy: another heavy job holds its lock. Retryable. */
 export class SlicerBusy extends Error {
@@ -311,6 +328,24 @@ export const ANSWER_LIMITS = Object.freeze({
  */
 export const ERROR_ANSWER_MAX_BYTES = 64 * 1024;
 
+/**
+ * The job could not write in its own temp folder (issue #415): making the
+ * folder, writing a STEP preview's STL there, or opening or writing the
+ * slicer's answer file. cause is the file system's own error. Neither the
+ * file's fault nor the slicer's, so it is told apart from both; reading
+ * from the store is never one.
+ */
+export class TempFileError extends Error {
+  override readonly cause: NodeJS.ErrnoException;
+
+  constructor(cause: unknown) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    super(`A temporary file could not be written: ${error.message}`, { cause: error });
+    this.name = "TempFileError";
+    this.cause = error;
+  }
+}
+
 /** True for the errors a pg-boss retry may cure: 409 busy and a lost connection. */
 export function isRetryable(error: unknown): boolean {
   return error instanceof SlicerBusy || error instanceof SlicerUnreachable;
@@ -373,9 +408,10 @@ async function readSmall(
 /**
  * Streams a 200's body to path a chunk at a time, stopping with
  * AnswerTooLarge as soon as it passes max; stopping cancels the body, so the
- * rest is never read. A failure to open or write the file is reported to
- * onFileError before it is thrown, so it is told apart from the connection
- * failing, which comes from reading the body and is thrown as it is.
+ * rest is never read. A failure to open or write the file is a
+ * TempFileError, reported to onFileError before it is thrown, so it is told
+ * apart from the connection failing, which comes from reading the body and
+ * is thrown as it is.
  */
 async function saveAnswer(
   body: ReadableStream<Uint8Array> | null,
@@ -387,8 +423,9 @@ async function saveAnswer(
     try {
       return await op();
     } catch (error) {
-      onFileError(error);
-      throw error;
+      const failed = new TempFileError(error);
+      onFileError(failed);
+      throw failed;
     }
   };
   const file = await onFile(() => open(path, "w"));
@@ -403,7 +440,7 @@ async function saveAnswer(
         for (let at = 0; at < chunk.byteLength; ) {
           const { bytesWritten } = await onFile(() => file.write(chunk, at, chunk.byteLength - at));
           if (bytesWritten <= 0) {
-            const error = new Error(`no bytes written to ${path}`);
+            const error = new TempFileError(new Error(`no bytes written to ${path}`));
             onFileError(error);
             throw error;
           }
@@ -458,9 +495,10 @@ function webBody(source: Readable, onError: (error: unknown) => void): ReadableS
  * as soon as it passes the route's cap (ANSWER_LIMITS). Any other answer is
  * read into memory only up to ERROR_ANSWER_MAX_BYTES. A streamed request
  * body that fails while it is read rejects with that failure as it is (see
- * webBody), a temp file that cannot be written with the file system's own
- * error; every other failure to get an answer is SlicerDown or
- * SlicerUnreachable. Whenever it rejects, the answer file is removed.
+ * webBody), a temp file that cannot be written with TempFileError, holding
+ * the file system's own error; every other failure to get an answer is
+ * SlicerDown or SlicerUnreachable. Whenever it rejects, the answer file is
+ * removed.
  */
 export async function postRender(target: SlicerTarget, req: RenderRequest): Promise<RenderAnswer> {
   const path = req.answer.path;

@@ -285,7 +285,7 @@ function isContent(content: FileHead | FileContent): content is FileContent {
 }
 
 /** The headers a file's answer sets that describe the bytes, not the answer. */
-const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition"] as const;
+const CONTENT_HEADERS = ["content-type", "content-length", "content-disposition", "etag"] as const;
 
 /**
  * Takes a file's content headers off an error answer. A stream that fails
