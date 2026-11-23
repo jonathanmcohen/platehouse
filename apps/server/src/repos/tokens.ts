@@ -1,6 +1,5 @@
 import { type Kysely, sql } from "kysely";
 import { isUuid, uuidv7 } from "../db/ids.js";
-import { inTransaction } from "../db/kysely.js";
 import type { ApiToken, DB, Session } from "../db/types.js";
 
 // API tokens, one per client, each revocable on its own. Only the SHA-256 of a token and its first 8
@@ -57,25 +56,34 @@ export function tokensRepo(db: Kysely<DB>) {
      * committed, and its revoke, which follows the delete in the same
      * transaction, then finds it; a creation that reaches the row after the delete waits for
      * the sign-out to commit and finds no row.
+     *
+     * The transaction asks for READ COMMITTED itself rather than taking the
+     * database default: the sign-out's revoke finds this token only because
+     * each of its statements takes a fresh snapshot, which a stricter level
+     * would not. It starts its own transaction, so db cannot be one (Kysely
+     * refuses to nest them).
      */
     async createForSession(
       sessionId: string,
       input: SessionToken,
       admit: (session: Session) => boolean,
     ): Promise<ApiToken | undefined> {
-      return inTransaction(db, async (trx) => {
-        const session = await trx
-          .selectFrom("sessions")
-          .selectAll()
-          .where("id", "=", sessionId)
-          .forShare()
-          .executeTakeFirst();
-        if (session === undefined || !admit(session)) return undefined;
-        return tokensRepo(trx).create({
-          ...input,
-          createdBy: { subject: session.subject, name: session.displayName },
+      return db
+        .transaction()
+        .setIsolationLevel("read committed")
+        .execute(async (trx) => {
+          const session = await trx
+            .selectFrom("sessions")
+            .selectAll()
+            .where("id", "=", sessionId)
+            .forShare()
+            .executeTakeFirst();
+          if (session === undefined || !admit(session)) return undefined;
+          return tokensRepo(trx).create({
+            ...input,
+            createdBy: { subject: session.subject, name: session.displayName },
+          });
         });
-      });
     },
 
     /** The live token with this hash; a revoked token is never found. */

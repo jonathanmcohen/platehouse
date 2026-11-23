@@ -1,5 +1,4 @@
 import type { Kysely } from "kysely";
-import { inTransaction } from "../db/kysely.js";
 import type { DB, Session } from "../db/types.js";
 import { tokensRepo } from "./tokens.js";
 
@@ -76,13 +75,22 @@ export function sessionsRepo(db: Kysely<DB>) {
      * (repos/tokens.ts createForSession) to commit, so the revoke after it
      * finds that token; a creation that reaches a row after the delete waits
      * for this commit and finds no session.
+     *
+     * The transaction asks for READ COMMITTED itself rather than taking the
+     * database default: the revoke finds a token committed while the delete
+     * waited only because each statement takes a fresh snapshot, which a
+     * stricter level would not. It starts its own transaction, so db cannot
+     * be one (Kysely refuses to nest them).
      */
     async signOutEverywhere(subject: string, revokeTokens: boolean): Promise<SignedOut> {
-      return inTransaction(db, async (trx) => {
-        const sessionsEnded = await sessionsRepo(trx).deleteForSubject(subject);
-        const tokensRevoked = revokeTokens ? await tokensRepo(trx).revokeForCreator(subject) : 0;
-        return { sessionsEnded, tokensRevoked };
-      });
+      return db
+        .transaction()
+        .setIsolationLevel("read committed")
+        .execute(async (trx) => {
+          const sessionsEnded = await sessionsRepo(trx).deleteForSubject(subject);
+          const tokensRevoked = revokeTokens ? await tokensRepo(trx).revokeForCreator(subject) : 0;
+          return { sessionsEnded, tokensRevoked };
+        });
     },
   };
 }
