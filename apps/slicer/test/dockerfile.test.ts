@@ -115,4 +115,14 @@ describe("apps/slicer/Dockerfile landrun pin", () => {
     expect(url).toContain(`/download/v${LANDRUN_VERSION}/`);
     expect(LANDRUN_STRICT_ABI).toBe(9);
   });
+
+  test("the slicing gate's Dockerfile pins the same landrun version", () => {
+    const gate = readFileSync(
+      new URL("../../../tools/slicing-gate/Dockerfile", import.meta.url),
+      "utf8",
+    );
+    const url = /^ARG LANDRUN_URL=(\S+)/m.exec(gate)?.[1];
+    expect(url, "an ARG LANDRUN_URL in the gate Dockerfile").toBeDefined();
+    expect(url).toContain(`/download/v${LANDRUN_VERSION}/`);
+  });
 });

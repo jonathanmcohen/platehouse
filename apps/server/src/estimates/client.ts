@@ -350,11 +350,12 @@ export function createSlicerClient(opts: SlicerClientOptions): SlicerClient {
     profiles: () => get("/v1/profiles", slicerContract.profiles),
     async slice({ printerId, plate, body, size, timeouts }) {
       // The slicer would answer 400 bad_request for this; no upload is worth it.
+      // The request never leaves the app, so the message does not say the slicer refused it.
       if (!Number.isInteger(plate) || plate < 1 || plate > LIMITS.maxPlate) {
         body.destroy();
         throw new SlicerRefused(
           400,
-          `The slicer refused the request (bad_request: plate must be 1 to ${LIMITS.maxPlate})`,
+          `Plate ${plate} is outside the 1 to ${LIMITS.maxPlate} plates this server can estimate.`,
         );
       }
       const query = new URLSearchParams({ printer: printerId, plate: String(plate) });

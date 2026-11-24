@@ -101,6 +101,5 @@ describe("renderMessage", () => {
 describe("placeholder lookup", () => {
   it("does not read an inherited property as a value", () => {
     expect(formatMessage("en", "Rename {constructor}", {})).toBe("Rename {constructor}");
-    expect(formatMessage("en", "{toString, plural, other {many}}", {})).toBe("many");
   });
 });

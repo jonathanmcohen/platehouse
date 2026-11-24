@@ -251,7 +251,10 @@ export const MIN_LANDLOCK_ABI = 6;
  */
 export const LANDRUN_VERSION = "0.1.17";
 
-/** The ABI landrun LANDRUN_VERSION asks for when it does not run best effort. */
+/**
+ * The ABI landrun LANDRUN_VERSION asks for when it does not run best effort.
+ * The value 9 was checked against landrun v0.1.17.
+ */
 export const LANDRUN_STRICT_ABI = 9;
 
 /**

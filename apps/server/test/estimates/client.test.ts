@@ -108,7 +108,7 @@ describe("slicer client", () => {
   });
 
   test.each([0, -1, 129, 1.5, Number.NaN])(
-    "plate %s is refused as bad_request at the app, with no slicer call",
+    "plate %s is refused at the app with a plain message, with no slicer call",
     async (plate) => {
       const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
       const before = stub.calls.length;
@@ -117,7 +117,9 @@ describe("slicer client", () => {
         .catch((e: unknown) => e);
       expect(refused).toBeInstanceOf(SlicerRefused);
       expect((refused as SlicerRefused).status).toBe(400);
-      expect((refused as SlicerRefused).message).toContain("bad_request");
+      expect((refused as SlicerRefused).message).toBe(
+        `Plate ${plate} is outside the 1 to 128 plates this server can estimate.`,
+      );
       expect(stub.calls.length).toBe(before);
     },
   );
