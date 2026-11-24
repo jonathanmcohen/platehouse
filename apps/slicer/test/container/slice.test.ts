@@ -66,6 +66,8 @@ describe("slicing in the image", () => {
     if (body.status !== "failed") return;
     expect(body.code).toBe(-50);
     expect(body.reason).toBe("slicer_error");
-    expect(body.detail).toContain("the plate has nothing to slice");
+    // Orca's own sentence: "The plate has nothing to slice: it is empty, or no
+    // object on it is both printable and fully inside the print volume."
+    expect(body.detail).toMatch(/^The plate has nothing to slice\b/);
   });
 });
