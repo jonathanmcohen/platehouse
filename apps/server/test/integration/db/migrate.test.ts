@@ -35,6 +35,7 @@ const TABLES = [
   "sessions",
   "settings",
   "tags",
+  "upgrade_leases",
   "upgrade_steps",
   "user_printers",
 ];
@@ -57,6 +58,7 @@ const SHIPPED = [
   "0013_token_creators.sql",
   "0014_description_source.sql",
   "0015_plate_mesh.sql",
+  "0016_jobs_database.sql",
 ];
 const NEXT = String(SHIPPED.length + 1).padStart(4, "0");
 
@@ -987,5 +989,142 @@ describe("0015 plate mesh", () => {
       `.execute(db)
     ).rows;
     expect(left).toEqual([{ meshBlobId: null }]);
+  });
+});
+
+// Migration 0016 (0.1.1 step 6) adds the indexes the blob-reference lookups
+// and the estimate rate need, a reason code beside each stored picture failure
+// message, the unproven description columns and the upgrade lease table. The
+// reason column is backfilled from the 0.1.1-rc message texts, which the
+// migration freezes on purpose.
+describe("0016 jobs and database", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ph-migrations-"));
+    await cp(MIGRATIONS_DIR, dir, { recursive: true });
+    const later = (await readdir(dir)).filter(
+      (name) => /^\d{4}_/.test(name) && Number(name.slice(0, 4)) > 15,
+    );
+    expect(later).toContain("0016_jobs_database.sql");
+    for (const name of later) await rm(join(dir, name));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const CASES: ReadonlyArray<readonly [string, string | null, string | null]> = [
+    [
+      "slicer down",
+      "The slicer is not answering, so the preview picture could not be made. It will be tried again automatically.",
+      "slicer_down",
+    ],
+    [
+      "store down",
+      "Storage is not answering, so the preview picture could not be made. It will be tried again automatically.",
+      "store_down",
+    ],
+    [
+      "queue failed",
+      "The preview picture could not be queued. It will be tried again automatically.",
+      "queue_failed",
+    ],
+    [
+      "temp failed",
+      "Platehouse could not write a temporary file; it will be tried again automatically.",
+      "temp_failed",
+    ],
+    [
+      "sandbox off kernel",
+      "Pictures and OpenSCAD renders are off on this server: its kernel is older than Linux 6.12.",
+      "sandbox_off_kernel",
+    ],
+    [
+      "sandbox off check",
+      "Pictures and OpenSCAD renders are off on this server: its sandbox check failed.",
+      "sandbox_off_check",
+    ],
+    ["lost", "The render did not finish.", "lost"],
+    ["openscad said", "OpenSCAD said: boom", "render_failed"],
+    ["no failure", null, null],
+  ];
+
+  test("gives each stored failure message its reason code and refuses a message without one", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrateFrom(db, dir);
+    const model = "0190a0b0-0000-7000-8000-000000000031";
+    const source = "0190a0b0-0000-7000-8000-000000000032";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic failures')`.execute(db);
+    await sql`
+      insert into blobs (id, model_id, key, kind, content_type)
+      values (${source}, ${model}, ${`models/${model}/${source}`}, 'source', 'model/stl')
+    `.execute(db);
+    const ids = CASES.map(
+      (_, i) => `0190a0b0-0000-7000-8000-0000000001${String(i).padStart(2, "0")}`,
+    );
+    for (const [i, [name, message]] of CASES.entries()) {
+      await sql`
+        insert into files (id, model_id, blob_id, name, original_name, kind, size, sha256,
+                           preview_failure_message)
+        values (${ids[i]}, ${model}, ${source}, ${`${name}.stl`}, ${`${name}.stl`}, 'stl', 1,
+                ${Buffer.alloc(32)}, ${message})
+      `.execute(db);
+    }
+
+    await migrate(db);
+
+    const rows = (
+      await sql<{ id: string; previewFailureReason: string | null }>`
+        select id, preview_failure_reason from files order by id
+      `.execute(db)
+    ).rows;
+    expect(rows).toEqual(ids.map((id, i) => ({ id, previewFailureReason: CASES[i]?.[2] })));
+
+    await expect(
+      sql`update files set preview_failure_message = 'x' where id = ${ids[CASES.length - 1]}`.execute(
+        db,
+      ),
+    ).rejects.toThrow(/files_preview_failure_reason_set/);
+  });
+
+  test("adds the six indexes, the unproven description columns and the lease table", async () => {
+    const { db } = await pgc.freshDatabase();
+    await migrate(db);
+    const wanted = [
+      "files_mesh_blob_id",
+      "files_render_stl_blob_id",
+      "files_render_png_blob_id",
+      "plates_thumbnail_blob_id",
+      "plates_mesh_blob_id",
+      "estimates_rate",
+    ];
+    const found = (
+      await sql<{ indexname: string }>`
+        select indexname from pg_indexes where indexname = any(${wanted})
+      `.execute(db)
+    ).rows.map((r) => r.indexname);
+    expect(found.sort()).toEqual([...wanted].sort());
+
+    const model = "0190a0b0-0000-7000-8000-000000000041";
+    await sql`insert into models (id, name) values (${model}, 'Synthetic unproven')`.execute(db);
+    await expect(
+      sql`update models set description_unproven_sha256 = ${"a".repeat(64)} where id = ${model}`.execute(
+        db,
+      ),
+    ).rejects.toThrow(/models_description_unproven_complete/);
+    await sql`
+      update models set description_unproven_sha256 = ${"a".repeat(64)},
+        description_unproven_file_id = ${model}
+      where id = ${model}
+    `.execute(db);
+    await sql`
+      insert into upgrade_leases (name, holder, expires_at) values ('reconvert', 'a', now())
+    `.execute(db);
+    await expect(
+      sql`insert into upgrade_leases (name, holder, expires_at) values ('Bad Name', 'a', now())`.execute(
+        db,
+      ),
+    ).rejects.toThrow();
   });
 });
