@@ -603,7 +603,7 @@ jobs:
 
   # The slicer image: the container tests build
   # apps/slicer/Dockerfile and run it the way examples/docker-compose.yml does (read-only root,
-  # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract v1 over
+  # tmpfs /work, 4 CPUs, 4 GB, no capabilities), then test contract 2 over
   # HTTP: a real slice of buildSliceable's plates, OpenSCAD renders and the
   # landrun sandbox, STEP to GLB, health and the printer menu. Runs only when
   # the changes job says the slicer or an input of its image changed. The

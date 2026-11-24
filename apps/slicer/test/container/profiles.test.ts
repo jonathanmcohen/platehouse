@@ -1,15 +1,18 @@
 // The printer menu comes from the image's own profiles: every BBL
 // machine_list entry ending in "nozzle" that is instantiable, and nothing
-// else (56 at Orca v2.5.0: 14 models x 0.2/0.4/0.6/0.8). Every filament
-// entry names its printer, and the image's default filament per printer and
-// type equals the pick the unit tests check over the real-profile digest
-// (test/fixtures/orca-filaments.json), so the digest cannot drift from the
-// image unnoticed.
+// else. Every filament entry names its printer. On an image at the digest's
+// Orca version (the Dockerfile's pin, which ci.yml builds), the image's
+// default filament per printer and type equals the pick the unit tests check
+// over the real-profile digest (test/fixtures/orca-filaments.json), so the
+// digest cannot drift from the image unnoticed. slicer-image.yml also runs
+// these tests on newer OrcaSlicer releases, whose profiles the digest does
+// not describe; there that one comparison is skipped.
 import { readFileSync } from "node:fs";
 import { slicerContract } from "@platehouse/slicer-contract";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { pickFilament } from "../../src/profiles.js";
 import { digestCandidates, type FilamentDigest } from "../support/filament-digest.js";
+import { expectedOrcaVersion } from "../support/orca-version.js";
 import { type RunningSlicer, startSlicer } from "./support/slicer.js";
 
 let slicer: RunningSlicer;
@@ -34,9 +37,8 @@ describe("slicer image profiles", () => {
       .filter((n) => n.endsWith("nozzle") && !n.includes(" template ") && !n.endsWith("_common"))
       .sort();
     const body = await profiles();
-    expect(body.orca).toBe("2.5.0");
+    expect(body.orca).toBe(expectedOrcaVersion());
     expect(body.printers.map((p) => p.id).sort()).toEqual(expected);
-    expect(body.printers.length).toBe(56);
     expect(body.printers).toContainEqual({
       id: "Bambu Lab P1S 0.4 nozzle",
       model: "Bambu Lab P1S",
@@ -59,10 +61,16 @@ describe("slicer image profiles", () => {
     }
   });
 
-  test("the image's default filaments equal the pick over the real-profile digest, for every printer and type", async () => {
+  test("the image's default filaments equal the pick over the real-profile digest, for every printer and type", async ({
+    skip,
+  }) => {
     const digest = JSON.parse(
       readFileSync(new URL("../fixtures/orca-filaments.json", import.meta.url), "utf8"),
     ) as FilamentDigest;
+    skip(
+      expectedOrcaVersion() !== digest.orca,
+      `the digest describes Orca ${digest.orca}, not this image's ${expectedOrcaVersion()}`,
+    );
     const body = await profiles();
     expect(body.orca).toBe(digest.orca);
     expect(body.printers.map((p) => p.id).sort()).toEqual([...digest.printers].sort());

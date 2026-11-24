@@ -514,6 +514,9 @@ jobs:
       #     after the smoke step, so force_fail works as before, and before
       #     anything is scanned, pushed or tagged: a failure publishes nothing.
       #     The STEP sample is fetched as ci.yml fetches it.
+      #     EXPECTED_ORCA_VERSION is the version this run built, which the
+      #     health and profiles tests check the image reports; without it
+      #     they expect the Dockerfile's own pin, as in ci.yml.
       - name: Fetch the STEP sample
         env:
           NIST_URL: https://www.nist.gov/system/files/documents/noindex/2024/06/19/NIST-PMI-STEP-Files.zip
@@ -532,6 +535,7 @@ jobs:
         env:
           SLICER_IMAGE: ${{ env.LOCAL }}
           SLICER_IMAGE_PREBUILT: "1"
+          EXPECTED_ORCA_VERSION: ${{ needs.detect.outputs.version }}
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {

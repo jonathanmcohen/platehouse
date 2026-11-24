@@ -2115,6 +2115,9 @@ test("slicer-image: the whole container suite runs on the built image before any
   const suite = stepBlock(job, "Whole container suite");
   assert.match(suite, /\n {10}SLICER_IMAGE: \$\{\{ env\.LOCAL \}\}\n/);
   assert.match(suite, /\n {10}SLICER_IMAGE_PREBUILT: "1"\n/);
+  // The suite checks the image reports the Orca version this run built, not
+  // the Dockerfile's pin (apps/slicer/test/support/orca-version.ts).
+  assert.match(suite, /\n {10}EXPECTED_ORCA_VERSION: \$\{\{ needs\.detect\.outputs\.version \}\}\n/);
   assert.match(suite, /vitest run --project container --reporter=default --reporter=json --outputFile=suite-report\.json/);
   assert.doesNotMatch(suite, /vitest run --project container \S*\.test\.ts/, "no file filter");
   assert.match(suite, /No tests ran \(vitest wrote no report\)/);
