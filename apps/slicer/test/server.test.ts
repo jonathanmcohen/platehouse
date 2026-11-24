@@ -9,15 +9,17 @@ import {
   readdirSync,
   readFileSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { type ClientRequest, type IncomingMessage, request } from "node:http";
+import { type ClientRequest, request } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
 import { join } from "node:path";
 import { LIMITS, slicerContract } from "@platehouse/slicer-contract";
 import { buildSliceable } from "@platehouse/threemf/test/sliceable";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
 import { buildProfiles, loadIndex } from "../src/profiles.js";
+import { PIPE_GRACE_MS } from "../src/sandbox.js";
 import { MAX_RENDER_OUTPUT_BYTES, readRenderOutput } from "../src/scad.js";
 import { createSlicer, loadConfig, type Slicer, type SlicerConfig } from "../src/server.js";
 import { streamChunked } from "./support/http.js";
@@ -1345,8 +1347,10 @@ describe("a client that goes away", () => {
     });
   }
 
+  // The time caps here are far past every deadline below, so only the
+  // disconnect can end a program in time.
   test("the slice's program is killed and the next slice is not 409", async () => {
-    const s = setup({ sliceTimeoutSeconds: 2 }, { kind: "sleep" });
+    const s = setup({ sliceTimeoutSeconds: 30 }, { kind: "sleep" });
     const base = await start(s.config);
     const req = await send(sliceUrl(base, P1S, 1), sliceable());
     await waitForFile(s.fake.pids);
@@ -1356,15 +1360,18 @@ describe("a client that goes away", () => {
     await waitFor(() => readdirSync(s.workDir).length === 0, 2000);
     const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
     expect(health.busy).toBe(false);
-    const next = await postSlice(base, sliceable());
-    expect(next.status).not.toBe(409);
+    // The next slice takes the lock (its program starts), and is then dropped too.
+    unlinkSync(s.fake.pids);
+    const next = await send(sliceUrl(base, P1S, 1), sliceable());
+    await waitForFile(s.fake.pids);
+    next.destroy();
   });
 
   test("a STEP conversion's program is killed and the next conversion is not 409", async () => {
     const stubs = stubDir();
     const pidFile = join(stubs, "worker.pid");
     const s = setup({
-      stepTimeoutSeconds: 2,
+      stepTimeoutSeconds: 30,
       stepWorker: fakeStepWorker(stubs, { kind: "sleep", pidFile }),
     });
     const base = await start(s.config);
@@ -1376,49 +1383,78 @@ describe("a client that goes away", () => {
     await waitFor(() => readdirSync(s.workDir).length === 0, 2000);
     const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
     expect(health.busy).toBe(false);
-    const next = await fetch(`${base}/v1/step/glb`, { method: "POST", body: "ISO-10303-21;" });
-    expect(next.status).not.toBe(409);
+    unlinkSync(pidFile);
+    const next = await send(`${base}/v1/step/glb`, "ISO-10303-21;");
+    await waitForFile(pidFile);
+    next.destroy();
   });
 
-  // The first job is done and released, its answer still unsent to a client
-  // that is not reading, when a second job takes the lock. The first
-  // client's disconnect then calls release a second time, and that call must
-  // not touch the second job's program, folder or lock.
-  test("a late release of a finished job leaves the next job's folder and answer alone", async () => {
+  // When a client goes away its job is released at once; the request's own
+  // code then runs on and releases again, later. If a program holding the
+  // job's pipes delays it (the pipe grace of runGroup), another job can
+  // already hold the lock by then. That late release must do nothing: not
+  // run the clean-up of leftover processes, which would reach the new job's
+  // program, nor free the lock or delete the folder of the job now running.
+  test("a late release of a job whose client went away leaves the next job alone", async () => {
     const stubs = stubDir();
-    const s = setup(
-      {
-        sliceTimeoutSeconds: 4,
-        stepWorker: fakeStepWorker(stubs, { kind: "big", bytes: 64 * 1024 * 1024 }),
-      },
-      { kind: "sleep" },
+    const helperFile = join(stubs, "helper.pid");
+    const workerFile = join(stubs, "worker.pid");
+    // An Orca stub that leaves a helper in a process group of its own,
+    // holding the job's output pipes open after the kill.
+    const orca = join(stubs, "orca-holding");
+    writeFileSync(
+      orca,
+      `#!/bin/sh
+'${process.execPath}' -e 'const h = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(process.argv[1], String(h.pid)); h.unref();' '${helperFile}'
+sleep 30 &
+wait
+`,
     );
-    const base = await start(s.config);
-    // Job 1: its answer is too big to leave the server before the client
-    // reads, so the response is still unfinished after the job is released.
-    const first = await new Promise<IncomingMessage>((resolve, reject) => {
-      const req = request(`${base}/v1/step/glb`, { method: "POST" }, (res) => {
-        res.pause();
-        resolve(res);
-      });
-      req.on("error", reject);
-      req.end("ISO-10303-21;");
+    chmodSync(orca, 0o755);
+    const reaps: number[] = [];
+    const s = setup({
+      sliceTimeoutSeconds: 30,
+      stepTimeoutSeconds: 30,
+      stepWorker: fakeStepWorker(stubs, { kind: "sleep", pidFile: workerFile }),
+      reap: () => {
+        reaps.push(Date.now());
+        return [];
+      },
     });
-    await waitFor(() => readdirSync(s.workDir).length === 0, 5000);
-    // Job 2 takes the lock and hangs in its program.
-    const second = postSlice(base, sliceable());
-    await waitForFile(s.fake.pids);
-    const [shell, child] = readFileSync(s.fake.pids, "utf8").trim().split(" ").map(Number);
-    const folders = readdirSync(s.workDir);
-    expect(folders).toHaveLength(1);
-    // Job 1's client goes away.
-    first.destroy();
-    await new Promise((r) => setTimeout(r, 300));
-    expect(alive(shell as number) && alive(child as number)).toBe(true);
-    expect(readdirSync(s.workDir)).toEqual(folders);
-    expect((await postSlice(base, sliceable())).status).toBe(409);
-    expect((await second).status).toBe(200);
-  });
+    const base = await start({ ...s.config, orcaBin: orca });
+    let helper = 0;
+    try {
+      // Job 1 starts, and its client goes away: released at once.
+      const first = await send(sliceUrl(base, P1S, 1), sliceable());
+      await waitForFile(helperFile);
+      helper = Number(readFileSync(helperFile, "utf8"));
+      first.destroy();
+      await waitFor(() => reaps.length === 1, 2000);
+      // Job 2 takes the lock at once and runs its program.
+      const second = await send(`${base}/v1/step/glb`, "ISO-10303-21;");
+      await waitForFile(workerFile);
+      const worker = Number(readFileSync(workerFile, "utf8"));
+      const folders = readdirSync(s.workDir);
+      expect(folders).toHaveLength(1);
+      // Job 1's code resumes once the pipe grace is up (2 s) and releases
+      // again; give it time, and check that job 2 is untouched.
+      await new Promise((r) => setTimeout(r, PIPE_GRACE_MS + 800));
+      expect(reaps).toHaveLength(1);
+      expect(alive(worker)).toBe(true);
+      expect(readdirSync(s.workDir)).toEqual(folders);
+      const health = slicerContract.health.parse(await (await fetch(`${base}/v1/health`)).json());
+      expect(health.busy).toBe(true);
+      second.destroy();
+    } finally {
+      if (helper) {
+        try {
+          process.kill(helper, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }, 15_000);
 });
 
 // Node's default requestTimeout (300 s) counts from the first byte of a

@@ -235,7 +235,7 @@ describe("processes left behind by a job", () => {
       procDir: dir,
       selfPid: 7,
       kill: killing(dir, killed, (pid) => {
-        // killing 42 lets a watcher start a replacement orphan
+        // killing 42 leaves a new process below PID 1
         if (pid === 42) {
           mkdirSync(join(dir, "99"));
           writeFileSync(join(dir, "99", "stat"), "99 (respawn) S 1 99 99 0 -1 4194560 0\n");
@@ -247,36 +247,60 @@ describe("processes left behind by a job", () => {
     expect(leftoverProcesses(dir, 7)).toEqual([]);
   });
 
-  test("reapLeftovers stops at maxPasses when the kills never clear", () => {
+  /** A kill that leaves the process and starts one more orphan each time. */
+  function spawning(dir: string, calls: number[]) {
+    return (pid: number) => {
+      calls.push(pid);
+      const next = 100 + calls.length;
+      mkdirSync(join(dir, String(next)));
+      writeFileSync(join(dir, String(next), "stat"), `${next} (n) S 1 ${next} ${next} 0 -1 0 0\n`);
+    };
+  }
+  const SMALL: Array<[number, string, number]> = [
+    [1, "tini", 0],
+    [7, "node", 1],
+    [42, "sleep", 1],
+  ];
+
+  test("reapLeftovers stops after maxPasses", () => {
+    const calls: number[] = [];
+    const dir = proc(SMALL);
+    reapLeftovers({ procDir: dir, selfPid: 7, kill: spawning(dir, calls), maxPasses: 3 });
+    expect(calls).toHaveLength(3);
+  });
+
+  test("reapLeftovers defaults to 20 passes", () => {
+    const calls: number[] = [];
+    const dir = proc(SMALL);
+    reapLeftovers({ procDir: dir, selfPid: 7, kill: spawning(dir, calls) });
+    expect(calls).toHaveLength(20);
+  });
+
+  test("reapLeftovers looks again only while a pass finds a process it has not signalled", () => {
     const dir = proc(TREE);
     let calls = 0;
     const out = reapLeftovers({
       procDir: dir,
       selfPid: 7,
       kill: () => {
-        calls += 1;
+        calls += 1; // nothing goes away, and nothing new appears
       },
-      maxPasses: 3,
     });
-    expect(calls).toBe(4 * 3);
+    expect(calls).toBe(4);
     expect(out).toEqual([42, 43, 44, 60]);
   });
 
-  test("reapLeftovers defaults to 20 passes", () => {
-    const dir = proc([
-      [1, "tini", 0],
-      [7, "node", 1],
-      [42, "sleep", 1],
-    ]);
-    let calls = 0;
-    reapLeftovers({
-      procDir: dir,
-      selfPid: 7,
-      kill: () => {
-        calls += 1;
-      },
+  test("a process that has exited (state Z or X) is not listed or signalled", () => {
+    const dir = proc(SMALL, {
+      "43": "43 (sleep) Z 1 43 43 0 -1 0 0\n",
+      "44": "44 (sleep) X 1 44 44 0 -1 0 0\n",
+      "45": "45 (sleep) S 1 45 45 0 -1 0 0\n",
     });
-    expect(calls).toBe(20);
+    expect(leftoverProcesses(dir, 7)).toEqual([42, 45]);
+    const killed: number[] = [];
+    expect(reapLeftovers({ procDir: dir, selfPid: 7, kill: (p) => killed.push(p) })).toEqual([
+      42, 45,
+    ]);
   });
 
   test("runsUnderTini holds only on Linux, with the server's parent PID 1 named tini", () => {

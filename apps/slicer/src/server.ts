@@ -103,6 +103,11 @@ export interface SlicerConfig {
    * on a host where PID 1 has children of its own.
    */
   reapOrphans?: boolean;
+  /**
+   * What release() runs to clean up leftover processes; tests pass a spy.
+   * Default: reapLeftovers when reapOrphans is on, nothing otherwise.
+   */
+  reap?: () => number[];
 }
 
 const seconds = (key: string) =>
@@ -333,13 +338,23 @@ export function createSlicer(config: SlicerConfig): Slicer {
 
   const track = (): Tracker => {
     let current: (() => void) | null = null;
+    // Once killNow has run, the job is over: a program registered after it
+    // is killed at once, so nothing starts outside the lock.
+    let over = false;
     const set = (kill: (() => void) | null) => {
       if (current) running.delete(current);
+      current = null;
+      if (!kill) return;
+      if (over) {
+        kill();
+        return;
+      }
       current = kill;
-      if (kill) running.add(kill);
+      running.add(kill);
     };
     return Object.assign(set, {
       killNow: () => {
+        over = true;
         current?.();
         set(null);
       },
@@ -460,8 +475,9 @@ export function createSlicer(config: SlicerConfig): Slicer {
           // A program that called setsid() left the group killNow kills and
           // was re-parented to tini; nothing of the job may outlive it, or a
           // sleeping process holds /work files open until a restart.
-          if (config.reapOrphans) {
-            const reaped = reapLeftovers();
+          const reap = config.reap ?? (config.reapOrphans ? reapLeftovers : null);
+          if (reap) {
+            const reaped = reap();
             if (reaped.length > 0) {
               log(
                 `killed ${reaped.length} process(es) left behind by the job: ${reaped.join(", ")}`,

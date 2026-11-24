@@ -347,72 +347,95 @@ export function runGroup(
   });
 }
 
+/** One process's parent and state, from its stat file; null when gone or unparsable. */
+function readStat(procDir: string, pid: number): { ppid: number; state: string } | null {
+  let stat: string;
+  try {
+    stat = readFileSync(join(procDir, String(pid), "stat"), "utf8");
+  } catch {
+    return null;
+  }
+  // After the last ")": the name in the parentheses may hold anything.
+  const close = stat.lastIndexOf(")");
+  if (close === -1) return null;
+  const [state, ppid] = stat.slice(close + 2).split(" ");
+  if (state === undefined || ppid === undefined || !/^[0-9]+$/.test(ppid)) return null;
+  return { ppid: Number(ppid), state };
+}
+
 /**
- * Every process a finished job may have left running: all of them except PID
- * 1, selfPid and the subtree of any process whose parent is 0, read from each
- * procDir/<pid>/stat. A program that calls setsid() leaves its job's process
- * group, so the kill at the time cap misses it; once its parent is gone it
- * is re-parented to PID 1, tini in the image (issue #153), and its own
- * children and grandchildren stay below it. Whatever a client's disconnect
- * interrupts leaves the same mess. A process docker exec starts (the health
- * check among them) has parent 0, and so does everything it starts in turn,
- * so those subtrees are not listed. The parent is read after the last ")" of
- * the stat line, since the name in the parentheses may hold anything, ")" and
- * digits included. A stat that is gone or does not parse is skipped.
+ * Looks at every process under procDir once: the processes to leave alone
+ * (PID 1, selfPid and the subtree of any process whose parent is 0, which is
+ * what docker exec starts, the health check among them) and the rest, with
+ * those already exited or exiting (state Z or X) left out, since there is
+ * nothing left in them to signal.
  */
-export function leftoverProcesses(procDir: string, selfPid: number): number[] {
+function scan(procDir: string, selfPid: number): { found: number[]; spared: Set<number> } {
   let names: string[];
   try {
     names = readdirSync(procDir);
   } catch {
-    return [];
+    return { found: [], spared: new Set() };
   }
-  const parents = new Map<number, number>();
+  const info = new Map<number, { ppid: number; state: string }>();
   for (const name of names) {
     if (!/^[1-9][0-9]*$/.test(name)) continue;
-    let stat: string;
-    try {
-      stat = readFileSync(join(procDir, name, "stat"), "utf8");
-    } catch {
-      continue;
-    }
-    const close = stat.lastIndexOf(")");
-    if (close === -1) continue;
-    const ppid = stat.slice(close + 2).split(" ")[1];
-    if (ppid === undefined || !/^[0-9]+$/.test(ppid)) continue;
-    parents.set(Number(name), Number(ppid));
+    const stat = readStat(procDir, Number(name));
+    if (stat) info.set(Number(name), stat);
   }
-  // Grow the set of processes to leave alone from each docker exec root
-  // (parent 0, but not PID 1 itself, whose parent is 0 too) down through
-  // every child, until a pass adds none.
+  // Grow the spared set from each docker exec root (parent 0, but not PID 1
+  // itself, whose parent is 0 too) down through every child, until a pass
+  // adds none.
   const spared = new Set<number>();
-  for (const [pid, ppid] of parents) {
+  for (const [pid, { ppid }] of info) {
     if (ppid === 0 && pid !== 1 && pid !== selfPid) spared.add(pid);
   }
   for (let grew = true; grew; ) {
     grew = false;
-    for (const [pid, ppid] of parents) {
+    for (const [pid, { ppid }] of info) {
       if (!spared.has(pid) && spared.has(ppid) && pid !== selfPid) {
         spared.add(pid);
         grew = true;
       }
     }
   }
-  const out: number[] = [];
-  for (const pid of parents.keys()) {
-    if (pid !== 1 && pid !== selfPid && !spared.has(pid)) out.push(pid);
+  const found: number[] = [];
+  for (const [pid, { state }] of info) {
+    if (pid === 1 || pid === selfPid || spared.has(pid)) continue;
+    if (state === "Z" || state === "X") continue;
+    found.push(pid);
   }
-  return out.sort((a, b) => a - b);
+  return { found: found.sort((x, y) => x - y), spared };
 }
 
 /**
- * Kills every process leftoverProcesses lists with SIGKILL, then looks again
- * and repeats until a pass finds none, or maxPasses (20) passes have run:
- * killing a parent can let a child be re-parented, and a watcher can start a
- * replacement, so one pass is not enough. Returns the ids it signalled, each
- * once. Run after each job, when nothing of that job may still be running,
- * so a setsid() child cannot outlive it holding /work files open (issue #153
- * item 3). A kill that fails (already gone, or not this user's) is skipped.
+ * Every process a finished job may have left running: all of them except PID
+ * 1, selfPid, the subtree of any process whose parent is 0 (docker exec's)
+ * and those already exited (state Z or X), read from each
+ * procDir/<pid>/stat. A program that calls setsid() leaves its job's process
+ * group, so the kill at the time cap misses it; once its parent is gone it
+ * is re-parented to PID 1, tini in the image (issue #153), and its own
+ * children stay below it. The parent is read after the last ")" of the stat
+ * line, since the name in the parentheses may hold anything, ")" and digits
+ * included. A stat that is gone or does not parse is skipped.
+ */
+export function leftoverProcesses(procDir: string, selfPid: number): number[] {
+  return scan(procDir, selfPid).found;
+}
+
+/**
+ * Sends SIGKILL to the processes leftoverProcesses lists, and looks again
+ * for as long as a pass finds a process it has not signalled before, at most
+ * maxPasses (20) passes. Returns the ids it signalled. Run after each job,
+ * when nothing of that job may still be running, so a setsid() child cannot
+ * outlive it holding /work files open (issue #153 item 3). A kill that fails
+ * (already gone, or not this user's) is skipped.
+ *
+ * Which processes are spared depends on the whole table (a docker exec
+ * subtree is known only once every parent is read), so each pass reads it
+ * first. To keep the gap between looking at a process and signalling it
+ * short, each one is read again just before its signal, and is signalled
+ * only if it is still there, still live and still outside the spared set.
  */
 export function reapLeftovers(
   opts: {
@@ -422,22 +445,29 @@ export function reapLeftovers(
     maxPasses?: number;
   } = {},
 ): number[] {
+  const procDir = opts.procDir ?? "/proc";
   const kill = opts.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
   const maxPasses = opts.maxPasses ?? 20;
-  const killed = new Set<number>();
+  const selfPid = opts.selfPid ?? process.pid;
+  const tried = new Set<number>();
+  const killed: number[] = [];
   for (let pass = 0; pass < maxPasses; pass++) {
-    const found = leftoverProcesses(opts.procDir ?? "/proc", opts.selfPid ?? process.pid);
-    if (found.length === 0) break;
-    for (const pid of found) {
+    const { found, spared } = scan(procDir, selfPid);
+    const fresh = found.filter((pid) => !tried.has(pid));
+    if (fresh.length === 0) break;
+    for (const pid of fresh) {
+      tried.add(pid);
+      const now = readStat(procDir, pid);
+      if (!now || now.state === "Z" || now.state === "X" || spared.has(now.ppid)) continue;
       try {
         kill(pid, "SIGKILL");
-        killed.add(pid);
+        killed.push(pid);
       } catch {
         // already gone, or not ours to signal
       }
     }
   }
-  return [...killed];
+  return killed;
 }
 
 /**

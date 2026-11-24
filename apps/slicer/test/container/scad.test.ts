@@ -238,11 +238,6 @@ describe("OpenSCAD in the image", () => {
     expect(slicer.logs()).toMatch(new RegExp(`left behind by the job: [0-9, ]*\\b${pid}\\b`));
   });
 
-  // After each job the server kills every process left running, not only
-  // those whose parent is PID 1. A setsid'd shell started through docker exec
-  // is re-parented to tini once exec's shell exits, and the two sleeps below
-  // it have the shell as their parent: all three must go, whatever order they
-  // are killed in.
   test("a re-parented process and its child are both gone after the next job", async () => {
     const started = slicer.exec([
       "sh",
