@@ -554,8 +554,10 @@ describe("the page", () => {
       "Sandbox: off. This server's kernel is older than Linux 6.12, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
     const OFF_CHECK =
       "Sandbox: off. Its check failed, so pictures, OpenSCAD renders, STEP previews and estimates are off.";
+    const OFF_KERNEL_SHORT = "Sandbox: off. This server's kernel is older than Linux 6.12.";
+    const OFF_CHECK_SHORT = "Sandbox: off. Its check failed.";
     const UNSANDBOXED =
-      "Estimates and STEP previews run without the sandbox, because SLICER_ALLOW_UNSANDBOXED is set. Pictures and OpenSCAD renders are off.";
+      "Estimates and STEP previews still run, without the sandbox, because SLICER_ALLOW_UNSANDBOXED is set. Pictures and OpenSCAD renders are off.";
 
     async function renderWith(sandbox: Partial<ActivityView["slicer"]>) {
       answer = () => {
@@ -596,14 +598,30 @@ describe("the page", () => {
       expect(t).toContain(OFF_CHECK);
     });
 
-    test("says what still runs when the slicer is allowed to run without it", async () => {
+    // Allowed to run without it, estimates and STEP previews are not off, so
+    // the off line gives only the reason, and the next line what still runs.
+    test("says what still runs when the slicer is allowed to run without it, for an old kernel", async () => {
       const t = await renderWith({
         sandbox: "off",
         sandboxReason: "old_kernel",
         unsandboxed: true,
       });
-      expect(t).toContain(OFF_KERNEL);
+      expect(t).toContain(OFF_KERNEL_SHORT);
       expect(t).toContain(UNSANDBOXED);
+      expect(t).not.toContain(OFF_KERNEL);
+      expect(t).not.toContain("estimates are off");
+    });
+
+    test("says what still runs when the slicer is allowed to run without it, for a failed check", async () => {
+      const t = await renderWith({
+        sandbox: "off",
+        sandboxReason: "check_failed",
+        unsandboxed: true,
+      });
+      expect(t).toContain(OFF_CHECK_SHORT);
+      expect(t).toContain(UNSANDBOXED);
+      expect(t).not.toContain(OFF_CHECK);
+      expect(t).not.toContain("estimates are off");
     });
 
     test("says nothing about it when the slicer did not answer", async () => {

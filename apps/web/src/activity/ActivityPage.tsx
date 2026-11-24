@@ -478,17 +478,24 @@ function Slicer({ slicer }: { slicer: ActivityView["slicer"] }) {
     : slicer.busy
       ? t("activity.slicer.busy")
       : t("activity.slicer.idle");
+  // Off with unsandboxed runs allowed, estimates and STEP previews still
+  // run, so the off line gives only the reason and the unsandboxed line
+  // below says what runs.
+  const offKey =
+    slicer.sandboxReason === "old_kernel"
+      ? slicer.unsandboxed
+        ? "activity.slicer.sandboxOffKernelShort"
+        : "activity.slicer.sandboxOffKernel"
+      : slicer.unsandboxed
+        ? "activity.slicer.sandboxOffCheckShort"
+        : "activity.slicer.sandboxOffCheck";
   const sandbox =
     slicer.sandbox === "on"
       ? t("activity.slicer.sandboxOn")
       : slicer.sandbox === "checking"
         ? t("activity.slicer.sandboxChecking")
         : slicer.sandbox === "off"
-          ? t(
-              slicer.sandboxReason === "old_kernel"
-                ? "activity.slicer.sandboxOffKernel"
-                : "activity.slicer.sandboxOffCheck",
-            )
+          ? t(offKey)
           : null;
   return (
     <Section title={t("model.numbers.slicer")}>
