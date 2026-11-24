@@ -125,7 +125,9 @@ inbox waits and tries again, and the log says an outage started and ended.
   the slicer reports its sandbox on (or allowed without it), the plates it refused are estimated
   again automatically, at most 50 on each Orca version check; no need to press **Retry**.
 
-OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**:
+OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **Details**. A plate
+designed for a bigger printer is re-arranged onto your printer's bed before Platehouse gives up, so
+its estimate can differ slightly from the designer's layout:
 
 | Code      | Shown                                                                                | In plain words                                                                                                                                                                     |
 | --------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -135,6 +137,7 @@ OrcaSlicer refusals, shown on the plate with OrcaSlicer's own message behind **D
 | -16       | This file cannot be switched to the selected printer.                                | The file is limited to other printers.                                                                                                                                             |
 | -17       | This file's print settings do not fit the selected printer.                          | The file's process cannot run on your printer.                                                                                                                                     |
 | -52, -102 | The plate is too big for this printer's bed.                                         | Objects sit outside your printer's bed.                                                                                                                                            |
+| -50       | Nothing on the plate fits this printer's bed, even after re-arranging.               | The plate is too big for this printer's bed.                                                                                                                                       |
 | -58       | Slicing took too long and was stopped.                                               | Raise `SLICE_PLATE_SECONDS` on both the app and the slicer if your plates are just slow.                                                                                           |
 | -66, -68  | This plate needs a different nozzle or extruder setup than the selected printer has. | For example a dual-nozzle file on a single-nozzle printer.                                                                                                                         |
 

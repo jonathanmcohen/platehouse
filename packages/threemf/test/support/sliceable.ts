@@ -54,6 +54,8 @@ export interface SliceableOptions {
   footprint?: number;
   /** Height of each object in mm, default `cubeSize`. */
   height?: number;
+  /** Bed position in mm of the first object's centre on each plate (measured from the plate's own corner). Default: the usual grid layout. */
+  at?: { x: number; y: number };
   /** List no object on any plate in model_settings.config, so each plate's object count reads 0 (as when the plate list comes from thumbnails). */
   noInstances?: boolean;
   /** Extra field bytes for the first entry's central record, to build a crafted directory. */
@@ -140,8 +142,9 @@ export function sliceableEntries(opts: SliceableOptions): Map<string, string> {
         id: placed.length + 1,
         plate: p + 1,
         filament: f + 1,
-        x: origin.x + 40 + (f % 4) * 45,
-        y: origin.y + 40 + Math.floor(f / 4) * 45,
+        x: origin.x + (f === 0 && opts.at ? opts.at.x - footprint / 2 : 40 + (f % 4) * 45),
+        y:
+          origin.y + (f === 0 && opts.at ? opts.at.y - footprint / 2 : 40 + Math.floor(f / 4) * 45),
       });
     }
   }

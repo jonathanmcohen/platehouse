@@ -128,6 +128,25 @@ describe("buildSliceable", () => {
     expect([extent(bigger, "x"), extent(bigger, "z")]).toEqual([30, 30]);
   });
 
+  test("at puts the first object's centre at that bed position, and the default layout is unchanged", () => {
+    const corner = (o: object) => {
+      const model =
+        sliceableEntries({ plates: 1, filaments: 2, ...o }).get("3D/3dmodel.model") ?? "";
+      return [...model.matchAll(/<item objectid="\d+" transform="([^"]+)"/g)].map((m) => ({
+        x: Number(m[1]?.split(" ")[9]),
+        y: Number(m[1]?.split(" ")[10]),
+      }));
+    };
+    // The mesh spans 0..size from the item's origin, so the centre is half a size in.
+    const placed = corner({ cubeSize: 20, at: { x: 220, y: 200 } });
+    expect(placed[0]).toEqual({ x: 210, y: 190 });
+    expect(placed[1]).toEqual({ x: 85, y: 40 });
+    expect(corner({})).toEqual([
+      { x: 40, y: 40 },
+      { x: 85, y: 40 },
+    ]);
+  });
+
   test("a size that is not a positive number is refused", () => {
     expect(() => buildSliceable({ plates: 1, filaments: 1, cubeSize: 0 })).toThrow(/cubeSize/);
     expect(() => buildSliceable({ plates: 1, filaments: 1, footprint: Number.NaN })).toThrow(
