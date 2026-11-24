@@ -884,13 +884,14 @@ describe("many files, slow imports and failures", () => {
     expect(said()).toEqual([
       "Benchy (2).3mf: The server is out of room for uploads; nothing was saved. Ask whoever runs Platehouse to free space, then try again.",
       "Fresh.stl: Added",
+      "1 added, 1 failed",
     ]);
     // Later renders do not say either again.
     await act(async () => {
       window.dispatchEvent(new Event("online"));
     });
     await settle();
-    expect(said()).toHaveLength(2);
+    expect(said()).toHaveLength(3);
   });
 
   test("a start that throws fails that row and frees its place", async () => {
@@ -992,5 +993,119 @@ describe("many files, slow imports and failures", () => {
       "Part 1.stl",
     ]);
     expect(rowOf("Part 2.stl").textContent).toMatch(/Waiting/);
+  });
+
+  const dialogRegion = () =>
+    container.querySelector<HTMLElement>('[role="dialog"] [role="status"]') as HTMLElement;
+
+  test("a finished batch is announced as one summary", async () => {
+    const answer = (s: Started): UploadResult =>
+      s.file.name.startsWith("Dup") && s.duplicates !== "allow"
+        ? {
+            status: "failed",
+            error: "already in the library",
+            code: "duplicate",
+            duplicates: [HOLDER],
+          }
+        : added();
+    const { start, fetchResult, finish, fail } = stubUploads(answer);
+    const batch = ["A.stl", "B.stl", "C.stl", "Dup.stl", "Bad.stl"].map(
+      (name) => new File([new Uint8Array(10)], name),
+    );
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={batch}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 5 files/i).click());
+    await finish(0);
+    await finish(1);
+    await finish(2);
+    await finish(3);
+    const lines = () => [...dialogRegion().children].map((el) => el.textContent ?? "");
+    expect(lines().some((l) => /added, /.test(l))).toBe(false);
+    await fail(4, refusedWith(507));
+    const last = lines().at(-1);
+    expect(last).toBe("3 added, 1 skipped, 1 failed");
+    expect(lines().filter((l) => l === last)).toHaveLength(1);
+    expect(dialogRegion().textContent).not.toMatch(/%/);
+  });
+
+  test("Upload keeps focus when pressed", async () => {
+    const { start, fetchResult } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[fresh]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    const upload = button(/^upload 1 file/i);
+    upload.focus();
+    await act(async () => upload.click());
+    const after = button(/^upload 0 files/i);
+    expect(document.activeElement).toBe(after);
+    expect(after.getAttribute("aria-disabled")).toBe("true");
+    expect(after.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("the switch is aria-disabled while busy, keeps focus, and ignores changes", async () => {
+    const { started, start, fetchResult } = stubUploads(added);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[fresh]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    const toggle = container.querySelector<HTMLInputElement>('input[role="switch"]');
+    if (toggle === null) throw new Error("no switch");
+    expect(toggle.getAttribute("aria-disabled")).not.toBe("true");
+    await act(async () => button(/^upload 1 file/i).click());
+    expect(started).toHaveLength(1);
+    toggle.focus();
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    expect(toggle.hasAttribute("disabled")).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+    await act(async () => toggle.click());
+    expect(toggle.checked).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  test("after Import anyway, focus is on that row's status", async () => {
+    const { start, fetchResult, finish } = stubUploads(duplicateUnlessAllowed);
+    await render(
+      inRouter(
+        <UploadDialog
+          open
+          files={[benchy]}
+          onClose={() => {}}
+          start={start}
+          fetchResult={fetchResult}
+        />,
+      ),
+    );
+    await act(async () => button(/^upload 1 file/i).click());
+    await finish(0);
+    const importButton = button(/^import anyway$/i);
+    importButton.focus();
+    await act(async () => importButton.click());
+    await settle();
+    expect(hasButton(/^import anyway$/i)).toBe(false);
+    expect(document.activeElement).toBe(rowOf("Benchy (2).3mf").querySelector(".ph-upload-status"));
   });
 });

@@ -219,6 +219,19 @@ const ANNOUNCED: ReadonlySet<UploadStatus> = new Set(["done", "failed", "duplica
 /** How many recent announcements the live region keeps. */
 const ANNOUNCEMENTS_KEPT = 10;
 
+/** One line for a finished batch: "3 added, 1 skipped, 1 failed", leaving out zero parts. */
+function summaryText(batch: readonly UploadItem[], i18n: Pick<I18n, "t">): string {
+  const count = (status: UploadStatus) => batch.filter((i) => i.status === status).length;
+  const parts: string[] = [];
+  const added = count("done");
+  const skipped = count("duplicate");
+  const failed = count("failed");
+  if (added > 0) parts.push(i18n.t("upload.summary.added", { count: added }));
+  if (skipped > 0) parts.push(i18n.t("upload.summary.skipped", { count: skipped }));
+  if (failed > 0) parts.push(i18n.t("upload.summary.failed", { count: failed }));
+  return parts.join(", ");
+}
+
 /** Moves focus from a row's button, about to go, to that row's status. */
 function focusRowStatus(button: HTMLElement) {
   button.closest("li")?.querySelector<HTMLElement>(".ph-upload-status")?.focus();
@@ -251,11 +264,19 @@ export function UploadDialog({
   /** Whether the dialog is open, for a round that finishes while it is hidden. */
   const isOpen = useRef(open);
   isOpen.current = open;
+  /** The rows sent since the last summary, by key. */
+  const sentKeys = useRef(new Set<string>());
+  /** The finished batch's outcome, waiting for the effect that says it. */
+  const summaryDue = useRef<UploadItem[] | null>(null);
   const upload = useTusUpload({
     ...(start === undefined ? {} : { start }),
     ...(fetchResult === undefined ? {} : { fetchResult }),
     ...(resultDelayMs === undefined ? {} : { resultDelayMs }),
-    onFinished: () => {
+    onFinished: (finished) => {
+      if (isOpen.current) {
+        summaryDue.current = finished.filter((i) => sentKeys.current.has(i.key));
+      }
+      sentKeys.current.clear();
       // Hidden while it was sending: the user has closed it, so the batch
       // ends here, as close() would have ended it. Only the rows that went
       // in are cleared: a failed row keeps its reason and an unsent row
@@ -293,6 +314,13 @@ export function UploadDialog({
       });
     }
     seen.current = next;
+    const batch = summaryDue.current;
+    summaryDue.current = null;
+    const summary = batch === null ? "" : summaryText(batch, i18n);
+    if (summary !== "") {
+      saidCount.current += 1;
+      lines.push({ id: saidCount.current, text: summary });
+    }
     if (lines.length > 0) setSaid((list) => [...list, ...lines].slice(-ANNOUNCEMENTS_KEPT));
   }, [items, i18n, open]);
 
@@ -367,6 +395,8 @@ export function UploadDialog({
   closeRef.current = close;
 
   function send() {
+    if (ready === 0) return;
+    for (const item of items) if (item.status === "ready") sentKeys.current.add(item.key);
     if (modelId === undefined && combine && batch.current === null) batch.current = newBatchId();
     const target: UploadTarget =
       modelId !== undefined
@@ -460,6 +490,7 @@ export function UploadDialog({
                       className="studio-button"
                       aria-label={t("upload.importAnywayFile", { name: item.file.name })}
                       onClick={(event) => {
+                        sentKeys.current.add(item.key);
                         upload.importAnyway(item.key);
                         focusRowStatus(event.currentTarget);
                       }}
@@ -475,6 +506,7 @@ export function UploadDialog({
                       className="studio-button"
                       aria-label={t("upload.retryFile", { name: item.file.name })}
                       onClick={(event) => {
+                        sentKeys.current.add(item.key);
                         upload.retry(item.key);
                         focusRowStatus(event.currentTarget);
                       }}
@@ -510,8 +542,9 @@ export function UploadDialog({
                 role="switch"
                 aria-checked={combine}
                 checked={combine}
-                disabled={busy}
+                aria-disabled={busy}
                 onChange={(event) => {
+                  if (busy) return;
                   batch.current = null;
                   setCombine(event.currentTarget.checked);
                 }}
@@ -528,7 +561,7 @@ export function UploadDialog({
           <button
             type="button"
             className="studio-button studio-button-primary"
-            disabled={ready === 0}
+            aria-disabled={ready === 0}
             onClick={send}
           >
             {t("upload.send", { count: ready })}
