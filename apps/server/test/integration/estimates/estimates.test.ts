@@ -1575,6 +1575,7 @@ describe("My printers", () => {
       const readByA = (await env.repos.settings.get()).printersVersion;
       // Window B adds the X1C: its plate is queued for it.
       await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S, version: readByA });
+      await estimates.pollOrca();
       const forX1C = async () =>
         (await platehouseRows(id)).filter((r) => r.printerId === X1C).map((r) => r.id);
       const waiting = await forX1C();
@@ -1600,6 +1601,7 @@ describe("My printers", () => {
   // Issue #272: the same, when window B changed only the default.
   test("a save from an old read cannot put back a default changed elsewhere", async () => {
     await estimates.savePrinters({ printers: [P1S, X1C], defaultId: P1S });
+    await estimates.pollOrca();
     await drain();
     const readByA = (await env.repos.settings.get()).printersVersion;
     // Window B makes the X1C the default; the list is unchanged.

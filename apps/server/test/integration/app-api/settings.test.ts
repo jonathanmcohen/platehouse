@@ -588,6 +588,7 @@ describe("the settings page", () => {
     await call("PUT", "/app/api/settings/printers", {
       json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
+    await estimates.pollOrca();
     await drain();
     const calls = stub.calls.length;
     const reorder = await call("PUT", "/app/api/settings/printers", {
@@ -653,6 +654,8 @@ describe("the settings page", () => {
       expect(added.status, added.text).toBe(200);
       const queued = (added.json() as { added: Array<{ queued: number }> }).added[0]?.queued ?? 0;
       expect(queued).toBeGreaterThanOrEqual(1);
+      // The poll the save sent queues its plates (run here, as in the other tests).
+      await estimates.pollOrca();
       // Window A, still showing [P1S], saves [P1S]: refused, nothing dropped.
       const stale = await call("PUT", "/app/api/settings/printers", {
         json: { printers: [P1S], defaultId: P1S, version: readByA },
@@ -679,6 +682,7 @@ describe("the settings page", () => {
     await call("PUT", "/app/api/settings/printers", {
       json: { printers: [P1S, X1C], defaultId: P1S, version: await version() },
     });
+    await estimates.pollOrca();
     await drain();
     const A1 = "Bambu Lab A1 0.4 nozzle";
     const readByA = await version();
