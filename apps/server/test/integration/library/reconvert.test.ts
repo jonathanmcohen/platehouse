@@ -588,11 +588,7 @@ describe("a description found unproven", () => {
     await env.db
       .updateTable("blobs")
       .set({ state: "pending" })
-      .where(
-        "id",
-        "in",
-        env.db.selectFrom("files").select("blobId").where("id", "=", m.fileId),
-      )
+      .where("id", "in", env.db.selectFrom("files").select("blobId").where("id", "=", m.fileId))
       .execute();
     const ids = (await descriptionsRepo(env.db).candidates(null, 10_000)).map((c) => c.modelId);
     expect(ids).toContain(m.modelId);
