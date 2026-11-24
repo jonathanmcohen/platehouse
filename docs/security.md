@@ -287,8 +287,9 @@ container, the slicer, which is locked down.
   fails, renders and STL pictures are off. Slices and STEP conversions are off too, unless
   `SLICER_ALLOW_UNSANDBOXED` is set on the slicer: then they run without the sandbox, with only
   the limits above and the container's own isolation. Without the sandbox, a slice or STEP
-  conversion can also read and change other jobs' files, reach the app over the internal network
-  and send signals to the slicer's own processes.
+  conversion can also read and change other files the slicer's user can reach, including
+  leftovers of earlier jobs, reach the app over the internal network and send signals to the
+  slicer's own processes.
 
 **What it does not do:**
 

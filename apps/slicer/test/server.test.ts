@@ -231,29 +231,38 @@ describe("configuration", () => {
   const VERSIONS = { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" };
 
   test("SLICE_PLATE_SECONDS defaults to the gate's 120 and the kill to that plus 60", () => {
-    const c = loadConfig(VERSIONS);
+    const c = loadConfig(VERSIONS, "/opt/node/bin/node");
     expect(c.slicePlateSeconds).toBe(120);
     expect(c.sliceTimeoutSeconds).toBe(180);
     expect(c.port).toBe(8080);
     expect(c.workDir).toBe("/work");
     expect(c.orcaVersion).toBe("2.5.0");
-    expect(loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "200" }).sliceTimeoutSeconds).toBe(260);
     expect(
-      loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "200", SLICE_TIMEOUT_SECONDS: "500" })
+      loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "200" }, "/opt/node/bin/node")
         .sliceTimeoutSeconds,
+    ).toBe(260);
+    expect(
+      loadConfig(
+        { ...VERSIONS, SLICE_PLATE_SECONDS: "200", SLICE_TIMEOUT_SECONDS: "500" },
+        "/opt/node/bin/node",
+      ).sliceTimeoutSeconds,
     ).toBe(500);
   });
 
   test("a bad number names the key", () => {
-    expect(() => loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "soon" })).toThrow(
-      /SLICE_PLATE_SECONDS/,
-    );
-    expect(() => loadConfig({ ...VERSIONS, PORT: "-1" })).toThrow(/PORT/);
+    expect(() =>
+      loadConfig({ ...VERSIONS, SLICE_PLATE_SECONDS: "soon" }, "/opt/node/bin/node"),
+    ).toThrow(/SLICE_PLATE_SECONDS/);
+    expect(() => loadConfig({ ...VERSIONS, PORT: "-1" }, "/opt/node/bin/node")).toThrow(/PORT/);
   });
 
   test("a missing version fails at start, naming the key", () => {
-    expect(() => loadConfig({ OPENSCAD_VERSION: "2026.11-RC0" })).toThrow(/ORCA_VERSION/);
-    expect(() => loadConfig({ ORCA_VERSION: "2.5.0" })).toThrow(/OPENSCAD_VERSION/);
+    expect(() => loadConfig({ OPENSCAD_VERSION: "2026.11-RC0" }, "/opt/node/bin/node")).toThrow(
+      /ORCA_VERSION/,
+    );
+    expect(() => loadConfig({ ORCA_VERSION: "2.5.0" }, "/opt/node/bin/node")).toThrow(
+      /OPENSCAD_VERSION/,
+    );
   });
 });
 
@@ -714,7 +723,10 @@ describe("sandbox self-test", () => {
   });
 
   test("SANDBOX_PROBE defaults to the file the image ships", () => {
-    const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
+    const c = loadConfig(
+      { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" },
+      "/opt/node/bin/node",
+    );
     expect(c.sandboxProbe).toBe("/opt/platehouse/sandbox-probe.stl");
   });
 });
@@ -917,17 +929,19 @@ describe("SLICER_ALLOW_UNSANDBOXED", () => {
   };
 
   test("is false unless it is set to true, and refuses any other value, naming the key", () => {
-    expect(loadConfig(VERSIONS).allowUnsandboxed).toBe(false);
-    expect(loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: "false" }).allowUnsandboxed).toBe(
-      false,
-    );
-    expect(loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: "true" }).allowUnsandboxed).toBe(
-      true,
-    );
+    expect(loadConfig(VERSIONS, "/opt/node/bin/node").allowUnsandboxed).toBe(false);
+    expect(
+      loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: "false" }, "/opt/node/bin/node")
+        .allowUnsandboxed,
+    ).toBe(false);
+    expect(
+      loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: "true" }, "/opt/node/bin/node")
+        .allowUnsandboxed,
+    ).toBe(true);
     for (const bad of ["1", "yes", "TRUE", ""]) {
-      expect(() => loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: bad })).toThrow(
-        /SLICER_ALLOW_UNSANDBOXED/,
-      );
+      expect(() =>
+        loadConfig({ ...VERSIONS, SLICER_ALLOW_UNSANDBOXED: bad }, "/opt/node/bin/node"),
+      ).toThrow(/SLICER_ALLOW_UNSANDBOXED/);
     }
   });
 
@@ -1120,7 +1134,10 @@ describe("OpenSCAD and STEP", () => {
   });
 
   test("PRLIMIT_BIN defaults to util-linux's prlimit in the image", () => {
-    const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
+    const c = loadConfig(
+      { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" },
+      "/opt/node/bin/node",
+    );
     expect(c.prlimitBin).toBe("/usr/bin/prlimit");
   });
 
@@ -2065,13 +2082,13 @@ describe("leftover job folders and /work space", () => {
 
   test("WORK_MIN_FREE_MIB defaults to 640 MiB and can be set", () => {
     const VERSIONS = { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" };
-    expect(loadConfig(VERSIONS).workMinFreeBytes).toBe(640 * 1024 * 1024);
-    expect(loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "100" }).workMinFreeBytes).toBe(
-      100 * 1024 * 1024,
-    );
-    expect(() => loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "lots" })).toThrow(
-      /WORK_MIN_FREE_MIB/,
-    );
+    expect(loadConfig(VERSIONS, "/opt/node/bin/node").workMinFreeBytes).toBe(640 * 1024 * 1024);
+    expect(
+      loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "100" }, "/opt/node/bin/node").workMinFreeBytes,
+    ).toBe(100 * 1024 * 1024);
+    expect(() =>
+      loadConfig({ ...VERSIONS, WORK_MIN_FREE_MIB: "lots" }, "/opt/node/bin/node"),
+    ).toThrow(/WORK_MIN_FREE_MIB/);
   });
 });
 
@@ -2217,10 +2234,13 @@ describe("OrcaSlicer and the STEP worker in the sandbox", () => {
   // (launcherEnv in orca.ts), not through the AppRun bash launcher, which
   // would need bash and the commands it calls inside the sandbox.
   test("the image's defaults: Orca's own binary and tree, this Node's folder, the app folder", () => {
-    const c = loadConfig({ ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" });
+    const c = loadConfig(
+      { ORCA_VERSION: "2.5.0", OPENSCAD_VERSION: "2026.11-RC0" },
+      "/opt/node/bin/node",
+    );
     expect(c.orcaBin).toBe("/opt/orca/bin/orca-slicer");
     expect(c.orcaDir).toBe("/opt/orca");
-    expect(c.nodeDir).toBe(dirname(dirname(process.execPath)));
+    expect(c.nodeDir).toBe("/opt/node");
     expect(c.appDir).toBe("/opt/platehouse/app");
   });
 });
@@ -2261,6 +2281,48 @@ describe("sandbox folders in the configuration", () => {
       }
     },
   );
+
+  test.each(["/usr/bin", "/bin", "/lib", "/lib64", "/usr/local", "/usr/local/bin"])(
+    "ORCA_DIR and OPENSCAD_DIR are refused as %s",
+    (folder) => {
+      expect(() =>
+        loadConfig({ ...VERSIONS, ORCA_DIR: folder, ORCA_BIN: `${folder}/orca-slicer` }, NODE),
+      ).toThrow(/ORCA_DIR/);
+      expect(() => loadConfig({ ...VERSIONS, OPENSCAD_DIR: folder }, NODE)).toThrow(/OPENSCAD_DIR/);
+    },
+  );
+
+  // Folders are compared by their real paths: a link that leads to a refused
+  // folder (on Ubuntu 24.04 /lib is one, to usr/lib) is refused too.
+  test("a folder that is a link to a refused folder is refused", () => {
+    const link = join(stubDir(), "looks-harmless");
+    symlinkSync("/usr/bin", link);
+    expect(() =>
+      loadConfig({ ...VERSIONS, ORCA_DIR: link, ORCA_BIN: `${link}/orca-slicer` }, NODE),
+    ).toThrow(/ORCA_DIR/);
+    expect(() => loadConfig({ ...VERSIONS, APP_DIR: link }, NODE)).toThrow(/APP_DIR/);
+  });
+
+  test("a folder that is a link into WORK_DIR is refused", () => {
+    const work = tempDir("slicer-work-");
+    const job = join(work, "job");
+    mkdirSync(job);
+    const link = join(stubDir(), "app");
+    symlinkSync(job, link);
+    expect(() => loadConfig({ ...VERSIONS, WORK_DIR: work, APP_DIR: link }, NODE)).toThrow(
+      /APP_DIR/,
+    );
+  });
+
+  // Each job folder, WORK_DIR/<uuid>, is landrun's --rw rule, and landrun
+  // takes each rule list joined with commas.
+  test("WORK_DIR is refused when it is relative or holds a comma", () => {
+    for (const value of ["work", "./work", "/work,/opt"]) {
+      expect(() => loadConfig({ ...VERSIONS, WORK_DIR: value }, NODE), value).toThrow(
+        /invalid slicer configuration: .*WORK_DIR/,
+      );
+    }
+  });
 
   test("a folder that holds WORK_DIR is refused", () => {
     expect(() => loadConfig({ ...VERSIONS, WORK_DIR: "/opt/platehouse/app/work" }, NODE)).toThrow(

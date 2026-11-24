@@ -241,28 +241,67 @@ export class ConfigError extends Error {
 }
 
 /**
- * Folders no sandbox rule may name: each would let a program run every
- * system command or read every system library folder, far more than the
- * rules mean to give.
+ * Folders no sandbox rule may name, by real path: each would let a program
+ * run every system command (/usr/bin, /bin, /usr/local/bin) or read and run
+ * every system library (/usr/lib, /lib, /lib64), far more than the rules
+ * mean to give. Their ancestors are listed too. Only these exact folders are
+ * refused: the image's own trees are under /opt.
  */
-const TOO_WIDE = new Set(["/", "/usr", "/usr/lib", "/usr/lib/x86_64-linux-gnu"]);
+const TOO_WIDE = new Set([
+  "/",
+  "/usr",
+  "/usr/bin",
+  "/bin",
+  "/usr/lib",
+  "/usr/lib/x86_64-linux-gnu",
+  "/lib",
+  "/lib64",
+  "/usr/local",
+  "/usr/local/bin",
+]);
 
 /**
- * Why `folder` cannot be a sandbox folder, or null when it can. It must be
- * absolute (landrun would resolve a relative one from the job folder), not
- * one of TOO_WIDE, hold no comma (landrun takes each rule list joined with
- * commas), and neither be WORK_DIR, sit under it, nor hold it, so no rule
+ * The real path of `folder` when it exists (its links resolved, as landrun
+ * resolves them when it adds the rule), else the path itself, normalised.
+ */
+function realFolder(folder: string): string {
+  try {
+    return realpathSync(folder);
+  } catch {
+    return resolve(folder);
+  }
+}
+
+/**
+ * Why a path cannot go into a landrun rule, or null when it can: it must be
+ * absolute (landrun would resolve a relative one from the job folder) and
+ * hold no comma (landrun takes each rule list joined with commas).
+ */
+function rulePathProblem(path: string): string | null {
+  if (!isAbsolute(path)) return "must be an absolute path";
+  if (path.includes(",")) return "must not contain a comma";
+  return null;
+}
+
+/**
+ * Why `folder` cannot be a sandbox folder, or null when it can: a valid rule
+ * path (rulePathProblem) that, by its path and by its real path, is none of
+ * TOO_WIDE and neither is WORK_DIR, sits under it, nor holds it, so no rule
  * reaches another job's folder.
  */
 function sandboxFolderProblem(folder: string, workDir: string): string | null {
-  if (!isAbsolute(folder)) return "must be an absolute path";
-  if (folder.includes(",")) return "must not contain a comma";
-  const f = resolve(folder);
-  const w = resolve(workDir);
-  if (TOO_WIDE.has(f)) return "must not be /, /usr, /usr/lib or /usr/lib/x86_64-linux-gnu";
+  const problem = rulePathProblem(folder);
+  if (problem) return problem;
+  const forms = [resolve(folder), realFolder(folder)];
+  const works = [resolve(workDir), realFolder(workDir)];
+  if (forms.some((f) => TOO_WIDE.has(f))) {
+    return "must not be a system folder such as /, /usr, /usr/bin, /usr/lib or /usr/local";
+  }
   const within = (inner: string, outer: string) =>
     inner === outer || inner.startsWith(outer === "/" ? "/" : `${outer}/`);
-  if (within(f, w) || within(w, f)) return "must not be WORK_DIR, sit under it, or hold it";
+  if (forms.some((f) => works.some((w) => within(f, w) || within(w, f)))) {
+    return "must not be WORK_DIR, sit under it, or hold it";
+  }
   return null;
 }
 
@@ -285,6 +324,9 @@ export function loadConfig(
   // the image, so /opt/node).
   const nodeDir = dirname(dirname(execPath));
   const issues: string[] = [];
+  // Each job folder, WORK_DIR/<uuid>, is a landrun --rw rule.
+  const workProblem = rulePathProblem(e.WORK_DIR);
+  if (workProblem) issues.push(`WORK_DIR: ${workProblem}`);
   const folders: [string, string][] = [
     ["ORCA_DIR", e.ORCA_DIR],
     ["APP_DIR", e.APP_DIR],
