@@ -1,0 +1,57 @@
+# Dependabot version updates (#432, #420).
+#
+# What it covers:
+# - npm: every package in the pnpm workspace, through the root pnpm-lock.yaml.
+#   Minor and patch updates come together in one weekly pull request; a major
+#   update comes in a pull request of its own, so it can be read and tested
+#   on its own.
+# - github-actions: every action used in .github/workflows, in one weekly
+#   pull request. Dependabot keeps an action pinned to a commit SHA pinned,
+#   so pinning them (#420) does not stop them being updated.
+#
+# What it does not cover: the Docker base images. docker/app.Dockerfile,
+# apps/slicer/Dockerfile and tools/slicing-gate/Dockerfile take their base
+# image from `ARG BASE=...@sha256:...`, and the slicer and slicing gate
+# download Node from NODE_URL/NODE_SHA256; Dependabot updates only images
+# named directly in a FROM line. The Ubuntu packages are moved by the monthly
+# apt-snapshot workflow instead.
+#
+# Security updates (a pull request for each Dependabot alert) are a separate
+# repository setting and do not use these groups.
+#
+# A new release must be out for a few days before Dependabot offers it
+# (cooldown), so a compromised release that is pulled quickly never reaches
+# a pull request.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
