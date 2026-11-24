@@ -50,6 +50,7 @@ import {
   needsPolling,
   type PlateNumbers,
   POLL_MS,
+  STL_3D_THRESHOLD_BYTES,
 } from "../src/model/ModelPage";
 import { BAMBU_PROMPT_LINE, type SlicerLink } from "../src/model/OpenInSlicer";
 import {
@@ -3220,5 +3221,119 @@ describe("the app's upload dialog keeps each file's target from when it was adde
       await app.unmount();
       window.history.pushState({}, "", "/");
     }
+  });
+});
+
+// Issue #469: the page does no work nobody asked for.
+describe("the model page's unasked work (issue #469)", () => {
+  const BIG_STL: ModelFile = {
+    ...STL_FILE,
+    size: STL_3D_THRESHOLD_BYTES + 1,
+    preview: "/blobs/0198f0c4-0000-7000-8000-0000000000f9",
+    previewStatus: "ok",
+    previewMessage: null,
+  };
+
+  test("a large STL opens on its picture with Show in 3D, and loads the mesh only when asked", async () => {
+    models.set(MODEL_ID, model([BIG_STL]));
+    await render(pageAt(MODEL_ID));
+    expect(container.querySelector(".studio-viewer img.studio-plate-large")).not.toBeNull();
+    expect(container.querySelector("[data-viewer3d]")).toBeNull();
+    expect(loadThree).not.toHaveBeenCalled();
+    expect(loads).toEqual([]);
+    const ask = button(/^show in 3d/i, container.querySelector(".studio-viewer") as HTMLElement);
+    expect(text(ask)).toBe("Show in 3D (52.4 MB)");
+    await click(ask);
+    expect(loads).toEqual([{ kind: "stl", url: BIG_STL.view?.url }]);
+    expect(container.querySelector("[data-viewer3d]")).not.toBeNull();
+  });
+
+  test("an STL at the threshold still opens in 3D at once", async () => {
+    models.set(MODEL_ID, model([{ ...BIG_STL, size: STL_3D_THRESHOLD_BYTES }]));
+    await render(pageAt(MODEL_ID));
+    expect(loads).toHaveLength(1);
+  });
+
+  test("a large STL with no picture yet still opens in 3D at once", async () => {
+    models.set(MODEL_ID, model([{ ...BIG_STL, preview: null }]));
+    await render(pageAt(MODEL_ID));
+    expect(loads).toHaveLength(1);
+  });
+
+  function modelRequests(id = MODEL_ID): number {
+    return requests.filter((r) => r === `GET /app/api/models/${id}`).length;
+  }
+
+  function setVisibility(state: "visible" | "hidden") {
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  test("the model page does not poll while the tab is hidden, and fetches once when it is shown", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      models.set(
+        MODEL_ID,
+        model([{ ...STL_FILE, previewStatus: "pending", previewMessage: null }]),
+      );
+      await render(pageAt(MODEL_ID));
+      expect(modelRequests()).toBe(1);
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(POLL_MS);
+        });
+        await settle();
+      }
+      expect(modelRequests()).toBe(1);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(modelRequests()).toBe(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_MS);
+      });
+      await settle();
+      expect(modelRequests()).toBe(3);
+    } finally {
+      setVisibility("visible");
+    }
+  });
+
+  test("a model that needs no polling is not fetched again when the tab is shown", async () => {
+    await render(pageAt(MODEL_ID));
+    const before = modelRequests();
+    await act(async () => {
+      setVisibility("hidden");
+      setVisibility("visible");
+    });
+    await settle();
+    expect(modelRequests()).toBe(before);
+  });
+
+  test("switching files resets the plate viewer: the next .3mf opens on its picture", async () => {
+    const OTHER_3MF = "0198f0c4-0000-7000-8000-00000000b0aa";
+    models.set(
+      MODEL_ID,
+      model([
+        threeMf([plate(1, "Base", { file: fileNumbers(1) })]),
+        threeMf([plate(1, "Lid", { file: fileNumbers(1) })], { id: OTHER_3MF, name: "Other.3mf" }),
+      ]),
+    );
+    await render(pageAt(MODEL_ID));
+    await click(container.querySelector(".studio-viewer .ph-plate-view-toggle"));
+    expect(container.querySelector(".studio-viewer [data-viewer3d]")).not.toBeNull();
+    loads = [];
+    await click(tab("Files"));
+    const row = [...panel().querySelectorAll("li")].find((li) => text(li).includes("Other.3mf"));
+    await click(button(/^view/i, row as HTMLElement));
+    expect(container.querySelector(".studio-viewer [data-viewer3d]")).toBeNull();
+    expect(loads).toEqual([]);
+    expect(container.querySelector(".studio-viewer .ph-plate-view-toggle")?.textContent).toBe(
+      "Show in 3D",
+    );
   });
 });

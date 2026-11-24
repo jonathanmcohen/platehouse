@@ -442,6 +442,7 @@
   "model.previewOf": "Aper\u00e7u de {name}",
   "model.refreshFailed": "Impossible d'actualiser le mod\u00e8le pour le moment.",
   "model.renderFailed": "Impossible de faire le rendu de {name}.",
+  "model.showIn3d": "Afficher en 3D ({size})",
   "model.slicer.bambuPrompt": "Bambu Studio signale que le fichier ne vient pas d'un site de confiance et demande s'il faut l'ouvrir quand m\u00eame, pour tout fichier qui ne vient pas de MakerWorld. Choisissez de l'ouvrir.",
   "model.slicer.linkFailed": "Impossible de cr\u00e9er le lien pour le trancheur. R\u00e9essayez.",
   "model.slicer.openBambu": "Ouvrir dans Bambu Studio<hidden>, {name}</hidden>",

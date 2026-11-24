@@ -71,9 +71,10 @@ import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { AppApiError, appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
+import { isHidden } from "../visibility";
 import "./model.css";
 import { AboutTab, MakerWorldLink, makerWorldHref } from "./AboutTab";
-import { derivedMessageIn, FilesTab, viewable } from "./FilesTab";
+import { derivedMessageIn, FilesTab, formatSize, viewable } from "./FilesTab";
 import type { Platform } from "./OpenInSlicer";
 import { PlatesTab } from "./PlatesTab";
 import { PlateViewer } from "./PlateViewer";
@@ -217,6 +218,9 @@ export interface ModelPageProps {
 /** How often the page asks again while a plate is estimating or a file is being rendered. */
 export const POLL_MS = 5000;
 
+/** An STL over this many bytes opens on its picture, and in 3D only when asked (issue #469). */
+export const STL_3D_THRESHOLD_BYTES = 50 * 1024 * 1024;
+
 /**
  * Whether a plate is waiting on its estimate: it is estimating, or an older
  * estimate is shown while the new one is queued or slicing (stale, with the
@@ -335,6 +339,13 @@ export function ModelPage({
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
+    let inFlight = false;
+
+    /** Asks again in POLL_MS, unless the tab is hidden: it asks once when it is shown (onVisibility). */
+    function askLater() {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = isHidden() ? undefined : setTimeout(fetchModel, POLL_MS);
+    }
 
     /** A failed load; status is the answer's, undefined when no answer came. */
     function failed(status?: number) {
@@ -356,11 +367,13 @@ export function ModelPage({
       // be refreshed, and is asked again only while the page is polling; the
       // next successful load clears the notice.
       setNotice({ id, kind: "failed" });
-      if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
+      if (polling.current) askLater();
     }
 
     async function fetchModel() {
       timer = undefined;
+      if (inFlight) return;
+      inFlight = true;
       try {
         const res = await fetch(
           `/app/api/models/${encodeURIComponent(id)}${printerQuery(choice)}`,
@@ -394,18 +407,32 @@ export function ModelPage({
         setNotice(null);
         setLoad({ id, status: "ready", model });
         settlePrinter(model.printer);
-        if (polling.current) timer = setTimeout(fetchModel, POLL_MS);
+        if (polling.current) askLater();
       } catch {
         if (cancelled) return;
         failed();
+      } finally {
+        inFlight = false;
       }
     }
 
+    function onVisibility() {
+      if (isHidden()) {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+      } else if (polling.current && !inFlight) {
+        if (timer !== undefined) clearTimeout(timer);
+        void fetchModel();
+      }
+    }
+
+    document.addEventListener("visibilitychange", onVisibility);
     void fetchModel();
     return () => {
       cancelled = true;
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [id, reload, refreshKey, choice]);
 
@@ -729,6 +756,8 @@ interface ViewerAreaProps {
 function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
   const i18n = useI18n();
   const { t } = i18n;
+  /** The large STL the person asked to see in 3D, by file id. */
+  const [asked, setAsked] = useState<string | null>(null);
   const derived = file === null ? null : derivedMessageIn(i18n, file);
   if (file === null) {
     return (
@@ -739,12 +768,24 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
   }
   if (file.kind === "3mf") {
     return (
-      <PlateViewer file={file} selected={plateIndex} onSelect={onPlate} loadThree={loadThree} />
+      <PlateViewer
+        key={file.id}
+        file={file}
+        selected={plateIndex}
+        onSelect={onPlate}
+        loadThree={loadThree}
+      />
     );
   }
-  if (file.view !== null) {
+  const holdBack =
+    file.kind === "stl" &&
+    file.size > STL_3D_THRESHOLD_BYTES &&
+    file.preview !== null &&
+    asked !== file.id;
+  if (file.view !== null && !holdBack) {
     return (
       <Viewer3d
+        key={file.id}
         source={file.view}
         label={file.name}
         download={file.download}
@@ -760,6 +801,11 @@ function ViewerArea({ file, plateIndex, onPlate, loadThree }: ViewerAreaProps) {
           src={file.preview}
           alt={t("model.previewOf", { name: file.name })}
         />
+        {file.view !== null ? (
+          <button type="button" className="studio-button" onClick={() => setAsked(file.id)}>
+            {t("model.showIn3d", { size: formatSize(file.size, i18n.fmt) })}
+          </button>
+        ) : null}
       </div>
     );
   }

@@ -924,6 +924,44 @@ describe("the settings page", () => {
     }
   });
 
+  test("the printer menu's poll pauses while the tab is hidden, and reads once and resumes when it is shown", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const setVisibility = (value: "visible" | "hidden") => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    try {
+      state.myPrinters = [P1S, X1C];
+      state.waiting = { [X1C]: 463 };
+      await show("/settings", <SettingsPage />);
+      const reads = () => callsTo("GET", "/app/api/settings").length;
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      const hiddenAt = reads();
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+        });
+        await settle();
+      }
+      expect(reads()).toBe(hiddenAt);
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WAITING_POLL_MS);
+      });
+      await settle();
+      expect(reads()).toBe(hiddenAt + 2);
+    } finally {
+      setVisibility("visible");
+      vi.useRealTimers();
+    }
+  });
+
   // Issue #254: every change sends the whole list, so a change made from a
   // list that does not have a just-added printer yet removes it (and cancels
   // its slices) with no confirm. The controls must wait for the list read

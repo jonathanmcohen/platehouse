@@ -442,6 +442,7 @@
   "model.previewOf": "Vista previa de {name}",
   "model.refreshFailed": "No se pudo actualizar el modelo en este momento.",
   "model.renderFailed": "No se pudo renderizar {name}.",
+  "model.showIn3d": "Mostrar en 3D ({size})",
   "model.slicer.bambuPrompt": "Bambu Studio avisa de que el archivo no procede de un sitio de confianza y pregunta si quieres abrirlo de todos modos, para cualquier archivo que no venga de MakerWorld. Elige abrirlo.",
   "model.slicer.linkFailed": "No se pudo crear el enlace para el laminador. Int\u00e9ntalo de nuevo.",
   "model.slicer.openBambu": "Abrir en Bambu Studio<hidden>, {name}</hidden>",

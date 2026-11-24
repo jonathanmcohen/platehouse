@@ -11,7 +11,12 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { defaultLoadThree, MeshLoadError, Viewer3d } from "../src/model/Viewer3d";
+import {
+  createRenderScheduler,
+  defaultLoadThree,
+  MeshLoadError,
+  Viewer3d,
+} from "../src/model/Viewer3d";
 
 const SOURCE = { kind: "glb", url: "/blobs/01900000-0000-7000-8000-000000000001" } as const;
 
@@ -149,5 +154,107 @@ describe("Viewer3d while the view loads", () => {
     expect(placeholder?.getAttribute("role")).toBe("status");
     await act(async () => root.unmount());
     host.remove();
+  });
+});
+
+// Issue #469: the view draws only when something moves.
+describe("createRenderScheduler", () => {
+  function setup(opts: { damping: boolean; updates?: boolean[] }) {
+    const frames = new Map<number, () => void>();
+    let next = 1;
+    let renders = 0;
+    let updates = 0;
+    const queue = opts.updates ?? [];
+    const scheduler = createRenderScheduler({
+      render: () => {
+        renders += 1;
+      },
+      update: () => {
+        updates += 1;
+        return queue.shift() ?? false;
+      },
+      damping: opts.damping,
+      requestFrame: (run) => {
+        frames.set(next, run);
+        return next++;
+      },
+      cancelFrame: (id) => {
+        frames.delete(id);
+      },
+    });
+    /** Runs the one pending frame, if any; false when none was pending. */
+    function frame(): boolean {
+      const [first] = [...frames.entries()];
+      if (first === undefined) return false;
+      frames.delete(first[0]);
+      first[1]();
+      return true;
+    }
+    return {
+      scheduler,
+      frame,
+      pending: () => frames.size,
+      renders: () => renders,
+      updates: () => updates,
+    };
+  }
+
+  test("renders once after a request, and not again while idle", () => {
+    const t = setup({ damping: true });
+    t.scheduler.request();
+    expect(t.renders()).toBe(0);
+    expect(t.frame()).toBe(true);
+    expect(t.renders()).toBe(1);
+    expect(t.frame()).toBe(false);
+    expect(t.renders()).toBe(1);
+  });
+
+  test("asks for one frame however many requests come before it", () => {
+    const t = setup({ damping: false });
+    t.scheduler.request();
+    t.scheduler.request();
+    t.scheduler.request();
+    expect(t.pending()).toBe(1);
+    t.frame();
+    expect(t.renders()).toBe(1);
+  });
+
+  test("a request after a render draws again", () => {
+    const t = setup({ damping: false });
+    t.scheduler.request();
+    t.frame();
+    t.scheduler.request();
+    t.frame();
+    expect(t.renders()).toBe(2);
+  });
+
+  test("with damping it loops only while update() reports a change, then stops", () => {
+    const t = setup({ damping: true, updates: [true, true, false] });
+    t.scheduler.request();
+    let frames = 0;
+    while (t.frame()) frames += 1;
+    expect(frames).toBe(3);
+    expect(t.updates()).toBe(3);
+    expect(t.renders()).toBe(3);
+    expect(t.pending()).toBe(0);
+  });
+
+  test("without damping (reduced motion) it never calls update() and never loops", () => {
+    const t = setup({ damping: false, updates: [true, true] });
+    t.scheduler.request();
+    expect(t.frame()).toBe(true);
+    expect(t.frame()).toBe(false);
+    expect(t.updates()).toBe(0);
+    expect(t.renders()).toBe(1);
+  });
+
+  test("dispose cancels a pending frame and later requests do nothing", () => {
+    const t = setup({ damping: true });
+    t.scheduler.request();
+    t.scheduler.dispose();
+    expect(t.pending()).toBe(0);
+    t.scheduler.request();
+    expect(t.pending()).toBe(0);
+    expect(t.renders()).toBe(0);
   });
 });

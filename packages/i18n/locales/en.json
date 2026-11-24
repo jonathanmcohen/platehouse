@@ -435,6 +435,7 @@
   "model.previewOf": "Preview of {name}",
   "model.refreshFailed": "The model could not be refreshed right now.",
   "model.renderFailed": "{name} could not be rendered.",
+  "model.showIn3d": "Show in 3D ({size})",
   "model.slicer.bambuPrompt": "Bambu Studio asks \"This file is not from a trusted site, do you want to open it anyway?\" for any file that is not from MakerWorld. Choose to open it.",
   "model.slicer.linkFailed": "The slicer link could not be made. Try again.",
   "model.slicer.openBambu": "Open in Bambu Studio<hidden>, {name}</hidden>",
