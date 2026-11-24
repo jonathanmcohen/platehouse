@@ -11,10 +11,12 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxState } from "@platehouse/slicer-contract";
+import { sql } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { PREVIOUS_RENDERS_SENTENCE, TempFileError } from "../../../src/derived/client.js";
 import {
+  BACKFILL_LOCK_KEY,
   createDerived,
   DERIVED_KINDS,
   DERIVED_MESSAGES,
@@ -184,8 +186,8 @@ describe("the preview backfill (issue #316)", () => {
     for (const id of ours) expect(await previewJobs(id)).toHaveLength(1);
   });
 
-  test("two runs at once queue at most one batch between them", async () => {
-    // Jobs held an hour, so the first batch stays queued while the second run looks.
+  test("a run waits while another holds the backfill lock, then queues its batch", async () => {
+    // Jobs held an hour, so the batch stays queued until the test cancels it.
     const send: PgBoss["send"] = async (...args: unknown[]) => {
       const [name, data, options] = args as [string, object, Record<string, unknown>];
       return (env.boss.send as (...a: unknown[]) => Promise<string | null>)(name, data, {
@@ -202,21 +204,46 @@ describe("the preview backfill (issue #316)", () => {
       retryDelaySeconds: 1,
       backfillBatch: 2,
     });
-    const files = [
-      await legacyStl("Lock one"),
-      await legacyStl("Lock two"),
-      await legacyStl("Lock three"),
-    ];
+    const files = [await legacyStl("Lock one"), await legacyStl("Lock two")];
     const ours = files.map((f) => f.fileId);
 
-    const [a, b] = await Promise.all([
-      batched.backfillPreviews(later()),
-      batched.backfillPreviews(later()),
-    ]);
-    const queued = [...a.queued, ...b.queued].filter((id) => ours.includes(id));
-    expect(queued).toHaveLength(2);
-    expect(new Set(queued).size).toBe(2);
+    // Another run, played by a transaction that holds the same advisory lock.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding: () => void = () => {};
+    const holds = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    const holder = env.db
+      .transaction()
+      .execute(async (trx) => {
+        await sql`select pg_advisory_xact_lock(${BACKFILL_LOCK_KEY}::bigint)`.execute(trx);
+        holding();
+        await gate;
+      })
+      .catch((error: unknown) => {
+        holding();
+        throw error;
+      });
+    await holds;
 
+    let settled = false;
+    const run = batched.backfillPreviews(later()).finally(() => {
+      settled = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false);
+      for (const id of ours) expect(await previewJobs(id)).toHaveLength(0);
+    } finally {
+      release();
+      await holder;
+    }
+
+    const result = await run;
+    expect(result.queued.filter((id) => ours.includes(id)).sort()).toEqual([...ours].sort());
     for (const f of files) {
       for (const job of await previewJobs(f.fileId)) {
         await env.boss.cancel(QUEUE.slicer, job.id);

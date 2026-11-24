@@ -417,7 +417,7 @@ const BODY_LIMIT: Partial<Record<DerivableKind, number>> = {
  * jobs until its batch is queued, so a second run at the same moment waits
  * and then sees the first run's jobs queued (backfillPreviews).
  */
-const BACKFILL_LOCK_KEY = 4_280_316;
+export const BACKFILL_LOCK_KEY = 4_280_316;
 
 /**
  * How many previews one backfill run queues at most (issue #316). A run
