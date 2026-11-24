@@ -738,6 +738,8 @@ describe("0012 file preview status", () => {
         previewSourceBlobId,
         previewFailureSourceBlobId,
         previewFailureMessage,
+        // 0016's column, which migrate() adds after 0012.
+        previewFailureReason,
         ...rest
       } = row;
       expect(previewStatus).toBeNull();
@@ -745,6 +747,7 @@ describe("0012 file preview status", () => {
       expect(previewSourceBlobId).toBeNull();
       expect(previewFailureSourceBlobId).toBeNull();
       expect(previewFailureMessage).toBeNull();
+      expect(previewFailureReason).toBeNull();
       expect(rest).toEqual(before[i]);
     }
   });
