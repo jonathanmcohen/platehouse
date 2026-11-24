@@ -170,8 +170,8 @@ export interface ReconvertStore {
    * row that the run renews while fn goes and releases when it ends, however
    * it ends; one a dead server left runs out by itself. The signal fn is
    * given aborts when the lease can no longer be shown to be held (taken
-   * over, or two renewals in a row failed), and fn then stops, as it does for
-   * a stop. renewMs and leaseMs are for tests: how often to renew, how long
+   * over, two renewals in a row failed, or one renewal has hung past the
+   * lease's safe margin), and fn then stops, as it does for a stop. renewMs and leaseMs are for tests: how often to renew, how long
    * a lease lasts.
    */
   exclusive<T>(

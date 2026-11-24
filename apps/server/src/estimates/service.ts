@@ -177,8 +177,10 @@ export class PrinterListRefused extends Error {
 export const SLICE_PRIORITY = Object.freeze({ waiting: 1, library: -1 });
 
 /**
- * A job waiting in the slicer queue: a slice carries its printer and
- * estimate, a render or mesh job (derived.ts) neither.
+ * A job waiting in the slicer queue, as slicesThrough takes it. slicesThrough
+ * and this shape are kept as the reference that the live SQL queue figures
+ * (queuePositions) are tested against; the app does not call them. A slice
+ * carries its printer and estimate, a render or mesh job (derived.ts) neither.
  */
 export interface QueuedWork {
   id: string;
@@ -189,6 +191,10 @@ export interface QueuedWork {
 }
 
 /**
+ * The reference algorithm for the queue figures, no longer the live one: the
+ * app reads them from the database (queuePositions), and a test checks that
+ * query against this function over generated queues.
+ *
  * For each printer with slices queued, how many slices run up to and
  * including its last one: the slices already running (ahead of everything),
  * then the queued slices in the order pg-boss starts them, highest priority
@@ -231,7 +237,7 @@ export interface PrinterQueue {
   waiting: number;
   /**
    * Slicer jobs that run up to and including its last waiting slice, across
-   * every printer, renders and meshes included (slicesThrough); at least
+   * every printer, renders and meshes included (queuePositions); at least
    * waiting.
    */
   through: number;
@@ -890,6 +896,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
         log(`added ${printer.id} to My printers; ${queued} estimate(s) to queue`);
         queuedFor.push({ printerId: printer.id, queued });
       }
+      // The added printer's plates are queued by this poll job, and the job
+      // needs the slicer to answer its health check, so while the slicer is
+      // down they wait for the next scheduled poll.
       await boss.send(QUEUE.maintenance, { task: MAINTENANCE_TASKS.pollOrca }, { retryLimit: 0 });
       // The poll's reestimateAll queues each listed printer's library. Plates
       // already waiting for other printers go ahead of an added printer's.

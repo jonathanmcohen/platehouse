@@ -267,9 +267,9 @@ container, the slicer, which is locked down.
 - **Limits.** It has a CPU and memory limit, a process limit, and runs one job at a time. Each plate
   has a time cap, and the slicer kills a job that runs over. After each job it also cleans up
   processes the job left behind, and it stops a job's programs at once when its client goes away.
-  That clean-up runs only when the slicer image's own entrypoint is PID 1 (both images run tini
-  as PID 1), so do not add an init in front of it (`init: true` in Compose, `--init` with
-  `docker run`); the slicer logs at start-up when the clean-up is off.
+  That clean-up runs only when the slicer image's own entrypoint is PID 1, so do not add an init
+  in front of it (`init: true` in Compose, `--init` with `docker run`); the slicer logs at
+  start-up when the clean-up is off.
 - **Each program is boxed in further.** OpenSCAD, OrcaSlicer and the STEP converter each run under
   a Linux Landlock sandbox that lets them write only to their own job folder, so none can read or
   change another job's files, and that refuses them any TCP connection. The sandbox does not block

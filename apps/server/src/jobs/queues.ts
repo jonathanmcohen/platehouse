@@ -20,7 +20,8 @@
 //   (derived/derived.ts's checkRenders) every 15 minutes (CHECK_RENDERS_CRON),
 //   the delete of login sessions past either expiry daily at 04:35 local
 //   time (PURGE_SESSIONS_CRON), and issue #316's preview backfill every 5
-//   minutes (BACKFILL_PREVIEWS_CRON), which also runs once at startup.
+//   minutes (BACKFILL_PREVIEWS_CRON), which also runs once at startup and is
+//   the backstop: a new batch is also sent as soon as one finishes (#417).
 //   The three daily tasks run at 03:30, 04:00 and 04:35, so none shares a
 //   minute with another, and minute 35 is on no hourly, 10-minute or
 //   15-minute schedule either. The 5-minute backfill does share minutes
@@ -152,7 +153,8 @@ export const MAINTENANCE_TASKS = {
  *   holds a lease row that it renews while it goes (repos/descriptions.ts
  *   exclusive), so a second server does nothing while it is held. A run that
  *   can no longer show it holds the lease stops after the model it is on,
- *   and a server that dies leaves a lease that runs out within a minute. The step has its own queue (#412): on the maintenance queue the
+ *   and a server that dies leaves a lease that runs out within a minute.
+ *   The step has its own queue (#412): on the maintenance queue the
  *   schedule and each paused slice added a job, about two for every one
  *   finished, and the other maintenance tasks waited behind them.
  * - Each job is sent with no pg-boss retry, and its handler never throws for
@@ -207,7 +209,9 @@ function reconvertSliceMs(expireInSeconds: number): number {
  * Every 5 minutes (issue #316): the preview backfill (derived/derived.ts's
  * backfillPreviews), which queues one batch of STL and STEP previews when
  * none of the last is still waiting, and does nothing once every file has
- * one. It also runs once at startup.
+ * one. It also runs once at startup. It is the backstop: a new batch is also
+ * sent as soon as one finishes (derived/derived.ts's nextBackfillBatch, #417),
+ * so this schedule only starts the backfill and restarts it if that chain breaks.
  */
 export const BACKFILL_PREVIEWS_CRON = "*/5 * * * *";
 

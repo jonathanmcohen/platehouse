@@ -70,9 +70,9 @@ export interface ModelsTable {
   descriptionConverter: number | null;
   /** The .3mf the description was converted from; no foreign key (0014). */
   descriptionFileId: string | null;
-  /** The .3mf a re-converted description came from, not yet proven; no foreign key (0016). */
+  /** The newest .3mf the description was checked against and could not be proven to be Platehouse's own conversion; no foreign key (0016). */
   descriptionUnprovenFileId: string | null;
-  /** SHA-256, lowercase hex, of that unproven description; set with descriptionUnprovenFileId (0016). */
+  /** SHA-256, lowercase hex, of the exact description text that check read; set with descriptionUnprovenFileId (0016). */
   descriptionUnprovenSha256: string | null;
   createdAt: CreatedAt;
   updatedAt: UpdatedAt;

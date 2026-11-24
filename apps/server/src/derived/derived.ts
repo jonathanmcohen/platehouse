@@ -2474,6 +2474,9 @@ export function createDerived(deps: DerivedDeps) {
    * preview that failed with a PREVIEW_RETRIED reason code, and no job, and a
    * queued file is 'pending' from then on. Once every file has a preview or
    * a failure that is not retried, a run finds nothing and queues nothing.
+   * The schedule is the backstop: a new batch is also sent as soon as one
+   * finishes (nextBackfillBatch, issue #417), so the backfill does not wait
+   * for the next scheduled run between batches.
    * A file that fails is logged and left for the next run; the others go on.
    */
   async function backfillPreviews(now: Date): Promise<BackfillResult> {

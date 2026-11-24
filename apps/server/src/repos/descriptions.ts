@@ -131,10 +131,15 @@ export function descriptionsRepo(db: Kysely<DB>): ReconvertStore & {
       let renewing = false;
       const renew = async () => {
         // A renewal that hangs (a connection that died without telling us)
-        // never fails, so the lease is also given up on when the last one
-        // that worked was sent so long ago that the lease is about to run out.
-        if (performance.now() - lastRenewedAt >= leaseMs - renewMs) lost.abort();
-        if (renewing || lost.signal.aborted) return;
+        // never fails, so while one is in flight the lease is given up on
+        // when the last one that worked was sent so long ago that the lease
+        // is about to run out. One that failed and returned is tolerated: the
+        // next tick tries again, and only a second failure in a row gives up.
+        if (renewing) {
+          if (performance.now() - lastRenewedAt >= leaseMs - renewMs) lost.abort();
+          return;
+        }
+        if (lost.signal.aborted) return;
         renewing = true;
         sentAt = performance.now();
         const sent = sentAt;

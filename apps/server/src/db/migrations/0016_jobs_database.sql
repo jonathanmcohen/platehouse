@@ -10,9 +10,11 @@
 --   (DERIVED_MESSAGES may change wording later; a database upgraded from an
 --   rc still holds these sentences). Any other stored message is a render
 --   failure.
--- - models.description_unproven_*: the description a re-conversion wrote
---   that is not yet proven to match its source (no foreign key, as
---   description_file_id in 0014).
+-- - models.description_unproven_*: the marker that a description was checked
+--   against the model's newest .3mf, with this exact description text, and
+--   could not be proven to be Platehouse's own conversion. Nothing is
+--   written to the description (no foreign key, as description_file_id in
+--   0014).
 -- - upgrade_leases: one holder at a time for a one-off upgrade run.
 --
 -- Additive only: new columns, indexes and a table; no existing value changes

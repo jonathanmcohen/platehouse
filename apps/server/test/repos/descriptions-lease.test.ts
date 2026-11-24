@@ -95,6 +95,47 @@ describe("the lease's renewal", () => {
     expect(out).toBe(false);
   });
 
+  test("one renewal that fails, followed by one that works, keeps the lease", async () => {
+    let calls = 0;
+    const repo = descriptionsRepo(
+      leaseDb(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("connection reset");
+        return { rows: [{ holder: "h" }], numAffectedRows: 1n };
+      }),
+    );
+    // The first renewal fails at 50 ms, when 50 ms of the 100 ms lease has
+    // passed since the take: the lease's safe margin is already reached, but
+    // the failed renewal returned, so only a hung one may give the lease up.
+    const out = await repo.exclusive(
+      "step",
+      async (lost) => {
+        await new Promise((resolve) => setTimeout(resolve, 280));
+        return lost.aborted;
+      },
+      { renewMs: 50, leaseMs: 100 },
+    );
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(out).toBe(false);
+  });
+
+  test("two renewals in a row that fail lose the lease", async () => {
+    const repo = descriptionsRepo(
+      leaseDb(async () => {
+        throw new Error("connection reset");
+      }),
+    );
+    const out = await repo.exclusive(
+      "step",
+      async (lost) => {
+        await aborted(lost);
+        return "stopped";
+      },
+      { renewMs: 10, leaseMs: 1_000 },
+    );
+    expect(out).toBe("stopped");
+  });
+
   test("a renewal that finds no row loses the lease", async () => {
     const repo = descriptionsRepo(leaseDb(async () => ({ rows: [], numAffectedRows: 0n })));
     const out = await repo.exclusive(

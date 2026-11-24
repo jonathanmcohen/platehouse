@@ -1358,11 +1358,17 @@ describe("My printers", () => {
       const urgent = await until(
         async () => {
           const ids = await estimateIds();
-          return (await queuedJobs()).filter(
-            (j) => j.priority === SLICE_PRIORITY.waiting && ids.includes(j.data.estimateId),
-          );
+          return [
+            ...new Set(
+              (await queuedJobs())
+                .filter(
+                  (j) => j.priority === SLICE_PRIORITY.waiting && ids.includes(j.data.estimateId),
+                )
+                .map((j) => j.data.estimateId),
+            ),
+          ];
         },
-        (jobs) => jobs.length === 6,
+        (estimateIds) => estimateIds.length === 6,
       );
       expect(urgent).toHaveLength(6);
     } finally {
@@ -1462,7 +1468,14 @@ describe("My printers", () => {
         (n) => n > before,
       );
       await until(
-        async () => (await queuedJobs()).filter((j) => j.data.printerId === A1).length,
+        // Distinct estimates, not jobs: the poll's library copy and an urgent
+        // copy (or a recovered one) can both be queued for one estimate.
+        async () =>
+          new Set(
+            (await queuedJobs())
+              .filter((j) => j.data.printerId === A1)
+              .map((j) => j.data.estimateId),
+          ).size,
         (n) => n === 3,
       );
       const saved = await estimates.savePrinters({ printers: [P1S], defaultId: P1S });
