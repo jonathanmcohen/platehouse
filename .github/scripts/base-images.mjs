@@ -10,6 +10,12 @@
 //   tools/slicing-gate/Dockerfile    the same
 //   tools/slicing-gate/README.md     its pins table lists the Ubuntu digest and Node
 //
+// Three more files name the Node release alone and move with it, so a Node
+// update never leaves CI and the docs on the old one: .node-version (the Node
+// CI runs on), the x-node image line of e2e/compose.yml, and the "You need
+// Node X.Y.Z" sentence of README.md. readPins refuses when any of them
+// disagrees with the Dockerfiles.
+//
 // One Node release drives both: the app image's node:X.Y.Z tag is the release
 // the slicer and the gate download. The slicer and the gate must pin the same
 // Ubuntu digest, Node release and Node sha256, and the pins table must agree
@@ -44,7 +50,14 @@ export const APP_DOCKERFILE = "docker/app.Dockerfile";
 export const SLICER_DOCKERFILE = "apps/slicer/Dockerfile";
 export const GATE_DOCKERFILE = "tools/slicing-gate/Dockerfile";
 export const GATE_README = "tools/slicing-gate/README.md";
-export const FILES = [APP_DOCKERFILE, SLICER_DOCKERFILE, GATE_DOCKERFILE, GATE_README];
+export const NODE_VERSION_FILE = ".node-version";
+export const E2E_COMPOSE = "e2e/compose.yml";
+export const ROOT_README = "README.md";
+// The four files that hold a digest, which no other tracked file may name.
+export const DIGEST_FILES = [APP_DOCKERFILE, SLICER_DOCKERFILE, GATE_DOCKERFILE, GATE_README];
+// Every file the weekly run reads and may rewrite: the digest files and the
+// three that name only the Node release.
+export const FILES = [...DIGEST_FILES, NODE_VERSION_FILE, E2E_COMPOSE, ROOT_README];
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
@@ -52,6 +65,9 @@ const IMAGE_AT_DIGEST = /^([^@\s]+)@sha256:([0-9a-f]{64})$/;
 const APP_BASE = /^node:(\d+\.\d+\.\d+)-trixie-slim@sha256:[0-9a-f]{64}$/;
 const NODE_URL =
   /^https:\/\/nodejs\.org\/dist\/v(\d+\.\d+\.\d+)\/node-v(\d+\.\d+\.\d+)-linux-x64\.tar\.xz$/;
+const NODE_VERSION_LINE = /^(\d+\.\d+\.\d+)\n?$/;
+const COMPOSE_NODE = /^( {2}image: node:)(\d+\.\d+\.\d+)(-trixie-slim)$/gm;
+const README_NODE = /(You need Node )(\d+\.\d+\.\d+)(, the version in)/g;
 const BASE_ROW = /^\| Base image \| (\S+) \| index digest `sha256:([0-9a-f]{64})` \|$/gm;
 const NODE_ROW = /^\| Node\.js \| (\d+\.\d+\.\d+) linux x64 \| sha256 `([0-9a-f]{64})` \|$/gm;
 // The comment above ARG BASE=: its first line and every # line after it.
@@ -157,7 +173,37 @@ export function readPins(texts) {
       `${GATE_README} lists the Node sha256 ${nodes[0][2]}, the Dockerfiles pin ${pins.nodeSha}`,
     );
   }
+
+  const others = [
+    [
+      NODE_VERSION_FILE,
+      NODE_VERSION_LINE.exec(need(texts, NODE_VERSION_FILE))?.[1],
+      "a single X.Y.Z line",
+    ],
+    [
+      E2E_COMPOSE,
+      onlyOne(need(texts, E2E_COMPOSE), COMPOSE_NODE, 2),
+      "one `image: node:X.Y.Z-trixie-slim` line",
+    ],
+    [
+      ROOT_README,
+      onlyOne(need(texts, ROOT_README), README_NODE, 2),
+      'one "You need Node X.Y.Z, the version in" sentence',
+    ],
+  ];
+  for (const [f, v, shape] of others) {
+    if (v === undefined) throw new Error(`${f} does not hold ${shape}`);
+    if (v !== pins.nodeVersion)
+      throw new Error(`${f} names Node ${v}, the Dockerfiles pin ${pins.nodeVersion}`);
+  }
   return pins;
+}
+
+// The version group of the one match of re in text, or undefined for none or
+// several.
+function onlyOne(text, re, group) {
+  const all = [...text.matchAll(re)];
+  return all.length === 1 ? all[0][group] : undefined;
 }
 
 function checkNext(next) {
@@ -217,6 +263,17 @@ export function rewritePins(texts, next) {
       out[f] = out[f].replace(old, next.nodeVersion);
       if (old.test(out[f])) throw new Error(`${f} still names Node ${now.nodeVersion}`);
     }
+  }
+  if (now.nodeVersion !== next.nodeVersion) {
+    out[NODE_VERSION_FILE] = `${next.nodeVersion}\n`;
+    out[E2E_COMPOSE] = out[E2E_COMPOSE].replace(
+      COMPOSE_NODE,
+      (_m, a, _v, c) => `${a}${next.nodeVersion}${c}`,
+    );
+    out[ROOT_README] = out[ROOT_README].replace(
+      README_NODE,
+      (_m, a, _v, c) => `${a}${next.nodeVersion}${c}`,
+    );
   }
   const digest = next.ubuntuBase.split("@")[1].slice("sha256:".length);
   out[GATE_README] = out[GATE_README]
@@ -290,7 +347,7 @@ export function grepArgs(hexes) {
     "--",
     ".",
     ":!CHANGELOG.md",
-    ...FILES.map((f) => `:!${f}`),
+    ...DIGEST_FILES.map((f) => `:!${f}`),
   ];
 }
 
@@ -374,7 +431,7 @@ function main([cmd, ...args]) {
       const found = leftovers(root, args);
       if (found.length > 0) {
         process.stderr.write(
-          `::error::these files name a base image or Node digest the rewrite moved, which only ${FILES.join(", ")} may: the weekly base-images run would leave them behind and stop before it pushes. Move the copy to the pin, or teach .github/scripts/base-images.mjs about it:\n${found.join("\n")}\n`,
+          `::error::these files name a base image or Node digest the rewrite moved, which only ${DIGEST_FILES.join(", ")} may: the weekly base-images run would leave them behind and stop before it pushes. Move the copy to the pin, or teach .github/scripts/base-images.mjs about it:\n${found.join("\n")}\n`,
         );
         process.exit(1);
       }

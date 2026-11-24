@@ -432,6 +432,29 @@ test("the snapshot-pins job runs the shared leftover check on every pull request
   assert.match(script, /if \(cmd === "leftovers"\)/);
 });
 
+// Issue #453, the same lesson as #391 for the base image and Node pins: the
+// check that the pins agree and that no file but the four digest files names
+// their digests runs on every pull request, as a job nothing scopes or gates,
+// and runs the command the weekly base-images workflow runs after its rewrite.
+test("the base-image-pins job runs the shared pin and leftover check on every pull request (issue #453)", () => {
+  const t = text();
+  const job = jobBlock(t, "base-image-pins");
+  assert.match(job, /\n {4}name: Base image pin check\n/);
+  assert.match(job, /\n {4}runs-on: ubuntu-24\.04\n/);
+  assert.doesNotMatch(job, /\n {4}(needs|if):/, "no needs and no condition: it runs on every run");
+  assert.match(onBlock(t), /^ {2}pull_request:\n(?! {4})/m, "pull_request with nothing nested under it");
+  assert.deepEqual(
+    jobSteps(job).map((s) => s.match(/^ {6}- name: (.+)$/m)[1]),
+    ["Check out", "Set up Node", "Pins agree and no file but the pins names their digests"],
+  );
+  const script = stepScript(job, "Pins agree and no file but the pins names their digests");
+  assert.match(script, /^pins="\$\(node \.github\/scripts\/base-images\.mjs read\)"$/m, "reads (and so cross-checks) the pins");
+  assert.match(script, /^node \.github\/scripts\/base-images\.mjs leftovers "\$\{app##\*@sha256:\}" "\$\{ubuntu##\*@sha256:\}" "\$\(get old_node_sha\)"$/m);
+  assert.doesNotMatch(job, /run: .*(pnpm|npm|curl|wget)|git grep/, "no install, no network, no grep of its own");
+  const weekly = readFileSync(join(ROOT, ".github", "workflows", "base-images.yml"), "utf8");
+  assert.ok(stepScript(jobBlock(weekly, "refresh"), "Push the branch and open the pull request").includes("node .github/scripts/base-images.mjs leftovers"), "the weekly run calls the same check");
+});
+
 const SLICER_REPORT = "Trivy report (informational, does not fail the job)";
 test("the CI slicer job ends with slicer-image.yml's Trivy report, which never fails the job", () => {
   const job = jobBlock(text(), "slicer-image");
@@ -946,6 +969,7 @@ for (const [file, want] of [
   [".github/workflows/base-images.yml", TESTS],
   [".github/scripts/base-images.mjs", TESTS],
   ["pnpm-workspace.yaml", TESTS],
+  ["e2e/compose.yml", TESTS],
   ["docker/app.Dockerfile", TESTS],
   ["docker/check-image-labels.sh", TESTS],
   ["apps/slicer/Dockerfile", TESTS],
@@ -1186,6 +1210,7 @@ test("gate jobs decision: every file the gate tests read outside tools/slicing-g
     ".github/workflows/base-images.yml",
     ".github/scripts/base-images.mjs",
     "pnpm-workspace.yaml",
+    "e2e/compose.yml",
     "docker/app.Dockerfile",
     "docker/check-image-labels.sh",
     "apps/slicer/Dockerfile",

@@ -10,8 +10,8 @@
 # did.
 #
 # The jobs in this file, in order: changes (Decide which path-scoped jobs
-# run), snapshot-pins (Ubuntu snapshot pin check, on every run, below), the
-# chain above, gate-tests (Slicing gate tests), gate-image (Slicing
+# run), snapshot-pins (Ubuntu snapshot pin check) and base-image-pins (Base
+# image pin check), both on every run, below, the chain above, gate-tests (Slicing gate tests), gate-image (Slicing
 # gate image build), slicer-image (Slicer image and container tests) and
 # app-image (App image (amd64) and App image (arm64): the
 # image build, its healthy and unhealthy checks, then the release workflow's
@@ -102,6 +102,7 @@ jobs:
       # .github/scripts/rc-target.mjs, .github/scripts/apt-snapshot.mjs,
       # .github/scripts/base-images.mjs, .github/scripts/release-gate.mjs,
       # pnpm-workspace.yaml (the overrides test in baseimages.test.mjs),
+      # e2e/compose.yml (the Node image the weekly base-images run moves),
       # docker/app.Dockerfile, docker/check-image-labels.sh (the slicer
       # image's label check step runs it), docker/test-app-image.sh, docker/app.Dockerfile.dockerignore, the root
       # tsconfig.json and tools/brand/tsconfig.json (workflowpins.test.mjs),
@@ -134,7 +135,7 @@ jobs:
             changed="$(git diff --name-only --no-renames "$base" HEAD)"
             echo "Files changed since ${base}:"
             printf '%s\n' "$changed"
-            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
+            if grep -Eq '^(tools/slicing-gate/|\.github/workflows/(ci|release|slicer-image|rc-tag|apt-snapshot|base-images|docs-pages)\.yml$|\.github/scripts/(rc-target|apt-snapshot|base-images|release-gate)\.mjs$|\.node-version$|docker/app\.Dockerfile$|docker/check-image-labels\.sh$|docker/test-app-image\.sh$|docker/app\.Dockerfile\.dockerignore$|pnpm-workspace\.yaml$|tsconfig\.json$|tools/brand/tsconfig\.json$|e2e/compose\.yml$|apps/slicer/Dockerfile$|apps/slicer/test/container/smoke\.test\.ts$|apps/slicer/test/container/support/slicer\.ts$|README\.md$|CHANGELOG\.md$)' <<<"$changed"; then
               echo "The slicing gate or a file its tests read changed; the gate tests run."
             else
               tests=false
@@ -236,6 +237,38 @@ jobs:
         run: |
           node .github/scripts/apt-snapshot.mjs leftovers
 
+  # Issue #453, as #391 above for the Ubuntu snapshot: the base image and Node
+  # pins the weekly base-images workflow moves must agree across the
+  # Dockerfiles, the gate README, .node-version, e2e/compose.yml and the root
+  # README, and only the four files that hold a digest (the three Dockerfiles
+  # and the gate README's pins table) may name the current digests, or the
+  # weekly run would leave a copy behind and stop before it pushes. A pull
+  # request that breaks either fails here instead. It runs on every pull
+  # request and push, whatever changed, with no network and no install.
+  # Nothing depends on it.
+  base-image-pins:
+    name: Base image pin check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Pins agree and no file but the pins names their digests
+        run: |
+          pins="$(node .github/scripts/base-images.mjs read)"
+          get() { sed -n "s/^$1=//p" <<<"$pins"; }
+          app="$(get old_app_base)"
+          ubuntu="$(get old_ubuntu_base)"
+          node .github/scripts/base-images.mjs leftovers "${app##*@sha256:}" "${ubuntu##*@sha256:}" "$(get old_node_sha)"
+
   lint:
     name: Lint (Biome)
     runs-on: ubuntu-24.04
@@ -254,14 +287,6 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
-      # Issues #432 and #453: a critical advisory in a package the server, web
-      # app, slicer or importer ships fails the job. Production dependencies
-      # only; the overrides in pnpm-workspace.yaml keep the docs site's known
-      # advisories out of the report. The exit code is pnpm's and nothing
-      # waves it through. It asks the advisory service live, so a new
-      # advisory can fail a pull request that changed nothing.
-      - name: Audit shipped dependencies (fail on critical)
-        run: pnpm audit --prod --audit-level=critical
       - name: Biome
         run: pnpm exec biome ci .
 
@@ -272,6 +297,17 @@ jobs:
         run: |
           sed 's/=$/=x/' examples/.env.example >"$RUNNER_TEMP/compose.env"
           docker compose -f examples/docker-compose.yml --env-file "$RUNNER_TEMP/compose.env" config -q
+
+      # Issues #432 and #453: a critical advisory in a production dependency
+      # fails the job. That covers the packages the server, web app, slicer
+      # and importer ship and also the docs site's production dependencies
+      # (the workspace has one lockfile); the overrides in pnpm-workspace.yaml
+      # keep the docs site's known advisories out of the report. It runs last
+      # so a lint finding is never hidden by it. The exit code is pnpm's and
+      # nothing waves it through. It asks the advisory service live, so a
+      # new advisory can fail a pull request that changed nothing.
+      - name: Audit production dependencies (fail on critical)
+        run: pnpm audit --prod --audit-level=critical
 
   typecheck:
     name: Typecheck

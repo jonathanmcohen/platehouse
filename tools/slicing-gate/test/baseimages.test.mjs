@@ -13,9 +13,13 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   APP_DOCKERFILE,
+  DIGEST_FILES,
+  E2E_COMPOSE,
   FILES,
   GATE_DOCKERFILE,
   GATE_README,
+  NODE_VERSION_FILE,
+  ROOT_README,
   SLICER_DOCKERFILE,
   grepArgs,
   latestNode,
@@ -32,6 +36,9 @@ const CI = join(ROOT, ".github", "workflows", "ci.yml");
 const RELEASE = join(ROOT, ".github", "workflows", "release.yml");
 const WORKSPACE = join(ROOT, "pnpm-workspace.yaml");
 const APP_FILE = join(ROOT, "docker", "app.Dockerfile");
+const NODE_VERSION_PATH = join(ROOT, ".node-version");
+const COMPOSE_FILE = join(ROOT, "e2e", "compose.yml");
+const README_FILE = join(ROOT, "README.md");
 const SLICER_FILE = join(ROOT, "apps", "slicer", "Dockerfile");
 const GATE_FILE = join(ROOT, "tools", "slicing-gate", "Dockerfile");
 const GATE_README_FILE = join(ROOT, "tools", "slicing-gate", "README.md");
@@ -46,6 +53,9 @@ const repoTexts = () => ({
   [SLICER_DOCKERFILE]: readFileSync(SLICER_FILE, "utf8"),
   [GATE_DOCKERFILE]: readFileSync(GATE_FILE, "utf8"),
   [GATE_README]: readFileSync(GATE_README_FILE, "utf8"),
+  [NODE_VERSION_FILE]: readFileSync(NODE_VERSION_PATH, "utf8"),
+  [E2E_COMPOSE]: readFileSync(COMPOSE_FILE, "utf8"),
+  [ROOT_README]: readFileSync(README_FILE, "utf8"),
 });
 
 // Small stand-ins for the four files, shaped like the real ones.
@@ -60,6 +70,7 @@ const fakeTexts = ({
   sha = hex("c"),
   slicerSha = sha,
   gateSha = sha,
+  nodeFiles = version,
 } = {}) => ({
   [APP_DOCKERFILE]: [
     "# on node:26.1.0-trixie-slim, run as the node user.",
@@ -98,6 +109,9 @@ const fakeTexts = ({
     `| Node.js | ${version} linux x64 | sha256 \`${sha}\` |`,
     "",
   ].join("\n"),
+  [NODE_VERSION_FILE]: `${nodeFiles}\n`,
+  [E2E_COMPOSE]: `x-node: &node\n  image: node:${nodeFiles}-trixie-slim\n  working_dir: /repo\n`,
+  [ROOT_README]: `You need Node ${nodeFiles}, the version in \`.node-version\`, and pnpm.\n`,
 });
 
 const NEXT = {
@@ -172,6 +186,18 @@ test("readPins: refuses a missing, doubled or malformed pin, and a NODE_URL that
   assert.throws(() => readPins({ ...t, [GATE_README]: undefined }), /tools\/slicing-gate\/README\.md was not read/);
 });
 
+test("readPins: refuses .node-version, the e2e image or the README sentence on another Node release", () => {
+  const t = fakeTexts();
+  const stale = fakeTexts({ nodeFiles: "26.0.0" });
+  assert.throws(() => readPins({ ...t, [NODE_VERSION_FILE]: stale[NODE_VERSION_FILE] }), /\.node-version names Node 26\.0\.0, the Dockerfiles pin 26\.1\.0/);
+  assert.throws(() => readPins({ ...t, [E2E_COMPOSE]: stale[E2E_COMPOSE] }), /e2e\/compose\.yml names Node 26\.0\.0, the Dockerfiles pin 26\.1\.0/);
+  assert.throws(() => readPins({ ...t, [ROOT_README]: stale[ROOT_README] }), /README\.md names Node 26\.0\.0, the Dockerfiles pin 26\.1\.0/);
+  assert.throws(() => readPins({ ...t, [E2E_COMPOSE]: "x: 1\n" }), /e2e\/compose\.yml does not hold one `image: node:X\.Y\.Z-trixie-slim` line/);
+  assert.throws(() => readPins({ ...t, [ROOT_README]: "no version here\n" }), /README\.md does not hold one "You need Node/);
+  assert.throws(() => readPins({ ...t, [NODE_VERSION_FILE]: "lts\n" }), /\.node-version does not hold a single X\.Y\.Z line/);
+  assert.throws(() => readPins({ ...t, [E2E_COMPOSE]: undefined }), /e2e\/compose\.yml was not read/);
+});
+
 test("readPins: refuses a README whose pins table disagrees with the Dockerfiles", () => {
   const t = fakeTexts();
   assert.throws(
@@ -200,6 +226,16 @@ test("rewritePins: moves every pin, its copies and the README table, and reads b
   for (const f of [APP_DOCKERFILE, SLICER_DOCKERFILE, GATE_DOCKERFILE]) {
     assert.doesNotMatch(out[f], /26\.1\.0/, `${f} keeps no old Node version`);
   }
+});
+
+test("rewritePins: moves .node-version, the e2e image and the README sentence with the Node release", () => {
+  const out = rewritePins(fakeTexts(), NEXT);
+  assert.equal(out[NODE_VERSION_FILE], "26.2.0\n");
+  assert.equal(out[E2E_COMPOSE], "x-node: &node\n  image: node:26.2.0-trixie-slim\n  working_dir: /repo\n");
+  assert.equal(out[ROOT_README], "You need Node 26.2.0, the version in `.node-version`, and pnpm.\n");
+  const same = readPins(fakeTexts());
+  const onlyDigests = rewritePins(fakeTexts(), { ...same, ubuntuBase: NEXT.ubuntuBase, date: NEXT.date });
+  for (const f of [NODE_VERSION_FILE, E2E_COMPOSE, ROOT_README]) assert.equal(onlyDigests[f], fakeTexts()[f], `${f} untouched when Node stays`);
 });
 
 test("rewritePins: the digest comments name the new date and drop the old manifest digests", () => {
@@ -231,7 +267,7 @@ test("rewritePins: rewrites the repo's own files and they still read back", () =
   const { date: _date, ...want } = next;
   assert.deepEqual(readPins(out), want);
   const old = new RegExp(now.nodeVersion.replaceAll(".", "\\."));
-  for (const f of [APP_DOCKERFILE, SLICER_DOCKERFILE, GATE_DOCKERFILE, GATE_README]) {
+  for (const f of [APP_DOCKERFILE, SLICER_DOCKERFILE, GATE_DOCKERFILE, GATE_README, NODE_VERSION_FILE, E2E_COMPOSE]) {
     assert.doesNotMatch(out[f], old, `${f} keeps no old Node version`);
   }
 });
@@ -387,7 +423,7 @@ function gitRepo(dir, files) {
   run("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "x");
 }
 
-test("leftovers: finds a tracked file, other than the pinned four and the CHANGELOG, that names an old digest", () =>
+test("leftovers: finds a tracked file, other than the four digest files and the CHANGELOG, that names an old digest", () =>
   inScratch((dir) => {
     const old = [hex("a"), hex("b")];
     gitRepo(dir, {
@@ -406,7 +442,8 @@ test("leftovers: only sha256 hex digests are searched, and a bad one is refused"
   const args = grepArgs([hex("a")]);
   assert.deepEqual(args.slice(0, 4), ["grep", "-l", "-F", "-e"]);
   assert.ok(args.includes(":!CHANGELOG.md"));
-  for (const f of FILES) assert.ok(args.includes(`:!${f}`), f);
+  for (const f of DIGEST_FILES) assert.ok(args.includes(`:!${f}`), f);
+  assert.ok(!args.includes(`:!${ROOT_README}`), "the root README is searched for digests; only the pins table may hold one");
 });
 
 test("cli leftovers: exit 0 when clean, 1 listing the files when not", () =>
@@ -793,7 +830,8 @@ test("base-images pr: the body says what moved and why, and where the checks are
   assert.match(body, /do not read ARG-based images/);
   assert.match(body, /docker\/app\.Dockerfile, apps\/slicer\/Dockerfile, tools\/slicing-gate\/Dockerfile and the pins table in tools\/slicing-gate\/README\.md/);
   assert.match(body, /https:\/\/github\.com\/o\/r\/actions\/workflows\/ci\.yml\?query=branch%3Abot%2Fbase-images/);
-  assert.match(body, /\.node-version/, "says the Node version files outside the Dockerfiles are not moved");
+  assert.match(body, /\.node-version/, "names the Node version files it moves");
+  assert.doesNotMatch(body, /on top of it|Move them/, "no advice to push onto the bot branch, which the next run replaces");
   assert.match(body, /fix it on another branch, because the next run replaces this one/);
   assert.doesNotMatch(body, /This replaces #/);
   assert.match(body, /Opened by the base-images workflow: https:\/\/github\.com\/o\/r\/actions\/runs\/99/);
@@ -873,18 +911,22 @@ test("base-images: ci.yml's gate-tests list names this workflow, its script and 
 
 // ------------------------------------------- the audit and library gates
 
-test("pnpm overrides: tinypool, serialize-javascript and uuid move to the fixed releases (#432)", () => {
+test("pnpm overrides: tinypool, serialize-javascript and uuid move to the fixed releases, scoped to the docs site's chains (#432)", () => {
   const y = readFileSync(WORKSPACE, "utf8");
   const overrides = y.slice(y.indexOf("\noverrides:\n"));
-  for (const [name, floor] of [
-    ["tinypool", ">=2.1.2"],
-    ["serialize-javascript", ">=7.1.3"],
-    ["uuid", ">=11.1.1"],
+  // Each is scoped by its parent, so a package a shipped app depends on can
+  // never pick an override up by accident.
+  for (const [key, floor] of [
+    ["@docusaurus/core>tinypool", ">=2.1.2"],
+    ["copy-webpack-plugin>serialize-javascript", ">=7.1.3"],
+    ["css-minimizer-webpack-plugin>serialize-javascript", ">=7.1.3"],
+    ["sockjs>uuid", ">=11.1.1"],
   ]) {
-    const m = overrides.match(new RegExp(`^ {2}["']?${name}["']?: ["']?([^"'\\n]+)["']?$`, "m"));
-    assert.ok(m, `${name} is overridden`);
-    assert.equal(m[1], floor, name);
+    const m = overrides.match(new RegExp(`^ {2}["']?${key.replaceAll(/[/@>-]/g, (c) => `\\${c}`)}["']?: ["']?([^"'\\n]+)["']?$`, "m"));
+    assert.ok(m, `${key} is overridden`);
+    assert.equal(m[1], floor, key);
   }
+  assert.doesNotMatch(overrides, /^ {2}["']?(tinypool|serialize-javascript|uuid)["']?:/m, "no unscoped override of the three");
 });
 
 const stepsOf = (file, id) => jobSteps(jobBlock(readFileSync(file, "utf8"), id));
@@ -892,10 +934,11 @@ const stepsOf = (file, id) => jobSteps(jobBlock(readFileSync(file, "utf8"), id))
 test("ci: the lint job audits the shipped dependencies and fails on a critical advisory (#432, #453)", () => {
   const block = jobBlock(readFileSync(CI, "utf8"), "lint");
   const names = stepNames(block);
-  const audit = stepBlock(block, "Audit shipped dependencies (fail on critical)");
-  assert.match(audit, /\n {8}run: pnpm audit --prod --audit-level=critical$/);
+  const audit = stepBlock(block, "Audit production dependencies (fail on critical)");
+  assert.match(audit, /\n {8}run: pnpm audit --prod --audit-level=critical\n?$/);
   assert.doesNotMatch(audit, /continue-on-error|\|\| true|if:/, "it cannot be waved through");
-  assert.ok(names.indexOf("Audit shipped dependencies (fail on critical)") > names.indexOf("Install"), "after the install");
+  assert.equal(names.at(-1), "Audit production dependencies (fail on critical)", "the last step, after Biome and the compose check");
+  assert.ok(names.indexOf("Biome") < names.length - 1 && names.includes("Validate the example Compose file"));
   assert.equal(stepsOf(CI, "lint").filter((s) => /pnpm audit/.test(s)).length, 1);
 });
 
@@ -932,7 +975,7 @@ for (const [file, job, image, os] of [
       "cache-dir": "${{ runner.temp }}/trivy-cache",
       version: "v0.76.2",
     });
-    assert.doesNotMatch(lib, /continue-on-error/);
+    assert.doesNotMatch(lib, /\n {8}(if|continue-on-error):/, "nothing softens the library gate");
     const names = stepNames(block);
     assert.equal(names.indexOf("Trivy library gate (fail on fixable CRITICAL)"), names.indexOf(os) + 1, "right after the OS gate");
   });

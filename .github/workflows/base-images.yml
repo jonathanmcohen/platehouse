@@ -21,10 +21,11 @@
 # where they differ. A Node release that nodejs.org lists but Docker Hub does
 # not have as an image yet is passed over for a week: Node stays where it is
 # and only the digests move. Node never moves to another major, and never
-# backwards. The four files that hold the pins (the three Dockerfiles and the
-# slicing gate README's pins table) move together, and nothing else is
-# written: .node-version, e2e/compose.yml and the Node version in README.md
-# keep their value, and the pull request says so. After the rewrite, the
+# backwards. The files that hold the pins move together, and nothing else is
+# written: the three Dockerfiles, the slicing gate README's pins table, and
+# the three files that name the Node release alone (.node-version, the
+# x-node image of e2e/compose.yml and the Node version in README.md), so CI
+# and the docs follow the images in the same pull request. After the rewrite, the
 # leftover check (node .github/scripts/base-images.mjs leftovers) stops the
 # run before it pushes when any other tracked file but CHANGELOG.md still
 # names a digest that moved.
@@ -145,7 +146,7 @@ jobs:
             printf '%s\n' "$d"
           }
 
-          curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/index.json" https://nodejs.org/dist/index.json
+          curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/index.json" https://nodejs.org/dist/index.json
           version="$(node "$script" latest-node "$major" "${RUNNER_TEMP}/index.json" "$old_node_version")"
 
           # A new Node release is used only once Docker Hub has its image, so
@@ -163,7 +164,7 @@ jobs:
             app_digest="$(digest_of "node:${version}-trixie-slim")" || { echo "::error::could not read the digest of node:${version}-trixie-slim from Docker Hub" >&2; exit 1; }
             node_sha="$old_node_sha"
           else
-            curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/SHASUMS256.txt" "https://nodejs.org/dist/v${version}/SHASUMS256.txt"
+            curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/SHASUMS256.txt" "https://nodejs.org/dist/v${version}/SHASUMS256.txt"
             node_sha="$(node "$script" node-sha "${RUNNER_TEMP}/SHASUMS256.txt" "node-v${version}-linux-x64.tar.xz")"
           fi
           ubuntu_digest="$(digest_of "$ubuntu_image")" || { echo "::error::could not read the digest of ${ubuntu_image} from Docker Hub" >&2; exit 1; }
@@ -199,10 +200,10 @@ jobs:
             echo "Up to date: the base images and Node \`${NEXT_NODE_VERSION}\` are current; nothing was pushed." >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          allowed="$(printf '%s\n' docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md)"
+          allowed="$(printf '%s\n' docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md .node-version e2e/compose.yml README.md)"
           stray="$(grep -vxF -f <(printf '%s\n' "$allowed") <<<"$changed" || true)"
           if [ -n "$stray" ]; then
-            echo "::error::the rewrite changed these files, not only the pinned four:"
+            echo "::error::the rewrite changed these files, not only the pinned seven:"
             printf '%s\n' "$stray"
             exit 1
           fi
@@ -232,15 +233,15 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          files=(docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md)
+          files=(docker/app.Dockerfile apps/slicer/Dockerfile tools/slicing-gate/Dockerfile tools/slicing-gate/README.md .node-version e2e/compose.yml README.md)
           changed="$(git diff --name-only | sort)"
           stray="$(grep -vxF -f <(printf '%s\n' "${files[@]}") <<<"$changed" || true)"
           if [ -z "$changed" ] || [ -n "$stray" ]; then
-            echo "::error::the rewrite changed these files, not only the pinned four:"
+            echo "::error::the rewrite changed these files, not only the pinned seven:"
             printf '%s\n' "$changed"
             exit 1
           fi
-          # The leftover check: a file other than the pinned four that names
+          # The leftover check: a file other than the four digest files that names
           # a digest the rewrite moved is a copy of the old pin it left behind.
           moved=()
           if [ "$OLD_APP_BASE" != "$NEXT_APP_BASE" ]; then moved+=("${OLD_APP_BASE##*@sha256:}"); fi
@@ -332,15 +333,11 @@ jobs:
           {
             echo "The app image, the slicer image and the slicing gate image pin their base images by digest (ARG BASE), and the slicer and the gate download Node with a pinned sha256. Dependabot and other updaters do not read ARG-based images, and apt upgrade does not move a digest-frozen Node, so nothing else proposes these updates. This weekly pull request moves ${what} to what Docker Hub and nodejs.org serve today."
             echo ""
-            echo "**What changed:** the pins in docker/app.Dockerfile, apps/slicer/Dockerfile, tools/slicing-gate/Dockerfile and the pins table in tools/slicing-gate/README.md. Nothing else."
+            echo "**What changed:** the pins in docker/app.Dockerfile, apps/slicer/Dockerfile, tools/slicing-gate/Dockerfile and the pins table in tools/slicing-gate/README.md; when Node moves, also the Node version in \`.node-version\` (the Node CI runs on), the node image in e2e/compose.yml and the version named in the root README.md. Nothing else."
             echo ""
             echo "- app image: \`${OLD_APP_BASE}\` to \`${NEXT_APP_BASE}\`"
             echo "- Ubuntu (slicer and gate): \`${OLD_UBUNTU_BASE}\` to \`${NEXT_UBUNTU_BASE}\`"
             echo "- Node download (slicer and gate): ${OLD_NODE_VERSION} to ${NEXT_NODE_VERSION}"
-            if [ "$OLD_NODE_VERSION" != "$NEXT_NODE_VERSION" ]; then
-              echo ""
-              echo "**Node version elsewhere:** \`.node-version\` (the Node CI itself runs on), e2e/compose.yml and the version named in README.md are not moved by this pull request. Move them on top of it if CI should follow the images."
-            fi
             echo ""
             echo "**Checks:** GitHub holds the usual pull request checks of a pull request a workflow opened until someone approves them, so the workflow has started the full ci workflow on this branch itself: ${runs}. It builds the app image and both slicing images, runs their tests, and fails on a fixable OS finding of HIGH or CRITICAL and a fixable library finding of CRITICAL in the app image. If the merge box offers to approve workflows for this pull request, approving runs the same checks a second time; it is not needed."
             echo ""
