@@ -658,6 +658,68 @@ describe("reloads keep focus and place", () => {
     expect(cardNames()).toHaveLength(10);
   });
 
+  const at = (refreshKey: number) => (
+    <MemoryRouter initialEntries={["/"]}>
+      <Routes>
+        <Route path="/" element={<LibraryPage refreshKey={refreshKey} />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+  test("clicking the current chip, then a quiet reload, leaves focus where it was", async () => {
+    stubServer(cards(171));
+    await render(at(0));
+    const pages = linkNamed("Pages");
+    expect(pages?.getAttribute("aria-current")).toBe("true");
+    await click(pages);
+    pages?.focus();
+    await act(async () => root.render(at(1)));
+    await settle();
+    expect(document.activeElement).toBe(pages);
+  });
+
+  test("a failed quiet reload does not move focus", async () => {
+    stubServer(cards(171));
+    const withOutside = (refreshKey: number) => (
+      <>
+        <button type="button" id="outside">
+          Upload
+        </button>
+        {at(refreshKey)}
+      </>
+    );
+    await render(withOutside(0));
+    const outside = container.querySelector<HTMLElement>("#outside");
+    outside?.focus();
+    failPages = new Set([1]);
+    await act(async () => root.render(withOutside(1)));
+    await settle();
+    expect(buttonNamed(/try again/i)).toBeDefined();
+    expect(document.activeElement).toBe(outside);
+  });
+
+  test("a modifier click on a chip does not send focus to the count on a later reload", async () => {
+    stubServer(cards(171));
+    await render(at(0));
+    const stop = (event: Event) => event.preventDefault();
+    document.addEventListener("click", stop);
+    try {
+      const viewAll = linkNamed("View all");
+      await act(async () => {
+        viewAll?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true }),
+        );
+      });
+    } finally {
+      document.removeEventListener("click", stop);
+    }
+    const pages = linkNamed("Pages");
+    pages?.focus();
+    await act(async () => root.render(at(1)));
+    await settle();
+    expect(document.activeElement).toBe(pages);
+  });
+
   test("a 401 shows signed out, with no Try again", async () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = new URL(String(input), "https://platehouse.test");

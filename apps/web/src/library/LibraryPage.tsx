@@ -226,6 +226,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   /** What the shown grid was asked for, so a reload for the same thing is told apart. */
   const loadedFor = useRef("");
   const generation = useRef(0);
+  /** The state of the load shown, as the last render drew it, and the one before. */
+  const shownState = useRef<Load["state"]>("loading");
+  const stateBefore = useRef<Load["state"]>("loading");
+  shownState.current = load.state;
   /** The current load's controller, so a View all retry is cancelled with it. */
   const loading = useRef<AbortController | null>(null);
   /** A pager link was followed: focus the count once the new page is in. */
@@ -538,6 +542,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
     const url = query(first, viewAll ? VIEW_ALL_CHUNK : PAGE_SIZE);
     const asked = `${viewAll}|${attempt}|${url}`;
     const quiet = asked === loadedFor.current;
+    // A quiet reload over a failed or Loading block shows its first answer at once.
+    const quietOverCards = quiet && shownState.current === "ready";
+    // A background reload is not a navigation: no earlier click's focus is owed to it.
+    if (quiet) focusCount.current = false;
     loadedFor.current = asked;
     if (!quiet) setLoad({ state: "loading" });
     else {
@@ -560,8 +568,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
         };
         if (ready.nextChunk === null) setLoad(ready);
         else {
-          if (!quiet) setLoad(ready);
-          void loadRest(ready, mine, controller.signal, quiet);
+          if (!quietOverCards) setLoad(ready);
+          void loadRest(ready, mine, controller.signal, quietOverCards);
         }
         setHeader({
           printer: answer.printer,
@@ -603,7 +611,10 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
   // Focus follows a pager link to the new page's count, once it is in.
   useEffect(() => {
     // A failed load puts focus on Try again, so a keyboard user is not left on nothing.
-    if (load.state === "failed") tryAgain.current?.focus();
+    // Only a load the user waited on (not a quiet reload) takes focus.
+    const was = stateBefore.current;
+    stateBefore.current = load.state;
+    if (load.state === "failed" && was === "loading") tryAgain.current?.focus();
     if (load.state === "loading" || !focusCount.current) return;
     focusCount.current = false;
     if (load.state === "ready") count.current?.focus();
@@ -611,6 +622,8 @@ export function LibraryPage({ onFiles, refreshKey = 0 }: LibraryPageProps) {
 
   /** A link that reloads the grid in this tab: focus goes to the count once it is in. */
   function keepFocusOnCount(event: MouseEvent<HTMLAnchorElement>) {
+    // The chip already current changes nothing, so no reload is coming to use the flag.
+    if (event.currentTarget.hasAttribute("aria-current")) return;
     if (isPlainClick(event)) focusCount.current = true;
   }
 
