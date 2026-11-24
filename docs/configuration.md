@@ -76,6 +76,11 @@ time: the trash purge at 03:30 and the cleanup of stray bucket objects at 04:00.
 The slicer image sets its own defaults, and the only variable you normally set is
 `SLICE_PLATE_SECONDS`. The rest are listed for completeness.
 
+The app follows the slicer's three time settings (`SLICE_TIMEOUT_SECONDS`, `SCAD_TIMEOUT_SECONDS`
+and `STEP_TIMEOUT_SECONDS`) on its own: it reads them from the slicer's health answer, so only the
+slicer needs them. `SLICE_PLATE_SECONDS` still goes to both, because the app uses it until the
+slicer has answered.
+
 | Variable                           | Required         | Default                    | What it does                                                                                                                                                                                                                                                                                                                             |
 | ---------------------------------- | ---------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SLICE_PLATE_SECONDS`              | No               | `120`                      | The time cap for one plate. Set it to the app's value.                                                                                                                                                                                                                                                                                   |

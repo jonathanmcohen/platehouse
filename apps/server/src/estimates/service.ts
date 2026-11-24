@@ -91,7 +91,6 @@ import {
   type SlicerClient,
   SlicerRefused,
   SlicerUnreachable,
-  sliceTimeoutMs,
 } from "./client.js";
 import {
   type DisplayContext,
@@ -104,6 +103,12 @@ import {
   profileSourceOf,
 } from "./display.js";
 import { RATE_SAMPLE, sliceRate } from "./rate.js";
+import {
+  defaultTimeouts,
+  estimateExpireSeconds,
+  SLICER_MARGIN_SECONDS,
+  type SlicerState,
+} from "./slicer-state.js";
 
 export const SLICE_JOB_KIND = "slice";
 
@@ -262,10 +267,12 @@ export interface EstimatesDeps {
   slicer: SlicerClient;
   store: Pick<BlobStore, "getBlobStream">;
   /**
-   * The client's slice timeout (sliceTimeoutMs(SLICE_PLATE_SECONDS)); a job
-   * may stay active this long plus a minute. 120 s plates when left out.
+   * The slicer's own limits, from its health answer: a job may stay active
+   * as long as its upload and slice limits allow (estimateExpireSeconds),
+   * and its slice request's timers follow them. The defaults for 120 s
+   * plates when left out.
    */
-  sliceTimeoutMs?: number;
+  slicerState?: SlicerState;
   jobOptions?: SliceJobOptions;
   /** SLICER_DOWN_WAIT when left out; the tests shorten it. */
   slicerDown?: SlicerDownWait;
@@ -498,7 +505,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
   const slicerDown = deps.slicerDown ?? SLICER_DOWN_WAIT;
   const log = deps.log ?? ((line: string) => console.error(`estimates: ${line}`));
   const repos: Repos = createRepos(db);
-  const expireInSeconds = Math.ceil((deps.sliceTimeoutMs ?? sliceTimeoutMs(120)) / 1000) + 60;
+  const slicerState: SlicerState = deps.slicerState ?? {
+    current: async () => ({ timeouts: defaultTimeouts(120), sandbox: null }),
+  };
   // pg-boss takes retryDelayMax on a job only beside retryBackoff: true, so
   // an override of the delay restates the queue's backoff (SLICER_RETRY).
   const retryOverrides =
@@ -539,8 +548,9 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
       printerId: estimate.printerId,
       ...(carried ?? {}),
     };
+    const { timeouts } = await slicerState.current();
     await boss.send(QUEUE.slicer, data, {
-      expireInSeconds,
+      expireInSeconds: estimateExpireSeconds(timeouts),
       priority,
       ...retryOverrides,
       ...(startAfterSeconds === undefined ? {} : { startAfter: startAfterSeconds }),
@@ -945,12 +955,17 @@ export function createEstimates(deps: EstimatesDeps): Estimates {
     const waitUntil = Date.now() + slicerDown.waitMs;
     for (;;) {
       try {
+        const { timeouts } = await slicerState.current();
         const body = await store.getBlobStream(target.key);
         const result = await slicer.slice({
           printerId: estimate.printerId,
           plate: target.index,
           body,
           size: target.size,
+          timeouts: {
+            uploadMs: timeouts.uploadSeconds * 1000,
+            answerMs: (timeouts.sliceSeconds + SLICER_MARGIN_SECONDS) * 1000,
+          },
         });
         if (result.status === "ok") {
           await recordOk(full, target.fileId, result);

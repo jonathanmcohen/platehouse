@@ -195,11 +195,16 @@ import { createReadStream } from "node:fs";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIMITS } from "@platehouse/slicer-contract";
+import { LIMITS, type SlicerTimeouts } from "@platehouse/slicer-contract";
 import { CompiledQuery, type Kysely, sql, type Transaction } from "kysely";
 import type { PgBoss } from "pg-boss";
 import { isUuid, uuidv7 } from "../db/ids.js";
 import type { Blob, DB, FileKind, ModelFile } from "../db/types.js";
+import {
+  convertExpireSeconds,
+  SLICER_MARGIN_SECONDS,
+  type SlicerState,
+} from "../estimates/slicer-state.js";
 import { detectKind } from "../ingest/detect.js";
 import {
   CONTENT_TYPES,
@@ -261,10 +266,33 @@ export type DerivedKind = (typeof DERIVED_KINDS)[keyof typeof DERIVED_KINDS];
 export function slicerSendOptions<T extends object>(
   kind: DerivedKind,
   options: T,
+  convertExpire: number = CONVERT_EXPIRE_SECONDS,
 ): T | (T & { expireInSeconds: number }) {
   return kind === DERIVED_KINDS.convertStep
-    ? { ...options, expireInSeconds: CONVERT_EXPIRE_SECONDS }
+    ? { ...options, expireInSeconds: convertExpire }
     : options;
+}
+
+/**
+ * The timers of a request to the slicer for a job of this kind, from the
+ * slicer's own limits: the answer wait is its time cap for the route plus
+ * the app's margin (a STEP conversion has its own cap, a render and a
+ * picture share the OpenSCAD one), and a streamed body gets its upload
+ * allowance. A timer the deps set stays as set.
+ */
+export function renderTarget(
+  baseUrl: string,
+  kind: DerivedKind,
+  timeouts: SlicerTimeouts,
+  fixed: { timeoutMs?: number | undefined; uploadTimeoutMs?: number | undefined } = {},
+): SlicerTarget {
+  const capSeconds =
+    kind === DERIVED_KINDS.convertStep ? timeouts.stepSeconds : timeouts.scadSeconds;
+  return {
+    baseUrl,
+    timeoutMs: fixed.timeoutMs ?? (capSeconds + SLICER_MARGIN_SECONDS) * 1000,
+    uploadTimeoutMs: fixed.uploadTimeoutMs ?? timeouts.uploadSeconds * 1000,
+  };
 }
 
 /** pg-boss job states in which a job still owns its file and source: queued or running. */
@@ -376,9 +404,16 @@ export interface DerivedDeps {
   queue: Pick<PgBoss, "send" | "findJobs">;
   /** Seconds before the first retry; SLICER_RETRY's when left out. */
   retryDelaySeconds?: number;
-  /** A render request's wait for its answer once sent; RENDER_TIMEOUT_MS when left out. */
+  /**
+   * The slicer's own limits, from its health answer: the render timers and
+   * a conversion's expiry follow them. RENDER_TIMEOUT_MS,
+   * RENDER_UPLOAD_TIMEOUT_MS and CONVERT_EXPIRE_SECONDS, the defaults of an
+   * unconfigured slicer, stand in when left out.
+   */
+  slicerState?: SlicerState;
+  /** A render request's wait for its answer once sent; the slicer's limit plus 30 s when left out. */
   requestTimeoutMs?: number;
-  /** The time a streamed body may take to send; RENDER_UPLOAD_TIMEOUT_MS when left out. */
+  /** The time a streamed body may take to send; the slicer's upload limit when left out. */
   uploadTimeoutMs?: number;
   /** The clock the slicer-down deadline is set and read by; the system clock when left out. */
   now?: () => Date;
@@ -684,10 +719,24 @@ function bossDb(trx: Transaction<DB>) {
 export function createDerived(deps: DerivedDeps) {
   const { db, store } = deps;
   const repos = createRepos(db);
-  const target: SlicerTarget = {
-    baseUrl: deps.slicerUrl,
-    timeoutMs: deps.requestTimeoutMs ?? RENDER_TIMEOUT_MS,
-    uploadTimeoutMs: deps.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
+  /** The slicer's limits now, or the fallbacks before health has answered. */
+  const limits = async (): Promise<SlicerTimeouts | null> =>
+    deps.slicerState ? (await deps.slicerState.current()).timeouts : null;
+  const targetFor = async (kind: DerivedKind): Promise<SlicerTarget> => {
+    const timeouts = await limits();
+    const fixed = { timeoutMs: deps.requestTimeoutMs, uploadTimeoutMs: deps.uploadTimeoutMs };
+    if (timeouts === null) {
+      return {
+        baseUrl: deps.slicerUrl,
+        timeoutMs: fixed.timeoutMs ?? RENDER_TIMEOUT_MS,
+        uploadTimeoutMs: fixed.uploadTimeoutMs ?? RENDER_UPLOAD_TIMEOUT_MS,
+      };
+    }
+    return renderTarget(deps.slicerUrl, kind, timeouts, fixed);
+  };
+  const convertExpiry = async (): Promise<number> => {
+    const timeouts = await limits();
+    return timeouts === null ? CONVERT_EXPIRE_SECONDS : convertExpireSeconds(timeouts);
   };
   const retry = {
     ...SLICER_RETRY,
@@ -778,6 +827,7 @@ export function createDerived(deps: DerivedDeps) {
     }
     if (file.kind !== kind) throw new DerivedError("not_derivable", NOT_DERIVABLE_MESSAGE);
     const job: DerivedJob = { kind: JOB_KIND_OF[kind], fileId: file.id, sourceBlobId: file.blobId };
+    const expiry = await convertExpiry();
     try {
       return await db.transaction().execute(async (trx) => {
         // A file that still shows renders of an earlier source keeps saying
@@ -797,7 +847,7 @@ export function createDerived(deps: DerivedDeps) {
         const id = await deps.queue.send(
           QUEUE.slicer,
           job,
-          slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }),
+          slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }, expiry),
         );
         if (id === null) throw new Error("pg-boss created no job");
         await recomputePreview(trx, file.id);
@@ -892,6 +942,7 @@ export function createDerived(deps: DerivedDeps) {
 
     // The staged source's row, the file marked pending, and its job, in one
     // transaction.
+    const expiry = await convertExpiry();
     const stage = async (trx: Transaction<DB>): Promise<void> => {
       const live = await trx
         .selectFrom("models")
@@ -930,7 +981,7 @@ export function createDerived(deps: DerivedDeps) {
       const id = await deps.queue.send(
         QUEUE.slicer,
         job,
-        slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }),
+        slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }, expiry),
       );
       if (id === null) throw new Error("pg-boss created no job");
       await recomputePreview(trx, file.id);
@@ -1613,11 +1664,15 @@ export function createDerived(deps: DerivedDeps) {
     const id = await deps.queue.send(
       QUEUE.slicer,
       next,
-      slicerSendOptions(next.kind, {
-        ...retry,
-        retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
-        startAfter,
-      }),
+      slicerSendOptions(
+        next.kind,
+        {
+          ...retry,
+          retryLimit: Math.max(0, attempt.retryLimit - attempt.retryCount),
+          startAfter,
+        },
+        await convertExpiry(),
+      ),
     );
     if (id === null) throw new Error("pg-boss created no job");
     console.warn(
@@ -1702,6 +1757,7 @@ export function createDerived(deps: DerivedDeps) {
         throw new TempFileError(error);
       });
       const size = source.size ?? 0;
+      const target = await targetFor(job.kind);
       let outputs: RenderOutput[];
       switch (job.kind) {
         case DERIVED_KINDS.renderScad:
@@ -1892,6 +1948,7 @@ export function createDerived(deps: DerivedDeps) {
    * Returns whether it queued one.
    */
   async function queueUnqueued(fileId: string, modelId: string): Promise<boolean> {
+    const expiry = await convertExpiry();
     return db.transaction().execute(async (trx) => {
       if (!(await lockModel(trx, modelId, true))) return false;
       const row = await trx
@@ -1916,7 +1973,7 @@ export function createDerived(deps: DerivedDeps) {
       const id = await deps.queue.send(
         QUEUE.slicer,
         job,
-        slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }),
+        slicerSendOptions(job.kind, { ...retry, db: bossDb(trx) }, expiry),
       );
       if (id === null) throw new Error("pg-boss created no job");
       return true;

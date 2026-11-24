@@ -162,6 +162,59 @@ describe("slicer client", () => {
     ).rejects.toBeInstanceOf(SlicerUnreachable);
   });
 
+  test("the answer timer starts when the body ends: a slow body then a slow answer succeeds", async () => {
+    // Body 600 ms (under a 900 ms upload allowance), then an answer 600 ms
+    // later (under a 900 ms answer allowance). One timer over both would
+    // have run out at 900 ms.
+    stub.onSlice(() => ({ kind: "ok" }));
+    const gate = stub.hold();
+    const file = build3mf({ plates: 1 });
+    const cut = Math.ceil(file.length / 3);
+    const slow = new Readable({ read() {} });
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const pending = client.slice({
+      printerId: P1S,
+      plate: 1,
+      body: slow,
+      size: file.length,
+      timeouts: { uploadMs: 900, answerMs: 900 },
+    });
+    for (let i = 0; i < 3; i++) {
+      slow.push(file.subarray(i * cut, (i + 1) * cut));
+      await sleep(200);
+    }
+    slow.push(null);
+    await sleep(600);
+    gate.release();
+    await expect(pending).resolves.toMatchObject({ status: "ok" });
+  });
+
+  test("a body that stalls fails after the upload allowance with SlicerUnreachable", async () => {
+    const file = build3mf({ plates: 1 });
+    let pushed = false;
+    const stuck = new Readable({
+      read() {
+        if (!pushed) {
+          pushed = true;
+          this.push(file.subarray(0, 16));
+        }
+      },
+    });
+    const client = createSlicerClient({ url: stub.url, plateSeconds: 5 });
+    const started = Date.now();
+    const error = await client
+      .slice({
+        printerId: P1S,
+        plate: 1,
+        body: stuck,
+        size: file.length,
+        timeouts: { uploadMs: 300, answerMs: 60_000 },
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SlicerUnreachable);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   test("a slicer that is not listening is SlicerUnreachable", async () => {
     const down = await startSlicerStub();
     const url = down.url;

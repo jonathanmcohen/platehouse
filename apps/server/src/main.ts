@@ -86,9 +86,10 @@ import { createDb } from "./db/kysely.js";
 import { migrate } from "./db/migrate.js";
 import { createDeliveryLibrary } from "./delivery/download.js";
 import { createDerived, derivedJobHandlers } from "./derived/derived.js";
-import { createSlicerClient, sliceTimeoutMs } from "./estimates/client.js";
+import { createSlicerClient } from "./estimates/client.js";
 import { plateNumbers } from "./estimates/display.js";
 import { createEstimates } from "./estimates/service.js";
+import { createSlicerState } from "./estimates/slicer-state.js";
 import { createInboxWatcher, type InboxWatcher, inboxProbes } from "./inbox/watch.js";
 import { createIngest, type IngestResult } from "./ingest/ingest.js";
 import { createOrphanSweep } from "./ingest/orphans.js";
@@ -382,12 +383,18 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       url: config.slicer.url,
       plateSeconds: config.slicer.plateSeconds,
     });
+    // One view of the slicer's limits and sandbox, shared by the estimates
+    // and the derived files.
+    const slicerState = createSlicerState({
+      health: () => slicer.health(),
+      plateSeconds: config.slicer.plateSeconds,
+    });
     const estimates = createEstimates({
       db,
       boss: startedBoss,
       slicer,
       store,
-      sliceTimeoutMs: sliceTimeoutMs(config.slicer.plateSeconds),
+      slicerState,
     });
     // A STEP preview's mesh read and the plate mesh builds (below) share the
     // process's one memory gate (memory/gate.ts), which both use when
@@ -396,6 +403,7 @@ export async function start(config: Config, options: StartOptions = {}): Promise
       db,
       store,
       slicerUrl: config.slicer.url,
+      slicerState,
       queue: startedBoss,
       tmpDir: config.tmpDir,
     });
