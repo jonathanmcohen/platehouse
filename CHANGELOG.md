@@ -30,6 +30,7 @@ All notable changes to Platehouse are recorded here. The format follows
 
 ### Fixed
 
+- On the first start of 0.1.1, models imported with a MakerWorld licence Platehouse did not recognise (including CC BY-ND) get their licence or licence note back from their .3mf, in the background. A licence or note already set is never changed ([#445](https://github.com/jonathanmcohen/platehouse/issues/445)).
 - MakerWorld's CC BY-ND licence is recognised, and a licence Platehouse does not know is kept as a licence note on the model, `License on MakerWorld: <value>`, instead of being dropped ([#445](https://github.com/jonathanmcohen/platehouse/issues/445)).
 - The preview backfill for older files sends its next batch as soon as one finishes, instead of making at most 10 pictures every 5 minutes ([#417](https://github.com/jonathanmcohen/platehouse/issues/417)).
 - Which failed preview pictures are retried in the background now depends on a stored reason code, not on the wording of the message, so rewording a message can no longer stop the retries. Migration 0016 fills in the code for failures already stored ([#418](https://github.com/jonathanmcohen/platehouse/issues/418)).

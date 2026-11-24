@@ -12,9 +12,9 @@ did not turn out as expected.
 - **Queues**: the background job queues (imports, the slicer queue and maintenance) and what is
   waiting or running in each.
 - **Scheduled jobs**: the daily and regular jobs, such as the trash purge, the cleanup and
-  "Preview pictures for older STL and STEP files", with their last runs. After an upgrade from 0.1.0 or 0.1.1-rc.1, "MakerWorld description
-  re-conversion (until it finishes)" is listed too while stored MakerWorld descriptions are being converted again; it
-  goes once the re-conversion has finished.
+  "Preview pictures for older STL and STEP files", with their last runs. After an upgrade from a version before 0.1.1, "MakerWorld descriptions
+  and licences (until they finish)" is listed too while stored MakerWorld descriptions and missing licences are being
+  read again; it goes once that has finished.
 - **Slicer**: whether the slicer is healthy, and its OrcaSlicer and OpenSCAD versions.
 - **Recent events**: the newest 50 events: models added, inbox files that failed, estimates that
   failed (with the same **Retry** as on the model page), renders and STEP conversions that
