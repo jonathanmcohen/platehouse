@@ -67,7 +67,7 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { InlineRename } from "../collections/InlineRename";
-import { type MessageKey, useI18n } from "../i18n/I18n";
+import { type I18n, type MessageKey, useI18n } from "../i18n/I18n";
 import { AppApiError, appApi } from "../settings/api";
 import { type PrinterChoice, printerQuery, usePrinterChoice } from "../settings/PrinterSwitch";
 import { DropZone } from "../upload/DropZone";
@@ -262,6 +262,8 @@ type TabName = "plates" | "files" | "about";
 export interface RetryTarget {
   fileName: string;
   plate: Pick<ModelPlate, "index" | "name">;
+  /** Whether the model has more than one .3mf, so a message names the file. */
+  inFile: boolean;
 }
 
 /**
@@ -285,6 +287,13 @@ interface Refused {
   id: string;
   target: RetryTarget;
   answers: number;
+}
+
+/** A plate in words for a message: "plate 2" or "plate 2 Huge". */
+function plateWords(target: RetryTarget, t: I18n["t"]): string {
+  return target.plate.name === null
+    ? t("activity.plate", { index: target.plate.index })
+    : t("activity.plateNamed", { index: target.plate.index, name: target.plate.name });
 }
 
 const TAB_LABEL: Record<TabName, MessageKey> = {
@@ -314,9 +323,12 @@ export function ModelPage({
   const printer = usePrinterChoice();
   const { choice, settle: settlePrinter } = printer;
   const [refused, setRefused] = useState<Refused | null>(null);
+  /** What a successful Retry says, for that model's id; the latest of this and the refusal wins. */
+  const [queued, setQueued] = useState<{ id: string; words: string } | null>(null);
   /** Whether the last answer made the page forget its printer choice, so the next request only asks for it again. */
   const forgetting = useRef(false);
   if (refused !== null && refused.id !== id) setRefused(null);
+  if (queued !== null && queued.id !== id) setQueued(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload and refreshKey are triggers: a change of either loads the model again.
   useEffect(() => {
@@ -406,6 +418,7 @@ export function ModelPage({
    */
   async function retry(estimateId: string, target: RetryTarget): Promise<void> {
     setRefused(null);
+    setQueued(null);
     try {
       await appApi("POST", `/estimates/${encodeURIComponent(estimateId)}/retry`);
     } catch (failure) {
@@ -415,12 +428,20 @@ export function ModelPage({
       }
       throw failure;
     }
+    const plate = plateWords(target, t);
+    setQueued({
+      id,
+      words: target.inFile
+        ? t("model.numbers.queuedIn", { plate, file: target.fileName })
+        : t("model.numbers.queued", { plate }),
+    });
     setReload((n) => n + 1);
   }
 
   /** The user's own choice on the printer switch, which ends a refusal's notice. */
   function choosePrinter(printerId: string) {
     setRefused(null);
+    setQueued(null);
     printer.choose(printerId);
   }
 
@@ -493,16 +514,11 @@ export function ModelPage({
           <p className="studio-alert studio-alert-alert">
             {t("model.numbers.notRetryable", {
               file: refused.target.fileName,
-              plate:
-                refused.target.plate.name === null
-                  ? t("activity.plate", { index: refused.target.plate.index })
-                  : t("activity.plateNamed", {
-                      index: refused.target.plate.index,
-                      name: refused.target.plate.name,
-                    }),
+              plate: plateWords(refused.target, t),
             })}
           </p>
         )}
+        {queued === null ? null : <p className="studio-muted">{queued.words}</p>}
       </div>
       <ModelDetail
         key={model.id}

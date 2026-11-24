@@ -12,6 +12,7 @@
 
 import { useRef } from "react";
 import { ENGLISH_I18N, type I18n, useI18n } from "../i18n/I18n";
+import { AppApiError } from "../settings/api";
 import { PrinterSwitch } from "../settings/PrinterSwitch";
 import type { ModelFile, ModelView, RetryTarget } from "./ModelPage";
 import { PlateNumbersView } from "./Numbers";
@@ -82,6 +83,17 @@ export function PlatesTab({
   const PlateHeading = files.length > 1 ? "h3" : "h2";
   const shown = switchPrinter(model, chosenPrinter);
   const headings = useRef(new Map<string, HTMLHeadingElement>());
+  /**
+   * Moves focus to a plate's heading, unless the user has moved on to
+   * something outside that plate while the request was in flight.
+   */
+  function keepFocus(plateId: string) {
+    const heading = headings.current.get(plateId);
+    const active = document.activeElement;
+    const item = heading?.closest("li");
+    if (heading === undefined || item === null || item === undefined) return;
+    if (active === null || active === document.body || item.contains(active)) heading.focus();
+  }
   return (
     <>
       <PrinterSwitch
@@ -129,10 +141,23 @@ export function PlatesTab({
                       projectFilaments={file.filaments}
                       pending={plate.estimatePending}
                       onRetry={async (estimateId) => {
-                        await onRetry(estimateId, { fileName: file.name, plate });
-                        // The failure block goes when the model reloads, so
-                        // keyboard focus moves to the plate's heading first.
-                        headings.current.get(plate.id)?.focus();
+                        try {
+                          await onRetry(estimateId, {
+                            fileName: file.name,
+                            plate,
+                            inFile: files.length > 1,
+                          });
+                        } catch (refusal) {
+                          // A 409 reloads the model, which takes the failure
+                          // block (and its Retry) away; any other refusal
+                          // keeps the button, so focus stays on it.
+                          if (refusal instanceof AppApiError && refusal.status === 409) {
+                            keepFocus(plate.id);
+                          }
+                          throw refusal;
+                        }
+                        // The failure block goes when the model reloads.
+                        keepFocus(plate.id);
                       }}
                     />
                   </li>

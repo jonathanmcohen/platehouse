@@ -401,6 +401,8 @@
   "model.numbers.profile": "({profile})",
   "model.numbers.profileSource": "({profile}, {source})",
   "model.numbers.projectFilaments": "Filamentos del proyecto",
+  "model.numbers.queued": "Estimaci\u00f3n en cola para {plate}",
+  "model.numbers.queuedIn": "Estimaci\u00f3n en cola para {plate} en {file}",
   "model.numbers.retry": "Reintentar",
   "model.numbers.slicedFor": "Laminado para",
   "model.numbers.slicer": "Laminador",

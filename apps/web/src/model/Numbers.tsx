@@ -165,9 +165,7 @@ function EstimateNumbers({
     <div className="ph-numbers">
       <p className="ph-numbers-source">{t("model.numbers.estimate")}</p>
       {numbers.state === "estimating" ? (
-        <p role="status" className="studio-muted">
-          {t("model.numbers.estimating", { printer: shownName })}
-        </p>
+        <p className="studio-muted">{t("model.numbers.estimating", { printer: shownName })}</p>
       ) : (
         <>
           {numbers.state === "stale" ? (

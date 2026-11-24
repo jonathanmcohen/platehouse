@@ -315,6 +315,8 @@ let models: Map<string, ModelView | number>;
 let mintAnswer: (fileId: string) => Response;
 /** What a POST to the retry route answers. */
 let retryStatus: number;
+/** While set, a POST to the retry route waits for it before it answers. */
+let retryHeld: Promise<void> | null;
 /** While set, GET /app/api/models/:id waits for it before it answers. */
 let modelHeld: Promise<void> | null;
 /** What GET /app/api/plates/:id/mesh answers (issue #358). */
@@ -354,6 +356,7 @@ function stubServer() {
     const mintMatch = /^\/app\/api\/files\/([^/]+)\/slicer-link$/.exec(url.pathname);
     if (method === "POST" && mintMatch) return mintAnswer(mintMatch[1] ?? "");
     if (method === "POST" && /^\/app\/api\/estimates\/[^/]+\/retry$/.test(url.pathname)) {
+      if (retryHeld !== null) await retryHeld;
       if (retryStatus === 202) return json({ queued: true }, 202);
       // The route's own refusal (apps/server/src/app-api/model.ts); any
       // other status is a session that ended or a server that is down.
@@ -512,6 +515,7 @@ beforeEach(() => {
   navigations = [];
   loads = [];
   retryStatus = 202;
+  retryHeld = null;
   modelHeld = null;
   meshHeld = null;
   meshAnswer = (plateId) => json({ url: meshUrl(plateId) });
@@ -1287,10 +1291,7 @@ describe("failed plate shows the plain reason and a retry button", () => {
 
   /** The page's one status region, where a refused Retry is said. */
   function pageStatus(): Element {
-    // The plates' own "Estimating for" lines are statuses too; they sit in a plate.
-    const regions = [...container.querySelectorAll('[role="status"]')].filter(
-      (el) => el.closest("[data-plate]") === null,
-    );
+    const regions = container.querySelectorAll('[role="status"]');
     expect(regions).toHaveLength(1);
     return regions[0] as Element;
   }
@@ -1334,35 +1335,108 @@ describe("failed plate shows the plain reason and a retry button", () => {
     expect(text(plateItems()[1])).toMatch(/estimating/i);
   });
 
-  test("after a successful Retry, focus is on that plate's heading", async () => {
+  function estimatingAfterRetry(): ModelView {
+    return model([
+      threeMf([
+        plate(1, "Base", { file: fileNumbers(1) }),
+        plate(2, "Huge", { platehouse: estimate("estimating") }),
+        plate(3, "Lid", { file: fileNumbers(3) }),
+      ]),
+    ]);
+  }
+
+  test("after a successful Retry, focus is on that plate's heading, and stays on it once the reload lands", async () => {
     models.set(MODEL_ID, failedModel());
     await render(pageAt(MODEL_ID));
     const retry = button(/retry/i, plateItems()[1] as HTMLElement);
     retry.focus();
-    models.set(
-      MODEL_ID,
-      model([
-        threeMf([
-          plate(1, "Base", { file: fileNumbers(1) }),
-          plate(2, "Huge", { platehouse: estimate("estimating") }),
-          plate(3, "Lid", { file: fileNumbers(3) }),
-        ]),
-      ]),
-    );
+    models.set(MODEL_ID, estimatingAfterRetry());
     await click(retry);
     const heading = plateTitle(plateItems()[1] as HTMLElement);
     expect(heading?.getAttribute("tabindex")).toBe("-1");
     expect(document.activeElement).toBe(heading);
+    expect(heading?.isConnected).toBe(true);
   });
 
-  test("the estimating line is a status", async () => {
+  test("a successful Retry says the estimate is queued, naming the plate, in the page status", async () => {
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i, plateItems()[1] as HTMLElement));
+    expect(text(pageStatus())).toBe("Estimate queued for plate 2 (Huge)");
+    // The plates' own estimating lines are not live regions.
+    expect(container.querySelector('[data-plate] [role="status"]')).toBeNull();
+  });
+
+  test("with several .3mf files the queued message names the file too", async () => {
     models.set(
       MODEL_ID,
-      model([threeMf([plate(1, "Base", { platehouse: estimate("estimating") })])]),
+      model([
+        threeMf([
+          plate(1, "Huge", {
+            failure: {
+              estimateId: EST_FAILED,
+              reason: "bed_too_small",
+              words: WORDS,
+              detail: null,
+            },
+          }),
+        ]),
+        threeMf([plate(1, "Other", { file: fileNumbers(1) })], {
+          id: "0198f0c4-0000-7000-8000-0000000000f2",
+          name: "Second.3mf",
+        }),
+      ]),
     );
     await render(pageAt(MODEL_ID));
-    const regions = [...container.querySelectorAll('[role="status"]')];
-    expect(regions.some((el) => (el.textContent ?? "").includes("Estimating for"))).toBe(true);
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(button(/retry/i));
+    expect(text(pageStatus())).toMatch(/^Estimate queued for plate 1 \(Huge\) in Cube set\.3mf$/);
+  });
+
+  test("after a Retry refused with a 409, focus moves to the plate heading", async () => {
+    retryStatus = 409;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    retry.focus();
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(retry);
+    expect(document.activeElement).toBe(plateTitle(plateItems()[1] as HTMLElement));
+  });
+
+  test("after a Retry that fails otherwise, focus stays on Retry and Retry is still there", async () => {
+    retryStatus = 503;
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const retry = button(/retry/i, plateItems()[1] as HTMLElement);
+    retry.focus();
+    await click(retry);
+    expect(retry.isConnected).toBe(true);
+    expect(document.activeElement).toBe(retry);
+  });
+
+  test("focus the user moved elsewhere while the Retry was in flight stays there", async () => {
+    let release: () => void = () => {};
+    retryHeld = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    models.set(MODEL_ID, failedModel());
+    await render(pageAt(MODEL_ID));
+    const item = plateItems()[1] as HTMLElement;
+    const retry = button(/retry/i, item);
+    retry.focus();
+    models.set(MODEL_ID, estimatingAfterRetry());
+    await click(retry);
+    const other = document.createElement("button");
+    container.append(other);
+    other.focus();
+    expect(document.activeElement).toBe(other);
+    await act(async () => {
+      release();
+    });
+    await settle();
+    expect(document.activeElement).toBe(other);
   });
 
   test("a retry refused as not retryable says so, naming the plate, and reloads the model, and the words outlive the failure", async () => {

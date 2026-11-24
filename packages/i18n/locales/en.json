@@ -394,6 +394,8 @@
   "model.numbers.profile": "({profile})",
   "model.numbers.profileSource": "({profile}, {source})",
   "model.numbers.projectFilaments": "Project filaments",
+  "model.numbers.queued": "Estimate queued for {plate}",
+  "model.numbers.queuedIn": "Estimate queued for {plate} in {file}",
   "model.numbers.retry": "Retry",
   "model.numbers.slicedFor": "Sliced for",
   "model.numbers.slicer": "Slicer",

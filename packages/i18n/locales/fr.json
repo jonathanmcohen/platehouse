@@ -401,6 +401,8 @@
   "model.numbers.profile": "({profile})",
   "model.numbers.profileSource": "({profile}, {source})",
   "model.numbers.projectFilaments": "Filaments du projet",
+  "model.numbers.queued": "Estimation mise en file d'attente pour {plate}",
+  "model.numbers.queuedIn": "Estimation mise en file d'attente pour {plate} dans {file}",
   "model.numbers.retry": "Relancer",
   "model.numbers.slicedFor": "Tranch\u00e9 pour",
   "model.numbers.slicer": "Trancheur",
