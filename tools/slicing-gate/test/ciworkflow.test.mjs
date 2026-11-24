@@ -6,7 +6,7 @@
 // end pin release.yml's pushed-image check and slicer-image.yml the same way.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -1565,13 +1565,14 @@ test("slicer-image: each job holds only the permissions it uses, within those th
     assert.ok(m, `${id} sets its own permissions`);
     return Object.fromEntries(m[1].trimEnd().split("\n").map((l) => l.trim().split(": ")));
   };
+  assert.deepEqual(perms("gate"), { contents: "read", actions: "read" });
   assert.deepEqual(perms("detect"), { contents: "read", packages: "read" });
   assert.deepEqual(perms("build"), { contents: "read", packages: "write" });
-  assert.deepEqual(perms("stable"), { packages: "write" });
+  assert.deepEqual(perms("stable"), { contents: "read", packages: "write" });
   assert.deepEqual(perms("report-failure"), { issues: "write" });
   const jobs = [...t.slice(t.indexOf("\njobs:\n")).matchAll(/\n {2}([\w-]+):\n/g)].map((m) => m[1]);
-  assert.deepEqual(jobs, ["detect", "build", "stable", "report-failure"]);
-  assert.doesNotMatch(t, /\bactions: (read|write)|\bwrite-all|\bread-all/, "nothing else is granted");
+  assert.deepEqual(jobs, ["gate", "detect", "build", "stable", "report-failure"]);
+  assert.doesNotMatch(t.replace(jobBlock(t, "gate"), ""), /\bactions: (read|write)|\bwrite-all|\bread-all/, "nothing else is granted");
   for (const s of t.matchAll(/secrets\.(\w+)/g)) assert.equal(s[1], "GITHUB_TOKEN", "no secret but the job token");
 });
 
@@ -1639,12 +1640,22 @@ const GH_RELEASES_STUB = [
   '  echo "gh $*" >> "$CALLS"',
   '  if [ "${GH_STATUS:-0}" != 0 ]; then echo "gh: Not Found (HTTP 404)" >&2; return "$GH_STATUS"; fi',
   '  case "$2" in',
+  // The repository's tags (the release gate's live check); by default only the ref's own.
+  '    --paginate) printf "%s" "${MATCHING_REFS-$REF}" ;;',
   '    repos/OrcaSlicer/OrcaSlicer/releases/latest) printf "%s" "$LATEST" ;;',
   '    repos/OrcaSlicer/OrcaSlicer/releases/tags/*) printf "%s" "$BYTAG" ;;',
   "    *) return 99 ;;",
   "  esac",
   "}",
 ];
+// The pick step runs .github/scripts/release-gate.mjs from its cwd; copying it
+// (and rc-target.mjs, which it imports) keeps the step out of the repo root.
+const withGateScripts = (work) => {
+  mkdirSync(join(work, ".github", "scripts"), { recursive: true });
+  const to = join(work, ".github", "scripts");
+  copyFileSync(join(ROOT, ".github", "scripts", "release-gate.mjs"), join(to, "release-gate.mjs"));
+  copyFileSync(join(ROOT, ".github", "scripts", "rc-target.mjs"), join(to, "rc-target.mjs"));
+};
 const release = (tag, extra = {}) => JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets: [], ...extra });
 
 for (const [name, env, want] of [
@@ -1677,7 +1688,7 @@ for (const [name, env, want] of [
   ["a failed API call fails the step", { EVENT: "schedule", GH_STATUS: "1" }, { fail: /HTTP 404/ }],
 ]) {
   test(`slicer-image version pick: ${name}`, () => {
-    const r = runSlicerStep("detect", "Pick the version", { stubs: GH_RELEASES_STUB, env: { REF: "refs/heads/main", ...env } });
+    const r = runSlicerStep("detect", "Pick the version", { setup: withGateScripts, stubs: GH_RELEASES_STUB, env: { REF: "refs/heads/main", ...env } });
     if (want.fail) {
       assert.notEqual(r.status, 0, r.log);
       assert.match(r.log, want.fail);
@@ -1694,6 +1705,40 @@ for (const [name, env, want] of [
   });
 }
 
+// A plain tag below a higher release (a backport) builds and gets its version
+// tags but never moves stable, and a failed tag lookup fails the step.
+test("slicer-image version pick: a backport tag leaves stable alone but still builds", () => {
+  const r = runSlicerStep("detect", "Pick the version", {
+    setup: withGateScripts,
+    stubs: GH_RELEASES_STUB,
+    env: { EVENT: "push", REF: "refs/tags/v0.1.2", LATEST: release("v2.5.1"), MATCHING_REFS: "refs/tags/v0.2.0\nrefs/tags/v0.1.2\n" },
+  });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.stable, "false");
+  assert.equal(r.outputs.orca, "true");
+  assert.equal(r.outputs.release, "0.1.2");
+});
+
+test("slicer-image version pick: a dispatch from a backport tag leaves stable alone", () => {
+  const r = runSlicerStep("detect", "Pick the version", {
+    setup: withGateScripts,
+    stubs: GH_RELEASES_STUB,
+    env: { EVENT: "workflow_dispatch", INPUT_VERSION: "", REF: "refs/tags/v0.1.2", LATEST: release("v2.5.1"), MATCHING_REFS: "refs/tags/v0.2.0\nrefs/tags/v0.1.2\n" },
+  });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.stable, "false");
+});
+
+test("slicer-image version pick: a failed tag lookup on a plain tag fails the step, never moves stable", () => {
+  const r = runSlicerStep("detect", "Pick the version", {
+    setup: withGateScripts,
+    stubs: ["gh() { echo boom >&2; return 1; }"],
+    env: { EVENT: "push", REF: "refs/tags/v0.1.0", GITHUB_REPOSITORY: "o/r" },
+  });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.stable, undefined);
+});
+
 // The release's version tag (PR #360): a run started from a release tag, by
 // a push, a re-run of it or a run by hand from it, tags the image with the
 // release's version, so rc-tag.yml can find the build made for that release
@@ -1709,7 +1754,7 @@ for (const [name, env, want] of [
   ["a daily run", { EVENT: "schedule", REF: "refs/heads/main" }, ""],
 ]) {
   test(`slicer-image version pick: the release version for ${name} is '${want}'`, () => {
-    const r = runSlicerStep("detect", "Pick the version", { stubs: GH_RELEASES_STUB, env: { LATEST: release("v2.5.1"), ...env } });
+    const r = runSlicerStep("detect", "Pick the version", { setup: withGateScripts, stubs: GH_RELEASES_STUB, env: { LATEST: release("v2.5.1"), ...env } });
     assert.equal(r.status, 0, r.log);
     assert.equal(r.outputs.release, want);
   });
@@ -2402,7 +2447,8 @@ test("slicer-image: the stable job runs after a successful build that detect sai
   assert.match(move, /\n {10}DIGEST: \$\{\{ needs\.build\.outputs\.digest \}\}\n/);
   assert.ok(stepIds(stable).indexOf("login") < stepIds(stable).indexOf("move"), "log in before the move");
   assert.equal((stable.match(/docker buildx imagetools create/g) ?? []).length, 1, "one create, for stable");
-  assert.doesNotMatch(move, /\n {8}(if|continue-on-error):/, "nothing softens the move");
+  assert.doesNotMatch(move, /\n {8}continue-on-error:/, "nothing softens the move");
+  assert.match(move, /\n {8}if: \$\{\{ steps\.recheck\.outputs\.move != 'false' \}\}\n/, "only the live highest-release check can skip it");
   // A failed move keeps its log tail for the issue, as the build does.
   assert.match(stepBlock(stable, "Keep the failing step's log tail"), /failure\/stable\.txt/);
   assert.match(stepBlock(stable, "Upload the log tail"), /\n {10}name: failure-stable\n {10}path: failure\/stable\.txt\n/);
@@ -2425,6 +2471,34 @@ test("slicer-image stable: stable becomes a carbon copy of the tested digest, re
   ]);
   assert.equal(r.outputs.tagged, "orca-2.5.1, orca-2.5.1-r42, stable");
   assert.match(r.summary, new RegExp(`stable now points at \`${DIGEST}\``));
+});
+
+// The recheck, from the live tags just before stable moves: a tag run moves
+// stable only while it is still the highest release.
+const recheck = (env) =>
+  runSlicerStep("stable", "Still the highest release", {
+    cwd: ROOT,
+    stubs: GH_RELEASES_STUB,
+    env: { TAG: "v0.2.0", REPO: "o/r", ...env },
+  });
+
+test("slicer-image stable: the recheck lets the highest release move stable", () => {
+  const r = recheck({ MATCHING_REFS: "refs/tags/v0.1.0\nrefs/tags/v0.2.0\nrefs/tags/v0.3.0-rc.1\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.move, "true");
+});
+
+test("slicer-image stable: the recheck stops a tag a higher release has passed since detect", () => {
+  const r = recheck({ MATCHING_REFS: "refs/tags/v0.2.0\nrefs/tags/v0.3.0\n" });
+  assert.equal(r.status, 0, r.log);
+  assert.equal(r.outputs.move, "false");
+  assert.match(r.log, /no longer the highest release/);
+});
+
+test("slicer-image stable: a failed tag lookup fails the recheck, so nothing moves", () => {
+  const r = recheck({ GH_STATUS: "1" });
+  assert.notEqual(r.status, 0, r.log);
+  assert.equal(r.outputs.move, undefined);
 });
 
 test("slicer-image stable: stable read back at another digest fails, and is still listed as touched", () => {

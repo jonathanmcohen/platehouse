@@ -138,8 +138,47 @@ defaults:
     shell: bash
 
 jobs:
+  # A run from a tag (a tag push, or a dispatch on a tag) publishes only a
+  # commit on main or a release/ branch that has a successful ci run, as
+  # release.yml's gate requires (issue #450). Daily and main runs skip it.
+  gate:
+    name: Check the tag's commit
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    # actions: read lets the job list the ci runs of the tagged commit.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The commit is on main or a release branch
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          if ! git branch -r --contains "$SHA" | grep -Eq '^[[:space:]]*origin/(main$|release/)'; then
+            echo "::error::${SHA} is on neither origin/main nor an origin/release/ branch; nothing is built"
+            exit 1
+          fi
+          echo "${SHA} is on a branch that takes releases"
+
+      - name: CI passed for the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: node .github/scripts/release-gate.mjs ci "$SHA"
+
   detect:
     name: Find the OrcaSlicer release to build
+    needs: gate
+    # The gate is skipped on a daily or main run, and must have passed on a tag run.
+    if: ${{ !cancelled() && (needs.gate.result == 'success' || needs.gate.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -173,7 +212,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           {
-            # stable moves on daily and manual runs and on a plain vX.Y.Z tag;
+            # stable moves on daily and manual runs and on a plain vX.Y.Z tag that
+            # is the highest release (a backport leaves it alone);
             # a prerelease tag leaves stable alone, and orca-X.Y.Z too, which
             # deployments pin: only the run tag and the release's version are
             # published for it. orca-X.Y.Z moves on every other run.
@@ -201,6 +241,17 @@ jobs:
                 stable=false
                 orca=false
                 echo "${REF#refs/tags/} is a prerelease tag: stable and orca-X.Y.Z will not move"
+              fi
+              if [ "$stable" = "true" ]; then
+                # stable only moves to the highest stable tag in the repository
+                # (checked again by the stable job, after the build), so a
+                # backport such as v0.1.2 after v0.2.0 leaves it alone.
+                refs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref')"
+                latest="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest "${REF#refs/tags/}")"
+                if [ "$latest" != "true" ]; then
+                  stable=false
+                  echo "${REF#refs/tags/} is not the highest release: stable will not move"
+                fi
               fi
               release="${REF#refs/tags/v}"
               echo "The image will also be tagged ${release}, the release's version"
@@ -818,6 +869,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      contents: read
       packages: write
     concurrency:
       group: slicer-image-stable
@@ -827,6 +879,33 @@ jobs:
     outputs:
       tagged: ${{ steps.move.outputs.tagged }}
     steps:
+      # A tag run checks again, from the live tags, that no higher release
+      # has been pushed since detect looked: the build takes a while, and a
+      # lower tag must never move stable after a higher one has.
+      - name: Check out
+        if: ${{ github.ref_type == 'tag' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Still the highest release
+        id: recheck
+        if: ${{ github.ref_type == 'tag' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          refs="$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" --jq '.[].ref')"
+          latest="$(printf '%s\n' "$refs" | sed -n 's#^refs/tags/##p' | node .github/scripts/release-gate.mjs latest "$TAG")"
+          if [ "$latest" = "true" ]; then
+            echo "move=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "move=false" >>"$GITHUB_OUTPUT"
+            echo "${TAG} is no longer the highest release: stable is not moved"
+          fi
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -840,6 +919,7 @@ jobs:
 
       - name: Move stable
         id: move
+        if: ${{ steps.recheck.outputs.move != 'false' }}
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
           BUILD_TAGGED: ${{ needs.build.outputs.tagged }}

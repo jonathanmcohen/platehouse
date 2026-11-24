@@ -28,6 +28,7 @@ All notable changes to Platehouse are recorded here. The format follows
 - Correction to the 0.1.0 notes, left as released below: the 3MF parser keeps a plate number only when it is a whole number from 1 to 2147483647, and a larger one makes the file one with no plate data. That rule came in with [#122](https://github.com/jonathanmcohen/platehouse/pull/122), before 0.1.0 was released; the 0.1.0 entry describes an older rule ([#329](https://github.com/jonathanmcohen/platehouse/issues/329)).
 - Upgrade notes for the slicer: upgrade the app and slicer images together, because the 0.1.1 app refuses an older slicer. Pictures and OpenSCAD renders need Linux 6.12 or newer on the host. On Linux older than 6.12, estimates and STEP previews stop unless `SLICER_ALLOW_UNSANDBOXED=true` is set on the slicer.
 - Reverse proxy guides: the optional allowlist examples now use narrow placeholder ranges. If you copied `172.16.0.0/12` or `192.168.0.0/16` from an earlier guide, replace them with your own networks and run check 7 of the proxy checklist.
+- Release images are published only for commits that passed CI on main or a release branch, and `latest` (and the slicer's `stable`) only moves to the highest release, so a backport no longer moves it back ([#450](https://github.com/jonathanmcohen/platehouse/issues/450)).
 
 ### Fixed
 
